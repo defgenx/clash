@@ -1,0 +1,433 @@
+//! Input adapter — translates keyboard events into application actions.
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::application::actions::{Action, AgentAction, NavAction, TableAction, TaskAction, UiAction};
+use crate::application::state::{AppState, InputMode};
+use crate::adapters::views::ViewKind;
+
+/// Map a key event to an action based on current state.
+pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
+    // Ctrl+C is NOT bound — it must pass through to Claude when attached.
+    // Use 'q' or ':quit' to exit clash.
+
+    match &state.input_mode {
+        InputMode::Normal => handle_normal_mode(key, state),
+        InputMode::Command => handle_input_mode(key),
+        InputMode::Filter => handle_input_mode(key),
+        InputMode::Confirm => handle_confirm_mode(key),
+        InputMode::Attached => handle_attached_mode(key, state),
+    }
+}
+
+fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
+    if state.show_help {
+        return match key.code {
+            KeyCode::Char('?') => Action::Ui(UiAction::HideHelp),
+            KeyCode::Esc => Action::Ui(UiAction::HideHelp),
+            _ => Action::Ui(UiAction::HideHelp),
+        };
+    }
+
+    // Check if we're in a detail view (scrollable, not a table)
+    let is_detail_view = matches!(
+        state.current_view(),
+        ViewKind::TeamDetail | ViewKind::AgentDetail | ViewKind::TaskDetail
+            | ViewKind::SessionDetail | ViewKind::SubagentDetail | ViewKind::Prompts
+    );
+
+    match key.code {
+        // Navigation — scroll in detail views, select in tables
+        KeyCode::Char('j') | KeyCode::Down => {
+            if is_detail_view {
+                Action::Ui(UiAction::ScrollDown)
+            } else {
+                Action::Table(TableAction::Next)
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if is_detail_view {
+                Action::Ui(UiAction::ScrollUp)
+            } else {
+                Action::Table(TableAction::Prev)
+            }
+        }
+        KeyCode::Char('g') => Action::Table(TableAction::First),
+        KeyCode::Char('G') => Action::Table(TableAction::Last),
+        KeyCode::Enter => handle_enter(state),
+        KeyCode::Esc => Action::Nav(NavAction::GoBack),
+
+        // Modes
+        KeyCode::Char(':') => Action::Ui(UiAction::EnterCommandMode),
+        KeyCode::Char('/') => Action::Ui(UiAction::EnterFilterMode),
+        KeyCode::Char('?') => Action::Ui(UiAction::ToggleHelp),
+
+        // Context-dependent actions
+        KeyCode::Char('c') => handle_create(state),
+        KeyCode::Char('d') => handle_delete(state),
+        KeyCode::Char('A') => {
+            if state.current_view() == ViewKind::Sessions {
+                Action::Ui(UiAction::ToggleAllSessions)
+            } else {
+                Action::Noop
+            }
+        }
+        KeyCode::Char('D') => handle_delete_all(state),
+        KeyCode::Char('a') => handle_attach_or_assign(state),
+        KeyCode::Char('i') => handle_inspect(state),
+        KeyCode::Char('s') => handle_cycle_status(state),
+        KeyCode::Char('m') => handle_message(state),
+        KeyCode::Char('n') => handle_new_session(state),
+        KeyCode::Char('r') => Action::Team(crate::application::actions::TeamAction::Refresh),
+
+        // Quit
+        KeyCode::Char('q') => Action::Ui(UiAction::Quit),
+
+        _ => Action::Noop,
+    }
+}
+
+fn handle_input_mode(key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Enter => Action::Ui(UiAction::SubmitInput(String::new())),
+        KeyCode::Esc => Action::Ui(UiAction::ExitInputMode),
+        _ => Action::Noop,
+    }
+}
+
+fn handle_attached_mode(key: KeyEvent, _state: &AppState) -> Action {
+    // Esc or Ctrl+B detaches from the daemon session
+    if key.code == KeyCode::Esc {
+        return Action::Ui(UiAction::DetachSession);
+    }
+    if key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Action::Ui(UiAction::DetachSession);
+    }
+
+    // Everything else → forward as input to the daemon session
+    // All other keystrokes are forwarded to the daemon in app.rs event loop
+    Action::Noop
+}
+
+/// Convert a KeyEvent into raw bytes for PTY input.
+pub fn key_to_bytes(key: KeyEvent) -> Vec<u8> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char(c) if ctrl => {
+            // Ctrl+A=0x01, Ctrl+B=0x02, ..., Ctrl+Z=0x1A
+            let byte = (c as u8).wrapping_sub(b'a').wrapping_add(1);
+            if byte <= 26 { vec![byte] } else { vec![] }
+        }
+        KeyCode::Char(c) => {
+            let mut buf = [0u8; 4];
+            let s = c.encode_utf8(&mut buf);
+            s.as_bytes().to_vec()
+        }
+        KeyCode::Enter => vec![b'\r'],
+        KeyCode::Backspace => vec![0x7f],
+        KeyCode::Tab => vec![b'\t'],
+        KeyCode::Up => b"\x1b[A".to_vec(),
+        KeyCode::Down => b"\x1b[B".to_vec(),
+        KeyCode::Right => b"\x1b[C".to_vec(),
+        KeyCode::Left => b"\x1b[D".to_vec(),
+        KeyCode::Home => b"\x1b[H".to_vec(),
+        KeyCode::End => b"\x1b[F".to_vec(),
+        KeyCode::Delete => b"\x1b[3~".to_vec(),
+        KeyCode::PageUp => b"\x1b[5~".to_vec(),
+        KeyCode::PageDown => b"\x1b[6~".to_vec(),
+        _ => vec![],
+    }
+}
+
+fn handle_confirm_mode(key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => Action::Ui(UiAction::ConfirmYes),
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::Ui(UiAction::ConfirmNo),
+        _ => Action::Noop,
+    }
+}
+
+fn handle_enter(state: &AppState) -> Action {
+    match state.current_view() {
+        // Enter on Sessions = attach directly to the session
+        ViewKind::Sessions => {
+            let idx = state.table_state.selected;
+            let filtered: Vec<&crate::domain::entities::Session> = if state.show_all_sessions {
+                state.store.sessions.iter().collect()
+            } else {
+                state.store.sessions.iter().filter(|s| s.is_running).collect()
+            };
+            if let Some(session) = filtered.get(idx) {
+                Action::Agent(AgentAction::Attach {
+                    session_id: session.id.clone(),
+                })
+            } else {
+                Action::Noop
+            }
+        }
+        // Enter on Subagents = attach to the parent session
+        ViewKind::Subagents => {
+            let idx = state.table_state.selected;
+            if let Some(sa) = state.store.subagents.get(idx) {
+                Action::Agent(AgentAction::Attach {
+                    session_id: sa.parent_session_id.clone(),
+                })
+            } else {
+                Action::Noop
+            }
+        }
+        // Other views drill in
+        _ => Action::Nav(NavAction::DrillIn {
+            view: match state.current_view() {
+                ViewKind::Teams => ViewKind::TeamDetail,
+                ViewKind::Agents => ViewKind::AgentDetail,
+                ViewKind::Tasks => ViewKind::TaskDetail,
+                ViewKind::SessionDetail => ViewKind::Subagents,
+                _ => return Action::Noop,
+            },
+            context: String::new(),
+        }),
+    }
+}
+
+fn handle_create(_state: &AppState) -> Action {
+    // `c` always spawns a new Claude session
+    Action::Agent(AgentAction::SpawnSession)
+}
+
+fn handle_delete(state: &AppState) -> Action {
+    match state.current_view() {
+        ViewKind::Teams | ViewKind::TeamDetail => {
+            if let Some(team) = state.current_team() {
+                Action::Ui(UiAction::ShowConfirm {
+                    message: format!("Delete team '{}'?", team),
+                    on_confirm: Box::new(Action::Team(
+                        crate::application::actions::TeamAction::Delete {
+                            name: team.to_string(),
+                        },
+                    )),
+                })
+            } else {
+                Action::Noop
+            }
+        }
+        ViewKind::Sessions => {
+            let idx = state.table_state.selected;
+            let filtered: Vec<&crate::domain::entities::Session> = if state.show_all_sessions {
+                state.store.sessions.iter().collect()
+            } else {
+                state.store.sessions.iter().filter(|s| s.is_running).collect()
+            };
+            if let Some(session) = filtered.get(idx) {
+                let short_id = if session.id.len() > 8 { &session.id[..8] } else { &session.id };
+                Action::Ui(UiAction::ShowConfirm {
+                    message: format!("Delete session '{}'?", short_id),
+                    on_confirm: Box::new(Action::Agent(AgentAction::DeleteSession {
+                        project: session.project.clone(),
+                        session_id: session.id.clone(),
+                    })),
+                })
+            } else {
+                Action::Noop
+            }
+        }
+        ViewKind::SessionDetail => {
+            if let Some(session_id) = state.current_session() {
+                if let Some(session) = state.store.find_session(session_id) {
+                    let short_id = if session.id.len() > 8 { &session.id[..8] } else { &session.id };
+                    Action::Ui(UiAction::ShowConfirm {
+                        message: format!("Delete session '{}'?", short_id),
+                        on_confirm: Box::new(Action::Agent(AgentAction::DeleteSession {
+                            project: session.project.clone(),
+                            session_id: session.id.clone(),
+                        })),
+                    })
+                } else {
+                    Action::Noop
+                }
+            } else {
+                Action::Noop
+            }
+        }
+        _ => Action::Noop,
+    }
+}
+
+fn handle_delete_all(state: &AppState) -> Action {
+    match state.current_view() {
+        ViewKind::Sessions => {
+            Action::Ui(UiAction::ShowConfirm {
+                message: "Delete ALL sessions?".to_string(),
+                on_confirm: Box::new(Action::Agent(AgentAction::DeleteAllSessions)),
+            })
+        }
+        _ => Action::Noop,
+    }
+}
+
+fn handle_attach_or_assign(state: &AppState) -> Action {
+    match state.current_view() {
+        ViewKind::Sessions => {
+            let idx = state.table_state.selected;
+            let filtered: Vec<&crate::domain::entities::Session> = if state.show_all_sessions {
+                state.store.sessions.iter().collect()
+            } else {
+                state.store.sessions.iter().filter(|s| s.is_running).collect()
+            };
+            if let Some(session) = filtered.get(idx) {
+                return Action::Agent(AgentAction::Attach {
+                    session_id: session.id.clone(),
+                });
+            }
+            Action::Noop
+        }
+        ViewKind::SessionDetail => {
+            if let Some(session_id) = state.current_session() {
+                return Action::Agent(AgentAction::Attach {
+                    session_id: session_id.to_string(),
+                });
+            }
+            Action::Noop
+        }
+        ViewKind::Subagents => {
+            let idx = state.table_state.selected;
+            if let Some(sa) = state.store.subagents.get(idx) {
+                return Action::Agent(AgentAction::Attach {
+                    session_id: sa.parent_session_id.clone(),
+                });
+            }
+            Action::Noop
+        }
+        ViewKind::SubagentDetail => {
+            if let Some(agent_id) = state.nav.current().context.as_deref() {
+                if let Some(sa) = state.store.subagents.iter().find(|s| s.id == agent_id) {
+                    return Action::Agent(AgentAction::Attach {
+                        session_id: sa.parent_session_id.clone(),
+                    });
+                }
+            }
+            Action::Noop
+        }
+        ViewKind::Agents | ViewKind::AgentDetail | ViewKind::Tasks => Action::Noop,
+        _ => Action::Noop,
+    }
+}
+
+fn handle_cycle_status(state: &AppState) -> Action {
+    match state.current_view() {
+        ViewKind::Tasks => {
+            if let Some(team) = state.current_team() {
+                let tasks = state.store.get_tasks(team);
+                if let Some(task) = tasks.get(state.table_state.selected) {
+                    return Action::Task(TaskAction::CycleStatus {
+                        team: team.to_string(),
+                        task_id: task.id.clone(),
+                    });
+                }
+            }
+            Action::Noop
+        }
+        _ => Action::Noop,
+    }
+}
+
+fn handle_message(state: &AppState) -> Action {
+    match state.current_view() {
+        ViewKind::Agents | ViewKind::AgentDetail | ViewKind::Inbox => {
+            Action::Ui(UiAction::EnterCommandMode)
+        }
+        _ => Action::Noop,
+    }
+}
+
+fn handle_inspect(state: &AppState) -> Action {
+    match state.current_view() {
+        ViewKind::Sessions => Action::Nav(NavAction::DrillIn {
+            view: ViewKind::SessionDetail,
+            context: String::new(),
+        }),
+        ViewKind::Subagents => Action::Nav(NavAction::DrillIn {
+            view: ViewKind::SubagentDetail,
+            context: String::new(),
+        }),
+        _ => Action::Noop,
+    }
+}
+
+fn handle_new_session(state: &AppState) -> Action {
+    match state.current_view() {
+        ViewKind::Sessions | ViewKind::SessionDetail => {
+            Action::Agent(AgentAction::SpawnSession)
+        }
+        _ => Action::Noop,
+    }
+}
+
+/// Parse a command string (from `:` mode).
+pub fn parse_command(cmd: &str) -> Action {
+    let cmd = cmd.trim();
+
+    // Handle "create team <name>" and "create task <team> <subject>"
+    if let Some(rest) = cmd.strip_prefix("create team ") {
+        let name = rest.trim();
+        if !name.is_empty() {
+            return Action::Team(crate::application::actions::TeamAction::Create {
+                name: name.to_string(),
+                description: String::new(),
+            });
+        }
+        return Action::Ui(UiAction::Toast("Usage: create team <name>".to_string()));
+    }
+    if let Some(rest) = cmd.strip_prefix("create task ") {
+        let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+        if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+            return Action::Task(crate::application::actions::TaskAction::Create {
+                team: parts[0].to_string(),
+                subject: parts[1].to_string(),
+                description: String::new(),
+            });
+        }
+        return Action::Ui(UiAction::Toast("Usage: create task <team> <subject>".to_string()));
+    }
+
+    match cmd {
+        "teams" | "team" => Action::Nav(NavAction::NavigateTo(ViewKind::Teams)),
+        "agents" | "agent" => Action::Nav(NavAction::NavigateTo(ViewKind::Agents)),
+        "tasks" | "task" => Action::Nav(NavAction::NavigateTo(ViewKind::Tasks)),
+        "inbox" => Action::Nav(NavAction::NavigateTo(ViewKind::Inbox)),
+        "prompts" | "prompt" => Action::Nav(NavAction::NavigateTo(ViewKind::Prompts)),
+        "sessions" | "session" => Action::Nav(NavAction::NavigateTo(ViewKind::Sessions)),
+        "subagents" | "subagent" => Action::Nav(NavAction::NavigateTo(ViewKind::Subagents)),
+        "quit" | "q" => Action::Ui(UiAction::Quit),
+        _ => Action::Ui(UiAction::Toast(format!("Unknown command: {}", cmd))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_command_teams() {
+        match parse_command("teams") {
+            Action::Nav(NavAction::NavigateTo(ViewKind::Teams)) => {}
+            _ => panic!("Expected NavigateTo Teams"),
+        }
+    }
+
+    #[test]
+    fn test_parse_command_quit() {
+        match parse_command("q") {
+            Action::Ui(UiAction::Quit) => {}
+            _ => panic!("Expected Quit"),
+        }
+    }
+
+    #[test]
+    fn test_parse_command_unknown() {
+        match parse_command("foobar") {
+            Action::Ui(UiAction::Toast(_)) => {}
+            _ => panic!("Expected Toast for unknown command"),
+        }
+    }
+}

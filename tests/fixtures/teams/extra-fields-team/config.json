@@ -1,0 +1,8 @@
+{
+  "name": "extra-fields-team",
+  "description": "Has extra fields",
+  "members": [],
+  "futureField1": true,
+  "futureField2": {"nested": "value"},
+  "futureField3": [1, 2, 3]
+}

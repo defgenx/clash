@@ -1,0 +1,7 @@
+{
+  "id": "task-4",
+  "subject": "Deploy to staging",
+  "description": "Deploy the auth module to staging environment",
+  "status": "blocked",
+  "blockedBy": ["task-3"]
+}

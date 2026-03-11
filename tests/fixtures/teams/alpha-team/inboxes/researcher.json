@@ -1,0 +1,15 @@
+[
+  {
+    "from": "coder",
+    "text": "Auth module is ready for review",
+    "timestamp": "2025-06-15T14:30:00Z",
+    "color": "green",
+    "read": true
+  },
+  {
+    "from": "lead",
+    "text": "Please prioritize the API analysis",
+    "timestamp": "2025-06-15T15:00:00Z",
+    "read": false
+  }
+]
