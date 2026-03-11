@@ -228,14 +228,14 @@ fn draw_vt100_terminal(
     let widget = TerminalWidget::new(screen);
     frame.render_widget(widget, inner);
 
-    // Render cursor if visible
-    if !screen.hide_cursor() {
-        let (cursor_row, cursor_col) = screen.cursor_position();
-        let cx = inner.x + cursor_col;
-        let cy = inner.y + cursor_row;
-        if cx < inner.x + inner.width && cy < inner.y + inner.height {
-            frame.set_cursor_position(ratatui::layout::Position { x: cx, y: cy });
-        }
+    // Always render cursor when attached — Claude Code may hide/show the terminal
+    // cursor rapidly during redraws, which causes it to appear invisible. Force it
+    // visible so the user can always see their input position.
+    let (cursor_row, cursor_col) = screen.cursor_position();
+    let cx = inner.x + cursor_col;
+    let cy = inner.y + cursor_row;
+    if cx < inner.x + inner.width && cy < inner.y + inner.height {
+        frame.set_cursor_position(ratatui::layout::Position { x: cx, y: cy });
     }
 }
 

@@ -15,7 +15,7 @@ const LOGO: &[&str] = &[
     r"      \/          \/     \/     \/ ",
 ];
 
-const TAGLINE: &str = "Claude Stash — K9s-style TUI for Claude Code Sessions";
+const TAGLINE: &str = "Claude Stash - TUI for Claude Code Sessions";
 
 const HINTS: &[&str] = &[
     "c  New session     :teams  View teams     ?  Help",
