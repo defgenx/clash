@@ -114,7 +114,8 @@ impl DetailView for SessionDetailView {
         let mut conversation = Section::new("Conversation");
         if state.store.conversation.is_empty() {
             if state.store.conversation_loaded {
-                conversation = conversation.row("", "No messages (session file may have been removed)");
+                conversation =
+                    conversation.row("", "No messages (session file may have been removed)");
             } else {
                 conversation = conversation.row("", "Loading...");
             }

@@ -12,6 +12,17 @@ cargo test                 # Run all 111 tests (unit + integration)
 cargo run -- --data-dir /path/to/test/data  # Run with test data
 ```
 
+## Before Pushing
+
+**Always run format and linter before every push:**
+
+```bash
+cargo fmt                  # Auto-format code
+cargo clippy               # Run linter
+```
+
+CI runs `cargo fmt --check` and `cargo clippy` — pushes will fail if either has issues.
+
 ## Architecture: Clean Architecture (strict layers)
 
 ```

@@ -290,21 +290,22 @@ impl App {
                         existing.is_running = is_running;
                     } else {
                         // Daemon-only session (no disk file yet)
-                        let created =
-                            chrono::DateTime::from_timestamp(info.created_at as i64, 0)
-                                .map(|dt| {
-                                    dt.with_timezone(&chrono::Local)
-                                        .format("%Y-%m-%d %H:%M")
-                                        .to_string()
-                                })
-                                .unwrap_or_default();
+                        let created = chrono::DateTime::from_timestamp(info.created_at as i64, 0)
+                            .map(|dt| {
+                                dt.with_timezone(&chrono::Local)
+                                    .format("%Y-%m-%d %H:%M")
+                                    .to_string()
+                            })
+                            .unwrap_or_default();
                         let clients_info = if info.attached_clients > 0 {
                             format!("{} attached", info.attached_clients)
                         } else {
                             "detached".to_string()
                         };
-                        self.state.store.sessions.push(
-                            crate::domain::entities::Session {
+                        self.state
+                            .store
+                            .sessions
+                            .push(crate::domain::entities::Session {
                                 id: info.session_id,
                                 project: String::new(),
                                 project_path: String::new(),
@@ -317,8 +318,7 @@ impl App {
                                 git_branch: String::new(),
                                 is_running,
                                 status,
-                            },
-                        );
+                            });
                     }
                 }
             }
