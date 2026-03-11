@@ -1,0 +1,7 @@
+{
+  "id": "task-1",
+  "subject": "Analyze API endpoints",
+  "description": "Review all API endpoints and document their behavior",
+  "status": "in_progress",
+  "owner": "researcher"
+}

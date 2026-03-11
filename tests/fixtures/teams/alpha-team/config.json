@@ -1,0 +1,30 @@
+{
+  "name": "alpha-team",
+  "description": "The alpha research team",
+  "createdAt": "2025-06-15T10:30:00Z",
+  "leadAgentId": "agent-lead-001",
+  "leadSessionId": "session-abc-123",
+  "members": [
+    {
+      "agentId": "agent-001",
+      "name": "researcher",
+      "agentType": "claude",
+      "model": "sonnet",
+      "prompt": "You are a research assistant.",
+      "color": "blue",
+      "isActive": true,
+      "mode": "auto",
+      "cwd": "/home/user/project"
+    },
+    {
+      "agentId": "agent-002",
+      "name": "coder",
+      "agentType": "claude",
+      "model": "opus",
+      "prompt": "You are a senior software engineer.",
+      "color": "green",
+      "isActive": false,
+      "cwd": "/home/user/project/src"
+    }
+  ]
+}

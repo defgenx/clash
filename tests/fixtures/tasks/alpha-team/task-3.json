@@ -1,0 +1,9 @@
+{
+  "id": "task-3",
+  "subject": "Implement auth module",
+  "description": "Build OAuth2 authentication flow",
+  "status": "completed",
+  "owner": "coder",
+  "blocks": ["task-4"],
+  "blockedBy": []
+}
