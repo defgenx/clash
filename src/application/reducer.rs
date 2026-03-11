@@ -38,11 +38,8 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
 fn reduce_nav(state: &mut AppState, action: NavAction) -> Vec<Effect> {
     match action {
         NavAction::NavigateTo(view) => {
-            // Top-level views replace the stack; sub-views push so Esc goes back
-            match view {
-                ViewKind::Teams | ViewKind::Sessions => state.nav.replace(view),
-                _ => state.nav.push(view, None),
-            }
+            // Always push so Esc goes back to the previous view
+            state.nav.push(view, None);
             state.table_state.selected = 0;
             state.scroll_state.offset = 0;
             state.filter.clear();
@@ -88,6 +85,7 @@ fn reduce_nav(state: &mut AppState, action: NavAction) -> Vec<Effect> {
             state.table_state.selected = 0;
             state.scroll_state.offset = 0;
             state.filter.clear();
+            state.store.conversation_loaded = false;
             vec![]
         }
     }

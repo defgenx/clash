@@ -440,10 +440,14 @@ impl App {
                     project,
                     session_id,
                 } => {
-                    let _ =
+                    if let Err(e) =
                         self.state
                             .store
-                            .load_conversation(&self.backend, &project, &session_id);
+                            .load_conversation(&self.backend, &project, &session_id)
+                    {
+                        tracing::warn!("Failed to load conversation: {}", e);
+                        self.state.store.conversation_loaded = true;
+                    }
                 }
                 Effect::LoadSubagentConversation {
                     project,

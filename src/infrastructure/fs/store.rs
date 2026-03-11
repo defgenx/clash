@@ -11,6 +11,7 @@ pub struct DataStore {
     pub sessions: Vec<Session>,
     pub subagents: Vec<Subagent>,
     pub conversation: Vec<ConversationMessage>,
+    pub conversation_loaded: bool,
 }
 
 impl Default for DataStore {
@@ -27,6 +28,7 @@ impl DataStore {
             sessions: Vec::new(),
             subagents: Vec::new(),
             conversation: Vec::new(),
+            conversation_loaded: false,
         }
     }
 
@@ -80,6 +82,7 @@ impl DataStore {
         session_id: &str,
     ) -> Result<()> {
         self.conversation = backend.load_conversation(project, session_id)?;
+        self.conversation_loaded = true;
         Ok(())
     }
 
@@ -91,6 +94,7 @@ impl DataStore {
         agent_id: &str,
     ) -> Result<()> {
         self.conversation = backend.load_subagent_conversation(project, session_id, agent_id)?;
+        self.conversation_loaded = true;
         Ok(())
     }
 

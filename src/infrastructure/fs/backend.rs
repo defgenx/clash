@@ -558,6 +558,35 @@ impl DataRepository for FsBackend {
         if session_dir.is_dir() {
             std::fs::remove_dir_all(&session_dir)?;
         }
+        // Remove entry from sessions-index.json so it doesn't reappear
+        let index_path = self
+            .base_dir
+            .join("projects")
+            .join(project)
+            .join("sessions-index.json");
+        if index_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&index_path) {
+                if let Ok(mut index) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(entries) = index.get_mut("entries").and_then(|e| e.as_array_mut()) {
+                        let before = entries.len();
+                        entries.retain(|e| {
+                            e.get("sessionId")
+                                .and_then(|v| v.as_str())
+                                .map(|id| id != session_id)
+                                .unwrap_or(true)
+                        });
+                        if entries.len() != before {
+                            if let Ok(updated) = serde_json::to_string_pretty(&index) {
+                                let _ = crate::infrastructure::fs::atomic::write_atomic(
+                                    &index_path,
+                                    updated.as_bytes(),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -566,6 +595,18 @@ impl DataRepository for FsBackend {
         for session in &sessions {
             if let Err(e) = self.delete_session(&session.project, &session.id) {
                 tracing::warn!("Failed to delete session {}: {}", session.id, e);
+            }
+        }
+        // Also remove sessions-index.json files so ghost entries don't reappear
+        let projects_dir = self.base_dir.join("projects");
+        if projects_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&projects_dir) {
+                for entry in entries.flatten() {
+                    let index_path = entry.path().join("sessions-index.json");
+                    if index_path.exists() {
+                        let _ = std::fs::remove_file(&index_path);
+                    }
+                }
             }
         }
         Ok(())
