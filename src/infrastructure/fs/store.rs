@@ -56,11 +56,6 @@ impl DataStore {
         Ok(())
     }
 
-    /// Replace sessions with daemon-managed sessions directly.
-    pub fn set_sessions(&mut self, sessions: Vec<Session>) {
-        self.sessions = sessions;
-    }
-
     pub fn refresh_subagents(
         &mut self,
         backend: &dyn DataRepository,

@@ -257,38 +257,53 @@ impl App {
         }
     }
 
-    /// Refresh sessions from the daemon (clash-managed sessions only).
-    /// Falls back to disk-based sessions if daemon is not available.
+    /// Refresh sessions: always load from Claude's disk files first,
+    /// then overlay daemon status for clash-managed sessions.
     async fn refresh_daemon_sessions(&mut self) {
+        // Always read sessions from Claude's files (read-only, source of truth)
+        let _ = self.state.store.refresh_sessions(&self.backend);
+
+        // Overlay daemon status on matching sessions, add daemon-only sessions
         if self.daemon.is_connected() {
-            match self.daemon.list_sessions().await {
-                Ok(infos) => {
-                    use crate::domain::entities::SessionStatus;
-                    let sessions: Vec<crate::domain::entities::Session> = infos
-                        .into_iter()
-                        .map(|info| {
-                            let status = match info.status.as_str() {
-                                "running" => SessionStatus::Running,
-                                "thinking" => SessionStatus::Thinking,
-                                "waiting" => SessionStatus::Waiting,
-                                "starting" => SessionStatus::Starting,
-                                "prompting" => SessionStatus::Prompting,
-                                _ => SessionStatus::Idle,
-                            };
-                            let is_running = !matches!(status, SessionStatus::Idle);
-                            let created =
-                                chrono::DateTime::from_timestamp(info.created_at as i64, 0)
-                                    .map(|dt| {
-                                        dt.with_timezone(&chrono::Local)
-                                            .format("%Y-%m-%d %H:%M")
-                                            .to_string()
-                                    })
-                                    .unwrap_or_default();
-                            let clients_info = if info.attached_clients > 0 {
-                                format!("{} attached", info.attached_clients)
-                            } else {
-                                "detached".to_string()
-                            };
+            if let Ok(infos) = self.daemon.list_sessions().await {
+                use crate::domain::entities::SessionStatus;
+                for info in infos {
+                    let status = match info.status.as_str() {
+                        "running" => SessionStatus::Running,
+                        "thinking" => SessionStatus::Thinking,
+                        "waiting" => SessionStatus::Waiting,
+                        "starting" => SessionStatus::Starting,
+                        "prompting" => SessionStatus::Prompting,
+                        _ => SessionStatus::Idle,
+                    };
+                    let is_running = !matches!(status, SessionStatus::Idle);
+
+                    // Try to find matching disk session and update its status
+                    if let Some(existing) = self
+                        .state
+                        .store
+                        .sessions
+                        .iter_mut()
+                        .find(|s| s.id == info.session_id)
+                    {
+                        existing.status = status;
+                        existing.is_running = is_running;
+                    } else {
+                        // Daemon-only session (no disk file yet)
+                        let created =
+                            chrono::DateTime::from_timestamp(info.created_at as i64, 0)
+                                .map(|dt| {
+                                    dt.with_timezone(&chrono::Local)
+                                        .format("%Y-%m-%d %H:%M")
+                                        .to_string()
+                                })
+                                .unwrap_or_default();
+                        let clients_info = if info.attached_clients > 0 {
+                            format!("{} attached", info.attached_clients)
+                        } else {
+                            "detached".to_string()
+                        };
+                        self.state.store.sessions.push(
                             crate::domain::entities::Session {
                                 id: info.session_id,
                                 project: String::new(),
@@ -302,19 +317,12 @@ impl App {
                                 git_branch: String::new(),
                                 is_running,
                                 status,
-                            }
-                        })
-                        .collect();
-                    self.state.store.set_sessions(sessions);
-                    return;
-                }
-                Err(e) => {
-                    tracing::warn!("Daemon list_sessions failed: {}", e);
+                            },
+                        );
+                    }
                 }
             }
         }
-        // Fallback: load from disk
-        let _ = self.state.store.refresh_sessions(&self.backend);
     }
 
     /// Auto-refresh conversation if viewing SessionDetail or SubagentDetail.
