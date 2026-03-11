@@ -80,6 +80,25 @@ impl App {
         self.refresh_daemon_sessions().await;
 
         loop {
+            // Keep vt100 parser size in sync with the actual render area every frame.
+            // Use the real layout computation so the parser matches the widget area exactly.
+            if self.state.input_mode == InputMode::Attached {
+                if let Some(ref mut parser) = self.vt_parser {
+                    let term_size = terminal.size().unwrap_or_default();
+                    let term_rect =
+                        ratatui::layout::Rect::new(0, 0, term_size.width, term_size.height);
+                    let layout = crate::infrastructure::tui::layout::FrameLayout::new(term_rect);
+                    let block = ratatui::widgets::Block::bordered();
+                    let inner = block.inner(layout.body);
+                    let expected_rows = inner.height;
+                    let expected_cols = inner.width;
+                    let (current_rows, current_cols) = parser.screen().size();
+                    if current_rows != expected_rows || current_cols != expected_cols {
+                        parser.set_size(expected_rows, expected_cols);
+                    }
+                }
+            }
+
             let vt_screen = self.vt_parser.as_ref().map(|p| p.screen());
             terminal.draw(|f| renderer::draw_with_terminal(&self.state, f, vt_screen))?;
 
@@ -163,13 +182,55 @@ impl App {
                                     continue;
                                 }
                                 crossterm::event::KeyCode::Backspace => {
-                                    self.state.input_buffer.pop();
+                                    let pos = self.state.input_cursor;
+                                    if pos > 0 {
+                                        self.state.input_buffer.remove(pos - 1);
+                                        self.state.input_cursor -= 1;
+                                        if self.state.input_mode == InputMode::Filter {
+                                            self.state.filter = self.state.input_buffer.clone();
+                                            self.state.table_state.selected = 0;
+                                        }
+                                    }
+                                    continue;
+                                }
+                                crossterm::event::KeyCode::Delete => {
+                                    let pos = self.state.input_cursor;
+                                    if pos < self.state.input_buffer.len() {
+                                        self.state.input_buffer.remove(pos);
+                                        if self.state.input_mode == InputMode::Filter {
+                                            self.state.filter = self.state.input_buffer.clone();
+                                            self.state.table_state.selected = 0;
+                                        }
+                                    }
+                                    continue;
+                                }
+                                crossterm::event::KeyCode::Left => {
+                                    if self.state.input_cursor > 0 {
+                                        self.state.input_cursor -= 1;
+                                    }
+                                    continue;
+                                }
+                                crossterm::event::KeyCode::Right => {
+                                    if self.state.input_cursor < self.state.input_buffer.len() {
+                                        self.state.input_cursor += 1;
+                                    }
+                                    continue;
+                                }
+                                crossterm::event::KeyCode::Home => {
+                                    self.state.input_cursor = 0;
+                                    continue;
+                                }
+                                crossterm::event::KeyCode::End => {
+                                    self.state.input_cursor = self.state.input_buffer.len();
                                     continue;
                                 }
                                 crossterm::event::KeyCode::Char(c) => {
-                                    self.state.input_buffer.push(c);
+                                    let pos = self.state.input_cursor;
+                                    self.state.input_buffer.insert(pos, c);
+                                    self.state.input_cursor += 1;
                                     if self.state.input_mode == InputMode::Filter {
                                         self.state.filter = self.state.input_buffer.clone();
+                                        self.state.table_state.selected = 0;
                                     }
                                     continue;
                                 }
@@ -189,11 +250,14 @@ impl App {
                         if self.state.toast.is_some() && self.state.tick.is_multiple_of(300) {
                             self.state.toast = None;
                         }
-                        // Refresh sessions every ~500ms (50 ticks)
+                        // Refresh sessions every ~500ms (50 ticks) on session-related views
                         if self.state.tick.is_multiple_of(50)
                             && matches!(
                                 self.state.current_view(),
                                 crate::adapters::views::ViewKind::Sessions
+                                    | crate::adapters::views::ViewKind::SessionDetail
+                                    | crate::adapters::views::ViewKind::Subagents
+                                    | crate::adapters::views::ViewKind::SubagentDetail
                             )
                         {
                             self.refresh_daemon_sessions().await;
@@ -208,16 +272,21 @@ impl App {
                         }
                     }
                     Event::Resize(width, height) => {
-                        // Resize vt100 parser when terminal changes size
+                        // Resize vt100 parser using real layout computation
                         if self.state.input_mode == InputMode::Attached {
-                            let rows = height.saturating_sub(4); // header + footer + borders
-                            let cols = width.saturating_sub(2); // borders
+                            let rect = ratatui::layout::Rect::new(0, 0, width, height);
+                            let layout = crate::infrastructure::tui::layout::FrameLayout::new(rect);
+                            let block = ratatui::widgets::Block::bordered();
+                            let inner = block.inner(layout.body);
                             if let Some(ref mut parser) = self.vt_parser {
-                                parser.set_size(rows, cols);
+                                parser.set_size(inner.height, inner.width);
                             }
                             // Notify daemon to resize the PTY
                             if let Some(ref session_id) = self.state.attached_session {
-                                let _ = self.daemon.resize(session_id, cols, rows).await;
+                                let _ = self
+                                    .daemon
+                                    .resize(session_id, inner.width, inner.height)
+                                    .await;
                             }
                         }
                     }
@@ -262,6 +331,9 @@ impl App {
     async fn refresh_daemon_sessions(&mut self) {
         // Always read sessions from Claude's files (read-only, source of truth)
         let _ = self.state.store.refresh_sessions(&self.backend);
+
+        // Preload subagents for sessions that have them (for tree view)
+        self.state.store.refresh_all_subagents(&self.backend);
 
         // Overlay daemon status on matching sessions, add daemon-only sessions
         if self.daemon.is_connected() {
@@ -323,6 +395,9 @@ impl App {
                 }
             }
         }
+
+        // Rebuild the flat session tree (sessions interleaved with subagents)
+        self.state.rebuild_session_tree();
     }
 
     /// Auto-refresh conversation if viewing SessionDetail or SubagentDetail.
@@ -557,15 +632,21 @@ impl App {
 
                     match self.daemon.attach(&session_id).await {
                         Ok(()) => {
-                            // Initialize vt100 parser sized to the terminal body area
+                            // Initialize vt100 parser sized to the actual inner render area
                             let term_size = terminal.size().unwrap_or_default();
-                            // Body area = total height minus header(1) and footer(1) minus border(2)
-                            let rows = term_size.height.saturating_sub(4);
-                            let cols = term_size.width.saturating_sub(2);
-                            self.vt_parser = Some(vt100::Parser::new(rows, cols, 0));
+                            let term_rect =
+                                ratatui::layout::Rect::new(0, 0, term_size.width, term_size.height);
+                            let layout =
+                                crate::infrastructure::tui::layout::FrameLayout::new(term_rect);
+                            let block = ratatui::widgets::Block::bordered();
+                            let inner = block.inner(layout.body);
+                            self.vt_parser = Some(vt100::Parser::new(inner.height, inner.width, 0));
 
                             // Resize the daemon PTY to match our terminal
-                            let _ = self.daemon.resize(&session_id, cols, rows).await;
+                            let _ = self
+                                .daemon
+                                .resize(&session_id, inner.width, inner.height)
+                                .await;
 
                             let short = if session_id.len() > 8 {
                                 &session_id[..8]
@@ -591,7 +672,15 @@ impl App {
                 Effect::DaemonKill { session_id } => {
                     if self.daemon.is_connected() {
                         let _ = self.daemon.kill_session(&session_id).await;
-                        self.state.toast = Some("Daemon session killed".to_string());
+                    }
+                }
+                Effect::DaemonKillAll => {
+                    if self.daemon.is_connected() {
+                        if let Ok(infos) = self.daemon.list_sessions().await {
+                            for info in infos {
+                                let _ = self.daemon.kill_session(&info.session_id).await;
+                            }
+                        }
                     }
                 }
 

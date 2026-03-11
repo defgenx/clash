@@ -6,7 +6,7 @@ use crate::adapters::views::ViewKind;
 use crate::application::actions::{
     Action, AgentAction, NavAction, TableAction, TaskAction, UiAction,
 };
-use crate::application::state::{AppState, InputMode};
+use crate::application::state::{AppState, InputMode, SessionTreeRow};
 
 /// Map a key event to an action based on current state.
 pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
@@ -73,7 +73,7 @@ fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
         KeyCode::Char('d') => handle_delete(state),
         KeyCode::Char('A') => {
             if state.current_view() == ViewKind::Sessions {
-                Action::Ui(UiAction::ToggleAllSessions)
+                Action::Ui(UiAction::CycleSessionFilter)
             } else {
                 Action::Noop
             }
@@ -159,23 +159,20 @@ fn handle_confirm_mode(key: KeyEvent) -> Action {
 
 fn handle_enter(state: &AppState) -> Action {
     match state.current_view() {
-        // Enter on Sessions = attach directly to the session
+        // Enter on Sessions = attach directly to session (or parent session for subagents)
         ViewKind::Sessions => {
-            let idx = state.table_state.selected;
-            let filtered: Vec<&crate::domain::entities::Session> = if state.show_all_sessions {
-                state.store.sessions.iter().collect()
-            } else {
-                state
-                    .store
-                    .sessions
-                    .iter()
-                    .filter(|s| s.is_running)
-                    .collect()
-            };
-            if let Some(session) = filtered.get(idx) {
-                Action::Agent(AgentAction::Attach {
-                    session_id: session.id.clone(),
-                })
+            let items = state.filtered_session_tree();
+            if let Some(row) = items.get(state.table_state.selected) {
+                match row {
+                    SessionTreeRow::Session(session) => Action::Agent(AgentAction::Attach {
+                        session_id: session.id.clone(),
+                    }),
+                    SessionTreeRow::Subagent { subagent, .. } => {
+                        Action::Agent(AgentAction::Attach {
+                            session_id: subagent.parent_session_id.clone(),
+                        })
+                    }
+                }
             } else {
                 Action::Noop
             }
@@ -227,30 +224,25 @@ fn handle_delete(state: &AppState) -> Action {
             }
         }
         ViewKind::Sessions => {
-            let idx = state.table_state.selected;
-            let filtered: Vec<&crate::domain::entities::Session> = if state.show_all_sessions {
-                state.store.sessions.iter().collect()
-            } else {
-                state
-                    .store
-                    .sessions
-                    .iter()
-                    .filter(|s| s.is_running)
-                    .collect()
-            };
-            if let Some(session) = filtered.get(idx) {
-                let short_id = if session.id.len() > 8 {
-                    &session.id[..8]
-                } else {
-                    &session.id
-                };
-                Action::Ui(UiAction::ShowConfirm {
-                    message: format!("Delete session '{}'?", short_id),
-                    on_confirm: Box::new(Action::Agent(AgentAction::DeleteSession {
-                        project: session.project.clone(),
-                        session_id: session.id.clone(),
-                    })),
-                })
+            let items = state.filtered_session_tree();
+            if let Some(row) = items.get(state.table_state.selected) {
+                match row {
+                    SessionTreeRow::Session(session) => {
+                        let short_id = if session.id.len() > 8 {
+                            &session.id[..8]
+                        } else {
+                            &session.id
+                        };
+                        Action::Ui(UiAction::ShowConfirm {
+                            message: format!("Close and delete session '{}'?", short_id),
+                            on_confirm: Box::new(Action::Agent(AgentAction::DeleteSession {
+                                project: session.project.clone(),
+                                session_id: session.id.clone(),
+                            })),
+                        })
+                    }
+                    SessionTreeRow::Subagent { .. } => Action::Noop,
+                }
             } else {
                 Action::Noop
             }
@@ -264,7 +256,7 @@ fn handle_delete(state: &AppState) -> Action {
                         &session.id
                     };
                     Action::Ui(UiAction::ShowConfirm {
-                        message: format!("Delete session '{}'?", short_id),
+                        message: format!("Close and delete session '{}'?", short_id),
                         on_confirm: Box::new(Action::Agent(AgentAction::DeleteSession {
                             project: session.project.clone(),
                             session_id: session.id.clone(),
@@ -284,7 +276,7 @@ fn handle_delete(state: &AppState) -> Action {
 fn handle_delete_all(state: &AppState) -> Action {
     match state.current_view() {
         ViewKind::Sessions => Action::Ui(UiAction::ShowConfirm {
-            message: "Delete ALL sessions?".to_string(),
+            message: "Close and delete ALL sessions?".to_string(),
             on_confirm: Box::new(Action::Agent(AgentAction::DeleteAllSessions)),
         }),
         _ => Action::Noop,
@@ -294,21 +286,20 @@ fn handle_delete_all(state: &AppState) -> Action {
 fn handle_attach_or_assign(state: &AppState) -> Action {
     match state.current_view() {
         ViewKind::Sessions => {
-            let idx = state.table_state.selected;
-            let filtered: Vec<&crate::domain::entities::Session> = if state.show_all_sessions {
-                state.store.sessions.iter().collect()
-            } else {
-                state
-                    .store
-                    .sessions
-                    .iter()
-                    .filter(|s| s.is_running)
-                    .collect()
-            };
-            if let Some(session) = filtered.get(idx) {
-                return Action::Agent(AgentAction::Attach {
-                    session_id: session.id.clone(),
-                });
+            let items = state.filtered_session_tree();
+            if let Some(row) = items.get(state.table_state.selected) {
+                match row {
+                    SessionTreeRow::Session(session) => {
+                        return Action::Agent(AgentAction::Attach {
+                            session_id: session.id.clone(),
+                        });
+                    }
+                    SessionTreeRow::Subagent { subagent, .. } => {
+                        return Action::Agent(AgentAction::Attach {
+                            session_id: subagent.parent_session_id.clone(),
+                        });
+                    }
+                }
             }
             Action::Noop
         }
@@ -331,7 +322,7 @@ fn handle_attach_or_assign(state: &AppState) -> Action {
         }
         ViewKind::SubagentDetail => {
             if let Some(agent_id) = state.nav.current().context.as_deref() {
-                if let Some(sa) = state.store.subagents.iter().find(|s| s.id == agent_id) {
+                if let Some(sa) = state.store.find_subagent(agent_id) {
                     return Action::Agent(AgentAction::Attach {
                         session_id: sa.parent_session_id.clone(),
                     });
@@ -373,10 +364,26 @@ fn handle_message(state: &AppState) -> Action {
 
 fn handle_inspect(state: &AppState) -> Action {
     match state.current_view() {
-        ViewKind::Sessions => Action::Nav(NavAction::DrillIn {
-            view: ViewKind::SessionDetail,
-            context: String::new(),
-        }),
+        ViewKind::Sessions => {
+            let items = state.filtered_session_tree();
+            if let Some(row) = items.get(state.table_state.selected) {
+                match row {
+                    SessionTreeRow::Session(session) => Action::Nav(NavAction::DrillIn {
+                        view: ViewKind::SessionDetail,
+                        context: session.id.clone(),
+                    }),
+                    SessionTreeRow::Subagent { subagent, .. } => {
+                        // First navigate to the parent session context, then to subagent detail
+                        Action::Nav(NavAction::DrillIn {
+                            view: ViewKind::SubagentDetail,
+                            context: subagent.id.clone(),
+                        })
+                    }
+                }
+            } else {
+                Action::Noop
+            }
+        }
         ViewKind::Subagents => Action::Nav(NavAction::DrillIn {
             view: ViewKind::SubagentDetail,
             context: String::new(),
@@ -428,6 +435,12 @@ pub fn parse_command(cmd: &str) -> Action {
         "inbox" => Action::Nav(NavAction::NavigateTo(ViewKind::Inbox)),
         "prompts" | "prompt" => Action::Nav(NavAction::NavigateTo(ViewKind::Prompts)),
         "sessions" | "session" => Action::Nav(NavAction::NavigateTo(ViewKind::Sessions)),
+        "active" => Action::Ui(UiAction::SetSessionFilter(
+            crate::application::state::SessionFilter::Active,
+        )),
+        "all" => Action::Ui(UiAction::SetSessionFilter(
+            crate::application::state::SessionFilter::All,
+        )),
         "subagents" | "subagent" => Action::Nav(NavAction::NavigateTo(ViewKind::Subagents)),
         "quit" | "q" => Action::Ui(UiAction::Quit),
         _ => Action::Ui(UiAction::Toast(format!("Unknown command: {}", cmd))),

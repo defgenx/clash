@@ -44,6 +44,7 @@ pub enum Effect {
     DaemonKill {
         session_id: String,
     },
+    DaemonKillAll,
 
     // ── Data refresh effects ────────────────────────────────────
     RefreshAll,

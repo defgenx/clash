@@ -100,6 +100,13 @@ impl FsBackend {
             String::new()
         };
 
+        // Resolve git branch: use provided value, or detect from project path
+        let resolved_branch = if !git_branch.is_empty() {
+            git_branch.to_string()
+        } else {
+            Self::detect_git_branch(project_path_str)
+        };
+
         Session {
             id: session_id.to_string(),
             project: project_dir_name.to_string(),
@@ -110,10 +117,30 @@ impl FsBackend {
             has_subagents,
             subagent_count,
             message_count,
-            git_branch: git_branch.to_string(),
+            git_branch: resolved_branch,
             is_running,
             status,
         }
+    }
+
+    /// Detect the current git branch from a project path by reading .git/HEAD.
+    fn detect_git_branch(project_path: &str) -> String {
+        if project_path.is_empty() {
+            return String::new();
+        }
+        let git_head = std::path::Path::new(project_path).join(".git/HEAD");
+        if let Ok(content) = std::fs::read_to_string(&git_head) {
+            let content = content.trim();
+            // "ref: refs/heads/my-branch" → "my-branch"
+            if let Some(branch) = content.strip_prefix("ref: refs/heads/") {
+                return branch.to_string();
+            }
+            // Detached HEAD — return short hash
+            if content.len() >= 8 {
+                return content[..8].to_string();
+            }
+        }
+        String::new()
     }
 
     /// Extract the first user message from a .jsonl session file as a summary.
@@ -480,16 +507,23 @@ impl DataRepository for FsBackend {
                 String::new()
             };
 
-            let last_modified = match path.metadata() {
-                Ok(meta) => match meta.modified() {
-                    Ok(mtime) => {
-                        let dt: chrono::DateTime<chrono::Local> = mtime.into();
-                        dt.format("%Y-%m-%d %H:%M").to_string()
-                    }
-                    Err(_) => "unknown".to_string(),
-                },
-                Err(_) => "unknown".to_string(),
-            };
+            let file_meta = path.metadata().ok();
+            let file_mtime = file_meta.as_ref().and_then(|m| m.modified().ok());
+            let now = std::time::SystemTime::now();
+
+            let last_modified = file_mtime
+                .map(|mtime| {
+                    let dt: chrono::DateTime<chrono::Local> = mtime.into();
+                    dt.format("%Y-%m-%d %H:%M").to_string()
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let age_secs = file_mtime
+                .and_then(|mtime| now.duration_since(mtime).ok())
+                .map(|age| age.as_secs());
+
+            let status = Self::detect_session_status(&path, age_secs);
+            let is_running = !matches!(status, crate::domain::entities::SessionStatus::Idle);
 
             let summary = Self::extract_session_summary(&path);
 
@@ -504,6 +538,8 @@ impl DataRepository for FsBackend {
                 last_modified,
                 summary,
                 file_path: decoded_path,
+                is_running,
+                status,
             });
         }
 

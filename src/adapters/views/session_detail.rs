@@ -82,8 +82,16 @@ impl DetailView for SessionDetailView {
             .collect();
 
         let agents_section = if !subagents_for_session.is_empty() {
-            let mut section = Section::new("Subagents");
+            let mut section = Section::new("Team");
             for sa in &subagents_for_session {
+                let status_icon = match sa.status {
+                    SessionStatus::Waiting => "◉",
+                    SessionStatus::Thinking => "◎",
+                    SessionStatus::Running => "●",
+                    SessionStatus::Starting => "⦿",
+                    SessionStatus::Prompting => "◉",
+                    SessionStatus::Idle => "✓",
+                };
                 let type_label = if sa.agent_type.is_empty() {
                     "agent".to_string()
                 } else {
@@ -95,19 +103,19 @@ impl DetailView for SessionDetailView {
                     &sa.id
                 };
                 let desc = if sa.summary.is_empty() {
-                    format!("[{}] {}", type_label, sa.last_modified)
+                    format!("{} [{}] {}", status_icon, type_label, sa.last_modified)
                 } else {
-                    format!("[{}] {}", type_label, sa.summary)
+                    format!("{} [{}] {}", status_icon, type_label, sa.summary)
                 };
                 section = section.row(short_id, &desc);
             }
             section
         } else if session.subagent_count > 0 {
-            Section::new("Subagents")
+            Section::new("Team")
                 .row("Count", &session.subagent_count.to_string())
                 .row("", "Press Enter to view")
         } else {
-            Section::new("Subagents").row("", "No subagents")
+            Section::new("Team").row("", "No agents")
         };
 
         // Conversation transcript (latest first)

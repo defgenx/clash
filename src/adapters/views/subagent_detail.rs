@@ -11,7 +11,7 @@ impl DetailView for SubagentDetailView {
             } else {
                 agent_id
             };
-            if let Some(sa) = state.store.subagents.iter().find(|s| s.id == agent_id) {
+            if let Some(sa) = state.store.find_subagent(agent_id) {
                 let type_label = if sa.agent_type.is_empty() {
                     "agent"
                 } else {
@@ -32,7 +32,7 @@ impl DetailView for SubagentDetailView {
             None => return vec![],
         };
 
-        let subagent = match state.store.subagents.iter().find(|s| s.id == agent_id) {
+        let subagent = match state.store.find_subagent(agent_id) {
             Some(s) => s,
             None => return vec![Section::new("Error").row("", "Subagent not found")],
         };
@@ -43,7 +43,10 @@ impl DetailView for SubagentDetailView {
             &subagent.agent_type
         };
 
+        let status_str = format!("{}", subagent.status);
+
         let info = Section::new("Info")
+            .row("Status", &status_str)
             .row("Agent ID", &subagent.id)
             .row("Type", type_label)
             .row("Parent", &subagent.parent_session_id)

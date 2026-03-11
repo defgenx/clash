@@ -43,10 +43,11 @@ fn draw_header(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
     let breadcrumbs = state.nav.breadcrumbs().join(" > ");
     let now = chrono::Local::now().format("%H:%M").to_string();
 
-    let filter_indicator = if state.current_view() == crate::adapters::views::ViewKind::Sessions
-        && !state.show_all_sessions
-    {
-        " [active]"
+    let filter_indicator = if state.current_view() == crate::adapters::views::ViewKind::Sessions {
+        match state.session_filter {
+            crate::application::state::SessionFilter::Active => " [active]",
+            crate::application::state::SessionFilter::All => " [all]",
+        }
     } else {
         ""
     };
@@ -164,7 +165,7 @@ fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
             input_bar::render_input_bar(
                 &state.input_mode,
                 &state.input_buffer,
-                state.input_buffer.len(),
+                state.input_cursor,
                 frame,
                 area,
             );
@@ -228,15 +229,53 @@ fn draw_vt100_terminal(
     let widget = TerminalWidget::new(screen);
     frame.render_widget(widget, inner);
 
-    // Always render cursor when attached — Claude Code may hide/show the terminal
-    // cursor rapidly during redraws, which causes it to appear invisible. Force it
-    // visible so the user can always see their input position.
-    let (cursor_row, cursor_col) = screen.cursor_position();
-    let cx = inner.x + cursor_col;
-    let cy = inner.y + cursor_row;
-    if cx < inner.x + inner.width && cy < inner.y + inner.height {
-        frame.set_cursor_position(ratatui::layout::Position { x: cx, y: cy });
+    // Claude Code (ink framework) parks the terminal cursor at the bottom
+    // after rendering, not at the input prompt. Detect the prompt line
+    // by scanning for the `❯` or `>` prompt character and place the
+    // hardware cursor at the end of text on that line.
+    if let Some((prompt_row, text_end_col)) = find_prompt_cursor(screen) {
+        if prompt_row < inner.height && text_end_col < inner.width {
+            let cx = inner.x + text_end_col;
+            let cy = inner.y + prompt_row;
+            frame.set_cursor_position(ratatui::layout::Position { x: cx, y: cy });
+        }
     }
+}
+
+/// Scan the vt100 screen for Claude Code's input prompt (`❯` or `>` at line start)
+/// and return (row, col) where the cursor should be (end of text on prompt line).
+fn find_prompt_cursor(screen: &vt100::Screen) -> Option<(u16, u16)> {
+    let (rows, cols) = screen.size();
+
+    // Scan bottom-to-top to find the prompt line
+    for row in (0..rows).rev() {
+        // Get the text content of this row
+        let mut line = String::new();
+        for col in 0..cols {
+            if let Some(cell) = screen.cell(row, col) {
+                let c = cell.contents();
+                line.push_str(if c.is_empty() { " " } else { &c });
+            }
+        }
+        let trimmed = line.trim_start();
+
+        // Claude Code uses `❯` or `>` as prompt
+        if trimmed.starts_with('❯') || trimmed.starts_with('>') {
+            // Find the end of actual text on this line (last non-space char + 1)
+            let mut last_non_space: u16 = 0;
+            for col in 0..cols {
+                if let Some(cell) = screen.cell(row, col) {
+                    let c = cell.contents();
+                    if !c.is_empty() && c != " " {
+                        last_non_space = col + 1;
+                    }
+                }
+            }
+            // Place cursor right after the last character
+            return Some((row, last_non_space.min(cols.saturating_sub(1))));
+        }
+    }
+    None
 }
 
 fn draw_help(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect) {

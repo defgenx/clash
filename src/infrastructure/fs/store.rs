@@ -10,6 +10,8 @@ pub struct DataStore {
     pub tasks: HashMap<String, Vec<Task>>,
     pub sessions: Vec<Session>,
     pub subagents: Vec<Subagent>,
+    /// Subagents indexed by parent session ID (for tree view).
+    pub subagents_by_session: HashMap<String, Vec<Subagent>>,
     pub conversation: Vec<ConversationMessage>,
     pub conversation_loaded: bool,
 }
@@ -27,6 +29,7 @@ impl DataStore {
             tasks: HashMap::new(),
             sessions: Vec::new(),
             subagents: Vec::new(),
+            subagents_by_session: HashMap::new(),
             conversation: Vec::new(),
             conversation_loaded: false,
         }
@@ -66,8 +69,37 @@ impl DataStore {
         Ok(())
     }
 
+    /// Load subagents for all sessions that have them, indexed by session ID.
+    pub fn refresh_all_subagents(&mut self, backend: &dyn DataRepository) {
+        self.subagents_by_session.clear();
+        for session in &self.sessions {
+            if session.subagent_count > 0 && !session.project.is_empty() {
+                if let Ok(subs) = backend.load_subagents(&session.project, &session.id) {
+                    if !subs.is_empty() {
+                        self.subagents_by_session.insert(session.id.clone(), subs);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn find_session(&self, session_id: &str) -> Option<&Session> {
         self.sessions.iter().find(|s| s.id == session_id)
+    }
+
+    /// Find a subagent by ID, searching both the flat list and the per-session map.
+    pub fn find_subagent(&self, agent_id: &str) -> Option<&Subagent> {
+        // Check the flat list first (loaded when navigating to Subagents view)
+        if let Some(sa) = self.subagents.iter().find(|s| s.id == agent_id) {
+            return Some(sa);
+        }
+        // Fall back to the per-session map (loaded for tree view)
+        for subs in self.subagents_by_session.values() {
+            if let Some(sa) = subs.iter().find(|s| s.id == agent_id) {
+                return Some(sa);
+            }
+        }
+        None
     }
 
     pub fn load_conversation(

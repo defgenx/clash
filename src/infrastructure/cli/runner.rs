@@ -26,36 +26,3 @@ impl CliGateway for RealCliRunner {
         })
     }
 }
-
-/// Mock CLI runner for tests.
-#[cfg(test)]
-pub struct MockCliRunner {
-    pub responses: std::collections::HashMap<String, CliOutput>,
-}
-
-#[cfg(test)]
-impl MockCliRunner {
-    pub fn new() -> Self {
-        Self {
-            responses: std::collections::HashMap::new(),
-        }
-    }
-
-    pub fn add_response(&mut self, key: &str, output: CliOutput) {
-        self.responses.insert(key.to_string(), output);
-    }
-}
-
-#[cfg(test)]
-impl CliGateway for MockCliRunner {
-    async fn run(&self, args: &[String]) -> Result<CliOutput> {
-        let key = args.join(" ");
-        self.responses.get(&key).cloned().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("No mock response for: {}", key),
-            )
-            .into()
-        })
-    }
-}

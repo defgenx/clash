@@ -13,7 +13,8 @@ pub enum UiAction {
     EnterFilterMode,
     ExitInputMode,
     SubmitInput(String),
-    ToggleAllSessions,
+    CycleSessionFilter,
+    SetSessionFilter(crate::application::state::SessionFilter),
     ScrollDown,
     ScrollUp,
     /// Detach from a daemon-managed session (Esc or Ctrl+B while attached).

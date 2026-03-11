@@ -52,6 +52,7 @@ impl Widget for TerminalWidget<'_> {
                     modifier |= Modifier::UNDERLINED;
                 }
 
+                // Respect the inverse attribute from the vt100 screen
                 let (fg, bg) = if cell.inverse() { (bg, fg) } else { (fg, bg) };
 
                 let style = Style::default().fg(fg).bg(bg).add_modifier(modifier);

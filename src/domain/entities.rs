@@ -206,6 +206,12 @@ pub struct Subagent {
     pub summary: String,
     #[serde(default)]
     pub file_path: String,
+    /// Whether this subagent is currently active.
+    #[serde(default)]
+    pub is_running: bool,
+    /// Granular status (same as sessions).
+    #[serde(default)]
+    pub status: SessionStatus,
 }
 
 /// A conversation message from a session or subagent .jsonl file.

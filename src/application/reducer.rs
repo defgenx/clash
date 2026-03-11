@@ -229,24 +229,29 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             project,
             session_id,
         } => {
-            state.toast = Some("Session deleted".to_string());
+            state.toast = Some("Session closed".to_string());
             state.nav.pop();
-            // clash-managed daemon sessions use DaemonKill; legacy disk sessions use DeleteSession
-            if session_id.starts_with("clash-") {
-                vec![Effect::DaemonKill { session_id }, Effect::RefreshSessions]
-            } else {
-                vec![
-                    Effect::DeleteSession {
-                        project,
-                        session_id,
-                    },
-                    Effect::RefreshSessions,
-                ]
+            // Always try to kill daemon session (works for both clash-managed and attached external)
+            // Then delete disk files from ~/.claude/projects/
+            let mut effects = vec![Effect::DaemonKill {
+                session_id: session_id.clone(),
+            }];
+            if !project.is_empty() {
+                effects.push(Effect::DeleteSession {
+                    project,
+                    session_id,
+                });
             }
+            effects.push(Effect::RefreshSessions);
+            effects
         }
         AgentAction::DeleteAllSessions => {
-            state.toast = Some("All sessions deleted".to_string());
-            vec![Effect::DeleteAllSessions, Effect::RefreshSessions]
+            state.toast = Some("All sessions closed".to_string());
+            vec![
+                Effect::DaemonKillAll,
+                Effect::DeleteAllSessions,
+                Effect::RefreshSessions,
+            ]
         }
     }
 }
@@ -291,16 +296,19 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
         UiAction::EnterCommandMode => {
             state.input_mode = InputMode::Command;
             state.input_buffer.clear();
+            state.input_cursor = 0;
             vec![]
         }
         UiAction::EnterFilterMode => {
             state.input_mode = InputMode::Filter;
             state.input_buffer.clear();
+            state.input_cursor = 0;
             vec![]
         }
         UiAction::ExitInputMode => {
             state.input_mode = InputMode::Normal;
             state.input_buffer.clear();
+            state.input_cursor = 0;
             vec![]
         }
         UiAction::SubmitInput(text) => {
@@ -312,6 +320,7 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             let mode = state.input_mode.clone();
             state.input_mode = InputMode::Normal;
             state.input_buffer.clear();
+            state.input_cursor = 0;
 
             match mode {
                 InputMode::Command => {
@@ -351,15 +360,22 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             }
             vec![Effect::RefreshSessions]
         }
-        UiAction::ToggleAllSessions => {
-            state.show_all_sessions = !state.show_all_sessions;
+        UiAction::CycleSessionFilter => {
+            state.session_filter = state.session_filter.next();
             state.table_state.selected = 0;
-            let label = if state.show_all_sessions {
-                "Showing all sessions"
-            } else {
-                "Showing running sessions only"
-            };
-            state.toast = Some(label.to_string());
+            state.toast = Some(format!("Showing {} sessions", state.session_filter.label()));
+            vec![]
+        }
+        UiAction::SetSessionFilter(filter) => {
+            state.session_filter = filter;
+            state.table_state.selected = 0;
+            state.toast = Some(format!("Showing {} sessions", state.session_filter.label()));
+            // Navigate to Sessions view if not already there
+            if state.current_view() != ViewKind::Sessions {
+                state.nav.push(ViewKind::Sessions, None);
+                state.filter.clear();
+                return vec![Effect::RefreshSessions];
+            }
             vec![]
         }
         UiAction::Quit => {
@@ -392,17 +408,13 @@ fn resolve_context(state: &AppState) -> Option<String> {
             }
         }
         ViewKind::Sessions => {
-            let filtered: Vec<&crate::domain::entities::Session> = if state.show_all_sessions {
-                state.store.sessions.iter().collect()
-            } else {
-                state
-                    .store
-                    .sessions
-                    .iter()
-                    .filter(|s| s.is_running)
-                    .collect()
-            };
-            filtered.get(idx).map(|s| s.id.clone())
+            let items = state.filtered_session_tree();
+            items.get(idx).map(|row| match row {
+                crate::application::state::SessionTreeRow::Session(s) => s.id.clone(),
+                crate::application::state::SessionTreeRow::Subagent { subagent, .. } => {
+                    subagent.id.clone()
+                }
+            })
         }
         ViewKind::Subagents => state.store.subagents.get(idx).map(|s| s.id.clone()),
         _ => None,
@@ -432,13 +444,7 @@ fn current_item_count(state: &AppState) -> usize {
             }
         }
         ViewKind::Inbox => state.inbox_messages.len(),
-        ViewKind::Sessions => {
-            if state.show_all_sessions {
-                state.store.sessions.len()
-            } else {
-                state.store.sessions.iter().filter(|s| s.is_running).count()
-            }
-        }
+        ViewKind::Sessions => state.filtered_session_tree().len(),
         ViewKind::Subagents => state.store.subagents.len(),
         _ => 0,
     }
@@ -489,7 +495,7 @@ fn load_effects_for_view(state: &AppState, view: ViewKind) -> Vec<Effect> {
         ViewKind::SubagentDetail => {
             // Load the subagent's conversation
             if let Some(agent_id) = state.nav.current().context.as_deref() {
-                if let Some(sa) = state.store.subagents.iter().find(|s| s.id == agent_id) {
+                if let Some(sa) = state.store.find_subagent(agent_id) {
                     // Find the parent session to get the project
                     let parent_session_id = sa.parent_session_id.clone();
                     let project = sa.project.clone();
@@ -558,6 +564,7 @@ mod tests {
                 ..Default::default()
             },
         ];
+        state.rebuild_session_tree();
         reduce(&mut state, Action::Table(TableAction::Next));
         assert_eq!(state.table_state.selected, 1);
         reduce(&mut state, Action::Table(TableAction::Next));

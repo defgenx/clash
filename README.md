@@ -5,18 +5,19 @@
 Attach to running Claude sessions, monitor their status in real-time, manage teams, agents, and tasks — all from a keyboard-driven TUI.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│ ✦ clash  │  Sessions                        ▸ 2 waiting  15:42 │
-├─────────────────────────────────────────────────────────────────┤
-│ STATUS       SESSION   PROJECT       SUMMARY          BRANCH   │
-│ ◉ PROMPTING  a1b2c3d4  my-api       Fix auth module   main    │
-│ ◉ WAITING    e5f6g7h8  web-app      Add dark mode     feat/ui │
-│ ● RUNNING    i9j0k1l2  cli-tool     Refactor parser   main    │
-│ ◎ THINKING   m3n4o5p6  docs         Update README     docs    │
-│ ○ IDLE       q7r8s9t0  backend      Deploy setup      main    │
-├─────────────────────────────────────────────────────────────────┤
-│ :command  /filter  ?help                                        │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│ ✦ clash  │  Sessions [active]                   ▸ 2 waiting   15:42 │
+├──────────────────────────────────────────────────────────────────────┤
+│ STATUS       SESSION   PROJECT    SUMMARY            AGENTS  BRANCH │
+│ ◉ PROMPTING  a1b2c3d4  my-api    Fix auth module    3       main   │
+│ ◉ WAITING    e5f6g7h8  web-app   Add dark mode      —       feat/ui│
+│ ● RUNNING    i9j0k1l2  cli-tool  Refactor parser    2       main   │
+│   ├─ ● RUN   abc123    Explore   Search for files                  │
+│   └─ ✓ DONE  def456    general   Run tests                        │
+│ ◎ THINKING   m3n4o5p6  docs      Update README      —       docs   │
+├──────────────────────────────────────────────────────────────────────┤
+│ :command  /filter  ?help                                             │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Features
@@ -121,10 +122,23 @@ Status is detected by parsing the terminal screen content via a vt100 emulator �
 | Key | Action |
 |-----|--------|
 | `Enter` | Attach to session (inline terminal) |
-| `c` | Create new Claude session |
-| `d` | Delete session (with confirmation) |
-| `A` | Toggle all / active sessions |
 | `i` | Inspect session details |
+| `a` | Attach to session |
+| `c` / `n` | Create new Claude session |
+| `A` | Toggle filter: active / all |
+| `d` | Close and delete session (with confirmation) |
+| `D` | Close and delete ALL sessions |
+| `:active` | Show active sessions only |
+| `:all` | Show all sessions |
+
+#### Session Detail
+
+| Key | Action |
+|-----|--------|
+| `Enter` | View team (subagents) |
+| `a` | Attach to session |
+| `d` | Delete session |
+| `j` / `k` | Scroll |
 
 #### Attached mode
 
@@ -144,9 +158,9 @@ Status is detected by parsing the terminal screen content via a vt100 emulator �
 
 ### Views
 
-- **Sessions** — all Claude sessions with status, project, summary, branch
-- **Session Detail** — session info, subagent list, conversation transcript
-- **Subagents** — subagents spawned by a session
+- **Sessions** — all Claude sessions with status, project, summary, agents, branch
+- **Session Detail** — session info, team (subagents with status), conversation transcript
+- **Subagents** — agents spawned by a session with status
 - **Teams** — all teams with member counts and description
 - **Team Detail** — team info, members, task count
 - **Agents** — team members with type, model, status

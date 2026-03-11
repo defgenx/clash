@@ -4,7 +4,7 @@ use ratatui::widgets::Cell;
 use crate::adapters::views::{ColumnDef, Keybinding, TableView, ViewKind};
 use crate::application::actions::{Action, NavAction};
 use crate::application::state::AppState;
-use crate::domain::entities::Subagent;
+use crate::domain::entities::{SessionStatus, Subagent};
 use crate::infrastructure::tui::theme;
 
 pub struct SubagentsTable;
@@ -14,14 +14,54 @@ impl TableView for SubagentsTable {
 
     fn columns() -> Vec<ColumnDef> {
         vec![
-            ColumnDef::new("AGENT", 25),
-            ColumnDef::new("TYPE", 15),
+            ColumnDef::new("STATUS", 15),
+            ColumnDef::new("AGENT", 20),
+            ColumnDef::new("TYPE", 12),
+            ColumnDef::new("SUMMARY", 38),
             ColumnDef::new("MODIFIED", 15),
-            ColumnDef::new("SUMMARY", 45),
         ]
     }
 
     fn row(item: &Subagent) -> Vec<Cell<'static>> {
+        let (status, status_style) = match item.status {
+            SessionStatus::Waiting => (
+                "◉ WAITING".to_string(),
+                Style::default()
+                    .fg(theme::STATUS_WAITING)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            SessionStatus::Thinking => (
+                "◎ THINKING".to_string(),
+                Style::default()
+                    .fg(theme::STATUS_THINKING)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            SessionStatus::Running => (
+                "● RUNNING".to_string(),
+                Style::default()
+                    .fg(theme::STATUS_RUNNING)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            SessionStatus::Starting => (
+                "⦿ STARTING".to_string(),
+                Style::default()
+                    .fg(theme::STATUS_STARTING)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            SessionStatus::Prompting => (
+                "◉ PROMPTING".to_string(),
+                Style::default()
+                    .fg(theme::STATUS_PROMPTING)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            SessionStatus::Idle => (
+                "✓ DONE".to_string(),
+                Style::default()
+                    .fg(theme::STATUS_RUNNING) // green = done
+                    .add_modifier(Modifier::BOLD),
+            ),
+        };
+
         let display_id = if item.id.len() > 20 {
             format!("{}...", &item.id[..17])
         } else {
@@ -41,14 +81,15 @@ impl TableView for SubagentsTable {
         };
 
         vec![
+            Cell::from(status).style(status_style),
             Cell::from(display_id).style(
                 Style::default()
                     .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from(agent_type).style(Style::default().fg(theme::STATUS_WAITING)),
-            Cell::from(item.last_modified.clone()).style(Style::default().fg(theme::MUTED)),
             Cell::from(summary).style(Style::default().fg(theme::TEXT_DIM)),
+            Cell::from(item.last_modified.clone()).style(Style::default().fg(theme::MUTED)),
         ]
     }
 
