@@ -16,6 +16,7 @@ use crate::domain::entities::SessionStatus;
 const HOOK_SCRIPT: &str = r#"#!/bin/sh
 # clash status hook — called by Claude Code on lifecycle events.
 # Writes session status to ~/.claude/clash/status/{session_id}.
+# On /clear, inherits the previous session name with an incremented suffix.
 input=$(cat)
 event=$(printf '%s' "$input" | grep -o '"hook_event_name":"[^"]*"' | head -1 | cut -d'"' -f4)
 sid=$(printf '%s' "$input" | grep -o '"session_id":"[^"]*"' | head -1 | cut -d'"' -f4)
@@ -33,12 +34,45 @@ mkdir -p "$dir"
 tmp=$(mktemp "$dir/.tmp.XXXXXX")
 printf '{"status":"%s","session_id":"%s"}' "$status" "$sid" > "$tmp"
 mv "$tmp" "$dir/$sid"
+# On SessionStart from /clear, inherit the previous session name with suffix
+if [ "$event" = "SessionStart" ]; then
+  source=$(printf '%s' "$input" | grep -o '"source":"[^"]*"' | head -1 | cut -d'"' -f4)
+  if [ "$source" = "clear" ]; then
+    cwd=$(printf '%s' "$input" | grep -o '"cwd":"[^"]*"' | head -1 | cut -d'"' -f4)
+    if [ -n "$cwd" ]; then
+      encoded_cwd=$(printf '%s' "$cwd" | tr '/' '-')
+      pdir="$HOME/.claude/clash/project-names"
+      old_name=""
+      [ -f "$pdir/$encoded_cwd" ] && old_name=$(cat "$pdir/$encoded_cwd")
+      if [ -n "$old_name" ]; then
+        base=$(printf '%s' "$old_name" | sed 's/-[0-9][0-9]*$//')
+        suffix=$(printf '%s' "$old_name" | grep -o -- '-[0-9][0-9]*$' | tr -d '-')
+        if [ -n "$suffix" ]; then
+          new_suffix=$((suffix + 1))
+        else
+          new_suffix=2
+        fi
+        new_name="${base}-${new_suffix}"
+        ndir="$HOME/.claude/clash/names"
+        mkdir -p "$ndir"
+        ntmp=$(mktemp "$ndir/.tmp.XXXXXX")
+        printf '%s' "$new_name" > "$ntmp"
+        mv "$ntmp" "$ndir/$sid"
+        ptmp=$(mktemp "$pdir/.tmp.XXXXXX")
+        printf '%s' "$new_name" > "$ptmp"
+        mv "$ptmp" "$pdir/$encoded_cwd"
+      fi
+    fi
+  fi
+fi
 "#;
 
 /// Directory under ~/.claude/clash/ where status files are written.
 const STATUS_DIR: &str = "clash/status";
 /// Directory under ~/.claude/clash/ where session names are persisted.
 const NAMES_DIR: &str = "clash/names";
+/// Directory under ~/.claude/clash/ where project→name mappings live.
+const PROJECT_NAMES_DIR: &str = "clash/project-names";
 /// Directory under ~/.claude/clash/ where the hook script lives.
 const HOOKS_DIR: &str = "clash/hooks";
 /// Name of the hook script file.
@@ -58,11 +92,13 @@ pub fn install_hooks(claude_dir: &Path) -> std::io::Result<()> {
         std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
     }
 
-    // 2. Ensure status and names directories exist
+    // 2. Ensure status, names, and project-names directories exist
     let status_dir = claude_dir.join(STATUS_DIR);
     std::fs::create_dir_all(&status_dir)?;
     let names_dir = claude_dir.join(NAMES_DIR);
     std::fs::create_dir_all(&names_dir)?;
+    let project_names_dir = claude_dir.join(PROJECT_NAMES_DIR);
+    std::fs::create_dir_all(&project_names_dir)?;
 
     // 3. Merge hooks into settings.local.json
     let settings_path = claude_dir.join("settings.local.json");
@@ -77,11 +113,26 @@ pub fn status_dir(claude_dir: &Path) -> PathBuf {
 }
 
 /// Save a session name to disk so it survives daemon restarts.
-pub fn save_session_name(claude_dir: &Path, session_id: &str, name: &str) {
+/// Also persists a project→name mapping so the hook script can inherit
+/// the name when `/clear` creates a new session in the same project.
+pub fn save_session_name(claude_dir: &Path, session_id: &str, name: &str, cwd: Option<&str>) {
     let dir = claude_dir.join(NAMES_DIR);
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(session_id);
     let _ = std::fs::write(path, name);
+
+    // Also write project→name mapping for hook-based name inheritance
+    if let Some(cwd) = cwd {
+        let pdir = claude_dir.join(PROJECT_NAMES_DIR);
+        let _ = std::fs::create_dir_all(&pdir);
+        let encoded = encode_cwd(cwd);
+        let _ = std::fs::write(pdir.join(encoded), name);
+    }
+}
+
+/// Encode a CWD path to a safe filename (matching the hook script's `tr '/' '-'`).
+fn encode_cwd(cwd: &str) -> String {
+    cwd.replace('/', "-")
 }
 
 /// Read all saved session names from disk.
@@ -348,5 +399,69 @@ mod tests {
         assert_eq!(statuses["session-1"], SessionStatus::Thinking);
         assert_eq!(statuses["session-2"], SessionStatus::Prompting);
         assert_eq!(statuses["session-3"], SessionStatus::Idle);
+    }
+
+    #[test]
+    fn test_save_session_name_writes_project_mapping() {
+        let dir = TempDir::new().unwrap();
+        let claude_dir = dir.path();
+
+        save_session_name(
+            claude_dir,
+            "sess-1",
+            "my-feature",
+            Some("/Users/me/project"),
+        );
+
+        // Session name file exists
+        let name = std::fs::read_to_string(claude_dir.join(NAMES_DIR).join("sess-1")).unwrap();
+        assert_eq!(name, "my-feature");
+
+        // Project name mapping exists
+        let project_name =
+            std::fs::read_to_string(claude_dir.join(PROJECT_NAMES_DIR).join("-Users-me-project"))
+                .unwrap();
+        assert_eq!(project_name, "my-feature");
+    }
+
+    #[test]
+    fn test_save_session_name_without_cwd() {
+        let dir = TempDir::new().unwrap();
+        let claude_dir = dir.path();
+
+        save_session_name(claude_dir, "sess-1", "my-feature", None);
+
+        // Session name file exists
+        let name = std::fs::read_to_string(claude_dir.join(NAMES_DIR).join("sess-1")).unwrap();
+        assert_eq!(name, "my-feature");
+
+        // No project-names directory created
+        assert!(!claude_dir.join(PROJECT_NAMES_DIR).exists());
+    }
+
+    #[test]
+    fn test_encode_cwd() {
+        assert_eq!(encode_cwd("/Users/me/project"), "-Users-me-project");
+        assert_eq!(encode_cwd("/"), "-");
+        assert_eq!(encode_cwd("no-slash"), "no-slash");
+    }
+
+    #[test]
+    fn test_install_hooks_creates_project_names_dir() {
+        let dir = TempDir::new().unwrap();
+        let claude_dir = dir.path();
+
+        install_hooks(claude_dir).unwrap();
+
+        assert!(claude_dir.join(PROJECT_NAMES_DIR).exists());
+    }
+
+    #[test]
+    fn test_hook_script_contains_name_inheritance() {
+        // Verify the hook script has the /clear name inheritance logic
+        assert!(HOOK_SCRIPT.contains("source"));
+        assert!(HOOK_SCRIPT.contains("clear"));
+        assert!(HOOK_SCRIPT.contains("project-names"));
+        assert!(HOOK_SCRIPT.contains("new_suffix"));
     }
 }

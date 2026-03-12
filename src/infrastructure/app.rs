@@ -2,6 +2,10 @@
 //!
 //! This is infrastructure: it owns the terminal, the backends, and the
 //! event loop. It translates abstract Effects from the reducer into real IO.
+//!
+//! Uses `EventLoop` (backed by crossterm's async `EventStream` and
+//! `tokio::select!`) so terminal input and daemon output are processed
+//! concurrently without blocking or starvation.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -16,7 +20,7 @@ use crate::domain::ports::{CliGateway, DataRepository};
 use crate::infrastructure::cli::commands;
 use crate::infrastructure::cli::runner::RealCliRunner;
 use crate::infrastructure::daemon::client::DaemonClient;
-use crate::infrastructure::event::{self, Event};
+use crate::infrastructure::event::{Event, EventLoop};
 use crate::infrastructure::fs::backend::FsBackend;
 use crate::infrastructure::fs::watcher::FsWatcher;
 
@@ -28,8 +32,6 @@ pub struct App {
     _watcher: Option<FsWatcher>,
     fs_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Vec<PathBuf>>>,
     daemon: DaemonClient,
-    /// vt100 terminal emulator for inline session rendering.
-    vt_parser: Option<vt100::Parser>,
 }
 
 impl App {
@@ -67,7 +69,6 @@ impl App {
         if let Err(e) = state.store.refresh_all(&backend) {
             tracing::error!("Initial data load failed: {}", e);
         }
-        // Sessions are loaded from daemon in run() (async)
 
         let daemon = DaemonClient::new(DaemonClient::default_socket_path());
 
@@ -78,25 +79,30 @@ impl App {
             _watcher: watcher,
             fs_event_rx: Some(fs_rx),
             daemon,
-            vt_parser: None,
         }
     }
 
     /// Run the main event loop.
     pub async fn run(&mut self, terminal: &mut ratatui::DefaultTerminal) -> color_eyre::Result<()> {
-        let tick_rate = Duration::from_millis(10);
+        let mut events = EventLoop::new(Duration::from_millis(10));
         let mut fs_rx = self.fs_event_rx.take();
 
-        // Auto-connect to daemon (best-effort, non-blocking)
+        // Auto-connect to daemon (best-effort)
         match self.daemon.connect().await {
-            Ok(()) => tracing::info!("Connected to clash daemon"),
+            Ok(()) => {
+                tracing::info!("Connected to clash daemon");
+                // Hand the stream event receiver to the event loop
+                if let Some(rx) = self.daemon.take_stream_rx() {
+                    events.set_daemon_rx(rx);
+                }
+            }
             Err(e) => tracing::info!("Daemon not available (legacy mode): {}", e),
         }
 
-        // Load initial sessions (from daemon or disk fallback)
+        // Load initial sessions
         self.refresh_daemon_sessions().await;
 
-        // Background update check (non-blocking)
+        // Background update check
         let mut update_check: Option<tokio::task::JoinHandle<_>> = Some(tokio::spawn(async {
             crate::infrastructure::update::check_for_update().await
         }));
@@ -118,25 +124,22 @@ impl App {
                 }
             }
 
-            let vt_screen = self.vt_parser.as_ref().map(|p| p.screen());
-            terminal.draw(|f| renderer::draw_with_terminal(&self.state, f, vt_screen))?;
+            terminal.draw(|f| renderer::draw(&self.state, f))?;
 
-            // Non-blocking FS event check
-            if let Some(ref mut rx) = fs_rx {
-                let mut needs_refresh_all = false;
-                let mut jsonl_changed = false;
-                while let Ok(paths) = rx.try_recv() {
-                    for p in &paths {
-                        if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                            jsonl_changed = true;
-                        } else {
-                            needs_refresh_all = true;
+            // Non-blocking FS event check (skip while attached)
+            if self.state.input_mode != InputMode::Attached {
+                if let Some(ref mut rx) = fs_rx {
+                    let mut needs_refresh_all = false;
+                    let mut jsonl_changed = false;
+                    while let Ok(paths) = rx.try_recv() {
+                        for p in &paths {
+                            if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                                jsonl_changed = true;
+                            } else {
+                                needs_refresh_all = true;
+                            }
                         }
                     }
-                }
-                // Skip heavy refreshes while attached — they block the event loop
-                // and prevent keystrokes from reaching the daemon promptly.
-                if self.state.input_mode != InputMode::Attached {
                     if needs_refresh_all {
                         let _ = self.state.store.refresh_all(&self.backend);
                     } else if jsonl_changed {
@@ -145,213 +148,147 @@ impl App {
                 }
             }
 
-            if let Some(event) = event::read_event(tick_rate).await {
+            let maybe_event = events.next().await;
+
+            if let Some(event) = maybe_event {
                 match event {
                     Event::Key(key) => {
-                        // Handle attached mode — forward input to daemon
-                        if self.state.input_mode == InputMode::Attached {
-                            use crossterm::event::{KeyCode, KeyModifiers};
-                            // Esc or Ctrl+B → detach
-                            if key.code == KeyCode::Esc
-                                || (key.code == KeyCode::Char('b')
-                                    && key.modifiers.contains(KeyModifiers::CONTROL))
-                            {
-                                let action = Action::Ui(
-                                    crate::application::actions::UiAction::DetachSession,
-                                );
-                                let effects = reducer::reduce(&mut self.state, action);
-                                self.draw_if_spinner(terminal);
-                                if self.execute_effects(effects, terminal).await {
-                                    return Ok(());
-                                }
-                            } else if let Some(session_id) = self.state.attached_session.clone() {
-                                // Forward keystroke to daemon
-                                let bytes = crate::adapters::input::key_to_bytes(key);
-                                if !bytes.is_empty() {
-                                    let _ = self.daemon.send_input(&session_id, &bytes).await;
-                                }
-                            }
-                            continue;
-                        }
-
-                        // Handle text input for command/filter/new-session mode
-                        if matches!(
-                            self.state.input_mode,
-                            InputMode::Command
-                                | InputMode::Filter
-                                | InputMode::NewSession
-                                | InputMode::NewSessionName
-                        ) {
-                            use crate::application::actions::ui::InputEdit;
-                            use crate::application::actions::UiAction;
-
-                            let action = match key.code {
-                                crossterm::event::KeyCode::Enter => {
-                                    let input = self.state.input_buffer.clone();
-                                    Action::Ui(UiAction::SubmitInput(input))
-                                }
-                                crossterm::event::KeyCode::Esc => {
-                                    Action::Ui(UiAction::ExitInputMode)
-                                }
-                                crossterm::event::KeyCode::Backspace => {
-                                    Action::Ui(UiAction::InputEdit(InputEdit::Backspace))
-                                }
-                                crossterm::event::KeyCode::Delete => {
-                                    Action::Ui(UiAction::InputEdit(InputEdit::Delete))
-                                }
-                                crossterm::event::KeyCode::Left => {
-                                    Action::Ui(UiAction::InputEdit(InputEdit::CursorLeft))
-                                }
-                                crossterm::event::KeyCode::Right => {
-                                    Action::Ui(UiAction::InputEdit(InputEdit::CursorRight))
-                                }
-                                crossterm::event::KeyCode::Home => {
-                                    Action::Ui(UiAction::InputEdit(InputEdit::CursorHome))
-                                }
-                                crossterm::event::KeyCode::End => {
-                                    Action::Ui(UiAction::InputEdit(InputEdit::CursorEnd))
-                                }
-                                crossterm::event::KeyCode::Char(c) => {
-                                    Action::Ui(UiAction::InputEdit(InputEdit::InsertChar(c)))
-                                }
-                                _ => {
-                                    continue;
-                                }
-                            };
-
-                            let effects = reducer::reduce(&mut self.state, action);
-                            if self.state.spinner.is_some() {
-                                let vt_screen = self.vt_parser.as_ref().map(|p| p.screen());
-                                let _ = terminal.draw(|f| {
-                                    renderer::draw_with_terminal(&self.state, f, vt_screen)
-                                });
-                            }
-                            if self.execute_effects(effects, terminal).await {
-                                return Ok(());
-                            }
-                            continue;
-                        }
-
-                        let action = input::handle_key(key, &self.state);
-                        let effects = reducer::reduce(&mut self.state, action);
-                        // Draw a frame before executing effects so spinners are visible
-                        self.draw_if_spinner(terminal);
-                        if self.execute_effects(effects, terminal).await {
-                            return Ok(());
+                        if self
+                            .handle_key_event(key, terminal, &mut events)
+                            .await
+                            .is_err()
+                        {
+                            return Ok(()); // Quit requested
                         }
                     }
                     Event::Tick => {
-                        let _ = reducer::reduce(
-                            &mut self.state,
-                            Action::Ui(crate::application::actions::UiAction::Tick),
-                        );
-                        // Refresh sessions every ~500ms (50 ticks) on session-related views
-                        if self.state.tick.is_multiple_of(50)
-                            && matches!(
-                                self.state.current_view(),
-                                crate::adapters::views::ViewKind::Sessions
-                                    | crate::adapters::views::ViewKind::SessionDetail
-                                    | crate::adapters::views::ViewKind::Subagents
-                                    | crate::adapters::views::ViewKind::SubagentDetail
-                            )
-                        {
-                            self.refresh_daemon_sessions().await;
-                        }
-                        // Refresh conversation every ~1s (100 ticks)
-                        if self.state.tick.is_multiple_of(100) {
-                            self.auto_refresh_conversation();
-                        }
-                        // Poll daemon events when attached
-                        if self.state.input_mode == InputMode::Attached {
-                            self.poll_daemon_events();
-                        }
+                        self.handle_tick().await;
                     }
                     Event::Resize(width, height) => {
-                        // Resize vt100 parser using real layout computation
-                        if self.state.input_mode == InputMode::Attached {
-                            let inner = Self::compute_vt_inner_area(width, height);
-                            if let Some(ref mut parser) = self.vt_parser {
-                                parser.set_size(inner.height, inner.width);
-                            }
-                            // Notify daemon to resize the PTY
-                            if let Some(ref session_id) = self.state.attached_session {
-                                let _ = self
-                                    .daemon
-                                    .resize(session_id, inner.width, inner.height)
-                                    .await;
-                            }
-                        }
+                        self.handle_resize(width, height).await;
                     }
+                    Event::DaemonExited { session_id } => {
+                        let action =
+                            Action::Ui(crate::application::actions::UiAction::SessionExited {
+                                session_id,
+                            });
+                        let _ = reducer::reduce(&mut self.state, action);
+                    }
+                    Event::DaemonOutput(_) => {}
                 }
+            } else {
+                // Event stream ended
+                return Ok(());
             }
         }
     }
 
-    /// Poll daemon for output/exit events and feed into vt100 parser.
-    fn poll_daemon_events(&mut self) {
-        use crate::infrastructure::daemon::protocol::Event as DaemonEvent;
-        while let Some(event) = self.daemon.try_recv_event() {
-            match event {
-                DaemonEvent::Output { session_id, data } => {
-                    if self.state.attached_session.as_deref() == Some(&session_id) {
-                        if let Ok(bytes) =
-                            crate::infrastructure::daemon::protocol::decode_data(&data)
-                        {
-                            if let Some(ref mut parser) = self.vt_parser {
-                                parser.process(&bytes);
-                            }
-                        }
-                    }
+    /// Handle a terminal key event based on current input mode.
+    ///
+    /// Attached mode is handled via raw stdin passthrough in the main loop
+    /// (RawInput/DetachRequested events), so Key events only arrive in
+    /// normal and text-input modes.
+    async fn handle_key_event(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        terminal: &mut ratatui::DefaultTerminal,
+        events: &mut EventLoop,
+    ) -> color_eyre::Result<()> {
+        // Text input mode (command, filter, new-session)
+        if matches!(
+            self.state.input_mode,
+            InputMode::Command
+                | InputMode::Filter
+                | InputMode::NewSession
+                | InputMode::NewSessionName
+        ) {
+            use crate::application::actions::ui::InputEdit;
+            use crate::application::actions::UiAction;
+
+            let action = match key.code {
+                crossterm::event::KeyCode::Enter => {
+                    let input = self.state.input_buffer.clone();
+                    Action::Ui(UiAction::SubmitInput(input))
                 }
-                DaemonEvent::Exited { session_id, .. } => {
-                    let action = Action::Ui(crate::application::actions::UiAction::SessionExited {
-                        session_id,
-                    });
-                    let _ = reducer::reduce(&mut self.state, action);
-                    // Clean up vt100 parser when session exits
-                    if self.state.attached_session.is_none() {
-                        self.vt_parser = None;
-                    }
+                crossterm::event::KeyCode::Esc => Action::Ui(UiAction::ExitInputMode),
+                crossterm::event::KeyCode::Backspace => {
+                    Action::Ui(UiAction::InputEdit(InputEdit::Backspace))
                 }
-                _ => {} // Ok, Error, Pong, Sessions — handled elsewhere
+                crossterm::event::KeyCode::Delete => {
+                    Action::Ui(UiAction::InputEdit(InputEdit::Delete))
+                }
+                crossterm::event::KeyCode::Left => {
+                    Action::Ui(UiAction::InputEdit(InputEdit::CursorLeft))
+                }
+                crossterm::event::KeyCode::Right => {
+                    Action::Ui(UiAction::InputEdit(InputEdit::CursorRight))
+                }
+                crossterm::event::KeyCode::Home => {
+                    Action::Ui(UiAction::InputEdit(InputEdit::CursorHome))
+                }
+                crossterm::event::KeyCode::End => {
+                    Action::Ui(UiAction::InputEdit(InputEdit::CursorEnd))
+                }
+                crossterm::event::KeyCode::Char(c) => {
+                    Action::Ui(UiAction::InputEdit(InputEdit::InsertChar(c)))
+                }
+                _ => return Ok(()),
+            };
+
+            let effects = reducer::reduce(&mut self.state, action);
+            if self.state.spinner.is_some() {
+                let _ = terminal.draw(|f| renderer::draw(&self.state, f));
             }
+            if self.execute_effects(effects, terminal, events).await {
+                return Err(color_eyre::eyre::eyre!("quit"));
+            }
+            return Ok(());
+        }
+
+        // Normal mode
+        let action = input::handle_key(key, &self.state);
+        let effects = reducer::reduce(&mut self.state, action);
+        self.draw_if_spinner(terminal);
+        if self.execute_effects(effects, terminal, events).await {
+            return Err(color_eyre::eyre::eyre!("quit"));
+        }
+        Ok(())
+    }
+
+    /// Handle periodic tick events.
+    async fn handle_tick(&mut self) {
+        let _ = reducer::reduce(
+            &mut self.state,
+            Action::Ui(crate::application::actions::UiAction::Tick),
+        );
+        // Refresh sessions every ~500ms (50 ticks) on session-related views
+        if self.state.tick.is_multiple_of(50)
+            && matches!(
+                self.state.current_view(),
+                crate::adapters::views::ViewKind::Sessions
+                    | crate::adapters::views::ViewKind::SessionDetail
+                    | crate::adapters::views::ViewKind::Subagents
+                    | crate::adapters::views::ViewKind::SubagentDetail
+            )
+        {
+            self.refresh_daemon_sessions().await;
+        }
+        // Refresh conversation every ~1s (100 ticks)
+        if self.state.tick.is_multiple_of(100) {
+            self.auto_refresh_conversation();
         }
     }
 
-    /// Draw a frame immediately if the spinner is active, so it's visible
-    /// before potentially long-running effects execute.
+    /// Handle terminal resize events.
+    async fn handle_resize(&mut self, _width: u16, _height: u16) {
+        // Resize is handled by ratatui automatically for the TUI.
+        // When attached, claude subprocess owns the terminal directly.
+    }
+
+    /// Draw a frame immediately if the spinner is active.
     fn draw_if_spinner(&self, terminal: &mut ratatui::DefaultTerminal) {
         if self.state.spinner.is_some() {
-            let vt_screen = self.vt_parser.as_ref().map(|p| p.screen());
-            let _ = terminal.draw(|f| renderer::draw_with_terminal(&self.state, f, vt_screen));
-        }
-    }
-
-    /// Compute the inner rendering area for the vt100 terminal emulator,
-    /// accounting for the frame layout and bordered block.
-    fn compute_vt_inner_area(width: u16, height: u16) -> ratatui::layout::Rect {
-        let rect = ratatui::layout::Rect::new(0, 0, width, height);
-        let layout = crate::infrastructure::tui::layout::FrameLayout::new(rect);
-        let block = ratatui::widgets::Block::bordered();
-        block.inner(layout.body)
-    }
-
-    /// Ensure the daemon is connected, auto-starting if needed.
-    /// Returns `true` on success, `false` on failure (sets error toast).
-    async fn ensure_daemon_connected(&mut self) -> bool {
-        if self.daemon.is_connected() {
-            return true;
-        }
-        self.state.spinner = Some("Starting daemon...".to_string());
-        match self.daemon.connect().await {
-            Ok(()) => true,
-            Err(e) => {
-                self.state.spinner = None;
-                self.state.toast = Some(format!("Daemon failed to start: {}", e));
-                self.state.input_mode = InputMode::Normal;
-                self.state.attached_session = None;
-                false
-            }
+            let _ = terminal.draw(|f| renderer::draw(&self.state, f));
         }
     }
 
@@ -404,7 +341,6 @@ impl App {
                 .unwrap_or(SessionStatus::Idle);
             let is_running = !matches!(status, SessionStatus::Idle);
 
-            // Try to find matching disk session by ID first
             let matched_by_id = self
                 .state
                 .store
@@ -421,7 +357,6 @@ impl App {
                 }
                 claimed_indices.insert(idx);
             } else if info.name.is_some() && !info.cwd.is_empty() {
-                // Clash-created daemon session — try to match by CWD
                 let daemon_cwd = info.cwd.trim_end_matches('/');
                 let matched_by_cwd =
                     self.state
@@ -448,7 +383,6 @@ impl App {
                     existing.name = info.name.clone();
                     claimed_indices.insert(idx);
                 } else {
-                    // Truly daemon-only (no disk file yet)
                     self.state.store.sessions.push(session_from_daemon_info(
                         &info,
                         String::new(),
@@ -457,7 +391,6 @@ impl App {
                     ));
                 }
             } else {
-                // External session resumed via daemon (no name, no cwd match)
                 let summary = if !info.cwd.is_empty() {
                     format!("New session in {}", info.cwd)
                 } else {
@@ -476,9 +409,8 @@ impl App {
         }
     }
 
-    /// Phase 4: Resolve session names from daemon (by project dir) and disk persistence.
+    /// Phase 4: Resolve session names from daemon and disk persistence.
     async fn resolve_session_names(&mut self) {
-        // Pass 1: propagate daemon names to unnamed sessions by project directory
         if self.daemon.is_connected() {
             if let Ok(infos) = self.daemon.list_sessions().await {
                 for info in &infos {
@@ -503,7 +435,6 @@ impl App {
             }
         }
 
-        // Pass 2: apply persisted names for sessions whose daemon has exited
         let saved_names =
             crate::infrastructure::hooks::read_all_session_names(self.backend.base_dir());
         for session in &mut self.state.store.sessions {
@@ -561,14 +492,11 @@ impl App {
     }
 
     /// Execute effects — translates abstract Effects into real IO.
-    ///
-    /// This is the key clean architecture boundary: the reducer speaks in
-    /// domain terms (PersistTask, RemoveTeam); this method translates to
-    /// filesystem ops, CLI calls, etc.
     async fn execute_effects(
         &mut self,
         effects: Vec<Effect>,
         terminal: &mut ratatui::DefaultTerminal,
+        _events: &mut EventLoop,
     ) -> bool {
         let mut queue = VecDeque::from(effects);
 
@@ -676,126 +604,139 @@ impl App {
                     }
                 }
 
-                // ── Daemon-managed sessions ────────────────────
-                Effect::DaemonCreateSession {
+                // ── Session attach (subprocess) ───────────────
+                Effect::DaemonAttach {
                     session_id,
                     args,
                     cwd,
                     name,
                 } => {
-                    if !self.ensure_daemon_connected().await {
-                        continue;
-                    }
-                    match self
-                        .daemon
-                        .create_session(
+                    // Save session name if provided (for new sessions)
+                    if let Some(ref n) = name {
+                        crate::infrastructure::hooks::save_session_name(
+                            self.backend.base_dir(),
                             &session_id,
-                            &self.cli_runner.claude_bin,
-                            &args,
-                            &cwd,
-                            name.clone(),
-                        )
-                        .await
-                    {
-                        Ok(()) => {
-                            let label = if let Some(ref n) = name {
-                                // Persist name to disk so it survives daemon restarts
-                                crate::infrastructure::hooks::save_session_name(
-                                    self.backend.base_dir(),
-                                    &session_id,
-                                    n,
-                                );
-                                n.clone()
-                            } else {
-                                crate::adapters::format::short_id(&session_id, 8).to_string()
-                            };
-                            self.state.toast = Some(format!("Session {} created", label));
+                            n,
+                            cwd.as_deref(),
+                        );
+                    }
+                    // Suspend TUI — give terminal to Claude Code directly
+                    crossterm::terminal::disable_raw_mode().ok();
+                    crossterm::execute!(
+                        std::io::stdout(),
+                        crossterm::terminal::LeaveAlternateScreen,
+                        crossterm::event::DisableMouseCapture
+                    )
+                    .ok();
+
+                    // Build args: use provided args, or default to --resume <session_id>
+                    let cmd_args = if args.is_empty() {
+                        vec!["--resume".to_string(), session_id.clone()]
+                    } else {
+                        args
+                    };
+
+                    // Resolve cwd: explicit > session project_path > none
+                    let cwd = cwd.or_else(|| {
+                        self.state
+                            .store
+                            .find_session(&session_id)
+                            .map(|s| s.project_path.clone())
+                            .filter(|p| !p.is_empty())
+                    });
+
+                    tracing::info!(
+                        "Attaching: {} {:?} (cwd: {:?})",
+                        &self.cli_runner.claude_bin,
+                        &cmd_args,
+                        &cwd
+                    );
+
+                    let mut cmd = tokio::process::Command::new(&self.cli_runner.claude_bin);
+                    cmd.args(&cmd_args)
+                        .stdin(std::process::Stdio::inherit())
+                        .stdout(std::process::Stdio::inherit())
+                        .stderr(std::process::Stdio::inherit());
+                    if let Some(dir) = &cwd {
+                        cmd.current_dir(dir);
+                    }
+
+                    let result = cmd.status().await;
+                    let attach_error = match &result {
+                        Ok(status) if !status.success() => {
+                            let msg = format!(
+                                "claude exited with {}",
+                                status
+                                    .code()
+                                    .map_or("signal".to_string(), |c| c.to_string())
+                            );
+                            tracing::warn!("{}", msg);
+                            Some(msg)
                         }
                         Err(e) => {
-                            self.state.spinner = None;
-                            self.state.toast = Some(format!("Create failed: {}", e));
-                            self.state.input_mode = InputMode::Normal;
-                            self.state.attached_session = None;
+                            let msg = format!("Failed to launch claude: {}", e);
+                            tracing::error!("{}", msg);
+                            Some(msg)
                         }
-                    }
-                }
-                Effect::DaemonAttach { session_id } => {
-                    if !self.ensure_daemon_connected().await {
-                        continue;
+                        _ => None,
+                    };
+
+                    // Resume TUI
+                    crossterm::terminal::enable_raw_mode().ok();
+                    crossterm::execute!(
+                        std::io::stdout(),
+                        crossterm::terminal::EnterAlternateScreen,
+                        crossterm::event::EnableMouseCapture
+                    )
+                    .ok();
+                    let _ = terminal.clear();
+
+                    // Reset state — no longer attached
+                    self.state.input_mode = InputMode::Normal;
+                    self.state.attached_session = None;
+
+                    // Show error toast if attach failed
+                    if let Some(err) = attach_error {
+                        self.state.toast = Some(err);
                     }
 
-                    // For existing Claude sessions (not clash-created), ensure the daemon
-                    // has a PTY session running with --resume.
-                    if !session_id.starts_with("clash-") {
-                        let args = commands::resume_session_args(&session_id);
-                        // Ignore "already exists" error — that's fine, we just attach.
-                        let _ = self
-                            .daemon
-                            .create_session(
-                                &session_id,
-                                &self.cli_runner.claude_bin,
-                                &args,
-                                "",
-                                None,
-                            )
-                            .await;
-                    }
-
-                    match self.daemon.attach(&session_id).await {
-                        Ok(()) => {
-                            // Initialize vt100 parser sized to the actual inner render area
-                            let term_size = terminal.size().unwrap_or_default();
-                            let inner =
-                                Self::compute_vt_inner_area(term_size.width, term_size.height);
-                            self.vt_parser = Some(vt100::Parser::new(inner.height, inner.width, 0));
-
-                            // Resize the daemon PTY to match our terminal
-                            let _ = self
-                                .daemon
-                                .resize(&session_id, inner.width, inner.height)
-                                .await;
-
-                            let short = crate::adapters::format::short_id(&session_id, 8);
-                            self.state.toast =
-                                Some(format!("Attached to {} | Esc/Ctrl+B detach", short));
-                        }
-                        Err(e) => {
-                            self.state.toast = Some(format!("Attach failed: {}", e));
-                            self.state.input_mode = InputMode::Normal;
-                            self.state.attached_session = None;
-                        }
-                    }
-                }
-                Effect::DaemonDetach { session_id } => {
-                    if self.daemon.is_connected() {
-                        let _ = self.daemon.detach(&session_id).await;
-                    }
-                    self.vt_parser = None;
+                    // Refresh sessions to pick up any changes
+                    self.refresh_daemon_sessions().await;
+                    tracing::info!(
+                        "After attach refresh: {} sessions loaded",
+                        self.state.store.sessions.len()
+                    );
                 }
                 Effect::DaemonKill { session_id } => {
                     if self.daemon.is_connected() {
                         let _ = self.daemon.kill_session(&session_id).await;
                     }
                 }
-                Effect::TerminateProcess { session_id } => {
-                    // Spawn in background — don't block the event loop with the
-                    // 5-second SIGKILL escalation sleep.
+                Effect::TerminateProcess {
+                    session_id,
+                    worktree,
+                } => {
                     tokio::spawn(async move {
                         terminate_claude_process(&session_id).await;
+                        if let Some(wt) = worktree {
+                            kill_tmux_session(&wt).await;
+                        }
                     });
                 }
                 Effect::TerminateAllProcesses => {
-                    // Terminate all Claude processes for all known sessions
-                    let ids: Vec<String> = self
+                    let sessions: Vec<(String, Option<String>)> = self
                         .state
                         .store
                         .sessions
                         .iter()
-                        .map(|s| s.id.clone())
+                        .map(|s| (s.id.clone(), s.worktree.clone()))
                         .collect();
                     tokio::spawn(async move {
-                        for id in ids {
+                        for (id, worktree) in sessions {
                             terminate_claude_process(&id).await;
+                            if let Some(wt) = worktree {
+                                kill_tmux_session(&wt).await;
+                            }
                         }
                     });
                 }
@@ -861,9 +802,6 @@ fn path_last_component(path: &str) -> &str {
 }
 
 /// Gracefully stop external Claude Code processes for a session.
-///
-/// Strategy: SIGTERM first, then SIGKILL after 5 seconds.
-/// Note: /exit is handled by the daemon PTY layer; this catches standalone processes.
 async fn terminate_claude_process(session_id: &str) {
     let output = tokio::process::Command::new("pgrep")
         .args(["-f", &format!("claude.*{}", session_id)])
@@ -891,8 +829,8 @@ async fn terminate_claude_process(session_id: &str) {
                 }
             }
 
-            // Escalate to SIGKILL after 5 seconds for any survivors
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            // Escalate to SIGKILL after 5 seconds
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             for line in stdout.lines() {
                 if let Ok(pid) = line.trim().parse::<u32>() {
                     let our_pid = std::process::id();
@@ -908,9 +846,28 @@ async fn terminate_claude_process(session_id: &str) {
         }
     }
 
-    // Fallback: pkill -TERM for any remaining processes
     let _ = tokio::process::Command::new("pkill")
         .args(["-TERM", "-f", &format!("claude.*{}", session_id)])
         .output()
         .await;
+}
+
+/// Kill a tmux session by worktree name.
+async fn kill_tmux_session(worktree: &str) {
+    // Claude creates tmux sessions named after the worktree
+    let result = tokio::process::Command::new("tmux")
+        .args(["kill-session", "-t", worktree])
+        .output()
+        .await;
+    match result {
+        Ok(output) if output.status.success() => {
+            tracing::info!("Killed tmux session '{}'", worktree);
+        }
+        Ok(_) => {
+            tracing::debug!("No tmux session '{}' found", worktree);
+        }
+        Err(e) => {
+            tracing::debug!("tmux not available: {}", e);
+        }
+    }
 }

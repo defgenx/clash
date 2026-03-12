@@ -29,27 +29,25 @@ pub enum Effect {
         on_complete: Action,
     },
 
-    // ── Daemon-managed session effects ────────────────────────
-    DaemonCreateSession {
-        session_id: String,
-        args: Vec<String>,
-        cwd: String,
-        /// Optional human-readable label for the session.
-        name: Option<String>,
-    },
+    // ── Session effects ────────────────────────────────────────
     DaemonAttach {
         session_id: String,
-    },
-    DaemonDetach {
-        session_id: String,
+        /// CLI args for the subprocess. Empty means `--resume <session_id>`.
+        args: Vec<String>,
+        /// Working directory for the subprocess.
+        cwd: Option<String>,
+        /// Optional session name to persist (for new sessions).
+        name: Option<String>,
     },
     DaemonKill {
         session_id: String,
     },
     DaemonKillAll,
-    /// Find and terminate the external Claude process for this session.
+    /// Find and terminate the external Claude process for this session,
+    /// and kill any associated tmux session.
     TerminateProcess {
         session_id: String,
+        worktree: Option<String>,
     },
     /// Find and terminate all external Claude processes for all sessions.
     TerminateAllProcesses,

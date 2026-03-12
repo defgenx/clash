@@ -31,8 +31,6 @@ pub enum UiAction {
     TourSkip,
     /// Trigger a self-update check + install.
     RequestUpdate,
-    /// Detach from a daemon-managed session (Esc or Ctrl+B while attached).
-    DetachSession,
     /// The attached session exited.
     SessionExited {
         session_id: String,

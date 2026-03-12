@@ -5,6 +5,7 @@ mod infrastructure;
 
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
+use crossterm::style::Stylize;
 
 const VERSION_INFO: &str = concat!(
     env!("CARGO_PKG_VERSION"),
@@ -91,7 +92,7 @@ async fn run_update() -> Result<()> {
 
     match infrastructure::update::perform_update().await {
         Ok(version) => {
-            println!("\x1b[32m✓\x1b[0m Updated to v{}!", version);
+            println!("{} Updated to v{}!", "✓".green(), version);
             println!("  Restart clash to use the new version.");
             Ok(())
         }

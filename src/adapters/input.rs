@@ -1,6 +1,6 @@
 //! Input adapter — translates keyboard events into application actions.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::adapters::format;
 use crate::adapters::views::ViewKind;
@@ -14,6 +14,8 @@ pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
     // Ctrl+C is NOT bound — it must pass through to Claude when attached.
     // Use 'q' or ':quit' to exit clash.
 
+    // Attached and text-input modes are handled directly in the event loop
+    // (app.rs) before reaching this function.
     match &state.input_mode {
         InputMode::Normal => handle_normal_mode(key, state),
         InputMode::Command
@@ -21,7 +23,7 @@ pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
         | InputMode::NewSession
         | InputMode::NewSessionName => handle_input_mode(key),
         InputMode::Confirm => handle_confirm_mode(key, state),
-        InputMode::Attached => handle_attached_mode(key, state),
+        InputMode::Attached => Action::Noop,
     }
 }
 
@@ -118,92 +120,6 @@ fn handle_input_mode(key: KeyEvent) -> Action {
         KeyCode::Enter => Action::Ui(UiAction::SubmitInput(String::new())),
         KeyCode::Esc => Action::Ui(UiAction::ExitInputMode),
         _ => Action::Noop,
-    }
-}
-
-fn handle_attached_mode(key: KeyEvent, _state: &AppState) -> Action {
-    // Esc or Ctrl+B detaches from the daemon session
-    if key.code == KeyCode::Esc {
-        return Action::Ui(UiAction::DetachSession);
-    }
-    if key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return Action::Ui(UiAction::DetachSession);
-    }
-
-    // Everything else → forward as input to the daemon session
-    // All other keystrokes are forwarded to the daemon in app.rs event loop
-    Action::Noop
-}
-
-/// Convert a KeyEvent into raw bytes for PTY input.
-pub fn key_to_bytes(key: KeyEvent) -> Vec<u8> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
-    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-
-    match key.code {
-        KeyCode::Char(c) if ctrl => {
-            // Ctrl+A=0x01, Ctrl+B=0x02, ..., Ctrl+Z=0x1A
-            let byte = (c as u8).wrapping_sub(b'a').wrapping_add(1);
-            if byte <= 26 {
-                vec![byte]
-            } else {
-                vec![]
-            }
-        }
-        KeyCode::Char(c) if alt => {
-            // Alt+char sends ESC followed by the character
-            let mut bytes = vec![0x1b];
-            let mut buf = [0u8; 4];
-            let s = c.encode_utf8(&mut buf);
-            bytes.extend_from_slice(s.as_bytes());
-            bytes
-        }
-        KeyCode::Char(c) => {
-            let mut buf = [0u8; 4];
-            let s = c.encode_utf8(&mut buf);
-            s.as_bytes().to_vec()
-        }
-        KeyCode::Enter => vec![b'\r'],
-        KeyCode::Backspace if alt => b"\x1b\x7f".to_vec(), // Alt+Backspace = delete word
-        KeyCode::Backspace => vec![0x7f],
-        KeyCode::Tab if shift => b"\x1b[Z".to_vec(), // Shift+Tab
-        KeyCode::Tab => vec![b'\t'],
-        KeyCode::Up => b"\x1b[A".to_vec(),
-        KeyCode::Down => b"\x1b[B".to_vec(),
-        // Ctrl+Right/Left = word-by-word movement
-        KeyCode::Right if ctrl => b"\x1b[1;5C".to_vec(),
-        KeyCode::Left if ctrl => b"\x1b[1;5D".to_vec(),
-        // Alt+Right/Left = word-by-word movement (alternative)
-        KeyCode::Right if alt => b"\x1b[1;3C".to_vec(),
-        KeyCode::Left if alt => b"\x1b[1;3D".to_vec(),
-        // Shift+Right/Left = selection in some terminals
-        KeyCode::Right if shift => b"\x1b[1;2C".to_vec(),
-        KeyCode::Left if shift => b"\x1b[1;2D".to_vec(),
-        KeyCode::Right => b"\x1b[C".to_vec(),
-        KeyCode::Left => b"\x1b[D".to_vec(),
-        KeyCode::Home => b"\x1b[H".to_vec(),
-        KeyCode::End => b"\x1b[F".to_vec(),
-        KeyCode::Delete => b"\x1b[3~".to_vec(),
-        KeyCode::PageUp => b"\x1b[5~".to_vec(),
-        KeyCode::PageDown => b"\x1b[6~".to_vec(),
-        KeyCode::Insert => b"\x1b[2~".to_vec(),
-        KeyCode::F(n) => match n {
-            1 => b"\x1bOP".to_vec(),
-            2 => b"\x1bOQ".to_vec(),
-            3 => b"\x1bOR".to_vec(),
-            4 => b"\x1bOS".to_vec(),
-            5 => b"\x1b[15~".to_vec(),
-            6 => b"\x1b[17~".to_vec(),
-            7 => b"\x1b[18~".to_vec(),
-            8 => b"\x1b[19~".to_vec(),
-            9 => b"\x1b[20~".to_vec(),
-            10 => b"\x1b[21~".to_vec(),
-            11 => b"\x1b[23~".to_vec(),
-            12 => b"\x1b[24~".to_vec(),
-            _ => vec![],
-        },
-        _ => vec![],
     }
 }
 

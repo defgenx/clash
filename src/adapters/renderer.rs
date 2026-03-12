@@ -16,12 +16,12 @@ use crate::infrastructure::tui::widgets::{
     confirm_dialog, detail, help_overlay, input_bar, logo, spinner, table, toast,
 };
 
-/// Draw with optional inline terminal emulator.
-pub fn draw_with_terminal(state: &AppState, frame: &mut Frame, vt_screen: Option<&vt100::Screen>) {
+/// Draw the clash UI (not called when attached — terminal is handed off).
+pub fn draw(state: &AppState, frame: &mut Frame) {
     let layout = FrameLayout::new(frame.area());
 
     draw_header(state, frame, layout.header);
-    draw_body(state, frame, layout.body, vt_screen);
+    draw_body(state, frame, layout.body);
     draw_footer(state, frame, layout.footer);
 
     // Overlays (drawn on top)
@@ -94,20 +94,7 @@ fn draw_header(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
     frame.render_widget(time_paragraph, area);
 }
 
-fn draw_body(
-    state: &AppState,
-    frame: &mut Frame,
-    area: ratatui::layout::Rect,
-    vt_screen: Option<&vt100::Screen>,
-) {
-    // When attached with a vt100 screen, render the inline terminal emulator
-    if state.input_mode == crate::application::state::InputMode::Attached {
-        if let Some(screen) = vt_screen {
-            draw_vt100_terminal(state, screen, frame, area);
-        }
-        return;
-    }
-
+fn draw_body(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect) {
     match state.current_view() {
         ViewKind::Teams => table::render_table::<teams::TeamsTable>(state, frame, area),
         ViewKind::TeamDetail => {
@@ -142,22 +129,6 @@ fn draw_body(
 
 fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect) {
     match &state.input_mode {
-        crate::application::state::InputMode::Attached => {
-            let left = Span::styled(
-                " Esc/Ctrl+B: detach  │  Keystrokes forwarded to session",
-                theme::footer_style(),
-            );
-            frame.render_widget(Paragraph::new(left).style(theme::footer_style()), area);
-            if let Some(ref toast_msg) = state.toast {
-                let right_area = ratatui::layout::Rect {
-                    x: area.x + area.width.saturating_sub(40),
-                    width: 40.min(area.width),
-                    ..area
-                };
-                toast::render_toast(toast_msg, frame, right_area);
-            }
-            return;
-        }
         crate::application::state::InputMode::Command
         | crate::application::state::InputMode::Filter
         | crate::application::state::InputMode::NewSession
@@ -206,41 +177,6 @@ fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
             .alignment(Alignment::Right)
             .style(theme::footer_style());
         frame.render_widget(version_paragraph, area);
-    }
-}
-
-fn draw_vt100_terminal(
-    state: &AppState,
-    screen: &vt100::Screen,
-    frame: &mut Frame,
-    area: ratatui::layout::Rect,
-) {
-    use crate::infrastructure::tui::widgets::terminal::TerminalWidget;
-    use ratatui::widgets::Block;
-
-    let session_id = state.attached_session.as_deref().unwrap_or("unknown");
-    let short = crate::adapters::format::short_id(session_id, 8);
-    let title = format!(" {} | Esc/Ctrl+B to detach ", short);
-
-    let block = Block::bordered()
-        .title(title)
-        .style(Style::default().fg(theme::TEXT))
-        .border_style(Style::default().fg(theme::ACCENT));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let widget = TerminalWidget::new(screen);
-    frame.render_widget(widget, inner);
-
-    // Always show the cursor at the position tracked by the vt100 screen.
-    // Newer Claude Code (ink framework) hides the terminal cursor during/after
-    // redraws, so we ignore hide_cursor — the position is still correct.
-    let (cursor_row, cursor_col) = screen.cursor_position();
-    let cx = inner.x + cursor_col;
-    let cy = inner.y + cursor_row;
-    if cx < inner.x + inner.width && cy < inner.y + inner.height {
-        frame.set_cursor_position(ratatui::layout::Position { x: cx, y: cy });
     }
 }
 

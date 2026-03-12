@@ -2,6 +2,11 @@
 //!
 //! This bridges the PTY output (parsed by vt100) into ratatui's cell grid,
 //! preserving colors, bold, italic, underline, and inverse attributes.
+//!
+//! Currently unused (tmux-style passthrough is active) but retained for
+//! potential future inline rendering.
+
+#![allow(dead_code)]
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

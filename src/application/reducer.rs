@@ -201,13 +201,18 @@ fn reduce_task(state: &mut AppState, action: TaskAction) -> Vec<Effect> {
 fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
     match action {
         AgentAction::Attach { session_id } => {
-            // Attach inline via daemon — vt100 terminal emulator renders in TUI
+            // Attach via daemon — leaves alternate screen for direct passthrough
             state.input_mode = InputMode::Attached;
             state.attached_session = Some(session_id.clone());
             state.spinner = Some("Attaching...".to_string());
 
             state.scroll_state.offset = 0;
-            vec![Effect::DaemonAttach { session_id }]
+            vec![Effect::DaemonAttach {
+                session_id,
+                args: vec![],
+                cwd: None,
+                name: None,
+            }]
         }
         AgentAction::SpawnSession { cwd, name } => {
             // Create a new daemon-managed session and attach inline.
@@ -225,18 +230,19 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
 
             state.spinner = Some(format!("Starting session {}...", session_name));
             state.scroll_state.offset = 0;
-            vec![
-                Effect::DaemonCreateSession {
-                    session_id: session_id.clone(),
-                    args: vec!["--session-id".to_string(), session_id.clone()],
-                    cwd,
-                    name: Some(session_name),
-                },
-                Effect::DaemonAttach { session_id },
-            ]
+            vec![Effect::DaemonAttach {
+                session_id: session_id.clone(),
+                args: vec!["--session-id".to_string(), session_id],
+                cwd: Some(cwd),
+                name: Some(session_name),
+            }]
         }
         AgentAction::DropSession { session_id } => {
             state.spinner = Some("Dropping session...".to_string());
+            let worktree = state
+                .store
+                .find_session(&session_id)
+                .and_then(|s| s.worktree.clone());
             state.nav.pop();
             vec![
                 Effect::MarkSessionIdle {
@@ -247,6 +253,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 },
                 Effect::TerminateProcess {
                     session_id: session_id.clone(),
+                    worktree,
                 },
                 Effect::RefreshSessions,
             ]
@@ -423,16 +430,6 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                 state.scroll_state.offset = state.scroll_state.offset.saturating_sub(3);
             }
             vec![]
-        }
-        UiAction::DetachSession => {
-            let effects = if let Some(session_id) = state.attached_session.take() {
-                vec![Effect::DaemonDetach { session_id }]
-            } else {
-                vec![]
-            };
-            state.input_mode = InputMode::Normal;
-            state.toast = Some("Detached — session continues in background".to_string());
-            effects
         }
         UiAction::SessionExited { session_id } => {
             if state.attached_session.as_deref() == Some(&session_id) {
@@ -851,7 +848,7 @@ mod tests {
         );
         assert!(effects
             .iter()
-            .any(|e| matches!(e, Effect::DaemonCreateSession { .. })));
+            .any(|e| matches!(e, Effect::DaemonAttach { .. })));
         assert_eq!(state.input_mode, InputMode::Attached);
     }
 }
