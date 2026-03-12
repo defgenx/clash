@@ -6,18 +6,8 @@ pub enum UiAction {
         message: String,
         on_confirm: Box<crate::application::actions::Action>,
     },
-    /// Show a delete confirm with two choices: terminate+delete vs files-only.
-    ShowDeleteConfirm {
-        message: String,
-        on_terminate: Box<crate::application::actions::Action>,
-        on_files_only: Box<crate::application::actions::Action>,
-    },
     ConfirmYes,
     ConfirmNo,
-    /// User chose "terminate & delete" in the delete confirm dialog.
-    ConfirmTerminate,
-    /// User chose "files only" in the delete confirm dialog.
-    ConfirmFilesOnly,
     Toast(String),
     EnterCommandMode,
     EnterFilterMode,

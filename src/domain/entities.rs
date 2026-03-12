@@ -148,6 +148,22 @@ pub enum SessionStatus {
     Prompting,
 }
 
+impl std::str::FromStr for SessionStatus {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "idle" => Ok(SessionStatus::Idle),
+            "starting" => Ok(SessionStatus::Starting),
+            "running" => Ok(SessionStatus::Running),
+            "thinking" => Ok(SessionStatus::Thinking),
+            "waiting" => Ok(SessionStatus::Waiting),
+            "prompting" => Ok(SessionStatus::Prompting),
+            _ => Err(()),
+        }
+    }
+}
+
 impl std::fmt::Display for SessionStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -242,18 +258,6 @@ pub struct Subagent {
     /// Git worktree name, if the subagent is running inside a worktree.
     #[serde(default)]
     pub worktree: Option<String>,
-}
-
-impl Subagent {
-    /// Case-insensitive text filter match on key fields.
-    #[allow(dead_code)]
-    pub fn matches_filter(&self, filter: &str) -> bool {
-        let f = filter.to_lowercase();
-        self.id.to_lowercase().contains(&f)
-            || self.summary.to_lowercase().contains(&f)
-            || self.agent_type.to_lowercase().contains(&f)
-            || self.file_path.to_lowercase().contains(&f)
-    }
 }
 
 /// A conversation message from a session or subagent .jsonl file.
@@ -367,22 +371,6 @@ mod tests {
         assert!(!session.matches_filter("nonexistent"));
         // Case insensitive
         assert!(session.matches_filter("FIX LOGIN"));
-    }
-
-    #[test]
-    fn test_subagent_matches_filter() {
-        let sa = Subagent {
-            id: "sub-999".to_string(),
-            summary: "Research API docs".to_string(),
-            agent_type: "researcher".to_string(),
-            file_path: "/tmp/work/agent.jsonl".to_string(),
-            ..Default::default()
-        };
-        assert!(sa.matches_filter("sub-999"));
-        assert!(sa.matches_filter("API docs"));
-        assert!(sa.matches_filter("researcher"));
-        assert!(sa.matches_filter("agent.jsonl"));
-        assert!(!sa.matches_filter("nonexistent"));
     }
 
     #[test]

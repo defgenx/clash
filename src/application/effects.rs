@@ -73,11 +73,12 @@ pub enum Effect {
         session_id: String,
         agent_id: String,
     },
-    DeleteSession {
-        project: String,
+    /// Mark a session as idle in the clash status file (persists across refreshes).
+    MarkSessionIdle {
         session_id: String,
     },
-    DeleteAllSessions,
+    /// Mark all sessions as idle in their clash status files.
+    MarkAllSessionsIdle,
 
     // ── UI state effects ────────────────────────────────────────
     ShowSpinner(String),

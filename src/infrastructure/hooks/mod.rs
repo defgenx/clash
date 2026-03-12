@@ -37,6 +37,8 @@ mv "$tmp" "$dir/$sid"
 
 /// Directory under ~/.claude/clash/ where status files are written.
 const STATUS_DIR: &str = "clash/status";
+/// Directory under ~/.claude/clash/ where session names are persisted.
+const NAMES_DIR: &str = "clash/names";
 /// Directory under ~/.claude/clash/ where the hook script lives.
 const HOOKS_DIR: &str = "clash/hooks";
 /// Name of the hook script file.
@@ -56,9 +58,11 @@ pub fn install_hooks(claude_dir: &Path) -> std::io::Result<()> {
         std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
     }
 
-    // 2. Ensure status directory exists
+    // 2. Ensure status and names directories exist
     let status_dir = claude_dir.join(STATUS_DIR);
     std::fs::create_dir_all(&status_dir)?;
+    let names_dir = claude_dir.join(NAMES_DIR);
+    std::fs::create_dir_all(&names_dir)?;
 
     // 3. Merge hooks into settings.local.json
     let settings_path = claude_dir.join("settings.local.json");
@@ -70,6 +74,50 @@ pub fn install_hooks(claude_dir: &Path) -> std::io::Result<()> {
 /// Get the path to the status directory.
 pub fn status_dir(claude_dir: &Path) -> PathBuf {
     claude_dir.join(STATUS_DIR)
+}
+
+/// Save a session name to disk so it survives daemon restarts.
+pub fn save_session_name(claude_dir: &Path, session_id: &str, name: &str) {
+    let dir = claude_dir.join(NAMES_DIR);
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(session_id);
+    let _ = std::fs::write(path, name);
+}
+
+/// Read all saved session names from disk.
+pub fn read_all_session_names(claude_dir: &Path) -> HashMap<String, String> {
+    let dir = claude_dir.join(NAMES_DIR);
+    let mut names = HashMap::new();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return names,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if let Some(session_id) = path.file_name().and_then(|n| n.to_str()) {
+            if session_id.starts_with('.') {
+                continue;
+            }
+            if let Ok(name) = std::fs::read_to_string(&path) {
+                if !name.is_empty() {
+                    names.insert(session_id.to_string(), name);
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Write a specific status for a session (e.g. "idle").
+pub fn write_session_status(claude_dir: &Path, session_id: &str, status: &str) {
+    let dir = claude_dir.join(STATUS_DIR);
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(session_id);
+    let json = format!(r#"{{"status":"{}","session_id":"{}"}}"#, status, session_id);
+    let _ = crate::infrastructure::fs::atomic::write_atomic(&path, json.as_bytes());
 }
 
 /// Read all session statuses from the status directory.
@@ -99,16 +147,9 @@ pub fn read_all_statuses(claude_dir: &Path) -> HashMap<String, SessionStatus> {
                 let status_str = val.get("status").and_then(|s| s.as_str()).unwrap_or("");
                 let session_id = val.get("session_id").and_then(|s| s.as_str()).unwrap_or("");
                 if !session_id.is_empty() {
-                    let status = match status_str {
-                        "thinking" => SessionStatus::Thinking,
-                        "running" => SessionStatus::Running,
-                        "prompting" => SessionStatus::Prompting,
-                        "starting" => SessionStatus::Starting,
-                        "waiting" => SessionStatus::Waiting,
-                        "idle" => SessionStatus::Idle,
-                        _ => continue,
-                    };
-                    statuses.insert(session_id.to_string(), status);
+                    if let Ok(status) = status_str.parse::<SessionStatus>() {
+                        statuses.insert(session_id.to_string(), status);
+                    }
                 }
             }
         }

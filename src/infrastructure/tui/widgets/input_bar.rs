@@ -17,6 +17,7 @@ pub fn render_input_bar(
         InputMode::Command => (":", Style::default().fg(Color::Yellow)),
         InputMode::Filter => ("/", Style::default().fg(Color::Green)),
         InputMode::NewSession => ("New session in: ", Style::default().fg(Color::Cyan)),
+        InputMode::NewSessionName => ("Session name: ", Style::default().fg(Color::Cyan)),
         _ => return,
     };
 

@@ -204,90 +204,59 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             // Attach inline via daemon — vt100 terminal emulator renders in TUI
             state.input_mode = InputMode::Attached;
             state.attached_session = Some(session_id.clone());
+            state.spinner = Some("Attaching...".to_string());
 
             state.scroll_state.offset = 0;
             vec![Effect::DaemonAttach { session_id }]
         }
         AgentAction::SpawnSession { cwd, name } => {
             // Create a new daemon-managed session and attach inline.
-            // Use a UUID as the internal session ID for the daemon PTY.
-            // We don't pass --session-id to Claude — let it manage its own.
+            // Pass --session-id to Claude so the daemon ID matches the
+            // filesystem session ID — this links them and prevents duplication.
             let session_id = uuid::Uuid::now_v7().to_string();
             state.input_mode = InputMode::Attached;
             state.attached_session = Some(session_id.clone());
 
-            // Default name: "Clash-N" where N is based on current session count.
+            // Default name: "clash-{short_uuid}"
             let session_name = name.unwrap_or_else(|| {
-                let n = state.store.sessions.len() + 1;
-                format!("Clash-{}", n)
+                let short = &session_id[..8];
+                format!("clash-{}", short)
             });
 
+            state.spinner = Some(format!("Starting session {}...", session_name));
             state.scroll_state.offset = 0;
             vec![
                 Effect::DaemonCreateSession {
                     session_id: session_id.clone(),
-                    args: vec![],
+                    args: vec!["--session-id".to_string(), session_id.clone()],
                     cwd,
                     name: Some(session_name),
                 },
                 Effect::DaemonAttach { session_id },
             ]
         }
-        AgentAction::TerminateAndDelete {
-            project,
-            session_id,
-        } => {
-            state.toast = Some("Terminating session...".to_string());
+        AgentAction::DropSession { session_id } => {
+            state.spinner = Some("Dropping session...".to_string());
             state.nav.pop();
-            let mut effects = vec![
+            vec![
+                Effect::MarkSessionIdle {
+                    session_id: session_id.clone(),
+                },
                 Effect::DaemonKill {
                     session_id: session_id.clone(),
                 },
                 Effect::TerminateProcess {
                     session_id: session_id.clone(),
                 },
-            ];
-            if !project.is_empty() {
-                effects.push(Effect::DeleteSession {
-                    project,
-                    session_id,
-                });
-            }
-            effects.push(Effect::RefreshSessions);
-            effects
-        }
-        AgentAction::DeleteSession {
-            project,
-            session_id,
-        } => {
-            state.toast = Some("Session files deleted".to_string());
-            state.nav.pop();
-            let mut effects = vec![Effect::DaemonKill {
-                session_id: session_id.clone(),
-            }];
-            if !project.is_empty() {
-                effects.push(Effect::DeleteSession {
-                    project,
-                    session_id,
-                });
-            }
-            effects.push(Effect::RefreshSessions);
-            effects
-        }
-        AgentAction::TerminateAndDeleteAllSessions => {
-            state.toast = Some("Terminating all sessions...".to_string());
-            vec![
-                Effect::DaemonKillAll,
-                Effect::TerminateAllProcesses,
-                Effect::DeleteAllSessions,
                 Effect::RefreshSessions,
             ]
         }
-        AgentAction::DeleteAllSessions => {
-            state.toast = Some("All session files deleted".to_string());
+        AgentAction::DropAllSessions => {
+            state.spinner = Some("Dropping all sessions...".to_string());
             vec![
+                Effect::MarkAllSessionsIdle,
                 Effect::DaemonKillAll,
-                Effect::DeleteAllSessions,
+                Effect::TerminateAllProcesses,
                 Effect::RefreshSessions,
             ]
         }
@@ -309,7 +278,7 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             vec![]
         }
         UiAction::RequestUpdate => {
-            state.toast = Some("Updating clash...".to_string());
+            state.spinner = Some("Updating clash...".to_string());
             vec![Effect::PerformUpdate]
         }
         UiAction::StartTour => {
@@ -335,46 +304,17 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             message,
             on_confirm,
         } => {
-            state.confirm_dialog = Some(ConfirmDialog::Simple {
+            state.confirm_dialog = Some(ConfirmDialog {
                 message,
                 on_confirm: *on_confirm,
             });
             state.input_mode = InputMode::Confirm;
             vec![]
         }
-        UiAction::ShowDeleteConfirm {
-            message,
-            on_terminate,
-            on_files_only,
-        } => {
-            state.confirm_dialog = Some(ConfirmDialog::Delete {
-                message,
-                on_terminate: *on_terminate,
-                on_files_only: *on_files_only,
-            });
-            state.input_mode = InputMode::Confirm;
-            vec![]
-        }
-        UiAction::ConfirmYes | UiAction::ConfirmTerminate => {
+        UiAction::ConfirmYes => {
             state.input_mode = InputMode::Normal;
-            let action = match state.confirm_dialog.take() {
-                Some(ConfirmDialog::Simple { on_confirm, .. }) => Some(on_confirm),
-                Some(ConfirmDialog::Delete { on_terminate, .. }) => Some(on_terminate),
-                None => None,
-            };
-            if let Some(action) = action {
-                return reduce(state, action);
-            }
-            vec![]
-        }
-        UiAction::ConfirmFilesOnly => {
-            state.input_mode = InputMode::Normal;
-            let action = match state.confirm_dialog.take() {
-                Some(ConfirmDialog::Delete { on_files_only, .. }) => Some(on_files_only),
-                _ => None,
-            };
-            if let Some(action) = action {
-                return reduce(state, action);
+            if let Some(dialog) = state.confirm_dialog.take() {
+                return reduce(state, dialog.on_confirm);
             }
             vec![]
         }
@@ -409,6 +349,7 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             state.input_mode = InputMode::Normal;
             state.input_buffer.clear();
             state.input_cursor = 0;
+            state.pending_session_cwd = None;
             vec![]
         }
         UiAction::SubmitInput(text) => {
@@ -438,9 +379,30 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                     } else {
                         cwd
                     };
+                    // Default name: "clash-{short_uuid}"
+                    let uid = uuid::Uuid::now_v7().to_string();
+                    let default_name = format!("clash-{}", &uid[..8]);
+                    // Step 1 done — store cwd and prompt for name
+                    state.pending_session_cwd = Some(cwd);
+                    state.input_mode = InputMode::NewSessionName;
+                    state.input_buffer = default_name;
+                    state.input_cursor = state.input_buffer.len();
+                    vec![]
+                }
+                InputMode::NewSessionName => {
+                    let name_input = input.trim().to_string();
+                    let cwd = state
+                        .pending_session_cwd
+                        .take()
+                        .unwrap_or_else(|| state.default_cwd.clone());
+                    let name = if name_input.is_empty() {
+                        None // will default to "Clash-N" in reduce_agent
+                    } else {
+                        Some(name_input)
+                    };
                     reduce(
                         state,
-                        Action::Agent(AgentAction::SpawnSession { cwd, name: None }),
+                        Action::Agent(AgentAction::SpawnSession { cwd, name }),
                     )
                 }
                 _ => vec![],
@@ -854,5 +816,42 @@ mod tests {
         assert!(effects
             .iter()
             .any(|e| matches!(e, Effect::RemoveTeam { .. })));
+    }
+
+    #[test]
+    fn test_new_session_two_step_flow() {
+        let mut state = test_state();
+
+        // Step 1: Enter new session mode
+        reduce(&mut state, Action::Ui(UiAction::EnterNewSessionMode));
+        assert_eq!(state.input_mode, InputMode::NewSession);
+        assert!(!state.input_buffer.is_empty()); // pre-filled with default_cwd
+
+        // Simulate typing a path
+        state.input_buffer = "/tmp/my-project".to_string();
+        state.input_cursor = state.input_buffer.len();
+
+        // Step 2: Submit directory — should transition to NewSessionName
+        let effects = reduce(
+            &mut state,
+            Action::Ui(UiAction::SubmitInput("/tmp/my-project".to_string())),
+        );
+        assert!(effects.is_empty());
+        assert_eq!(state.input_mode, InputMode::NewSessionName);
+        assert!(state.input_buffer.starts_with("clash-")); // default name "clash-{short_uuid}"
+        assert_eq!(
+            state.pending_session_cwd.as_deref(),
+            Some("/tmp/my-project")
+        );
+
+        // Step 3: Submit name — should spawn session
+        let effects = reduce(
+            &mut state,
+            Action::Ui(UiAction::SubmitInput("my-project".to_string())),
+        );
+        assert!(effects
+            .iter()
+            .any(|e| matches!(e, Effect::DaemonCreateSession { .. })));
+        assert_eq!(state.input_mode, InputMode::Attached);
     }
 }

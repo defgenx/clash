@@ -353,17 +353,37 @@ impl PtySession {
         self.alive.load(Ordering::SeqCst)
     }
 
-    /// Kill the child process.
+    /// Gracefully stop the child process.
+    ///
+    /// Strategy: /exit → SIGTERM → SIGKILL
+    /// 1. Send "/exit\n" to the PTY — Claude's built-in quit command
+    /// 2. After 3s, SIGTERM to process group if still alive
+    /// 3. After 3 more seconds, SIGKILL if still alive
     pub fn kill(&self) {
         if self.is_alive() {
-            unsafe { libc::kill(self.pid as i32, libc::SIGTERM) };
-            // Escalate to SIGKILL after 2 seconds
+            // Step 1: Send /exit command to the PTY
+            let exit_cmd = b"/exit\n";
+            unsafe {
+                libc::write(
+                    self.master_fd,
+                    exit_cmd.as_ptr() as *const _,
+                    exit_cmd.len(),
+                )
+            };
+
             let pid = self.pid;
             let alive = self.alive.clone();
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(2));
+                // Step 2: After 3s, SIGTERM to process group
+                std::thread::sleep(std::time::Duration::from_secs(3));
                 if alive.load(Ordering::SeqCst) {
-                    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                    unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
+                }
+
+                // Step 3: After 3 more seconds, SIGKILL
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                if alive.load(Ordering::SeqCst) {
+                    unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
                 }
             });
         }
@@ -482,11 +502,7 @@ fn has_input_prompt(bottom: &str, last_lines: &[&str]) -> bool {
     // not when ">" appears at the end of arbitrary output.
     if let Some(last) = last_lines.first() {
         let trimmed = last.trim();
-        if trimmed == ">"
-            || trimmed == "❯"
-            || trimmed == "$"
-            || trimmed == "%"
-            || trimmed == ">>>"
+        if trimmed == ">" || trimmed == "❯" || trimmed == "$" || trimmed == "%" || trimmed == ">>>"
         {
             return true;
         }

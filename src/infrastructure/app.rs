@@ -118,25 +118,6 @@ impl App {
                 }
             }
 
-            // Keep vt100 parser size in sync with the actual render area every frame.
-            // Use the real layout computation so the parser matches the widget area exactly.
-            if self.state.input_mode == InputMode::Attached {
-                if let Some(ref mut parser) = self.vt_parser {
-                    let term_size = terminal.size().unwrap_or_default();
-                    let term_rect =
-                        ratatui::layout::Rect::new(0, 0, term_size.width, term_size.height);
-                    let layout = crate::infrastructure::tui::layout::FrameLayout::new(term_rect);
-                    let block = ratatui::widgets::Block::bordered();
-                    let inner = block.inner(layout.body);
-                    let expected_rows = inner.height;
-                    let expected_cols = inner.width;
-                    let (current_rows, current_cols) = parser.screen().size();
-                    if current_rows != expected_rows || current_cols != expected_cols {
-                        parser.set_size(expected_rows, expected_cols);
-                    }
-                }
-            }
-
             let vt_screen = self.vt_parser.as_ref().map(|p| p.screen());
             terminal.draw(|f| renderer::draw_with_terminal(&self.state, f, vt_screen))?;
 
@@ -153,11 +134,14 @@ impl App {
                         }
                     }
                 }
-                if needs_refresh_all {
-                    let _ = self.state.store.refresh_all(&self.backend);
-                } else if jsonl_changed {
-                    // JSONL changed → refresh session statuses immediately
-                    self.refresh_daemon_sessions().await;
+                // Skip heavy refreshes while attached — they block the event loop
+                // and prevent keystrokes from reaching the daemon promptly.
+                if self.state.input_mode != InputMode::Attached {
+                    if needs_refresh_all {
+                        let _ = self.state.store.refresh_all(&self.backend);
+                    } else if jsonl_changed {
+                        self.refresh_daemon_sessions().await;
+                    }
                 }
             }
 
@@ -176,6 +160,7 @@ impl App {
                                     crate::application::actions::UiAction::DetachSession,
                                 );
                                 let effects = reducer::reduce(&mut self.state, action);
+                                self.draw_if_spinner(terminal);
                                 if self.execute_effects(effects, terminal).await {
                                     return Ok(());
                                 }
@@ -192,7 +177,10 @@ impl App {
                         // Handle text input for command/filter/new-session mode
                         if matches!(
                             self.state.input_mode,
-                            InputMode::Command | InputMode::Filter | InputMode::NewSession
+                            InputMode::Command
+                                | InputMode::Filter
+                                | InputMode::NewSession
+                                | InputMode::NewSessionName
                         ) {
                             use crate::application::actions::ui::InputEdit;
                             use crate::application::actions::UiAction;
@@ -232,6 +220,12 @@ impl App {
                             };
 
                             let effects = reducer::reduce(&mut self.state, action);
+                            if self.state.spinner.is_some() {
+                                let vt_screen = self.vt_parser.as_ref().map(|p| p.screen());
+                                let _ = terminal.draw(|f| {
+                                    renderer::draw_with_terminal(&self.state, f, vt_screen)
+                                });
+                            }
                             if self.execute_effects(effects, terminal).await {
                                 return Ok(());
                             }
@@ -240,6 +234,8 @@ impl App {
 
                         let action = input::handle_key(key, &self.state);
                         let effects = reducer::reduce(&mut self.state, action);
+                        // Draw a frame before executing effects so spinners are visible
+                        self.draw_if_spinner(terminal);
                         if self.execute_effects(effects, terminal).await {
                             return Ok(());
                         }
@@ -273,10 +269,7 @@ impl App {
                     Event::Resize(width, height) => {
                         // Resize vt100 parser using real layout computation
                         if self.state.input_mode == InputMode::Attached {
-                            let rect = ratatui::layout::Rect::new(0, 0, width, height);
-                            let layout = crate::infrastructure::tui::layout::FrameLayout::new(rect);
-                            let block = ratatui::widgets::Block::bordered();
-                            let inner = block.inner(layout.body);
+                            let inner = Self::compute_vt_inner_area(width, height);
                             if let Some(ref mut parser) = self.vt_parser {
                                 parser.set_size(inner.height, inner.width);
                             }
@@ -325,17 +318,61 @@ impl App {
         }
     }
 
+    /// Draw a frame immediately if the spinner is active, so it's visible
+    /// before potentially long-running effects execute.
+    fn draw_if_spinner(&self, terminal: &mut ratatui::DefaultTerminal) {
+        if self.state.spinner.is_some() {
+            let vt_screen = self.vt_parser.as_ref().map(|p| p.screen());
+            let _ = terminal.draw(|f| renderer::draw_with_terminal(&self.state, f, vt_screen));
+        }
+    }
+
+    /// Compute the inner rendering area for the vt100 terminal emulator,
+    /// accounting for the frame layout and bordered block.
+    fn compute_vt_inner_area(width: u16, height: u16) -> ratatui::layout::Rect {
+        let rect = ratatui::layout::Rect::new(0, 0, width, height);
+        let layout = crate::infrastructure::tui::layout::FrameLayout::new(rect);
+        let block = ratatui::widgets::Block::bordered();
+        block.inner(layout.body)
+    }
+
+    /// Ensure the daemon is connected, auto-starting if needed.
+    /// Returns `true` on success, `false` on failure (sets error toast).
+    async fn ensure_daemon_connected(&mut self) -> bool {
+        if self.daemon.is_connected() {
+            return true;
+        }
+        self.state.spinner = Some("Starting daemon...".to_string());
+        match self.daemon.connect().await {
+            Ok(()) => true,
+            Err(e) => {
+                self.state.spinner = None;
+                self.state.toast = Some(format!("Daemon failed to start: {}", e));
+                self.state.input_mode = InputMode::Normal;
+                self.state.attached_session = None;
+                false
+            }
+        }
+    }
+
     /// Refresh sessions: load from disk, overlay hook statuses, then daemon.
     async fn refresh_daemon_sessions(&mut self) {
+        self.load_disk_sessions();
+        self.overlay_hook_statuses();
+        self.overlay_daemon_sessions().await;
+        self.resolve_session_names().await;
+    }
+
+    /// Phase 1: Load sessions from JSONL files and preload subagents.
+    fn load_disk_sessions(&mut self) {
+        let _ = self.state.store.refresh_sessions(&self.backend);
+        self.state.store.refresh_all_subagents(&self.backend);
+    }
+
+    /// Phase 2: Overlay hook-based statuses (instant, from Claude Code lifecycle events).
+    fn overlay_hook_statuses(&mut self) {
         use crate::domain::entities::SessionStatus;
 
-        // 1. Read sessions from Claude's JSONL files (baseline status)
-        let _ = self.state.store.refresh_sessions(&self.backend);
-
-        // Preload subagents for sessions that have them (for tree view)
-        self.state.store.refresh_all_subagents(&self.backend);
-
-        // 2. Overlay hook-based statuses (instant, from Claude Code lifecycle events)
         let hook_statuses =
             crate::infrastructure::hooks::read_all_statuses(self.backend.base_dir());
         for session in &mut self.state.store.sessions {
@@ -344,101 +381,138 @@ impl App {
                 session.is_running = !matches!(status, SessionStatus::Idle);
             }
         }
+    }
 
-        // 3. Overlay daemon status on matching sessions, add daemon-only sessions
-        if self.daemon.is_connected() {
-            if let Ok(infos) = self.daemon.list_sessions().await {
-                for info in infos {
-                    let status = match info.status.as_str() {
-                        "running" => SessionStatus::Running,
-                        "thinking" => SessionStatus::Thinking,
-                        "waiting" => SessionStatus::Waiting,
-                        "starting" => SessionStatus::Starting,
-                        "prompting" => SessionStatus::Prompting,
-                        _ => SessionStatus::Idle,
-                    };
-                    let is_running = !matches!(status, SessionStatus::Idle);
+    /// Phase 3: Overlay daemon status on matching sessions, add daemon-only sessions.
+    async fn overlay_daemon_sessions(&mut self) {
+        use crate::domain::entities::SessionStatus;
 
-                    // Try to find matching disk session and update its status
-                    if let Some(existing) = self
-                        .state
+        if !self.daemon.is_connected() {
+            return;
+        }
+        let infos = match self.daemon.list_sessions().await {
+            Ok(infos) => infos,
+            Err(_) => return,
+        };
+
+        let mut claimed_indices = std::collections::HashSet::new();
+
+        for info in infos {
+            let status = info
+                .status
+                .parse::<SessionStatus>()
+                .unwrap_or(SessionStatus::Idle);
+            let is_running = !matches!(status, SessionStatus::Idle);
+
+            // Try to find matching disk session by ID first
+            let matched_by_id = self
+                .state
+                .store
+                .sessions
+                .iter()
+                .position(|s| s.id == info.session_id);
+
+            if let Some(idx) = matched_by_id {
+                let existing = &mut self.state.store.sessions[idx];
+                existing.status = status;
+                existing.is_running = is_running;
+                if existing.name.is_none() && info.name.is_some() {
+                    existing.name = info.name.clone();
+                }
+                claimed_indices.insert(idx);
+            } else if info.name.is_some() && !info.cwd.is_empty() {
+                // Clash-created daemon session — try to match by CWD
+                let daemon_cwd = info.cwd.trim_end_matches('/');
+                let matched_by_cwd =
+                    self.state
                         .store
                         .sessions
-                        .iter_mut()
-                        .find(|s| s.id == info.session_id)
-                    {
-                        existing.status = status;
-                        existing.is_running = is_running;
-                        // Overlay daemon name if the session doesn't have one yet
-                        if existing.name.is_none() && info.name.is_some() {
-                            existing.name = info.name.clone();
-                        }
-                    } else {
-                        // Daemon-only session (no disk file yet)
-                        let created = chrono::DateTime::from_timestamp(info.created_at as i64, 0)
-                            .map(|dt| {
-                                dt.with_timezone(&chrono::Local)
-                                    .format("%Y-%m-%d %H:%M")
-                                    .to_string()
-                            })
-                            .unwrap_or_default();
-
-                        // Derive project name from cwd (last path component)
-                        let project = if !info.cwd.is_empty() {
-                            std::path::Path::new(&info.cwd)
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("")
-                                .to_string()
-                        } else {
-                            String::new()
-                        };
-
-                        let git_branch =
-                            crate::infrastructure::fs::backend::FsBackend::detect_git_branch(
-                                &info.cwd,
-                            );
-                        let worktree =
-                            crate::infrastructure::fs::backend::FsBackend::detect_worktree(
-                                &info.cwd,
-                            );
-
-                        let summary = if !info.cwd.is_empty() {
-                            format!("New session in {}", info.cwd)
-                        } else {
-                            let clients_info = if info.attached_clients > 0 {
-                                format!("{} attached", info.attached_clients)
+                        .iter()
+                        .enumerate()
+                        .find_map(|(idx, s)| {
+                            let disk_path = s.project_path.trim_end_matches('/');
+                            if disk_path == daemon_cwd
+                                && s.name.is_none()
+                                && !claimed_indices.contains(&idx)
+                            {
+                                Some(idx)
                             } else {
-                                "detached".to_string()
-                            };
-                            format!("PID {} | {}", info.pid, clients_info)
-                        };
+                                None
+                            }
+                        });
 
-                        self.state
-                            .store
-                            .sessions
-                            .push(crate::domain::entities::Session {
-                                id: info.session_id,
-                                project,
-                                project_path: info.cwd,
-                                last_modified: created,
-                                summary,
-                                first_prompt: String::new(),
-                                has_subagents: false,
-                                subagent_count: 0,
-                                message_count: 0,
-                                git_branch,
-                                is_running,
-                                status,
-                                worktree,
-                                name: info.name,
-                            });
+                if let Some(idx) = matched_by_cwd {
+                    let existing = &mut self.state.store.sessions[idx];
+                    existing.status = status;
+                    existing.is_running = is_running;
+                    existing.name = info.name.clone();
+                    claimed_indices.insert(idx);
+                } else {
+                    // Truly daemon-only (no disk file yet)
+                    self.state.store.sessions.push(session_from_daemon_info(
+                        &info,
+                        String::new(),
+                        status,
+                        is_running,
+                    ));
+                }
+            } else {
+                // External session resumed via daemon (no name, no cwd match)
+                let summary = if !info.cwd.is_empty() {
+                    format!("New session in {}", info.cwd)
+                } else {
+                    let clients_info = if info.attached_clients > 0 {
+                        format!("{} attached", info.attached_clients)
+                    } else {
+                        "detached".to_string()
+                    };
+                    format!("PID {} | {}", info.pid, clients_info)
+                };
+                self.state
+                    .store
+                    .sessions
+                    .push(session_from_daemon_info(&info, summary, status, is_running));
+            }
+        }
+    }
+
+    /// Phase 4: Resolve session names from daemon (by project dir) and disk persistence.
+    async fn resolve_session_names(&mut self) {
+        // Pass 1: propagate daemon names to unnamed sessions by project directory
+        if self.daemon.is_connected() {
+            if let Ok(infos) = self.daemon.list_sessions().await {
+                for info in &infos {
+                    if let Some(ref daemon_name) = info.name {
+                        if info.cwd.is_empty() {
+                            continue;
+                        }
+                        let daemon_project = path_last_component(&info.cwd);
+                        if daemon_project.is_empty() {
+                            continue;
+                        }
+                        for session in &mut self.state.store.sessions {
+                            if session.name.is_some() {
+                                continue;
+                            }
+                            if path_last_component(&session.project_path) == daemon_project {
+                                session.name = Some(daemon_name.clone());
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // Flat subagents list is rebuilt inside refresh_all_subagents()
+        // Pass 2: apply persisted names for sessions whose daemon has exited
+        let saved_names =
+            crate::infrastructure::hooks::read_all_session_names(self.backend.base_dir());
+        for session in &mut self.state.store.sessions {
+            if session.name.is_none() {
+                if let Some(name) = saved_names.get(&session.id) {
+                    session.name = Some(name.clone());
+                }
+            }
+        }
     }
 
     /// Auto-refresh conversation if viewing SessionDetail or SubagentDetail.
@@ -585,17 +659,20 @@ impl App {
                         &agent_id,
                     );
                 }
-                Effect::DeleteSession {
-                    project,
-                    session_id,
-                } => {
-                    if let Err(e) = self.backend.delete_session(&project, &session_id) {
-                        self.state.toast = Some(format!("Delete failed: {}", e));
-                    }
+                Effect::MarkSessionIdle { session_id } => {
+                    crate::infrastructure::hooks::write_session_status(
+                        self.backend.base_dir(),
+                        &session_id,
+                        "idle",
+                    );
                 }
-                Effect::DeleteAllSessions => {
-                    if let Err(e) = self.backend.delete_all_sessions() {
-                        self.state.toast = Some(format!("Delete all failed: {}", e));
+                Effect::MarkAllSessionsIdle => {
+                    for session in &self.state.store.sessions {
+                        crate::infrastructure::hooks::write_session_status(
+                            self.backend.base_dir(),
+                            &session.id,
+                            "idle",
+                        );
                     }
                 }
 
@@ -606,15 +683,8 @@ impl App {
                     cwd,
                     name,
                 } => {
-                    // Auto-start daemon if not connected
-                    if !self.daemon.is_connected() {
-                        self.state.toast = Some("Starting daemon...".to_string());
-                        if let Err(e) = self.daemon.connect().await {
-                            self.state.toast = Some(format!("Daemon failed to start: {}", e));
-                            self.state.input_mode = InputMode::Normal;
-                            self.state.attached_session = None;
-                            continue;
-                        }
+                    if !self.ensure_daemon_connected().await {
+                        continue;
                     }
                     match self
                         .daemon
@@ -629,15 +699,20 @@ impl App {
                     {
                         Ok(()) => {
                             let label = if let Some(ref n) = name {
+                                // Persist name to disk so it survives daemon restarts
+                                crate::infrastructure::hooks::save_session_name(
+                                    self.backend.base_dir(),
+                                    &session_id,
+                                    n,
+                                );
                                 n.clone()
-                            } else if session_id.len() > 8 {
-                                session_id[..8].to_string()
                             } else {
-                                session_id.clone()
+                                crate::adapters::format::short_id(&session_id, 8).to_string()
                             };
                             self.state.toast = Some(format!("Session {} created", label));
                         }
                         Err(e) => {
+                            self.state.spinner = None;
                             self.state.toast = Some(format!("Create failed: {}", e));
                             self.state.input_mode = InputMode::Normal;
                             self.state.attached_session = None;
@@ -645,15 +720,8 @@ impl App {
                     }
                 }
                 Effect::DaemonAttach { session_id } => {
-                    // Auto-start daemon if not connected
-                    if !self.daemon.is_connected() {
-                        self.state.toast = Some("Starting daemon...".to_string());
-                        if let Err(e) = self.daemon.connect().await {
-                            self.state.toast = Some(format!("Daemon failed to start: {}", e));
-                            self.state.input_mode = InputMode::Normal;
-                            self.state.attached_session = None;
-                            continue;
-                        }
+                    if !self.ensure_daemon_connected().await {
+                        continue;
                     }
 
                     // For existing Claude sessions (not clash-created), ensure the daemon
@@ -677,12 +745,8 @@ impl App {
                         Ok(()) => {
                             // Initialize vt100 parser sized to the actual inner render area
                             let term_size = terminal.size().unwrap_or_default();
-                            let term_rect =
-                                ratatui::layout::Rect::new(0, 0, term_size.width, term_size.height);
-                            let layout =
-                                crate::infrastructure::tui::layout::FrameLayout::new(term_rect);
-                            let block = ratatui::widgets::Block::bordered();
-                            let inner = block.inner(layout.body);
+                            let inner =
+                                Self::compute_vt_inner_area(term_size.width, term_size.height);
                             self.vt_parser = Some(vt100::Parser::new(inner.height, inner.width, 0));
 
                             // Resize the daemon PTY to match our terminal
@@ -691,11 +755,7 @@ impl App {
                                 .resize(&session_id, inner.width, inner.height)
                                 .await;
 
-                            let short = if session_id.len() > 8 {
-                                &session_id[..8]
-                            } else {
-                                &session_id
-                            };
+                            let short = crate::adapters::format::short_id(&session_id, 8);
                             self.state.toast =
                                 Some(format!("Attached to {} | Esc/Ctrl+B detach", short));
                         }
@@ -718,13 +778,26 @@ impl App {
                     }
                 }
                 Effect::TerminateProcess { session_id } => {
-                    terminate_claude_process(&session_id).await;
+                    // Spawn in background — don't block the event loop with the
+                    // 5-second SIGKILL escalation sleep.
+                    tokio::spawn(async move {
+                        terminate_claude_process(&session_id).await;
+                    });
                 }
                 Effect::TerminateAllProcesses => {
                     // Terminate all Claude processes for all known sessions
-                    for session in &self.state.store.sessions {
-                        terminate_claude_process(&session.id).await;
-                    }
+                    let ids: Vec<String> = self
+                        .state
+                        .store
+                        .sessions
+                        .iter()
+                        .map(|s| s.id.clone())
+                        .collect();
+                    tokio::spawn(async move {
+                        for id in ids {
+                            terminate_claude_process(&id).await;
+                        }
+                    });
                 }
                 Effect::DaemonKillAll => {
                     if self.daemon.is_connected() {
@@ -754,16 +827,44 @@ impl App {
                 }
             }
         }
+        // Clear spinner after all effects have executed
+        self.state.spinner = None;
         false
     }
 }
 
-/// Find and terminate external Claude Code processes for a session.
+/// Build a `Session` from daemon `SessionInfo` for sessions with no disk file.
+fn session_from_daemon_info(
+    info: &crate::infrastructure::daemon::protocol::SessionInfo,
+    summary: String,
+    status: crate::domain::entities::SessionStatus,
+    is_running: bool,
+) -> crate::domain::entities::Session {
+    crate::domain::entities::Session {
+        id: info.session_id.clone(),
+        project: path_last_component(&info.cwd).to_string(),
+        project_path: info.cwd.clone(),
+        summary,
+        is_running,
+        status,
+        name: info.name.clone(),
+        ..Default::default()
+    }
+}
+
+/// Extract the last component of a path string (e.g. "/foo/bar" → "bar").
+fn path_last_component(path: &str) -> &str {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+}
+
+/// Gracefully stop external Claude Code processes for a session.
 ///
-/// Strategy: search for `claude` processes whose command line contains the session ID
-/// (e.g. `claude --resume <session_id>`). Uses `pgrep` on macOS/Linux.
+/// Strategy: SIGTERM first, then SIGKILL after 5 seconds.
+/// Note: /exit is handled by the daemon PTY layer; this catches standalone processes.
 async fn terminate_claude_process(session_id: &str) {
-    // Try pgrep to find claude processes matching this session
     let output = tokio::process::Command::new("pgrep")
         .args(["-f", &format!("claude.*{}", session_id)])
         .output()
@@ -774,23 +875,30 @@ async fn terminate_claude_process(session_id: &str) {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 if let Ok(pid) = line.trim().parse::<u32>() {
-                    // Don't kill ourselves
                     let our_pid = std::process::id();
                     if pid == our_pid {
                         continue;
                     }
                     tracing::info!(
-                        "Terminating Claude process PID {} for session {}",
+                        "Sending SIGTERM to Claude process PID {} for session {}",
                         pid,
                         session_id
                     );
-                    // SIGTERM first
                     let _ = tokio::process::Command::new("kill")
                         .args(["-TERM", &pid.to_string()])
                         .output()
                         .await;
-                    // Give it a moment, then SIGKILL if still alive
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
+
+            // Escalate to SIGKILL after 5 seconds for any survivors
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            for line in stdout.lines() {
+                if let Ok(pid) = line.trim().parse::<u32>() {
+                    let our_pid = std::process::id();
+                    if pid == our_pid {
+                        continue;
+                    }
                     let _ = tokio::process::Command::new("kill")
                         .args(["-KILL", &pid.to_string()])
                         .output()
@@ -800,9 +908,9 @@ async fn terminate_claude_process(session_id: &str) {
         }
     }
 
-    // Also try pkill as a fallback for any remaining processes
+    // Fallback: pkill -TERM for any remaining processes
     let _ = tokio::process::Command::new("pkill")
-        .args(["-f", &format!("claude.*{}", session_id)])
+        .args(["-TERM", "-f", &format!("claude.*{}", session_id)])
         .output()
         .await;
 }

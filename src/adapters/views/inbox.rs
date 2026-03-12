@@ -2,7 +2,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Cell;
 
 use crate::adapters::views::{ColumnDef, Keybinding, TableView};
-use crate::application::actions::Action;
 use crate::application::state::AppState;
 use crate::domain::entities::InboxMessage;
 
@@ -59,10 +58,6 @@ impl TableView for InboxTable {
 
     fn items(state: &AppState) -> Vec<&InboxMessage> {
         state.inbox_messages.iter().collect()
-    }
-
-    fn on_select(_item: &InboxMessage) -> Action {
-        Action::Noop
     }
 
     fn context_keybindings() -> Vec<Keybinding> {

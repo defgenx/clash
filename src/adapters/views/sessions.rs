@@ -4,8 +4,7 @@ use ratatui::widgets::{Block, Borders, Cell, Row, Table};
 use ratatui::Frame;
 
 use crate::adapters::format::{self, or_dash};
-use crate::adapters::views::{ColumnDef, Keybinding, TableView, ViewKind};
-use crate::application::actions::{Action, NavAction};
+use crate::adapters::views::{ColumnDef, Keybinding, TableView};
 use crate::application::state::AppState;
 use crate::domain::entities::{Session, SessionStatus, Subagent};
 use crate::infrastructure::tui::theme;
@@ -277,24 +276,17 @@ impl TableView for SessionsTable {
         state.filtered_sessions()
     }
 
-    fn on_select(item: &Session) -> Action {
-        Action::Nav(NavAction::DrillIn {
-            view: ViewKind::SessionDetail,
-            context: item.id.clone(),
-        })
-    }
-
     fn context_keybindings() -> Vec<Keybinding> {
         vec![
             Keybinding::new("Enter", "View session details"),
             Keybinding::new("Tab", "Expand/collapse subagents"),
             Keybinding::new("i", "Inspect session details"),
             Keybinding::new("a", "Attach to session"),
-            Keybinding::new("c/n", "New session (prompts for dir)"),
+            Keybinding::new("c/n", "New session (prompts for dir, then name)"),
             Keybinding::new(":new <path>", "New session in <path>"),
             Keybinding::new("A", "Toggle filter: active / all"),
-            Keybinding::new("d", "Close and delete session"),
-            Keybinding::new("D", "Close and delete ALL sessions"),
+            Keybinding::new("d", "Drop session (idle standby)"),
+            Keybinding::new("D", "Drop ALL sessions"),
             Keybinding::new(":active", "Show active sessions"),
             Keybinding::new(":all", "Show all sessions"),
         ]

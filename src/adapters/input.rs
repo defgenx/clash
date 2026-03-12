@@ -2,6 +2,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::adapters::format;
 use crate::adapters::views::ViewKind;
 use crate::application::actions::{
     Action, AgentAction, NavAction, TableAction, TaskAction, UiAction,
@@ -15,7 +16,10 @@ pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
 
     match &state.input_mode {
         InputMode::Normal => handle_normal_mode(key, state),
-        InputMode::Command | InputMode::Filter | InputMode::NewSession => handle_input_mode(key),
+        InputMode::Command
+        | InputMode::Filter
+        | InputMode::NewSession
+        | InputMode::NewSessionName => handle_input_mode(key),
         InputMode::Confirm => handle_confirm_mode(key, state),
         InputMode::Attached => handle_attached_mode(key, state),
     }
@@ -98,6 +102,7 @@ fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
         KeyCode::Char('m') => handle_message(state),
         KeyCode::Char('t') => handle_t_key(state),
         KeyCode::Char('n') => handle_new_session(state),
+        KeyCode::Char('x') => Action::Noop,
         KeyCode::Char('r') => Action::Team(crate::application::actions::TeamAction::Refresh),
         KeyCode::Tab => Action::Ui(UiAction::ToggleExpand),
 
@@ -133,6 +138,9 @@ fn handle_attached_mode(key: KeyEvent, _state: &AppState) -> Action {
 /// Convert a KeyEvent into raw bytes for PTY input.
 pub fn key_to_bytes(key: KeyEvent) -> Vec<u8> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
     match key.code {
         KeyCode::Char(c) if ctrl => {
             // Ctrl+A=0x01, Ctrl+B=0x02, ..., Ctrl+Z=0x1A
@@ -143,16 +151,35 @@ pub fn key_to_bytes(key: KeyEvent) -> Vec<u8> {
                 vec![]
             }
         }
+        KeyCode::Char(c) if alt => {
+            // Alt+char sends ESC followed by the character
+            let mut bytes = vec![0x1b];
+            let mut buf = [0u8; 4];
+            let s = c.encode_utf8(&mut buf);
+            bytes.extend_from_slice(s.as_bytes());
+            bytes
+        }
         KeyCode::Char(c) => {
             let mut buf = [0u8; 4];
             let s = c.encode_utf8(&mut buf);
             s.as_bytes().to_vec()
         }
         KeyCode::Enter => vec![b'\r'],
+        KeyCode::Backspace if alt => b"\x1b\x7f".to_vec(), // Alt+Backspace = delete word
         KeyCode::Backspace => vec![0x7f],
+        KeyCode::Tab if shift => b"\x1b[Z".to_vec(), // Shift+Tab
         KeyCode::Tab => vec![b'\t'],
         KeyCode::Up => b"\x1b[A".to_vec(),
         KeyCode::Down => b"\x1b[B".to_vec(),
+        // Ctrl+Right/Left = word-by-word movement
+        KeyCode::Right if ctrl => b"\x1b[1;5C".to_vec(),
+        KeyCode::Left if ctrl => b"\x1b[1;5D".to_vec(),
+        // Alt+Right/Left = word-by-word movement (alternative)
+        KeyCode::Right if alt => b"\x1b[1;3C".to_vec(),
+        KeyCode::Left if alt => b"\x1b[1;3D".to_vec(),
+        // Shift+Right/Left = selection in some terminals
+        KeyCode::Right if shift => b"\x1b[1;2C".to_vec(),
+        KeyCode::Left if shift => b"\x1b[1;2D".to_vec(),
         KeyCode::Right => b"\x1b[C".to_vec(),
         KeyCode::Left => b"\x1b[D".to_vec(),
         KeyCode::Home => b"\x1b[H".to_vec(),
@@ -160,22 +187,28 @@ pub fn key_to_bytes(key: KeyEvent) -> Vec<u8> {
         KeyCode::Delete => b"\x1b[3~".to_vec(),
         KeyCode::PageUp => b"\x1b[5~".to_vec(),
         KeyCode::PageDown => b"\x1b[6~".to_vec(),
+        KeyCode::Insert => b"\x1b[2~".to_vec(),
+        KeyCode::F(n) => match n {
+            1 => b"\x1bOP".to_vec(),
+            2 => b"\x1bOQ".to_vec(),
+            3 => b"\x1bOR".to_vec(),
+            4 => b"\x1bOS".to_vec(),
+            5 => b"\x1b[15~".to_vec(),
+            6 => b"\x1b[17~".to_vec(),
+            7 => b"\x1b[18~".to_vec(),
+            8 => b"\x1b[19~".to_vec(),
+            9 => b"\x1b[20~".to_vec(),
+            10 => b"\x1b[21~".to_vec(),
+            11 => b"\x1b[23~".to_vec(),
+            12 => b"\x1b[24~".to_vec(),
+            _ => vec![],
+        },
         _ => vec![],
     }
 }
 
-fn handle_confirm_mode(key: KeyEvent, state: &AppState) -> Action {
-    let is_delete = state.confirm_dialog.as_ref().is_some_and(|d| d.is_delete());
-
+fn handle_confirm_mode(key: KeyEvent, _state: &AppState) -> Action {
     match key.code {
-        // Delete confirm: t = terminate+delete, f = files only
-        KeyCode::Char('t') | KeyCode::Char('T') if is_delete => {
-            Action::Ui(UiAction::ConfirmTerminate)
-        }
-        KeyCode::Char('f') | KeyCode::Char('F') if is_delete => {
-            Action::Ui(UiAction::ConfirmFilesOnly)
-        }
-        // Simple confirm: y = yes
         KeyCode::Char('y') | KeyCode::Char('Y') => Action::Ui(UiAction::ConfirmYes),
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::Ui(UiAction::ConfirmNo),
         _ => Action::Noop,
@@ -268,19 +301,10 @@ fn handle_delete(state: &AppState) -> Action {
         ViewKind::Sessions => {
             let items = state.filtered_sessions();
             if let Some(session) = items.get(state.table_state.selected) {
-                let short_id = if session.id.len() > 8 {
-                    &session.id[..8]
-                } else {
-                    &session.id
-                };
-                Action::Ui(UiAction::ShowDeleteConfirm {
-                    message: format!("Delete session '{}'?", short_id),
-                    on_terminate: Box::new(Action::Agent(AgentAction::TerminateAndDelete {
-                        project: session.project.clone(),
-                        session_id: session.id.clone(),
-                    })),
-                    on_files_only: Box::new(Action::Agent(AgentAction::DeleteSession {
-                        project: session.project.clone(),
+                let short_id = format::short_id(&session.id, 8);
+                Action::Ui(UiAction::ShowConfirm {
+                    message: format!("Drop session '{}'?", short_id),
+                    on_confirm: Box::new(Action::Agent(AgentAction::DropSession {
                         session_id: session.id.clone(),
                     })),
                 })
@@ -296,14 +320,9 @@ fn handle_delete(state: &AppState) -> Action {
                     } else {
                         &session.id
                     };
-                    Action::Ui(UiAction::ShowDeleteConfirm {
-                        message: format!("Delete session '{}'?", short_id),
-                        on_terminate: Box::new(Action::Agent(AgentAction::TerminateAndDelete {
-                            project: session.project.clone(),
-                            session_id: session.id.clone(),
-                        })),
-                        on_files_only: Box::new(Action::Agent(AgentAction::DeleteSession {
-                            project: session.project.clone(),
+                    Action::Ui(UiAction::ShowConfirm {
+                        message: format!("Drop session '{}'?", short_id),
+                        on_confirm: Box::new(Action::Agent(AgentAction::DropSession {
                             session_id: session.id.clone(),
                         })),
                     })
@@ -320,10 +339,9 @@ fn handle_delete(state: &AppState) -> Action {
 
 fn handle_delete_all(state: &AppState) -> Action {
     match state.current_view() {
-        ViewKind::Sessions => Action::Ui(UiAction::ShowDeleteConfirm {
-            message: "Delete ALL sessions?".to_string(),
-            on_terminate: Box::new(Action::Agent(AgentAction::TerminateAndDeleteAllSessions)),
-            on_files_only: Box::new(Action::Agent(AgentAction::DeleteAllSessions)),
+        ViewKind::Sessions => Action::Ui(UiAction::ShowConfirm {
+            message: "Drop ALL sessions?".to_string(),
+            on_confirm: Box::new(Action::Agent(AgentAction::DropAllSessions)),
         }),
         _ => Action::Noop,
     }

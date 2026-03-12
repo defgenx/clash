@@ -9,18 +9,11 @@ pub enum AgentAction {
         /// Optional human-readable label for the session.
         name: Option<String>,
     },
-    /// Terminate the Claude process + delete session files.
-    TerminateAndDelete {
-        project: String,
+    /// Drop a session: kill daemon PTY, terminate Claude process, mark as idle.
+    /// Session data remains on disk — it's just on standby.
+    DropSession {
         session_id: String,
     },
-    /// Delete session files only (leave process running).
-    DeleteSession {
-        project: String,
-        session_id: String,
-    },
-    /// Terminate all processes + delete all session files.
-    TerminateAndDeleteAllSessions,
-    /// Delete all session files only (leave processes running).
-    DeleteAllSessions,
+    /// Drop all sessions: kill all daemon PTYs, terminate all processes, mark as idle.
+    DropAllSessions,
 }

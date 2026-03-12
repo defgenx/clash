@@ -7,14 +7,11 @@ use std::fmt;
 
 /// A domain-level error that port implementations return.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum DomainError {
     /// IO error (file not found, permission denied, etc.)
     Io(std::io::Error),
     /// Data parsing error.
     Parse(String),
-    /// Generic error with a message.
-    Other(String),
 }
 
 impl fmt::Display for DomainError {
@@ -22,7 +19,6 @@ impl fmt::Display for DomainError {
         match self {
             Self::Io(e) => write!(f, "IO error: {}", e),
             Self::Parse(msg) => write!(f, "Parse error: {}", msg),
-            Self::Other(msg) => write!(f, "{}", msg),
         }
     }
 }

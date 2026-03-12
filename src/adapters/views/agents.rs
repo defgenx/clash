@@ -1,8 +1,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Cell;
 
-use crate::adapters::views::{ColumnDef, Keybinding, TableView, ViewKind};
-use crate::application::actions::{Action, NavAction};
+use crate::adapters::views::{ColumnDef, Keybinding, TableView};
 use crate::application::state::AppState;
 use crate::domain::entities::Member;
 use crate::infrastructure::fs::backend::FsBackend;
@@ -71,13 +70,6 @@ impl TableView for AgentsTable {
             }
         }
         state.store.all_members.iter().collect()
-    }
-
-    fn on_select(item: &Member) -> Action {
-        Action::Nav(NavAction::DrillIn {
-            view: ViewKind::AgentDetail,
-            context: item.name.clone(),
-        })
     }
 
     fn context_keybindings() -> Vec<Keybinding> {

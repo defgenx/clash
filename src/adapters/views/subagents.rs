@@ -2,8 +2,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Cell;
 
 use crate::adapters::format::{self, or_dash, short_id, truncate};
-use crate::adapters::views::{ColumnDef, Keybinding, TableView, ViewKind};
-use crate::application::actions::{Action, NavAction};
+use crate::adapters::views::{ColumnDef, Keybinding, TableView};
 use crate::application::state::AppState;
 use crate::domain::entities::Subagent;
 use crate::infrastructure::tui::theme;
@@ -75,13 +74,6 @@ impl TableView for SubagentsTable {
         } else {
             state.store.all_subagents.iter().collect()
         }
-    }
-
-    fn on_select(item: &Subagent) -> Action {
-        Action::Nav(NavAction::DrillIn {
-            view: ViewKind::SubagentDetail,
-            context: item.id.clone(),
-        })
     }
 
     fn context_keybindings() -> Vec<Keybinding> {

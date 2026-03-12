@@ -31,11 +31,7 @@ pub fn draw_with_terminal(state: &AppState, frame: &mut Frame, vt_screen: Option
         draw_help(state, frame, frame.area());
     }
     if let Some(ref dialog) = state.confirm_dialog {
-        if dialog.is_delete() {
-            confirm_dialog::render_delete_confirm_dialog(dialog.message(), frame, frame.area());
-        } else {
-            confirm_dialog::render_confirm_dialog(dialog.message(), frame, frame.area());
-        }
+        confirm_dialog::render_confirm_dialog(&dialog.message, frame, frame.area());
     }
 }
 
@@ -164,7 +160,8 @@ fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
         }
         crate::application::state::InputMode::Command
         | crate::application::state::InputMode::Filter
-        | crate::application::state::InputMode::NewSession => {
+        | crate::application::state::InputMode::NewSession
+        | crate::application::state::InputMode::NewSessionName => {
             input_bar::render_input_bar(
                 &state.input_mode,
                 &state.input_buffer,
@@ -222,11 +219,7 @@ fn draw_vt100_terminal(
     use ratatui::widgets::Block;
 
     let session_id = state.attached_session.as_deref().unwrap_or("unknown");
-    let short = if session_id.len() > 8 {
-        &session_id[..8]
-    } else {
-        session_id
-    };
+    let short = crate::adapters::format::short_id(session_id, 8);
     let title = format!(" {} | Esc/Ctrl+B to detach ", short);
 
     let block = Block::bordered()
@@ -240,53 +233,15 @@ fn draw_vt100_terminal(
     let widget = TerminalWidget::new(screen);
     frame.render_widget(widget, inner);
 
-    // Claude Code (ink framework) parks the terminal cursor at the bottom
-    // after rendering, not at the input prompt. Detect the prompt line
-    // by scanning for the `❯` or `>` prompt character and place the
-    // hardware cursor at the end of text on that line.
-    if let Some((prompt_row, text_end_col)) = find_prompt_cursor(screen) {
-        if prompt_row < inner.height && text_end_col < inner.width {
-            let cx = inner.x + text_end_col;
-            let cy = inner.y + prompt_row;
-            frame.set_cursor_position(ratatui::layout::Position { x: cx, y: cy });
-        }
+    // Always show the cursor at the position tracked by the vt100 screen.
+    // Newer Claude Code (ink framework) hides the terminal cursor during/after
+    // redraws, so we ignore hide_cursor — the position is still correct.
+    let (cursor_row, cursor_col) = screen.cursor_position();
+    let cx = inner.x + cursor_col;
+    let cy = inner.y + cursor_row;
+    if cx < inner.x + inner.width && cy < inner.y + inner.height {
+        frame.set_cursor_position(ratatui::layout::Position { x: cx, y: cy });
     }
-}
-
-/// Scan the vt100 screen for Claude Code's input prompt (`❯` or `>` at line start)
-/// and return (row, col) where the cursor should be (end of text on prompt line).
-fn find_prompt_cursor(screen: &vt100::Screen) -> Option<(u16, u16)> {
-    let (rows, cols) = screen.size();
-
-    // Scan bottom-to-top to find the prompt line
-    for row in (0..rows).rev() {
-        // Get the text content of this row
-        let mut line = String::new();
-        for col in 0..cols {
-            if let Some(cell) = screen.cell(row, col) {
-                let c = cell.contents();
-                line.push_str(if c.is_empty() { " " } else { &c });
-            }
-        }
-        let trimmed = line.trim_start();
-
-        // Claude Code uses `❯` or `>` as prompt
-        if trimmed.starts_with('❯') || trimmed.starts_with('>') {
-            // Find the end of actual text on this line (last non-space char + 1)
-            let mut last_non_space: u16 = 0;
-            for col in 0..cols {
-                if let Some(cell) = screen.cell(row, col) {
-                    let c = cell.contents();
-                    if !c.is_empty() && c != " " {
-                        last_non_space = col + 1;
-                    }
-                }
-            }
-            // Place cursor right after the last character
-            return Some((row, last_non_space.min(cols.saturating_sub(1))));
-        }
-    }
-    None
 }
 
 fn draw_help(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect) {

@@ -51,12 +51,6 @@ pub trait DataRepository: Send + Sync {
         session_id: &str,
         agent_id: &str,
     ) -> Result<Vec<ConversationMessage>>;
-
-    /// Delete a session .jsonl file.
-    fn delete_session(&self, project: &str, session_id: &str) -> Result<()>;
-
-    /// Delete all sessions across all projects.
-    fn delete_all_sessions(&self) -> Result<()>;
 }
 
 /// CLI gateway output.
