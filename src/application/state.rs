@@ -1,21 +1,12 @@
 //! Application state — the single source of truth for the UI.
 
+use std::collections::HashSet;
+
 use crate::adapters::views::ViewKind;
 use crate::application::actions::Action;
 use crate::application::nav::NavigationStack;
-use crate::domain::entities::{InboxMessage, Session, Subagent};
-use crate::infrastructure::fs::store::DataStore;
-
-/// A row in the sessions tree view — either a top-level session or a nested subagent.
-#[derive(Debug, Clone)]
-pub enum SessionTreeRow {
-    Session(Session),
-    Subagent {
-        subagent: Subagent,
-        /// Whether this is the last subagent under its parent (for `└─` vs `├─`).
-        is_last: bool,
-    },
-}
+use crate::application::store::DataStore;
+use crate::domain::entities::{InboxMessage, Session};
 
 /// Session filter mode for the sessions view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +40,8 @@ pub enum InputMode {
     Command,
     Filter,
     Confirm,
+    /// Prompting user for the directory for a new session.
+    NewSession,
     /// Attached to a daemon PTY session — keystrokes go to the session.
     Attached,
 }
@@ -65,6 +58,32 @@ pub struct ScrollState {
     pub offset: u16,
 }
 
+/// A confirmation dialog — explicit about the choices it offers.
+#[derive(Debug, Clone)]
+pub enum ConfirmDialog {
+    /// Simple yes/no confirmation.
+    Simple { message: String, on_confirm: Action },
+    /// Session delete with two paths: terminate process or just remove files.
+    Delete {
+        message: String,
+        on_terminate: Action,
+        on_files_only: Action,
+    },
+}
+
+impl ConfirmDialog {
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Simple { message, .. } => message,
+            Self::Delete { message, .. } => message,
+        }
+    }
+
+    pub fn is_delete(&self) -> bool {
+        matches!(self, Self::Delete { .. })
+    }
+}
+
 /// Main application state — everything the reducer and renderer need.
 pub struct AppState {
     pub nav: NavigationStack,
@@ -76,17 +95,21 @@ pub struct AppState {
     pub input_cursor: usize,
     pub filter: String,
     pub show_help: bool,
+    pub help_scroll: u16,
     pub spinner: Option<String>,
     pub toast: Option<String>,
-    pub confirm_message: Option<String>,
-    pub confirm_action: Option<Action>,
+    pub confirm_dialog: Option<ConfirmDialog>,
     pub tick: usize,
     pub inbox_messages: Vec<InboxMessage>,
     pub session_filter: SessionFilter,
     /// Currently attached daemon session ID.
     pub attached_session: Option<String>,
-    /// Flat tree of sessions interleaved with their subagents.
-    pub session_tree: Vec<SessionTreeRow>,
+    /// Sessions with expanded subagent rows in the Sessions table.
+    pub expanded_sessions: HashSet<String>,
+    /// Default working directory for new sessions (where clash was started).
+    pub default_cwd: String,
+    /// Guided tour state: Some(step_index) when active, None when inactive.
+    pub tour_step: Option<usize>,
 }
 
 impl Default for AppState {
@@ -107,15 +130,19 @@ impl AppState {
             input_cursor: 0,
             filter: String::new(),
             show_help: false,
+            help_scroll: 0,
             spinner: None,
             toast: None,
-            confirm_message: None,
-            confirm_action: None,
+            confirm_dialog: None,
             tick: 0,
             inbox_messages: Vec::new(),
             session_filter: SessionFilter::Active,
             attached_session: None,
-            session_tree: Vec::new(),
+            expanded_sessions: HashSet::new(),
+            default_cwd: std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            tour_step: None,
         }
     }
 
@@ -131,97 +158,94 @@ impl AppState {
         self.nav.current_session()
     }
 
-    /// Rebuild the flat session tree from sessions + subagents_by_session.
-    pub fn rebuild_session_tree(&mut self) {
-        let mut tree = Vec::new();
-        for session in &self.store.sessions {
-            tree.push(SessionTreeRow::Session(session.clone()));
-            if let Some(subagents) = self.store.subagents_by_session.get(&session.id) {
-                let count = subagents.len();
-                for (i, sa) in subagents.iter().enumerate() {
-                    tree.push(SessionTreeRow::Subagent {
-                        subagent: sa.clone(),
-                        is_last: i == count - 1,
-                    });
-                }
-            }
-        }
-        self.session_tree = tree;
-    }
-
-    /// Get filtered session tree items based on the current session filter
-    /// and the text filter (`/` search).
-    pub fn filtered_session_tree(&self) -> Vec<&SessionTreeRow> {
-        let filter_lower = self.filter.to_lowercase();
-
-        let status_filtered: Vec<&SessionTreeRow> = match self.session_filter {
-            SessionFilter::All => self.session_tree.iter().collect(),
-            SessionFilter::Active => {
-                let running_ids: std::collections::HashSet<&str> = self
-                    .store
-                    .sessions
-                    .iter()
-                    .filter(|s| s.is_running)
-                    .map(|s| s.id.as_str())
-                    .collect();
-
-                self.session_tree
-                    .iter()
-                    .filter(|row| match row {
-                        SessionTreeRow::Session(s) => s.is_running,
-                        SessionTreeRow::Subagent { subagent, .. } => {
-                            subagent.is_running
-                                && running_ids.contains(subagent.parent_session_id.as_str())
-                        }
-                    })
-                    .collect()
-            }
+    /// Get filtered sessions based on the current session filter and text filter.
+    pub fn filtered_sessions(&self) -> Vec<&Session> {
+        let status_filtered: Vec<&Session> = match self.session_filter {
+            SessionFilter::All => self.store.sessions.iter().collect(),
+            SessionFilter::Active => self
+                .store
+                .sessions
+                .iter()
+                .filter(|s| s.is_running)
+                .collect(),
         };
 
-        // Apply text filter if set
-        if filter_lower.is_empty() {
+        if self.filter.is_empty() {
             return status_filtered;
         }
 
-        // First pass: find which parent session IDs match the filter
-        let matching_session_ids: std::collections::HashSet<&str> = status_filtered
-            .iter()
-            .filter_map(|row| match row {
-                SessionTreeRow::Session(s) if Self::row_matches_filter(row, &filter_lower) => {
-                    Some(s.id.as_str())
-                }
-                _ => None,
-            })
-            .collect();
-
-        // Second pass: include matching sessions + their subagents (parent must be shown)
         status_filtered
             .into_iter()
-            .filter(|row| match row {
-                SessionTreeRow::Session(_) => Self::row_matches_filter(row, &filter_lower),
-                SessionTreeRow::Subagent { subagent, .. } => {
-                    matching_session_ids.contains(subagent.parent_session_id.as_str())
-                }
-            })
+            .filter(|s| s.matches_filter(&self.filter))
             .collect()
     }
+}
 
-    /// Check if a session tree row matches a text filter (case-insensitive).
-    fn row_matches_filter(row: &SessionTreeRow, filter: &str) -> bool {
-        match row {
-            SessionTreeRow::Session(s) => {
-                s.id.to_lowercase().contains(filter)
-                    || s.summary.to_lowercase().contains(filter)
-                    || s.project_path.to_lowercase().contains(filter)
-                    || s.git_branch.to_lowercase().contains(filter)
-                    || s.first_prompt.to_lowercase().contains(filter)
-            }
-            SessionTreeRow::Subagent { subagent, .. } => {
-                subagent.id.to_lowercase().contains(filter)
-                    || subagent.summary.to_lowercase().contains(filter)
-                    || subagent.agent_type.to_lowercase().contains(filter)
-                    || subagent.file_path.to_lowercase().contains(filter)
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::entities::Session;
+
+    #[test]
+    fn test_filtered_sessions_default_active() {
+        let mut state = AppState::new();
+        state.store.sessions = vec![
+            Session {
+                id: "s1".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+            Session {
+                id: "s2".to_string(),
+                is_running: false,
+                ..Default::default()
+            },
+        ];
+        // Default filter is Active — only running sessions shown
+        assert_eq!(state.filtered_sessions().len(), 1);
+        assert_eq!(state.filtered_sessions()[0].id, "s1");
+    }
+
+    #[test]
+    fn test_filtered_sessions_active_only() {
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::Active;
+        state.store.sessions = vec![
+            Session {
+                id: "s1".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+            Session {
+                id: "s2".to_string(),
+                is_running: false,
+                ..Default::default()
+            },
+        ];
+        let filtered = state.filtered_sessions();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "s1");
+    }
+
+    #[test]
+    fn test_filtered_sessions_with_text_filter() {
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::All;
+        state.store.sessions = vec![
+            Session {
+                id: "s1".to_string(),
+                summary: "Fix login".to_string(),
+                ..Default::default()
+            },
+            Session {
+                id: "s2".to_string(),
+                summary: "Add tests".to_string(),
+                ..Default::default()
+            },
+        ];
+        state.filter = "login".to_string();
+        let filtered = state.filtered_sessions();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "s1");
     }
 }

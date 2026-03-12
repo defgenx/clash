@@ -1,12 +1,8 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to release (e.g. 0.2.0)'
-        required: true
-        type: string
+  push:
+    branches: [main]
 
 permissions:
   contents: write
@@ -15,25 +11,81 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  tag:
-    name: Create Tag
+  version:
+    name: Determine Version
     runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.tag.outputs.new_version }}
+      new_tag: ${{ steps.tag.outputs.new_tag }}
+      bump: ${{ steps.tag.outputs.part }}
+      skipped: ${{ steps.check.outputs.skipped }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Configure git
+      # Skip if the push is a version bump commit from this workflow
+      - name: Check if version bump commit
+        id: check
         run: |
+          MSG=$(git log -1 --pretty=%s)
+          if echo "$MSG" | grep -qE '^chore\(release\): v[0-9]'; then
+            echo "skipped=true" >> $GITHUB_OUTPUT
+            echo "Skipping release — this is a version bump commit"
+          else
+            echo "skipped=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Determine version bump from commits
+        if: steps.check.outputs.skipped == 'false'
+        id: tag
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: false
+          dry_run: true
+          tag_prefix: v
+
+  bump:
+    name: Bump Cargo.toml & Tag
+    needs: version
+    if: needs.version.outputs.skipped == 'false' && needs.version.outputs.new_version != ''
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ needs.version.outputs.new_version }}
+      tag: ${{ needs.version.outputs.new_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Update Cargo.toml version
+        run: |
+          VERSION="${{ needs.version.outputs.new_version }}"
+          echo "Bumping to $VERSION"
+          sed -i 's/^version = ".*"/version = "'"$VERSION"'"/' Cargo.toml
+          grep '^version' Cargo.toml
+
+      - name: Regenerate Cargo.lock
+        run: cargo check
+
+      - name: Commit and tag
+        run: |
+          VERSION="${{ needs.version.outputs.new_version }}"
+          TAG="${{ needs.version.outputs.new_tag }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Create and push tag
-        run: |
-          git tag -a "v${{ inputs.version }}" -m "Release v${{ inputs.version }}"
-          git push origin "v${{ inputs.version }}"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): v${VERSION}"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin main
+          git push origin "$TAG"
 
   build:
     name: Build ${{ matrix.target }}
-    needs: tag
+    needs: bump
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -54,7 +106,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: v${{ inputs.version }}
+          ref: ${{ needs.bump.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -89,38 +141,31 @@ jobs:
 
   release:
     name: Create Release
-    needs: build
+    needs: [bump, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: v${{ inputs.version }}
+          ref: ${{ needs.bump.outputs.tag }}
 
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: Generate release notes
-        id: notes
+      - name: Generate SHA256 checksums
         run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -z "$PREV_TAG" ]; then
-            echo "body=Initial release" >> $GITHUB_OUTPUT
-          else
-            NOTES=$(git log --pretty=format:"- %s" "$PREV_TAG"..HEAD)
-            EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
-            echo "body<<$EOF" >> $GITHUB_OUTPUT
-            echo "$NOTES" >> $GITHUB_OUTPUT
-            echo "$EOF" >> $GITHUB_OUTPUT
-          fi
+          cd artifacts
+          sha256sum *.tar.gz > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ inputs.version }}
-          name: v${{ inputs.version }}
-          body: ${{ steps.notes.outputs.body }}
-          files: artifacts/*.tar.gz
-          generate_release_notes: false
+          tag_name: ${{ needs.bump.outputs.tag }}
+          name: ${{ needs.bump.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/SHA256SUMS.txt

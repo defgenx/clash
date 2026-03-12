@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use crate::domain::entities::{ConversationMessage, Session, Subagent, Task, Team};
-use crate::infrastructure::error::Result;
+use crate::domain::error::Result;
 
 /// Repository port for all data access operations.
 ///

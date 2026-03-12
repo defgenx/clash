@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 /// A team member / agent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Member {
     #[serde(default)]
@@ -39,6 +39,9 @@ pub struct Member {
     /// Capture unknown fields for forward compatibility.
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+    /// Team name — populated by DataStore::rebuild_all_members(), not from JSON.
+    #[serde(skip)]
+    pub team_name: String,
 }
 
 /// A team configuration.
@@ -128,7 +131,7 @@ pub struct Task {
 }
 
 /// Granular session status — detected by parsing the terminal screen content.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub enum SessionStatus {
     /// Session process is dead or exited.
     #[default]
@@ -189,8 +192,20 @@ pub struct Session {
     pub status: SessionStatus,
 }
 
+impl Session {
+    /// Case-insensitive text filter match on key fields.
+    pub fn matches_filter(&self, filter: &str) -> bool {
+        let f = filter.to_lowercase();
+        self.id.to_lowercase().contains(&f)
+            || self.summary.to_lowercase().contains(&f)
+            || self.project_path.to_lowercase().contains(&f)
+            || self.git_branch.to_lowercase().contains(&f)
+            || self.first_prompt.to_lowercase().contains(&f)
+    }
+}
+
 /// A subagent spawned by a session or another agent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Subagent {
     #[serde(default)]
     pub id: String,
@@ -212,6 +227,18 @@ pub struct Subagent {
     /// Granular status (same as sessions).
     #[serde(default)]
     pub status: SessionStatus,
+}
+
+impl Subagent {
+    /// Case-insensitive text filter match on key fields.
+    #[allow(dead_code)]
+    pub fn matches_filter(&self, filter: &str) -> bool {
+        let f = filter.to_lowercase();
+        self.id.to_lowercase().contains(&f)
+            || self.summary.to_lowercase().contains(&f)
+            || self.agent_type.to_lowercase().contains(&f)
+            || self.file_path.to_lowercase().contains(&f)
+    }
 }
 
 /// A conversation message from a session or subagent .jsonl file.
@@ -305,6 +332,42 @@ mod tests {
         let msg: InboxMessage = serde_json::from_str(json).unwrap();
         assert_eq!(msg.from, "agent-1");
         assert!(!msg.read);
+    }
+
+    #[test]
+    fn test_session_matches_filter() {
+        let session = Session {
+            id: "abc12345".to_string(),
+            summary: "Fix login bug".to_string(),
+            project_path: "/home/user/myproject".to_string(),
+            git_branch: "feature/auth".to_string(),
+            first_prompt: "Please fix the auth flow".to_string(),
+            ..Default::default()
+        };
+        assert!(session.matches_filter("abc"));
+        assert!(session.matches_filter("login"));
+        assert!(session.matches_filter("myproject"));
+        assert!(session.matches_filter("auth"));
+        assert!(session.matches_filter("fix the auth"));
+        assert!(!session.matches_filter("nonexistent"));
+        // Case insensitive
+        assert!(session.matches_filter("FIX LOGIN"));
+    }
+
+    #[test]
+    fn test_subagent_matches_filter() {
+        let sa = Subagent {
+            id: "sub-999".to_string(),
+            summary: "Research API docs".to_string(),
+            agent_type: "researcher".to_string(),
+            file_path: "/tmp/work/agent.jsonl".to_string(),
+            ..Default::default()
+        };
+        assert!(sa.matches_filter("sub-999"));
+        assert!(sa.matches_filter("API docs"));
+        assert!(sa.matches_filter("researcher"));
+        assert!(sa.matches_filter("agent.jsonl"));
+        assert!(!sa.matches_filter("nonexistent"));
     }
 
     #[test]

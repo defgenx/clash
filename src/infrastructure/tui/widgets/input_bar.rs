@@ -16,6 +16,7 @@ pub fn render_input_bar(
     let (prefix, style) = match mode {
         InputMode::Command => (":", Style::default().fg(Color::Yellow)),
         InputMode::Filter => ("/", Style::default().fg(Color::Green)),
+        InputMode::NewSession => ("New session in: ", Style::default().fg(Color::Cyan)),
         _ => return,
     };
 

@@ -1,8 +1,7 @@
-use crate::infrastructure::error::Result;
 use std::path::Path;
 
 /// Write data to a file atomically (temp file + rename).
-pub fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
+pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)?;
     let temp_path = parent.join(format!(".clash-tmp-{}", std::process::id()));

@@ -1,10 +1,10 @@
-# clash — K9s-style TUI for Claude Code Agent Teams
+# clash — Terminal UI for Claude Code Agent Teams
 
 ## Context
 
 Claude Code's experimental Agent Teams feature lets you spawn, coordinate, and manage multiple AI agents working in parallel. However, there's no dedicated dashboard to visualize team state, jump between agents, or manage tasks — you're limited to the interactive CLI with `Shift+Down` cycling or tmux panes.
 
-**clash** fills this gap: a K9s-inspired terminal UI that provides a real-time dashboard for all your Claude Code teams, agents, and tasks with full CRUD management, keyboard-driven navigation, and the ability to attach/detach to agent sessions.
+**clash** fills this gap: a terminal UI that provides a real-time dashboard for all your Claude Code teams, agents, and tasks with full CRUD management, keyboard-driven navigation, and the ability to attach/detach to agent sessions.
 
 ---
 

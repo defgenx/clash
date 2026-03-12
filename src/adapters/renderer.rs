@@ -25,15 +25,17 @@ pub fn draw_with_terminal(state: &AppState, frame: &mut Frame, vt_screen: Option
     draw_footer(state, frame, layout.footer);
 
     // Overlays (drawn on top)
-    if state.show_help {
+    if let Some(step) = state.tour_step {
+        crate::infrastructure::tui::widgets::tour::render_tour(step, frame, frame.area());
+    } else if state.show_help {
         draw_help(state, frame, frame.area());
     }
-    if state.confirm_message.is_some() {
-        confirm_dialog::render_confirm_dialog(
-            state.confirm_message.as_deref().unwrap_or(""),
-            frame,
-            frame.area(),
-        );
+    if let Some(ref dialog) = state.confirm_dialog {
+        if dialog.is_delete() {
+            confirm_dialog::render_delete_confirm_dialog(dialog.message(), frame, frame.area());
+        } else {
+            confirm_dialog::render_confirm_dialog(dialog.message(), frame, frame.area());
+        }
     }
 }
 
@@ -52,8 +54,8 @@ fn draw_header(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
         ""
     };
 
-    // Count sessions needing attention
-    let waiting_count = state
+    // Count sessions needing attention (prompting for user input)
+    let prompting_count = state
         .store
         .sessions
         .iter()
@@ -72,11 +74,11 @@ fn draw_header(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
         Span::styled(filter_indicator, Style::default().fg(theme::STATUS_RUNNING)),
     ];
 
-    if waiting_count > 0 {
+    if prompting_count > 0 {
         spans.push(Span::styled(
-            format!("  ▸ {} waiting", waiting_count),
+            format!("  ▸ {} prompting", prompting_count),
             Style::default()
-                .fg(theme::STATUS_WAITING)
+                .fg(theme::STATUS_PROMPTING)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
     }
@@ -127,7 +129,7 @@ fn draw_body(
         ViewKind::Prompts => detail::render_detail::<prompts::PromptsView>(state, frame, area),
         ViewKind::Sessions => {
             if sessions::SessionsTable::has_items(state) {
-                table::render_table::<sessions::SessionsTable>(state, frame, area);
+                sessions::render_sessions_table(state, frame, area);
             } else {
                 logo::render_logo(frame, area);
             }
@@ -161,7 +163,8 @@ fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
             return;
         }
         crate::application::state::InputMode::Command
-        | crate::application::state::InputMode::Filter => {
+        | crate::application::state::InputMode::Filter
+        | crate::application::state::InputMode::NewSession => {
             input_bar::render_input_bar(
                 &state.input_mode,
                 &state.input_buffer,
@@ -198,6 +201,14 @@ fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
             ..area
         };
         toast::render_toast(toast_msg, frame, right_area);
+    } else {
+        // Show version on the right side of the footer
+        let version = format!("v{}  ", env!("CARGO_PKG_VERSION"));
+        let version_span = Span::styled(version, Style::default().fg(theme::MUTED));
+        let version_paragraph = Paragraph::new(version_span)
+            .alignment(Alignment::Right)
+            .style(theme::footer_style());
+        frame.render_widget(version_paragraph, area);
     }
 }
 
@@ -311,6 +322,7 @@ fn draw_help(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect) {
         state.current_view().label(),
         &global_keys,
         &context_keys,
+        state.help_scroll,
         frame,
         area,
     );

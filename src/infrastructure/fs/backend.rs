@@ -3,9 +3,21 @@
 use std::path::{Path, PathBuf};
 
 use crate::domain::entities::{Session, Subagent, Task, Team};
+use crate::domain::error::Result;
 use crate::domain::ports::DataRepository;
-use crate::infrastructure::error::Result;
 use crate::infrastructure::fs::atomic::write_atomic;
+
+/// Truncate a string at a char boundary, appending suffix if truncated.
+fn truncate_str(s: &str, max_chars: usize, suffix: &str) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let truncated: String = s
+        .chars()
+        .take(max_chars.saturating_sub(suffix.len()))
+        .collect();
+    format!("{}{}", truncated, suffix)
+}
 
 /// Production filesystem-based data repository.
 pub struct FsBackend {
@@ -15,6 +27,10 @@ pub struct FsBackend {
 impl FsBackend {
     pub fn new(base_dir: PathBuf) -> Self {
         Self { base_dir }
+    }
+
+    pub fn base_dir(&self) -> &Path {
+        &self.base_dir
     }
 
     pub fn projects_dir(&self) -> PathBuf {
@@ -46,11 +62,11 @@ impl FsBackend {
         let file_meta = jsonl_path.metadata().ok();
         let file_mtime = file_meta.as_ref().and_then(|m| m.modified().ok());
 
-        let age_secs = file_mtime
+        let age_ms = file_mtime
             .and_then(|mtime| now.duration_since(mtime).ok())
-            .map(|age| age.as_secs());
+            .map(|age| age.as_millis() as u64);
 
-        let status = Self::detect_session_status(jsonl_path, age_secs);
+        let status = Self::detect_session_status(jsonl_path, age_ms);
         let is_running = !matches!(status, crate::domain::entities::SessionStatus::Idle);
 
         // Format last_modified from actual file mtime for accuracy
@@ -91,11 +107,7 @@ impl FsBackend {
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ");
-            if clean.len() > 60 {
-                format!("{}...", &clean[..57])
-            } else {
-                clean
-            }
+            truncate_str(&clean, 60, "...")
         } else {
             String::new()
         };
@@ -145,15 +157,26 @@ impl FsBackend {
 
     /// Extract the first user message from a .jsonl session file as a summary.
     fn extract_session_summary(path: &Path) -> String {
+        Self::extract_session_metadata(path).summary
+    }
+
+    /// Extract metadata (cwd, gitBranch, summary) from JSONL file in a single pass.
+    /// Reads only the first ~50 lines to stay fast.
+    fn extract_session_metadata(path: &Path) -> SessionMetadata {
         use std::io::BufRead;
+
+        let mut meta = SessionMetadata::default();
 
         let file = match std::fs::File::open(path) {
             Ok(f) => f,
-            Err(_) => return String::new(),
+            Err(_) => return meta,
         };
 
         let reader = std::io::BufReader::new(file);
-        for line in reader.lines() {
+        for (i, line) in reader.lines().enumerate() {
+            if i > 50 {
+                break; // metadata is always near the top
+            }
             let line = match line {
                 Ok(l) => l,
                 Err(_) => break,
@@ -165,8 +188,27 @@ impl FsBackend {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            if parsed.get("type").and_then(|t| t.as_str()) == Some("user") {
-                // Try message.content as string, or message.content[0].text
+
+            // Extract cwd and gitBranch from any entry that has them
+            if meta.cwd.is_empty() {
+                if let Some(cwd) = parsed.get("cwd").and_then(|v| v.as_str()) {
+                    if !cwd.is_empty() {
+                        meta.cwd = cwd.to_string();
+                    }
+                }
+            }
+            if meta.git_branch.is_empty() {
+                if let Some(branch) = parsed.get("gitBranch").and_then(|v| v.as_str()) {
+                    if !branch.is_empty() {
+                        meta.git_branch = branch.to_string();
+                    }
+                }
+            }
+
+            // Extract first user message as summary
+            if meta.summary.is_empty()
+                && parsed.get("type").and_then(|t| t.as_str()) == Some("user")
+            {
                 if let Some(msg) = parsed.get("message") {
                     if let Some(content) = msg.get("content") {
                         let text = if let Some(s) = content.as_str() {
@@ -182,21 +224,30 @@ impl FsBackend {
                         };
 
                         if !text.is_empty() {
-                            // Truncate to ~60 chars, collapse whitespace
                             let clean: String =
                                 text.split_whitespace().collect::<Vec<_>>().join(" ");
-                            if clean.len() > 60 {
-                                return format!("{}...", &clean[..57]);
-                            }
-                            return clean;
+                            meta.summary = truncate_str(&clean, 60, "...");
                         }
                     }
                 }
             }
+
+            // Early exit if we have everything
+            if !meta.cwd.is_empty() && !meta.git_branch.is_empty() && !meta.summary.is_empty() {
+                break;
+            }
         }
 
-        String::new()
+        meta
     }
+}
+
+/// Metadata extracted from JSONL file header entries.
+#[derive(Default)]
+struct SessionMetadata {
+    cwd: String,
+    git_branch: String,
+    summary: String,
 }
 
 impl DataRepository for FsBackend {
@@ -281,7 +332,8 @@ impl DataRepository for FsBackend {
             .join(team)
             .join(format!("{}.json", task.id));
         let data = serde_json::to_vec_pretty(task)?;
-        write_atomic(&path, &data)
+        write_atomic(&path, &data)?;
+        Ok(())
     }
 
     fn delete_team(&self, name: &str) -> Result<()> {
@@ -362,7 +414,7 @@ impl DataRepository for FsBackend {
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
                                     .to_string();
-                                let project_path_str = entry
+                                let index_project_path = entry
                                     .get("projectPath")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
@@ -372,7 +424,7 @@ impl DataRepository for FsBackend {
                                     .and_then(|v| v.as_u64())
                                     .unwrap_or(0)
                                     as usize;
-                                let git_branch = entry
+                                let index_git_branch = entry
                                     .get("gitBranch")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
@@ -383,20 +435,35 @@ impl DataRepository for FsBackend {
                                     .unwrap_or("")
                                     .to_string();
 
+                                // Read JSONL metadata for accurate cwd/gitBranch
                                 let jsonl_path = project_path.join(format!("{}.jsonl", session_id));
+                                let jsonl_meta = Self::extract_session_metadata(&jsonl_path);
+
+                                // Priority: JSONL cwd > index projectPath > lossy decode
+                                let resolved_path = if !jsonl_meta.cwd.is_empty() {
+                                    jsonl_meta.cwd
+                                } else if !index_project_path.is_empty() {
+                                    index_project_path
+                                } else {
+                                    decoded_project_path.clone()
+                                };
+
+                                // Priority: JSONL gitBranch > index gitBranch
+                                let resolved_branch = if !jsonl_meta.git_branch.is_empty() {
+                                    jsonl_meta.git_branch
+                                } else {
+                                    index_git_branch
+                                };
+
                                 let session = Self::build_session(
                                     &jsonl_path,
                                     &session_id,
                                     &project_dir_name,
-                                    if project_path_str.is_empty() {
-                                        &decoded_project_path
-                                    } else {
-                                        &project_path_str
-                                    },
+                                    &resolved_path,
                                     &summary,
                                     &first_prompt,
                                     message_count,
-                                    &git_branch,
+                                    &resolved_branch,
                                     &modified,
                                     &project_path,
                                     now,
@@ -426,17 +493,23 @@ impl DataRepository for FsBackend {
                         continue;
                     }
 
-                    // Extract summary from the .jsonl file (first user message)
-                    let summary = Self::extract_session_summary(&path);
+                    // Extract metadata from JSONL (cwd, gitBranch, summary)
+                    let meta = Self::extract_session_metadata(&path);
+                    let resolved_path = if !meta.cwd.is_empty() {
+                        meta.cwd
+                    } else {
+                        decoded_project_path.clone()
+                    };
+
                     let session = Self::build_session(
                         &path,
                         &session_id,
                         &project_dir_name,
-                        &decoded_project_path,
-                        &summary,
+                        &resolved_path,
+                        &meta.summary,
                         "",
                         0,
-                        "",
+                        &meta.git_branch,
                         "",
                         &project_path,
                         now,
@@ -518,11 +591,11 @@ impl DataRepository for FsBackend {
                 })
                 .unwrap_or_else(|| "unknown".to_string());
 
-            let age_secs = file_mtime
+            let age_ms = file_mtime
                 .and_then(|mtime| now.duration_since(mtime).ok())
-                .map(|age| age.as_secs());
+                .map(|age| age.as_millis() as u64);
 
-            let status = Self::detect_session_status(&path, age_secs);
+            let status = Self::detect_session_status(&path, age_ms);
             let is_running = !matches!(status, crate::domain::entities::SessionStatus::Idle);
 
             let summary = Self::extract_session_summary(&path);
@@ -652,14 +725,16 @@ impl DataRepository for FsBackend {
 impl FsBackend {
     /// Detect session status by reading the tail of the JSONL file.
     ///
-    /// Key patterns from real Claude Code JSONL data:
-    /// - `last-prompt` as last entry → WAITING for user input
-    /// - `assistant stop_reason=end_turn` + `system` entries (no `last-prompt`) → session exited, Idle
-    /// - `assistant stop_reason=None` or `progress` at end + recent file → RUNNING
-    /// - Old file with none of the above → IDLE
+    /// This is the **baseline** — hooks and daemon overlay on top.
+    /// The JSONL parser is conservative: it only reports what it can prove.
+    ///
+    /// - **Waiting**: only when `last-prompt` is present (definitive REPL signal)
+    /// - **Thinking**: Claude is mid-generation or processing (user/tool_use/no stop_reason)
+    /// - **Running**: active tool output (`progress`) or very recent file writes
+    /// - **Idle**: turn completed (`end_turn`/`result`), old file, or no clear signal
     fn detect_session_status(
         jsonl_path: &Path,
-        age_secs: Option<u64>,
+        age_ms: Option<u64>,
     ) -> crate::domain::entities::SessionStatus {
         use crate::domain::entities::SessionStatus;
         use std::io::{Read, Seek, SeekFrom};
@@ -739,40 +814,70 @@ impl FsBackend {
             }
         }
 
-        // 1. last-prompt at end → definitively WAITING for user input
+        // 1. last-prompt at end → session is at the REPL prompt
+        //    If file is recent (<5 min), session is likely still alive → Waiting.
+        //    If old, it probably exited → Idle.
         if last_type == "last-prompt" {
-            return SessionStatus::Waiting;
-        }
-
-        // 2. result with subtype=success → turn completed, WAITING
-        if last_type == "result" && last_subtype == "success" {
-            return SessionStatus::Waiting;
-        }
-
-        // 3. Turn completed (end_turn seen) + system bookkeeping after → session exited
-        if has_end_turn_in_current_turn
-            && (last_type == "system" || last_type == "file-history-snapshot")
-        {
-            if age_secs.map(|a| a < 10).unwrap_or(false) {
-                return SessionStatus::Running;
-            }
-            return SessionStatus::Idle;
-        }
-
-        // 4. assistant with end_turn as the very last entry
-        if last_type == "assistant" && last_assistant_stop_reason == "end_turn" {
-            if age_secs.map(|a| a < 10).unwrap_or(false) {
+            if age_ms.map(|a| a < 300_000).unwrap_or(false) {
                 return SessionStatus::Waiting;
             }
             return SessionStatus::Idle;
         }
 
-        // 5. File is recent → still running
-        if age_secs.map(|a| a < 30).unwrap_or(false) {
+        // 2. result with subtype=success → turn completed, idle
+        if last_type == "result" && last_subtype == "success" {
+            return SessionStatus::Idle;
+        }
+
+        // 3. Turn completed (end_turn seen) + system bookkeeping after.
+        //    The turn is done. Very recent (<10s) means bookkeeping is still
+        //    flushing → Running. Otherwise → Idle (hooks/daemon will overlay
+        //    Waiting if the session is actually alive at the REPL prompt).
+        if has_end_turn_in_current_turn
+            && (last_type == "system" || last_type == "file-history-snapshot")
+        {
+            if age_ms.map(|a| a < 10_000).unwrap_or(false) {
+                return SessionStatus::Running;
+            }
+            return SessionStatus::Idle;
+        }
+
+        // 4. assistant with end_turn as the very last entry → turn finished.
+        //    Only `last-prompt` (case 1) definitively means user input is
+        //    needed. end_turn just means Claude stopped generating → Idle.
+        if last_type == "assistant" && last_assistant_stop_reason == "end_turn" {
+            return SessionStatus::Idle;
+        }
+
+        // 5. assistant with tool_use as last entry — Claude invoked a tool.
+        //    Could be auto-executing or awaiting approval; we can't tell from
+        //    JSONL alone. Hooks (PermissionRequest) or daemon will set
+        //    PROMPTING if approval is actually needed.
+        if last_type == "assistant" && last_assistant_stop_reason == "tool_use" {
+            return SessionStatus::Thinking;
+        }
+
+        // 6. progress entries = tool is actively producing output
+        if last_type == "progress" {
             return SessionStatus::Running;
         }
 
-        // 6. Old file, no clear waiting signal → idle
+        // 7. user entry as last = Claude is processing the user's message / tool result
+        if last_type == "user" {
+            return SessionStatus::Thinking;
+        }
+
+        // 8. assistant mid-generation (no stop_reason yet) = actively thinking
+        if last_type == "assistant" && last_assistant_stop_reason.is_empty() {
+            return SessionStatus::Thinking;
+        }
+
+        // 9. File is recent → still running
+        if age_ms.map(|a| a < 30_000).unwrap_or(false) {
+            return SessionStatus::Running;
+        }
+
+        // 10. Old file, no clear waiting signal → idle
         SessionStatus::Idle
     }
 

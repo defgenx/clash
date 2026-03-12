@@ -37,15 +37,32 @@ impl App {
         let backend = FsBackend::new(data_dir.clone());
         let cli_runner = RealCliRunner::with_bin(claude_bin);
 
+        // Install Claude Code hooks for instant status detection
+        if let Err(e) = crate::infrastructure::hooks::install_hooks(&data_dir) {
+            tracing::warn!("Failed to install hooks: {}", e);
+        }
+
         let (fs_tx, fs_rx) = tokio::sync::mpsc::unbounded_channel();
+        let status_dir = crate::infrastructure::hooks::status_dir(&data_dir);
         let watch_paths = vec![
             backend.teams_dir(),
             backend.tasks_dir(),
             backend.projects_dir(),
+            status_dir,
         ];
         let watcher = FsWatcher::new(&watch_paths, fs_tx).ok();
 
         let mut state = AppState::new();
+
+        // Show guided tour on first launch
+        let tour_marker = data_dir.join("clash/.tour_done");
+        if !tour_marker.exists() {
+            state.tour_step = Some(0);
+            if let Some(parent) = tour_marker.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&tour_marker, "1");
+        }
 
         if let Err(e) = state.store.refresh_all(&backend) {
             tracing::error!("Initial data load failed: {}", e);
@@ -79,7 +96,28 @@ impl App {
         // Load initial sessions (from daemon or disk fallback)
         self.refresh_daemon_sessions().await;
 
+        // Background update check (non-blocking)
+        let mut update_check: Option<tokio::task::JoinHandle<_>> = Some(tokio::spawn(async {
+            crate::infrastructure::update::check_for_update().await
+        }));
+
         loop {
+            // Poll background update check without blocking
+            if let Some(ref handle) = update_check {
+                if handle.is_finished() {
+                    if let Some(handle) = update_check.take() {
+                        if let Ok(Some(crate::infrastructure::update::UpdateCheck::Available {
+                            version,
+                            ..
+                        })) = handle.await
+                        {
+                            self.state.toast =
+                                Some(format!("v{} available — :update to install", version));
+                        }
+                    }
+                }
+            }
+
             // Keep vt100 parser size in sync with the actual render area every frame.
             // Use the real layout computation so the parser matches the widget area exactly.
             if self.state.input_mode == InputMode::Attached {
@@ -105,11 +143,11 @@ impl App {
             // Non-blocking FS event check
             if let Some(ref mut rx) = fs_rx {
                 let mut needs_refresh_all = false;
-                let mut needs_refresh_sessions = false;
+                let mut jsonl_changed = false;
                 while let Ok(paths) = rx.try_recv() {
                     for p in &paths {
                         if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                            needs_refresh_sessions = true;
+                            jsonl_changed = true;
                         } else {
                             needs_refresh_all = true;
                         }
@@ -117,10 +155,9 @@ impl App {
                 }
                 if needs_refresh_all {
                     let _ = self.state.store.refresh_all(&self.backend);
-                }
-                if needs_refresh_sessions {
-                    // FS changes don't trigger daemon session refresh —
-                    // daemon sessions are refreshed on their own schedule
+                } else if jsonl_changed {
+                    // JSONL changed → refresh session statuses immediately
+                    self.refresh_daemon_sessions().await;
                 }
             }
 
@@ -152,90 +189,53 @@ impl App {
                             continue;
                         }
 
-                        // Handle text input for command/filter mode
+                        // Handle text input for command/filter/new-session mode
                         if matches!(
                             self.state.input_mode,
-                            InputMode::Command | InputMode::Filter
+                            InputMode::Command | InputMode::Filter | InputMode::NewSession
                         ) {
-                            match key.code {
+                            use crate::application::actions::ui::InputEdit;
+                            use crate::application::actions::UiAction;
+
+                            let action = match key.code {
                                 crossterm::event::KeyCode::Enter => {
                                     let input = self.state.input_buffer.clone();
-                                    let action =
-                                        crate::application::actions::UiAction::SubmitInput(input);
-                                    let effects =
-                                        reducer::reduce(&mut self.state, Action::Ui(action));
-                                    if self.execute_effects(effects, terminal).await {
-                                        return Ok(());
-                                    }
-                                    continue;
+                                    Action::Ui(UiAction::SubmitInput(input))
                                 }
                                 crossterm::event::KeyCode::Esc => {
-                                    let effects = reducer::reduce(
-                                        &mut self.state,
-                                        Action::Ui(
-                                            crate::application::actions::UiAction::ExitInputMode,
-                                        ),
-                                    );
-                                    if self.execute_effects(effects, terminal).await {
-                                        return Ok(());
-                                    }
-                                    continue;
+                                    Action::Ui(UiAction::ExitInputMode)
                                 }
                                 crossterm::event::KeyCode::Backspace => {
-                                    let pos = self.state.input_cursor;
-                                    if pos > 0 {
-                                        self.state.input_buffer.remove(pos - 1);
-                                        self.state.input_cursor -= 1;
-                                        if self.state.input_mode == InputMode::Filter {
-                                            self.state.filter = self.state.input_buffer.clone();
-                                            self.state.table_state.selected = 0;
-                                        }
-                                    }
-                                    continue;
+                                    Action::Ui(UiAction::InputEdit(InputEdit::Backspace))
                                 }
                                 crossterm::event::KeyCode::Delete => {
-                                    let pos = self.state.input_cursor;
-                                    if pos < self.state.input_buffer.len() {
-                                        self.state.input_buffer.remove(pos);
-                                        if self.state.input_mode == InputMode::Filter {
-                                            self.state.filter = self.state.input_buffer.clone();
-                                            self.state.table_state.selected = 0;
-                                        }
-                                    }
-                                    continue;
+                                    Action::Ui(UiAction::InputEdit(InputEdit::Delete))
                                 }
                                 crossterm::event::KeyCode::Left => {
-                                    if self.state.input_cursor > 0 {
-                                        self.state.input_cursor -= 1;
-                                    }
-                                    continue;
+                                    Action::Ui(UiAction::InputEdit(InputEdit::CursorLeft))
                                 }
                                 crossterm::event::KeyCode::Right => {
-                                    if self.state.input_cursor < self.state.input_buffer.len() {
-                                        self.state.input_cursor += 1;
-                                    }
-                                    continue;
+                                    Action::Ui(UiAction::InputEdit(InputEdit::CursorRight))
                                 }
                                 crossterm::event::KeyCode::Home => {
-                                    self.state.input_cursor = 0;
-                                    continue;
+                                    Action::Ui(UiAction::InputEdit(InputEdit::CursorHome))
                                 }
                                 crossterm::event::KeyCode::End => {
-                                    self.state.input_cursor = self.state.input_buffer.len();
-                                    continue;
+                                    Action::Ui(UiAction::InputEdit(InputEdit::CursorEnd))
                                 }
                                 crossterm::event::KeyCode::Char(c) => {
-                                    let pos = self.state.input_cursor;
-                                    self.state.input_buffer.insert(pos, c);
-                                    self.state.input_cursor += 1;
-                                    if self.state.input_mode == InputMode::Filter {
-                                        self.state.filter = self.state.input_buffer.clone();
-                                        self.state.table_state.selected = 0;
-                                    }
+                                    Action::Ui(UiAction::InputEdit(InputEdit::InsertChar(c)))
+                                }
+                                _ => {
                                     continue;
                                 }
-                                _ => continue,
+                            };
+
+                            let effects = reducer::reduce(&mut self.state, action);
+                            if self.execute_effects(effects, terminal).await {
+                                return Ok(());
                             }
+                            continue;
                         }
 
                         let action = input::handle_key(key, &self.state);
@@ -245,11 +245,10 @@ impl App {
                         }
                     }
                     Event::Tick => {
-                        self.state.tick = self.state.tick.wrapping_add(1);
-                        // Toast lasts ~3 seconds (300 ticks at 10ms)
-                        if self.state.toast.is_some() && self.state.tick.is_multiple_of(300) {
-                            self.state.toast = None;
-                        }
+                        let _ = reducer::reduce(
+                            &mut self.state,
+                            Action::Ui(crate::application::actions::UiAction::Tick),
+                        );
                         // Refresh sessions every ~500ms (50 ticks) on session-related views
                         if self.state.tick.is_multiple_of(50)
                             && matches!(
@@ -326,19 +325,29 @@ impl App {
         }
     }
 
-    /// Refresh sessions: always load from Claude's disk files first,
-    /// then overlay daemon status for clash-managed sessions.
+    /// Refresh sessions: load from disk, overlay hook statuses, then daemon.
     async fn refresh_daemon_sessions(&mut self) {
-        // Always read sessions from Claude's files (read-only, source of truth)
+        use crate::domain::entities::SessionStatus;
+
+        // 1. Read sessions from Claude's JSONL files (baseline status)
         let _ = self.state.store.refresh_sessions(&self.backend);
 
         // Preload subagents for sessions that have them (for tree view)
         self.state.store.refresh_all_subagents(&self.backend);
 
-        // Overlay daemon status on matching sessions, add daemon-only sessions
+        // 2. Overlay hook-based statuses (instant, from Claude Code lifecycle events)
+        let hook_statuses =
+            crate::infrastructure::hooks::read_all_statuses(self.backend.base_dir());
+        for session in &mut self.state.store.sessions {
+            if let Some(&status) = hook_statuses.get(&session.id) {
+                session.status = status;
+                session.is_running = !matches!(status, SessionStatus::Idle);
+            }
+        }
+
+        // 3. Overlay daemon status on matching sessions, add daemon-only sessions
         if self.daemon.is_connected() {
             if let Ok(infos) = self.daemon.list_sessions().await {
-                use crate::domain::entities::SessionStatus;
                 for info in infos {
                     let status = match info.status.as_str() {
                         "running" => SessionStatus::Running,
@@ -396,8 +405,7 @@ impl App {
             }
         }
 
-        // Rebuild the flat session tree (sessions interleaved with subagents)
-        self.state.rebuild_session_tree();
+        // Flat subagents list is rebuilt inside refresh_all_subagents()
     }
 
     /// Auto-refresh conversation if viewing SessionDetail or SubagentDetail.
@@ -574,22 +582,9 @@ impl App {
                             continue;
                         }
                     }
-                    // Resolve __CWD__ placeholder to actual current directory
-                    let resolved_cwd = if cwd == "__CWD__" {
-                        std::env::current_dir()
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_default()
-                    } else {
-                        cwd
-                    };
                     match self
                         .daemon
-                        .create_session(
-                            &session_id,
-                            &self.cli_runner.claude_bin,
-                            &args,
-                            &resolved_cwd,
-                        )
+                        .create_session(&session_id, &self.cli_runner.claude_bin, &args, &cwd)
                         .await
                     {
                         Ok(()) => {
@@ -674,6 +669,9 @@ impl App {
                         let _ = self.daemon.kill_session(&session_id).await;
                     }
                 }
+                Effect::TerminateProcess { session_id } => {
+                    terminate_claude_process(&session_id).await;
+                }
                 Effect::DaemonKillAll => {
                     if self.daemon.is_connected() {
                         if let Ok(infos) = self.daemon.list_sessions().await {
@@ -688,8 +686,69 @@ impl App {
                 Effect::ShowSpinner(msg) => {
                     self.state.spinner = Some(msg);
                 }
+                Effect::PerformUpdate => {
+                    self.state.toast = Some("Downloading update...".to_string());
+                    match crate::infrastructure::update::perform_update().await {
+                        Ok(version) => {
+                            self.state.toast =
+                                Some(format!("Updated to v{}! Restart clash to apply.", version));
+                        }
+                        Err(msg) => {
+                            self.state.toast = Some(msg);
+                        }
+                    }
+                }
             }
         }
         false
     }
+}
+
+/// Find and terminate external Claude Code processes for a session.
+///
+/// Strategy: search for `claude` processes whose command line contains the session ID
+/// (e.g. `claude --resume <session_id>`). Uses `pgrep` on macOS/Linux.
+async fn terminate_claude_process(session_id: &str) {
+    // Try pgrep to find claude processes matching this session
+    let output = tokio::process::Command::new("pgrep")
+        .args(["-f", &format!("claude.*{}", session_id)])
+        .output()
+        .await;
+
+    if let Ok(output) = output {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if let Ok(pid) = line.trim().parse::<u32>() {
+                    // Don't kill ourselves
+                    let our_pid = std::process::id();
+                    if pid == our_pid {
+                        continue;
+                    }
+                    tracing::info!(
+                        "Terminating Claude process PID {} for session {}",
+                        pid,
+                        session_id
+                    );
+                    // SIGTERM first
+                    let _ = tokio::process::Command::new("kill")
+                        .args(["-TERM", &pid.to_string()])
+                        .output()
+                        .await;
+                    // Give it a moment, then SIGKILL if still alive
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let _ = tokio::process::Command::new("kill")
+                        .args(["-KILL", &pid.to_string()])
+                        .output()
+                        .await;
+                }
+            }
+        }
+    }
+
+    // Also try pkill as a fallback for any remaining processes
+    let _ = tokio::process::Command::new("pkill")
+        .args(["-f", &format!("claude.*{}", session_id)])
+        .output()
+        .await;
 }

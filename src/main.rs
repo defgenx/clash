@@ -6,9 +6,18 @@ mod infrastructure;
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
 
-/// clash — K9s-style TUI for Claude Code Agent Teams
+const VERSION_INFO: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("GIT_HASH"),
+    " ",
+    env!("BUILD_DATE"),
+    ")"
+);
+
+/// clash — Terminal UI for Claude Code Sessions & Agent Teams
 #[derive(Parser, Debug)]
-#[command(version, about)]
+#[command(version = VERSION_INFO, about)]
 struct Args {
     /// Path to Claude data directory (default: ~/.claude)
     #[arg(long)]
@@ -26,6 +35,8 @@ struct Args {
 enum Cmd {
     /// Run the daemon (session persistence server)
     Daemon,
+    /// Update clash to the latest version
+    Update,
 }
 
 #[tokio::main]
@@ -46,13 +57,18 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    // Handle daemon subcommand
-    if matches!(args.command, Some(Cmd::Daemon)) {
-        tracing::info!("Starting clash daemon");
-        let socket_path = infrastructure::daemon::client::DaemonClient::default_socket_path();
-        let server = infrastructure::daemon::server::DaemonServer::new(socket_path);
-        server.run().await?;
-        return Ok(());
+    match args.command {
+        Some(Cmd::Daemon) => {
+            tracing::info!("Starting clash daemon");
+            let socket_path = infrastructure::daemon::client::DaemonClient::default_socket_path();
+            let server = infrastructure::daemon::server::DaemonServer::new(socket_path);
+            server.run().await?;
+            return Ok(());
+        }
+        Some(Cmd::Update) => {
+            return run_update().await;
+        }
+        None => {}
     }
 
     let config = infrastructure::config::Config::load();
@@ -66,4 +82,22 @@ async fn main() -> Result<()> {
     ratatui::restore();
 
     result
+}
+
+/// Run the CLI update command.
+async fn run_update() -> Result<()> {
+    println!("clash v{}", env!("CARGO_PKG_VERSION"));
+    println!("Checking for updates...");
+
+    match infrastructure::update::perform_update().await {
+        Ok(version) => {
+            println!("\x1b[32m✓\x1b[0m Updated to v{}!", version);
+            println!("  Restart clash to use the new version.");
+            Ok(())
+        }
+        Err(msg) => {
+            println!("{}", msg);
+            Ok(())
+        }
+    }
 }

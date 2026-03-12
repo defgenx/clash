@@ -165,7 +165,7 @@ fn test_confirm_cancel() {
     );
 
     reducer::reduce(&mut state, Action::Ui(UiAction::ConfirmNo));
-    assert!(state.confirm_message.is_none());
+    assert!(state.confirm_dialog.is_none());
     assert_eq!(state.store.teams.len(), initial_teams);
 }
 

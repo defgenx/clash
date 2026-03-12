@@ -1,3 +1,4 @@
+pub mod centered;
 pub mod confirm_dialog;
 pub mod detail;
 pub mod help_overlay;
@@ -7,3 +8,4 @@ pub mod spinner;
 pub mod table;
 pub mod terminal;
 pub mod toast;
+pub mod tour;

@@ -1,3 +1,4 @@
+use crate::adapters::format::short_id;
 use crate::adapters::views::{DetailView, Keybinding, Section};
 use crate::application::state::AppState;
 
@@ -33,27 +34,51 @@ impl DetailView for TeamDetailView {
             info = info.row("Lead Agent", lead);
         }
         if let Some(ref session) = team.lead_session_id {
-            info = info.row("Lead Session", session);
+            let sid = short_id(session, 8);
+            info = info.row("Lead Session", &format!("{} (press 's' to view)", sid));
         }
 
-        let active = team.members.iter().filter(|m| m.is_active).count();
-        let total = team.members.len();
-        let members = Section::new("Members")
-            .row("Total", &total.to_string())
-            .row("Active", &active.to_string());
+        let mut members_section = Section::new("Members");
+        if team.members.is_empty() {
+            members_section = members_section.row("", "No members");
+        } else {
+            for member in &team.members {
+                let status_icon = if member.is_active { "●" } else { "○" };
+                let type_label = if member.agent_type.is_empty() {
+                    "agent"
+                } else {
+                    &member.agent_type
+                };
+                let model_str = if member.model.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", member.model)
+                };
+                members_section = members_section.row(
+                    &member.name,
+                    &format!("{} [{}]{}", status_icon, type_label, model_str),
+                );
+            }
+            members_section = members_section.row("", "Press Enter to view agents");
+        }
 
         let task_count = state.store.get_tasks(team_name).len();
-        let tasks = Section::new("Tasks").row("Total", &task_count.to_string());
+        let mut tasks = Section::new("Tasks").row("Total", &task_count.to_string());
+        if task_count > 0 {
+            tasks = tasks.row("", "Press 't' to view");
+        }
 
-        vec![info, members, tasks]
+        vec![info, members_section, tasks]
     }
 
     fn context_keybindings() -> Vec<Keybinding> {
         vec![
+            Keybinding::new("Enter", "View agents"),
+            Keybinding::new("a", "View agents"),
+            Keybinding::new("s", "View lead session"),
+            Keybinding::new("t", "View tasks"),
             Keybinding::new("d", "Delete team"),
-            Keybinding::new(":agents", "View agents"),
-            Keybinding::new(":tasks", "View tasks"),
-            Keybinding::new(":inbox", "View inbox"),
+            Keybinding::new("j/k", "Scroll"),
         ]
     }
 }

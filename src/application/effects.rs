@@ -45,6 +45,10 @@ pub enum Effect {
         session_id: String,
     },
     DaemonKillAll,
+    /// Find and terminate the external Claude process for this session.
+    TerminateProcess {
+        session_id: String,
+    },
 
     // ── Data refresh effects ────────────────────────────────────
     RefreshAll,
@@ -73,6 +77,7 @@ pub enum Effect {
 
     // ── UI state effects ────────────────────────────────────────
     ShowSpinner(String),
+    PerformUpdate,
     Quit,
 }
 

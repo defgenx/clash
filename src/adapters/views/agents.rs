@@ -14,11 +14,12 @@ impl TableView for AgentsTable {
     fn columns() -> Vec<ColumnDef> {
         vec![
             ColumnDef::new("NAME", 20),
-            ColumnDef::new("TYPE", 15),
-            ColumnDef::new("MODEL", 15),
+            ColumnDef::new("TEAM", 15),
+            ColumnDef::new("TYPE", 12),
+            ColumnDef::new("MODEL", 12),
             ColumnDef::new("STATUS", 10),
             ColumnDef::new("MODE", 10),
-            ColumnDef::new("CWD", 30),
+            ColumnDef::new("CWD", 21),
         ]
     }
 
@@ -30,12 +31,19 @@ impl TableView for AgentsTable {
             Color::DarkGray
         };
 
+        let team_display = if item.team_name.is_empty() {
+            "—".to_string()
+        } else {
+            item.team_name.clone()
+        };
+
         vec![
             Cell::from(item.name.clone()).style(
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
+            Cell::from(team_display).style(Style::default().fg(Color::Yellow)),
             Cell::from(item.agent_type.clone()),
             Cell::from(item.model.clone()),
             Cell::from(status.to_string()).style(Style::default().fg(status_color)),
@@ -46,12 +54,14 @@ impl TableView for AgentsTable {
     }
 
     fn items(state: &AppState) -> Vec<&Member> {
+        // If we have a team context, show only that team's members;
+        // otherwise show all members across all teams.
         if let Some(team_name) = state.current_team() {
             if let Some(team) = state.store.find_team(team_name) {
                 return team.members.iter().collect();
             }
         }
-        Vec::new()
+        state.store.all_members.iter().collect()
     }
 
     fn on_select(item: &Member) -> Action {
@@ -70,6 +80,6 @@ impl TableView for AgentsTable {
     }
 
     fn empty_message() -> &'static str {
-        "No agents in this team."
+        "No agents found."
     }
 }

@@ -88,12 +88,17 @@ impl NavigationStack {
     /// Get the currently selected team name from the nav context.
     pub fn current_team(&self) -> Option<&str> {
         for entry in self.stack.iter().rev() {
-            if entry.view == ViewKind::Teams || entry.view == ViewKind::TeamDetail {
+            if matches!(
+                entry.view,
+                ViewKind::Teams | ViewKind::TeamDetail | ViewKind::Agents | ViewKind::Tasks
+            ) {
                 return entry.context.as_deref();
             }
         }
         self.context_for(ViewKind::TeamDetail)
             .or_else(|| self.context_for(ViewKind::Teams))
+            .or_else(|| self.context_for(ViewKind::Agents))
+            .or_else(|| self.context_for(ViewKind::Tasks))
     }
 
     /// Get the current session ID from nav context.

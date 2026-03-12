@@ -1,35 +1,28 @@
-# clash
+<p align="center">
+  <img src="assets/logo.svg" alt="clash logo" width="500">
+</p>
 
-**K9s-style terminal UI for Claude Code Sessions.**
+<p align="center">
+  <strong>Terminal UI for Claude Code Sessions & Agent Teams</strong>
+</p>
 
-Attach to running Claude sessions, monitor their status in real-time, manage teams, agents, and tasks — all from a keyboard-driven TUI.
+<p align="center">
+  <a href="#installation">Install</a> &bull;
+  <a href="#features">Features</a> &bull;
+  <a href="#usage">Usage</a> &bull;
+  <a href="#keybindings">Keys</a>
+</p>
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│ ✦ clash  │  Sessions [active]                   ▸ 2 waiting   15:42 │
-├──────────────────────────────────────────────────────────────────────┤
-│ STATUS       SESSION   PROJECT    SUMMARY            AGENTS  BRANCH │
-│ ◉ PROMPTING  a1b2c3d4  my-api    Fix auth module    3       main   │
-│ ◉ WAITING    e5f6g7h8  web-app   Add dark mode      —       feat/ui│
-│ ● RUNNING    i9j0k1l2  cli-tool  Refactor parser    2       main   │
-│   ├─ ● RUN   abc123    Explore   Search for files                  │
-│   └─ ✓ DONE  def456    general   Run tests                        │
-│ ◎ THINKING   m3n4o5p6  docs      Update README      —       docs   │
-├──────────────────────────────────────────────────────────────────────┤
-│ :command  /filter  ?help                                             │
-└──────────────────────────────────────────────────────────────────────┘
-```
+---
 
 ## Features
 
 - **Session management** — list, attach, detach, create, and delete Claude Code sessions
 - **Inline terminal** — attach to sessions with a full vt100 terminal emulator, no window switching
-- **Real-time status** — 6 granular states (Idle, Starting, Running, Thinking, Waiting, Prompting) detected by parsing terminal screen content
-- **Daemon architecture** — persistent PTY sessions survive TUI restarts, multi-client attach support
-- **Teams & tasks** — CRUD for teams, agents, and tasks backed by Claude Code's filesystem
+- **Real-time status** — instant status detection via file watcher + JSONL parsing
+- **Teams & tasks** — organize agents into teams, manage tasks, send messages
 - **Keyboard-driven** — vim-style navigation, command mode (`:`), fuzzy filter (`/`), context help (`?`)
-- **Resilient parsing** — lenient serde handles schema changes; malformed files show as error rows
-- **Atomic writes** — temp file + rename prevents corruption from concurrent access
+- **Self-updating** — `:update` in the TUI or `clash update` from the CLI
 
 ## Installation
 
@@ -39,7 +32,7 @@ Attach to running Claude sessions, monitor their status in real-time, manage tea
 curl -fsSL https://raw.githubusercontent.com/defgenx/clash/main/install.sh | bash
 ```
 
-This downloads the latest release binary for your platform and installs it to `/usr/local/bin`. To install elsewhere:
+Custom install path:
 
 ```bash
 CLASH_INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/defgenx/clash/main/install.sh | bash
@@ -51,187 +44,105 @@ CLASH_INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/defg
 cargo install --git https://github.com/defgenx/clash.git
 ```
 
-Or clone and build:
-
-```bash
-git clone https://github.com/defgenx/clash.git
-cd clash
-cargo build --release
-./target/release/clash
-```
-
 ### Requirements
 
 - Rust 1.75+ (for building from source)
-- A terminal with Unicode support
-- Claude Code CLI (`claude`) for session management
+- Claude Code CLI (`claude`)
 
 ## Usage
 
 ```bash
-# Start clash (reads from ~/.claude by default)
-clash
-
-# Custom data directory
-clash --data-dir ~/.claude
-
-# Custom Claude CLI binary path
-clash --claude-bin /usr/local/bin/claude
-
-# Start the daemon separately (auto-started on first use)
-clash daemon
+clash                              # Start (reads from ~/.claude)
+clash --data-dir ~/.claude         # Custom data directory
+clash --claude-bin /path/to/claude # Custom CLI path
+clash daemon                       # Start daemon separately
+clash update                       # Update to the latest release
 ```
+
+On first launch, clash shows a guided tour. Replay it anytime with `:tour`.
 
 ### Session Status
 
 | Icon | Status | Meaning |
 |------|--------|---------|
-| `◉ PROMPTING` | Tool approval needed | Claude is asking for permission (Yes/No) |
-| `◉ WAITING` | Waiting for input | Claude finished and awaits your next prompt |
-| `◎ THINKING` | Thinking | Claude is reasoning / generating |
-| `● RUNNING` | Running | Claude is executing tools, writing code |
-| `⦿ STARTING` | Starting | Session just spawned |
-| `○ IDLE` | Idle | Session is inactive |
+| `◉` | Prompting | Claude needs tool approval |
+| `◉` | Waiting | Awaiting your next prompt |
+| `◎` | Thinking | Reasoning / generating |
+| `●` | Running | Executing tools |
+| `⦿` | Starting | Session just spawned |
+| `○` | Idle | Exited or inactive |
 
-Status is detected by parsing the terminal screen content via a vt100 emulator — not timing heuristics.
+## Keybindings
 
-### Keybindings
-
-#### Navigation
+### Navigation
 
 | Key | Action |
 |-----|--------|
-| `j` / `↓` | Select next |
-| `k` / `↑` | Select previous |
-| `g` | Jump to first |
-| `G` | Jump to last |
-| `Enter` | Drill in / attach |
+| `j` / `k` | Select next / previous |
+| `g` / `G` | Jump to first / last |
+| `Enter` | Drill in |
 | `Esc` | Go back |
 | `q` | Quit |
 
-#### Modes
+### Modes
 
-| Key | Mode | Description |
-|-----|------|-------------|
-| `:` | Command | Navigate: `:teams`, `:tasks`, `:sessions`, `:quit` |
-| `/` | Filter | Fuzzy filter table rows |
-| `?` | Help | Context-sensitive keybinding reference |
+| Key | Description |
+|-----|-------------|
+| `:` | Command mode — `:teams`, `:sessions`, `:tour`, `:update`, `:quit` |
+| `/` | Fuzzy filter |
+| `?` | Context help |
 
-#### Sessions
-
-| Key | Action |
-|-----|--------|
-| `Enter` | Attach to session (inline terminal) |
-| `i` | Inspect session details |
-| `a` | Attach to session |
-| `c` / `n` | Create new Claude session |
-| `A` | Toggle filter: active / all |
-| `d` | Close and delete session (with confirmation) |
-| `D` | Close and delete ALL sessions |
-| `:active` | Show active sessions only |
-| `:all` | Show all sessions |
-
-#### Session Detail
+### Sessions
 
 | Key | Action |
 |-----|--------|
-| `Enter` | View team (subagents) |
-| `a` | Attach to session |
+| `a` | Attach (inline terminal) |
+| `c` / `n` | New session |
+| `Tab` | Expand / collapse subagents |
+| `A` | Toggle active / all |
 | `d` | Delete session |
-| `j` / `k` | Scroll |
+| `D` | Delete ALL sessions |
 
-#### Attached mode
+### Attached Mode
 
 | Key | Action |
 |-----|--------|
-| `Esc` / `Ctrl+B` | Detach from session |
-| All other keys | Forwarded to Claude |
+| `Esc` / `Ctrl+B` | Detach |
+| Everything else | Forwarded to Claude |
 
-#### Teams & Tasks
+### Session Detail
 
-| Key | Context | Action |
-|-----|---------|--------|
-| `c` | Teams/Tasks | Create new |
-| `d` | Any | Delete (with confirmation) |
-| `s` | Tasks | Cycle status |
-| `r` | Any | Force refresh |
+| Key | Action |
+|-----|--------|
+| `s` | Subagents |
+| `t` | Linked team |
+| `m` | Team members |
+| `a` | Attach |
+| `d` | Delete |
 
-### Views
+## Data
 
-- **Sessions** — all Claude sessions with status, project, summary, agents, branch
-- **Session Detail** — session info, team (subagents with status), conversation transcript
-- **Subagents** — agents spawned by a session with status
-- **Teams** — all teams with member counts and description
-- **Team Detail** — team info, members, task count
-- **Agents** — team members with type, model, status
-- **Tasks** — team tasks with status, owner, subject
-- **Inbox** — agent inbox messages
-
-## Architecture
-
-Clean Architecture with four layers. Dependencies point strictly inward.
-
-```
-┌─────────────────────────────────────────────────┐
-│              Infrastructure                      │
-│  ┌───────────────────────────────────────────┐  │
-│  │             Adapters                       │  │
-│  │  ┌─────────────────────────────────────┐  │  │
-│  │  │          Application                 │  │  │
-│  │  │  ┌───────────────────────────────┐  │  │  │
-│  │  │  │           Domain              │  │  │  │
-│  │  │  └───────────────────────────────┘  │  │  │
-│  │  └─────────────────────────────────────┘  │  │
-│  └───────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────┘
-```
-
-**TEA pattern** (The Elm Architecture):
-
-```
-Input → Action → reducer(state, action) → (state', effects) → execute → draw
-                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-                         pure function, no IO
-```
-
-The reducer contains all business logic but performs no IO. Effects are domain-level descriptions (`PersistTask`, `DaemonAttach`, `RefreshSessions`) that infrastructure translates into real operations.
-
-## Data Model
-
-clash reads from Claude Code's filesystem:
+clash reads directly from Claude Code's filesystem:
 
 ```
 ~/.claude/
 ├── projects/{name}/
-│   ├── sessions-index.json     # Session metadata
-│   ├── {session-id}.jsonl      # Conversation transcript
-│   └── {session-id}/subagents/ # Subagent transcripts
-├── teams/{name}/
-│   ├── config.json             # Team config + members[]
-│   └── inboxes/{agent}.json    # Inbox messages
-└── tasks/{team-name}/
-    └── {id}.json               # Task with status, owner, deps
-```
-
-## Configuration
-
-Optional config at `~/.config/clash/config.toml`:
-
-```toml
-claude_bin = "claude"
-claude_dir = "/home/user/.claude"
-tick_rate_ms = 250
-debounce_ms = 200
+│   ├── {session-id}.jsonl          # Conversation
+│   └── {session-id}/subagents/     # Subagent transcripts
+├── teams/{name}/config.json        # Team config + members
+└── tasks/{team-name}/{id}.json     # Tasks
 ```
 
 ## Development
 
 ```bash
-cargo test          # 111 tests (unit + integration)
-cargo clippy        # Zero warnings
-cargo fmt --check   # Formatting
+cargo test          # Run all tests
+cargo clippy        # Lint
+cargo fmt --check   # Check formatting
 ```
+
+Releases are automatic — push with conventional commits (`feat:`, `fix:`) and CI handles the rest.
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+MIT

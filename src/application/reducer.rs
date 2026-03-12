@@ -8,7 +8,7 @@ use crate::adapters::input::parse_command;
 use crate::adapters::views::ViewKind;
 use crate::application::actions::*;
 use crate::application::effects::{CliCommand, Effect};
-use crate::application::state::{AppState, InputMode};
+use crate::application::state::{AppState, ConfirmDialog, InputMode};
 
 /// Pure reducer: takes state + action, returns effects.
 /// All state mutation happens here and only here.
@@ -208,31 +208,51 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             state.scroll_state.offset = 0;
             vec![Effect::DaemonAttach { session_id }]
         }
-        AgentAction::SpawnSession => {
+        AgentAction::SpawnSession { cwd } => {
             // Create a new daemon-managed session and attach inline
             let session_id = format!("clash-{}", chrono::Utc::now().timestamp_millis());
             state.input_mode = InputMode::Attached;
             state.attached_session = Some(session_id.clone());
 
             state.scroll_state.offset = 0;
-            // cwd is resolved at effect execution time (infrastructure layer)
             vec![
                 Effect::DaemonCreateSession {
                     session_id: session_id.clone(),
                     args: vec![],
-                    cwd: "__CWD__".to_string(),
+                    cwd,
                 },
                 Effect::DaemonAttach { session_id },
             ]
+        }
+        AgentAction::TerminateAndDelete {
+            project,
+            session_id,
+        } => {
+            state.toast = Some("Terminating session...".to_string());
+            state.nav.pop();
+            let mut effects = vec![
+                Effect::DaemonKill {
+                    session_id: session_id.clone(),
+                },
+                Effect::TerminateProcess {
+                    session_id: session_id.clone(),
+                },
+            ];
+            if !project.is_empty() {
+                effects.push(Effect::DeleteSession {
+                    project,
+                    session_id,
+                });
+            }
+            effects.push(Effect::RefreshSessions);
+            effects
         }
         AgentAction::DeleteSession {
             project,
             session_id,
         } => {
-            state.toast = Some("Session closed".to_string());
+            state.toast = Some("Session files deleted".to_string());
             state.nav.pop();
-            // Always try to kill daemon session (works for both clash-managed and attached external)
-            // Then delete disk files from ~/.claude/projects/
             let mut effects = vec![Effect::DaemonKill {
                 session_id: session_id.clone(),
             }];
@@ -260,33 +280,89 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
     match action {
         UiAction::HideHelp => {
             state.show_help = false;
+            state.help_scroll = 0;
             vec![]
         }
         UiAction::ToggleHelp => {
             state.show_help = !state.show_help;
+            if state.show_help {
+                state.help_scroll = 0;
+            }
+            vec![]
+        }
+        UiAction::RequestUpdate => {
+            state.toast = Some("Updating clash...".to_string());
+            vec![Effect::PerformUpdate]
+        }
+        UiAction::StartTour => {
+            state.tour_step = Some(0);
+            vec![]
+        }
+        UiAction::TourNext => {
+            if let Some(step) = state.tour_step {
+                let total = crate::infrastructure::tui::widgets::tour::TOUR_STEPS.len();
+                if step + 1 < total {
+                    state.tour_step = Some(step + 1);
+                } else {
+                    state.tour_step = None;
+                }
+            }
+            vec![]
+        }
+        UiAction::TourSkip => {
+            state.tour_step = None;
             vec![]
         }
         UiAction::ShowConfirm {
             message,
             on_confirm,
         } => {
-            state.confirm_message = Some(message);
-            state.confirm_action = Some(*on_confirm);
+            state.confirm_dialog = Some(ConfirmDialog::Simple {
+                message,
+                on_confirm: *on_confirm,
+            });
             state.input_mode = InputMode::Confirm;
             vec![]
         }
-        UiAction::ConfirmYes => {
+        UiAction::ShowDeleteConfirm {
+            message,
+            on_terminate,
+            on_files_only,
+        } => {
+            state.confirm_dialog = Some(ConfirmDialog::Delete {
+                message,
+                on_terminate: *on_terminate,
+                on_files_only: *on_files_only,
+            });
+            state.input_mode = InputMode::Confirm;
+            vec![]
+        }
+        UiAction::ConfirmYes | UiAction::ConfirmTerminate => {
             state.input_mode = InputMode::Normal;
-            state.confirm_message = None;
-            if let Some(action) = state.confirm_action.take() {
+            let action = match state.confirm_dialog.take() {
+                Some(ConfirmDialog::Simple { on_confirm, .. }) => Some(on_confirm),
+                Some(ConfirmDialog::Delete { on_terminate, .. }) => Some(on_terminate),
+                None => None,
+            };
+            if let Some(action) = action {
+                return reduce(state, action);
+            }
+            vec![]
+        }
+        UiAction::ConfirmFilesOnly => {
+            state.input_mode = InputMode::Normal;
+            let action = match state.confirm_dialog.take() {
+                Some(ConfirmDialog::Delete { on_files_only, .. }) => Some(on_files_only),
+                _ => None,
+            };
+            if let Some(action) = action {
                 return reduce(state, action);
             }
             vec![]
         }
         UiAction::ConfirmNo => {
             state.input_mode = InputMode::Normal;
-            state.confirm_message = None;
-            state.confirm_action = None;
+            state.confirm_dialog = None;
             vec![]
         }
         UiAction::Toast(msg) => {
@@ -303,6 +379,12 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             state.input_mode = InputMode::Filter;
             state.input_buffer.clear();
             state.input_cursor = 0;
+            vec![]
+        }
+        UiAction::EnterNewSessionMode => {
+            state.input_mode = InputMode::NewSession;
+            state.input_buffer = state.default_cwd.clone();
+            state.input_cursor = state.input_buffer.len();
             vec![]
         }
         UiAction::ExitInputMode => {
@@ -331,15 +413,32 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                     state.filter = input;
                     vec![]
                 }
+                InputMode::NewSession => {
+                    let cwd = input.trim().to_string();
+                    let cwd = if cwd.is_empty() {
+                        state.default_cwd.clone()
+                    } else {
+                        cwd
+                    };
+                    reduce(state, Action::Agent(AgentAction::SpawnSession { cwd }))
+                }
                 _ => vec![],
             }
         }
         UiAction::ScrollDown => {
-            state.scroll_state.offset = state.scroll_state.offset.saturating_add(3);
+            if state.show_help {
+                state.help_scroll = state.help_scroll.saturating_add(1);
+            } else {
+                state.scroll_state.offset = state.scroll_state.offset.saturating_add(3);
+            }
             vec![]
         }
         UiAction::ScrollUp => {
-            state.scroll_state.offset = state.scroll_state.offset.saturating_sub(3);
+            if state.show_help {
+                state.help_scroll = state.help_scroll.saturating_sub(1);
+            } else {
+                state.scroll_state.offset = state.scroll_state.offset.saturating_sub(3);
+            }
             vec![]
         }
         UiAction::DetachSession => {
@@ -360,6 +459,20 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             }
             vec![Effect::RefreshSessions]
         }
+        UiAction::ToggleExpand => {
+            if state.current_view() == ViewKind::Sessions {
+                let sessions = state.filtered_sessions();
+                if let Some(session) = sessions.get(state.table_state.selected) {
+                    let id = session.id.clone();
+                    if state.expanded_sessions.contains(&id) {
+                        state.expanded_sessions.remove(&id);
+                    } else {
+                        state.expanded_sessions.insert(id);
+                    }
+                }
+            }
+            vec![]
+        }
         UiAction::CycleSessionFilter => {
             state.session_filter = state.session_filter.next();
             state.table_state.selected = 0;
@@ -375,6 +488,61 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                 state.nav.push(ViewKind::Sessions, None);
                 state.filter.clear();
                 return vec![Effect::RefreshSessions];
+            }
+            vec![]
+        }
+        UiAction::InputEdit(edit) => {
+            use crate::application::actions::ui::InputEdit;
+            match edit {
+                InputEdit::InsertChar(c) => {
+                    let pos = state.input_cursor;
+                    state.input_buffer.insert(pos, c);
+                    state.input_cursor += 1;
+                    if state.input_mode == InputMode::Filter {
+                        state.filter = state.input_buffer.clone();
+                        state.table_state.selected = 0;
+                    }
+                }
+                InputEdit::Backspace => {
+                    if state.input_cursor > 0 {
+                        state.input_buffer.remove(state.input_cursor - 1);
+                        state.input_cursor -= 1;
+                        if state.input_mode == InputMode::Filter {
+                            state.filter = state.input_buffer.clone();
+                            state.table_state.selected = 0;
+                        }
+                    }
+                }
+                InputEdit::Delete => {
+                    if state.input_cursor < state.input_buffer.len() {
+                        state.input_buffer.remove(state.input_cursor);
+                        if state.input_mode == InputMode::Filter {
+                            state.filter = state.input_buffer.clone();
+                            state.table_state.selected = 0;
+                        }
+                    }
+                }
+                InputEdit::CursorLeft => {
+                    state.input_cursor = state.input_cursor.saturating_sub(1);
+                }
+                InputEdit::CursorRight => {
+                    if state.input_cursor < state.input_buffer.len() {
+                        state.input_cursor += 1;
+                    }
+                }
+                InputEdit::CursorHome => {
+                    state.input_cursor = 0;
+                }
+                InputEdit::CursorEnd => {
+                    state.input_cursor = state.input_buffer.len();
+                }
+            }
+            vec![]
+        }
+        UiAction::Tick => {
+            state.tick = state.tick.wrapping_add(1);
+            if state.toast.is_some() && state.tick.is_multiple_of(300) {
+                state.toast = None;
             }
             vec![]
         }
@@ -396,27 +564,12 @@ fn resolve_context(state: &AppState) -> Option<String> {
                 None
             }
         }
-        ViewKind::Agents => {
-            if let Some(team_name) = state.current_team() {
-                state
-                    .store
-                    .find_team(team_name)
-                    .and_then(|t| t.members.get(idx))
-                    .map(|m| m.name.clone())
-            } else {
-                None
-            }
-        }
+        ViewKind::Agents => state.store.all_members.get(idx).map(|m| m.name.clone()),
         ViewKind::Sessions => {
-            let items = state.filtered_session_tree();
-            items.get(idx).map(|row| match row {
-                crate::application::state::SessionTreeRow::Session(s) => s.id.clone(),
-                crate::application::state::SessionTreeRow::Subagent { subagent, .. } => {
-                    subagent.id.clone()
-                }
-            })
+            let items = state.filtered_sessions();
+            items.get(idx).map(|s| s.id.clone())
         }
-        ViewKind::Subagents => state.store.subagents.get(idx).map(|s| s.id.clone()),
+        ViewKind::Subagents => state.store.all_subagents.get(idx).map(|s| s.id.clone()),
         _ => None,
     }
 }
@@ -432,20 +585,10 @@ fn current_item_count(state: &AppState) -> usize {
                 0
             }
         }
-        ViewKind::Agents => {
-            if let Some(team_name) = state.current_team() {
-                state
-                    .store
-                    .find_team(team_name)
-                    .map(|t| t.members.len())
-                    .unwrap_or(0)
-            } else {
-                0
-            }
-        }
+        ViewKind::Agents => state.store.all_members.len(),
         ViewKind::Inbox => state.inbox_messages.len(),
-        ViewKind::Sessions => state.filtered_session_tree().len(),
-        ViewKind::Subagents => state.store.subagents.len(),
+        ViewKind::Sessions => state.filtered_sessions().len(),
+        ViewKind::Subagents => state.store.all_subagents.len(),
         _ => 0,
     }
 }
@@ -465,23 +608,24 @@ fn load_effects_for_view(state: &AppState, view: ViewKind) -> Vec<Effect> {
             }
         }
         ViewKind::SessionDetail => {
+            let mut effects = vec![Effect::RefreshAll];
             if let Some(session_id) = state.current_session() {
                 if let Some(session) = state.store.find_session(session_id) {
-                    return vec![
-                        Effect::RefreshSubagents {
-                            project: session.project.clone(),
-                            session_id: session.id.clone(),
-                        },
-                        Effect::LoadConversation {
-                            project: session.project.clone(),
-                            session_id: session.id.clone(),
-                        },
-                    ];
+                    effects.push(Effect::RefreshSubagents {
+                        project: session.project.clone(),
+                        session_id: session.id.clone(),
+                    });
+                    effects.push(Effect::LoadConversation {
+                        project: session.project.clone(),
+                        session_id: session.id.clone(),
+                    });
                 }
             }
-            vec![]
+            effects
         }
         ViewKind::Subagents => {
+            // If we have a session context, refresh that session's subagents;
+            // otherwise show all subagents (already loaded).
             if let Some(session_id) = state.current_session() {
                 if let Some(session) = state.store.find_session(session_id) {
                     return vec![Effect::RefreshSubagents {
@@ -490,7 +634,10 @@ fn load_effects_for_view(state: &AppState, view: ViewKind) -> Vec<Effect> {
                     }];
                 }
             }
-            vec![]
+            vec![Effect::RefreshSessions]
+        }
+        ViewKind::Agents => {
+            vec![Effect::RefreshAll]
         }
         ViewKind::SubagentDetail => {
             // Load the subagent's conversation
@@ -549,22 +696,24 @@ mod tests {
     #[test]
     fn test_reduce_table_select() {
         let mut state = test_state();
-        // Default view is Sessions (filtered to running), so mark sessions as running
+        // Default view is Sessions (default filter: Active), add 3 running sessions
         state.store.sessions = vec![
             crate::domain::entities::Session {
+                id: "s1".to_string(),
                 is_running: true,
                 ..Default::default()
             },
             crate::domain::entities::Session {
+                id: "s2".to_string(),
                 is_running: true,
                 ..Default::default()
             },
             crate::domain::entities::Session {
+                id: "s3".to_string(),
                 is_running: true,
                 ..Default::default()
             },
         ];
-        state.rebuild_session_tree();
         reduce(&mut state, Action::Table(TableAction::Next));
         assert_eq!(state.table_state.selected, 1);
         reduce(&mut state, Action::Table(TableAction::Next));
@@ -612,12 +761,12 @@ mod tests {
                 on_confirm: Box::new(Action::Ui(UiAction::Toast("confirmed!".to_string()))),
             }),
         );
-        assert!(state.confirm_message.is_some());
+        assert!(state.confirm_dialog.is_some());
         assert!(matches!(state.input_mode, InputMode::Confirm));
 
         reduce(&mut state, Action::Ui(UiAction::ConfirmYes));
         assert_eq!(state.toast.as_deref(), Some("confirmed!"));
-        assert!(state.confirm_message.is_none());
+        assert!(state.confirm_dialog.is_none());
     }
 
     #[test]

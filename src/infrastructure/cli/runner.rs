@@ -1,5 +1,5 @@
+use crate::domain::error::Result;
 use crate::domain::ports::{CliGateway, CliOutput};
-use crate::infrastructure::error::Result;
 
 /// Production CLI runner using tokio::process.
 pub struct RealCliRunner {

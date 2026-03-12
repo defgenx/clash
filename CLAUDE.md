@@ -2,7 +2,7 @@
 
 ## What is clash?
 
-K9s-style terminal UI for managing Claude Code Agent Teams. Built in Rust with ratatui.
+Terminal UI for managing Claude Code Sessions & Agent Teams. Built in Rust with ratatui.
 
 ## Quick Commands
 

@@ -3,72 +3,99 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use tui_big_text::{BigText, PixelSize};
 
 use crate::infrastructure::tui::theme;
 
-const LOGO: &[&str] = &[
-    r"        .__                .__     ",
-    r"   ____ |  | _____    _____|  |__  ",
-    r" _/ ___\|  | \__  \  /  ___|  |  \ ",
-    r" \  \___|  |__/ __ \_\___ \|   Y  \",
-    r"  \___  |____(____  /____  |___|  /",
-    r"      \/          \/     \/     \/ ",
-];
+const TAGLINE: &str = "your agents aren't gonna manage themselves";
 
-const TAGLINE: &str = "Claude Stash - TUI for Claude Code Sessions";
-
-const HINTS: &[&str] = &[
-    "c  New session     :teams  View teams     ?  Help",
-    "A  Show all sessions      /  Filter        q  Quit",
-];
-
-/// Render the splash logo centered in the given area.
+/// Render the splash/landing page centered in the given area.
 pub fn render_logo(frame: &mut Frame, area: Rect) {
-    // Vertically center: logo (6) + blank (1) + tagline (1) + blank (1) + hints (2) = 11 lines
-    let content_height = 11u16;
+    // BigText "clash" is 4 lines tall at HalfHeight pixel size
+    // Layout: big_text (4) + gap (1) + sparkle+tagline (1) + gap (2) + hints (4) + gap (1) + version (1) = 14
+    let content_height = 14u16;
     let top_pad = area.height.saturating_sub(content_height) / 2;
 
     let layout = Layout::vertical([
         Constraint::Length(top_pad),
-        Constraint::Length(6), // logo
+        Constraint::Length(4), // big text
         Constraint::Length(1), // gap
         Constraint::Length(1), // tagline
+        Constraint::Length(2), // gap
+        Constraint::Length(4), // hints
         Constraint::Length(1), // gap
-        Constraint::Length(2), // hints
+        Constraint::Length(1), // version
         Constraint::Min(0),
     ])
     .split(area);
 
-    // Logo
-    let logo_lines: Vec<Line> = LOGO
-        .iter()
-        .map(|line| {
-            Line::from(Span::styled(
-                *line,
-                Style::default()
-                    .fg(theme::ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            ))
-        })
-        .collect();
+    // Big "clash" text using block characters
+    let big = BigText::builder()
+        .pixel_size(PixelSize::HalfHeight)
+        .style(
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        )
+        .lines(vec!["clash".into()])
+        .alignment(Alignment::Center)
+        .build();
 
-    let logo_widget = Paragraph::new(logo_lines).alignment(Alignment::Center);
-    frame.render_widget(logo_widget, layout[1]);
+    frame.render_widget(big, layout[1]);
 
-    // Tagline
-    let tagline = Paragraph::new(Line::from(Span::styled(
-        TAGLINE,
-        Style::default().fg(theme::TEXT_DIM),
-    )))
+    // Sparkle + tagline
+    let tagline = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "✦ ",
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(TAGLINE, Style::default().fg(theme::TEXT_DIM)),
+    ]))
     .alignment(Alignment::Center);
     frame.render_widget(tagline, layout[3]);
 
-    // Hints
-    let hint_lines: Vec<Line> = HINTS
-        .iter()
-        .map(|line| Line::from(Span::styled(*line, Style::default().fg(theme::MUTED))))
-        .collect();
+    // Hint blocks
+    let hints: Vec<Line> = vec![
+        hint_line("c", "New session", "a", "Attach to session"),
+        hint_line("Tab", "Expand agents", "/", "Filter"),
+        hint_line(":", "Command mode", "?", "Help"),
+        hint_line("A", "Active / all", "q", "Quit"),
+    ];
 
-    let hints_widget = Paragraph::new(hint_lines).alignment(Alignment::Center);
+    let hints_widget = Paragraph::new(hints).alignment(Alignment::Center);
     frame.render_widget(hints_widget, layout[5]);
+
+    // Version
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let version_widget = Paragraph::new(Line::from(Span::styled(
+        version,
+        Style::default().fg(theme::MUTED),
+    )))
+    .alignment(Alignment::Center);
+    frame.render_widget(version_widget, layout[7]);
+}
+
+/// Build a hint line with two key-description pairs.
+fn hint_line(key1: &str, desc1: &str, key2: &str, desc2: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("  {:<6}", key1),
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{:<20}", desc1),
+            Style::default().fg(theme::TEXT_DIM),
+        ),
+        Span::styled(
+            format!("  {:<6}", key2),
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(desc2.to_string(), Style::default().fg(theme::TEXT_DIM)),
+    ])
 }

@@ -1,10 +1,11 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Cell;
 
+use crate::adapters::format::{self, or_dash, short_id, truncate};
 use crate::adapters::views::{ColumnDef, Keybinding, TableView, ViewKind};
 use crate::application::actions::{Action, NavAction};
 use crate::application::state::AppState;
-use crate::domain::entities::{SessionStatus, Subagent};
+use crate::domain::entities::Subagent;
 use crate::infrastructure::tui::theme;
 
 pub struct SubagentsTable;
@@ -15,70 +16,33 @@ impl TableView for SubagentsTable {
     fn columns() -> Vec<ColumnDef> {
         vec![
             ColumnDef::new("STATUS", 15),
-            ColumnDef::new("AGENT", 20),
-            ColumnDef::new("TYPE", 12),
-            ColumnDef::new("SUMMARY", 38),
+            ColumnDef::new("AGENT", 18),
+            ColumnDef::new("SESSION", 10),
+            ColumnDef::new("TYPE", 10),
+            ColumnDef::new("SUMMARY", 32),
             ColumnDef::new("MODIFIED", 15),
         ]
     }
 
     fn row(item: &Subagent) -> Vec<Cell<'static>> {
-        let (status, status_style) = match item.status {
-            SessionStatus::Waiting => (
-                "◉ WAITING".to_string(),
-                Style::default()
-                    .fg(theme::STATUS_WAITING)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            SessionStatus::Thinking => (
-                "◎ THINKING".to_string(),
-                Style::default()
-                    .fg(theme::STATUS_THINKING)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            SessionStatus::Running => (
-                "● RUNNING".to_string(),
-                Style::default()
-                    .fg(theme::STATUS_RUNNING)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            SessionStatus::Starting => (
-                "⦿ STARTING".to_string(),
-                Style::default()
-                    .fg(theme::STATUS_STARTING)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            SessionStatus::Prompting => (
-                "◉ PROMPTING".to_string(),
-                Style::default()
-                    .fg(theme::STATUS_PROMPTING)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            SessionStatus::Idle => (
-                "✓ DONE".to_string(),
-                Style::default()
-                    .fg(theme::STATUS_RUNNING) // green = done
-                    .add_modifier(Modifier::BOLD),
-            ),
-        };
-
-        let display_id = if item.id.len() > 20 {
-            format!("{}...", &item.id[..17])
+        let (status, status_style) = format::status_cell(item.status);
+        let display_id = truncate(&item.id, 18, "…");
+        let short_session = short_id(&item.parent_session_id, 8).to_string();
+        let agent_type = or_dash(if item.agent_type.is_empty() {
+            ""
         } else {
-            item.id.clone()
-        };
-
-        let agent_type = if item.agent_type.is_empty() {
-            "agent".to_string()
+            &item.agent_type
+        });
+        let agent_type = if agent_type == "—" {
+            "agent"
         } else {
-            item.agent_type.clone()
+            agent_type
         };
-
-        let summary = if item.summary.is_empty() {
-            "—".to_string()
+        let summary = or_dash(if item.summary.is_empty() {
+            ""
         } else {
-            item.summary.clone()
-        };
+            &item.summary
+        });
 
         vec![
             Cell::from(status).style(status_style),
@@ -87,14 +51,30 @@ impl TableView for SubagentsTable {
                     .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             ),
-            Cell::from(agent_type).style(Style::default().fg(theme::STATUS_WAITING)),
-            Cell::from(summary).style(Style::default().fg(theme::TEXT_DIM)),
+            Cell::from(short_session).style(
+                Style::default()
+                    .fg(theme::CLAUDE_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from(agent_type.to_string()).style(Style::default().fg(theme::STATUS_WAITING)),
+            Cell::from(summary.to_string()).style(Style::default().fg(theme::TEXT_DIM)),
             Cell::from(item.last_modified.clone()).style(Style::default().fg(theme::MUTED)),
         ]
     }
 
     fn items(state: &AppState) -> Vec<&Subagent> {
-        state.store.subagents.iter().collect()
+        // If we have a session context, show only that session's subagents;
+        // otherwise show all subagents across all sessions.
+        if let Some(session_id) = state.current_session() {
+            state
+                .store
+                .subagents
+                .iter()
+                .filter(|s| s.parent_session_id == session_id)
+                .collect()
+        } else {
+            state.store.all_subagents.iter().collect()
+        }
     }
 
     fn on_select(item: &Subagent) -> Action {
@@ -112,6 +92,6 @@ impl TableView for SubagentsTable {
     }
 
     fn empty_message() -> &'static str {
-        "No subagents found for this session."
+        "No subagents found."
     }
 }

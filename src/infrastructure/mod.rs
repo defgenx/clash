@@ -5,4 +5,6 @@ pub mod daemon;
 pub mod error;
 pub mod event;
 pub mod fs;
+pub mod hooks;
 pub mod tui;
+pub mod update;
