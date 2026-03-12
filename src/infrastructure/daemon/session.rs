@@ -426,8 +426,7 @@ fn detect_claude_status(screen_text: &str, last_output_at: u64) -> &'static str 
     } else if elapsed <= 8 {
         "thinking"
     } else {
-        // Long silence + no prompt detected → could be stuck or slow
-        "waiting"
+        "idle"
     }
 }
 
@@ -478,20 +477,17 @@ fn has_approval_prompt(bottom: &str, last_lines: &[&str]) -> bool {
 
 /// Check if the screen shows a user input prompt.
 fn has_input_prompt(bottom: &str, last_lines: &[&str]) -> bool {
-    // Check the very last non-empty line for prompt characters
+    // Check the very last non-empty line for standalone prompt characters.
+    // Only match when the line IS the prompt (short, just the marker),
+    // not when ">" appears at the end of arbitrary output.
     if let Some(last) = last_lines.first() {
         let trimmed = last.trim();
-        // Common prompt endings
-        if trimmed.ends_with('>')
-            || trimmed.ends_with('❯')
-            || trimmed.ends_with('$')
-            || trimmed.ends_with('%')
-            || trimmed.ends_with(">>>")
+        if trimmed == ">"
+            || trimmed == "❯"
+            || trimmed == "$"
+            || trimmed == "%"
+            || trimmed == ">>>"
         {
-            return true;
-        }
-        // Claude Code shows ">" or similar at start of input line
-        if trimmed == ">" || trimmed == "❯" || trimmed == "$" {
             return true;
         }
     }
