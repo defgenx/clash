@@ -6,6 +6,8 @@ pub enum AgentAction {
     /// Spawn a new interactive Claude session in the given directory.
     SpawnSession {
         cwd: String,
+        /// Optional human-readable label for the session.
+        name: Option<String>,
     },
     /// Terminate the Claude process + delete session files.
     TerminateAndDelete {
@@ -17,6 +19,8 @@ pub enum AgentAction {
         project: String,
         session_id: String,
     },
-    /// Delete all sessions.
+    /// Terminate all processes + delete all session files.
+    TerminateAndDeleteAllSessions,
+    /// Delete all session files only (leave processes running).
     DeleteAllSessions,
 }

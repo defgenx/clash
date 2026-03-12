@@ -190,6 +190,12 @@ pub struct Session {
     /// Granular session status.
     #[serde(default)]
     pub status: SessionStatus,
+    /// Git worktree name, if the session is running inside a worktree.
+    #[serde(default)]
+    pub worktree: Option<String>,
+    /// Optional human-readable label for the session.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 impl Session {
@@ -201,6 +207,12 @@ impl Session {
             || self.project_path.to_lowercase().contains(&f)
             || self.git_branch.to_lowercase().contains(&f)
             || self.first_prompt.to_lowercase().contains(&f)
+            || self
+                .name
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&f)
     }
 }
 
@@ -227,6 +239,9 @@ pub struct Subagent {
     /// Granular status (same as sessions).
     #[serde(default)]
     pub status: SessionStatus,
+    /// Git worktree name, if the subagent is running inside a worktree.
+    #[serde(default)]
+    pub worktree: Option<String>,
 }
 
 impl Subagent {

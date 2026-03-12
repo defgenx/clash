@@ -208,11 +208,19 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             state.scroll_state.offset = 0;
             vec![Effect::DaemonAttach { session_id }]
         }
-        AgentAction::SpawnSession { cwd } => {
-            // Create a new daemon-managed session and attach inline
-            let session_id = format!("clash-{}", chrono::Utc::now().timestamp_millis());
+        AgentAction::SpawnSession { cwd, name } => {
+            // Create a new daemon-managed session and attach inline.
+            // Use a UUID as the internal session ID for the daemon PTY.
+            // We don't pass --session-id to Claude — let it manage its own.
+            let session_id = uuid::Uuid::now_v7().to_string();
             state.input_mode = InputMode::Attached;
             state.attached_session = Some(session_id.clone());
+
+            // Default name: "Clash-N" where N is based on current session count.
+            let session_name = name.unwrap_or_else(|| {
+                let n = state.store.sessions.len() + 1;
+                format!("Clash-{}", n)
+            });
 
             state.scroll_state.offset = 0;
             vec![
@@ -220,6 +228,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                     session_id: session_id.clone(),
                     args: vec![],
                     cwd,
+                    name: Some(session_name),
                 },
                 Effect::DaemonAttach { session_id },
             ]
@@ -265,8 +274,17 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             effects.push(Effect::RefreshSessions);
             effects
         }
+        AgentAction::TerminateAndDeleteAllSessions => {
+            state.toast = Some("Terminating all sessions...".to_string());
+            vec![
+                Effect::DaemonKillAll,
+                Effect::TerminateAllProcesses,
+                Effect::DeleteAllSessions,
+                Effect::RefreshSessions,
+            ]
+        }
         AgentAction::DeleteAllSessions => {
-            state.toast = Some("All sessions closed".to_string());
+            state.toast = Some("All session files deleted".to_string());
             vec![
                 Effect::DaemonKillAll,
                 Effect::DeleteAllSessions,
@@ -420,7 +438,10 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                     } else {
                         cwd
                     };
-                    reduce(state, Action::Agent(AgentAction::SpawnSession { cwd }))
+                    reduce(
+                        state,
+                        Action::Agent(AgentAction::SpawnSession { cwd, name: None }),
+                    )
                 }
                 _ => vec![],
             }

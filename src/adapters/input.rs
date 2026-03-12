@@ -182,6 +182,22 @@ fn handle_confirm_mode(key: KeyEvent, state: &AppState) -> Action {
     }
 }
 
+/// Get the subagent list matching what the Subagents view displays.
+/// When there's a session context, returns only that session's subagents;
+/// otherwise returns all subagents.
+fn subagent_items(state: &AppState) -> Vec<&crate::domain::entities::Subagent> {
+    if let Some(session_id) = state.current_session() {
+        state
+            .store
+            .subagents
+            .iter()
+            .filter(|s| s.parent_session_id == session_id)
+            .collect()
+    } else {
+        state.store.all_subagents.iter().collect()
+    }
+}
+
 fn handle_enter(state: &AppState) -> Action {
     match state.current_view() {
         // Enter on Sessions = drill into SessionDetail
@@ -199,7 +215,8 @@ fn handle_enter(state: &AppState) -> Action {
         // Enter on Subagents = drill into SubagentDetail
         ViewKind::Subagents => {
             let idx = state.table_state.selected;
-            if let Some(sa) = state.store.all_subagents.get(idx) {
+            let items = subagent_items(state);
+            if let Some(sa) = items.get(idx) {
                 Action::Nav(NavAction::DrillIn {
                     view: ViewKind::SubagentDetail,
                     context: sa.id.clone(),
@@ -303,9 +320,10 @@ fn handle_delete(state: &AppState) -> Action {
 
 fn handle_delete_all(state: &AppState) -> Action {
     match state.current_view() {
-        ViewKind::Sessions => Action::Ui(UiAction::ShowConfirm {
-            message: "Close and delete ALL sessions?".to_string(),
-            on_confirm: Box::new(Action::Agent(AgentAction::DeleteAllSessions)),
+        ViewKind::Sessions => Action::Ui(UiAction::ShowDeleteConfirm {
+            message: "Delete ALL sessions?".to_string(),
+            on_terminate: Box::new(Action::Agent(AgentAction::TerminateAndDeleteAllSessions)),
+            on_files_only: Box::new(Action::Agent(AgentAction::DeleteAllSessions)),
         }),
         _ => Action::Noop,
     }
@@ -332,7 +350,8 @@ fn handle_attach_or_assign(state: &AppState) -> Action {
         }
         ViewKind::Subagents => {
             let idx = state.table_state.selected;
-            if let Some(sa) = state.store.all_subagents.get(idx) {
+            let items = subagent_items(state);
+            if let Some(sa) = items.get(idx) {
                 return Action::Agent(AgentAction::Attach {
                     session_id: sa.parent_session_id.clone(),
                 });
@@ -536,6 +555,7 @@ pub fn parse_command(cmd: &str) -> Action {
         }
         return Action::Agent(crate::application::actions::AgentAction::SpawnSession {
             cwd: path.to_string(),
+            name: None,
         });
     }
 

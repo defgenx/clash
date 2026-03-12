@@ -369,6 +369,10 @@ impl App {
                     {
                         existing.status = status;
                         existing.is_running = is_running;
+                        // Overlay daemon name if the session doesn't have one yet
+                        if existing.name.is_none() && info.name.is_some() {
+                            existing.name = info.name.clone();
+                        }
                     } else {
                         // Daemon-only session (no disk file yet)
                         let created = chrono::DateTime::from_timestamp(info.created_at as i64, 0)
@@ -378,27 +382,56 @@ impl App {
                                     .to_string()
                             })
                             .unwrap_or_default();
-                        let clients_info = if info.attached_clients > 0 {
-                            format!("{} attached", info.attached_clients)
+
+                        // Derive project name from cwd (last path component)
+                        let project = if !info.cwd.is_empty() {
+                            std::path::Path::new(&info.cwd)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("")
+                                .to_string()
                         } else {
-                            "detached".to_string()
+                            String::new()
                         };
+
+                        let git_branch =
+                            crate::infrastructure::fs::backend::FsBackend::detect_git_branch(
+                                &info.cwd,
+                            );
+                        let worktree =
+                            crate::infrastructure::fs::backend::FsBackend::detect_worktree(
+                                &info.cwd,
+                            );
+
+                        let summary = if !info.cwd.is_empty() {
+                            format!("New session in {}", info.cwd)
+                        } else {
+                            let clients_info = if info.attached_clients > 0 {
+                                format!("{} attached", info.attached_clients)
+                            } else {
+                                "detached".to_string()
+                            };
+                            format!("PID {} | {}", info.pid, clients_info)
+                        };
+
                         self.state
                             .store
                             .sessions
                             .push(crate::domain::entities::Session {
                                 id: info.session_id,
-                                project: String::new(),
-                                project_path: String::new(),
+                                project,
+                                project_path: info.cwd,
                                 last_modified: created,
-                                summary: format!("PID {} | {}", info.pid, clients_info),
+                                summary,
                                 first_prompt: String::new(),
                                 has_subagents: false,
                                 subagent_count: 0,
                                 message_count: 0,
-                                git_branch: String::new(),
+                                git_branch,
                                 is_running,
                                 status,
+                                worktree,
+                                name: info.name,
                             });
                     }
                 }
@@ -571,6 +604,7 @@ impl App {
                     session_id,
                     args,
                     cwd,
+                    name,
                 } => {
                     // Auto-start daemon if not connected
                     if !self.daemon.is_connected() {
@@ -584,16 +618,24 @@ impl App {
                     }
                     match self
                         .daemon
-                        .create_session(&session_id, &self.cli_runner.claude_bin, &args, &cwd)
+                        .create_session(
+                            &session_id,
+                            &self.cli_runner.claude_bin,
+                            &args,
+                            &cwd,
+                            name.clone(),
+                        )
                         .await
                     {
                         Ok(()) => {
-                            let short = if session_id.len() > 8 {
-                                &session_id[..8]
+                            let label = if let Some(ref n) = name {
+                                n.clone()
+                            } else if session_id.len() > 8 {
+                                session_id[..8].to_string()
                             } else {
-                                &session_id
+                                session_id.clone()
                             };
-                            self.state.toast = Some(format!("Session {} created", short));
+                            self.state.toast = Some(format!("Session {} created", label));
                         }
                         Err(e) => {
                             self.state.toast = Some(format!("Create failed: {}", e));
@@ -621,7 +663,13 @@ impl App {
                         // Ignore "already exists" error — that's fine, we just attach.
                         let _ = self
                             .daemon
-                            .create_session(&session_id, &self.cli_runner.claude_bin, &args, "")
+                            .create_session(
+                                &session_id,
+                                &self.cli_runner.claude_bin,
+                                &args,
+                                "",
+                                None,
+                            )
                             .await;
                     }
 
@@ -671,6 +719,12 @@ impl App {
                 }
                 Effect::TerminateProcess { session_id } => {
                     terminate_claude_process(&session_id).await;
+                }
+                Effect::TerminateAllProcesses => {
+                    // Terminate all Claude processes for all known sessions
+                    for session in &self.state.store.sessions {
+                        terminate_claude_process(&session.id).await;
+                    }
                 }
                 Effect::DaemonKillAll => {
                     if self.daemon.is_connected() {

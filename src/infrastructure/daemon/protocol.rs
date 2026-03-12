@@ -23,6 +23,9 @@ pub enum Request {
         args: Vec<String>,
         /// Working directory (empty = inherit).
         cwd: String,
+        /// Optional human-readable label for the session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
 
     /// Attach to an existing session (start receiving output).
@@ -99,6 +102,12 @@ pub struct SessionInfo {
     /// Session status: "running", "waiting", "idle".
     #[serde(default)]
     pub status: String,
+    /// Working directory the session was spawned in.
+    #[serde(default)]
+    pub cwd: String,
+    /// Optional human-readable label for the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────

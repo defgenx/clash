@@ -3,7 +3,7 @@ use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Cell, Row, Table};
 use ratatui::Frame;
 
-use crate::adapters::format::{self, or_dash, short_id};
+use crate::adapters::format::{self, or_dash};
 use crate::adapters::views::{ColumnDef, Keybinding, TableView, ViewKind};
 use crate::application::actions::{Action, NavAction};
 use crate::application::state::AppState;
@@ -65,6 +65,11 @@ fn subagent_row(sa: &Subagent) -> Vec<Cell<'static>> {
         sa.agent_type.clone()
     };
 
+    let worktree_display = match &sa.worktree {
+        Some(name) => format!("⊟ {}", name),
+        None => "".to_string(),
+    };
+
     vec![
         Cell::from(format!("  {}", status)).style(style),
         Cell::from(format!("  └ {}", display_id)).style(Style::default().fg(theme::MUTED)),
@@ -72,6 +77,7 @@ fn subagent_row(sa: &Subagent) -> Vec<Cell<'static>> {
         Cell::from(summary).style(Style::default().fg(theme::TEXT_DIM)),
         Cell::from("".to_string()),
         Cell::from("".to_string()),
+        Cell::from(worktree_display).style(Style::default().fg(theme::ACCENT)),
     ]
 }
 
@@ -100,7 +106,15 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
 
     for (i, session) in sessions.iter().enumerate() {
         let is_expanded = state.expanded_sessions.contains(&session.id);
-        let expand_indicator = if session.subagent_count > 0 {
+
+        // Get subagents for this session
+        let subs = state.store.subagents_by_session.get(&session.id);
+
+        // Only show expand arrow if there are active (non-idle) subagents
+        let has_active_subs = subs
+            .map(|s| s.iter().any(|sa| !matches!(sa.status, SessionStatus::Idle)))
+            .unwrap_or(false);
+        let expand_indicator = if has_active_subs {
             if is_expanded {
                 "▼ "
             } else {
@@ -109,9 +123,6 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
         } else {
             "  "
         };
-
-        // Get subagents for this session
-        let subs = state.store.subagents_by_session.get(&session.id);
         let agents_text = if let Some(subs) = subs {
             agents_summary(subs)
         } else if session.subagent_count > 0 {
@@ -121,7 +132,7 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
         };
 
         let (status, status_style) = format::status_cell(session.status);
-        let sid = short_id(&session.id, 8);
+        let name_display = session.name.as_deref().unwrap_or("—");
         let display_name = or_dash(if session.summary.is_empty() {
             ""
         } else {
@@ -133,10 +144,14 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
             .next()
             .unwrap_or(&session.project_path);
         let branch = or_dash(&session.git_branch);
+        let worktree_display = match &session.worktree {
+            Some(name) => format!("⊟ {}", name),
+            None => "—".to_string(),
+        };
 
         let cells = vec![
             Cell::from(format!("{}{}", expand_indicator, status)).style(status_style),
-            Cell::from(sid.to_string()).style(
+            Cell::from(name_display.to_string()).style(
                 Style::default()
                     .fg(theme::CLAUDE_COLOR)
                     .add_modifier(ratatui::style::Modifier::BOLD),
@@ -145,6 +160,7 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
             Cell::from(display_name.to_string()).style(Style::default().fg(theme::TEXT_DIM)),
             Cell::from(agents_text).style(Style::default().fg(theme::ACCENT)),
             Cell::from(branch.to_string()).style(Style::default().fg(theme::STATUS_WAITING)),
+            Cell::from(worktree_display).style(Style::default().fg(theme::ACCENT)),
         ];
 
         let row = Row::new(cells);
@@ -207,18 +223,19 @@ impl TableView for SessionsTable {
 
     fn columns() -> Vec<ColumnDef> {
         vec![
-            ColumnDef::new("STATUS", 15),
-            ColumnDef::new("SESSION", 12),
-            ColumnDef::new("PROJECT", 20),
-            ColumnDef::new("SUMMARY", 35),
-            ColumnDef::new("AGENTS", 8),
+            ColumnDef::new("STATUS", 13),
+            ColumnDef::new("NAME", 10),
+            ColumnDef::new("PROJECT", 22),
+            ColumnDef::new("SUMMARY", 27),
+            ColumnDef::new("AGENTS", 7),
             ColumnDef::new("BRANCH", 10),
+            ColumnDef::new("WORKTREE", 11),
         ]
     }
 
     fn row(item: &Session) -> Vec<Cell<'static>> {
         let (status, status_style) = format::status_cell(item.status);
-        let sid = short_id(&item.id, 8).to_string();
+        let name_display = item.name.clone().unwrap_or_else(|| "—".to_string());
         let display_name = or_dash(if item.summary.is_empty() {
             ""
         } else {
@@ -236,10 +253,14 @@ impl TableView for SessionsTable {
             "—".to_string()
         };
         let branch = or_dash(&item.git_branch);
+        let worktree_display = match &item.worktree {
+            Some(name) => format!("⊟ {}", name),
+            None => "—".to_string(),
+        };
 
         vec![
             Cell::from(status).style(status_style),
-            Cell::from(sid).style(
+            Cell::from(name_display).style(
                 Style::default()
                     .fg(theme::CLAUDE_COLOR)
                     .add_modifier(ratatui::style::Modifier::BOLD),
@@ -248,6 +269,7 @@ impl TableView for SessionsTable {
             Cell::from(display_name.to_string()).style(Style::default().fg(theme::TEXT_DIM)),
             Cell::from(agents).style(Style::default().fg(theme::ACCENT)),
             Cell::from(branch.to_string()).style(Style::default().fg(theme::STATUS_WAITING)),
+            Cell::from(worktree_display).style(Style::default().fg(theme::ACCENT)),
         ]
     }
 

@@ -119,6 +119,9 @@ impl FsBackend {
             Self::detect_git_branch(project_path_str)
         };
 
+        // Detect if running inside a git worktree
+        let worktree = Self::detect_worktree(project_path_str);
+
         Session {
             id: session_id.to_string(),
             project: project_dir_name.to_string(),
@@ -132,16 +135,37 @@ impl FsBackend {
             git_branch: resolved_branch,
             is_running,
             status,
+            worktree,
+            name: None,
         }
     }
 
     /// Detect the current git branch from a project path by reading .git/HEAD.
-    fn detect_git_branch(project_path: &str) -> String {
+    /// Handles both regular repos (.git is a directory) and worktrees (.git is a file).
+    pub fn detect_git_branch(project_path: &str) -> String {
         if project_path.is_empty() {
             return String::new();
         }
-        let git_head = std::path::Path::new(project_path).join(".git/HEAD");
-        if let Ok(content) = std::fs::read_to_string(&git_head) {
+        let git_path = std::path::Path::new(project_path).join(".git");
+
+        // For worktrees, .git is a file containing "gitdir: /path/to/.git/worktrees/<name>"
+        let head_path = if git_path.is_file() {
+            std::fs::read_to_string(&git_path).ok().and_then(|content| {
+                content
+                    .trim()
+                    .strip_prefix("gitdir: ")
+                    .map(|gitdir| std::path::PathBuf::from(gitdir).join("HEAD"))
+            })
+        } else {
+            Some(git_path.join("HEAD"))
+        };
+
+        let head_path = match head_path {
+            Some(p) => p,
+            None => return String::new(),
+        };
+
+        if let Ok(content) = std::fs::read_to_string(&head_path) {
             let content = content.trim();
             // "ref: refs/heads/my-branch" → "my-branch"
             if let Some(branch) = content.strip_prefix("ref: refs/heads/") {
@@ -153,6 +177,32 @@ impl FsBackend {
             }
         }
         String::new()
+    }
+
+    /// Detect if a project path is inside a git worktree.
+    /// Returns the worktree name if detected, None otherwise.
+    pub fn detect_worktree(project_path: &str) -> Option<String> {
+        if project_path.is_empty() {
+            return None;
+        }
+        let git_path = std::path::Path::new(project_path).join(".git");
+        if git_path.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&git_path) {
+                if let Some(gitdir) = content.trim().strip_prefix("gitdir: ") {
+                    // "gitdir: /path/to/.git/worktrees/<name>" → extract <name>
+                    if let Some(name) = gitdir.rsplit('/').next() {
+                        if !name.is_empty() {
+                            return Some(name.to_string());
+                        }
+                    }
+                    return Some("yes".to_string());
+                }
+            }
+            // .git is a file but couldn't parse — likely still a worktree
+            Some("yes".to_string())
+        } else {
+            None
+        }
     }
 
     /// Extract the first user message from a .jsonl session file as a summary.
@@ -363,6 +413,7 @@ impl DataRepository for FsBackend {
         }
 
         let mut sessions = Vec::new();
+        let mut global_seen_ids = std::collections::HashSet::new();
         let now = std::time::SystemTime::now();
 
         let project_entries = std::fs::read_dir(&projects_dir)?;
@@ -399,6 +450,11 @@ impl DataRepository for FsBackend {
                                     .unwrap_or("")
                                     .to_string();
                                 if session_id.is_empty() {
+                                    continue;
+                                }
+
+                                // Skip if we've already seen this session from another project
+                                if !global_seen_ids.insert(session_id.clone()) {
                                     continue;
                                 }
 
@@ -490,6 +546,10 @@ impl DataRepository for FsBackend {
 
                     let session_id = fname.trim_end_matches(".jsonl").to_string();
                     if indexed_ids.contains(&session_id) {
+                        continue;
+                    }
+                    // Skip if we've already seen this session from another project
+                    if !global_seen_ids.insert(session_id.clone()) {
                         continue;
                     }
 
@@ -603,6 +663,15 @@ impl DataRepository for FsBackend {
             // Decode project name to path
             let decoded_path = format!("/{}", project.trim_start_matches('-').replace('-', "/"));
 
+            // Extract cwd from subagent JSONL for worktree detection
+            let sub_meta = Self::extract_session_metadata(&path);
+            let sub_cwd = if !sub_meta.cwd.is_empty() {
+                sub_meta.cwd
+            } else {
+                decoded_path.clone()
+            };
+            let worktree = Self::detect_worktree(&sub_cwd);
+
             subagents.push(Subagent {
                 id: agent_id,
                 agent_type,
@@ -610,9 +679,10 @@ impl DataRepository for FsBackend {
                 project: project.to_string(),
                 last_modified,
                 summary,
-                file_path: decoded_path,
+                file_path: sub_cwd,
                 is_running,
                 status,
+                worktree,
             });
         }
 

@@ -5,6 +5,7 @@ use crate::adapters::views::{ColumnDef, Keybinding, TableView, ViewKind};
 use crate::application::actions::{Action, NavAction};
 use crate::application::state::AppState;
 use crate::domain::entities::Member;
+use crate::infrastructure::fs::backend::FsBackend;
 
 pub struct AgentsTable;
 
@@ -13,13 +14,14 @@ impl TableView for AgentsTable {
 
     fn columns() -> Vec<ColumnDef> {
         vec![
-            ColumnDef::new("NAME", 20),
-            ColumnDef::new("TEAM", 15),
-            ColumnDef::new("TYPE", 12),
-            ColumnDef::new("MODEL", 12),
-            ColumnDef::new("STATUS", 10),
-            ColumnDef::new("MODE", 10),
-            ColumnDef::new("CWD", 21),
+            ColumnDef::new("NAME", 17),
+            ColumnDef::new("TEAM", 13),
+            ColumnDef::new("TYPE", 10),
+            ColumnDef::new("MODEL", 10),
+            ColumnDef::new("STATUS", 8),
+            ColumnDef::new("MODE", 8),
+            ColumnDef::new("CWD", 22),
+            ColumnDef::new("WORKTREE", 12),
         ]
     }
 
@@ -37,6 +39,12 @@ impl TableView for AgentsTable {
             item.team_name.clone()
         };
 
+        let worktree = item.cwd.as_deref().and_then(FsBackend::detect_worktree);
+        let worktree_display = match &worktree {
+            Some(name) => format!("⊟ {}", name),
+            None => "—".to_string(),
+        };
+
         vec![
             Cell::from(item.name.clone()).style(
                 Style::default()
@@ -50,6 +58,7 @@ impl TableView for AgentsTable {
             Cell::from(item.mode.as_deref().unwrap_or("—").to_string()),
             Cell::from(item.cwd.as_deref().unwrap_or("—").to_string())
                 .style(Style::default().fg(Color::DarkGray)),
+            Cell::from(worktree_display).style(Style::default().fg(Color::Cyan)),
         ]
     }
 

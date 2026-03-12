@@ -31,8 +31,11 @@ const STATUS_SCREEN_COLS: u16 = 120;
 /// A managed PTY session.
 pub struct PtySession {
     pub session_id: String,
+    /// Optional human-readable label for the session.
+    pub name: Option<String>,
     pub pid: u32,
     pub created_at: u64,
+    pub cwd: String,
     master_fd: i32,
     /// Keep the OwnedFd alive — dropping it closes the master PTY fd.
     _master_owned: std::os::fd::OwnedFd,
@@ -53,6 +56,7 @@ impl PtySession {
     /// Spawn a new PTY session.
     pub fn spawn(
         session_id: String,
+        name: Option<String>,
         bin: &str,
         args: &[String],
         cwd: Option<&str>,
@@ -229,8 +233,10 @@ impl PtySession {
 
         Ok(Self {
             session_id,
+            name,
             pid,
             created_at: now,
+            cwd: cwd.unwrap_or("").to_string(),
             master_fd,
             _master_owned: pty.master,
             alive,

@@ -201,12 +201,14 @@ impl DaemonClient {
         bin: &str,
         args: &[String],
         cwd: &str,
+        name: Option<String>,
     ) -> std::io::Result<()> {
         self.send(&Request::CreateSession {
             session_id: session_id.to_string(),
             bin: bin.to_string(),
             args: args.to_vec(),
             cwd: cwd.to_string(),
+            name,
         })
         .await?;
 

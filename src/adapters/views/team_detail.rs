@@ -1,6 +1,7 @@
 use crate::adapters::format::short_id;
 use crate::adapters::views::{DetailView, Keybinding, Section};
 use crate::application::state::AppState;
+use crate::infrastructure::fs::backend::FsBackend;
 
 pub struct TeamDetailView;
 
@@ -54,9 +55,18 @@ impl DetailView for TeamDetailView {
                 } else {
                     format!(" {}", member.model)
                 };
+                let worktree_str = member
+                    .cwd
+                    .as_deref()
+                    .and_then(FsBackend::detect_worktree)
+                    .map(|w| format!(" ⊟ {}", w))
+                    .unwrap_or_default();
                 members_section = members_section.row(
                     &member.name,
-                    &format!("{} [{}]{}", status_icon, type_label, model_str),
+                    &format!(
+                        "{} [{}]{}{}",
+                        status_icon, type_label, model_str, worktree_str
+                    ),
                 );
             }
             members_section = members_section.row("", "Press Enter to view agents");

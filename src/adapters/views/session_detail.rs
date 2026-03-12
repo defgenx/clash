@@ -10,7 +10,8 @@ impl DetailView for SessionDetailView {
             let short = short_id(session_id, 8);
             if let Some(session) = state.store.find_session(session_id) {
                 let icon = format::status_icon(session.status);
-                format!("{} Session {}", icon, short)
+                let label = session.name.as_deref().unwrap_or(short);
+                format!("{} Session {}", icon, label)
             } else {
                 format!("Session {}", short)
             }
@@ -30,21 +31,23 @@ impl DetailView for SessionDetailView {
             None => return vec![Section::new("Error").row("", "Session not found")],
         };
 
-        let info = Section::new("Info")
+        let mut info = Section::new("Info")
             .row("Session", &session.id)
+            .row("Name", session.name.as_deref().unwrap_or("—"))
             .row("Status", format::status_display(session.status))
-            .row("Project", &session.project_path)
+            .row("Path", &session.project_path)
             .row("Branch", or_dash(&session.git_branch))
+            .row("Worktree", session.worktree.as_deref().unwrap_or("no"))
             .row("Messages", &session.message_count.to_string())
-            .row("Modified", &session.last_modified)
-            .row(
-                "Summary",
-                or_dash(if session.summary.is_empty() {
-                    ""
-                } else {
-                    &session.summary
-                }),
-            );
+            .row("Modified", &session.last_modified);
+        info = info.row(
+            "Summary",
+            or_dash(if session.summary.is_empty() {
+                ""
+            } else {
+                &session.summary
+            }),
+        );
 
         // Linked Teams section — teams where lead_session_id matches this session
         let linked_teams: Vec<_> = state

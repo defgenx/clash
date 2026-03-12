@@ -160,6 +160,8 @@ async fn handle_client(
                         attached_clients: s.subscriber_count(),
                         created_at: s.created_at,
                         status: s.status().to_string(),
+                        cwd: s.cwd.clone(),
+                        name: s.name.clone(),
                     })
                     .collect();
                 send_event(&writer, &Event::Sessions { sessions: infos }).await;
@@ -170,6 +172,7 @@ async fn handle_client(
                 bin,
                 args,
                 cwd,
+                name,
             } => {
                 let mut map = sessions.lock().await;
                 if map.contains_key(&session_id) {
@@ -188,7 +191,7 @@ async fn handle_client(
                 } else {
                     Some(cwd.as_str())
                 };
-                match PtySession::spawn(session_id.clone(), &bin, &args, cwd_opt, 120, 40) {
+                match PtySession::spawn(session_id.clone(), name, &bin, &args, cwd_opt, 120, 40) {
                     Ok(session) => {
                         map.insert(session_id.clone(), session);
                         send_event(

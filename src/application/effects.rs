@@ -34,6 +34,8 @@ pub enum Effect {
         session_id: String,
         args: Vec<String>,
         cwd: String,
+        /// Optional human-readable label for the session.
+        name: Option<String>,
     },
     DaemonAttach {
         session_id: String,
@@ -49,6 +51,8 @@ pub enum Effect {
     TerminateProcess {
         session_id: String,
     },
+    /// Find and terminate all external Claude processes for all sessions.
+    TerminateAllProcesses,
 
     // ── Data refresh effects ────────────────────────────────────
     RefreshAll,
