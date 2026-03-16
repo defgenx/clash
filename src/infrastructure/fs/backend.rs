@@ -2,22 +2,11 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::adapters::format;
 use crate::domain::entities::{Session, Subagent, Task, Team};
 use crate::domain::error::Result;
 use crate::domain::ports::DataRepository;
 use crate::infrastructure::fs::atomic::write_atomic;
-
-/// Truncate a string at a char boundary, appending suffix if truncated.
-fn truncate_str(s: &str, max_chars: usize, suffix: &str) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    let truncated: String = s
-        .chars()
-        .take(max_chars.saturating_sub(suffix.len()))
-        .collect();
-    format!("{}{}", truncated, suffix)
-}
 
 /// Production filesystem-based data repository.
 pub struct FsBackend {
@@ -35,6 +24,20 @@ impl FsBackend {
 
     pub fn projects_dir(&self) -> PathBuf {
         self.base_dir.join("projects")
+    }
+
+    /// Get the mtime of a session's JSONL file (for freshness comparison).
+    pub fn session_jsonl_mtime(
+        &self,
+        project: &str,
+        session_id: &str,
+    ) -> Option<std::time::SystemTime> {
+        let path = self
+            .base_dir
+            .join("projects")
+            .join(project)
+            .join(format!("{}.jsonl", session_id));
+        path.metadata().ok().and_then(|m| m.modified().ok())
     }
 
     fn read_json_file<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
@@ -56,17 +59,13 @@ impl FsBackend {
         git_branch: &str,
         fallback_modified: &str,
         project_dir: &Path,
-        now: std::time::SystemTime,
+        _now: std::time::SystemTime,
     ) -> Session {
-        // Detect status from JSONL tail content + file age
+        // Detect status from JSONL tail content
         let file_meta = jsonl_path.metadata().ok();
         let file_mtime = file_meta.as_ref().and_then(|m| m.modified().ok());
 
-        let age_ms = file_mtime
-            .and_then(|mtime| now.duration_since(mtime).ok())
-            .map(|age| age.as_millis() as u64);
-
-        let status = Self::detect_session_status(jsonl_path, age_ms);
+        let status = Self::detect_session_status(jsonl_path);
         let is_running = !matches!(status, crate::domain::entities::SessionStatus::Idle);
 
         // Format last_modified from actual file mtime for accuracy
@@ -107,7 +106,7 @@ impl FsBackend {
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ");
-            truncate_str(&clean, 60, "...")
+            format::truncate(&clean, 60, "...")
         } else {
             String::new()
         };
@@ -276,7 +275,7 @@ impl FsBackend {
                         if !text.is_empty() {
                             let clean: String =
                                 text.split_whitespace().collect::<Vec<_>>().join(" ");
-                            meta.summary = truncate_str(&clean, 60, "...");
+                            meta.summary = format::truncate(&clean, 60, "...");
                         }
                     }
                 }
@@ -642,7 +641,6 @@ impl DataRepository for FsBackend {
 
             let file_meta = path.metadata().ok();
             let file_mtime = file_meta.as_ref().and_then(|m| m.modified().ok());
-            let now = std::time::SystemTime::now();
 
             let last_modified = file_mtime
                 .map(|mtime| {
@@ -651,11 +649,7 @@ impl DataRepository for FsBackend {
                 })
                 .unwrap_or_else(|| "unknown".to_string());
 
-            let age_ms = file_mtime
-                .and_then(|mtime| now.duration_since(mtime).ok())
-                .map(|age| age.as_millis() as u64);
-
-            let status = Self::detect_session_status(&path, age_ms);
+            let status = Self::detect_session_status(&path);
             let is_running = !matches!(status, crate::domain::entities::SessionStatus::Idle);
 
             let summary = Self::extract_session_summary(&path);
@@ -718,94 +712,24 @@ impl DataRepository for FsBackend {
             .join(format!("{}.jsonl", agent_id));
         Self::parse_conversation(&path)
     }
-
-    fn delete_session(&self, project: &str, session_id: &str) -> Result<()> {
-        let jsonl_path = self
-            .base_dir
-            .join("projects")
-            .join(project)
-            .join(format!("{}.jsonl", session_id));
-        if jsonl_path.exists() {
-            std::fs::remove_file(&jsonl_path)?;
-        }
-        // Also remove the session directory (subagents, etc.)
-        let session_dir = self
-            .base_dir
-            .join("projects")
-            .join(project)
-            .join(session_id);
-        if session_dir.is_dir() {
-            std::fs::remove_dir_all(&session_dir)?;
-        }
-        // Remove entry from sessions-index.json so it doesn't reappear
-        let index_path = self
-            .base_dir
-            .join("projects")
-            .join(project)
-            .join("sessions-index.json");
-        if index_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&index_path) {
-                if let Ok(mut index) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(entries) = index.get_mut("entries").and_then(|e| e.as_array_mut()) {
-                        let before = entries.len();
-                        entries.retain(|e| {
-                            e.get("sessionId")
-                                .and_then(|v| v.as_str())
-                                .map(|id| id != session_id)
-                                .unwrap_or(true)
-                        });
-                        if entries.len() != before {
-                            if let Ok(updated) = serde_json::to_string_pretty(&index) {
-                                let _ = crate::infrastructure::fs::atomic::write_atomic(
-                                    &index_path,
-                                    updated.as_bytes(),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn delete_all_sessions(&self) -> Result<()> {
-        let sessions = self.load_sessions()?;
-        for session in &sessions {
-            if let Err(e) = self.delete_session(&session.project, &session.id) {
-                tracing::warn!("Failed to delete session {}: {}", session.id, e);
-            }
-        }
-        // Also remove sessions-index.json files so ghost entries don't reappear
-        let projects_dir = self.base_dir.join("projects");
-        if projects_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&projects_dir) {
-                for entry in entries.flatten() {
-                    let index_path = entry.path().join("sessions-index.json");
-                    if index_path.exists() {
-                        let _ = std::fs::remove_file(&index_path);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 impl FsBackend {
     /// Detect session status by reading the tail of the JSONL file.
     ///
     /// This is the **baseline** — hooks and daemon overlay on top.
-    /// The JSONL parser is conservative: it only reports what it can prove.
     ///
-    /// - **Waiting**: only when `last-prompt` is present (definitive REPL signal)
-    /// - **Thinking**: Claude is mid-generation or processing (user/tool_use/no stop_reason)
-    /// - **Running**: active tool output (`progress`) or very recent file writes
-    /// - **Idle**: turn completed (`end_turn`/`result`), old file, or no clear signal
-    fn detect_session_status(
-        jsonl_path: &Path,
-        age_ms: Option<u64>,
-    ) -> crate::domain::entities::SessionStatus {
+    /// Key principle: **Idle means the session process is not running.**
+    /// A session at the REPL prompt is Waiting, not Idle.
+    /// We only mark Idle when we're confident the process has exited.
+    ///
+    /// - **Waiting**: turn completed, session is likely at the REPL prompt
+    /// - **Thinking**: Claude is mid-generation or processing
+    /// - **Running**: active tool output or very recent activity
+    ///
+    /// This heuristic never returns Idle — only hooks (SessionEnd) or manual
+    /// drop should set a session to idle.
+    fn detect_session_status(jsonl_path: &Path) -> crate::domain::entities::SessionStatus {
         use crate::domain::entities::SessionStatus;
         use std::io::{Read, Seek, SeekFrom};
 
@@ -884,45 +808,35 @@ impl FsBackend {
             }
         }
 
-        // 1. last-prompt at end → session is at the REPL prompt
-        //    If file is recent (<5 min), session is likely still alive → Waiting.
-        //    If old, it probably exited → Idle.
+        // JSONL heuristics provide a baseline status from the conversation log.
+        // Hook statuses (from Claude Code lifecycle events) overlay these and are
+        // more authoritative. Only hooks (SessionEnd) or manual drop set idle —
+        // the JSONL heuristic never returns idle so stale sessions show their
+        // logical state rather than falsely appearing idle.
+
+        // 1. last-prompt → session is at the REPL prompt (waiting for user input)
         if last_type == "last-prompt" {
-            if age_ms.map(|a| a < 300_000).unwrap_or(false) {
-                return SessionStatus::Waiting;
-            }
-            return SessionStatus::Idle;
+            return SessionStatus::Waiting;
         }
 
-        // 2. result with subtype=success → turn completed, idle
+        // 2. result with subtype=success → turn completed, at REPL prompt
         if last_type == "result" && last_subtype == "success" {
-            return SessionStatus::Idle;
+            return SessionStatus::Waiting;
         }
 
         // 3. Turn completed (end_turn seen) + system bookkeeping after.
-        //    The turn is done. Very recent (<10s) means bookkeeping is still
-        //    flushing → Running. Otherwise → Idle (hooks/daemon will overlay
-        //    Waiting if the session is actually alive at the REPL prompt).
         if has_end_turn_in_current_turn
             && (last_type == "system" || last_type == "file-history-snapshot")
         {
-            if age_ms.map(|a| a < 10_000).unwrap_or(false) {
-                return SessionStatus::Running;
-            }
-            return SessionStatus::Idle;
+            return SessionStatus::Waiting;
         }
 
-        // 4. assistant with end_turn as the very last entry → turn finished.
-        //    Only `last-prompt` (case 1) definitively means user input is
-        //    needed. end_turn just means Claude stopped generating → Idle.
+        // 4. assistant with end_turn → turn finished, session is at REPL prompt
         if last_type == "assistant" && last_assistant_stop_reason == "end_turn" {
-            return SessionStatus::Idle;
+            return SessionStatus::Waiting;
         }
 
-        // 5. assistant with tool_use as last entry — Claude invoked a tool.
-        //    Could be auto-executing or awaiting approval; we can't tell from
-        //    JSONL alone. Hooks (PermissionRequest) or daemon will set
-        //    PROMPTING if approval is actually needed.
+        // 5. assistant with tool_use → Claude invoked a tool, processing
         if last_type == "assistant" && last_assistant_stop_reason == "tool_use" {
             return SessionStatus::Thinking;
         }
@@ -932,7 +846,7 @@ impl FsBackend {
             return SessionStatus::Running;
         }
 
-        // 7. user entry as last = Claude is processing the user's message / tool result
+        // 7. user entry as last = Claude is processing the user's message
         if last_type == "user" {
             return SessionStatus::Thinking;
         }
@@ -942,13 +856,8 @@ impl FsBackend {
             return SessionStatus::Thinking;
         }
 
-        // 9. File is recent → still running
-        if age_ms.map(|a| a < 30_000).unwrap_or(false) {
-            return SessionStatus::Running;
-        }
-
-        // 10. Old file, no clear waiting signal → idle
-        SessionStatus::Idle
+        // 9. No clear signal → default to waiting (hooks will set idle if session ended)
+        SessionStatus::Waiting
     }
 
     /// Parse conversation messages from a .jsonl file.

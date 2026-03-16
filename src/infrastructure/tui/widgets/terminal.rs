@@ -2,6 +2,8 @@
 //!
 //! This bridges the PTY output (parsed by vt100) into ratatui's cell grid,
 //! preserving colors, bold, italic, underline, and inverse attributes.
+//!
+//! Used for inline session rendering when attached to a daemon PTY session.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

@@ -9,19 +9,75 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::adapters::views::*;
-use crate::application::state::AppState;
+use crate::application::state::{AppState, InputMode};
 use crate::infrastructure::tui::layout::FrameLayout;
 use crate::infrastructure::tui::theme;
 use crate::infrastructure::tui::widgets::{
-    confirm_dialog, detail, help_overlay, input_bar, logo, spinner, table, toast,
+    confirm_dialog, detail, help_overlay, input_bar, logo, spinner, table, terminal, toast,
 };
 
-/// Draw with optional inline terminal emulator.
-pub fn draw_with_terminal(state: &AppState, frame: &mut Frame, vt_screen: Option<&vt100::Screen>) {
+/// Draw the clash UI.
+pub fn draw(state: &AppState, frame: &mut Frame) {
     let layout = FrameLayout::new(frame.area());
 
+    // When attached: render inline terminal
+    if state.input_mode == InputMode::Attached {
+        draw_header(state, frame, layout.header);
+        if let Some(ref parser) = state.terminal_screen {
+            let screen = parser.screen();
+            let widget = terminal::TerminalWidget::new(screen);
+            frame.render_widget(widget, layout.body);
+
+            // Cursor positioning strategy:
+            // - If vt100 says cursor is on the prompt line → trust cursor_position()
+            //   (tracks arrow keys, Option+Left, etc.)
+            // - Otherwise → find the prompt line and place cursor at end of text
+            //   (Claude Code's ink parks cursor elsewhere during re-renders)
+            let (cursor_row, cursor_col) = screen.cursor_position();
+            let prompt_line = find_prompt_line(screen);
+
+            let (cy, cx) = if let Some(prompt_row) = prompt_line {
+                if cursor_row == prompt_row {
+                    // Cursor is on prompt line — use real column position
+                    (prompt_row, cursor_col)
+                } else {
+                    // Cursor is elsewhere (ink re-render) — snap to end of prompt text
+                    (prompt_row, find_text_end(screen, prompt_row))
+                }
+            } else {
+                // No prompt found — use vt100 cursor as-is
+                (cursor_row, cursor_col)
+            };
+
+            let px = layout.body.x + cx;
+            let py = layout.body.y + cy;
+            if px < layout.body.x + layout.body.width && py < layout.body.y + layout.body.height {
+                frame.set_cursor_position(ratatui::layout::Position { x: px, y: py });
+            }
+        }
+        let session_label = state
+            .attached_session
+            .as_deref()
+            .map(|s| if s.len() > 8 { &s[..8] } else { s })
+            .unwrap_or("?");
+        let hint = Line::from(vec![
+            Span::styled(
+                format!(" {} ", session_label),
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+            Span::styled("  Ctrl+B detach", Style::default().fg(theme::MUTED)),
+        ]);
+        frame.render_widget(
+            Paragraph::new(hint).style(theme::footer_style()),
+            layout.footer,
+        );
+        return;
+    }
+
     draw_header(state, frame, layout.header);
-    draw_body(state, frame, layout.body, vt_screen);
+    draw_body(state, frame, layout.body);
     draw_footer(state, frame, layout.footer);
 
     // Overlays (drawn on top)
@@ -31,11 +87,7 @@ pub fn draw_with_terminal(state: &AppState, frame: &mut Frame, vt_screen: Option
         draw_help(state, frame, frame.area());
     }
     if let Some(ref dialog) = state.confirm_dialog {
-        if dialog.is_delete() {
-            confirm_dialog::render_delete_confirm_dialog(dialog.message(), frame, frame.area());
-        } else {
-            confirm_dialog::render_confirm_dialog(dialog.message(), frame, frame.area());
-        }
+        confirm_dialog::render_confirm_dialog(&dialog.message, frame, frame.area());
     }
 }
 
@@ -98,20 +150,7 @@ fn draw_header(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
     frame.render_widget(time_paragraph, area);
 }
 
-fn draw_body(
-    state: &AppState,
-    frame: &mut Frame,
-    area: ratatui::layout::Rect,
-    vt_screen: Option<&vt100::Screen>,
-) {
-    // When attached with a vt100 screen, render the inline terminal emulator
-    if state.input_mode == crate::application::state::InputMode::Attached {
-        if let Some(screen) = vt_screen {
-            draw_vt100_terminal(state, screen, frame, area);
-        }
-        return;
-    }
-
+fn draw_body(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect) {
     match state.current_view() {
         ViewKind::Teams => table::render_table::<teams::TeamsTable>(state, frame, area),
         ViewKind::TeamDetail => {
@@ -146,25 +185,10 @@ fn draw_body(
 
 fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect) {
     match &state.input_mode {
-        crate::application::state::InputMode::Attached => {
-            let left = Span::styled(
-                " Esc/Ctrl+B: detach  │  Keystrokes forwarded to session",
-                theme::footer_style(),
-            );
-            frame.render_widget(Paragraph::new(left).style(theme::footer_style()), area);
-            if let Some(ref toast_msg) = state.toast {
-                let right_area = ratatui::layout::Rect {
-                    x: area.x + area.width.saturating_sub(40),
-                    width: 40.min(area.width),
-                    ..area
-                };
-                toast::render_toast(toast_msg, frame, right_area);
-            }
-            return;
-        }
         crate::application::state::InputMode::Command
         | crate::application::state::InputMode::Filter
-        | crate::application::state::InputMode::NewSession => {
+        | crate::application::state::InputMode::NewSession
+        | crate::application::state::InputMode::NewSessionName => {
             input_bar::render_input_bar(
                 &state.input_mode,
                 &state.input_buffer,
@@ -212,55 +236,10 @@ fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
     }
 }
 
-fn draw_vt100_terminal(
-    state: &AppState,
-    screen: &vt100::Screen,
-    frame: &mut Frame,
-    area: ratatui::layout::Rect,
-) {
-    use crate::infrastructure::tui::widgets::terminal::TerminalWidget;
-    use ratatui::widgets::Block;
-
-    let session_id = state.attached_session.as_deref().unwrap_or("unknown");
-    let short = if session_id.len() > 8 {
-        &session_id[..8]
-    } else {
-        session_id
-    };
-    let title = format!(" {} | Esc/Ctrl+B to detach ", short);
-
-    let block = Block::bordered()
-        .title(title)
-        .style(Style::default().fg(theme::TEXT))
-        .border_style(Style::default().fg(theme::ACCENT));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let widget = TerminalWidget::new(screen);
-    frame.render_widget(widget, inner);
-
-    // Claude Code (ink framework) parks the terminal cursor at the bottom
-    // after rendering, not at the input prompt. Detect the prompt line
-    // by scanning for the `❯` or `>` prompt character and place the
-    // hardware cursor at the end of text on that line.
-    if let Some((prompt_row, text_end_col)) = find_prompt_cursor(screen) {
-        if prompt_row < inner.height && text_end_col < inner.width {
-            let cx = inner.x + text_end_col;
-            let cy = inner.y + prompt_row;
-            frame.set_cursor_position(ratatui::layout::Position { x: cx, y: cy });
-        }
-    }
-}
-
-/// Scan the vt100 screen for Claude Code's input prompt (`❯` or `>` at line start)
-/// and return (row, col) where the cursor should be (end of text on prompt line).
-fn find_prompt_cursor(screen: &vt100::Screen) -> Option<(u16, u16)> {
+/// Find the row containing the prompt (`❯` or `>`), scanning bottom-to-top.
+fn find_prompt_line(screen: &vt100::Screen) -> Option<u16> {
     let (rows, cols) = screen.size();
-
-    // Scan bottom-to-top to find the prompt line
     for row in (0..rows).rev() {
-        // Get the text content of this row
         let mut line = String::new();
         for col in 0..cols {
             if let Some(cell) = screen.cell(row, col) {
@@ -269,24 +248,26 @@ fn find_prompt_cursor(screen: &vt100::Screen) -> Option<(u16, u16)> {
             }
         }
         let trimmed = line.trim_start();
-
-        // Claude Code uses `❯` or `>` as prompt
         if trimmed.starts_with('❯') || trimmed.starts_with('>') {
-            // Find the end of actual text on this line (last non-space char + 1)
-            let mut last_non_space: u16 = 0;
-            for col in 0..cols {
-                if let Some(cell) = screen.cell(row, col) {
-                    let c = cell.contents();
-                    if !c.is_empty() && c != " " {
-                        last_non_space = col + 1;
-                    }
-                }
-            }
-            // Place cursor right after the last character
-            return Some((row, last_non_space.min(cols.saturating_sub(1))));
+            return Some(row);
         }
     }
     None
+}
+
+/// Find the column after the last non-space character on a given row.
+fn find_text_end(screen: &vt100::Screen, row: u16) -> u16 {
+    let (_, cols) = screen.size();
+    let mut last_non_space: u16 = 0;
+    for col in 0..cols {
+        if let Some(cell) = screen.cell(row, col) {
+            let c = cell.contents();
+            if !c.is_empty() && c != " " {
+                last_non_space = col + 1;
+            }
+        }
+    }
+    last_non_space.min(cols.saturating_sub(1))
 }
 
 fn draw_help(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect) {

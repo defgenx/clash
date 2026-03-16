@@ -16,10 +16,6 @@ pub fn to_args(command: &CliCommand) -> Vec<String> {
     }
 }
 
-pub fn resume_session_args(session_id: &str) -> Vec<String> {
-    vec!["--resume".to_string(), session_id.to_string()]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -34,11 +30,5 @@ mod tests {
         assert_eq!(args[0], "team");
         assert_eq!(args[1], "create");
         assert!(args.contains(&"my-team".to_string()));
-    }
-
-    #[test]
-    fn test_resume_args() {
-        let args = resume_session_args("sess-123");
-        assert_eq!(args, vec!["--resume", "sess-123"]);
     }
 }

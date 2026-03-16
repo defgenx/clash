@@ -61,4 +61,15 @@ impl Config {
                 .join(".claude")
         })
     }
+
+    /// Clash's own data directory for all RW state: `~/.claude/clash/`.
+    ///
+    /// Everything clash writes (status, names, hooks, tour marker) goes here,
+    /// co-located with Claude Code's own data.
+    pub fn clash_data_dir() -> PathBuf {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".claude")
+            .join("clash")
+    }
 }

@@ -42,6 +42,8 @@ pub enum InputMode {
     Confirm,
     /// Prompting user for the directory for a new session.
     NewSession,
+    /// Prompting user for the name of a new session (after directory).
+    NewSessionName,
     /// Attached to a daemon PTY session — keystrokes go to the session.
     Attached,
 }
@@ -58,30 +60,11 @@ pub struct ScrollState {
     pub offset: u16,
 }
 
-/// A confirmation dialog — explicit about the choices it offers.
+/// A confirmation dialog — simple yes/no.
 #[derive(Debug, Clone)]
-pub enum ConfirmDialog {
-    /// Simple yes/no confirmation.
-    Simple { message: String, on_confirm: Action },
-    /// Session delete with two paths: terminate process or just remove files.
-    Delete {
-        message: String,
-        on_terminate: Action,
-        on_files_only: Action,
-    },
-}
-
-impl ConfirmDialog {
-    pub fn message(&self) -> &str {
-        match self {
-            Self::Simple { message, .. } => message,
-            Self::Delete { message, .. } => message,
-        }
-    }
-
-    pub fn is_delete(&self) -> bool {
-        matches!(self, Self::Delete { .. })
-    }
+pub struct ConfirmDialog {
+    pub message: String,
+    pub on_confirm: Action,
 }
 
 /// Main application state — everything the reducer and renderer need.
@@ -108,8 +91,12 @@ pub struct AppState {
     pub expanded_sessions: HashSet<String>,
     /// Default working directory for new sessions (where clash was started).
     pub default_cwd: String,
+    /// Pending CWD for new session (set during the two-step creation flow).
+    pub pending_session_cwd: Option<String>,
     /// Guided tour state: Some(step_index) when active, None when inactive.
     pub tour_step: Option<usize>,
+    /// vt100 screen for inline terminal rendering when attached to a session.
+    pub terminal_screen: Option<vt100::Parser>,
 }
 
 impl Default for AppState {
@@ -142,7 +129,9 @@ impl AppState {
             default_cwd: std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default(),
+            pending_session_cwd: None,
             tour_step: None,
+            terminal_screen: None,
         }
     }
 

@@ -1,7 +1,8 @@
 //! Input adapter — translates keyboard events into application actions.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
+use crate::adapters::format;
 use crate::adapters::views::ViewKind;
 use crate::application::actions::{
     Action, AgentAction, NavAction, TableAction, TaskAction, UiAction,
@@ -13,11 +14,16 @@ pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
     // Ctrl+C is NOT bound — it must pass through to Claude when attached.
     // Use 'q' or ':quit' to exit clash.
 
+    // Attached and text-input modes are handled directly in the event loop
+    // (app.rs) before reaching this function.
     match &state.input_mode {
         InputMode::Normal => handle_normal_mode(key, state),
-        InputMode::Command | InputMode::Filter | InputMode::NewSession => handle_input_mode(key),
+        InputMode::Command
+        | InputMode::Filter
+        | InputMode::NewSession
+        | InputMode::NewSessionName => handle_input_mode(key),
         InputMode::Confirm => handle_confirm_mode(key, state),
-        InputMode::Attached => handle_attached_mode(key, state),
+        InputMode::Attached => Action::Noop,
     }
 }
 
@@ -116,66 +122,8 @@ fn handle_input_mode(key: KeyEvent) -> Action {
     }
 }
 
-fn handle_attached_mode(key: KeyEvent, _state: &AppState) -> Action {
-    // Esc or Ctrl+B detaches from the daemon session
-    if key.code == KeyCode::Esc {
-        return Action::Ui(UiAction::DetachSession);
-    }
-    if key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return Action::Ui(UiAction::DetachSession);
-    }
-
-    // Everything else → forward as input to the daemon session
-    // All other keystrokes are forwarded to the daemon in app.rs event loop
-    Action::Noop
-}
-
-/// Convert a KeyEvent into raw bytes for PTY input.
-pub fn key_to_bytes(key: KeyEvent) -> Vec<u8> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+fn handle_confirm_mode(key: KeyEvent, _state: &AppState) -> Action {
     match key.code {
-        KeyCode::Char(c) if ctrl => {
-            // Ctrl+A=0x01, Ctrl+B=0x02, ..., Ctrl+Z=0x1A
-            let byte = (c as u8).wrapping_sub(b'a').wrapping_add(1);
-            if byte <= 26 {
-                vec![byte]
-            } else {
-                vec![]
-            }
-        }
-        KeyCode::Char(c) => {
-            let mut buf = [0u8; 4];
-            let s = c.encode_utf8(&mut buf);
-            s.as_bytes().to_vec()
-        }
-        KeyCode::Enter => vec![b'\r'],
-        KeyCode::Backspace => vec![0x7f],
-        KeyCode::Tab => vec![b'\t'],
-        KeyCode::Up => b"\x1b[A".to_vec(),
-        KeyCode::Down => b"\x1b[B".to_vec(),
-        KeyCode::Right => b"\x1b[C".to_vec(),
-        KeyCode::Left => b"\x1b[D".to_vec(),
-        KeyCode::Home => b"\x1b[H".to_vec(),
-        KeyCode::End => b"\x1b[F".to_vec(),
-        KeyCode::Delete => b"\x1b[3~".to_vec(),
-        KeyCode::PageUp => b"\x1b[5~".to_vec(),
-        KeyCode::PageDown => b"\x1b[6~".to_vec(),
-        _ => vec![],
-    }
-}
-
-fn handle_confirm_mode(key: KeyEvent, state: &AppState) -> Action {
-    let is_delete = state.confirm_dialog.as_ref().is_some_and(|d| d.is_delete());
-
-    match key.code {
-        // Delete confirm: t = terminate+delete, f = files only
-        KeyCode::Char('t') | KeyCode::Char('T') if is_delete => {
-            Action::Ui(UiAction::ConfirmTerminate)
-        }
-        KeyCode::Char('f') | KeyCode::Char('F') if is_delete => {
-            Action::Ui(UiAction::ConfirmFilesOnly)
-        }
-        // Simple confirm: y = yes
         KeyCode::Char('y') | KeyCode::Char('Y') => Action::Ui(UiAction::ConfirmYes),
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::Ui(UiAction::ConfirmNo),
         _ => Action::Noop,
@@ -268,19 +216,10 @@ fn handle_delete(state: &AppState) -> Action {
         ViewKind::Sessions => {
             let items = state.filtered_sessions();
             if let Some(session) = items.get(state.table_state.selected) {
-                let short_id = if session.id.len() > 8 {
-                    &session.id[..8]
-                } else {
-                    &session.id
-                };
-                Action::Ui(UiAction::ShowDeleteConfirm {
-                    message: format!("Delete session '{}'?", short_id),
-                    on_terminate: Box::new(Action::Agent(AgentAction::TerminateAndDelete {
-                        project: session.project.clone(),
-                        session_id: session.id.clone(),
-                    })),
-                    on_files_only: Box::new(Action::Agent(AgentAction::DeleteSession {
-                        project: session.project.clone(),
+                let short_id = format::short_id(&session.id, 8);
+                Action::Ui(UiAction::ShowConfirm {
+                    message: format!("Drop session '{}'?", short_id),
+                    on_confirm: Box::new(Action::Agent(AgentAction::DropSession {
                         session_id: session.id.clone(),
                     })),
                 })
@@ -296,14 +235,9 @@ fn handle_delete(state: &AppState) -> Action {
                     } else {
                         &session.id
                     };
-                    Action::Ui(UiAction::ShowDeleteConfirm {
-                        message: format!("Delete session '{}'?", short_id),
-                        on_terminate: Box::new(Action::Agent(AgentAction::TerminateAndDelete {
-                            project: session.project.clone(),
-                            session_id: session.id.clone(),
-                        })),
-                        on_files_only: Box::new(Action::Agent(AgentAction::DeleteSession {
-                            project: session.project.clone(),
+                    Action::Ui(UiAction::ShowConfirm {
+                        message: format!("Drop session '{}'?", short_id),
+                        on_confirm: Box::new(Action::Agent(AgentAction::DropSession {
                             session_id: session.id.clone(),
                         })),
                     })
@@ -320,10 +254,9 @@ fn handle_delete(state: &AppState) -> Action {
 
 fn handle_delete_all(state: &AppState) -> Action {
     match state.current_view() {
-        ViewKind::Sessions => Action::Ui(UiAction::ShowDeleteConfirm {
-            message: "Delete ALL sessions?".to_string(),
-            on_terminate: Box::new(Action::Agent(AgentAction::TerminateAndDeleteAllSessions)),
-            on_files_only: Box::new(Action::Agent(AgentAction::DeleteAllSessions)),
+        ViewKind::Sessions => Action::Ui(UiAction::ShowConfirm {
+            message: "Drop ALL sessions?".to_string(),
+            on_confirm: Box::new(Action::Agent(AgentAction::DropAllSessions)),
         }),
         _ => Action::Noop,
     }

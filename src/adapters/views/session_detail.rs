@@ -158,7 +158,7 @@ impl DetailView for SessionDetailView {
             Keybinding::new("s", "View subagents"),
             Keybinding::new("m", "View team members"),
             Keybinding::new("t", "View linked team"),
-            Keybinding::new("d", "Delete session"),
+            Keybinding::new("d", "Drop session"),
             Keybinding::new("j/k", "Scroll"),
         ]
     }

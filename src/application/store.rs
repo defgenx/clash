@@ -67,7 +67,33 @@ impl DataStore {
     }
 
     pub fn refresh_sessions(&mut self, backend: &dyn DataRepository) -> Result<()> {
-        self.sessions = backend.load_sessions()?;
+        let new_sessions = backend.load_sessions()?;
+
+        // Merge: preserve daemon-derived fields (status, is_running, name) from
+        // existing sessions when the disk-based status would downgrade them.
+        // This prevents "flickering" when disk says idle but daemon says running.
+        let old_by_id: HashMap<String, &Session> =
+            self.sessions.iter().map(|s| (s.id.clone(), s)).collect();
+
+        self.sessions = new_sessions
+            .into_iter()
+            .map(|mut new| {
+                if let Some(old) = old_by_id.get(&new.id) {
+                    // Keep the more "active" status — don't downgrade from
+                    // running/waiting/prompting to idle based on stale disk data
+                    if old.is_running && !new.is_running {
+                        new.is_running = old.is_running;
+                        new.status = old.status;
+                    }
+                    // Preserve daemon-assigned name
+                    if new.name.is_none() && old.name.is_some() {
+                        new.name = old.name.clone();
+                    }
+                }
+                new
+            })
+            .collect();
+
         Ok(())
     }
 

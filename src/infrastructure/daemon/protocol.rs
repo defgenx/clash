@@ -26,6 +26,12 @@ pub enum Request {
         /// Optional human-readable label for the session.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// Initial terminal width (0 = default 120).
+        #[serde(default)]
+        cols: u16,
+        /// Initial terminal height (0 = default 40).
+        #[serde(default)]
+        rows: u16,
     },
 
     /// Attach to an existing session (start receiving output).

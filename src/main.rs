@@ -5,6 +5,7 @@ mod infrastructure;
 
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
+use crossterm::style::Stylize;
 
 const VERSION_INFO: &str = concat!(
     env!("CARGO_PKG_VERSION"),
@@ -71,17 +72,56 @@ async fn main() -> Result<()> {
         None => {}
     }
 
+    // Ensure terminal is restored on panic
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        default_panic(info);
+    }));
+
     let config = infrastructure::config::Config::load();
     let data_dir = args.data_dir.unwrap_or_else(|| config.claude_dir());
 
     tracing::info!("clash starting, data_dir={:?}", data_dir);
 
     let mut terminal = ratatui::init();
+    // Enable mouse button tracking (1000) + SGR mode (1006) for scroll support.
+    // Do NOT enable mode 1003 (any-event tracking) — it floods the event stream
+    // with mouse movement events and causes keystroke lag.
+    {
+        use std::io::Write;
+        std::io::stdout().write_all(b"\x1b[?1000h\x1b[?1006h")?;
+        std::io::stdout().flush()?;
+    }
     let mut app = infrastructure::app::App::new(data_dir, args.claude_bin);
     let result = app.run(&mut terminal).await;
-    ratatui::restore();
+    restore_terminal();
 
     result
+}
+
+/// Fully restore the terminal to a clean state.
+///
+/// Resets everything that Clash may have changed:
+/// - Scroll region (from attached mode's header/footer)
+/// - Mouse tracking
+/// - Kitty keyboard protocol
+/// - Raw mode + alternate screen (via ratatui::restore)
+fn restore_terminal() {
+    use std::io::Write;
+    let _ = std::io::stdout().write_all(
+        concat!(
+            "\x1b[?6l",      // Disable origin mode
+            "\x1b[r",        // Reset scroll region to full terminal
+            "\x1b[?1000l",   // Disable mouse button tracking
+            "\x1b[?1006l",   // Disable SGR mouse mode
+            "\x1b[<u",       // Pop Kitty keyboard protocol (if active)
+            "\x1b[2J\x1b[H", // Clear screen + cursor home
+        )
+        .as_bytes(),
+    );
+    let _ = std::io::stdout().flush();
+    ratatui::restore();
 }
 
 /// Run the CLI update command.
@@ -91,7 +131,7 @@ async fn run_update() -> Result<()> {
 
     match infrastructure::update::perform_update().await {
         Ok(version) => {
-            println!("\x1b[32m✓\x1b[0m Updated to v{}!", version);
+            println!("{} Updated to v{}!", "✓".green(), version);
             println!("  Restart clash to use the new version.");
             Ok(())
         }

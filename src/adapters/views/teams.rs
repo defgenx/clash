@@ -1,8 +1,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Cell;
 
-use crate::adapters::views::{ColumnDef, Keybinding, TableView, ViewKind};
-use crate::application::actions::{Action, NavAction};
+use crate::adapters::views::{ColumnDef, Keybinding, TableView};
 use crate::application::state::AppState;
 use crate::domain::entities::Team;
 
@@ -45,13 +44,6 @@ impl TableView for TeamsTable {
 
     fn items(state: &AppState) -> Vec<&Team> {
         state.store.teams.iter().collect()
-    }
-
-    fn on_select(item: &Team) -> Action {
-        Action::Nav(NavAction::DrillIn {
-            view: ViewKind::TeamDetail,
-            context: item.name.clone(),
-        })
     }
 
     fn context_keybindings() -> Vec<Keybinding> {

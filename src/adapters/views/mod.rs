@@ -17,7 +17,6 @@ pub mod teams;
 
 use ratatui::widgets::Cell;
 
-use crate::application::actions::Action;
 use crate::application::state::AppState;
 
 /// All view kinds in the application.
@@ -110,14 +109,12 @@ impl Section {
 }
 
 /// Trait for views that render as a table.
-#[allow(dead_code)]
 pub trait TableView {
     type Item;
 
     fn columns() -> Vec<ColumnDef>;
     fn row(item: &Self::Item) -> Vec<Cell<'static>>;
     fn items(state: &AppState) -> Vec<&Self::Item>;
-    fn on_select(item: &Self::Item) -> Action;
     fn context_keybindings() -> Vec<Keybinding>;
     fn empty_message() -> &'static str {
         "No items"

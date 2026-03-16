@@ -1,8 +1,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Cell;
 
-use crate::adapters::views::{ColumnDef, Keybinding, TableView, ViewKind};
-use crate::application::actions::{Action, NavAction};
+use crate::adapters::views::{ColumnDef, Keybinding, TableView};
 use crate::application::state::AppState;
 use crate::domain::entities::{Task, TaskStatus};
 
@@ -47,13 +46,6 @@ impl TableView for TasksTable {
         } else {
             Vec::new()
         }
-    }
-
-    fn on_select(item: &Task) -> Action {
-        Action::Nav(NavAction::DrillIn {
-            view: ViewKind::TaskDetail,
-            context: item.id.clone(),
-        })
     }
 
     fn context_keybindings() -> Vec<Keybinding> {
