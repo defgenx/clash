@@ -30,6 +30,11 @@ impl DaemonServer {
         }
     }
 
+    /// Get a handle to signal shutdown from outside.
+    pub fn shutdown_handle(&self) -> Arc<Notify> {
+        self.shutdown.clone()
+    }
+
     /// Run the daemon server. Blocks until shutdown is requested.
     pub async fn run(&self) -> std::io::Result<()> {
         // Remove stale socket

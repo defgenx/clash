@@ -25,9 +25,9 @@ pub enum Event {
     Tick,
     /// Terminal window resized.
     Resize(u16, u16),
-    /// Daemon sent output bytes for the attached session.
-    #[allow(dead_code)]
-    DaemonOutput(Vec<u8>),
+    /// Daemon sent output bytes (currently discarded in TUI mode;
+    /// attach mode reads daemon output via its own loop).
+    DaemonOutput,
     /// Daemon reports a session exited.
     DaemonExited { session_id: String },
     /// Mouse event (scroll, click, etc.).
@@ -118,19 +118,16 @@ impl EventLoop {
                 } => {
                     self.reset_tick();
                     match daemon_event {
-                        crate::infrastructure::daemon::protocol::Event::Output { data, .. } => {
-                            if let Ok(mut bytes) = crate::infrastructure::daemon::protocol::decode_data(&data) {
-                                if let Some(ref mut rx) = self.daemon_rx {
-                                    while let Ok(extra) = rx.try_recv() {
-                                        if let crate::infrastructure::daemon::protocol::Event::Output { data: d, .. } = extra {
-                                            if let Ok(b) = crate::infrastructure::daemon::protocol::decode_data(&d) {
-                                                bytes.extend_from_slice(&b);
-                                            }
-                                        }
+                        crate::infrastructure::daemon::protocol::Event::Output { .. } => {
+                            // Drain any queued output events to avoid backpressure
+                            if let Some(ref mut rx) = self.daemon_rx {
+                                while let Ok(extra) = rx.try_recv() {
+                                    if matches!(extra, crate::infrastructure::daemon::protocol::Event::Output { .. }) {
+                                        // discard — TUI mode doesn't render daemon output
                                     }
                                 }
-                                return Some(Event::DaemonOutput(bytes));
                             }
+                            return Some(Event::DaemonOutput);
                         }
                         crate::infrastructure::daemon::protocol::Event::Exited { session_id, .. } => {
                             return Some(Event::DaemonExited { session_id });

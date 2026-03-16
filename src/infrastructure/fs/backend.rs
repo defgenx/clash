@@ -180,33 +180,10 @@ impl FsBackend {
 
     /// Detect if a project path is inside a git worktree.
     /// Returns the worktree name if detected, None otherwise.
+    ///
+    /// Delegates to `adapters::format::detect_worktree` — the shared implementation.
     pub fn detect_worktree(project_path: &str) -> Option<String> {
-        if project_path.is_empty() {
-            return None;
-        }
-        let git_path = std::path::Path::new(project_path).join(".git");
-        if git_path.is_file() {
-            if let Ok(content) = std::fs::read_to_string(&git_path) {
-                if let Some(gitdir) = content.trim().strip_prefix("gitdir: ") {
-                    // "gitdir: /path/to/.git/worktrees/<name>" → extract <name>
-                    if let Some(name) = gitdir.rsplit('/').next() {
-                        if !name.is_empty() {
-                            return Some(name.to_string());
-                        }
-                    }
-                    return Some("yes".to_string());
-                }
-            }
-            // .git is a file but couldn't parse — likely still a worktree
-            Some("yes".to_string())
-        } else {
-            None
-        }
-    }
-
-    /// Extract the first user message from a .jsonl session file as a summary.
-    fn extract_session_summary(path: &Path) -> String {
-        Self::extract_session_metadata(path).summary
+        format::detect_worktree(project_path)
     }
 
     /// Extract metadata (cwd, gitBranch, summary) from JSONL file in a single pass.
@@ -587,7 +564,8 @@ impl DataRepository for FsBackend {
                 SessionStatus::Thinking => 2,
                 SessionStatus::Running => 3,
                 SessionStatus::Starting => 4,
-                SessionStatus::Idle => 5,
+                SessionStatus::Errored => 5,
+                SessionStatus::Idle => 6,
             };
             status_ord(&a.status)
                 .cmp(&status_ord(&b.status))
@@ -652,13 +630,12 @@ impl DataRepository for FsBackend {
             let status = Self::detect_session_status(&path);
             let is_running = !matches!(status, crate::domain::entities::SessionStatus::Idle);
 
-            let summary = Self::extract_session_summary(&path);
-
             // Decode project name to path
             let decoded_path = format!("/{}", project.trim_start_matches('-').replace('-', "/"));
 
-            // Extract cwd from subagent JSONL for worktree detection
+            // Extract metadata from JSONL in a single pass (summary + cwd)
             let sub_meta = Self::extract_session_metadata(&path);
+            let summary = sub_meta.summary;
             let sub_cwd = if !sub_meta.cwd.is_empty() {
                 sub_meta.cwd
             } else {

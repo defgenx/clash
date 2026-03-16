@@ -146,6 +146,8 @@ pub enum SessionStatus {
     Waiting,
     /// Claude is asking for tool/action approval — needs Yes/No response.
     Prompting,
+    /// Session process died shortly after starting (crash, bad resume, etc.).
+    Errored,
 }
 
 impl std::str::FromStr for SessionStatus {
@@ -159,6 +161,7 @@ impl std::str::FromStr for SessionStatus {
             "thinking" => Ok(SessionStatus::Thinking),
             "waiting" => Ok(SessionStatus::Waiting),
             "prompting" => Ok(SessionStatus::Prompting),
+            "errored" => Ok(SessionStatus::Errored),
             _ => Err(()),
         }
     }
@@ -173,6 +176,7 @@ impl std::fmt::Display for SessionStatus {
             SessionStatus::Thinking => write!(f, "THINKING"),
             SessionStatus::Waiting => write!(f, "WAITING"),
             SessionStatus::Prompting => write!(f, "PROMPTING"),
+            SessionStatus::Errored => write!(f, "ERRORED"),
         }
     }
 }

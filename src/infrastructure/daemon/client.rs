@@ -6,7 +6,6 @@
 //! - **stream** (Output, Exited) — consumed by the event loop for real-time updates
 
 use std::path::PathBuf;
-use std::process::Command;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -46,28 +45,20 @@ impl DaemonClient {
             .join("daemon.sock")
     }
 
-    /// Connect to the daemon, auto-starting it if needed.
+    /// Connect to the daemon (running in-process as a background task).
     pub async fn connect(&mut self) -> std::io::Result<()> {
-        match UnixStream::connect(&self.socket_path).await {
-            Ok(stream) => {
+        // Try a few times — the in-process daemon may still be starting up
+        for _ in 0..20 {
+            if let Ok(stream) = UnixStream::connect(&self.socket_path).await {
                 self.setup_stream(stream);
-                Ok(())
+                return Ok(());
             }
-            Err(_) => {
-                self.start_daemon()?;
-                for _ in 0..50 {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    if let Ok(stream) = UnixStream::connect(&self.socket_path).await {
-                        self.setup_stream(stream);
-                        return Ok(());
-                    }
-                }
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    "Failed to connect to daemon after starting it",
-                ))
-            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "Failed to connect to daemon",
+        ))
     }
 
     /// Check if connected.
@@ -81,18 +72,6 @@ impl DaemonClient {
     /// processes daemon output concurrently with terminal input.
     pub fn take_stream_rx(&mut self) -> Option<mpsc::UnboundedReceiver<Event>> {
         self.stream_event_rx.take()
-    }
-
-    fn start_daemon(&self) -> std::io::Result<()> {
-        let exe = std::env::current_exe()?;
-        tracing::info!("Starting daemon: {:?} daemon", exe);
-        Command::new(exe)
-            .arg("daemon")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()?;
-        Ok(())
     }
 
     fn setup_stream(&mut self, stream: UnixStream) {

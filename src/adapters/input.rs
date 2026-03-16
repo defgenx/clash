@@ -230,11 +230,7 @@ fn handle_delete(state: &AppState) -> Action {
         ViewKind::SessionDetail => {
             if let Some(session_id) = state.current_session() {
                 if let Some(session) = state.store.find_session(session_id) {
-                    let short_id = if session.id.len() > 8 {
-                        &session.id[..8]
-                    } else {
-                        &session.id
-                    };
+                    let short_id = format::short_id(&session.id, 8);
                     Action::Ui(UiAction::ShowConfirm {
                         message: format!("Drop session '{}'?", short_id),
                         on_confirm: Box::new(Action::Agent(AgentAction::DropSession {

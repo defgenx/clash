@@ -1,10 +1,10 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Cell;
 
+use crate::adapters::format as fmt;
 use crate::adapters::views::{ColumnDef, Keybinding, TableView};
 use crate::application::state::AppState;
 use crate::domain::entities::Member;
-use crate::infrastructure::fs::backend::FsBackend;
 
 pub struct AgentsTable;
 
@@ -38,7 +38,7 @@ impl TableView for AgentsTable {
             item.team_name.clone()
         };
 
-        let worktree = item.cwd.as_deref().and_then(FsBackend::detect_worktree);
+        let worktree = item.cwd.as_deref().and_then(fmt::detect_worktree);
         let worktree_display = match &worktree {
             Some(name) => format!("⊟ {}", name),
             None => "—".to_string(),

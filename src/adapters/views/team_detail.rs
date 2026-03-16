@@ -1,7 +1,6 @@
-use crate::adapters::format::short_id;
+use crate::adapters::format::{self, short_id};
 use crate::adapters::views::{DetailView, Keybinding, Section};
 use crate::application::state::AppState;
-use crate::infrastructure::fs::backend::FsBackend;
 
 pub struct TeamDetailView;
 
@@ -58,7 +57,7 @@ impl DetailView for TeamDetailView {
                 let worktree_str = member
                     .cwd
                     .as_deref()
-                    .and_then(FsBackend::detect_worktree)
+                    .and_then(format::detect_worktree)
                     .map(|w| format!(" ⊟ {}", w))
                     .unwrap_or_default();
                 members_section = members_section.row(

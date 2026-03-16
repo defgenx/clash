@@ -100,6 +100,9 @@ impl App {
             Err(e) => tracing::info!("Daemon not available (legacy mode): {}", e),
         }
 
+        // Restore registered sessions in the daemon (resume Claude conversations)
+        self.restore_sessions().await;
+
         // Load initial sessions
         self.refresh_daemon_sessions().await;
 
@@ -183,7 +186,7 @@ impl App {
                                 });
                             let _ = reducer::reduce(&mut self.state, action);
                         }
-                        Event::DaemonOutput(_) => {}
+                        Event::DaemonOutput => {}
                         Event::Mouse(mouse) => {
                             self.handle_mouse(mouse).await;
                         }
@@ -218,6 +221,11 @@ impl App {
                 )
                 .ok();
 
+                // Clear the main screen so sessions start clean
+                unsafe {
+                    libc::write(1, b"\x1b[2J\x1b[H".as_ptr() as *const libc::c_void, 10);
+                }
+
                 // Run the attached session — pure sync loop on fd 0.
                 // No crossterm, no EventStream, no race. Sole reader on stdin.
                 self.run_attached(session_id, &mut daemon_rx).await;
@@ -249,11 +257,6 @@ impl App {
     /// Run the attached session loop — pure sync I/O on fd 0.
     ///
     /// crossterm is fully dead at this point. We are the sole reader on stdin.
-    /// Ctrl+B (0x02) detaches. Everything else is forwarded to the daemon PTY.
-    /// Daemon output is written directly to stdout.
-    /// Run the attached session loop — pure sync I/O on fd 0.
-    ///
-    /// crossterm is fully dead at this point. We are the sole reader on stdin.
     /// Ctrl+B detaches. Everything else is forwarded to the daemon PTY.
     /// Daemon output is written directly to stdout via libc::write.
     /// SIGWINCH is handled to resize the PTY when the terminal is resized.
@@ -264,9 +267,14 @@ impl App {
             mpsc::UnboundedReceiver<crate::infrastructure::daemon::protocol::Event>,
         >,
     ) {
-        // Resize PTY to match terminal
         let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
-        let _ = self.daemon.resize(session_id, cols, rows).await;
+
+        // PTY = rows-1 (footer takes the last row)
+        let body_rows = rows.saturating_sub(1).max(1);
+        let _ = self.daemon.resize(session_id, cols, body_rows).await;
+
+        // Set scroll region + draw footer + position cursor with a blank line at top
+        Self::draw_attach_chrome(cols, rows, session_id);
 
         // SIGWINCH for terminal resize detection
         let mut sigwinch =
@@ -304,7 +312,7 @@ impl App {
                     }
                 }
 
-                // Terminal resized → resize PTY to match
+                // Terminal resized → resize PTY + redraw footer
                 Some(_) = async {
                     match sigwinch.as_mut() {
                         Some(sig) => sig.recv().await,
@@ -312,7 +320,9 @@ impl App {
                     }
                 } => {
                     if let Ok((w, h)) = crossterm::terminal::size() {
-                        let _ = self.daemon.resize(session_id, w, h).await;
+                        let body = h.saturating_sub(1).max(1);
+                        let _ = self.daemon.resize(session_id, w, body).await;
+                        Self::draw_attach_chrome(w, h, session_id);
                     }
                 }
 
@@ -342,12 +352,41 @@ impl App {
             }
         }
 
+        // Reset scroll region to full terminal before leaving
+        if let Ok((_, h)) = crossterm::terminal::size() {
+            let reset = format!("\x1b[1;{}r", h);
+            unsafe {
+                libc::write(1, reset.as_ptr() as *const libc::c_void, reset.len());
+            }
+        }
+
         drop(input_rx);
         reader.abort();
         let _ = self.daemon.detach(session_id).await;
     }
 
-    /// Handle a terminal key event based on current input mode.
+    /// Draw the attach chrome: scroll region + footer bar.
+    /// Leaves cursor at row 2 so Claude has a blank line at the top.
+    fn draw_attach_chrome(cols: u16, rows: u16, session_id: &str) {
+        let short_id = crate::adapters::format::short_id(session_id, 8);
+        let hint = format!(" clash | {}  Ctrl+B detach", short_id);
+        let pad = cols as usize - hint.len().min(cols as usize);
+
+        // Scroll region: rows 1 to rows-1 (footer on row `rows`)
+        // Footer: dark bar with session info
+        // Cursor: row 2 (blank line at top for visual breathing room)
+        let chrome = format!(
+            "\x1b[1;{}r\x1b[{};1H\x1b[48;5;236m\x1b[38;2;90;90;110m{}{}\x1b[0m\x1b[2;1H",
+            rows - 1,
+            rows,
+            hint,
+            " ".repeat(pad),
+        );
+        unsafe {
+            libc::write(1, chrome.as_ptr() as *const libc::c_void, chrome.len());
+        }
+    }
+
     async fn handle_key_event(
         &mut self,
         key: crossterm::event::KeyEvent,
@@ -464,8 +503,7 @@ impl App {
                     }
                 } else {
                     let action = Action::Ui(crate::application::actions::UiAction::ScrollUp);
-                    let effects = reducer::reduce(&mut self.state, action);
-                    drop(effects);
+                    let _ = reducer::reduce(&mut self.state, action);
                 }
             }
             MouseEventKind::ScrollDown => {
@@ -480,8 +518,7 @@ impl App {
                     }
                 } else {
                     let action = Action::Ui(crate::application::actions::UiAction::ScrollDown);
-                    let effects = reducer::reduce(&mut self.state, action);
-                    drop(effects);
+                    let _ = reducer::reduce(&mut self.state, action);
                 }
             }
             _ => {}
@@ -503,6 +540,56 @@ impl App {
     fn draw_if_spinner(&mut self, terminal: &mut ratatui::DefaultTerminal) {
         if self.state.spinner.is_some() {
             let _ = terminal.draw(|f| renderer::draw(&self.state, f));
+        }
+    }
+
+    /// Restore registered sessions by creating daemon PTY sessions.
+    /// Called once at startup — resumes Claude conversations from where they left off.
+    async fn restore_sessions(&mut self) {
+        if !self.daemon.is_connected() {
+            return;
+        }
+
+        let registry = crate::infrastructure::hooks::registry::load();
+        if registry.is_empty() {
+            return;
+        }
+
+        let existing: std::collections::HashSet<String> = match self.daemon.list_sessions().await {
+            Ok(infos) => infos.into_iter().map(|i| i.session_id).collect(),
+            Err(_) => std::collections::HashSet::new(),
+        };
+
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
+
+        for (id, entry) in &registry {
+            if existing.contains(id) {
+                continue;
+            }
+
+            let args = vec!["--resume".to_string(), entry.claude_session_id.clone()];
+            let cwd = if entry.cwd.is_empty() {
+                None
+            } else {
+                Some(entry.cwd.as_str())
+            };
+
+            tracing::info!("Restoring session {} ({})", id, entry.name);
+            if let Err(e) = self
+                .daemon
+                .create_session(
+                    id,
+                    &self.cli_runner.claude_bin,
+                    &args,
+                    cwd,
+                    Some(entry.name.clone()),
+                    cols,
+                    rows,
+                )
+                .await
+            {
+                tracing::warn!("Failed to restore session {}: {}", id, e);
+            }
         }
     }
 
@@ -587,11 +674,26 @@ impl App {
 
         let mut claimed_indices = std::collections::HashSet::new();
 
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
         for info in infos {
-            let status = info
+            let mut status = info
                 .status
                 .parse::<SessionStatus>()
                 .unwrap_or(SessionStatus::Idle);
+
+            // If the process died shortly after creation, mark as errored
+            // so the user can see something went wrong (instead of disappearing).
+            if !info.is_alive && matches!(status, SessionStatus::Idle) {
+                let age_secs = now.saturating_sub(info.created_at);
+                if age_secs < 120 {
+                    status = SessionStatus::Errored;
+                }
+            }
+
             let is_running = !matches!(status, SessionStatus::Idle);
 
             let matched_by_id = self

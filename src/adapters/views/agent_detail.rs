@@ -1,6 +1,6 @@
+use crate::adapters::format;
 use crate::adapters::views::{DetailView, Keybinding, Section};
 use crate::application::state::AppState;
-use crate::infrastructure::fs::backend::FsBackend;
 
 pub struct AgentDetailView;
 
@@ -44,7 +44,7 @@ impl DetailView for AgentDetailView {
             .row("Mode", member.mode.as_deref().unwrap_or("—"))
             .row("Color", &member.color);
 
-        let worktree = member.cwd.as_deref().and_then(FsBackend::detect_worktree);
+        let worktree = member.cwd.as_deref().and_then(format::detect_worktree);
         let runtime = Section::new("Runtime")
             .row("CWD", member.cwd.as_deref().unwrap_or("—"))
             .row("Worktree", worktree.as_deref().unwrap_or("no"))

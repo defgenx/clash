@@ -84,10 +84,21 @@ async fn main() -> Result<()> {
 
     tracing::info!("clash starting, data_dir={:?}", data_dir);
 
+    // Start the daemon server in-process as a background task.
+    // This replaces the old approach of spawning a separate `clash daemon` process.
+    // When Clash exits, the daemon shuts down with it — no orphan processes.
+    let socket_path = infrastructure::daemon::client::DaemonClient::default_socket_path();
+    let daemon_server = infrastructure::daemon::server::DaemonServer::new(socket_path);
+    let daemon_shutdown = daemon_server.shutdown_handle();
+    let daemon_task = tokio::spawn(async move {
+        if let Err(e) = daemon_server.run().await {
+            tracing::error!("Daemon server error: {}", e);
+        }
+    });
+    // Brief wait for the daemon to bind the socket
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
     let mut terminal = ratatui::init();
-    // Enable mouse button tracking (1000) + SGR mode (1006) for scroll support.
-    // Do NOT enable mode 1003 (any-event tracking) — it floods the event stream
-    // with mouse movement events and causes keystroke lag.
     {
         use std::io::Write;
         std::io::stdout().write_all(b"\x1b[?1000h\x1b[?1006h")?;
@@ -96,6 +107,10 @@ async fn main() -> Result<()> {
     let mut app = infrastructure::app::App::new(data_dir, args.claude_bin);
     let result = app.run(&mut terminal).await;
     restore_terminal();
+
+    // Graceful shutdown: signal daemon to stop, wait briefly
+    daemon_shutdown.notify_one();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), daemon_task).await;
 
     result
 }

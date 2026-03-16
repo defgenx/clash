@@ -155,7 +155,9 @@ impl AppState {
                 .store
                 .sessions
                 .iter()
-                .filter(|s| s.is_running)
+                .filter(|s| {
+                    s.is_running || s.status == crate::domain::entities::SessionStatus::Errored
+                })
                 .collect(),
         };
 

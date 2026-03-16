@@ -18,6 +18,7 @@ pub fn status_icon(status: SessionStatus) -> &'static str {
         SessionStatus::Running => "●",
         SessionStatus::Starting => "⦿",
         SessionStatus::Prompting => "◉",
+        SessionStatus::Errored => "✗",
         SessionStatus::Idle => "○",
     }
 }
@@ -38,6 +39,7 @@ pub fn status_display(status: SessionStatus) -> &'static str {
         SessionStatus::Running => "● RUNNING",
         SessionStatus::Starting => "⦿ STARTING",
         SessionStatus::Prompting => "◉ PROMPTING (approval needed)",
+        SessionStatus::Errored => "✗ ERRORED (process died)",
         SessionStatus::Idle => "○ IDLE",
     }
 }
@@ -50,6 +52,7 @@ pub fn status_style(status: SessionStatus) -> Style {
         SessionStatus::Running => theme::STATUS_RUNNING,
         SessionStatus::Starting => theme::STATUS_STARTING,
         SessionStatus::Prompting => theme::STATUS_PROMPTING,
+        SessionStatus::Errored => ratatui::style::Color::Red,
         SessionStatus::Idle => theme::STATUS_IDLE,
     };
     let base = Style::default().fg(color);
@@ -89,5 +92,37 @@ pub fn or_dash(s: &str) -> &str {
         "—"
     } else {
         s
+    }
+}
+
+// ── Filesystem display helpers ──────────────────────────────────
+
+/// Detect if a project path is inside a git worktree.
+/// Returns the worktree name if detected, None otherwise.
+///
+/// This reads `.git` to check if it's a file (worktree indicator) rather
+/// than a directory (regular repo), and extracts the worktree name from
+/// the gitdir reference.
+pub fn detect_worktree(project_path: &str) -> Option<String> {
+    if project_path.is_empty() {
+        return None;
+    }
+    let git_path = std::path::Path::new(project_path).join(".git");
+    if git_path.is_file() {
+        if let Ok(content) = std::fs::read_to_string(&git_path) {
+            if let Some(gitdir) = content.trim().strip_prefix("gitdir: ") {
+                // "gitdir: /path/to/.git/worktrees/<name>" → extract <name>
+                if let Some(name) = gitdir.rsplit('/').next() {
+                    if !name.is_empty() {
+                        return Some(name.to_string());
+                    }
+                }
+                return Some("yes".to_string());
+            }
+        }
+        // .git is a file but couldn't parse — likely still a worktree
+        Some("yes".to_string())
+    } else {
+        None
     }
 }

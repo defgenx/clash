@@ -1,3 +1,4 @@
+use crate::adapters::format;
 use crate::adapters::views::{DetailView, Keybinding, Section};
 use crate::application::state::AppState;
 
@@ -6,11 +7,7 @@ pub struct SubagentDetailView;
 impl DetailView for SubagentDetailView {
     fn title(state: &AppState) -> String {
         if let Some(agent_id) = state.nav.current().context.as_deref() {
-            let short = if agent_id.len() > 12 {
-                &agent_id[..12]
-            } else {
-                agent_id
-            };
+            let short = format::short_id(agent_id, 12);
             if let Some(sa) = state.store.find_subagent(agent_id) {
                 let type_label = if sa.agent_type.is_empty() {
                     "agent"

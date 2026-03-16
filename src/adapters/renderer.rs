@@ -58,7 +58,7 @@ pub fn draw(state: &AppState, frame: &mut Frame) {
         let session_label = state
             .attached_session
             .as_deref()
-            .map(|s| if s.len() > 8 { &s[..8] } else { s })
+            .map(|s| crate::adapters::format::short_id(s, 8))
             .unwrap_or("?");
         let hint = Line::from(vec![
             Span::styled(
