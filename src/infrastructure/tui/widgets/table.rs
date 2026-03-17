@@ -40,7 +40,7 @@ pub fn render_table<V: TableView>(state: &AppState, frame: &mut Frame, area: Rec
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            let cells = V::row(item);
+            let cells = V::row(item, state.tick);
             let row = Row::new(cells);
             if i == state.table_state.selected {
                 row.style(theme::selected_style())

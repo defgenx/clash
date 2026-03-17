@@ -113,7 +113,7 @@ pub trait TableView {
     type Item;
 
     fn columns() -> Vec<ColumnDef>;
-    fn row(item: &Self::Item) -> Vec<Cell<'static>>;
+    fn row(item: &Self::Item, tick: usize) -> Vec<Cell<'static>>;
     fn items(state: &AppState) -> Vec<&Self::Item>;
     fn context_keybindings() -> Vec<Keybinding>;
     fn empty_message() -> &'static str {

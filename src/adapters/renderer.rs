@@ -106,12 +106,18 @@ fn draw_header(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
         ""
     };
 
-    // Count sessions needing attention (prompting for user input)
-    let prompting_count = state
+    // Count sessions needing approval (Prompting) vs waiting for input (Waiting)
+    let approval_count = state
         .store
         .sessions
         .iter()
-        .filter(|s| s.status == SessionStatus::Waiting || s.status == SessionStatus::Prompting)
+        .filter(|s| s.status == SessionStatus::Prompting)
+        .count();
+    let waiting_count = state
+        .store
+        .sessions
+        .iter()
+        .filter(|s| s.status == SessionStatus::Waiting)
         .count();
 
     let mut spans = vec![
@@ -126,11 +132,20 @@ fn draw_header(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
         Span::styled(filter_indicator, Style::default().fg(theme::STATUS_RUNNING)),
     ];
 
-    if prompting_count > 0 {
+    if approval_count > 0 {
+        let icon = crate::adapters::format::status_icon(SessionStatus::Prompting, state.tick);
         spans.push(Span::styled(
-            format!("  ▸ {} prompting", prompting_count),
+            format!("  {} {} approval needed", icon, approval_count),
             Style::default()
                 .fg(theme::STATUS_PROMPTING)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+    }
+    if waiting_count > 0 {
+        spans.push(Span::styled(
+            format!("  ◉ {} waiting", waiting_count),
+            Style::default()
+                .fg(theme::STATUS_WAITING)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
     }

@@ -19,7 +19,7 @@ impl TableView for InboxTable {
         ]
     }
 
-    fn row(item: &InboxMessage) -> Vec<Cell<'static>> {
+    fn row(item: &InboxMessage, _tick: usize) -> Vec<Cell<'static>> {
         let time = item
             .timestamp
             .as_ref()

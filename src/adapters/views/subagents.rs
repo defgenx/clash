@@ -23,8 +23,8 @@ impl TableView for SubagentsTable {
         ]
     }
 
-    fn row(item: &Subagent) -> Vec<Cell<'static>> {
-        let (status, status_style) = format::status_cell(item.status);
+    fn row(item: &Subagent, tick: usize) -> Vec<Cell<'static>> {
+        let (status, status_style) = format::status_cell(item.status, tick);
         let display_id = truncate(&item.id, 18, "…");
         let short_session = short_id(&item.parent_session_id, 8).to_string();
         let agent_type = or_dash(if item.agent_type.is_empty() {

@@ -19,7 +19,7 @@ impl TableView for TeamsTable {
         ]
     }
 
-    fn row(item: &Team) -> Vec<Cell<'static>> {
+    fn row(item: &Team, _tick: usize) -> Vec<Cell<'static>> {
         let active_count = item.members.iter().filter(|m| m.is_active).count();
         let total = item.members.len();
         let members_str = if total > 0 {

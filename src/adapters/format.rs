@@ -10,37 +10,63 @@ use crate::infrastructure::tui::theme;
 
 // ── Status formatting ────────────────────────────────────────────
 
-/// Returns (icon, label) for a session status — used in detail views.
-pub fn status_icon(status: SessionStatus) -> &'static str {
+/// Ticks per animation frame. At ~10ms/tick this gives ~120ms per frame.
+const TICKS_PER_STATUS_FRAME: usize = 12;
+
+/// Returns an animated icon for a session status.
+///
+/// Active statuses (Thinking, Running, Starting, Prompting) cycle through
+/// animation frames driven by the tick counter, giving visual feedback that
+/// the session is alive. Static statuses (Waiting, Errored, Idle) use a
+/// fixed icon.
+pub fn status_icon(status: SessionStatus, tick: usize) -> &'static str {
+    let frame = tick / TICKS_PER_STATUS_FRAME;
     match status {
+        SessionStatus::Prompting => {
+            // Blinking diamond — most urgent, demands user action
+            const FRAMES: &[&str] = &["◆", "◇", "◆", "◇"];
+            FRAMES[frame % FRAMES.len()]
+        }
+        SessionStatus::Thinking => {
+            // Pulsing circle — Claude is reasoning
+            const FRAMES: &[&str] = &["◌", "◎", "◉", "◎"];
+            FRAMES[frame % FRAMES.len()]
+        }
+        SessionStatus::Running => {
+            // Braille spinner — active tool execution
+            const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            FRAMES[frame % FRAMES.len()]
+        }
+        SessionStatus::Starting => {
+            // Filling circle — session booting up
+            const FRAMES: &[&str] = &["○", "◔", "◑", "◕", "●", "◕", "◑", "◔"];
+            FRAMES[frame % FRAMES.len()]
+        }
         SessionStatus::Waiting => "◉",
-        SessionStatus::Thinking => "◎",
-        SessionStatus::Running => "●",
-        SessionStatus::Starting => "⦿",
-        SessionStatus::Prompting => "◉",
         SessionStatus::Errored => "✗",
         SessionStatus::Idle => "○",
     }
 }
 
 /// Returns a styled (text, style) pair for table cells.
-pub fn status_cell(status: SessionStatus) -> (String, Style) {
-    let icon = status_icon(status);
+pub fn status_cell(status: SessionStatus, tick: usize) -> (String, Style) {
+    let icon = status_icon(status, tick);
     let label = status.to_string();
     let style = status_style(status);
     (format!("{} {}", icon, label), style)
 }
 
-/// Returns the display string for detail views (icon + label + context).
-pub fn status_display(status: SessionStatus) -> &'static str {
+/// Returns the display string for detail views (animated icon + label + context).
+pub fn status_display(status: SessionStatus, tick: usize) -> String {
+    let icon = status_icon(status, tick);
     match status {
-        SessionStatus::Waiting => "◉ WAITING FOR INPUT",
-        SessionStatus::Thinking => "◎ THINKING",
-        SessionStatus::Running => "● RUNNING",
-        SessionStatus::Starting => "⦿ STARTING",
-        SessionStatus::Prompting => "◉ PROMPTING (approval needed)",
-        SessionStatus::Errored => "✗ ERRORED (process died)",
-        SessionStatus::Idle => "○ IDLE",
+        SessionStatus::Waiting => format!("{} WAITING FOR INPUT", icon),
+        SessionStatus::Thinking => format!("{} THINKING", icon),
+        SessionStatus::Running => format!("{} RUNNING", icon),
+        SessionStatus::Starting => format!("{} STARTING", icon),
+        SessionStatus::Prompting => format!("{} PROMPTING (approval needed)", icon),
+        SessionStatus::Errored => format!("{} ERRORED (process died)", icon),
+        SessionStatus::Idle => format!("{} IDLE", icon),
     }
 }
 

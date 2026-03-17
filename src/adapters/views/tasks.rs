@@ -29,7 +29,7 @@ impl TableView for TasksTable {
         ]
     }
 
-    fn row(item: &Task) -> Vec<Cell<'static>> {
+    fn row(item: &Task, _tick: usize) -> Vec<Cell<'static>> {
         let color = status_color(&item.status);
         vec![
             Cell::from(item.id.clone()),

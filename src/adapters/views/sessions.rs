@@ -50,8 +50,8 @@ fn agents_summary(subagents: &[Subagent]) -> String {
 }
 
 /// Build a subagent child row (indented) for expanded sessions.
-fn subagent_row(sa: &Subagent) -> Vec<Cell<'static>> {
-    let (status, style) = format::status_cell(sa.status);
+fn subagent_row(sa: &Subagent, tick: usize) -> Vec<Cell<'static>> {
+    let (status, style) = format::status_cell(sa.status, tick);
     let display_id = format::truncate(&sa.id, 15, "…");
     let summary = if sa.summary.is_empty() {
         "—".to_string()
@@ -130,7 +130,7 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
             "—".to_string()
         };
 
-        let (status, status_style) = format::status_cell(session.status);
+        let (status, status_style) = format::status_cell(session.status, state.tick);
         let name_display = session.name.as_deref().unwrap_or("—");
         let display_name = or_dash(if session.summary.is_empty() {
             ""
@@ -178,8 +178,8 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
                     .iter()
                     .filter(|sa| !matches!(sa.status, SessionStatus::Idle))
                 {
-                    let child =
-                        Row::new(subagent_row(sa)).style(Style::default().fg(theme::TEXT_DIM));
+                    let child = Row::new(subagent_row(sa, state.tick))
+                        .style(Style::default().fg(theme::TEXT_DIM));
                     rows.push(child);
                     logical_to_parent.push(i);
                 }
@@ -232,8 +232,8 @@ impl TableView for SessionsTable {
         ]
     }
 
-    fn row(item: &Session) -> Vec<Cell<'static>> {
-        let (status, status_style) = format::status_cell(item.status);
+    fn row(item: &Session, tick: usize) -> Vec<Cell<'static>> {
+        let (status, status_style) = format::status_cell(item.status, tick);
         let name_display = item.name.clone().unwrap_or_else(|| "—".to_string());
         let display_name = or_dash(if item.summary.is_empty() {
             ""

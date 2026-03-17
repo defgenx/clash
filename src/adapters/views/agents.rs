@@ -24,7 +24,7 @@ impl TableView for AgentsTable {
         ]
     }
 
-    fn row(item: &Member) -> Vec<Cell<'static>> {
+    fn row(item: &Member, _tick: usize) -> Vec<Cell<'static>> {
         let status = if item.is_active { "active" } else { "idle" };
         let status_color = if item.is_active {
             Color::Green

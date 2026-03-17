@@ -9,7 +9,7 @@ impl DetailView for SessionDetailView {
         if let Some(session_id) = state.nav.current().context.as_deref() {
             let short = short_id(session_id, 8);
             if let Some(session) = state.store.find_session(session_id) {
-                let icon = format::status_icon(session.status);
+                let icon = format::status_icon(session.status, state.tick);
                 let label = session.name.as_deref().unwrap_or(short);
                 format!("{} Session {}", icon, label)
             } else {
@@ -34,7 +34,10 @@ impl DetailView for SessionDetailView {
         let mut info = Section::new("Info")
             .row("Session", &session.id)
             .row("Name", session.name.as_deref().unwrap_or("—"))
-            .row("Status", format::status_display(session.status))
+            .row(
+                "Status",
+                &format::status_display(session.status, state.tick),
+            )
             .row("Path", &session.project_path)
             .row("Branch", or_dash(&session.git_branch))
             .row("Worktree", session.worktree.as_deref().unwrap_or("no"))
@@ -106,7 +109,7 @@ impl DetailView for SessionDetailView {
         let agents_section = if !subagents_for_session.is_empty() {
             let mut section = Section::new("Subagents");
             for sa in &subagents_for_session {
-                let icon = format::status_icon(sa.status);
+                let icon = format::status_icon(sa.status, state.tick);
                 let type_label = if sa.agent_type.is_empty() {
                     "agent"
                 } else {
