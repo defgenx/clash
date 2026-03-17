@@ -131,8 +131,16 @@ fn reduce_team(state: &mut AppState, action: TeamAction) -> Vec<Effect> {
         TeamAction::Delete { name } => {
             state.toast = Some(format!("Deleted team '{}'", name));
             if state.current_team() == Some(&name) {
-                state.nav.replace(ViewKind::Teams);
+                // Pop back to the Teams list (preserving the stack so Esc
+                // still returns to Sessions). Don't use replace() — that
+                // clears the entire stack and makes Teams the root.
+                while state.current_view() != ViewKind::Teams {
+                    if !state.nav.pop() {
+                        break;
+                    }
+                }
             }
+            state.table_state.selected = 0;
             vec![Effect::RemoveTeam { name }, Effect::RefreshAll]
         }
         TeamAction::Refresh => {

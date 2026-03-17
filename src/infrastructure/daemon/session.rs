@@ -471,6 +471,8 @@ fn has_approval_prompt(bottom: &str, last_lines: &[&str]) -> bool {
         "allow",
         "approve",
         "permit",
+        "deny",
+        "reject",
         "do you want",
         "would you like",
         "press y",
@@ -482,6 +484,8 @@ fn has_approval_prompt(bottom: &str, last_lines: &[&str]) -> bool {
         "create file",
         "delete file",
         "modify",
+        "allow once",
+        "allow always",
     ];
 
     for pattern in &approval_patterns {

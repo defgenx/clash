@@ -19,9 +19,12 @@
 
 - **Session management** — list, attach, detach, create, and delete Claude Code sessions
 - **Inline terminal** — attach to sessions with a full vt100 terminal emulator, no window switching
-- **Real-time status** — instant status detection via file watcher + JSONL parsing
-- **Teams & tasks** — organize agents into teams, manage tasks, send messages
+- **Real-time status** — instant status detection via hooks, daemon PTY screen analysis, and JSONL parsing (three-layer system)
+- **In-process daemon** — embedded PTY daemon manages sessions without a separate process
+- **Teams & tasks** — create, view, and delete teams; organize agents, manage tasks, send messages
+- **Subagent tracking** — view subagent trees per session, expand/collapse in the sessions table
 - **Keyboard-driven** — vim-style navigation, command mode (`:`), fuzzy filter (`/`), context help (`?`)
+- **Guided tour** — first-launch walkthrough, replay anytime with `:tour`
 - **Self-updating** — `:update` in the TUI or `clash update` from the CLI
 
 ## Installation
@@ -55,21 +58,27 @@ cargo install --git https://github.com/defgenx/clash.git
 clash                              # Start (reads from ~/.claude)
 clash --data-dir ~/.claude         # Custom data directory
 clash --claude-bin /path/to/claude # Custom CLI path
-clash daemon                       # Start daemon separately
 clash update                       # Update to the latest release
 ```
 
-On first launch, clash shows a guided tour. Replay it anytime with `:tour`.
+On first launch, clash installs lifecycle hooks into `~/.claude/settings.local.json` for instant status detection and shows a guided tour. Replay it anytime with `:tour`.
 
 ### Session Status
 
+clash detects session status through three layers (in priority order):
+
+1. **Hooks** — Claude Code lifecycle events (`PermissionRequest`, `Stop`, `SessionStart`, etc.) write instant status updates
+2. **Daemon PTY** — screen content analysis pattern-matches the terminal for prompts, approval dialogs, and thinking indicators
+3. **JSONL baseline** — conversation log heuristics (last entry type, stop reasons, timing)
+
 | Icon | Status | Meaning |
 |------|--------|---------|
-| `◉` | Prompting | Claude needs tool approval |
+| `◉` | Prompting | Claude needs tool approval (Yes/No) |
 | `◉` | Waiting | Awaiting your next prompt |
 | `◎` | Thinking | Reasoning / generating |
 | `●` | Running | Executing tools |
 | `⦿` | Starting | Session just spawned |
+| `⊘` | Errored | Session crashed shortly after starting |
 | `○` | Idle | Exited or inactive |
 
 ## Keybindings
@@ -97,11 +106,20 @@ On first launch, clash shows a guided tour. Replay it anytime with `:tour`.
 | Key | Action |
 |-----|--------|
 | `a` | Attach (inline terminal) |
-| `c` / `n` | New session |
+| `c` / `n` | New session (two-step: directory, then name) |
 | `Tab` | Expand / collapse subagents |
 | `A` | Toggle active / all |
-| `d` | Delete session |
-| `D` | Delete ALL sessions |
+| `d` | Drop session |
+| `D` | Drop ALL sessions |
+| `i` | Inspect (drill into detail) |
+
+### Teams
+
+| Key | Action |
+|-----|--------|
+| `c` | Create team |
+| `d` | Delete team |
+| `Enter` | View team detail |
 
 ### Attached Mode
 
@@ -118,7 +136,32 @@ On first launch, clash shows a guided tour. Replay it anytime with `:tour`.
 | `t` | Linked team |
 | `m` | Team members |
 | `a` | Attach |
-| `d` | Delete |
+| `d` | Drop |
+
+### Team Detail
+
+| Key | Action |
+|-----|--------|
+| `Enter` / `a` | View agents |
+| `t` | View tasks |
+| `s` | View lead session |
+| `d` | Delete team |
+
+### Commands
+
+| Command | Action |
+|---------|--------|
+| `:teams` | Navigate to Teams view |
+| `:sessions` | Navigate to Sessions view |
+| `:subagents` | Navigate to Subagents view |
+| `:create team <name>` | Create a new team |
+| `:delete team <name>` | Delete a team |
+| `:create task <team> <subject>` | Create a task |
+| `:new [path]` | Spawn a new session |
+| `:active` / `:all` | Filter sessions |
+| `:tour` | Replay guided tour |
+| `:update` | Update clash |
+| `:quit` | Exit |
 
 ## Data
 
@@ -127,11 +170,40 @@ clash reads directly from Claude Code's filesystem:
 ```
 ~/.claude/
 ├── projects/{name}/
-│   ├── {session-id}.jsonl          # Conversation
-│   └── {session-id}/subagents/     # Subagent transcripts
-├── teams/{name}/config.json        # Team config + members
-└── tasks/{team-name}/{id}.json     # Tasks
+│   ├── sessions-index.json            # Session index with summaries
+│   ├── {session-id}.jsonl             # Conversation log
+│   └── {session-id}/subagents/        # Subagent transcripts
+├── teams/{name}/config.json           # Team config + members
+├── tasks/{team-name}/{id}.json        # Tasks
+└── settings.local.json                # Hook registrations (written by clash)
 ```
+
+clash also maintains its own state in `~/.claude/clash/`:
+
+```
+~/.claude/clash/
+├── hooks/status-hook.sh               # Lifecycle hook script
+├── status/{session-id}                # Instant status from hooks
+├── names/{session-id}                 # Session display names
+├── project-names/{encoded-cwd}        # Project-to-name mapping
+└── sessions.json                      # Session registry
+```
+
+## Architecture
+
+clash follows **The Elm Architecture** (TEA) with clean architecture layers:
+
+```
+User Input → Action → reducer() → (State', Effects) → execute_effects() → draw()
+                        (pure)                          (infrastructure IO)
+```
+
+| Layer | Purpose |
+|-------|---------|
+| **Domain** | Entities, port traits — no dependencies |
+| **Application** | State, actions, effects, pure reducer |
+| **Adapters** | Input mapping, view rendering |
+| **Infrastructure** | Event loop, filesystem, daemon, CLI, TUI widgets |
 
 ## Development
 

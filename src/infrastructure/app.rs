@@ -705,8 +705,16 @@ impl App {
 
             if let Some(idx) = matched_by_id {
                 let existing = &mut self.state.store.sessions[idx];
-                existing.status = status;
-                existing.is_running = is_running;
+                // Don't let daemon screen-detection downgrade a hook-derived
+                // "prompting" to "waiting". Hooks fire from Claude Code's actual
+                // PermissionRequest event and are more authoritative than screen
+                // pattern matching for approval prompts.
+                let dominated = matches!(existing.status, SessionStatus::Prompting)
+                    && matches!(status, SessionStatus::Waiting | SessionStatus::Idle);
+                if !dominated {
+                    existing.status = status;
+                    existing.is_running = is_running;
+                }
                 if existing.name.is_none() && info.name.is_some() {
                     existing.name = info.name.clone();
                 }
@@ -733,8 +741,12 @@ impl App {
 
                 if let Some(idx) = matched_by_cwd {
                     let existing = &mut self.state.store.sessions[idx];
-                    existing.status = status;
-                    existing.is_running = is_running;
+                    let dominated = matches!(existing.status, SessionStatus::Prompting)
+                        && matches!(status, SessionStatus::Waiting | SessionStatus::Idle);
+                    if !dominated {
+                        existing.status = status;
+                        existing.is_running = is_running;
+                    }
                     existing.name = info.name.clone();
                     claimed_indices.insert(idx);
                 } else {

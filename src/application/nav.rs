@@ -55,6 +55,7 @@ impl NavigationStack {
     }
 
     /// Replace the entire stack with a single view.
+    #[allow(dead_code)]
     pub fn replace(&mut self, view: ViewKind) {
         self.stack.clear();
         self.stack.push(NavEntry {
