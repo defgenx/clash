@@ -44,6 +44,8 @@ pub enum InputMode {
     NewSession,
     /// Prompting user for the name of a new session (after directory).
     NewSessionName,
+    /// Prompting user whether to start the new session in a worktree (y/n).
+    NewSessionWorktree,
     /// Attached to a daemon PTY session — keystrokes go to the session.
     Attached,
 }
@@ -93,6 +95,8 @@ pub struct AppState {
     pub default_cwd: String,
     /// Pending CWD for new session (set during the two-step creation flow).
     pub pending_session_cwd: Option<String>,
+    /// Whether the pending new session should use a worktree.
+    pub pending_session_worktree: bool,
     /// Guided tour state: Some(step_index) when active, None when inactive.
     pub tour_step: Option<usize>,
     /// vt100 screen for inline terminal rendering when attached to a session.
@@ -130,6 +134,7 @@ impl AppState {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default(),
             pending_session_cwd: None,
+            pending_session_worktree: false,
             tour_step: None,
             terminal_screen: None,
         }

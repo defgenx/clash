@@ -295,6 +295,53 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 Effect::RefreshSessions,
             ]
         }
+        AgentAction::SpawnInWorktree { session_id } => {
+            let session = state.store.find_session(&session_id).cloned();
+            match session {
+                Some(s) if s.worktree.is_some() => {
+                    // Already in a worktree — just attach
+                    reduce_agent(state, AgentAction::Attach { session_id })
+                }
+                Some(s) if s.project_path.is_empty() => {
+                    state.toast = Some("Session has no project path".to_string());
+                    vec![]
+                }
+                Some(_s) => {
+                    let new_session_id = uuid::Uuid::now_v7().to_string();
+                    let short = &new_session_id[..8];
+                    let name = format!("wt-{}", short);
+                    state.input_mode = InputMode::Attached;
+                    state.attached_session = Some(new_session_id.clone());
+                    state.spinner = Some(format!("Creating worktree {}...", name));
+                    state.scroll_state.offset = 0;
+                    vec![Effect::CreateWorktreeAndAttach {
+                        source_session_id: Some(session_id),
+                        cwd: None,
+                        new_session_id,
+                        name,
+                    }]
+                }
+                None => {
+                    state.toast = Some("Session not found".to_string());
+                    vec![]
+                }
+            }
+        }
+        AgentAction::SpawnSessionInWorktree { cwd, name } => {
+            let new_session_id = uuid::Uuid::now_v7().to_string();
+            let short = &new_session_id[..8];
+            let session_name = name.unwrap_or_else(|| format!("wt-{}", short));
+            state.input_mode = InputMode::Attached;
+            state.attached_session = Some(new_session_id.clone());
+            state.spinner = Some(format!("Creating worktree {}...", session_name));
+            state.scroll_state.offset = 0;
+            vec![Effect::CreateWorktreeAndAttach {
+                source_session_id: None,
+                cwd: Some(cwd),
+                new_session_id,
+                name: session_name,
+            }]
+        }
     }
 }
 
@@ -385,6 +432,7 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             state.input_buffer.clear();
             state.input_cursor = 0;
             state.pending_session_cwd = None;
+            state.pending_session_worktree = false;
             vec![]
         }
         UiAction::SubmitInput(text) => {
@@ -426,19 +474,53 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                 }
                 InputMode::NewSessionName => {
                     let name_input = input.trim().to_string();
+                    // Store the name for the worktree prompt step
+                    state.pending_session_worktree = false;
+                    state.input_mode = InputMode::NewSessionWorktree;
+                    state.input_buffer = "n".to_string();
+                    state.input_cursor = 1;
+                    // Stash the name in toast temporarily (pending_session_cwd still holds cwd)
+                    // We re-use pending_session_worktree as a flag; store name in a new temp field
+                    // Actually, let's store in a simpler way: put cwd back and keep name in buffer context
+                    // The cleanest approach: store name in state.toast won't work (visible).
+                    // Instead: re-set pending_session_cwd to "cwd\0name" encoding, split later.
                     let cwd = state
                         .pending_session_cwd
                         .take()
                         .unwrap_or_else(|| state.default_cwd.clone());
                     let name = if name_input.is_empty() {
-                        None // will default to "Clash-N" in reduce_agent
+                        String::new()
                     } else {
-                        Some(name_input)
+                        name_input
                     };
-                    reduce(
-                        state,
-                        Action::Agent(AgentAction::SpawnSession { cwd, name }),
-                    )
+                    state.pending_session_cwd = Some(format!("{}\0{}", cwd, name));
+                    vec![]
+                }
+                InputMode::NewSessionWorktree => {
+                    let wants_worktree = input.trim().eq_ignore_ascii_case("y");
+                    let combined = state.pending_session_cwd.take().unwrap_or_default();
+                    let (cwd, name_str) = combined.split_once('\0').unwrap_or((&combined, ""));
+                    let cwd = if cwd.is_empty() {
+                        state.default_cwd.clone()
+                    } else {
+                        cwd.to_string()
+                    };
+                    let name = if name_str.is_empty() {
+                        None
+                    } else {
+                        Some(name_str.to_string())
+                    };
+                    if wants_worktree {
+                        reduce(
+                            state,
+                            Action::Agent(AgentAction::SpawnSessionInWorktree { cwd, name }),
+                        )
+                    } else {
+                        reduce(
+                            state,
+                            Action::Agent(AgentAction::SpawnSession { cwd, name }),
+                        )
+                    }
                 }
                 _ => vec![],
             }
@@ -869,14 +951,138 @@ mod tests {
             Some("/tmp/my-project")
         );
 
-        // Step 3: Submit name — should spawn session
+        // Step 3: Submit name — should transition to NewSessionWorktree prompt
         let effects = reduce(
             &mut state,
             Action::Ui(UiAction::SubmitInput("my-project".to_string())),
         );
+        assert!(effects.is_empty());
+        assert_eq!(state.input_mode, InputMode::NewSessionWorktree);
+        assert_eq!(state.input_buffer, "n"); // default: no worktree
+
+        // Step 4a: Answer "n" — should spawn session normally
+        let effects = reduce(
+            &mut state,
+            Action::Ui(UiAction::SubmitInput("n".to_string())),
+        );
         assert!(effects
             .iter()
             .any(|e| matches!(e, Effect::DaemonAttach { .. })));
+        assert_eq!(state.input_mode, InputMode::Attached);
+    }
+
+    #[test]
+    fn test_new_session_worktree_yes() {
+        let mut state = test_state();
+
+        // Set up pending session state (as if NewSession + NewSessionName completed)
+        state.input_mode = InputMode::NewSessionWorktree;
+        state.pending_session_cwd = Some("/tmp/project\0my-session".to_string());
+        state.input_buffer = "y".to_string();
+        state.input_cursor = 1;
+
+        let effects = reduce(
+            &mut state,
+            Action::Ui(UiAction::SubmitInput("y".to_string())),
+        );
+        assert!(effects
+            .iter()
+            .any(|e| matches!(e, Effect::CreateWorktreeAndAttach { .. })));
+        assert_eq!(state.input_mode, InputMode::Attached);
+    }
+
+    #[test]
+    fn test_spawn_in_worktree_existing_worktree_delegates_to_attach() {
+        let mut state = test_state();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "s1".to_string(),
+            is_running: true,
+            worktree: Some("my-wt".to_string()),
+            ..Default::default()
+        }];
+
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::SpawnInWorktree {
+                session_id: "s1".to_string(),
+            }),
+        );
+        // Should delegate to Attach → DaemonAttach effect
+        assert!(effects
+            .iter()
+            .any(|e| matches!(e, Effect::DaemonAttach { .. })));
+    }
+
+    #[test]
+    fn test_spawn_in_worktree_no_project_path_toasts_error() {
+        let mut state = test_state();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "s1".to_string(),
+            is_running: true,
+            project_path: String::new(),
+            ..Default::default()
+        }];
+
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::SpawnInWorktree {
+                session_id: "s1".to_string(),
+            }),
+        );
+        assert!(effects.is_empty());
+        assert!(state.toast.as_deref().unwrap().contains("no project path"));
+    }
+
+    #[test]
+    fn test_spawn_in_worktree_missing_session_toasts_error() {
+        let mut state = test_state();
+
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::SpawnInWorktree {
+                session_id: "nonexistent".to_string(),
+            }),
+        );
+        assert!(effects.is_empty());
+        assert!(state.toast.as_deref().unwrap().contains("not found"));
+    }
+
+    #[test]
+    fn test_spawn_in_worktree_creates_worktree_effect() {
+        let mut state = test_state();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "s1".to_string(),
+            is_running: true,
+            project_path: "/tmp/project".to_string(),
+            ..Default::default()
+        }];
+
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::SpawnInWorktree {
+                session_id: "s1".to_string(),
+            }),
+        );
+        assert!(effects
+            .iter()
+            .any(|e| matches!(e, Effect::CreateWorktreeAndAttach { .. })));
+        assert_eq!(state.input_mode, InputMode::Attached);
+    }
+
+    #[test]
+    fn test_spawn_session_in_worktree() {
+        let mut state = test_state();
+
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::SpawnSessionInWorktree {
+                cwd: "/tmp/project".to_string(),
+                name: Some("my-wt".to_string()),
+            }),
+        );
+        assert!(effects
+            .iter()
+            .any(|e| matches!(e, Effect::CreateWorktreeAndAttach { .. })));
         assert_eq!(state.input_mode, InputMode::Attached);
     }
 }

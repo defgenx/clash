@@ -400,6 +400,7 @@ impl App {
                 | InputMode::Filter
                 | InputMode::NewSession
                 | InputMode::NewSessionName
+                | InputMode::NewSessionWorktree
         ) {
             use crate::application::actions::ui::InputEdit;
             use crate::application::actions::UiAction;
@@ -1074,6 +1075,168 @@ impl App {
                         rows
                     );
                 }
+                Effect::CreateWorktreeAndAttach {
+                    source_session_id,
+                    cwd,
+                    new_session_id,
+                    name,
+                } => {
+                    // Resolve project_path and git_branch
+                    let (project_path, git_branch) = if let Some(ref sid) = source_session_id {
+                        match self.state.store.find_session(sid) {
+                            Some(s) => (s.project_path.clone(), s.git_branch.clone()),
+                            None => {
+                                self.state.toast = Some("Source session not found".to_string());
+                                self.state.input_mode = InputMode::Normal;
+                                self.state.attached_session = None;
+                                self.state.spinner = None;
+                                continue;
+                            }
+                        }
+                    } else if let Some(ref dir) = cwd {
+                        let branch = tokio::process::Command::new("git")
+                            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                            .current_dir(dir)
+                            .output()
+                            .await
+                            .ok()
+                            .and_then(|o| {
+                                if o.status.success() {
+                                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_default();
+                        (dir.clone(), branch)
+                    } else {
+                        self.state.toast = Some("No project path".to_string());
+                        self.state.input_mode = InputMode::Normal;
+                        self.state.attached_session = None;
+                        self.state.spinner = None;
+                        continue;
+                    };
+
+                    // Compute worktree path: <project_path>/../<project_name>-worktrees/<name>/
+                    let project_dir = std::path::Path::new(&project_path);
+                    let project_name = project_dir
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("project");
+                    let worktree_base = project_dir
+                        .parent()
+                        .unwrap_or(project_dir)
+                        .join(format!("{}-worktrees", project_name));
+                    let worktree_path = worktree_base.join(&name);
+
+                    // Create base dir
+                    if let Err(e) = std::fs::create_dir_all(&worktree_base) {
+                        self.state.toast = Some(format!("Failed to create worktree dir: {}", e));
+                        self.state.input_mode = InputMode::Normal;
+                        self.state.attached_session = None;
+                        self.state.spinner = None;
+                        continue;
+                    }
+
+                    // Run git worktree add
+                    let mut git_args = vec![
+                        "worktree".to_string(),
+                        "add".to_string(),
+                        worktree_path.to_string_lossy().to_string(),
+                        "-b".to_string(),
+                        name.clone(),
+                    ];
+                    if !git_branch.is_empty() {
+                        git_args.push(git_branch);
+                    }
+                    let git_result = tokio::process::Command::new("git")
+                        .args(&git_args)
+                        .current_dir(&project_path)
+                        .output()
+                        .await;
+
+                    match git_result {
+                        Ok(output) if output.status.success() => {
+                            let wt_str = worktree_path.to_string_lossy().to_string();
+                            // Register session
+                            crate::infrastructure::hooks::registry::register(
+                                &new_session_id,
+                                &name,
+                                &wt_str,
+                            );
+                            // Save session name
+                            crate::infrastructure::hooks::save_session_name(
+                                self.backend.base_dir(),
+                                &new_session_id,
+                                &name,
+                                Some(&wt_str),
+                            );
+
+                            // Create daemon session in the worktree
+                            if !self.daemon.is_connected() {
+                                self.state.toast = Some("Daemon not connected".to_string());
+                                self.state.input_mode = InputMode::Normal;
+                                self.state.attached_session = None;
+                                self.state.spinner = None;
+                                continue;
+                            }
+
+                            let cmd_args = vec!["--session-id".to_string(), new_session_id.clone()];
+                            let size = terminal
+                                .size()
+                                .unwrap_or(ratatui::layout::Size::new(120, 40));
+
+                            if let Err(e) = self
+                                .daemon
+                                .create_session(
+                                    &new_session_id,
+                                    &self.cli_runner.claude_bin,
+                                    &cmd_args,
+                                    Some(&wt_str),
+                                    Some(name.clone()),
+                                    size.width,
+                                    size.height,
+                                )
+                                .await
+                            {
+                                tracing::debug!("Create worktree session: {}", e);
+                                let _ = self
+                                    .daemon
+                                    .resize(&new_session_id, size.width, size.height)
+                                    .await;
+                            }
+
+                            // Attach to daemon output stream
+                            if let Err(e) = self.daemon.attach(&new_session_id).await {
+                                self.state.toast = Some(format!("Attach failed: {}", e));
+                                self.state.input_mode = InputMode::Normal;
+                                self.state.attached_session = None;
+                                self.state.spinner = None;
+                                continue;
+                            }
+
+                            tracing::info!(
+                                "Created worktree and attached: {} at {}",
+                                new_session_id,
+                                wt_str
+                            );
+                        }
+                        Ok(output) => {
+                            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                            self.state.toast =
+                                Some(format!("git worktree failed: {}", stderr.trim()));
+                            self.state.input_mode = InputMode::Normal;
+                            self.state.attached_session = None;
+                            self.state.spinner = None;
+                        }
+                        Err(e) => {
+                            self.state.toast = Some(format!("Failed to run git: {}", e));
+                            self.state.input_mode = InputMode::Normal;
+                            self.state.attached_session = None;
+                            self.state.spinner = None;
+                        }
+                    }
+                }
                 Effect::DaemonKill { session_id } => {
                     if self.daemon.is_connected() {
                         let _ = self.daemon.kill_session(&session_id).await;
@@ -1087,6 +1250,7 @@ impl App {
                         terminate_claude_process(&session_id).await;
                         if let Some(wt) = worktree {
                             kill_tmux_session(&wt).await;
+                            remove_git_worktree(&wt).await;
                         }
                     });
                 }
@@ -1217,6 +1381,32 @@ async fn terminate_claude_process(session_id: &str) {
         .args(["-TERM", "-f", &format!("claude.*{}", session_id)])
         .output()
         .await;
+}
+
+/// Remove a git worktree if the path is one (`.git` is a file, not a directory).
+async fn remove_git_worktree(worktree_path: &str) {
+    let git_file = std::path::Path::new(worktree_path).join(".git");
+    if !git_file.is_file() {
+        return; // not a worktree
+    }
+    let result = tokio::process::Command::new("git")
+        .args(["worktree", "remove", "--force", worktree_path])
+        .output()
+        .await;
+    match result {
+        Ok(output) if output.status.success() => {
+            tracing::info!("Removed git worktree '{}'", worktree_path);
+        }
+        Ok(output) => {
+            tracing::debug!(
+                "git worktree remove failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Err(e) => {
+            tracing::debug!("Failed to run git worktree remove: {}", e);
+        }
+    }
 }
 
 /// Kill a tmux session by worktree name.

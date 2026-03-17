@@ -161,6 +161,7 @@ impl DetailView for SessionDetailView {
             Keybinding::new("s", "View subagents"),
             Keybinding::new("m", "View team members"),
             Keybinding::new("t", "View linked team"),
+            Keybinding::new("w", "Open in git worktree"),
             Keybinding::new("d", "Drop session"),
             Keybinding::new("j/k", "Scroll"),
         ]

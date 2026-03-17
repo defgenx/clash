@@ -17,4 +17,13 @@ pub enum AgentAction {
     /// Drop all sessions: kill all daemon PTYs, terminate all processes,
     /// clear the clash session registry.
     DropAllSessions,
+    /// Spawn a new session inside a git worktree created from the selected session's project.
+    SpawnInWorktree {
+        session_id: String,
+    },
+    /// Spawn a new session in a worktree created from the given directory.
+    SpawnSessionInWorktree {
+        cwd: String,
+        name: Option<String>,
+    },
 }

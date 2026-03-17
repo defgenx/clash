@@ -21,7 +21,8 @@ pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
         InputMode::Command
         | InputMode::Filter
         | InputMode::NewSession
-        | InputMode::NewSessionName => handle_input_mode(key),
+        | InputMode::NewSessionName
+        | InputMode::NewSessionWorktree => handle_input_mode(key),
         InputMode::Confirm => handle_confirm_mode(key, state),
         InputMode::Attached => Action::Noop,
     }
@@ -104,6 +105,7 @@ fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
         KeyCode::Char('m') => handle_message(state),
         KeyCode::Char('t') => handle_t_key(state),
         KeyCode::Char('n') => handle_new_session(state),
+        KeyCode::Char('w') => handle_worktree(state),
         KeyCode::Char('r') => Action::Team(crate::application::actions::TeamAction::Refresh),
         KeyCode::Tab => Action::Ui(UiAction::ToggleExpand),
 
@@ -427,6 +429,31 @@ fn handle_new_session(state: &AppState) -> Action {
     }
 }
 
+fn handle_worktree(state: &AppState) -> Action {
+    match state.current_view() {
+        ViewKind::Sessions => {
+            let items = state.filtered_sessions();
+            if let Some(session) = items.get(state.table_state.selected) {
+                Action::Agent(AgentAction::SpawnInWorktree {
+                    session_id: session.id.clone(),
+                })
+            } else {
+                Action::Noop
+            }
+        }
+        ViewKind::SessionDetail => {
+            if let Some(id) = state.current_session() {
+                Action::Agent(AgentAction::SpawnInWorktree {
+                    session_id: id.to_string(),
+                })
+            } else {
+                Action::Noop
+            }
+        }
+        _ => Action::Noop,
+    }
+}
+
 /// Parse a command string (from `:` mode).
 pub fn parse_command(cmd: &str) -> Action {
     let cmd = cmd.trim();
@@ -534,6 +561,36 @@ mod tests {
         match parse_command("foobar") {
             Action::Ui(UiAction::Toast(_)) => {}
             _ => panic!("Expected Toast for unknown command"),
+        }
+    }
+
+    #[test]
+    fn test_w_key_on_sessions_view() {
+        let mut state = AppState::new();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "s1".to_string(),
+            is_running: true,
+            ..Default::default()
+        }];
+        state.table_state.selected = 0;
+        // Default view is Sessions
+        let key = KeyEvent::new(KeyCode::Char('w'), crossterm::event::KeyModifiers::NONE);
+        match handle_key(key, &state) {
+            Action::Agent(AgentAction::SpawnInWorktree { session_id }) => {
+                assert_eq!(session_id, "s1");
+            }
+            other => panic!("Expected SpawnInWorktree, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_w_key_on_teams_view_is_noop() {
+        let mut state = AppState::new();
+        state.nav.push(ViewKind::Teams, None);
+        let key = KeyEvent::new(KeyCode::Char('w'), crossterm::event::KeyModifiers::NONE);
+        match handle_key(key, &state) {
+            Action::Noop => {}
+            other => panic!("Expected Noop on Teams view, got {:?}", other),
         }
     }
 }

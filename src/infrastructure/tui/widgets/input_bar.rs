@@ -18,6 +18,10 @@ pub fn render_input_bar(
         InputMode::Filter => ("/", Style::default().fg(Color::Green)),
         InputMode::NewSession => ("New session in: ", Style::default().fg(Color::Cyan)),
         InputMode::NewSessionName => ("Session name: ", Style::default().fg(Color::Cyan)),
+        InputMode::NewSessionWorktree => (
+            "Start in worktree? (y/n): ",
+            Style::default().fg(Color::Cyan),
+        ),
         _ => return,
     };
 

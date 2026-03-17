@@ -89,6 +89,15 @@ pub enum Effect {
     },
     /// Mark all sessions as idle in their clash status files.
     MarkAllSessionsIdle,
+    /// Create a git worktree, then spawn a new daemon session inside it.
+    CreateWorktreeAndAttach {
+        /// For existing-session flow: the session whose project_path/git_branch to use.
+        source_session_id: Option<String>,
+        /// Direct cwd for new-session flow.
+        cwd: Option<String>,
+        new_session_id: String,
+        name: String,
+    },
 
     // ── UI state effects ────────────────────────────────────────
     ShowSpinner(String),
