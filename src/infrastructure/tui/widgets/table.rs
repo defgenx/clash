@@ -29,7 +29,10 @@ pub fn compute_constraints(
         // All percentage — legacy path
         return columns
             .iter()
-            .map(|c| Constraint::Percentage(c.width_pct))
+            .map(|c| match c.sizing {
+                ColumnSizing::Pct(p) => Constraint::Percentage(p),
+                _ => unreachable!(),
+            })
             .collect();
     }
 

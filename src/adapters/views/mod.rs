@@ -70,17 +70,14 @@ pub enum ColumnSizing {
 pub struct ColumnDef {
     pub name: String,
     pub sizing: ColumnSizing,
-    /// Legacy accessor — panics if not `Pct`. Kept for session custom renderer compat.
-    pub width_pct: u16,
 }
 
 impl ColumnDef {
-    /// Create a fixed-percentage column (legacy).
+    /// Create a fixed-percentage column.
     pub fn new(name: &str, width_pct: u16) -> Self {
         Self {
             name: name.to_string(),
             sizing: ColumnSizing::Pct(width_pct),
-            width_pct,
         }
     }
 
@@ -89,7 +86,6 @@ impl ColumnDef {
         Self {
             name: name.to_string(),
             sizing: ColumnSizing::Flex { min, max },
-            width_pct: 0,
         }
     }
 }
