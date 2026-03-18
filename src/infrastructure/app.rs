@@ -616,9 +616,11 @@ impl App {
             });
             // Overlay cwd from registry onto each session
             for session in &mut self.state.store.sessions {
-                let entry = registry
-                    .get(&session.id)
-                    .or_else(|| registry.values().find(|r| r.claude_session_id == session.id));
+                let entry = registry.get(&session.id).or_else(|| {
+                    registry
+                        .values()
+                        .find(|r| r.claude_session_id == session.id)
+                });
                 if let Some(entry) = entry {
                     if !entry.cwd.is_empty() {
                         session.cwd = Some(entry.cwd.clone());
@@ -1029,18 +1031,12 @@ impl App {
                     // Resolve cwd from session data: prefer the session's
                     // original cwd (from the registry), fall back to project_path.
                     let resolved_cwd = cwd.or_else(|| {
-                        self.state
-                            .store
-                            .find_session(&session_id)
-                            .and_then(|s| {
-                                s.cwd
-                                    .clone()
-                                    .filter(|c| !c.is_empty())
-                                    .or_else(|| {
-                                        Some(s.project_path.clone())
-                                            .filter(|p| !p.is_empty())
-                                    })
-                            })
+                        self.state.store.find_session(&session_id).and_then(|s| {
+                            s.cwd
+                                .clone()
+                                .filter(|c| !c.is_empty())
+                                .or_else(|| Some(s.project_path.clone()).filter(|p| !p.is_empty()))
+                        })
                     });
 
                     // Build CLI args: provided args for new sessions,

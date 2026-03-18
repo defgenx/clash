@@ -310,6 +310,17 @@ fn handle_attach_or_assign(state: &AppState) -> Action {
 
 fn handle_s_key(state: &AppState) -> Action {
     match state.current_view() {
+        // On Sessions list, `s` stashes/unstashes the selected session
+        ViewKind::Sessions => {
+            let items = state.filtered_sessions();
+            if let Some(session) = items.get(state.table_state.selected) {
+                Action::Agent(AgentAction::StashSession {
+                    session_id: session.id.clone(),
+                })
+            } else {
+                Action::Noop
+            }
+        }
         // On SessionDetail, `s` drills into Subagents
         ViewKind::SessionDetail => Action::Nav(NavAction::DrillIn {
             view: ViewKind::Subagents,

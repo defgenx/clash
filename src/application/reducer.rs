@@ -327,6 +327,36 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 }
             }
         }
+        AgentAction::StashSession { session_id } => {
+            let session = state.store.find_session(&session_id).cloned();
+            match session {
+                Some(s)
+                    if s.status == crate::domain::entities::SessionStatus::Idle
+                        && !s.is_running =>
+                {
+                    // Unstash: re-attach to resume the session
+                    state.toast = Some("Session unstashed".to_string());
+                    reduce_agent(state, AgentAction::Attach { session_id })
+                }
+                Some(s) => {
+                    // Stash: terminate the process and mark idle
+                    let worktree = s.worktree.clone();
+                    state.toast = Some("Session stashed".to_string());
+                    vec![
+                        Effect::TerminateProcess {
+                            session_id: session_id.clone(),
+                            worktree,
+                        },
+                        Effect::MarkSessionIdle { session_id },
+                        Effect::RefreshSessions,
+                    ]
+                }
+                None => {
+                    state.toast = Some("Session not found".to_string());
+                    vec![]
+                }
+            }
+        }
         AgentAction::SpawnSessionInWorktree { cwd, name } => {
             let new_session_id = uuid::Uuid::now_v7().to_string();
             let short = &new_session_id[..8];

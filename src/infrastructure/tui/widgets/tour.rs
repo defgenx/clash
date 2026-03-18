@@ -57,6 +57,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
             ("i / Enter", "Inspect session details"),
             ("a", "Attach to a session (live terminal)"),
             ("c / n", "Create a new Claude session"),
+            ("s", "Stash / unstash session"),
             ("d", "Delete selected session"),
             ("D", "Delete ALL sessions"),
             ("Tab", "Expand / collapse subagents"),

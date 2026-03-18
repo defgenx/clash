@@ -306,6 +306,7 @@ impl TableView for SessionsTable {
             Keybinding::new("a", "Attach to session"),
             Keybinding::new("c/n", "New session (prompts for dir, then name)"),
             Keybinding::new(":new <path>", "New session in <path>"),
+            Keybinding::new("s", "Stash/unstash session"),
             Keybinding::new("A", "Toggle filter: active / all"),
             Keybinding::new("w", "Open in git worktree"),
             Keybinding::new("d", "Drop session (kill + unregister)"),

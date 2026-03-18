@@ -17,7 +17,7 @@
 
 ## Features
 
-- **Session management** — list, attach, detach, create, and delete Claude Code sessions
+- **Session management** — list, attach, detach, create, stash, and delete Claude Code sessions
 - **Inline terminal** — attach to sessions with a full vt100 terminal emulator, no window switching
 - **Real-time status** — instant status detection via hooks, daemon PTY screen analysis, and JSONL parsing (three-layer system)
 - **In-process daemon** — embedded PTY daemon manages sessions without a separate process
@@ -107,6 +107,7 @@ clash detects session status through three layers (in priority order):
 |-----|--------|
 | `a` | Attach (inline terminal) |
 | `c` / `n` | New session (two-step: directory, then name) |
+| `s` | Stash / unstash session (stop process, keep in registry) |
 | `Tab` | Expand / collapse subagents |
 | `A` | Toggle active / all |
 | `d` | Drop session |

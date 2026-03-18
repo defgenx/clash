@@ -26,4 +26,9 @@ pub enum AgentAction {
         cwd: String,
         name: Option<String>,
     },
+    /// Stash a session: terminate the Claude process and mark idle, but keep
+    /// it in the registry. If already idle, unstash by re-attaching.
+    StashSession {
+        session_id: String,
+    },
 }
