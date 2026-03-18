@@ -694,7 +694,17 @@ impl App {
             .unwrap_or_default()
             .as_secs();
 
+        // Load hook statuses so we can distinguish intentional kills (stash/drop)
+        // from genuine crashes. Sessions with a hook-derived "idle" were
+        // intentionally stopped and should not be marked as errored.
+        let hook_statuses =
+            crate::infrastructure::hooks::read_all_statuses(self.backend.base_dir());
+
         for info in infos {
+            let hook_says_idle = hook_statuses
+                .get(&info.session_id)
+                .is_some_and(|(s, _)| matches!(s, SessionStatus::Idle));
+
             let mut status = info
                 .status
                 .parse::<SessionStatus>()
@@ -702,7 +712,9 @@ impl App {
 
             // If the process died shortly after creation, mark as errored
             // so the user can see something went wrong (instead of disappearing).
-            if !info.is_alive && matches!(status, SessionStatus::Idle) {
+            // Skip this heuristic when the hook says idle — the session was
+            // intentionally killed (stash/drop), not a crash.
+            if !hook_says_idle && !info.is_alive && matches!(status, SessionStatus::Idle) {
                 let age_secs = now.saturating_sub(info.created_at);
                 if age_secs < 120 {
                     status = SessionStatus::Errored;
@@ -724,8 +736,14 @@ impl App {
                 // "prompting" to "waiting". Hooks fire from Claude Code's actual
                 // PermissionRequest event and are more authoritative than screen
                 // pattern matching for approval prompts.
-                let dominated = matches!(existing.status, SessionStatus::Prompting)
-                    && matches!(status, SessionStatus::Waiting | SessionStatus::Idle);
+                // Also don't let the daemon override an idle session that was
+                // intentionally stopped — the daemon may still report it as
+                // running/waiting during the graceful kill window.
+                let dominated = (matches!(existing.status, SessionStatus::Prompting)
+                    && matches!(status, SessionStatus::Waiting | SessionStatus::Idle))
+                    || (matches!(existing.status, SessionStatus::Idle)
+                        && matches!(status, SessionStatus::Errored))
+                    || (hook_says_idle && !matches!(status, SessionStatus::Idle));
                 if !dominated {
                     existing.status = status;
                     existing.is_running = is_running;
@@ -735,6 +753,13 @@ impl App {
                 }
                 claimed_indices.insert(idx);
             } else if info.name.is_some() && !info.cwd.is_empty() {
+                // Don't re-add sessions that were intentionally killed or are
+                // already dead — they were likely dropped by the user and the
+                // daemon's reaper hasn't cleaned them up yet.
+                if hook_says_idle || !info.is_alive {
+                    continue;
+                }
+
                 let daemon_cwd = info.cwd.trim_end_matches('/');
                 let matched_by_cwd =
                     self.state
@@ -756,8 +781,11 @@ impl App {
 
                 if let Some(idx) = matched_by_cwd {
                     let existing = &mut self.state.store.sessions[idx];
-                    let dominated = matches!(existing.status, SessionStatus::Prompting)
-                        && matches!(status, SessionStatus::Waiting | SessionStatus::Idle);
+                    let dominated = (matches!(existing.status, SessionStatus::Prompting)
+                        && matches!(status, SessionStatus::Waiting | SessionStatus::Idle))
+                        || (matches!(existing.status, SessionStatus::Idle)
+                            && matches!(status, SessionStatus::Errored))
+                        || (hook_says_idle && !matches!(status, SessionStatus::Idle));
                     if !dominated {
                         existing.status = status;
                         existing.is_running = is_running;
@@ -773,6 +801,11 @@ impl App {
                     ));
                 }
             } else {
+                // Don't add dead/idle-hooked daemon sessions as new entries.
+                if hook_says_idle || !info.is_alive {
+                    continue;
+                }
+
                 let summary = if !info.cwd.is_empty() {
                     format!("New session in {}", info.cwd)
                 } else {
@@ -1091,6 +1124,89 @@ impl App {
                         rows
                     );
                 }
+                Effect::DaemonStart {
+                    session_id,
+                    args,
+                    cwd,
+                    name,
+                } => {
+                    // Start a session in the daemon without entering passthrough.
+                    if let Some(ref n) = name {
+                        crate::infrastructure::hooks::save_session_name(
+                            self.backend.base_dir(),
+                            &session_id,
+                            n,
+                            cwd.as_deref(),
+                        );
+                    }
+
+                    // Clear the stale "idle" hook status so the daemon's
+                    // Starting/Running status can take effect in reconciliation.
+                    crate::infrastructure::hooks::write_session_status(
+                        self.backend.base_dir(),
+                        &session_id,
+                        "starting",
+                    );
+
+                    if !self.daemon.is_connected() {
+                        self.state.toast = Some("Daemon not connected".to_string());
+                        continue;
+                    }
+
+                    let resolved_cwd = cwd.or_else(|| {
+                        self.state.store.find_session(&session_id).and_then(|s| {
+                            s.cwd
+                                .clone()
+                                .filter(|c| !c.is_empty())
+                                .or_else(|| Some(s.project_path.clone()).filter(|p| !p.is_empty()))
+                        })
+                    });
+
+                    let cmd_args = if args.is_empty() {
+                        vec!["--resume".to_string(), session_id.clone()]
+                    } else {
+                        args
+                    };
+
+                    let size = terminal
+                        .size()
+                        .unwrap_or(ratatui::layout::Size::new(120, 40));
+                    let cols = size.width;
+                    let rows = size.height;
+
+                    // Create or resume session; fall back to resize if it already exists
+                    if let Err(e) = self
+                        .daemon
+                        .create_session(
+                            &session_id,
+                            &self.cli_runner.claude_bin,
+                            &cmd_args,
+                            resolved_cwd.as_deref(),
+                            name,
+                            cols,
+                            rows,
+                        )
+                        .await
+                    {
+                        tracing::debug!("Background start: create_session returned: {}", e);
+                        let _ = self.daemon.resize(&session_id, cols, rows).await;
+                    }
+
+                    // Update in-memory state so the UI shows Starting immediately
+                    if let Some(session) = self
+                        .state
+                        .store
+                        .sessions
+                        .iter_mut()
+                        .find(|s| s.id == session_id)
+                    {
+                        session.status = crate::domain::entities::SessionStatus::Starting;
+                        session.is_running = true;
+                    }
+
+                    self.state.toast = Some("Session restarted".to_string());
+                    tracing::info!("Started daemon session {} in background", session_id);
+                }
                 Effect::CreateWorktreeAndAttach {
                     source_session_id,
                     cwd,
@@ -1262,12 +1378,21 @@ impl App {
                     session_id,
                     worktree,
                 } => {
+                    let base_dir = self.backend.base_dir().to_path_buf();
                     tokio::spawn(async move {
                         terminate_claude_process(&session_id).await;
                         if let Some(wt) = worktree {
                             kill_tmux_session(&wt).await;
                             remove_git_worktree(&wt).await;
                         }
+                        // Re-write "idle" after the process has died, so that
+                        // any Stop hook the dying Claude fires ("waiting") is
+                        // overwritten and the session doesn't get stuck in Waiting.
+                        crate::infrastructure::hooks::write_session_status(
+                            &base_dir,
+                            &session_id,
+                            "idle",
+                        );
                     });
                 }
                 Effect::TerminateAllProcesses => {

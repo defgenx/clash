@@ -39,6 +39,16 @@ pub enum Effect {
         /// Optional session name to persist (for new sessions).
         name: Option<String>,
     },
+    /// Start a session in the daemon without entering passthrough (background).
+    DaemonStart {
+        session_id: String,
+        /// CLI args for the subprocess. Empty means `--resume <session_id>`.
+        args: Vec<String>,
+        /// Working directory for the subprocess.
+        cwd: Option<String>,
+        /// Optional session name to persist.
+        name: Option<String>,
+    },
     DaemonKill {
         session_id: String,
     },

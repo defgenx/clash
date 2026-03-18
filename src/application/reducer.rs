@@ -334,15 +334,38 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                     if s.status == crate::domain::entities::SessionStatus::Idle
                         && !s.is_running =>
                 {
-                    // Unstash: re-attach to resume the session
-                    state.toast = Some("Session unstashed".to_string());
-                    reduce_agent(state, AgentAction::Attach { session_id })
+                    // Unstash: restart in the background (don't attach)
+                    state.toast = Some("Session starting...".to_string());
+                    vec![
+                        Effect::DaemonStart {
+                            session_id,
+                            args: vec![],
+                            cwd: None,
+                            name: None,
+                        },
+                        Effect::RefreshSessions,
+                    ]
                 }
                 Some(s) => {
-                    // Stash: terminate the process and mark idle
+                    // Stash: kill daemon PTY, terminate process, mark idle
                     let worktree = s.worktree.clone();
+                    // Update in-memory state immediately so the UI reflects the change
+                    if let Some(session) =
+                        state.store.sessions.iter_mut().find(|x| x.id == session_id)
+                    {
+                        session.status = crate::domain::entities::SessionStatus::Idle;
+                        session.is_running = false;
+                    }
+                    // Clamp selection index since the session may vanish from Active filter
+                    let count = state.filtered_sessions().len();
+                    if count > 0 && state.table_state.selected >= count {
+                        state.table_state.selected = count - 1;
+                    }
                     state.toast = Some("Session stashed".to_string());
                     vec![
+                        Effect::DaemonKill {
+                            session_id: session_id.clone(),
+                        },
                         Effect::TerminateProcess {
                             session_id: session_id.clone(),
                             worktree,
