@@ -136,6 +136,7 @@ impl FsBackend {
             status,
             worktree,
             name: None,
+            cwd: None,
         }
     }
 

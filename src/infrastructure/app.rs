@@ -606,13 +606,25 @@ impl App {
     fn load_disk_sessions(&mut self) {
         let _ = self.state.store.refresh_sessions(&self.backend);
 
-        // Filter sessions to only those registered in the clash session registry.
+        // Filter sessions to only those registered in the clash session registry,
+        // and populate each session's cwd from the registry entry.
         let registry = crate::infrastructure::hooks::registry::load();
         if !registry.is_empty() {
             self.state.store.sessions.retain(|s| {
                 registry.contains_key(&s.id)
                     || registry.values().any(|r| r.claude_session_id == s.id)
             });
+            // Overlay cwd from registry onto each session
+            for session in &mut self.state.store.sessions {
+                let entry = registry
+                    .get(&session.id)
+                    .or_else(|| registry.values().find(|r| r.claude_session_id == session.id));
+                if let Some(entry) = entry {
+                    if !entry.cwd.is_empty() {
+                        session.cwd = Some(entry.cwd.clone());
+                    }
+                }
+            }
         } else {
             // Empty registry = no clash sessions yet; show nothing from disk
             self.state.store.sessions.clear();
@@ -1014,13 +1026,21 @@ impl App {
                         continue;
                     }
 
-                    // Resolve cwd from session data
+                    // Resolve cwd from session data: prefer the session's
+                    // original cwd (from the registry), fall back to project_path.
                     let resolved_cwd = cwd.or_else(|| {
                         self.state
                             .store
                             .find_session(&session_id)
-                            .map(|s| s.project_path.clone())
-                            .filter(|p| !p.is_empty())
+                            .and_then(|s| {
+                                s.cwd
+                                    .clone()
+                                    .filter(|c| !c.is_empty())
+                                    .or_else(|| {
+                                        Some(s.project_path.clone())
+                                            .filter(|p| !p.is_empty())
+                                    })
+                            })
                     });
 
                     // Build CLI args: provided args for new sessions,
@@ -1312,6 +1332,16 @@ fn session_from_daemon_info(
     status: crate::domain::entities::SessionStatus,
     is_running: bool,
 ) -> crate::domain::entities::Session {
+    let cwd = if info.cwd.is_empty() {
+        // Fall back to registry
+        let registry = crate::infrastructure::hooks::registry::load();
+        registry
+            .get(&info.session_id)
+            .map(|e| e.cwd.clone())
+            .filter(|c| !c.is_empty())
+    } else {
+        Some(info.cwd.clone())
+    };
     crate::domain::entities::Session {
         id: info.session_id.clone(),
         project: path_last_component(&info.cwd).to_string(),
@@ -1320,6 +1350,7 @@ fn session_from_daemon_info(
         is_running,
         status,
         name: info.name.clone(),
+        cwd,
         ..Default::default()
     }
 }

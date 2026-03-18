@@ -216,6 +216,9 @@ pub struct Session {
     /// Optional human-readable label for the session.
     #[serde(default)]
     pub name: Option<String>,
+    /// Working directory where the session was started (from clash registry).
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 impl Session {
