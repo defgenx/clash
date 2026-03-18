@@ -55,18 +55,41 @@ impl ViewKind {
     }
 }
 
+/// How a column should be sized.
+#[derive(Debug, Clone, Copy)]
+pub enum ColumnSizing {
+    /// Fixed percentage of table width (legacy behavior).
+    Pct(u16),
+    /// Fit to content: uses measured content width, clamped to `min..=max`.
+    /// Remaining space is distributed proportionally among Flex columns.
+    Flex { min: u16, max: u16 },
+}
+
 /// Column definition for table views.
 #[derive(Debug, Clone)]
 pub struct ColumnDef {
     pub name: String,
+    pub sizing: ColumnSizing,
+    /// Legacy accessor — panics if not `Pct`. Kept for session custom renderer compat.
     pub width_pct: u16,
 }
 
 impl ColumnDef {
+    /// Create a fixed-percentage column (legacy).
     pub fn new(name: &str, width_pct: u16) -> Self {
         Self {
             name: name.to_string(),
+            sizing: ColumnSizing::Pct(width_pct),
             width_pct,
+        }
+    }
+
+    /// Create a flex column that sizes to content within `min..=max` chars.
+    pub fn flex(name: &str, min: u16, max: u16) -> Self {
+        Self {
+            name: name.to_string(),
+            sizing: ColumnSizing::Flex { min, max },
+            width_pct: 0,
         }
     }
 }
@@ -118,6 +141,14 @@ pub trait TableView {
     fn context_keybindings() -> Vec<Keybinding>;
     fn empty_message() -> &'static str {
         "No items"
+    }
+
+    /// Return plain-text values for width measurement. Override if your columns
+    /// use Flex sizing. Default returns empty strings (no measurement).
+    fn row_texts(item: &Self::Item, tick: usize) -> Vec<String> {
+        let cells = Self::row(item, tick);
+        // Fallback: return header-width placeholders so Flex columns use min width.
+        cells.iter().map(|_| String::new()).collect()
     }
 }
 

@@ -17,26 +17,40 @@ fn status_color(status: &TaskStatus) -> Color {
     }
 }
 
+fn task_texts(item: &Task) -> Vec<String> {
+    vec![
+        item.id.clone(),
+        item.status.as_str().to_string(),
+        item.owner.as_deref().unwrap_or("—").to_string(),
+        item.subject.clone(),
+    ]
+}
+
 impl TableView for TasksTable {
     type Item = Task;
 
     fn columns() -> Vec<ColumnDef> {
         vec![
-            ColumnDef::new("ID", 10),
-            ColumnDef::new("STATUS", 15),
-            ColumnDef::new("OWNER", 20),
+            ColumnDef::flex("ID", 4, 15),
+            ColumnDef::flex("STATUS", 6, 12),
+            ColumnDef::flex("OWNER", 4, 20),
             ColumnDef::new("SUBJECT", 55),
         ]
     }
 
+    fn row_texts(item: &Task, _tick: usize) -> Vec<String> {
+        task_texts(item)
+    }
+
     fn row(item: &Task, _tick: usize) -> Vec<Cell<'static>> {
+        let texts = task_texts(item);
         let color = status_color(&item.status);
         vec![
-            Cell::from(item.id.clone()),
-            Cell::from(item.status.as_str().to_string())
+            Cell::from(texts[0].clone()),
+            Cell::from(texts[1].clone())
                 .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
-            Cell::from(item.owner.as_deref().unwrap_or("—").to_string()),
-            Cell::from(item.subject.clone()),
+            Cell::from(texts[2].clone()),
+            Cell::from(texts[3].clone()),
         ]
     }
 

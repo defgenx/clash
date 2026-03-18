@@ -7,38 +7,51 @@ use crate::domain::entities::Team;
 
 pub struct TeamsTable;
 
+fn team_texts(item: &Team) -> Vec<String> {
+    let active_count = item.members.iter().filter(|m| m.is_active).count();
+    let total = item.members.len();
+    let members_str = if total > 0 {
+        format!("{}/{}", active_count, total)
+    } else {
+        "0".to_string()
+    };
+    let lead = item.lead_agent_id.as_deref().unwrap_or("—").to_string();
+    vec![
+        item.name.clone(),
+        members_str,
+        lead,
+        item.description.clone(),
+    ]
+}
+
 impl TableView for TeamsTable {
     type Item = Team;
 
     fn columns() -> Vec<ColumnDef> {
         vec![
-            ColumnDef::new("NAME", 25),
-            ColumnDef::new("MEMBERS", 10),
-            ColumnDef::new("LEAD", 20),
-            ColumnDef::new("DESCRIPTION", 45),
+            ColumnDef::flex("NAME", 4, 30),
+            ColumnDef::flex("MEMBERS", 4, 10),
+            ColumnDef::flex("LEAD", 4, 25),
+            ColumnDef::new("DESCRIPTION", 50),
         ]
     }
 
-    fn row(item: &Team, _tick: usize) -> Vec<Cell<'static>> {
-        let active_count = item.members.iter().filter(|m| m.is_active).count();
-        let total = item.members.len();
-        let members_str = if total > 0 {
-            format!("{}/{}", active_count, total)
-        } else {
-            "0".to_string()
-        };
+    fn row_texts(item: &Team, _tick: usize) -> Vec<String> {
+        team_texts(item)
+    }
 
-        let lead = item.lead_agent_id.as_deref().unwrap_or("—").to_string();
+    fn row(item: &Team, _tick: usize) -> Vec<Cell<'static>> {
+        let texts = team_texts(item);
 
         vec![
-            Cell::from(item.name.clone()).style(
+            Cell::from(texts[0].clone()).style(
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Cell::from(members_str),
-            Cell::from(lead),
-            Cell::from(item.description.clone()).style(Style::default().fg(Color::DarkGray)),
+            Cell::from(texts[1].clone()),
+            Cell::from(texts[2].clone()),
+            Cell::from(texts[3].clone()).style(Style::default().fg(Color::DarkGray)),
         ]
     }
 

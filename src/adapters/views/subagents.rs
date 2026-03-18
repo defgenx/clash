@@ -9,55 +9,72 @@ use crate::infrastructure::tui::theme;
 
 pub struct SubagentsTable;
 
+fn subagent_texts(item: &Subagent, tick: usize) -> Vec<String> {
+    let (status, _) = format::status_cell(item.status, tick);
+    let display_id = truncate(&item.id, 18, "…");
+    let short_session = short_id(&item.parent_session_id, 8).to_string();
+    let agent_type = or_dash(if item.agent_type.is_empty() {
+        ""
+    } else {
+        &item.agent_type
+    });
+    let agent_type = if agent_type == "—" {
+        "agent"
+    } else {
+        agent_type
+    };
+    let summary = or_dash(if item.summary.is_empty() {
+        ""
+    } else {
+        &item.summary
+    });
+    vec![
+        status,
+        display_id,
+        short_session,
+        agent_type.to_string(),
+        summary.to_string(),
+        item.last_modified.clone(),
+    ]
+}
+
 impl TableView for SubagentsTable {
     type Item = Subagent;
 
     fn columns() -> Vec<ColumnDef> {
         vec![
-            ColumnDef::new("STATUS", 15),
-            ColumnDef::new("AGENT", 18),
-            ColumnDef::new("SESSION", 10),
-            ColumnDef::new("TYPE", 10),
-            ColumnDef::new("SUMMARY", 32),
-            ColumnDef::new("MODIFIED", 15),
+            ColumnDef::flex("STATUS", 6, 14),
+            ColumnDef::flex("AGENT", 5, 20),
+            ColumnDef::flex("SESSION", 5, 12),
+            ColumnDef::flex("TYPE", 4, 10),
+            ColumnDef::new("SUMMARY", 40),
+            ColumnDef::flex("MODIFIED", 8, 18),
         ]
     }
 
+    fn row_texts(item: &Subagent, tick: usize) -> Vec<String> {
+        subagent_texts(item, tick)
+    }
+
     fn row(item: &Subagent, tick: usize) -> Vec<Cell<'static>> {
-        let (status, status_style) = format::status_cell(item.status, tick);
-        let display_id = truncate(&item.id, 18, "…");
-        let short_session = short_id(&item.parent_session_id, 8).to_string();
-        let agent_type = or_dash(if item.agent_type.is_empty() {
-            ""
-        } else {
-            &item.agent_type
-        });
-        let agent_type = if agent_type == "—" {
-            "agent"
-        } else {
-            agent_type
-        };
-        let summary = or_dash(if item.summary.is_empty() {
-            ""
-        } else {
-            &item.summary
-        });
+        let texts = subagent_texts(item, tick);
+        let (_, status_style) = format::status_cell(item.status, tick);
 
         vec![
-            Cell::from(status).style(status_style),
-            Cell::from(display_id).style(
+            Cell::from(texts[0].clone()).style(status_style),
+            Cell::from(texts[1].clone()).style(
                 Style::default()
                     .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             ),
-            Cell::from(short_session).style(
+            Cell::from(texts[2].clone()).style(
                 Style::default()
                     .fg(theme::CLAUDE_COLOR)
                     .add_modifier(Modifier::BOLD),
             ),
-            Cell::from(agent_type.to_string()).style(Style::default().fg(theme::STATUS_WAITING)),
-            Cell::from(summary.to_string()).style(Style::default().fg(theme::TEXT_DIM)),
-            Cell::from(item.last_modified.clone()).style(Style::default().fg(theme::MUTED)),
+            Cell::from(texts[3].clone()).style(Style::default().fg(theme::STATUS_WAITING)),
+            Cell::from(texts[4].clone()).style(Style::default().fg(theme::TEXT_DIM)),
+            Cell::from(texts[5].clone()).style(Style::default().fg(theme::MUTED)),
         ]
     }
 

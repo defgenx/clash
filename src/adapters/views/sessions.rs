@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Cell, Row, Table};
 use ratatui::Frame;
@@ -7,7 +7,7 @@ use crate::adapters::format::{self, or_dash};
 use crate::adapters::views::{ColumnDef, Keybinding, TableView};
 use crate::application::state::AppState;
 use crate::domain::entities::{Session, SessionStatus, Subagent};
-use crate::infrastructure::tui::theme;
+use crate::infrastructure::tui::{theme, widgets::table::compute_constraints};
 
 pub struct SessionsTable;
 
@@ -80,6 +80,43 @@ fn subagent_row(sa: &Subagent, tick: usize) -> Vec<Cell<'static>> {
     ]
 }
 
+/// Extract plain text values from a session row (shared by row() and row_texts()).
+fn session_texts(item: &Session, tick: usize) -> Vec<String> {
+    let (status, _) = format::status_cell(item.status, tick);
+    let name_display = item.name.clone().unwrap_or_else(|| "—".to_string());
+    let display_name = or_dash(if item.summary.is_empty() {
+        ""
+    } else {
+        &item.summary
+    });
+    let project_display = item
+        .project_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&item.project_path)
+        .to_string();
+    let agents = if item.subagent_count > 0 {
+        format!("{}", item.subagent_count)
+    } else {
+        "—".to_string()
+    };
+    let branch = or_dash(&item.git_branch).to_string();
+    let worktree_display = match &item.worktree {
+        Some(name) => format!("⊟ {}", name),
+        None => "—".to_string(),
+    };
+
+    vec![
+        status,
+        name_display,
+        project_display,
+        display_name.to_string(),
+        agents,
+        branch,
+        worktree_display,
+    ]
+}
+
 /// Custom renderer for the Sessions table with expandable subagent rows.
 pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
     let sessions = state.filtered_sessions();
@@ -94,10 +131,12 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
         .collect();
     let header = Row::new(header_cells).height(1);
 
-    let constraints: Vec<Constraint> = columns
+    // Measure content for dynamic column sizing
+    let content_rows: Vec<Vec<String>> = sessions
         .iter()
-        .map(|c| Constraint::Percentage(c.width_pct))
+        .map(|s| session_texts(s, state.tick))
         .collect();
+    let constraints = compute_constraints(&columns, &content_rows, area.width);
 
     // Build rows: parent sessions + expanded child subagent rows
     let mut rows: Vec<Row> = Vec::new();
@@ -222,53 +261,36 @@ impl TableView for SessionsTable {
 
     fn columns() -> Vec<ColumnDef> {
         vec![
-            ColumnDef::new("STATUS", 13),
-            ColumnDef::new("NAME", 10),
-            ColumnDef::new("PROJECT", 22),
-            ColumnDef::new("SUMMARY", 27),
-            ColumnDef::new("AGENTS", 7),
-            ColumnDef::new("BRANCH", 10),
-            ColumnDef::new("WORKTREE", 11),
+            ColumnDef::flex("STATUS", 8, 16),
+            ColumnDef::flex("NAME", 4, 30),
+            ColumnDef::flex("PROJECT", 7, 25),
+            ColumnDef::new("SUMMARY", 35),
+            ColumnDef::flex("AGENTS", 4, 12),
+            ColumnDef::flex("BRANCH", 6, 25),
+            ColumnDef::flex("WORKTREE", 4, 20),
         ]
     }
 
+    fn row_texts(item: &Session, tick: usize) -> Vec<String> {
+        session_texts(item, tick)
+    }
+
     fn row(item: &Session, tick: usize) -> Vec<Cell<'static>> {
-        let (status, status_style) = format::status_cell(item.status, tick);
-        let name_display = item.name.clone().unwrap_or_else(|| "—".to_string());
-        let display_name = or_dash(if item.summary.is_empty() {
-            ""
-        } else {
-            &item.summary
-        });
-        let project_display = item
-            .project_path
-            .rsplit('/')
-            .next()
-            .unwrap_or(&item.project_path)
-            .to_string();
-        let agents = if item.subagent_count > 0 {
-            format!("{}", item.subagent_count)
-        } else {
-            "—".to_string()
-        };
-        let branch = or_dash(&item.git_branch);
-        let worktree_display = match &item.worktree {
-            Some(name) => format!("⊟ {}", name),
-            None => "—".to_string(),
-        };
+        let texts = session_texts(item, tick);
+        let (_, status_style) = format::status_cell(item.status, tick);
 
         vec![
-            Cell::from(status).style(status_style),
-            Cell::from(name_display).style(
+            Cell::from(texts[0].clone()).style(status_style),
+            Cell::from(texts[1].clone()).style(
                 Style::default()
                     .fg(theme::CLAUDE_COLOR)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ),
-            Cell::from(project_display).style(Style::default().fg(theme::TEXT)),
-            Cell::from(display_name.to_string()).style(Style::default().fg(theme::TEXT_DIM)),
-            Cell::from(agents).style(Style::default().fg(theme::ACCENT)),
-            Cell::from(branch.to_string()).style(Style::default().fg(theme::STATUS_WAITING)),
-            Cell::from(worktree_display).style(Style::default().fg(theme::ACCENT)),
+            Cell::from(texts[2].clone()).style(Style::default().fg(theme::TEXT)),
+            Cell::from(texts[3].clone()).style(Style::default().fg(theme::TEXT_DIM)),
+            Cell::from(texts[4].clone()).style(Style::default().fg(theme::ACCENT)),
+            Cell::from(texts[5].clone()).style(Style::default().fg(theme::STATUS_WAITING)),
+            Cell::from(texts[6].clone()).style(Style::default().fg(theme::ACCENT)),
         ]
     }
 

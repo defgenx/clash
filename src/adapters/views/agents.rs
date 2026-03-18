@@ -6,6 +6,30 @@ use crate::adapters::views::{ColumnDef, Keybinding, TableView};
 use crate::application::state::AppState;
 use crate::domain::entities::Member;
 
+fn agent_texts(item: &Member) -> Vec<String> {
+    let status = if item.is_active { "active" } else { "idle" };
+    let team_display = if item.team_name.is_empty() {
+        "—".to_string()
+    } else {
+        item.team_name.clone()
+    };
+    let worktree = item.cwd.as_deref().and_then(fmt::detect_worktree);
+    let worktree_display = match &worktree {
+        Some(name) => format!("⊟ {}", name),
+        None => "—".to_string(),
+    };
+    vec![
+        item.name.clone(),
+        team_display,
+        item.agent_type.clone(),
+        item.model.clone(),
+        status.to_string(),
+        item.mode.as_deref().unwrap_or("—").to_string(),
+        item.cwd.as_deref().unwrap_or("—").to_string(),
+        worktree_display,
+    ]
+}
+
 pub struct AgentsTable;
 
 impl TableView for AgentsTable {
@@ -13,51 +37,42 @@ impl TableView for AgentsTable {
 
     fn columns() -> Vec<ColumnDef> {
         vec![
-            ColumnDef::new("NAME", 17),
-            ColumnDef::new("TEAM", 13),
-            ColumnDef::new("TYPE", 10),
-            ColumnDef::new("MODEL", 10),
-            ColumnDef::new("STATUS", 8),
-            ColumnDef::new("MODE", 8),
-            ColumnDef::new("CWD", 22),
-            ColumnDef::new("WORKTREE", 12),
+            ColumnDef::flex("NAME", 4, 25),
+            ColumnDef::flex("TEAM", 4, 20),
+            ColumnDef::flex("TYPE", 4, 12),
+            ColumnDef::flex("MODEL", 5, 15),
+            ColumnDef::flex("STATUS", 4, 10),
+            ColumnDef::flex("MODE", 4, 10),
+            ColumnDef::new("CWD", 30),
+            ColumnDef::flex("WORKTREE", 4, 20),
         ]
     }
 
+    fn row_texts(item: &Member, _tick: usize) -> Vec<String> {
+        agent_texts(item)
+    }
+
     fn row(item: &Member, _tick: usize) -> Vec<Cell<'static>> {
-        let status = if item.is_active { "active" } else { "idle" };
+        let texts = agent_texts(item);
         let status_color = if item.is_active {
             Color::Green
         } else {
             Color::DarkGray
         };
 
-        let team_display = if item.team_name.is_empty() {
-            "—".to_string()
-        } else {
-            item.team_name.clone()
-        };
-
-        let worktree = item.cwd.as_deref().and_then(fmt::detect_worktree);
-        let worktree_display = match &worktree {
-            Some(name) => format!("⊟ {}", name),
-            None => "—".to_string(),
-        };
-
         vec![
-            Cell::from(item.name.clone()).style(
+            Cell::from(texts[0].clone()).style(
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Cell::from(team_display).style(Style::default().fg(Color::Yellow)),
-            Cell::from(item.agent_type.clone()),
-            Cell::from(item.model.clone()),
-            Cell::from(status.to_string()).style(Style::default().fg(status_color)),
-            Cell::from(item.mode.as_deref().unwrap_or("—").to_string()),
-            Cell::from(item.cwd.as_deref().unwrap_or("—").to_string())
-                .style(Style::default().fg(Color::DarkGray)),
-            Cell::from(worktree_display).style(Style::default().fg(Color::Cyan)),
+            Cell::from(texts[1].clone()).style(Style::default().fg(Color::Yellow)),
+            Cell::from(texts[2].clone()),
+            Cell::from(texts[3].clone()),
+            Cell::from(texts[4].clone()).style(Style::default().fg(status_color)),
+            Cell::from(texts[5].clone()),
+            Cell::from(texts[6].clone()).style(Style::default().fg(Color::DarkGray)),
+            Cell::from(texts[7].clone()).style(Style::default().fg(Color::Cyan)),
         ]
     }
 
