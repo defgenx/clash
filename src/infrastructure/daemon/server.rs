@@ -35,23 +35,59 @@ impl DaemonServer {
         self.shutdown.clone()
     }
 
-    /// Run the daemon server. Blocks until shutdown is requested.
-    pub async fn run(&self) -> std::io::Result<()> {
-        // Remove stale socket
-        if self.socket_path.exists() {
-            std::fs::remove_file(&self.socket_path)?;
+    /// Kill a stale daemon process from a previous run, if any.
+    fn kill_stale_daemon(&self, pid_path: &std::path::Path) {
+        let contents = match std::fs::read_to_string(pid_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let old_pid: i32 = match contents.trim().parse() {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+
+        // Don't kill ourselves
+        if old_pid == std::process::id() as i32 {
+            return;
         }
 
+        // Check if the process is alive (signal 0 = existence check)
+        let alive = unsafe { libc::kill(old_pid, 0) } == 0;
+        if !alive {
+            tracing::info!("Stale PID file (pid={}, not running) — cleaning up", old_pid);
+            let _ = std::fs::remove_file(pid_path);
+            return;
+        }
+
+        tracing::info!("Killing stale daemon process pid={}", old_pid);
+        unsafe { libc::kill(old_pid, libc::SIGTERM) };
+
+        // Brief wait for graceful exit, then force kill
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if unsafe { libc::kill(old_pid, 0) } == 0 {
+            unsafe { libc::kill(old_pid, libc::SIGKILL) };
+        }
+        let _ = std::fs::remove_file(pid_path);
+    }
+
+    /// Run the daemon server. Blocks until shutdown is requested.
+    pub async fn run(&self) -> std::io::Result<()> {
         // Ensure parent directory exists
         if let Some(parent) = self.socket_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
+        // Kill any stale daemon from a previous run (e.g. old separate-process daemon)
+        let pid_path = self.socket_path.with_extension("pid");
+        self.kill_stale_daemon(&pid_path);
+
+        // Remove stale socket
+        let _ = std::fs::remove_file(&self.socket_path);
+
         let listener = UnixListener::bind(&self.socket_path)?;
         tracing::info!("Daemon listening on {:?}", self.socket_path);
 
-        // Write PID file for client discovery
-        let pid_path = self.socket_path.with_extension("pid");
+        // Write PID file
         std::fs::write(&pid_path, std::process::id().to_string())?;
 
         // Reaper task: clean up dead sessions periodically
