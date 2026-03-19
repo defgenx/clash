@@ -219,6 +219,9 @@ pub struct Session {
     /// Working directory where the session was started (from clash registry).
     #[serde(default)]
     pub cwd: Option<String>,
+    /// The original branch a worktree session was created from.
+    #[serde(default)]
+    pub source_branch: Option<String>,
 }
 
 impl Session {
@@ -232,6 +235,12 @@ impl Session {
             || self.first_prompt.to_lowercase().contains(&f)
             || self
                 .name
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&f)
+            || self
+                .source_branch
                 .as_deref()
                 .unwrap_or("")
                 .to_lowercase()
@@ -378,6 +387,18 @@ mod tests {
         assert!(!session.matches_filter("nonexistent"));
         // Case insensitive
         assert!(session.matches_filter("FIX LOGIN"));
+    }
+
+    #[test]
+    fn test_matches_filter_source_branch() {
+        let session = Session {
+            id: "abc12345".to_string(),
+            source_branch: Some("feature/auth".to_string()),
+            ..Default::default()
+        };
+        assert!(session.matches_filter("auth"));
+        assert!(session.matches_filter("feature"));
+        assert!(!session.matches_filter("nonexistent"));
     }
 
     #[test]

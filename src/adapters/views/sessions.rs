@@ -100,7 +100,12 @@ fn session_texts(item: &Session, tick: usize) -> Vec<String> {
     } else {
         "—".to_string()
     };
-    let branch = or_dash(&item.git_branch).to_string();
+    let branch = item
+        .source_branch
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&item.git_branch);
+    let branch = or_dash(branch).to_string();
     let worktree_display = match &item.worktree {
         Some(name) => format!("⊟ {}", name),
         None => "—".to_string(),
@@ -181,7 +186,12 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
             .rsplit('/')
             .next()
             .unwrap_or(&session.project_path);
-        let branch = or_dash(&session.git_branch);
+        let branch_str = session
+            .source_branch
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&session.git_branch);
+        let branch = or_dash(branch_str);
         let worktree_display = match &session.worktree {
             Some(name) => format!("⊟ {}", name),
             None => "—".to_string(),

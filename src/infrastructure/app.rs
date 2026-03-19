@@ -90,6 +90,10 @@ impl App {
     pub async fn run(&mut self, terminal: &mut ratatui::DefaultTerminal) -> color_eyre::Result<()> {
         let mut fs_rx = self.fs_event_rx.take();
 
+        // Show loading overlay while startup tasks run
+        self.state.spinner = Some("Loading sessions...".to_string());
+        let _ = terminal.draw(|f| renderer::draw(&self.state, f));
+
         // Auto-connect to daemon (best-effort)
         let mut daemon_rx = None;
         match self.daemon.connect().await {
@@ -105,6 +109,9 @@ impl App {
 
         // Load initial sessions
         self.refresh_daemon_sessions().await;
+
+        // Clear the loading overlay
+        self.state.spinner = None;
 
         // Background update check
         let mut update_check: Option<tokio::task::JoinHandle<_>> = Some(tokio::spawn(async {
@@ -568,6 +575,16 @@ impl App {
                 continue;
             }
 
+            // Skip restore if the cwd no longer exists (e.g. deleted worktree)
+            if !entry.cwd.is_empty() && !std::path::Path::new(&entry.cwd).is_dir() {
+                tracing::warn!(
+                    "Skipping restore of session {} — cwd '{}' no longer exists",
+                    id,
+                    entry.cwd
+                );
+                continue;
+            }
+
             let args = vec!["--resume".to_string(), entry.claude_session_id.clone()];
             let cwd = if entry.cwd.is_empty() {
                 None
@@ -624,6 +641,9 @@ impl App {
                 if let Some(entry) = entry {
                     if !entry.cwd.is_empty() {
                         session.cwd = Some(entry.cwd.clone());
+                    }
+                    if entry.source_branch.is_some() {
+                        session.source_branch = entry.source_branch.clone();
                     }
                 }
             }
@@ -1006,8 +1026,14 @@ impl App {
                     session_id,
                     name,
                     cwd,
+                    source_branch,
                 } => {
-                    crate::infrastructure::hooks::registry::register(&session_id, &name, &cwd);
+                    crate::infrastructure::hooks::registry::register(
+                        &session_id,
+                        &name,
+                        &cwd,
+                        source_branch.as_deref(),
+                    );
                 }
                 Effect::UnregisterSession { session_id } => {
                     crate::infrastructure::hooks::registry::unregister(&session_id);
@@ -1279,7 +1305,7 @@ impl App {
                         name.clone(),
                     ];
                     if !git_branch.is_empty() {
-                        git_args.push(git_branch);
+                        git_args.push(git_branch.clone());
                     }
                     let git_result = tokio::process::Command::new("git")
                         .args(&git_args)
@@ -1290,11 +1316,17 @@ impl App {
                     match git_result {
                         Ok(output) if output.status.success() => {
                             let wt_str = worktree_path.to_string_lossy().to_string();
-                            // Register session
+                            // Register session with the source branch
+                            let src_branch = if git_branch.is_empty() {
+                                None
+                            } else {
+                                Some(git_branch.as_str())
+                            };
                             crate::infrastructure::hooks::registry::register(
                                 &new_session_id,
                                 &name,
                                 &wt_str,
+                                src_branch,
                             );
                             // Save session name
                             crate::infrastructure::hooks::save_session_name(

@@ -243,6 +243,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                     session_id: session_id.clone(),
                     name: session_name.clone(),
                     cwd: cwd.clone(),
+                    source_branch: None,
                 },
                 Effect::DaemonAttach {
                     session_id: session_id.clone(),

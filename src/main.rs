@@ -72,6 +72,15 @@ async fn main() -> Result<()> {
         None => {}
     }
 
+    // Single-instance lock — prevent multiple clash TUIs from running
+    let _instance_lock = match infrastructure::lock::SingleInstanceLock::acquire() {
+        Ok(lock) => lock,
+        Err(msg) => {
+            eprintln!("{}", msg.red());
+            std::process::exit(1);
+        }
+    };
+
     // Ensure terminal is restored on panic
     let default_panic = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

@@ -38,8 +38,15 @@ impl DetailView for SessionDetailView {
                 "Status",
                 &format::status_display(session.status, state.tick),
             )
-            .row("Path", &session.project_path)
-            .row("Branch", or_dash(&session.git_branch))
+            .row("Path", &session.project_path);
+        if let Some(ref src) = session.source_branch {
+            info = info
+                .row("Branch", or_dash(src))
+                .row("Worktree Branch", or_dash(&session.git_branch));
+        } else {
+            info = info.row("Branch", or_dash(&session.git_branch));
+        }
+        info = info
             .row("Worktree", session.worktree.as_deref().unwrap_or("no"))
             .row("Messages", &session.message_count.to_string())
             .row("Modified", &session.last_modified);

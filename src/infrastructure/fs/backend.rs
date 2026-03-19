@@ -137,6 +137,7 @@ impl FsBackend {
             worktree,
             name: None,
             cwd: None,
+            source_branch: None,
         }
     }
 

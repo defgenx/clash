@@ -24,6 +24,9 @@ pub struct ClashSession {
     pub claude_session_id: String,
     #[serde(default)]
     pub created_at: String,
+    /// The original branch a worktree session was created from.
+    #[serde(default)]
+    pub source_branch: Option<String>,
 }
 
 /// Path to the session registry file.
@@ -50,7 +53,7 @@ fn save(registry: &HashMap<String, ClashSession>) {
 }
 
 /// Register a new session in the registry.
-pub fn register(session_id: &str, name: &str, cwd: &str) {
+pub fn register(session_id: &str, name: &str, cwd: &str, source_branch: Option<&str>) {
     let mut registry = load();
     registry.insert(
         session_id.to_string(),
@@ -60,6 +63,7 @@ pub fn register(session_id: &str, name: &str, cwd: &str) {
             cwd: cwd.to_string(),
             claude_session_id: session_id.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
+            source_branch: source_branch.map(|s| s.to_string()),
         },
     );
     save(&registry);
@@ -94,6 +98,7 @@ mod tests {
                 cwd: "/tmp/project".to_string(),
                 claude_session_id: "test-1".to_string(),
                 created_at: String::new(),
+                source_branch: None,
             },
         );
 
@@ -101,5 +106,34 @@ mod tests {
         let loaded: HashMap<String, ClashSession> = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded["test-1"].name, "my-session");
         assert_eq!(loaded["test-1"].cwd, "/tmp/project");
+    }
+
+    #[test]
+    fn test_registry_backward_compat_no_source_branch() {
+        // Old JSON without source_branch field should deserialize fine
+        let json = r#"{"test-2":{"session_id":"test-2","name":"old","cwd":"/tmp","claude_session_id":"test-2","created_at":""}}"#;
+        let loaded: HashMap<String, ClashSession> = serde_json::from_str(json).unwrap();
+        assert_eq!(loaded["test-2"].name, "old");
+        assert!(loaded["test-2"].source_branch.is_none());
+    }
+
+    #[test]
+    fn test_registry_round_trip_with_source_branch() {
+        let mut reg = HashMap::new();
+        reg.insert(
+            "test-3".to_string(),
+            ClashSession {
+                session_id: "test-3".to_string(),
+                name: "wt-session".to_string(),
+                cwd: "/tmp/worktree".to_string(),
+                claude_session_id: "test-3".to_string(),
+                created_at: String::new(),
+                source_branch: Some("main".to_string()),
+            },
+        );
+
+        let json = serde_json::to_string(&reg).unwrap();
+        let loaded: HashMap<String, ClashSession> = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded["test-3"].source_branch.as_deref(), Some("main"));
     }
 }

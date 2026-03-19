@@ -13,7 +13,7 @@ use crate::application::state::{AppState, InputMode};
 use crate::infrastructure::tui::layout::FrameLayout;
 use crate::infrastructure::tui::theme;
 use crate::infrastructure::tui::widgets::{
-    confirm_dialog, detail, help_overlay, input_bar, logo, spinner, table, terminal, toast,
+    busy_overlay, confirm_dialog, detail, help_overlay, input_bar, logo, table, terminal, toast,
 };
 
 /// Draw the clash UI.
@@ -73,6 +73,13 @@ pub fn draw(state: &AppState, frame: &mut Frame) {
             Paragraph::new(hint).style(theme::footer_style()),
             layout.footer,
         );
+
+        // Show busy overlay while waiting for terminal to load
+        if state.terminal_screen.is_none() {
+            if let Some(ref msg) = state.spinner {
+                busy_overlay::render_busy_overlay(msg, state.tick, frame, frame.area());
+            }
+        }
         return;
     }
 
@@ -88,6 +95,11 @@ pub fn draw(state: &AppState, frame: &mut Frame) {
     }
     if let Some(ref dialog) = state.confirm_dialog {
         confirm_dialog::render_confirm_dialog(&dialog.message, frame, frame.area());
+    }
+
+    // Busy overlay — drawn last, on top of everything, on any view
+    if let Some(ref msg) = state.spinner {
+        busy_overlay::render_busy_overlay(msg, state.tick, frame, frame.area());
     }
 }
 
@@ -227,14 +239,7 @@ fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
     let left_paragraph = Paragraph::new(left_span).style(theme::footer_style());
     frame.render_widget(left_paragraph, area);
 
-    if let Some(ref spinner_msg) = state.spinner {
-        let right_area = ratatui::layout::Rect {
-            x: area.x + area.width.saturating_sub(40),
-            width: 40.min(area.width),
-            ..area
-        };
-        spinner::render_spinner(spinner_msg, state.tick, frame, right_area);
-    } else if let Some(ref toast_msg) = state.toast {
+    if let Some(ref toast_msg) = state.toast {
         let right_area = ratatui::layout::Rect {
             x: area.x + area.width.saturating_sub(40),
             width: 40.min(area.width),

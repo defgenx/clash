@@ -86,6 +86,7 @@ pub enum Effect {
         session_id: String,
         name: String,
         cwd: String,
+        source_branch: Option<String>,
     },
     /// Remove a session from the clash session registry.
     UnregisterSession {

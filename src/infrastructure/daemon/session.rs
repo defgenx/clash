@@ -3,9 +3,8 @@
 //! The daemon owns PtySessions. Each one:
 //! - Spawns claude in a PTY (via openpty + fork)
 //! - Runs output-reader thread that feeds a broadcast channel
-//! - Maintains a vt100 screen mirror for status detection
+//! - Maintains a vt100 screen mirror for status detection and attach snapshots
 //! - Accepts input writes from any attached client
-//! - Tracks attached clients for multi-viewer support
 
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
@@ -20,9 +19,6 @@ use tokio::sync::broadcast;
 
 /// Backpressure: max buffered output frames per client before dropping.
 const OUTPUT_CHANNEL_CAPACITY: usize = 4096;
-
-/// Max replay buffer size (keeps last 128KB of raw PTY output).
-const REPLAY_BUFFER_MAX: usize = 128 * 1024;
 
 /// Default screen size for status detection parser.
 const STATUS_SCREEN_ROWS: u16 = 50;
@@ -42,8 +38,6 @@ pub struct PtySession {
     alive: Arc<AtomicBool>,
     /// Broadcast channel for output — subscribers get output frames.
     output_tx: broadcast::Sender<Vec<u8>>,
-    /// Ring buffer of recent output for replay on late attach.
-    replay_buffer: Arc<std::sync::Mutex<Vec<u8>>>,
     /// Timestamp of last output received (epoch secs).
     last_output_at: Arc<std::sync::Mutex<u64>>,
     /// vt100 screen mirror — used to detect status by reading screen content.
@@ -145,8 +139,6 @@ impl PtySession {
 
         let alive = Arc::new(AtomicBool::new(true));
         let (output_tx, _) = broadcast::channel(OUTPUT_CHANNEL_CAPACITY);
-        let replay_buffer: Arc<std::sync::Mutex<Vec<u8>>> =
-            Arc::new(std::sync::Mutex::new(Vec::new()));
         let last_output_at: Arc<std::sync::Mutex<u64>> = Arc::new(std::sync::Mutex::new(0));
 
         // vt100 parser for screen content analysis
@@ -156,11 +148,10 @@ impl PtySession {
             vt100::Parser::new(screen_rows, screen_cols, 0),
         ));
 
-        // Output reader thread: master_fd → broadcast channel + replay buffer + screen
+        // Output reader thread: master_fd → broadcast channel + screen mirror
         let tx = output_tx.clone();
         let alive2 = alive.clone();
         let sid = session_id.clone();
-        let replay_buf2 = replay_buffer.clone();
         let last_out2 = last_output_at.clone();
         let screen2 = screen.clone();
         let reader_handle = std::thread::spawn(move || {
@@ -195,15 +186,6 @@ impl PtySession {
                 // Feed into vt100 screen mirror
                 if let Ok(mut parser) = screen2.lock() {
                     parser.process(&data);
-                }
-
-                // Append to replay buffer (ring: trim front if over max)
-                if let Ok(mut rb) = replay_buf2.lock() {
-                    rb.extend_from_slice(&data);
-                    if rb.len() > REPLAY_BUFFER_MAX {
-                        let excess = rb.len() - REPLAY_BUFFER_MAX;
-                        rb.drain(..excess);
-                    }
                 }
 
                 // Broadcast to live subscribers
@@ -241,7 +223,6 @@ impl PtySession {
             _master_owned: pty.master,
             alive,
             output_tx,
-            replay_buffer,
             last_output_at,
             screen,
             _reader_handle: reader_handle,
@@ -267,9 +248,8 @@ impl PtySession {
 
     /// Resize the PTY.
     ///
-    /// Clears the replay buffer and resets the screen mirror so that
-    /// subsequent attaches only replay content rendered at the new size.
-    /// The child process receives SIGWINCH and re-renders its UI.
+    /// Resets the screen mirror so that subsequent snapshots reflect
+    /// the new size. The child process receives SIGWINCH and re-renders.
     pub fn resize(&self, cols: u16, rows: u16) {
         let ws = libc::winsize {
             ws_row: rows,
@@ -280,21 +260,34 @@ impl PtySession {
         unsafe { libc::ioctl(self.master_fd, libc::TIOCSWINSZ as libc::c_ulong, &ws) };
         // Send SIGWINCH to the child process group
         unsafe { libc::kill(-(self.pid as i32), libc::SIGWINCH) };
-        // Reset screen mirror and replay buffer — old content was rendered
-        // at a different size and would corrupt the client's vt100 parser.
+        // Reset screen mirror — old content was rendered at a different size.
         if let Ok(mut parser) = self.screen.lock() {
             parser.set_size(rows, cols);
         }
-        if let Ok(mut rb) = self.replay_buffer.lock() {
-            rb.clear();
-        }
     }
 
-    /// Get the replay buffer (accumulated output for late-attach replay).
-    pub fn replay_data(&self) -> Vec<u8> {
-        self.replay_buffer
+    /// Get a clean screen snapshot for attach replay.
+    ///
+    /// Instead of replaying the raw PTY buffer (which dumps all historical
+    /// escape sequences and causes ugly scrolling), this returns the current
+    /// visible screen state as ANSI escape codes. The result paints the
+    /// terminal in one shot — like what tmux/screen do on attach.
+    pub fn screen_snapshot(&self) -> Vec<u8> {
+        self.screen
             .lock()
-            .map(|rb| rb.clone())
+            .ok()
+            .map(|parser| {
+                let screen = parser.screen();
+                let mut snapshot = Vec::new();
+                // Clear screen + cursor home first
+                snapshot.extend_from_slice(b"\x1b[2J\x1b[H");
+                // Paint the current screen contents with colors/styles
+                snapshot.extend_from_slice(&screen.contents_formatted());
+                // Restore cursor position
+                let (row, col) = screen.cursor_position();
+                snapshot.extend_from_slice(format!("\x1b[{};{}H", row + 1, col + 1).as_bytes());
+                snapshot
+            })
             .unwrap_or_default()
     }
 

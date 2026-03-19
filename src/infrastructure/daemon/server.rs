@@ -246,7 +246,7 @@ async fn handle_client(
                             continue;
                         }
 
-                        let replay = session.replay_data();
+                        let replay = session.screen_snapshot();
                         let mut rx = session.subscribe();
                         let w = writer.clone();
                         let sid = session_id.clone();
