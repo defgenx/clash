@@ -691,6 +691,15 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             vec![]
         }
         UiAction::Quit => {
+            // Show confirmation dialog before quitting
+            state.confirm_dialog = Some(crate::application::state::ConfirmDialog {
+                message: "Are you sure you want to quit?".to_string(),
+                on_confirm: Action::Ui(UiAction::QuitConfirmed),
+            });
+            state.input_mode = InputMode::Confirm;
+            vec![]
+        }
+        UiAction::QuitConfirmed => {
             vec![Effect::Quit]
         }
     }
@@ -763,6 +772,9 @@ fn load_effects_for_view(state: &AppState, view: ViewKind) -> Vec<Effect> {
                         project: session.project.clone(),
                         session_id: session.id.clone(),
                     });
+                    effects.push(Effect::LoadRepoConfig {
+                        session_id: session.id.clone(),
+                    });
                 }
             }
             effects
@@ -821,10 +833,43 @@ mod tests {
     }
 
     #[test]
-    fn test_reduce_quit() {
+    fn test_reduce_quit_shows_confirm() {
         let mut state = test_state();
         let effects = reduce(&mut state, Action::Ui(UiAction::Quit));
+        assert!(effects.is_empty()); // No immediate quit — shows confirm dialog
+        assert!(state.confirm_dialog.is_some());
+        assert_eq!(state.input_mode, InputMode::Confirm);
+    }
+
+    #[test]
+    fn test_reduce_quit_confirmed() {
+        let mut state = test_state();
+        let effects = reduce(&mut state, Action::Ui(UiAction::QuitConfirmed));
         assert!(matches!(effects.first(), Some(Effect::Quit)));
+    }
+
+    #[test]
+    fn test_session_detail_emits_load_repo_config() {
+        let mut state = test_state();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "test-session".to_string(),
+            project: "test-project".to_string(),
+            is_running: true,
+            ..Default::default()
+        }];
+        state.session_filter = crate::application::state::SessionFilter::All;
+        // Navigate to SessionDetail with context
+        let effects = reduce(
+            &mut state,
+            Action::Nav(NavAction::DrillIn {
+                view: ViewKind::SessionDetail,
+                context: "test-session".to_string(),
+            }),
+        );
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::LoadRepoConfig { session_id } if session_id == "test-session"
+        )));
     }
 
     #[test]

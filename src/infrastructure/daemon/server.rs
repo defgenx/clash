@@ -54,7 +54,10 @@ impl DaemonServer {
         // Check if the process is alive (signal 0 = existence check)
         let alive = unsafe { libc::kill(old_pid, 0) } == 0;
         if !alive {
-            tracing::info!("Stale PID file (pid={}, not running) — cleaning up", old_pid);
+            tracing::info!(
+                "Stale PID file (pid={}, not running) — cleaning up",
+                old_pid
+            );
             let _ = std::fs::remove_file(pid_path);
             return;
         }
@@ -216,6 +219,7 @@ async fn handle_client(
                 name,
                 cols,
                 rows,
+                env_vars,
             } => {
                 let mut map = sessions.lock().await;
                 if map.contains_key(&session_id) {
@@ -244,6 +248,7 @@ async fn handle_client(
                     cwd_opt,
                     pty_cols,
                     pty_rows,
+                    &env_vars,
                 ) {
                     Ok(session) => {
                         map.insert(session_id.clone(), session);

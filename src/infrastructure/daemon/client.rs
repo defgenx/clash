@@ -5,6 +5,7 @@
 //! - **responses** (Ok, Error, Sessions, Pong) — consumed by request methods
 //! - **stream** (Output, Exited) — consumed by the event loop for real-time updates
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -175,6 +176,7 @@ impl DaemonClient {
         name: Option<String>,
         cols: u16,
         rows: u16,
+        env_vars: HashMap<String, String>,
     ) -> std::io::Result<()> {
         self.send(&Request::CreateSession {
             session_id: session_id.to_string(),
@@ -184,6 +186,7 @@ impl DaemonClient {
             name,
             cols,
             rows,
+            env_vars,
         })
         .await?;
         match self.recv_response().await? {

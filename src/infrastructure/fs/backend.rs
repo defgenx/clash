@@ -138,6 +138,7 @@ impl FsBackend {
             name: None,
             cwd: None,
             source_branch: None,
+            repo_config: None,
         }
     }
 
@@ -572,6 +573,7 @@ impl DataRepository for FsBackend {
             status_ord(&a.status)
                 .cmp(&status_ord(&b.status))
                 .then(b.last_modified.cmp(&a.last_modified))
+                .then(a.id.cmp(&b.id))
         });
         Ok(sessions)
     }
@@ -659,7 +661,7 @@ impl DataRepository for FsBackend {
             });
         }
 
-        subagents.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+        subagents.sort_by(|a, b| b.last_modified.cmp(&a.last_modified).then(a.id.cmp(&b.id)));
         Ok(subagents)
     }
 

@@ -2,11 +2,30 @@
 
 use std::collections::HashSet;
 
+use serde::{Deserialize, Serialize};
+
 use crate::adapters::views::ViewKind;
 use crate::application::actions::Action;
 use crate::application::nav::NavigationStack;
 use crate::application::store::DataStore;
 use crate::domain::entities::{InboxMessage, Session};
+
+/// Serializable snapshot of UI state for persistence across restarts.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct UiSnapshot {
+    /// Navigation stack entries: [(view_kind_key, optional_context), ...]
+    #[serde(default)]
+    pub nav_stack: Vec<(String, Option<String>)>,
+    /// Selected row index in the current table view.
+    #[serde(default)]
+    pub selected: usize,
+    /// Session filter mode: "active" or "all".
+    #[serde(default)]
+    pub session_filter: String,
+    /// Session IDs with expanded subagent rows.
+    #[serde(default)]
+    pub expanded_sessions: Vec<String>,
+}
 
 /// Session filter mode for the sessions view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +169,51 @@ impl AppState {
 
     pub fn current_session(&self) -> Option<&str> {
         self.nav.current_session()
+    }
+
+    /// Capture current UI state for persistence.
+    pub fn snapshot(&self) -> UiSnapshot {
+        UiSnapshot {
+            nav_stack: self
+                .nav
+                .entries()
+                .iter()
+                .map(|entry| (entry.view.key().to_string(), entry.context.clone()))
+                .collect(),
+            selected: self.table_state.selected,
+            session_filter: self.session_filter.label().to_string(),
+            expanded_sessions: self.expanded_sessions.iter().cloned().collect(),
+        }
+    }
+
+    /// Restore UI state from a snapshot (best-effort — stale/invalid entries are skipped).
+    pub fn restore(&mut self, snapshot: UiSnapshot) {
+        // Restore session filter
+        self.session_filter = match snapshot.session_filter.as_str() {
+            "all" => SessionFilter::All,
+            _ => SessionFilter::Active,
+        };
+
+        // Restore selected row
+        self.table_state.selected = snapshot.selected;
+
+        // Restore expanded sessions
+        self.expanded_sessions = snapshot.expanded_sessions.into_iter().collect();
+
+        // Restore navigation stack
+        if !snapshot.nav_stack.is_empty() {
+            let mut valid_entries = Vec::new();
+            for (key, context) in &snapshot.nav_stack {
+                if let Some(view) = ViewKind::from_key(key) {
+                    valid_entries.push((view, context.clone()));
+                } else {
+                    break; // Stop at first invalid entry
+                }
+            }
+            if !valid_entries.is_empty() {
+                self.nav.restore_from(valid_entries);
+            }
+        }
     }
 
     /// Get filtered sessions based on the current session filter and text filter.

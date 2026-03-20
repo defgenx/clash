@@ -6,6 +6,7 @@
 //! - Maintains a vt100 screen mirror for status detection and attach snapshots
 //! - Accepts input writes from any attached client
 
+use std::collections::HashMap;
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -48,6 +49,7 @@ pub struct PtySession {
 
 impl PtySession {
     /// Spawn a new PTY session.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         session_id: String,
         name: Option<String>,
@@ -56,6 +58,7 @@ impl PtySession {
         cwd: Option<&str>,
         cols: u16,
         rows: u16,
+        env_vars: &HashMap<String, String>,
     ) -> std::io::Result<Self> {
         let pty = openpty(None, None).map_err(std::io::Error::other)?;
 
@@ -98,6 +101,11 @@ impl PtySession {
             if let Ok(val) = std::env::var(key) {
                 cmd.env(key, val);
             }
+        }
+
+        // Additional env vars from repo config
+        for (key, val) in env_vars {
+            cmd.env(key, val);
         }
 
         if let Some(dir) = cwd {

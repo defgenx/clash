@@ -36,6 +36,8 @@ pub enum UiAction {
         session_id: String,
     },
     Quit,
+    /// Actually quit (after confirmation).
+    QuitConfirmed,
     /// Tick event — advances animation frame counter, clears stale toasts.
     Tick,
 }

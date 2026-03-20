@@ -53,6 +53,43 @@ impl ViewKind {
             Self::SubagentDetail => "Subagent",
         }
     }
+
+    /// Machine-readable key for serialization (used in UI state persistence).
+    pub fn key(&self) -> &'static str {
+        match self {
+            Self::Teams => "teams",
+            Self::TeamDetail => "team_detail",
+            Self::Agents => "agents",
+            Self::AgentDetail => "agent_detail",
+            Self::Tasks => "tasks",
+            Self::TaskDetail => "task_detail",
+            Self::Inbox => "inbox",
+            Self::Prompts => "prompts",
+            Self::Sessions => "sessions",
+            Self::SessionDetail => "session_detail",
+            Self::Subagents => "subagents",
+            Self::SubagentDetail => "subagent_detail",
+        }
+    }
+
+    /// Parse from a serialized key string.
+    pub fn from_key(s: &str) -> Option<Self> {
+        match s {
+            "teams" => Some(Self::Teams),
+            "team_detail" => Some(Self::TeamDetail),
+            "agents" => Some(Self::Agents),
+            "agent_detail" => Some(Self::AgentDetail),
+            "tasks" => Some(Self::Tasks),
+            "task_detail" => Some(Self::TaskDetail),
+            "inbox" => Some(Self::Inbox),
+            "prompts" => Some(Self::Prompts),
+            "sessions" => Some(Self::Sessions),
+            "session_detail" => Some(Self::SessionDetail),
+            "subagents" => Some(Self::Subagents),
+            "subagent_detail" => Some(Self::SubagentDetail),
+            _ => None,
+        }
+    }
 }
 
 /// How a column should be sized.

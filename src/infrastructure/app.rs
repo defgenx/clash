@@ -7,7 +7,7 @@
 //! `tokio::select!`) so terminal input and daemon output are processed
 //! concurrently without blocking or starvation.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -68,6 +68,16 @@ impl App {
 
         if let Err(e) = state.store.refresh_all(&backend) {
             tracing::error!("Initial data load failed: {}", e);
+        }
+
+        // Restore UI state from previous session (best-effort)
+        let ui_path = data_dir.join("clash/ui_state.json");
+        if let Ok(content) = std::fs::read_to_string(&ui_path) {
+            if let Ok(snapshot) =
+                serde_json::from_str::<crate::application::state::UiSnapshot>(&content)
+            {
+                state.restore(snapshot);
+            }
         }
 
         let daemon = DaemonClient::new(DaemonClient::default_socket_path());
@@ -603,6 +613,7 @@ impl App {
                     Some(entry.name.clone()),
                     cols,
                     rows,
+                    HashMap::new(),
                 )
                 .await
             {
@@ -937,7 +948,16 @@ impl App {
 
         while let Some(effect) = queue.pop_front() {
             match effect {
-                Effect::Quit => return true,
+                Effect::Quit => {
+                    // Persist UI state for next startup
+                    let snapshot = self.state.snapshot();
+                    let path = self.backend.base_dir().join("clash/ui_state.json");
+                    if let Ok(json) = serde_json::to_string_pretty(&snapshot) {
+                        let _ =
+                            crate::infrastructure::fs::atomic::write_atomic(&path, json.as_bytes());
+                    }
+                    return true;
+                }
 
                 // ── Domain persistence → filesystem IO ──────────
                 Effect::PersistTask { team, task } => {
@@ -996,6 +1016,30 @@ impl App {
                         self.state
                             .store
                             .refresh_subagents(&self.backend, &project, &session_id);
+                }
+                Effect::LoadRepoConfig { session_id } => {
+                    if let Some(session) = self
+                        .state
+                        .store
+                        .sessions
+                        .iter_mut()
+                        .find(|s| s.id == session_id)
+                    {
+                        // Skip if already loaded (cache)
+                        if session.repo_config.is_none() {
+                            let dir = session
+                                .cwd
+                                .as_deref()
+                                .or(Some(&session.project_path))
+                                .filter(|p| !p.is_empty());
+                            if let Some(d) = dir {
+                                session.repo_config =
+                                    Some(crate::infrastructure::fs::repo_config::load_repo_config(
+                                        std::path::Path::new(d),
+                                    ));
+                            }
+                        }
+                    }
                 }
                 Effect::LoadConversation {
                     project,
@@ -1124,6 +1168,7 @@ impl App {
                             name,
                             cols,
                             rows,
+                            HashMap::new(),
                         )
                         .await
                     {
@@ -1211,6 +1256,7 @@ impl App {
                             name,
                             cols,
                             rows,
+                            HashMap::new(),
                         )
                         .await
                     {
@@ -1360,6 +1406,7 @@ impl App {
                                     Some(name.clone()),
                                     size.width,
                                     size.height,
+                                    HashMap::new(),
                                 )
                                 .await
                             {

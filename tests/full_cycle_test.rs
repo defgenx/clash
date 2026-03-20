@@ -170,8 +170,16 @@ fn test_confirm_cancel() {
 }
 
 #[test]
-fn test_quit_produces_effect() {
+fn test_quit_shows_confirm_dialog() {
     let (_dir, _backend, mut state) = setup();
     let effects = reducer::reduce(&mut state, Action::Ui(UiAction::Quit));
+    assert!(effects.is_empty()); // Shows confirm dialog, no immediate quit
+    assert!(state.confirm_dialog.is_some());
+}
+
+#[test]
+fn test_quit_confirmed_produces_effect() {
+    let (_dir, _backend, mut state) = setup();
+    let effects = reducer::reduce(&mut state, Action::Ui(UiAction::QuitConfirmed));
     assert!(effects.iter().any(|e| matches!(e, Effect::Quit)));
 }

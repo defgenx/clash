@@ -222,6 +222,9 @@ pub struct Session {
     /// The original branch a worktree session was created from.
     #[serde(default)]
     pub source_branch: Option<String>,
+    /// Repo-level configuration discovered from the session's cwd (lazy-loaded, not serialized).
+    #[serde(skip)]
+    pub repo_config: Option<RepoConfig>,
 }
 
 impl Session {
@@ -281,6 +284,20 @@ pub struct Subagent {
 pub struct ConversationMessage {
     pub role: String, // "user" or "assistant"
     pub text: String,
+}
+
+/// Repo-level configuration discovered from a session's working directory.
+/// Built programmatically by infrastructure — not deserialized from a single JSON file.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RepoConfig {
+    pub setup_scripts: Vec<String>,
+    pub teardown_scripts: Vec<String>,
+    pub mcp_servers: Vec<String>,
+    /// Path to .mcp.json if it exists (for display; Claude auto-discovers from cwd).
+    pub mcp_config_path: Option<String>,
+    pub custom_commands: Vec<String>,
+    pub agent_definitions: Vec<String>,
+    pub has_claude_settings: bool,
 }
 
 /// An inbox message.

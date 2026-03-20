@@ -59,6 +59,31 @@ impl DetailView for SessionDetailView {
             }),
         );
 
+        // Repo Config section (lazy-loaded)
+        let repo_config_section = session.repo_config.as_ref().and_then(|config| {
+            let has_content = !config.mcp_servers.is_empty()
+                || !config.custom_commands.is_empty()
+                || !config.agent_definitions.is_empty()
+                || !config.setup_scripts.is_empty();
+            if !has_content {
+                return None;
+            }
+            let mut rc = Section::new("Repo Config");
+            if !config.mcp_servers.is_empty() {
+                rc = rc.row("MCP Servers", &config.mcp_servers.join(", "));
+            }
+            if !config.custom_commands.is_empty() {
+                rc = rc.row("Commands", &config.custom_commands.join(", "));
+            }
+            if !config.agent_definitions.is_empty() {
+                rc = rc.row("Agents", &config.agent_definitions.join(", "));
+            }
+            if !config.setup_scripts.is_empty() {
+                rc = rc.row("Setup", &config.setup_scripts.join(", "));
+            }
+            Some(rc)
+        });
+
         // Linked Teams section — teams where lead_session_id matches this session
         let linked_teams: Vec<_> = state
             .store
@@ -79,7 +104,11 @@ impl DetailView for SessionDetailView {
         }
 
         // Team Members section — members from linked teams
-        let mut sections = vec![info, linked_teams_section];
+        let mut sections = vec![info];
+        if let Some(rc) = repo_config_section {
+            sections.push(rc);
+        }
+        sections.push(linked_teams_section);
 
         if !linked_teams.is_empty() {
             let mut members_section = Section::new("Team Members");

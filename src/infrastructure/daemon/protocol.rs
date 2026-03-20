@@ -3,6 +3,8 @@
 //! Uses NDJSON (newline-delimited JSON) over Unix domain sockets.
 //! Terminal data is base64-encoded to avoid escape-sequence issues in JSON.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 // ── Client → Daemon requests ─────────────────────────────────────
@@ -32,6 +34,9 @@ pub enum Request {
         /// Initial terminal height (0 = default 40).
         #[serde(default)]
         rows: u16,
+        /// Additional environment variables to set in the spawned process.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        env_vars: HashMap<String, String>,
     },
 
     /// Attach to an existing session (start receiving output).

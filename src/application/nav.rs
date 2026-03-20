@@ -102,6 +102,22 @@ impl NavigationStack {
             .or_else(|| self.context_for(ViewKind::Tasks))
     }
 
+    /// Get a reference to the internal stack entries.
+    pub fn entries(&self) -> &[NavEntry] {
+        &self.stack
+    }
+
+    /// Restore the navigation stack from a list of (view, context) pairs.
+    pub fn restore_from(&mut self, entries: Vec<(ViewKind, Option<String>)>) {
+        if entries.is_empty() {
+            return;
+        }
+        self.stack = entries
+            .into_iter()
+            .map(|(view, context)| NavEntry { view, context })
+            .collect();
+    }
+
     /// Get the current session ID from nav context.
     pub fn current_session(&self) -> Option<&str> {
         for entry in self.stack.iter().rev() {

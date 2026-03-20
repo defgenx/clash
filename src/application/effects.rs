@@ -76,6 +76,10 @@ pub enum Effect {
         project: String,
         session_id: String,
     },
+    /// Lazy-load repo config for a session (for display in SessionDetail).
+    LoadRepoConfig {
+        session_id: String,
+    },
     LoadSubagentConversation {
         project: String,
         session_id: String,

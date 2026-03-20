@@ -134,7 +134,7 @@ impl DataStore {
         }
     }
 
-    /// Flatten `subagents_by_session` into `all_subagents`.
+    /// Flatten `subagents_by_session` into `all_subagents` (sorted for stable ordering).
     pub fn rebuild_flat_subagents(&mut self) {
         self.all_subagents.clear();
         for subs in self.subagents_by_session.values() {
@@ -142,6 +142,9 @@ impl DataStore {
                 self.all_subagents.push(sa.clone());
             }
         }
+        // Sort to ensure deterministic order regardless of HashMap iteration order.
+        self.all_subagents
+            .sort_by(|a, b| b.last_modified.cmp(&a.last_modified).then(a.id.cmp(&b.id)));
     }
 
     pub fn find_session(&self, session_id: &str) -> Option<&Session> {
