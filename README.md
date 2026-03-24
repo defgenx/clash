@@ -20,10 +20,15 @@
 - **Session management** — list, attach, detach, create, stash, and delete Claude Code sessions
 - **Inline terminal** — attach to sessions with a full vt100 terminal emulator, no window switching
 - **Real-time status** — instant status detection via hooks, daemon PTY screen analysis, and JSONL parsing (three-layer system)
+- **Animated status icons** — active sessions show animated spinners and pulsing icons for visual feedback
 - **In-process daemon** — embedded PTY daemon manages sessions without a separate process
+- **Git worktree support** — spawn sessions in isolated worktrees for parallel feature branches (`w` key)
+- **Repo config discovery** — auto-detects MCP servers, custom commands, agent definitions, and setup scripts from the project directory
 - **Teams & tasks** — create, view, and delete teams; organize agents, manage tasks, send messages
 - **Subagent tracking** — view subagent trees per session, expand/collapse in the sessions table
 - **Keyboard-driven** — vim-style navigation, command mode (`:`), fuzzy filter (`/`), context help (`?`)
+- **UI state persistence** — restores navigation, selection, filters, and expanded sessions on restart
+- **Single-instance lock** — prevents multiple clash instances from running simultaneously
 - **Guided tour** — first-launch walkthrough, replay anytime with `:tour`
 - **Self-updating** — `:update` in the TUI or `clash update` from the CLI
 
@@ -73,12 +78,12 @@ clash detects session status through three layers (in priority order):
 
 | Icon | Status | Meaning |
 |------|--------|---------|
-| `◉` | Prompting | Claude needs tool approval (Yes/No) |
+| `◆◇` | Prompting | Claude needs tool approval — blinking diamond |
 | `◉` | Waiting | Awaiting your next prompt |
-| `◎` | Thinking | Reasoning / generating |
-| `●` | Running | Executing tools |
-| `⦿` | Starting | Session just spawned |
-| `⊘` | Errored | Session crashed shortly after starting |
+| `◌◎◉` | Thinking | Reasoning / generating — pulsing circle |
+| `⠋⠙⠹…` | Running | Executing tools — braille spinner |
+| `○◔◑◕●` | Starting | Session just spawned — filling circle |
+| `✗` | Errored | Session crashed shortly after starting |
 | `○` | Idle | Exited or inactive |
 
 ## Keybindings
@@ -91,7 +96,7 @@ clash detects session status through three layers (in priority order):
 | `g` / `G` | Jump to first / last |
 | `Enter` | Drill in |
 | `Esc` | Go back |
-| `q` | Quit |
+| `q` | Quit (with confirmation) |
 
 ### Modes
 
@@ -108,6 +113,7 @@ clash detects session status through three layers (in priority order):
 | `a` | Attach (inline terminal) |
 | `c` / `n` | New session (two-step: directory, then name) |
 | `s` | Stash / unstash session (stop process, keep in registry) |
+| `w` | Spawn session in a git worktree |
 | `Tab` | Expand / collapse subagents |
 | `A` | Toggle active / all |
 | `d` | Drop session |
@@ -187,8 +193,12 @@ clash also maintains its own state in `~/.claude/clash/`:
 ├── status/{session-id}                # Instant status from hooks
 ├── names/{session-id}                 # Session display names
 ├── project-names/{encoded-cwd}        # Project-to-name mapping
-└── sessions.json                      # Session registry
+├── sessions.json                      # Session registry
+├── ui_state.json                      # Persisted UI state (nav, selection, filters)
+└── trusted_repos.json                 # SHA256 trust store for repo setup scripts
 ```
+
+Single-instance lock file: `~/.local/share/clash/clash.lock`
 
 ## Architecture
 
