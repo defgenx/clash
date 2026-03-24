@@ -271,12 +271,10 @@ impl App {
         }
     }
 
-    /// Run the attached session loop — pure sync I/O on fd 0.
+    /// Run the attached session loop — delegates to the shared `attach_loop`.
     ///
     /// crossterm is fully dead at this point. We are the sole reader on stdin.
     /// Ctrl+B detaches. Everything else is forwarded to the daemon PTY.
-    /// Daemon output is written directly to stdout via libc::write.
-    /// SIGWINCH is handled to resize the PTY when the terminal is resized.
     async fn run_attached(
         &mut self,
         session_id: &str,
@@ -284,124 +282,15 @@ impl App {
             mpsc::UnboundedReceiver<crate::infrastructure::daemon::protocol::Event>,
         >,
     ) {
-        let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
+        use crate::infrastructure::windowing::attach::{attach_loop, AttachResult};
 
-        // PTY = rows-1 (footer takes the last row)
-        let body_rows = rows.saturating_sub(1).max(1);
-        let _ = self.daemon.resize(session_id, cols, body_rows).await;
+        let result = attach_loop(&mut self.daemon, session_id, daemon_rx, "Ctrl+B detach").await;
 
-        // Set scroll region + draw footer + position cursor with a blank line at top
-        Self::draw_attach_chrome(cols, rows, session_id);
-
-        // SIGWINCH for terminal resize detection
-        let mut sigwinch =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change()).ok();
-
-        let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-
-        let reader = tokio::task::spawn_blocking(move || {
-            let mut buf = [0u8; 4096];
-            loop {
-                let n = unsafe { libc::read(0, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-                if n <= 0 {
-                    break;
-                }
-                if input_tx.send(buf[..n as usize].to_vec()).is_err() {
-                    break;
-                }
-            }
-        });
-
-        loop {
-            tokio::select! {
-                biased;
-
-                Some(bytes) = input_rx.recv() => {
-                    // Ctrl+B = detach (standard 0x02 or Kitty protocol ESC[98;5u)
-                    if bytes.contains(&0x02)
-                        || bytes.windows(7).any(|w| w == b"\x1b[98;5u")
-                    {
-                        break;
-                    }
-                    if let Err(e) = self.daemon.send_input(session_id, &bytes).await {
-                        tracing::warn!("send_input failed: {}", e);
-                        break;
-                    }
-                }
-
-                // Terminal resized → resize PTY + redraw footer
-                Some(_) = async {
-                    match sigwinch.as_mut() {
-                        Some(sig) => sig.recv().await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    if let Ok((w, h)) = crossterm::terminal::size() {
-                        let body = h.saturating_sub(1).max(1);
-                        let _ = self.daemon.resize(session_id, w, body).await;
-                        Self::draw_attach_chrome(w, h, session_id);
-                    }
-                }
-
-                Some(daemon_event) = async {
-                    match daemon_rx.as_mut() {
-                        Some(rx) => rx.recv().await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    match daemon_event {
-                        crate::infrastructure::daemon::protocol::Event::Output { data, .. } => {
-                            if let Ok(bytes) = crate::infrastructure::daemon::protocol::decode_data(&data) {
-                                unsafe {
-                                    libc::write(1, bytes.as_ptr() as *const libc::c_void, bytes.len());
-                                }
-                            }
-                        }
-                        crate::infrastructure::daemon::protocol::Event::Exited { .. } => {
-                            self.state.toast = Some("Session exited".to_string());
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-
-                else => break,
-            }
+        if result == AttachResult::SessionExited {
+            self.state.toast = Some("Session exited".to_string());
         }
 
-        // Reset scroll region to full terminal before leaving
-        if let Ok((_, h)) = crossterm::terminal::size() {
-            let reset = format!("\x1b[1;{}r", h);
-            unsafe {
-                libc::write(1, reset.as_ptr() as *const libc::c_void, reset.len());
-            }
-        }
-
-        drop(input_rx);
-        reader.abort();
         let _ = self.daemon.detach(session_id).await;
-    }
-
-    /// Draw the attach chrome: scroll region + footer bar.
-    /// Leaves cursor at row 2 so Claude has a blank line at the top.
-    fn draw_attach_chrome(cols: u16, rows: u16, session_id: &str) {
-        let short_id = crate::adapters::format::short_id(session_id, 8);
-        let hint = format!(" clash | {}  Ctrl+B detach", short_id);
-        let pad = cols as usize - hint.len().min(cols as usize);
-
-        // Scroll region: rows 1 to rows-1 (footer on row `rows`)
-        // Footer: dark bar with session info
-        // Cursor: row 2 (blank line at top for visual breathing room)
-        let chrome = format!(
-            "\x1b[1;{}r\x1b[{};1H\x1b[48;5;236m\x1b[38;2;90;90;110m{}{}\x1b[0m\x1b[2;1H",
-            rows - 1,
-            rows,
-            hint,
-            " ".repeat(pad),
-        );
-        unsafe {
-            libc::write(1, chrome.as_ptr() as *const libc::c_void, chrome.len());
-        }
     }
 
     async fn handle_key_event(
@@ -622,6 +511,38 @@ impl App {
         }
     }
 
+    /// Ensure a session exists in the daemon (idempotent). Creates it if needed.
+    async fn ensure_daemon_session(
+        &mut self,
+        session_id: &str,
+        terminal: &mut ratatui::DefaultTerminal,
+    ) {
+        let resolved_cwd = self.state.store.find_session(session_id).and_then(|s| {
+            s.cwd
+                .clone()
+                .filter(|c| !c.is_empty())
+                .or_else(|| Some(s.project_path.clone()).filter(|p| !p.is_empty()))
+        });
+        let cmd_args = vec!["--resume".to_string(), session_id.to_string()];
+        let size = terminal
+            .size()
+            .unwrap_or(ratatui::layout::Size::new(120, 40));
+
+        let _ = self
+            .daemon
+            .create_session(
+                session_id,
+                &self.cli_runner.claude_bin,
+                &cmd_args,
+                resolved_cwd.as_deref(),
+                None,
+                size.width,
+                size.height,
+                HashMap::new(),
+            )
+            .await;
+    }
+
     /// Refresh sessions: load from disk, overlay hook statuses, then daemon.
     async fn refresh_daemon_sessions(&mut self) {
         self.load_disk_sessions();
@@ -731,7 +652,7 @@ impl App {
         let hook_statuses =
             crate::infrastructure::hooks::read_all_statuses(self.backend.base_dir());
 
-        for info in infos {
+        for info in &infos {
             let hook_says_idle = hook_statuses
                 .get(&info.session_id)
                 .is_some_and(|(s, _)| matches!(s, SessionStatus::Idle));
@@ -825,7 +746,7 @@ impl App {
                     claimed_indices.insert(idx);
                 } else {
                     self.state.store.sessions.push(session_from_daemon_info(
-                        &info,
+                        info,
                         String::new(),
                         status,
                         is_running,
@@ -850,9 +771,17 @@ impl App {
                 self.state
                     .store
                     .sessions
-                    .push(session_from_daemon_info(&info, summary, status, is_running));
+                    .push(session_from_daemon_info(info, summary, status, is_running));
             }
         }
+
+        // Clean up externally_opened: remove sessions whose external viewer disconnected
+        // (attached_clients == 0 means the `clash attach` process exited).
+        self.state.externally_opened.retain(|id| {
+            infos
+                .iter()
+                .any(|i| i.session_id == *id && i.attached_clients > 0)
+        });
     }
 
     /// Phase 4: Resolve session names from daemon and disk persistence.
@@ -1278,6 +1207,79 @@ impl App {
 
                     self.state.toast = Some("Session restarted".to_string());
                     tracing::info!("Started daemon session {} in background", session_id);
+                }
+                Effect::AttachInNewWindow { session_id } => {
+                    if !self.daemon.is_connected() {
+                        self.state.toast = Some("Daemon not connected".to_string());
+                        continue;
+                    }
+
+                    self.ensure_daemon_session(&session_id, terminal).await;
+
+                    let term = std::env::var("TERM_PROGRAM").ok();
+                    let in_tmux = std::env::var("TMUX").is_ok();
+                    let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
+                    match crate::infrastructure::windowing::terminal_spawn::open_session(
+                        &session_id,
+                        term.as_deref(),
+                        in_tmux,
+                        cols,
+                        rows,
+                    ) {
+                        Ok(mode) => {
+                            self.state.externally_opened.insert(session_id.clone());
+                            let label = match mode {
+                                crate::infrastructure::windowing::terminal_spawn::OpenMode::Pane => "pane",
+                                crate::infrastructure::windowing::terminal_spawn::OpenMode::Tab => "tab",
+                                crate::infrastructure::windowing::terminal_spawn::OpenMode::Window => "window",
+                            };
+                            self.state.toast = Some(format!("Opened in new {}", label));
+                        }
+                        Err(e) => {
+                            self.state.toast = Some(format!("Failed: {}", e));
+                        }
+                    }
+                    self.state.spinner = None;
+                }
+                Effect::AttachBatchInNewWindows { session_ids } => {
+                    if !self.daemon.is_connected() {
+                        self.state.toast = Some("Daemon not connected".to_string());
+                        continue;
+                    }
+
+                    // Phase 1: ensure all sessions exist in daemon
+                    for id in &session_ids {
+                        self.ensure_daemon_session(id, terminal).await;
+                    }
+
+                    // Phase 2: spawn with smart pane/tab layout
+                    let term = std::env::var("TERM_PROGRAM").ok();
+                    let in_tmux = std::env::var("TMUX").is_ok();
+                    let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
+                    match crate::infrastructure::windowing::terminal_spawn::open_batch(
+                        &session_ids,
+                        term.as_deref(),
+                        in_tmux,
+                        cols,
+                        rows,
+                    ) {
+                        Ok(result) => {
+                            // Track all opened sessions
+                            for id in &session_ids {
+                                self.state.externally_opened.insert(id.clone());
+                            }
+                            let msg = match (result.panes_opened, result.tabs_opened) {
+                                (p, 0) => format!("Opened {} pane(s)", p),
+                                (0, t) => format!("Opened {} tab(s)", t),
+                                (p, t) => format!("Opened {} pane(s) + {} tab(s)", p, t),
+                            };
+                            self.state.toast = Some(msg);
+                        }
+                        Err(e) => {
+                            self.state.toast = Some(format!("Failed: {}", e));
+                        }
+                    }
+                    self.state.spinner = None;
                 }
                 Effect::CreateWorktreeAndAttach {
                     source_session_id,

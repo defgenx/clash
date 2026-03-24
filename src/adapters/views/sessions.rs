@@ -197,13 +197,25 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
             None => "—".to_string(),
         };
 
+        let is_ext_open = state.externally_opened.contains(&session.id);
+        let name_text = if is_ext_open {
+            format!("⊞ {}", name_display)
+        } else {
+            name_display.to_string()
+        };
+        let name_style = if is_ext_open {
+            Style::default()
+                .fg(theme::TEXT_DIM)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(theme::CLAUDE_COLOR)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        };
+
         let cells = vec![
             Cell::from(format!("{}{}", expand_indicator, status)).style(status_style),
-            Cell::from(name_display.to_string()).style(
-                Style::default()
-                    .fg(theme::CLAUDE_COLOR)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ),
+            Cell::from(name_text).style(name_style),
             Cell::from(project_display.to_string()).style(Style::default().fg(theme::TEXT)),
             Cell::from(display_name.to_string()).style(Style::default().fg(theme::TEXT_DIM)),
             Cell::from(agents_text).style(Style::default().fg(theme::ACCENT)),
@@ -314,6 +326,8 @@ impl TableView for SessionsTable {
             Keybinding::new("Tab", "Expand/collapse subagents"),
             Keybinding::new("i", "Inspect session details"),
             Keybinding::new("a", "Attach to session"),
+            Keybinding::new("o", "Open in new tab"),
+            Keybinding::new("O", "Open ALL in new tabs"),
             Keybinding::new("c/n", "New session (prompts for dir, then name)"),
             Keybinding::new(":new <path>", "New session in <path>"),
             Keybinding::new("s", "Stash/unstash session"),

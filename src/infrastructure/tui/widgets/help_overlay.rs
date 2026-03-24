@@ -78,6 +78,26 @@ pub fn render_help_overlay(
         ]));
     }
 
+    // Indicators section
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Indicators",
+        Style::default()
+            .fg(theme::TITLE_COLOR)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+    for &(symbol, desc) in &[
+        ("\u{229e}", "Session open in external pane/tab"),
+        ("\u{229f}", "Session in a git worktree"),
+        ("\u{25b6} / \u{25bc}", "Collapsed / expanded subagents"),
+    ] {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:<16}", symbol), theme::help_key_style()),
+            Span::styled(desc, theme::help_desc_style()),
+        ]));
+    }
+
     let total_lines = lines.len() as u16;
     let inner_height = popup_area.height.saturating_sub(2);
     let can_scroll = total_lines > inner_height;

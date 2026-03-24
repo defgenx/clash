@@ -293,12 +293,16 @@ fn find_text_end(screen: &vt100::Screen, row: u16) -> u16 {
 
 fn draw_help(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect) {
     let global_keys = vec![
-        Keybinding::new("j/↓", "Select next"),
-        Keybinding::new("k/↑", "Select previous"),
+        Keybinding::new("j/\u{2193}", "Select next"),
+        Keybinding::new("k/\u{2191}", "Select previous"),
         Keybinding::new("g", "First item"),
         Keybinding::new("G", "Last item"),
         Keybinding::new("Enter", "Drill in"),
         Keybinding::new("Esc", "Go back"),
+        Keybinding::new("a", "Attach to session (inline)"),
+        Keybinding::new("o", "Open in new pane/tab"),
+        Keybinding::new("O", "Open ALL running sessions"),
+        Keybinding::new("w", "Open in git worktree"),
         Keybinding::new(":", "Command mode"),
         Keybinding::new("/", "Filter mode"),
         Keybinding::new("r", "Refresh"),

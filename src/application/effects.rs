@@ -114,6 +114,16 @@ pub enum Effect {
         name: String,
     },
 
+    /// Open a single session in a new pane/tab/window.
+    /// Unlike DaemonAttach, this does NOT suspend the TUI.
+    AttachInNewWindow {
+        session_id: String,
+    },
+    /// Open multiple sessions with smart pane/tab layout.
+    AttachBatchInNewWindows {
+        session_ids: Vec<String>,
+    },
+
     // ── UI state effects ────────────────────────────────────────
     ShowSpinner(String),
     PerformUpdate,

@@ -31,4 +31,10 @@ pub enum AgentAction {
     StashSession {
         session_id: String,
     },
+    /// Attach to a session in a new terminal window (TUI stays active).
+    AttachNewWindow {
+        session_id: String,
+    },
+    /// Open ALL running sessions in new terminal windows.
+    AttachAllNewWindows,
 }

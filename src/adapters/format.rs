@@ -5,7 +5,7 @@
 
 use ratatui::style::{Modifier, Style};
 
-use crate::domain::entities::SessionStatus;
+use crate::domain::entities::{Session, SessionStatus};
 use crate::infrastructure::tui::theme;
 
 // ── Status formatting ────────────────────────────────────────────
@@ -103,6 +103,14 @@ pub fn truncate(s: &str, max_chars: usize, suffix: &str) -> String {
     format!("{}{}", truncated, suffix)
 }
 
+/// Display name for a session: the human-readable name if set, or a truncated ID.
+pub fn session_display_name(session: &Session) -> &str {
+    session
+        .name
+        .as_deref()
+        .unwrap_or_else(|| short_id(&session.id, 8))
+}
+
 /// Shorten an ID to `max` characters. IDs are ASCII-safe (UUIDs, hashes).
 pub fn short_id(id: &str, max: usize) -> &str {
     if id.len() > max {
@@ -150,5 +158,30 @@ pub fn detect_worktree(project_path: &str) -> Option<String> {
         Some("yes".to_string())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_display_name_with_name() {
+        let session = Session {
+            id: "abcdef1234567890".to_string(),
+            name: Some("my-session".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(session_display_name(&session), "my-session");
+    }
+
+    #[test]
+    fn session_display_name_without_name() {
+        let session = Session {
+            id: "abcdef1234567890".to_string(),
+            name: None,
+            ..Default::default()
+        };
+        assert_eq!(session_display_name(&session), "abcdef12");
     }
 }

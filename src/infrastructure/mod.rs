@@ -9,3 +9,4 @@ pub mod hooks;
 pub mod lock;
 pub mod tui;
 pub mod update;
+pub mod windowing;

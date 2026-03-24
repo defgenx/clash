@@ -120,6 +120,9 @@ pub struct AppState {
     pub tour_step: Option<usize>,
     /// vt100 screen for inline terminal rendering when attached to a session.
     pub terminal_screen: Option<vt100::Parser>,
+    /// Sessions currently open in external panes/tabs/windows.
+    /// Tracked in-memory only — cleared on restart.
+    pub externally_opened: HashSet<String>,
 }
 
 impl Default for AppState {
@@ -156,6 +159,7 @@ impl AppState {
             pending_session_worktree: false,
             tour_step: None,
             terminal_screen: None,
+            externally_opened: HashSet::new(),
         }
     }
 

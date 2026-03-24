@@ -396,6 +396,28 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 name: session_name,
             }]
         }
+        AgentAction::AttachNewWindow { session_id } => {
+            if state.externally_opened.contains(&session_id) {
+                state.toast = Some("Session already open externally".to_string());
+                vec![]
+            } else {
+                vec![Effect::AttachInNewWindow { session_id }]
+            }
+        }
+        AgentAction::AttachAllNewWindows => {
+            let ids: Vec<String> = state
+                .filtered_sessions()
+                .iter()
+                .filter(|s| s.is_running && !state.externally_opened.contains(&s.id))
+                .map(|s| s.id.clone())
+                .collect();
+            if ids.is_empty() {
+                state.toast = Some("No running sessions (or all already open)".to_string());
+                vec![]
+            } else {
+                vec![Effect::AttachBatchInNewWindows { session_ids: ids }]
+            }
+        }
     }
 }
 
@@ -1183,5 +1205,114 @@ mod tests {
             .iter()
             .any(|e| matches!(e, Effect::CreateWorktreeAndAttach { .. })));
         assert_eq!(state.input_mode, InputMode::Attached);
+    }
+
+    #[test]
+    fn test_attach_new_window_emits_effect_and_stays_normal() {
+        let mut state = test_state();
+
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::AttachNewWindow {
+                session_id: "test-session".to_string(),
+            }),
+        );
+
+        // Must emit AttachInNewWindow effect
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::AttachInNewWindow { session_id } if session_id == "test-session"
+        )));
+
+        // Critical: TUI stays active — no mode change, no attached session
+        assert_eq!(state.input_mode, InputMode::Normal);
+        assert!(state.attached_session.is_none());
+        assert!(state.spinner.is_none());
+    }
+
+    #[test]
+    fn test_attach_all_new_windows_only_running() {
+        let mut state = test_state();
+        state.session_filter = crate::application::state::SessionFilter::All;
+        state.store.sessions = vec![
+            crate::domain::entities::Session {
+                id: "running1".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+            crate::domain::entities::Session {
+                id: "running2".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+            crate::domain::entities::Session {
+                id: "idle1".to_string(),
+                is_running: false,
+                status: crate::domain::entities::SessionStatus::Idle,
+                ..Default::default()
+            },
+        ];
+
+        let effects = reduce(&mut state, Action::Agent(AgentAction::AttachAllNewWindows));
+
+        // Single batch effect with only running session IDs
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::AttachBatchInNewWindows { session_ids } => {
+                assert_eq!(session_ids.len(), 2);
+                assert!(session_ids.contains(&"running1".to_string()));
+                assert!(session_ids.contains(&"running2".to_string()));
+                assert!(!session_ids.contains(&"idle1".to_string()));
+            }
+            other => panic!("Expected AttachBatchInNewWindows, got {:?}", other),
+        }
+        // TUI stays normal
+        assert_eq!(state.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_attach_new_window_blocked_when_externally_opened() {
+        let mut state = test_state();
+        state.externally_opened.insert("test-session".to_string());
+
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::AttachNewWindow {
+                session_id: "test-session".to_string(),
+            }),
+        );
+
+        assert!(effects.is_empty());
+        assert!(state.toast.as_deref().unwrap().contains("already open"));
+    }
+
+    #[test]
+    fn test_attach_all_excludes_externally_opened() {
+        let mut state = test_state();
+        state.session_filter = crate::application::state::SessionFilter::All;
+        state.store.sessions = vec![
+            crate::domain::entities::Session {
+                id: "open1".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+            crate::domain::entities::Session {
+                id: "not-open".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        ];
+        state.externally_opened.insert("open1".to_string());
+
+        let effects = reduce(&mut state, Action::Agent(AgentAction::AttachAllNewWindows));
+
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::AttachBatchInNewWindows { session_ids } => {
+                assert_eq!(session_ids.len(), 1);
+                assert_eq!(session_ids[0], "not-open");
+            }
+            other => panic!("Expected AttachBatchInNewWindows, got {:?}", other),
+        }
     }
 }

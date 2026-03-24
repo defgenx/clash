@@ -38,6 +38,11 @@ enum Cmd {
     Daemon,
     /// Update clash to the latest version
     Update,
+    /// Attach to a running session (used by new-window spawning)
+    Attach {
+        /// The session ID to attach to
+        session_id: String,
+    },
 }
 
 #[tokio::main]
@@ -68,6 +73,9 @@ async fn main() -> Result<()> {
         }
         Some(Cmd::Update) => {
             return run_update().await;
+        }
+        Some(Cmd::Attach { session_id }) => {
+            return infrastructure::windowing::attach::run_attach_client(session_id).await;
         }
         None => {}
     }

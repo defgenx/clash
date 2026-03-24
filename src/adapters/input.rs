@@ -105,6 +105,8 @@ fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
         KeyCode::Char('m') => handle_message(state),
         KeyCode::Char('t') => handle_t_key(state),
         KeyCode::Char('n') => handle_new_session(state),
+        KeyCode::Char('o') => handle_attach_new_window(state),
+        KeyCode::Char('O') => handle_attach_all_new_windows(state),
         KeyCode::Char('w') => handle_worktree(state),
         KeyCode::Char('r') => Action::Team(crate::application::actions::TeamAction::Refresh),
         KeyCode::Tab => Action::Ui(UiAction::ToggleExpand),
@@ -218,9 +220,9 @@ fn handle_delete(state: &AppState) -> Action {
         ViewKind::Sessions => {
             let items = state.filtered_sessions();
             if let Some(session) = items.get(state.table_state.selected) {
-                let short_id = format::short_id(&session.id, 8);
+                let display = format::session_display_name(session);
                 Action::Ui(UiAction::ShowConfirm {
-                    message: format!("Drop session '{}'?", short_id),
+                    message: format!("Drop session '{}'?", display),
                     on_confirm: Box::new(Action::Agent(AgentAction::DropSession {
                         session_id: session.id.clone(),
                     })),
@@ -232,9 +234,9 @@ fn handle_delete(state: &AppState) -> Action {
         ViewKind::SessionDetail => {
             if let Some(session_id) = state.current_session() {
                 if let Some(session) = state.store.find_session(session_id) {
-                    let short_id = format::short_id(&session.id, 8);
+                    let display = format::session_display_name(session);
                     Action::Ui(UiAction::ShowConfirm {
-                        message: format!("Drop session '{}'?", short_id),
+                        message: format!("Drop session '{}'?", display),
                         on_confirm: Box::new(Action::Agent(AgentAction::DropSession {
                             session_id: session.id.clone(),
                         })),
@@ -260,52 +262,73 @@ fn handle_delete_all(state: &AppState) -> Action {
     }
 }
 
-fn handle_attach_or_assign(state: &AppState) -> Action {
+/// Resolve the session ID from the current view context.
+///
+/// Returns `Some(session_id)` for views that have an actionable session
+/// (Sessions, SessionDetail, Subagents, SubagentDetail), or `None`.
+fn resolve_session_id(state: &AppState) -> Option<String> {
     match state.current_view() {
-        ViewKind::Sessions => {
-            let items = state.filtered_sessions();
-            if let Some(session) = items.get(state.table_state.selected) {
-                return Action::Agent(AgentAction::Attach {
-                    session_id: session.id.clone(),
-                });
-            }
-            Action::Noop
-        }
-        ViewKind::SessionDetail => {
-            if let Some(session_id) = state.current_session() {
-                return Action::Agent(AgentAction::Attach {
-                    session_id: session_id.to_string(),
-                });
-            }
-            Action::Noop
-        }
+        ViewKind::Sessions => state
+            .filtered_sessions()
+            .get(state.table_state.selected)
+            .map(|s| s.id.clone()),
+        ViewKind::SessionDetail => state.current_session().map(|s| s.to_string()),
         ViewKind::Subagents => {
-            let idx = state.table_state.selected;
             let items = subagent_items(state);
-            if let Some(sa) = items.get(idx) {
-                return Action::Agent(AgentAction::Attach {
-                    session_id: sa.parent_session_id.clone(),
-                });
-            }
-            Action::Noop
+            items
+                .get(state.table_state.selected)
+                .map(|sa| sa.parent_session_id.clone())
         }
-        ViewKind::SubagentDetail => {
-            if let Some(agent_id) = state.nav.current().context.as_deref() {
-                if let Some(sa) = state.store.find_subagent(agent_id) {
-                    return Action::Agent(AgentAction::Attach {
-                        session_id: sa.parent_session_id.clone(),
-                    });
-                }
-            }
-            Action::Noop
-        }
+        ViewKind::SubagentDetail => state
+            .nav
+            .current()
+            .context
+            .as_deref()
+            .and_then(|aid| state.store.find_subagent(aid))
+            .map(|sa| sa.parent_session_id.clone()),
+        _ => None,
+    }
+}
+
+fn handle_attach_or_assign(state: &AppState) -> Action {
+    if let Some(session_id) = resolve_session_id(state) {
+        return Action::Agent(AgentAction::Attach { session_id });
+    }
+    // Non-session views: TeamDetail drills into Agents
+    match state.current_view() {
         ViewKind::TeamDetail => Action::Nav(NavAction::DrillIn {
             view: ViewKind::Agents,
             context: String::new(),
         }),
-        ViewKind::Agents | ViewKind::AgentDetail | ViewKind::Tasks => Action::Noop,
         _ => Action::Noop,
     }
+}
+
+fn handle_attach_new_window(state: &AppState) -> Action {
+    if let Some(session_id) = resolve_session_id(state) {
+        return Action::Agent(AgentAction::AttachNewWindow { session_id });
+    }
+    Action::Noop
+}
+
+fn handle_attach_all_new_windows(state: &AppState) -> Action {
+    if state.current_view() != ViewKind::Sessions {
+        return Action::Noop;
+    }
+    let count = state
+        .filtered_sessions()
+        .iter()
+        .filter(|s| s.is_running && !state.externally_opened.contains(&s.id))
+        .count();
+    if count == 0 {
+        return Action::Ui(UiAction::Toast(
+            "No running sessions (or all already open)".to_string(),
+        ));
+    }
+    Action::Ui(UiAction::ShowConfirm {
+        message: format!("Open {} session(s) in new tabs?", count),
+        on_confirm: Box::new(Action::Agent(AgentAction::AttachAllNewWindows)),
+    })
 }
 
 fn handle_s_key(state: &AppState) -> Action {
@@ -429,6 +452,16 @@ fn handle_inspect(state: &AppState) -> Action {
             view: ViewKind::SubagentDetail,
             context: String::new(),
         }),
+        ViewKind::Teams => {
+            if let Some(team) = state.store.teams.get(state.table_state.selected) {
+                Action::Nav(NavAction::DrillIn {
+                    view: ViewKind::TeamDetail,
+                    context: team.name.clone(),
+                })
+            } else {
+                Action::Noop
+            }
+        }
         _ => Action::Noop,
     }
 }
@@ -602,6 +635,187 @@ mod tests {
         match handle_key(key, &state) {
             Action::Noop => {}
             other => panic!("Expected Noop on Teams view, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_o_key_on_sessions_view_attaches_new_window() {
+        let mut state = AppState::new();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "s1".to_string(),
+            is_running: true,
+            ..Default::default()
+        }];
+        state.table_state.selected = 0;
+        let key = KeyEvent::new(KeyCode::Char('o'), crossterm::event::KeyModifiers::NONE);
+        match handle_key(key, &state) {
+            Action::Agent(AgentAction::AttachNewWindow { session_id }) => {
+                assert_eq!(session_id, "s1");
+            }
+            other => panic!("Expected AttachNewWindow, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_o_key_on_session_detail_attaches_new_window() {
+        let mut state = AppState::new();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "s1".to_string(),
+            is_running: true,
+            ..Default::default()
+        }];
+        state.session_filter = crate::application::state::SessionFilter::All;
+        state
+            .nav
+            .push(ViewKind::SessionDetail, Some("s1".to_string()));
+        let key = KeyEvent::new(KeyCode::Char('o'), crossterm::event::KeyModifiers::NONE);
+        match handle_key(key, &state) {
+            Action::Agent(AgentAction::AttachNewWindow { session_id }) => {
+                assert_eq!(session_id, "s1");
+            }
+            other => panic!("Expected AttachNewWindow, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_o_key_on_teams_view_is_noop() {
+        let mut state = AppState::new();
+        state.nav.push(ViewKind::Teams, None);
+        let key = KeyEvent::new(KeyCode::Char('o'), crossterm::event::KeyModifiers::NONE);
+        match handle_key(key, &state) {
+            Action::Noop => {}
+            other => panic!("Expected Noop on Teams view, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_shift_o_on_sessions_shows_confirm() {
+        let mut state = AppState::new();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "s1".to_string(),
+            is_running: true,
+            ..Default::default()
+        }];
+        let key = KeyEvent::new(KeyCode::Char('O'), crossterm::event::KeyModifiers::SHIFT);
+        match handle_key(key, &state) {
+            Action::Ui(UiAction::ShowConfirm {
+                message,
+                on_confirm,
+            }) => {
+                assert!(message.contains("1 session"));
+                assert!(matches!(
+                    *on_confirm,
+                    Action::Agent(AgentAction::AttachAllNewWindows)
+                ));
+            }
+            other => panic!("Expected ShowConfirm, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_shift_o_no_running_sessions_toasts() {
+        let mut state = AppState::new();
+        state.session_filter = crate::application::state::SessionFilter::All;
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "idle1".to_string(),
+            is_running: false,
+            status: crate::domain::entities::SessionStatus::Idle,
+            ..Default::default()
+        }];
+        let key = KeyEvent::new(KeyCode::Char('O'), crossterm::event::KeyModifiers::SHIFT);
+        match handle_key(key, &state) {
+            Action::Ui(UiAction::Toast(msg)) => {
+                assert!(msg.contains("No running"));
+            }
+            other => panic!("Expected Toast, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_shift_o_on_session_detail_is_noop() {
+        let mut state = AppState::new();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "s1".to_string(),
+            is_running: true,
+            ..Default::default()
+        }];
+        state.session_filter = crate::application::state::SessionFilter::All;
+        state
+            .nav
+            .push(ViewKind::SessionDetail, Some("s1".to_string()));
+        let key = KeyEvent::new(KeyCode::Char('O'), crossterm::event::KeyModifiers::SHIFT);
+        match handle_key(key, &state) {
+            Action::Noop => {}
+            other => panic!("Expected Noop on SessionDetail, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_i_on_teams_drills_to_detail() {
+        let mut state = AppState::new();
+        state.nav.push(ViewKind::Teams, None);
+        state.store.teams = vec![crate::domain::entities::Team {
+            name: "my-team".to_string(),
+            ..Default::default()
+        }];
+        state.table_state.selected = 0;
+        let key = KeyEvent::new(KeyCode::Char('i'), crossterm::event::KeyModifiers::NONE);
+        match handle_key(key, &state) {
+            Action::Nav(NavAction::DrillIn { view, context }) => {
+                assert_eq!(view, ViewKind::TeamDetail);
+                assert_eq!(context, "my-team");
+            }
+            other => panic!("Expected DrillIn to TeamDetail, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_delete_session_shows_name() {
+        let mut state = AppState::new();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "abcdef1234567890".to_string(),
+            name: Some("my-session".to_string()),
+            is_running: true,
+            ..Default::default()
+        }];
+        state.table_state.selected = 0;
+        let key = KeyEvent::new(KeyCode::Char('d'), crossterm::event::KeyModifiers::NONE);
+        match handle_key(key, &state) {
+            Action::Ui(UiAction::ShowConfirm { message, .. }) => {
+                assert!(
+                    message.contains("my-session"),
+                    "Expected name in confirm: {}",
+                    message
+                );
+            }
+            other => panic!("Expected ShowConfirm, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_delete_session_detail_shows_name() {
+        let mut state = AppState::new();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "abcdef1234567890".to_string(),
+            name: Some("detail-session".to_string()),
+            is_running: true,
+            ..Default::default()
+        }];
+        state.session_filter = crate::application::state::SessionFilter::All;
+        state.nav.push(
+            ViewKind::SessionDetail,
+            Some("abcdef1234567890".to_string()),
+        );
+        let key = KeyEvent::new(KeyCode::Char('d'), crossterm::event::KeyModifiers::NONE);
+        match handle_key(key, &state) {
+            Action::Ui(UiAction::ShowConfirm { message, .. }) => {
+                assert!(
+                    message.contains("detail-session"),
+                    "Expected name in confirm: {}",
+                    message
+                );
+            }
+            other => panic!("Expected ShowConfirm, got {:?}", other),
         }
     }
 }

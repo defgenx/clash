@@ -79,12 +79,13 @@ impl DataStore {
             .into_iter()
             .map(|mut new| {
                 if let Some(old) = old_by_id.get(&new.id) {
-                    // Keep the more "active" status — don't downgrade from
-                    // running/waiting/prompting to idle based on stale disk data
-                    if old.is_running && !new.is_running {
-                        new.is_running = old.is_running;
-                        new.status = old.status;
-                    }
+                    // Preserve in-memory status for existing sessions.
+                    // Disk-based status detection is just a baseline for NEW sessions.
+                    // Hooks and daemon overlays (which run immediately after this
+                    // in refresh_daemon_sessions) are the authoritative sources
+                    // for status updates on existing sessions.
+                    new.is_running = old.is_running;
+                    new.status = old.status;
                     // Preserve daemon-assigned name
                     if new.name.is_none() && old.name.is_some() {
                         new.name = old.name.clone();
@@ -211,6 +212,116 @@ impl DataStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::entities::SessionStatus;
+
+    /// Minimal mock that only implements load_sessions for merge tests.
+    struct MockBackend {
+        sessions: Vec<Session>,
+    }
+
+    impl crate::domain::ports::DataRepository for MockBackend {
+        fn load_teams(&self) -> crate::domain::error::Result<Vec<Team>> {
+            Ok(vec![])
+        }
+        fn load_tasks(&self, _team: &str) -> crate::domain::error::Result<Vec<Task>> {
+            Ok(vec![])
+        }
+        fn write_task(&self, _team: &str, _task: &Task) -> crate::domain::error::Result<()> {
+            Ok(())
+        }
+        fn delete_team(&self, _name: &str) -> crate::domain::error::Result<()> {
+            Ok(())
+        }
+        fn teams_dir(&self) -> std::path::PathBuf {
+            std::path::PathBuf::new()
+        }
+        fn tasks_dir(&self) -> std::path::PathBuf {
+            std::path::PathBuf::new()
+        }
+        fn load_sessions(&self) -> crate::domain::error::Result<Vec<Session>> {
+            Ok(self.sessions.clone())
+        }
+        fn load_subagents(
+            &self,
+            _project: &str,
+            _session_id: &str,
+        ) -> crate::domain::error::Result<Vec<Subagent>> {
+            Ok(vec![])
+        }
+        fn load_conversation(
+            &self,
+            _project: &str,
+            _session_id: &str,
+        ) -> crate::domain::error::Result<Vec<crate::domain::entities::ConversationMessage>>
+        {
+            Ok(vec![])
+        }
+        fn load_subagent_conversation(
+            &self,
+            _project: &str,
+            _session_id: &str,
+            _agent_id: &str,
+        ) -> crate::domain::error::Result<Vec<crate::domain::entities::ConversationMessage>>
+        {
+            Ok(vec![])
+        }
+    }
+
+    #[test]
+    fn test_refresh_preserves_idle_status() {
+        let mut store = DataStore::new();
+        // In-memory: session is idle (e.g., after stash)
+        store.sessions = vec![Session {
+            id: "s1".to_string(),
+            is_running: false,
+            status: SessionStatus::Idle,
+            ..Default::default()
+        }];
+
+        // Disk: session appears running (JSONL has recent activity)
+        let backend = MockBackend {
+            sessions: vec![Session {
+                id: "s1".to_string(),
+                is_running: true,
+                status: SessionStatus::Running,
+                ..Default::default()
+            }],
+        };
+
+        store.refresh_sessions(&backend).unwrap();
+
+        // Old idle status should be preserved — overlays are authoritative
+        assert!(!store.sessions[0].is_running);
+        assert_eq!(store.sessions[0].status, SessionStatus::Idle);
+    }
+
+    #[test]
+    fn test_refresh_preserves_running_status() {
+        let mut store = DataStore::new();
+        // In-memory: session is running (daemon says so)
+        store.sessions = vec![Session {
+            id: "s1".to_string(),
+            is_running: true,
+            status: SessionStatus::Running,
+            ..Default::default()
+        }];
+
+        // Disk: session appears idle (stale JSONL)
+        let backend = MockBackend {
+            sessions: vec![Session {
+                id: "s1".to_string(),
+                is_running: false,
+                status: SessionStatus::Idle,
+                ..Default::default()
+            }],
+        };
+
+        store.refresh_sessions(&backend).unwrap();
+
+        // Old running status should be preserved — overlays are authoritative
+        assert!(store.sessions[0].is_running);
+        assert_eq!(store.sessions[0].status, SessionStatus::Running);
+    }
 
     #[test]
     fn test_rebuild_all_members() {

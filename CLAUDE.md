@@ -39,7 +39,7 @@ Infrastructure → Adapters → Application → Domain
 | **Domain** | `src/domain/` | Entities (`Team`, `Task`, `Member`, `InboxMessage`, `TaskStatus`) and port traits (`DataRepository`, `CliGateway`) | Nothing |
 | **Application** | `src/application/` | `AppState`, `Action` enums, `Effect` enum, pure `reducer`, `NavigationStack` | Domain |
 | **Adapters** | `src/adapters/` | `input.rs` (KeyEvent→Action), `renderer.rs` (State→Frame), `views/` (TableView/DetailView impls) | Application, Domain |
-| **Infrastructure** | `src/infrastructure/` | `app.rs` (event loop), `fs/` (FsBackend, atomic writes, watcher), `cli/` (subprocess), `tui/` (widgets, theme, layout), `config.rs`, `error.rs`, `event.rs` | All layers |
+| **Infrastructure** | `src/infrastructure/` | `app.rs` (event loop), `fs/` (FsBackend, atomic writes, watcher), `cli/` (subprocess), `tui/` (widgets, theme, layout), `windowing/` (pane/tab/window spawning, standalone attach client), `config.rs`, `error.rs`, `event.rs` | All layers |
 
 ### Key Files
 
@@ -51,6 +51,8 @@ Infrastructure → Adapters → Application → Domain
 - `src/infrastructure/app.rs` — Event loop coordinator. Executes effects by calling `DataRepository` / `CliGateway` impls.
 - `src/infrastructure/fs/backend.rs` — `FsBackend` implements `DataRepository`
 - `src/infrastructure/fs/atomic.rs` — `write_atomic()`: write to temp file, then rename (prevents partial reads)
+- `src/infrastructure/windowing/terminal_spawn.rs` — Terminal detection, smart pane/tab/window spawning with layout planning
+- `src/infrastructure/windowing/attach.rs` — Standalone `clash attach <session_id>` client for external panes/tabs
 
 ## Core Pattern: TEA (The Elm Architecture)
 
@@ -115,6 +117,14 @@ All types use `#[serde(default)]` so missing fields get zero values, and `#[serd
 1. Add variant to `Effect` enum in `src/application/effects.rs`
 2. Handle execution in `src/infrastructure/app.rs` `execute_effects()`
 
+### Opening sessions externally (windowing)
+- `o` opens the selected session in a pane (if terminal supports it) or tab/window
+- `O` (Shift+O) opens ALL running sessions with smart layout (confirm dialog first)
+- Layout: panes fill first (horizontal or vertical based on screen size), overflow to tabs
+- Sessions opened externally show `⊞` prefix and cannot be reopened until closed
+- Cleanup: when the external `clash attach` process exits, the indicator clears on next refresh
+- Implementation: `src/infrastructure/windowing/terminal_spawn.rs` (spawn logic), `src/infrastructure/windowing/attach.rs` (attach client)
+
 ## Dependencies
 
 Key crates: `ratatui` (TUI), `crossterm` (terminal), `tokio` (async), `serde`/`serde_json` (data), `notify-debouncer-full` (FS watching), `clap` (CLI args), `color-eyre`/`thiserror` (errors), `lru` (inbox cache), `tui-input` (text input widget), `chrono` (timestamps), `fuzzy-matcher` (filter mode).
@@ -126,3 +136,5 @@ Key crates: `ratatui` (TUI), `crossterm` (terminal), `tokio` (async), `serde`/`s
 - Raw strings containing `#` in JSON values (like hex colors) need `r##"..."##` delimiters.
 - Inboxes are lazy-loaded with LRU(3) eviction — they're only fetched when navigating to the inbox view.
 - Agent attach uses suspend-and-resume: save state → restore terminal → spawn `claude --resume` → reclaim terminal on exit.
+- External session opening (`o`/`O`) uses the `windowing` module: pane-capable terminals (tmux, iTerm, WezTerm, Kitty) get split panes; others get tabs/windows. Sessions opened externally are tracked in-memory via `externally_opened` and shown with `⊞` prefix.
+- `clash attach <id>` is a lightweight subcommand for external panes — it connects to the in-process daemon, not a standalone daemon. The TUI must be running.
