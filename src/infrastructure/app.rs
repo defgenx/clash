@@ -315,6 +315,28 @@ impl App {
         terminal: &mut ratatui::DefaultTerminal,
         events: &mut EventLoop,
     ) -> color_eyre::Result<()> {
+        // Ctrl+C: cancel current mode, or quit from normal mode
+        if key.code == crossterm::event::KeyCode::Char('c')
+            && key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
+        {
+            let action = match self.state.input_mode {
+                InputMode::Normal => {
+                    Action::Ui(crate::application::actions::UiAction::Quit)
+                }
+                InputMode::Confirm => {
+                    Action::Ui(crate::application::actions::UiAction::ConfirmNo)
+                }
+                _ => Action::Ui(crate::application::actions::UiAction::ExitInputMode),
+            };
+            let effects = reducer::reduce(&mut self.state, action);
+            if self.execute_effects(effects, terminal, events).await {
+                return Err(color_eyre::eyre::eyre!("quit"));
+            }
+            return Ok(());
+        }
+
         // Text input mode (command, filter, new-session)
         if matches!(
             self.state.input_mode,

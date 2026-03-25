@@ -287,7 +287,7 @@ async fn handle_client(
                             continue;
                         }
 
-                        let replay = session.screen_snapshot();
+                        let replay = session.output_history();
                         let mut rx = session.subscribe();
                         let w = writer.clone();
                         let sid = session_id.clone();
@@ -328,9 +328,11 @@ async fn handle_client(
                         )
                         .await;
 
-                        // Then send replay buffer (existing screen content)
-                        if !replay.is_empty() {
-                            let encoded = protocol::encode_data(&replay);
+                        // Send replay buffer (full session history) in chunks
+                        // to avoid one giant NDJSON line on the socket.
+                        const REPLAY_CHUNK: usize = 64 * 1024;
+                        for chunk in replay.chunks(REPLAY_CHUNK) {
+                            let encoded = protocol::encode_data(chunk);
                             send_event(
                                 &writer,
                                 &Event::Output {

@@ -92,13 +92,15 @@ pub async fn attach_loop(
     set_title(&format!("clash │ {name}"));
 
     // ── Loading phase ───────────────────────────────────────────
-    // Show a spinner while buffering output through a local vt100 parser.
-    // When output settles (200ms idle) or 2s elapses, paint the final
-    // screen state in one shot — no scrolling history visible to the user.
+    // Show a spinner while buffering the full session history through a
+    // local vt100 parser. The daemon replays the complete PTY output so
+    // the terminal reaches the exact same state as if watching live.
+    // When output settles (200ms idle) or 4s elapses, paint the final
+    // screen state in one shot — clean transition from spinner to Claude.
     let screen_snapshot = {
         const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         const IDLE_MS: u64 = 200;
-        const DEADLINE_MS: u64 = 2000;
+        const DEADLINE_MS: u64 = 4000;
         const TICK_MS: u64 = 80;
 
         let mut parser = vt100::Parser::new(rows, cols, 0);

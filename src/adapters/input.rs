@@ -11,8 +11,8 @@ use crate::application::state::{AppState, InputMode};
 
 /// Map a key event to an action based on current state.
 pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
-    // Ctrl+C is NOT bound — it must pass through to Claude when attached.
-    // Use 'q' or ':quit' to exit clash.
+    // Ctrl+C is handled in app.rs handle_key_event() before reaching here.
+    // In attached mode, input goes through the attach loop (not this handler).
 
     // Attached and text-input modes are handled directly in the event loop
     // (app.rs) before reaching this function.

@@ -24,6 +24,16 @@ cargo clippy               # Run linter
 
 CI runs `cargo fmt --check` and `cargo clippy` — pushes will fail if either has issues.
 
+## Documentation Rules
+
+Every change **must** keep documentation in sync:
+
+1. **README.md** — Update keybindings, commands, features, or behavior descriptions whenever they change.
+2. **Guided tour** (`src/infrastructure/tui/widgets/tour.rs`) — Every new user-facing command or keybinding must be added to the appropriate tour step.
+3. **Help overlay** (`src/infrastructure/tui/widgets/help_overlay.rs`) — Every new keybinding or command must appear in the `?` help screen (global, context, or commands section).
+
+If a PR adds a keybinding but doesn't update all three, it is incomplete.
+
 ## Architecture: Clean Architecture (strict layers)
 
 ```

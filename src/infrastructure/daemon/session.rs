@@ -3,7 +3,8 @@
 //! The daemon owns PtySessions. Each one:
 //! - Spawns claude in a PTY (via openpty + fork)
 //! - Runs output-reader thread that feeds a broadcast channel
-//! - Maintains a vt100 screen mirror for status detection and attach snapshots
+//! - Maintains a vt100 screen mirror for status detection
+//! - Accumulates raw output history (capped at 4 MB) for full replay on attach
 //! - Accepts input writes from any attached client
 
 use std::collections::HashMap;
@@ -20,6 +21,10 @@ use tokio::sync::broadcast;
 
 /// Backpressure: max buffered output frames per client before dropping.
 const OUTPUT_CHANNEL_CAPACITY: usize = 4096;
+
+/// Max raw output history kept per session (4 MB). Oldest bytes are discarded
+/// when this limit is reached so the session never grows unbounded.
+const MAX_HISTORY_BYTES: usize = 4 * 1024 * 1024;
 
 /// Default screen size for status detection parser.
 const STATUS_SCREEN_ROWS: u16 = 50;
@@ -43,6 +48,8 @@ pub struct PtySession {
     last_output_at: Arc<std::sync::Mutex<u64>>,
     /// vt100 screen mirror — used to detect status by reading screen content.
     screen: Arc<std::sync::Mutex<vt100::Parser>>,
+    /// Raw output history — replayed on attach for full session restore.
+    history: Arc<std::sync::Mutex<Vec<u8>>>,
     _reader_handle: std::thread::JoinHandle<()>,
     _waiter_handle: std::thread::JoinHandle<()>,
 }
@@ -132,12 +139,16 @@ impl PtySession {
             vt100::Parser::new(screen_rows, screen_cols, 0),
         ));
 
-        // Output reader thread: master_fd → broadcast channel + screen mirror
+        let history: Arc<std::sync::Mutex<Vec<u8>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        // Output reader thread: master_fd → broadcast channel + screen mirror + history
         let tx = output_tx.clone();
         let alive2 = alive.clone();
         let sid = session_id.clone();
         let last_out2 = last_output_at.clone();
         let screen2 = screen.clone();
+        let history2 = history.clone();
         let reader_handle = std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             while alive2.load(Ordering::SeqCst) {
@@ -170,6 +181,15 @@ impl PtySession {
                 // Feed into vt100 screen mirror
                 if let Ok(mut parser) = screen2.lock() {
                     parser.process(&data);
+                }
+
+                // Append to history buffer (capped)
+                if let Ok(mut h) = history2.lock() {
+                    h.extend_from_slice(&data);
+                    if h.len() > MAX_HISTORY_BYTES {
+                        let excess = h.len() - MAX_HISTORY_BYTES;
+                        h.drain(..excess);
+                    }
                 }
 
                 // Broadcast to live subscribers
@@ -209,6 +229,7 @@ impl PtySession {
             output_tx,
             last_output_at,
             screen,
+            history,
             _reader_handle: reader_handle,
             _waiter_handle: waiter_handle,
         })
@@ -250,29 +271,13 @@ impl PtySession {
         }
     }
 
-    /// Get a clean screen snapshot for attach replay.
+    /// Return the full raw output history for replay on attach.
     ///
-    /// Instead of replaying the raw PTY buffer (which dumps all historical
-    /// escape sequences and causes ugly scrolling), this returns the current
-    /// visible screen state as ANSI escape codes. The result paints the
-    /// terminal in one shot — like what tmux/screen do on attach.
-    pub fn screen_snapshot(&self) -> Vec<u8> {
-        self.screen
-            .lock()
-            .ok()
-            .map(|parser| {
-                let screen = parser.screen();
-                let mut snapshot = Vec::new();
-                // Clear screen + cursor home first
-                snapshot.extend_from_slice(b"\x1b[2J\x1b[H");
-                // Paint the current screen contents with colors/styles
-                snapshot.extend_from_slice(&screen.contents_formatted());
-                // Restore cursor position
-                let (row, col) = screen.cursor_position();
-                snapshot.extend_from_slice(format!("\x1b[{};{}H", row + 1, col + 1).as_bytes());
-                snapshot
-            })
-            .unwrap_or_default()
+    /// This is more faithful than `screen_snapshot()` because it replays the
+    /// actual PTY byte stream, letting the terminal reconstruct the exact state
+    /// including any internal alternate-screen content.
+    pub fn output_history(&self) -> Vec<u8> {
+        self.history.lock().ok().map(|h| h.clone()).unwrap_or_default()
     }
 
     /// Detect session status by analyzing the vt100 screen content.

@@ -147,11 +147,20 @@ async fn main() -> Result<()> {
     let mut terminal = ratatui::init();
     {
         use std::io::Write;
-        std::io::stdout().write_all(b"\x1b[?1000h\x1b[?1006h")?;
-        std::io::stdout().flush()?;
+        // Use .ok() — if these fail, we must not skip restore_terminal()
+        let _ = std::io::stdout().write_all(b"\x1b[?1000h\x1b[?1006h");
+        let _ = std::io::stdout().flush();
     }
     let mut app = infrastructure::app::App::new(data_dir, args.claude_bin, args.debug, config);
-    let result = app.run(&mut terminal).await;
+
+    // Race the TUI against OS signals so we always restore the terminal
+    let result = tokio::select! {
+        result = app.run(&mut terminal) => result,
+        _ = shutdown_signal() => {
+            tracing::info!("Signal received, shutting down");
+            Ok(())
+        },
+    };
     restore_terminal();
 
     // Graceful shutdown: signal daemon to stop, wait briefly
@@ -159,6 +168,18 @@ async fn main() -> Result<()> {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), daemon_task).await;
 
     result
+}
+
+/// Wait for any OS shutdown signal (SIGINT, SIGTERM, SIGHUP).
+async fn shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut sigterm = signal(SignalKind::terminate()).expect("register SIGTERM");
+    let mut sighup = signal(SignalKind::hangup()).expect("register SIGHUP");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = sigterm.recv() => {}
+        _ = sighup.recv() => {}
+    }
 }
 
 /// Fully restore the terminal to a clean state.

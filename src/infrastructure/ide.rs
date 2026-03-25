@@ -142,13 +142,13 @@ mod tests {
         let defaults = default_ides();
         for entry in &defaults {
             if entry.terminal {
-                let items = vec![PickerItem {
+                let item = PickerItem {
                     label: entry.name.clone(),
                     description: entry.description.clone(),
                     value: format!("{}{}", TERMINAL_VALUE_PREFIX, entry.command),
-                }];
+                };
                 assert!(
-                    items[0].value.starts_with(TERMINAL_VALUE_PREFIX),
+                    item.value.starts_with(TERMINAL_VALUE_PREFIX),
                     "Terminal editor {} should have prefix",
                     entry.command
                 );
