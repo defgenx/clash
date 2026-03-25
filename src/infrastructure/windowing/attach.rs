@@ -12,20 +12,22 @@ use crate::adapters::format::short_id;
 use crate::infrastructure::daemon::client::DaemonClient;
 use crate::infrastructure::daemon::protocol;
 
+// ── ANSI color constants (matching theme.rs) ────────────────────
+const ACCENT: &str = "\x1b[38;2;180;140;255m";
+const MUTED: &str = "\x1b[38;2;90;90;110m";
+const RESET: &str = "\x1b[0m";
+
 /// Detect Ctrl+B in any of the three common terminal encodings:
 ///   - `0x02` — standard raw byte (most terminals in normal mode)
 ///   - `ESC[98;5u` — Kitty keyboard protocol (CSI u)
 ///   - `ESC[27;5;98~` — xterm modifyOtherKeys mode (iTerm2, etc.)
 fn is_ctrl_b(bytes: &[u8]) -> bool {
-    // Standard raw byte
     if bytes.contains(&0x02) {
         return true;
     }
-    // Kitty CSI u: \x1b[98;5u (7 bytes)
     if bytes.windows(7).any(|w| w == b"\x1b[98;5u") {
         return true;
     }
-    // xterm modifyOtherKeys: \x1b[27;5;98~ (10 bytes)
     if bytes.windows(10).any(|w| w == b"\x1b[27;5;98~") {
         return true;
     }
@@ -43,29 +45,119 @@ pub enum AttachResult {
     Disconnected,
 }
 
+/// Write raw bytes to stdout.
+fn write_stdout(data: &[u8]) {
+    unsafe {
+        libc::write(1, data.as_ptr() as *const libc::c_void, data.len());
+    }
+}
+
+/// Set the terminal title bar (xterm OSC sequence, works in iTerm2/etc).
+fn set_title(title: &str) {
+    let seq = format!("\x1b]0;{title}\x07");
+    write_stdout(seq.as_bytes());
+}
+
+/// Draw a centered status message (spinner + text) on a cleared screen.
+fn draw_status_screen(cols: u16, rows: u16, message: &str) {
+    let mid_row = rows / 2;
+    let msg_col = (cols / 2).saturating_sub(message.len() as u16 / 2);
+    let screen = format!("\x1b[2J\x1b[{mid_row};{msg_col}H{message}");
+    write_stdout(screen.as_bytes());
+}
+
 /// Run the I/O passthrough loop between stdin/stdout and a daemon PTY session.
 ///
 /// Reads input from a freshly opened `/dev/tty` fd to avoid competing with
-/// crossterm's internal reader thread (which may linger on fd 0 after
-/// EventStream is dropped). Daemon output is written directly to stdout.
+/// crossterm's internal reader thread. Daemon output is written directly to
+/// stdout with no chrome overlay (Claude Code manages its own full-screen UI).
 ///
-/// - `hint` is the text shown in the footer bar (e.g., "Ctrl+B detach").
+/// Session info is shown in the terminal title bar instead.
+///
+/// - `name` is the session display name (shown in title bar and loading screen).
 /// - Returns an `AttachResult` indicating why the loop ended.
 /// - The caller is responsible for calling `daemon.detach()` afterwards.
 pub async fn attach_loop(
     daemon: &mut DaemonClient,
     session_id: &str,
+    name: &str,
     daemon_rx: &mut Option<mpsc::UnboundedReceiver<protocol::Event>>,
-    hint: &str,
 ) -> AttachResult {
     let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
 
-    // PTY = rows-1 (footer takes the last row)
-    let body_rows = rows.saturating_sub(1).max(1);
-    let _ = daemon.resize(session_id, cols, body_rows).await;
+    // PTY gets full terminal size — no chrome to reserve rows for
+    let _ = daemon.resize(session_id, cols, rows).await;
 
-    // Set scroll region + draw footer + position cursor
-    draw_attach_chrome(cols, rows, session_id, hint);
+    // Set terminal title bar
+    set_title(&format!("clash │ {name}"));
+
+    // ── Loading phase ───────────────────────────────────────────
+    // Show a spinner while buffering output through a local vt100 parser.
+    // When output settles (200ms idle) or 2s elapses, paint the final
+    // screen state in one shot — no scrolling history visible to the user.
+    let screen_snapshot = {
+        const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        const IDLE_MS: u64 = 200;
+        const DEADLINE_MS: u64 = 2000;
+        const TICK_MS: u64 = 80;
+
+        let mut parser = vt100::Parser::new(rows, cols, 0);
+        let mut frame = 0usize;
+        let mut got_output = false;
+        let mut last_output = tokio::time::Instant::now();
+        let deadline = last_output + std::time::Duration::from_millis(DEADLINE_MS);
+
+        let loading_msg = format!("{ACCENT}{}{MUTED} Loading {name}…{RESET}", SPINNER[0]);
+        draw_status_screen(cols, rows, &loading_msg);
+
+        loop {
+            tokio::select! {
+                biased;
+
+                Some(ev) = async {
+                    match daemon_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match ev {
+                        protocol::Event::Output { data, .. } => {
+                            if let Ok(bytes) = protocol::decode_data(&data) {
+                                parser.process(&bytes);
+                            }
+                            got_output = true;
+                            last_output = tokio::time::Instant::now();
+                        }
+                        protocol::Event::Exited { .. } => return AttachResult::SessionExited,
+                        _ => {}
+                    }
+                }
+
+                _ = tokio::time::sleep(std::time::Duration::from_millis(TICK_MS)) => {
+                    let now = tokio::time::Instant::now();
+                    let idle = now.duration_since(last_output).as_millis() as u64 >= IDLE_MS;
+                    if (got_output && idle) || now >= deadline {
+                        break;
+                    }
+                    frame = (frame + 1) % SPINNER.len();
+                    let msg = format!("{ACCENT}{}{MUTED} Loading {name}…{RESET}", SPINNER[frame]);
+                    draw_status_screen(cols, rows, &msg);
+                }
+            }
+        }
+
+        // Extract final screen state
+        let screen = parser.screen();
+        let mut snapshot = Vec::new();
+        snapshot.extend_from_slice(b"\x1b[2J\x1b[H");
+        snapshot.extend_from_slice(&screen.contents_formatted());
+        let (cur_row, cur_col) = screen.cursor_position();
+        snapshot.extend_from_slice(format!("\x1b[{};{}H", cur_row + 1, cur_col + 1).as_bytes());
+        snapshot
+    };
+
+    // Paint the buffered screen — clean transition from spinner to Claude
+    write_stdout(&screen_snapshot);
 
     // SIGWINCH for terminal resize detection
     let mut sigwinch =
@@ -105,10 +197,6 @@ pub async fn attach_loop(
 
             Some(bytes) = input_rx.recv() => {
                 tracing::debug!("attach input: {:02x?}", &bytes[..bytes.len().min(32)]);
-                // Ctrl+B = detach. Supported encodings:
-                //   0x02              — standard raw byte
-                //   ESC[98;5u         — Kitty CSI u protocol
-                //   ESC[27;5;98~      — xterm modifyOtherKeys
                 if is_ctrl_b(&bytes) {
                     result = AttachResult::Detached;
                     break;
@@ -120,7 +208,7 @@ pub async fn attach_loop(
                 }
             }
 
-            // Terminal resized → resize PTY + redraw footer
+            // Terminal resized → just resize PTY (no chrome to redraw)
             Some(_) = async {
                 match sigwinch.as_mut() {
                     Some(sig) => sig.recv().await,
@@ -128,9 +216,7 @@ pub async fn attach_loop(
                 }
             } => {
                 if let Ok((w, h)) = crossterm::terminal::size() {
-                    let body = h.saturating_sub(1).max(1);
-                    let _ = daemon.resize(session_id, w, body).await;
-                    draw_attach_chrome(w, h, session_id, hint);
+                    let _ = daemon.resize(session_id, w, h).await;
                 }
             }
 
@@ -143,9 +229,7 @@ pub async fn attach_loop(
                 match daemon_event {
                     protocol::Event::Output { data, .. } => {
                         if let Ok(bytes) = protocol::decode_data(&data) {
-                            unsafe {
-                                libc::write(1, bytes.as_ptr() as *const libc::c_void, bytes.len());
-                            }
+                            write_stdout(&bytes);
                         }
                     }
                     protocol::Event::Exited { .. } => {
@@ -160,40 +244,17 @@ pub async fn attach_loop(
         }
     }
 
-    // Reset scroll region to full terminal before leaving
-    if let Ok((_, h)) = crossterm::terminal::size() {
-        let reset = format!("\x1b[1;{}r", h);
-        unsafe {
-            libc::write(1, reset.as_ptr() as *const libc::c_void, reset.len());
-        }
-    }
+    // Show detaching feedback
+    let detach_msg = format!("{ACCENT}⏎{MUTED} Detaching {name}…{RESET}");
+    draw_status_screen(cols, rows, &detach_msg);
+
+    // Reset terminal title
+    set_title("");
 
     drop(input_rx);
     reader.abort();
 
     result
-}
-
-/// Draw the attach chrome: scroll region + footer bar.
-/// Leaves cursor at row 2 so Claude has a blank line at the top.
-pub fn draw_attach_chrome(cols: u16, rows: u16, session_id: &str, hint: &str) {
-    let short = short_id(session_id, 8);
-    let footer = format!(" clash | {}  {}", short, hint);
-    let pad = cols as usize - footer.len().min(cols as usize);
-
-    // Scroll region: rows 1 to rows-1 (footer on row `rows`)
-    // Footer: dark bar with session info
-    // Cursor: row 2 (blank line at top for visual breathing room)
-    let chrome = format!(
-        "\x1b[1;{}r\x1b[{};1H\x1b[48;5;236m\x1b[38;2;90;90;110m{}{}\x1b[0m\x1b[2;1H",
-        rows - 1,
-        rows,
-        footer,
-        " ".repeat(pad),
-    );
-    unsafe {
-        libc::write(1, chrome.as_ptr() as *const libc::c_void, chrome.len());
-    }
 }
 
 // ── Standalone attach client ───────────────────────────────────────
@@ -244,18 +305,61 @@ pub async fn run_attach_client(session_id: String) -> eyre::Result<()> {
     nix::sys::termios::tcsetattr(&tty, nix::sys::termios::SetArg::TCSANOW, &raw)
         .map_err(|e| eyre::eyre!("tcsetattr failed: {}", e))?;
 
-    let _result = attach_loop(&mut daemon, &session_id, &mut daemon_rx, "Ctrl+B exit").await;
+    let name = short_id(&session_id, 8);
+    let _result = attach_loop(&mut daemon, &session_id, name, &mut daemon_rx).await;
 
     // Restore terminal
     nix::sys::termios::tcsetattr(&tty, nix::sys::termios::SetArg::TCSANOW, &orig_termios).ok();
-    // Clear screen and reset cursor
-    unsafe {
-        libc::write(1, b"\x1b[2J\x1b[H".as_ptr() as *const libc::c_void, 10);
-    }
+    write_stdout(b"\x1b[2J\x1b[H");
 
     let _ = daemon.detach(&session_id).await;
-
-    // Exit immediately so the terminal window closes on detach.
-    // No message needed — the user pressed Ctrl+B intentionally.
     std::process::exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ctrl_b_standard_raw_byte() {
+        assert!(is_ctrl_b(&[0x02]));
+    }
+
+    #[test]
+    fn ctrl_b_raw_byte_in_middle_of_data() {
+        assert!(is_ctrl_b(&[0x61, 0x02, 0x63]));
+    }
+
+    #[test]
+    fn ctrl_b_kitty_csi_u() {
+        assert!(is_ctrl_b(b"\x1b[98;5u"));
+    }
+
+    #[test]
+    fn ctrl_b_xterm_modify_other_keys() {
+        assert!(is_ctrl_b(b"\x1b[27;5;98~"));
+    }
+
+    #[test]
+    fn ctrl_b_xterm_embedded_in_stream() {
+        let mut data = vec![0x61, 0x62];
+        data.extend_from_slice(b"\x1b[27;5;98~");
+        data.push(0x63);
+        assert!(is_ctrl_b(&data));
+    }
+
+    #[test]
+    fn not_ctrl_b_regular_text() {
+        assert!(!is_ctrl_b(b"hello world"));
+    }
+
+    #[test]
+    fn not_ctrl_b_empty() {
+        assert!(!is_ctrl_b(&[]));
+    }
+
+    #[test]
+    fn not_ctrl_b_other_escape_sequence() {
+        assert!(!is_ctrl_b(b"\x1b[27;5;97~"));
+    }
 }

@@ -285,7 +285,15 @@ impl App {
     ) {
         use crate::infrastructure::windowing::attach::{attach_loop, AttachResult};
 
-        let result = attach_loop(&mut self.daemon, session_id, daemon_rx, "Ctrl+B detach").await;
+        // Resolve session display name from store
+        let name = self
+            .state
+            .store
+            .find_session(session_id)
+            .and_then(|s| s.name.clone())
+            .unwrap_or_else(|| crate::adapters::format::short_id(session_id, 8).to_string());
+
+        let result = attach_loop(&mut self.daemon, session_id, &name, daemon_rx).await;
 
         if result == AttachResult::SessionExited {
             self.state.toast = Some("Session exited".to_string());
