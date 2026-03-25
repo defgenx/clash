@@ -36,7 +36,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(data_dir: PathBuf, claude_bin: String) -> Self {
+    pub fn new(data_dir: PathBuf, claude_bin: String, debug: bool) -> Self {
         let backend = FsBackend::new(data_dir.clone());
         let cli_runner = RealCliRunner::with_bin(claude_bin);
 
@@ -56,6 +56,7 @@ impl App {
         let watcher = FsWatcher::new(&watch_paths, fs_tx).ok();
 
         let mut state = AppState::new();
+        state.debug_mode = debug;
 
         // Show guided tour on first launch (stored in clash's own data dir)
         let clash_data = crate::infrastructure::config::Config::clash_data_dir();
@@ -224,10 +225,10 @@ impl App {
             // Save daemon_rx before dropping EventLoop
             daemon_rx = events.take_daemon_rx();
 
-            // Drop EventLoop — crossterm's EventStream and reader thread die
+            // Drop EventLoop — crossterm's EventStream is released.
+            // The attach loop reads from its own /dev/tty fd, so crossterm's
+            // lingering reader thread on fd 0 doesn't interfere.
             drop(events);
-            // Give crossterm's thread time to exit via self-pipe
-            tokio::time::sleep(Duration::from_millis(500)).await;
 
             if let Some(ref session_id) = attach_request {
                 // Leave TUI — switch to main screen for Claude Code

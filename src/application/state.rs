@@ -123,6 +123,8 @@ pub struct AppState {
     /// Sessions currently open in external panes/tabs/windows.
     /// Tracked in-memory only — cleared on restart.
     pub externally_opened: HashSet<String>,
+    /// Debug mode flag — enables verbose logging.
+    pub debug_mode: bool,
 }
 
 impl Default for AppState {
@@ -160,6 +162,7 @@ impl AppState {
             tour_step: None,
             terminal_screen: None,
             externally_opened: HashSet::new(),
+            debug_mode: false,
         }
     }
 

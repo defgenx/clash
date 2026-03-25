@@ -166,7 +166,17 @@ fn draw_header(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
 
     let header = Line::from(spans);
 
-    let time_span = Span::styled(format!("{}  ", now), Style::default().fg(theme::MUTED));
+    let time_span = if state.debug_mode {
+        Line::from(vec![
+            Span::styled("DEBUG ", Style::default().fg(theme::STATUS_PROMPTING)),
+            Span::styled(format!("{}  ", now), Style::default().fg(theme::MUTED)),
+        ])
+    } else {
+        Line::from(Span::styled(
+            format!("{}  ", now),
+            Style::default().fg(theme::MUTED),
+        ))
+    };
 
     let header_paragraph = Paragraph::new(header).style(theme::header_style());
     frame.render_widget(header_paragraph, area);

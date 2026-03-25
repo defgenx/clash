@@ -28,6 +28,10 @@ struct Args {
     #[arg(long, default_value = "claude")]
     claude_bin: String,
 
+    /// Enable debug logging (writes verbose logs to clash.log)
+    #[arg(long)]
+    debug: bool,
+
     #[command(subcommand)]
     command: Option<Cmd>,
 }
@@ -54,14 +58,39 @@ async fn main() -> Result<()> {
         .join("clash");
     std::fs::create_dir_all(&log_dir)?;
 
-    let log_file = std::fs::File::create(log_dir.join("clash.log"))?;
+    // Rotate stale log file. Default: 24h. Override with CLASH_LOG_RETENTION_HOURS.
+    let log_path = log_dir.join("clash.log");
+    let retention_hours: u64 = std::env::var("CLASH_LOG_RETENTION_HOURS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(24);
+    if let Ok(meta) = std::fs::metadata(&log_path) {
+        if let Ok(modified) = meta.modified() {
+            if modified.elapsed().unwrap_or_default()
+                > std::time::Duration::from_secs(retention_hours * 3600)
+            {
+                let _ = std::fs::remove_file(&log_path);
+            }
+        }
+    }
+
+    let args = Args::parse();
+
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    let max_level = if args.debug {
+        tracing::Level::DEBUG
+    } else {
+        tracing::Level::INFO
+    };
     tracing_subscriber::fmt()
         .with_writer(log_file)
         .with_ansi(false)
         .with_target(false)
+        .with_max_level(max_level)
         .init();
-
-    let args = Args::parse();
 
     match args.command {
         Some(Cmd::Daemon) => {
@@ -121,7 +150,7 @@ async fn main() -> Result<()> {
         std::io::stdout().write_all(b"\x1b[?1000h\x1b[?1006h")?;
         std::io::stdout().flush()?;
     }
-    let mut app = infrastructure::app::App::new(data_dir, args.claude_bin);
+    let mut app = infrastructure::app::App::new(data_dir, args.claude_bin, args.debug);
     let result = app.run(&mut terminal).await;
     restore_terminal();
 

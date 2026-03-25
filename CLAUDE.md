@@ -8,8 +8,9 @@ Terminal UI for managing Claude Code Sessions & Agent Teams. Built in Rust with 
 
 ```bash
 cargo build --release      # Build
-cargo test                 # Run all 111 tests (unit + integration)
+cargo test                 # Run all tests (unit + integration)
 cargo run -- --data-dir /path/to/test/data  # Run with test data
+cargo run -- --debug       # Run with debug-level logging
 ```
 
 ## Before Pushing
@@ -52,7 +53,7 @@ Infrastructure → Adapters → Application → Domain
 - `src/infrastructure/fs/backend.rs` — `FsBackend` implements `DataRepository`
 - `src/infrastructure/fs/atomic.rs` — `write_atomic()`: write to temp file, then rename (prevents partial reads)
 - `src/infrastructure/windowing/terminal_spawn.rs` — Terminal detection, smart pane/tab/window spawning with layout planning
-- `src/infrastructure/windowing/attach.rs` — Standalone `clash attach <session_id>` client for external panes/tabs
+- `src/infrastructure/windowing/attach.rs` — Shared attach loop (`attach_loop`) and standalone `clash attach <id>` client. Uses `/dev/tty` for input and `nix` termios for raw mode (avoids crossterm's reader thread)
 
 ## Core Pattern: TEA (The Elm Architecture)
 
@@ -127,7 +128,7 @@ All types use `#[serde(default)]` so missing fields get zero values, and `#[serd
 
 ## Dependencies
 
-Key crates: `ratatui` (TUI), `crossterm` (terminal), `tokio` (async), `serde`/`serde_json` (data), `notify-debouncer-full` (FS watching), `clap` (CLI args), `color-eyre`/`thiserror` (errors), `lru` (inbox cache), `tui-input` (text input widget), `chrono` (timestamps), `fuzzy-matcher` (filter mode).
+Key crates: `ratatui` (TUI), `crossterm` (terminal events, TUI raw mode), `nix` (termios for attach raw mode, PTY), `tokio` (async), `serde`/`serde_json` (data), `notify-debouncer-full` (FS watching), `clap` (CLI args), `color-eyre`/`thiserror` (errors), `lru` (inbox cache), `tui-input` (text input widget), `chrono` (timestamps), `fuzzy-matcher` (filter mode).
 
 ## Gotchas
 
@@ -138,3 +139,7 @@ Key crates: `ratatui` (TUI), `crossterm` (terminal), `tokio` (async), `serde`/`s
 - Agent attach uses suspend-and-resume: save state → restore terminal → spawn `claude --resume` → reclaim terminal on exit.
 - External session opening (`o`/`O`) uses the `windowing` module: pane-capable terminals (tmux, iTerm, WezTerm, Kitty) get split panes; others get tabs/windows. Sessions opened externally are tracked in-memory via `externally_opened` and shown with `⊞` prefix.
 - `clash attach <id>` is a lightweight subcommand for external panes — it connects to the in-process daemon, not a standalone daemon. The TUI must be running.
+- The attach loop reads from `/dev/tty` (not fd 0) to avoid racing with crossterm's internal reader thread. The standalone client uses `nix::sys::termios` for raw mode instead of crossterm to prevent crossterm's reader from being initialized.
+- Ctrl+B detach supports three terminal encodings: raw `0x02`, Kitty CSI u (`ESC[98;5u`), and xterm modifyOtherKeys (`ESC[27;5;98~`). iTerm2 uses the xterm format.
+- `--debug` flag enables debug-level logging; the header shows a `DEBUG` indicator when active.
+- Log file (`~/Library/Application Support/clash/clash.log`) appends across restarts and auto-rotates after 24h (configurable via `CLASH_LOG_RETENTION_HOURS`).

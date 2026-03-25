@@ -30,6 +30,7 @@
 - **UI state persistence** — restores navigation, selection, filters, and expanded sessions on restart
 - **Single-instance lock** — prevents multiple clash instances from running simultaneously
 - **Guided tour** — first-launch walkthrough, replay anytime with `:tour`
+- **Debug mode** — `clash --debug` enables verbose logging with a header indicator
 - **Self-updating** — `:update` in the TUI or `clash update` from the CLI
 
 ## Installation
@@ -63,6 +64,7 @@ cargo install --git https://github.com/defgenx/clash.git
 clash                              # Start (reads from ~/.claude)
 clash --data-dir ~/.claude         # Custom data directory
 clash --claude-bin /path/to/claude # Custom CLI path
+clash --debug                      # Enable debug logging
 clash update                       # Update to the latest release
 ```
 
@@ -111,6 +113,8 @@ clash detects session status through three layers (in priority order):
 | Key | Action |
 |-----|--------|
 | `a` | Attach (inline terminal) |
+| `o` | Open in new pane / tab / window |
+| `O` | Open ALL running sessions (smart layout) |
 | `c` / `n` | New session (two-step: directory, then name) |
 | `s` | Stash / unstash session (stop process, keep in registry) |
 | `w` | Spawn session in a git worktree |
@@ -132,7 +136,7 @@ clash detects session status through three layers (in priority order):
 
 | Key | Action |
 |-----|--------|
-| `Esc` / `Ctrl+B` | Detach |
+| `Ctrl+B` | Detach (works across all terminal encodings) |
 | Everything else | Forwarded to Claude |
 
 ### Session Detail
