@@ -1,5 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
@@ -117,7 +117,7 @@ pub fn render_help_overlay(
         .title(scroll_hint)
         .title_style(theme::title_style())
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::DIALOG_BORDER));
 
     let paragraph = Paragraph::new(lines)
         .block(block)

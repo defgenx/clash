@@ -1,9 +1,10 @@
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Cell;
 
 use crate::adapters::views::{ColumnDef, Keybinding, TableView};
 use crate::application::state::AppState;
 use crate::domain::entities::InboxMessage;
+use crate::infrastructure::tui::theme;
 
 pub struct InboxTable;
 
@@ -50,21 +51,21 @@ impl TableView for InboxTable {
     fn row(item: &InboxMessage, _tick: usize) -> Vec<Cell<'static>> {
         let texts = inbox_texts(item);
         let style = if item.read {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme::MUTED)
         } else {
             Style::default()
-                .fg(Color::White)
+                .fg(theme::TEXT)
                 .add_modifier(Modifier::BOLD)
         };
 
         vec![
             Cell::from(texts[0].clone()).style(style),
-            Cell::from(texts[1].clone()).style(Style::default().fg(Color::DarkGray)),
+            Cell::from(texts[1].clone()).style(Style::default().fg(theme::MUTED)),
             Cell::from(texts[2].clone()).style(style),
             Cell::from(texts[3].clone()).style(if item.read {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(theme::MUTED)
             } else {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(theme::UNREAD_COLOR)
             }),
         ]
     }

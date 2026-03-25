@@ -215,6 +215,31 @@ impl App {
                         Event::Mouse(mouse) => {
                             self.handle_mouse(mouse).await;
                         }
+                        Event::UpdateProgress(phase) => {
+                            use crate::application::state::UpdatePhase;
+                            let is_terminal = matches!(
+                                phase,
+                                UpdatePhase::Done { .. } | UpdatePhase::Failed { .. }
+                            );
+                            self.state.update_progress = Some(phase);
+                            if is_terminal {
+                                // Auto-dismiss after a few seconds via toast
+                                if let Some(UpdatePhase::Done { ref version }) =
+                                    self.state.update_progress
+                                {
+                                    self.state.toast = Some(format!(
+                                        "Updated to v{}! Restart clash to apply.",
+                                        version
+                                    ));
+                                } else if let Some(UpdatePhase::Failed { ref message }) =
+                                    self.state.update_progress
+                                {
+                                    self.state.toast = Some(message.clone());
+                                }
+                                self.state.update_progress = None;
+                                self.state.spinner = None;
+                            }
+                        }
                     }
                 } else {
                     return Ok(());
@@ -322,12 +347,8 @@ impl App {
                 .contains(crossterm::event::KeyModifiers::CONTROL)
         {
             let action = match self.state.input_mode {
-                InputMode::Normal => {
-                    Action::Ui(crate::application::actions::UiAction::Quit)
-                }
-                InputMode::Confirm => {
-                    Action::Ui(crate::application::actions::UiAction::ConfirmNo)
-                }
+                InputMode::Normal => Action::Ui(crate::application::actions::UiAction::Quit),
+                InputMode::Confirm => Action::Ui(crate::application::actions::UiAction::ConfirmNo),
                 _ => Action::Ui(crate::application::actions::UiAction::ExitInputMode),
             };
             let effects = reducer::reduce(&mut self.state, action);
@@ -909,7 +930,7 @@ impl App {
         &mut self,
         effects: Vec<Effect>,
         terminal: &mut ratatui::DefaultTerminal,
-        _events: &mut EventLoop,
+        events: &mut EventLoop,
     ) -> bool {
         let mut queue = VecDeque::from(effects);
 
@@ -1611,16 +1632,13 @@ impl App {
                     self.state.spinner = Some(msg);
                 }
                 Effect::PerformUpdate => {
-                    self.state.toast = Some("Downloading update...".to_string());
-                    match crate::infrastructure::update::perform_update().await {
-                        Ok(version) => {
-                            self.state.toast =
-                                Some(format!("Updated to v{}! Restart clash to apply.", version));
-                        }
-                        Err(msg) => {
-                            self.state.toast = Some(msg);
-                        }
-                    }
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                    events.set_update_rx(rx);
+                    self.state.update_progress =
+                        Some(crate::application::state::UpdatePhase::Checking);
+                    tokio::spawn(async move {
+                        crate::infrastructure::update::perform_update(tx).await;
+                    });
                 }
             }
         }

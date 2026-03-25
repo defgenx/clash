@@ -224,7 +224,7 @@ async fn run_update() -> Result<()> {
     println!("clash v{}", env!("CARGO_PKG_VERSION"));
     println!("Checking for updates...");
 
-    match infrastructure::update::perform_update().await {
+    match infrastructure::update::perform_update_cli().await {
         Ok(version) => {
             println!("{} Updated to v{}!", "✓".green(), version);
             println!("  Restart clash to use the new version.");

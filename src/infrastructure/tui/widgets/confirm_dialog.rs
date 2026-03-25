@@ -1,5 +1,5 @@
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
@@ -27,9 +27,9 @@ pub fn render_confirm_dialog(message: &str, frame: &mut Frame, area: Rect) {
 
     let block = Block::default()
         .title(" Confirm ")
-        .title_style(Style::default().fg(Color::Yellow))
+        .title_style(Style::default().fg(theme::CONFIRM_BORDER))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow));
+        .border_style(Style::default().fg(theme::CONFIRM_BORDER));
 
     let paragraph = Paragraph::new(lines)
         .block(block)

@@ -216,10 +216,10 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
         let cells = vec![
             Cell::from(format!("{}{}", expand_indicator, status)).style(status_style),
             Cell::from(name_text).style(name_style),
-            Cell::from(project_display.to_string()).style(Style::default().fg(theme::TEXT)),
+            Cell::from(project_display.to_string()).style(Style::default().fg(theme::PATH_COLOR)),
             Cell::from(display_name.to_string()).style(Style::default().fg(theme::TEXT_DIM)),
-            Cell::from(agents_text).style(Style::default().fg(theme::ACCENT)),
-            Cell::from(branch.to_string()).style(Style::default().fg(theme::STATUS_WAITING)),
+            Cell::from(agents_text).style(Style::default().fg(theme::COUNT_COLOR)),
+            Cell::from(branch.to_string()).style(Style::default().fg(theme::BRANCH_COLOR)),
             Cell::from(worktree_display).style(Style::default().fg(theme::ACCENT)),
         ];
 
@@ -308,10 +308,10 @@ impl TableView for SessionsTable {
                     .fg(theme::CLAUDE_COLOR)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ),
-            Cell::from(texts[2].clone()).style(Style::default().fg(theme::TEXT)),
+            Cell::from(texts[2].clone()).style(Style::default().fg(theme::PATH_COLOR)),
             Cell::from(texts[3].clone()).style(Style::default().fg(theme::TEXT_DIM)),
-            Cell::from(texts[4].clone()).style(Style::default().fg(theme::ACCENT)),
-            Cell::from(texts[5].clone()).style(Style::default().fg(theme::STATUS_WAITING)),
+            Cell::from(texts[4].clone()).style(Style::default().fg(theme::COUNT_COLOR)),
+            Cell::from(texts[5].clone()).style(Style::default().fg(theme::BRANCH_COLOR)),
             Cell::from(texts[6].clone()).style(Style::default().fg(theme::ACCENT)),
         ]
     }

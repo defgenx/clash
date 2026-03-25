@@ -14,7 +14,7 @@ use crate::infrastructure::tui::layout::FrameLayout;
 use crate::infrastructure::tui::theme;
 use crate::infrastructure::tui::widgets::{
     busy_overlay, confirm_dialog, detail, help_overlay, input_bar, logo, picker_dialog, table,
-    terminal, toast,
+    terminal, toast, update_overlay,
 };
 
 /// Draw the clash UI.
@@ -99,6 +99,11 @@ pub fn draw(state: &AppState, frame: &mut Frame) {
     }
     if let Some(ref picker) = state.picker_dialog {
         picker_dialog::render_picker_dialog(picker, frame, frame.area());
+    }
+
+    // Update progress overlay — on top of everything except busy
+    if let Some(ref phase) = state.update_progress {
+        update_overlay::render_update_overlay(phase, state.tick, frame, frame.area());
     }
 
     // Busy overlay — drawn last, on top of everything, on any view

@@ -78,7 +78,7 @@ pub fn status_style(status: SessionStatus) -> Style {
         SessionStatus::Running => theme::STATUS_RUNNING,
         SessionStatus::Starting => theme::STATUS_STARTING,
         SessionStatus::Prompting => theme::STATUS_PROMPTING,
-        SessionStatus::Errored => ratatui::style::Color::Red,
+        SessionStatus::Errored => theme::ERROR_COLOR,
         SessionStatus::Idle => theme::STATUS_IDLE,
     };
     let base = Style::default().fg(color);

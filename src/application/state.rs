@@ -10,6 +10,17 @@ use crate::application::nav::NavigationStack;
 use crate::application::store::DataStore;
 use crate::domain::entities::{InboxMessage, Session};
 
+/// Phases of the self-update process (displayed in the update overlay).
+#[derive(Debug, Clone)]
+pub enum UpdatePhase {
+    Checking,
+    Downloading { version: String },
+    Extracting,
+    Installing,
+    Done { version: String },
+    Failed { message: String },
+}
+
 /// Serializable snapshot of UI state for persistence across restarts.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct UiSnapshot {
@@ -152,6 +163,8 @@ pub struct AppState {
     pub externally_opened: HashSet<String>,
     /// Debug mode flag — enables verbose logging.
     pub debug_mode: bool,
+    /// Self-update progress (shown as an overlay when active).
+    pub update_progress: Option<UpdatePhase>,
 }
 
 impl Default for AppState {
@@ -191,6 +204,7 @@ impl AppState {
             terminal_screen: None,
             externally_opened: HashSet::new(),
             debug_mode: false,
+            update_progress: None,
         }
     }
 

@@ -92,18 +92,17 @@ pub async fn attach_loop(
     set_title(&format!("clash │ {name}"));
 
     // ── Loading phase ───────────────────────────────────────────
-    // Show a spinner while buffering the full session history through a
-    // local vt100 parser. The daemon replays the complete PTY output so
-    // the terminal reaches the exact same state as if watching live.
-    // When output settles (200ms idle) or 4s elapses, paint the final
-    // screen state in one shot — clean transition from spinner to Claude.
-    let screen_snapshot = {
+    // Buffer raw history bytes from the daemon while showing a spinner.
+    // Once output settles (200ms idle) or 4s elapses, write the raw
+    // bytes directly to stdout so the terminal emulator builds its own
+    // scrollback buffer — scrolling up shows full session history.
+    let raw_history = {
         const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         const IDLE_MS: u64 = 200;
         const DEADLINE_MS: u64 = 4000;
         const TICK_MS: u64 = 80;
 
-        let mut parser = vt100::Parser::new(rows, cols, 0);
+        let mut history: Vec<u8> = Vec::new();
         let mut frame = 0usize;
         let mut got_output = false;
         let mut last_output = tokio::time::Instant::now();
@@ -125,7 +124,7 @@ pub async fn attach_loop(
                     match ev {
                         protocol::Event::Output { data, .. } => {
                             if let Ok(bytes) = protocol::decode_data(&data) {
-                                parser.process(&bytes);
+                                history.extend_from_slice(&bytes);
                             }
                             got_output = true;
                             last_output = tokio::time::Instant::now();
@@ -148,18 +147,15 @@ pub async fn attach_loop(
             }
         }
 
-        // Extract final screen state
-        let screen = parser.screen();
-        let mut snapshot = Vec::new();
-        snapshot.extend_from_slice(b"\x1b[2J\x1b[H");
-        snapshot.extend_from_slice(&screen.contents_formatted());
-        let (cur_row, cur_col) = screen.cursor_position();
-        snapshot.extend_from_slice(format!("\x1b[{};{}H", cur_row + 1, cur_col + 1).as_bytes());
-        snapshot
+        history
     };
 
-    // Paint the buffered screen — clean transition from spinner to Claude
-    write_stdout(&screen_snapshot);
+    // Replay raw history directly through the terminal emulator so its
+    // scrollback buffer captures the full session output.
+    write_stdout(b"\x1b[2J\x1b[H"); // clear loading screen
+    write_stdout(b"\x1b[?25l"); // hide cursor during replay
+    write_stdout(&raw_history); // full history → terminal scrollback
+    write_stdout(b"\x1b[?25h"); // show cursor
 
     // SIGWINCH for terminal resize detection
     let mut sigwinch =

@@ -1,5 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::Frame;
 
 use super::spinner;
@@ -17,8 +17,8 @@ pub fn render_busy_overlay(message: &str, tick: usize, frame: &mut Frame, area: 
             if let Some(cell) = buf.cell_mut((x, y)) {
                 cell.set_style(
                     Style::default()
-                        .fg(Color::DarkGray)
-                        .bg(Color::Rgb(10, 10, 16))
+                        .fg(crate::infrastructure::tui::theme::BUSY_FG)
+                        .bg(crate::infrastructure::tui::theme::BUSY_BG)
                         .remove_modifier(Modifier::BOLD | Modifier::ITALIC),
                 );
             }

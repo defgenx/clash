@@ -1,9 +1,10 @@
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::widgets::Cell;
 
 use crate::adapters::views::{ColumnDef, Keybinding, TableView};
 use crate::application::state::AppState;
 use crate::domain::entities::Team;
+use crate::infrastructure::tui::theme;
 
 pub struct TeamsTable;
 
@@ -44,14 +45,10 @@ impl TableView for TeamsTable {
         let texts = team_texts(item);
 
         vec![
-            Cell::from(texts[0].clone()).style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Cell::from(texts[1].clone()),
-            Cell::from(texts[2].clone()),
-            Cell::from(texts[3].clone()).style(Style::default().fg(Color::DarkGray)),
+            Cell::from(texts[0].clone()).style(theme::name_style()),
+            Cell::from(texts[1].clone()).style(Style::default().fg(theme::COUNT_COLOR)),
+            Cell::from(texts[2].clone()).style(Style::default().fg(theme::TEXT_DIM)),
+            Cell::from(texts[3].clone()).style(Style::default().fg(theme::DESCRIPTION_COLOR)),
         ]
     }
 

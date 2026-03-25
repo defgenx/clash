@@ -1,10 +1,11 @@
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Cell;
 
 use crate::adapters::format as fmt;
 use crate::adapters::views::{ColumnDef, Keybinding, TableView};
 use crate::application::state::AppState;
 use crate::domain::entities::Member;
+use crate::infrastructure::tui::theme;
 
 fn agent_texts(item: &Member) -> Vec<String> {
     let status = if item.is_active { "active" } else { "idle" };
@@ -55,24 +56,24 @@ impl TableView for AgentsTable {
     fn row(item: &Member, _tick: usize) -> Vec<Cell<'static>> {
         let texts = agent_texts(item);
         let status_color = if item.is_active {
-            Color::Green
+            theme::STATUS_RUNNING
         } else {
-            Color::DarkGray
+            theme::STATUS_IDLE
         };
 
         vec![
-            Cell::from(texts[0].clone()).style(
+            Cell::from(texts[0].clone()).style(theme::name_style()),
+            Cell::from(texts[1].clone()).style(Style::default().fg(theme::BRANCH_COLOR)),
+            Cell::from(texts[2].clone()).style(Style::default().fg(theme::TEXT_DIM)),
+            Cell::from(texts[3].clone()).style(Style::default().fg(theme::TEXT_DIM)),
+            Cell::from(texts[4].clone()).style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(status_color)
                     .add_modifier(Modifier::BOLD),
             ),
-            Cell::from(texts[1].clone()).style(Style::default().fg(Color::Yellow)),
-            Cell::from(texts[2].clone()),
-            Cell::from(texts[3].clone()),
-            Cell::from(texts[4].clone()).style(Style::default().fg(status_color)),
-            Cell::from(texts[5].clone()),
-            Cell::from(texts[6].clone()).style(Style::default().fg(Color::DarkGray)),
-            Cell::from(texts[7].clone()).style(Style::default().fg(Color::Cyan)),
+            Cell::from(texts[5].clone()).style(Style::default().fg(theme::TEXT_DIM)),
+            Cell::from(texts[6].clone()).style(Style::default().fg(theme::PATH_COLOR)),
+            Cell::from(texts[7].clone()).style(Style::default().fg(theme::ACCENT)),
         ]
     }
 

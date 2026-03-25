@@ -11,3 +11,4 @@ pub mod table;
 pub mod terminal;
 pub mod toast;
 pub mod tour;
+pub mod update_overlay;

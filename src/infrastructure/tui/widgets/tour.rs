@@ -1,5 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
@@ -251,11 +251,11 @@ pub fn render_tour(step_index: usize, frame: &mut Frame, area: Rect) {
         .title(format!(" {} ", step.title))
         .title_style(
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::DIALOG_TITLE)
                 .add_modifier(Modifier::BOLD),
         )
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(theme::DIALOG_BORDER))
         .style(Style::default().bg(theme::BG));
 
     let paragraph = Paragraph::new(lines)

@@ -32,6 +32,8 @@ pub enum Event {
     DaemonExited { session_id: String },
     /// Mouse event (scroll, click, etc.).
     Mouse(MouseEvent),
+    /// Self-update progress changed.
+    UpdateProgress(crate::application::state::UpdatePhase),
 }
 
 /// Multiplexes crossterm terminal events, daemon events, and a tick timer.
@@ -39,6 +41,7 @@ pub struct EventLoop {
     crossterm: EventStream,
     tick_rate: Duration,
     daemon_rx: Option<mpsc::UnboundedReceiver<crate::infrastructure::daemon::protocol::Event>>,
+    update_rx: Option<mpsc::UnboundedReceiver<crate::application::state::UpdatePhase>>,
     tick_sleep: std::pin::Pin<Box<Sleep>>,
 }
 
@@ -48,6 +51,7 @@ impl EventLoop {
             crossterm: EventStream::new(),
             tick_rate,
             daemon_rx: None,
+            update_rx: None,
             tick_sleep: Box::pin(tokio::time::sleep(tick_rate)),
         }
     }
@@ -58,6 +62,14 @@ impl EventLoop {
         rx: mpsc::UnboundedReceiver<crate::infrastructure::daemon::protocol::Event>,
     ) {
         self.daemon_rx = Some(rx);
+    }
+
+    /// Attach the self-update progress receiver.
+    pub fn set_update_rx(
+        &mut self,
+        rx: mpsc::UnboundedReceiver<crate::application::state::UpdatePhase>,
+    ) {
+        self.update_rx = Some(rx);
     }
 
     /// Take the daemon event receiver back (used when suspending the event loop for attach).
@@ -134,6 +146,17 @@ impl EventLoop {
                         }
                         _ => continue,
                     }
+                }
+
+                // Self-update progress
+                Some(phase) = async {
+                    match self.update_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    self.reset_tick();
+                    return Some(Event::UpdateProgress(phase));
                 }
 
                 // Tick

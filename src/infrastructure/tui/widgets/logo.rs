@@ -11,17 +11,17 @@ const TAGLINE: &str = "your agents aren't gonna manage themselves";
 
 /// Render the splash/landing page centered in the given area.
 pub fn render_logo(frame: &mut Frame, area: Rect) {
-    // BigText "clash" is 4 lines tall at HalfHeight pixel size
-    // Layout: big_text (4) + gap (1) + sparkle+tagline (1) + gap (2) + hints (4) + gap (1) + version (1) = 14
+    // Layout: big_text (4) + glow_line (1) + gap (1) + tagline (1) + gap (1) + hints (4) + gap (1) + version (1) = 14
     let content_height = 14u16;
     let top_pad = area.height.saturating_sub(content_height) / 2;
 
     let layout = Layout::vertical([
         Constraint::Length(top_pad),
         Constraint::Length(4), // big text
+        Constraint::Length(1), // glow underline
         Constraint::Length(1), // gap
         Constraint::Length(1), // tagline
-        Constraint::Length(2), // gap
+        Constraint::Length(1), // gap
         Constraint::Length(4), // hints
         Constraint::Length(1), // gap
         Constraint::Length(1), // version
@@ -29,12 +29,12 @@ pub fn render_logo(frame: &mut Frame, area: Rect) {
     ])
     .split(area);
 
-    // Big "clash" text using block characters
+    // Big "clash" text — uses the brighter logo-specific neon color
     let big = BigText::builder()
         .pixel_size(PixelSize::HalfHeight)
         .style(
             Style::default()
-                .fg(theme::ACCENT)
+                .fg(theme::LOGO_PRIMARY)
                 .add_modifier(Modifier::BOLD),
         )
         .lines(vec!["clash".into()])
@@ -43,18 +43,22 @@ pub fn render_logo(frame: &mut Frame, area: Rect) {
 
     frame.render_widget(big, layout[1]);
 
+    // Neon glow underline — gradient fade from dim edges to bright center sparkle
+    let glow = Paragraph::new(glow_line()).alignment(Alignment::Center);
+    frame.render_widget(glow, layout[2]);
+
     // Sparkle + tagline
     let tagline = Paragraph::new(Line::from(vec![
         Span::styled(
             "✦ ",
             Style::default()
-                .fg(theme::ACCENT)
+                .fg(theme::LOGO_ACCENT)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(TAGLINE, Style::default().fg(theme::TEXT_DIM)),
     ]))
     .alignment(Alignment::Center);
-    frame.render_widget(tagline, layout[3]);
+    frame.render_widget(tagline, layout[4]);
 
     // Hint blocks
     let hints: Vec<Line> = vec![
@@ -65,7 +69,7 @@ pub fn render_logo(frame: &mut Frame, area: Rect) {
     ];
 
     let hints_widget = Paragraph::new(hints).alignment(Alignment::Center);
-    frame.render_widget(hints_widget, layout[5]);
+    frame.render_widget(hints_widget, layout[6]);
 
     // Version
     let version = format!("v{}", env!("CARGO_PKG_VERSION"));
@@ -74,7 +78,24 @@ pub fn render_logo(frame: &mut Frame, area: Rect) {
         Style::default().fg(theme::MUTED),
     )))
     .alignment(Alignment::Center);
-    frame.render_widget(version_widget, layout[7]);
+    frame.render_widget(version_widget, layout[8]);
+}
+
+/// Build the neon glow underline with gradient: dim → bright → sparkle → bright → dim
+fn glow_line() -> Line<'static> {
+    let dim = Style::default().fg(theme::LOGO_GLOW);
+    let bright = Style::default().fg(theme::LOGO_PRIMARY);
+    let spark = Style::default()
+        .fg(theme::LOGO_ACCENT)
+        .add_modifier(Modifier::BOLD);
+
+    Line::from(vec![
+        Span::styled("──────", dim),
+        Span::styled("──────", bright),
+        Span::styled(" ✦ ", spark),
+        Span::styled("──────", bright),
+        Span::styled("──────", dim),
+    ])
 }
 
 /// Build a hint line with two key-description pairs.

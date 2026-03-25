@@ -139,8 +139,7 @@ impl PtySession {
             vt100::Parser::new(screen_rows, screen_cols, 0),
         ));
 
-        let history: Arc<std::sync::Mutex<Vec<u8>>> =
-            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let history: Arc<std::sync::Mutex<Vec<u8>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
 
         // Output reader thread: master_fd → broadcast channel + screen mirror + history
         let tx = output_tx.clone();
@@ -277,7 +276,11 @@ impl PtySession {
     /// actual PTY byte stream, letting the terminal reconstruct the exact state
     /// including any internal alternate-screen content.
     pub fn output_history(&self) -> Vec<u8> {
-        self.history.lock().ok().map(|h| h.clone()).unwrap_or_default()
+        self.history
+            .lock()
+            .ok()
+            .map(|h| h.clone())
+            .unwrap_or_default()
     }
 
     /// Detect session status by analyzing the vt100 screen content.

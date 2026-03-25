@@ -4,16 +4,17 @@ use ratatui::widgets::Cell;
 use crate::adapters::views::{ColumnDef, Keybinding, TableView};
 use crate::application::state::AppState;
 use crate::domain::entities::{Task, TaskStatus};
+use crate::infrastructure::tui::theme;
 
 pub struct TasksTable;
 
 fn status_color(status: &TaskStatus) -> Color {
     match status {
-        TaskStatus::Completed => Color::Green,
-        TaskStatus::InProgress => Color::Yellow,
-        TaskStatus::Blocked => Color::Red,
-        TaskStatus::Pending => Color::DarkGray,
-        TaskStatus::Unknown => Color::Magenta,
+        TaskStatus::Completed => theme::TASK_COMPLETED,
+        TaskStatus::InProgress => theme::TASK_IN_PROGRESS,
+        TaskStatus::Blocked => theme::TASK_BLOCKED,
+        TaskStatus::Pending => theme::TASK_PENDING,
+        TaskStatus::Unknown => theme::TASK_UNKNOWN,
     }
 }
 

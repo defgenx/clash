@@ -1,10 +1,11 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::application::state::InputMode;
+use crate::infrastructure::tui::theme;
 
 pub fn render_input_bar(
     mode: &InputMode,
@@ -14,13 +15,13 @@ pub fn render_input_bar(
     area: Rect,
 ) {
     let (prefix, style) = match mode {
-        InputMode::Command => (":", Style::default().fg(Color::Yellow)),
-        InputMode::Filter => ("/", Style::default().fg(Color::Green)),
-        InputMode::NewSession => ("New session in: ", Style::default().fg(Color::Cyan)),
-        InputMode::NewSessionName => ("Session name: ", Style::default().fg(Color::Cyan)),
+        InputMode::Command => (":", Style::default().fg(theme::COMMAND_COLOR)),
+        InputMode::Filter => ("/", Style::default().fg(theme::FILTER_COLOR)),
+        InputMode::NewSession => ("New session in: ", Style::default().fg(theme::PROMPT_COLOR)),
+        InputMode::NewSessionName => ("Session name: ", Style::default().fg(theme::PROMPT_COLOR)),
         InputMode::NewSessionWorktree => (
             "Start in worktree? (y/n): ",
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(theme::PROMPT_COLOR),
         ),
         _ => return,
     };

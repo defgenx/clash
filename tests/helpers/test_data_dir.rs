@@ -31,7 +31,8 @@ impl TestDataDir {
         }
     }
 
-    /// Create an empty test data dir.
+    /// Create an empty test data dir (no fixtures).
+    #[allow(dead_code)]
     pub fn empty() -> Self {
         let temp = TempDir::new().expect("Failed to create temp dir");
         Self {
