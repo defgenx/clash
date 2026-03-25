@@ -170,19 +170,32 @@ async fn main() -> Result<()> {
 /// - Raw mode + alternate screen (via ratatui::restore)
 fn restore_terminal() {
     use std::io::Write;
+    // Reset terminal modes while still on the alternate screen
     let _ = std::io::stdout().write_all(
         concat!(
-            "\x1b[?6l",      // Disable origin mode
-            "\x1b[r",        // Reset scroll region to full terminal
-            "\x1b[?1000l",   // Disable mouse button tracking
-            "\x1b[?1006l",   // Disable SGR mouse mode
-            "\x1b[<u",       // Pop Kitty keyboard protocol (if active)
-            "\x1b[2J\x1b[H", // Clear screen + cursor home
+            "\x1b[?6l",    // Disable origin mode
+            "\x1b[r",      // Reset scroll region to full terminal
+            "\x1b[?1000l", // Disable mouse button tracking
+            "\x1b[?1006l", // Disable SGR mouse mode
+            "\x1b[<u",     // Pop Kitty keyboard protocol (if active)
         )
         .as_bytes(),
     );
     let _ = std::io::stdout().flush();
+
+    // Leave alternate screen + disable raw mode
     ratatui::restore();
+
+    // Clear the main screen so attach session output doesn't linger
+    let _ = std::io::stdout().write_all(
+        concat!(
+            "\x1b[2J\x1b[H", // Clear screen + cursor home
+            "\x1b[?25h",      // Show cursor (ratatui may have hidden it)
+            "\x1b[0m",        // Reset text attributes
+        )
+        .as_bytes(),
+    );
+    let _ = std::io::stdout().flush();
 }
 
 /// Run the CLI update command.
