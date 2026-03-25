@@ -78,32 +78,8 @@ impl PtySession {
 
         let mut cmd = Command::new(bin);
 
-        // Whitelist safe environment variables
-        cmd.env_clear();
-        for key in &[
-            "PATH",
-            "HOME",
-            "USER",
-            "SHELL",
-            "TERM",
-            "LANG",
-            "LC_ALL",
-            "LC_CTYPE",
-            "TMPDIR",
-            "XDG_CONFIG_HOME",
-            "XDG_DATA_HOME",
-            "SSH_AUTH_SOCK",
-            "ANTHROPIC_API_KEY",
-            "DISPLAY",
-            "COLORTERM",
-            "TERM_PROGRAM",
-        ] {
-            if let Ok(val) = std::env::var(key) {
-                cmd.env(key, val);
-            }
-        }
-
-        // Additional env vars from repo config
+        // Inherit parent environment (includes Vertex, Bedrock, and other cloud provider vars).
+        // Additional env vars from repo config override on top.
         for (key, val) in env_vars {
             cmd.env(key, val);
         }

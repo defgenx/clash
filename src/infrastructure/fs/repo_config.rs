@@ -121,7 +121,6 @@ pub fn load_repo_config(cwd: &Path) -> RepoConfig {
 // ── Trust / Consent Mechanism ───────────────────────────────────────
 
 /// Environment variable keys that must never be overridden by repo config.
-/// Matches the PTY whitelist in `daemon/session.rs`.
 #[allow(dead_code)]
 const BLOCKED_ENV_KEYS: &[&str] = &[
     "PATH",
