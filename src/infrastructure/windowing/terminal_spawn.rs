@@ -237,14 +237,26 @@ fn spawn_pane(
     strategy: &SpawnStrategy,
     axis: SplitAxis,
 ) -> eyre::Result<()> {
+    spawn_pane_cmd(binary, &["attach", session_id], strategy, axis)
+}
+
+/// Spawn an arbitrary command in a split pane with the given axis.
+fn spawn_pane_cmd(
+    command: &str,
+    args: &[&str],
+    strategy: &SpawnStrategy,
+    axis: SplitAxis,
+) -> eyre::Result<()> {
     match strategy {
         SpawnStrategy::Tmux => {
             let flag = match axis {
                 SplitAxis::Horizontal => "-h",
                 SplitAxis::Vertical => "-v",
             };
+            let mut cmd_args = vec!["split-window", flag, command];
+            cmd_args.extend(args);
             Command::new("tmux")
-                .args(["split-window", flag, binary, "attach", session_id])
+                .args(&cmd_args)
                 .spawn()
                 .wrap_err("Failed to open tmux pane")?;
         }
@@ -253,15 +265,22 @@ fn spawn_pane(
                 SplitAxis::Horizontal => "horizontally",
                 SplitAxis::Vertical => "vertically",
             };
+            let args_str = std::iter::once(format!("(quoted form of \"{}\")", command))
+                .chain(
+                    args.iter()
+                        .map(|a| format!("& \" \" & (quoted form of \"{}\")", a)),
+                )
+                .collect::<Vec<_>>()
+                .join(" ");
             let script = format!(
                 concat!(
                     r#"tell application "iTerm2""#,
                     "\n  tell current session of current window",
-                    "\n    split {} with default profile command (quoted form of \"{}\") & \" attach \" & (quoted form of \"{}\")",
+                    "\n    split {} with default profile command {}",
                     "\n  end tell",
                     "\nend tell",
                 ),
-                direction, binary, session_id,
+                direction, args_str,
             );
             Command::new("osascript")
                 .args(["-e", &script])
@@ -273,23 +292,18 @@ fn spawn_pane(
                 SplitAxis::Horizontal => "--right",
                 SplitAxis::Vertical => "--bottom",
             };
+            let mut cmd_args = vec!["cli", "split-pane", side, "--", command];
+            cmd_args.extend(args);
             Command::new("wezterm")
-                .args([
-                    "cli",
-                    "split-pane",
-                    side,
-                    "--",
-                    binary,
-                    "attach",
-                    session_id,
-                ])
+                .args(&cmd_args)
                 .spawn()
                 .wrap_err("Failed to open WezTerm pane")?;
         }
         SpawnStrategy::Kitty => {
-            // Kitty doesn't distinguish split axis — uses OS-level window split
+            let mut cmd_args = vec!["@", "launch", "--type=window", command];
+            cmd_args.extend(args);
             Command::new("kitty")
-                .args(["@", "launch", "--type=window", binary, "attach", session_id])
+                .args(&cmd_args)
                 .spawn()
                 .wrap_err("Failed to open Kitty pane")?;
         }
@@ -306,16 +320,29 @@ fn spawn_pane(
 /// Spawn a session in a new tab (or window for terminals without tab support).
 /// Returns the mode used (Tab or Window).
 fn spawn_tab(binary: &str, session_id: &str, strategy: &SpawnStrategy) -> eyre::Result<OpenMode> {
+    spawn_tab_cmd(binary, &["attach", session_id], strategy)
+}
+
+/// Spawn an arbitrary command in a new tab (or window).
+/// Returns the mode used (Tab or Window).
+fn spawn_tab_cmd(command: &str, args: &[&str], strategy: &SpawnStrategy) -> eyre::Result<OpenMode> {
     match strategy {
         SpawnStrategy::AppleTerminal => {
+            let args_str = std::iter::once(format!("(quoted form of \"{}\")", command))
+                .chain(
+                    args.iter()
+                        .map(|a| format!("& \" \" & (quoted form of \"{}\")", a)),
+                )
+                .collect::<Vec<_>>()
+                .join(" ");
             let script = format!(
                 concat!(
                     r#"tell application "Terminal""#,
                     "\n  activate",
-                    "\n  do script (quoted form of \"{}\") & \" attach \" & (quoted form of \"{}\") in front window",
+                    "\n  do script {} in front window",
                     "\nend tell",
                 ),
-                binary, session_id,
+                args_str,
             );
             Command::new("osascript")
                 .args(["-e", &script])
@@ -324,15 +351,22 @@ fn spawn_tab(binary: &str, session_id: &str, strategy: &SpawnStrategy) -> eyre::
             Ok(OpenMode::Tab)
         }
         SpawnStrategy::ITerm => {
+            let args_str = std::iter::once(format!("(quoted form of \"{}\")", command))
+                .chain(
+                    args.iter()
+                        .map(|a| format!("& \" \" & (quoted form of \"{}\")", a)),
+                )
+                .collect::<Vec<_>>()
+                .join(" ");
             let script = format!(
                 concat!(
                     r#"tell application "iTerm2""#,
                     "\n  tell current window",
-                    "\n    create tab with default profile command (quoted form of \"{}\") & \" attach \" & (quoted form of \"{}\")",
+                    "\n    create tab with default profile command {}",
                     "\n  end tell",
                     "\nend tell",
                 ),
-                binary, session_id,
+                args_str,
             );
             Command::new("osascript")
                 .args(["-e", &script])
@@ -341,36 +375,46 @@ fn spawn_tab(binary: &str, session_id: &str, strategy: &SpawnStrategy) -> eyre::
             Ok(OpenMode::Tab)
         }
         SpawnStrategy::Ghostty => {
+            let mut cmd_args = vec!["-e", command];
+            cmd_args.extend(args);
             Command::new("ghostty")
-                .args(["-e", binary, "attach", session_id])
+                .args(&cmd_args)
                 .spawn()
                 .wrap_err("Failed to open Ghostty window")?;
             Ok(OpenMode::Window)
         }
         SpawnStrategy::WezTerm => {
+            let mut cmd_args = vec!["cli", "spawn", "--", command];
+            cmd_args.extend(args);
             Command::new("wezterm")
-                .args(["cli", "spawn", "--", binary, "attach", session_id])
+                .args(&cmd_args)
                 .spawn()
                 .wrap_err("Failed to open WezTerm tab")?;
             Ok(OpenMode::Tab)
         }
         SpawnStrategy::Alacritty => {
+            let mut cmd_args = vec!["-e", command];
+            cmd_args.extend(args);
             Command::new("alacritty")
-                .args(["-e", binary, "attach", session_id])
+                .args(&cmd_args)
                 .spawn()
                 .wrap_err("Failed to open Alacritty window")?;
             Ok(OpenMode::Window)
         }
         SpawnStrategy::Kitty => {
+            let mut cmd_args = vec!["@", "launch", "--type=tab", command];
+            cmd_args.extend(args);
             Command::new("kitty")
-                .args(["@", "launch", "--type=tab", binary, "attach", session_id])
+                .args(&cmd_args)
                 .spawn()
                 .wrap_err("Failed to open Kitty tab")?;
             Ok(OpenMode::Tab)
         }
         SpawnStrategy::Tmux => {
+            let mut cmd_args = vec!["new-window", command];
+            cmd_args.extend(args);
             Command::new("tmux")
-                .args(["new-window", binary, "attach", session_id])
+                .args(&cmd_args)
                 .spawn()
                 .wrap_err("Failed to open tmux window")?;
             Ok(OpenMode::Tab)
@@ -378,33 +422,62 @@ fn spawn_tab(binary: &str, session_id: &str, strategy: &SpawnStrategy) -> eyre::
         SpawnStrategy::Fallback => {
             #[cfg(target_os = "macos")]
             {
+                let mut cmd_args = vec!["-a", "Terminal", command, "--args"];
+                cmd_args.extend(args);
                 Command::new("open")
-                    .args(["-a", "Terminal", binary, "--args", "attach", session_id])
+                    .args(&cmd_args)
                     .spawn()
                     .wrap_err("Failed to open terminal window")?;
             }
             #[cfg(target_os = "linux")]
             {
-                let result = Command::new("x-terminal-emulator")
-                    .args(["-e", binary, "attach", session_id])
-                    .spawn();
+                let mut cmd_args = vec!["-e", command];
+                cmd_args.extend(args);
+                let result = Command::new("x-terminal-emulator").args(&cmd_args).spawn();
                 if result.is_err() {
                     Command::new("xterm")
-                        .args(["-e", binary, "attach", session_id])
+                        .args(&cmd_args)
                         .spawn()
                         .wrap_err("Failed to open terminal (tried x-terminal-emulator, xterm)")?;
                 }
             }
             #[cfg(not(any(target_os = "macos", target_os = "linux")))]
             {
-                Command::new(binary)
-                    .args(["attach", session_id])
+                Command::new(command)
+                    .args(args)
                     .spawn()
-                    .wrap_err("Failed to spawn attach process")?;
+                    .wrap_err("Failed to spawn process")?;
             }
             Ok(OpenMode::Window)
         }
     }
+}
+
+/// Open an arbitrary command in a new pane/tab/window.
+/// Used by the IDE feature for terminal editors (nvim, vim).
+pub fn open_command(
+    command: &str,
+    args: &[&str],
+    term_program: Option<&str>,
+    in_tmux: bool,
+    cols: u16,
+    rows: u16,
+) -> eyre::Result<OpenMode> {
+    let strategy = detect_strategy(term_program, in_tmux);
+
+    if strategy_supports_panes(&strategy) {
+        let max_h = max_panes(cols);
+        let max_v = max_vertical_panes(rows);
+        if max_h >= 1 {
+            spawn_pane_cmd(command, args, &strategy, SplitAxis::Horizontal)?;
+            return Ok(OpenMode::Pane);
+        } else if max_v >= 1 {
+            spawn_pane_cmd(command, args, &strategy, SplitAxis::Vertical)?;
+            return Ok(OpenMode::Pane);
+        }
+    }
+
+    spawn_tab_cmd(command, args, &strategy)
 }
 
 // ── Tests ────────────────────────────────────────────────────────

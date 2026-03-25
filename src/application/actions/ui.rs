@@ -38,6 +38,16 @@ pub enum UiAction {
     Quit,
     /// Actually quit (after confirmation).
     QuitConfirmed,
+    /// Show a picker dialog.
+    ShowPicker {
+        title: String,
+        items: Vec<crate::application::state::PickerItem>,
+        on_select: crate::application::state::PickerAction,
+    },
+    PickerUp,
+    PickerDown,
+    PickerSelect,
+    PickerCancel,
     /// Tick event — advances animation frame counter, clears stale toasts.
     Tick,
 }

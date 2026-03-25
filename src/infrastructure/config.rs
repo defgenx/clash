@@ -2,6 +2,16 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdeEntry {
+    pub command: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub terminal: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_claude_bin")]
     pub claude_bin: String,
@@ -11,6 +21,8 @@ pub struct Config {
     pub tick_rate_ms: u64,
     #[serde(default = "default_debounce_ms")]
     pub debounce_ms: u64,
+    #[serde(default)]
+    pub ides: Vec<IdeEntry>,
 }
 
 fn default_claude_bin() -> String {
@@ -30,6 +42,7 @@ impl Default for Config {
             claude_dir: None,
             tick_rate_ms: default_tick_rate(),
             debounce_ms: default_debounce_ms(),
+            ides: Vec::new(),
         }
     }
 }

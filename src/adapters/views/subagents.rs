@@ -97,6 +97,7 @@ impl TableView for SubagentsTable {
         vec![
             Keybinding::new("Enter", "View subagent details"),
             Keybinding::new("a", "Attach to parent session"),
+            Keybinding::new("e", "Open in IDE"),
             Keybinding::new("o", "Open in new window"),
         ]
     }

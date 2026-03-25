@@ -124,6 +124,18 @@ pub enum Effect {
         session_ids: Vec<String>,
     },
 
+    // ── IDE effects ────────────────────────────────────────────
+    /// Detect available IDEs for the given project directory.
+    DetectIdes {
+        project_dir: String,
+    },
+    /// Open a project directory in an IDE.
+    OpenIde {
+        command: String,
+        project_dir: String,
+        terminal: bool,
+    },
+
     // ── UI state effects ────────────────────────────────────────
     ShowSpinner(String),
     PerformUpdate,

@@ -67,6 +67,32 @@ pub enum InputMode {
     NewSessionWorktree,
     /// Attached to a daemon PTY session — keystrokes go to the session.
     Attached,
+    /// Picker dialog is open — j/k navigate, Enter selects, Esc cancels.
+    Picker,
+}
+
+/// A generic picker dialog — list of items with a callback action.
+#[derive(Debug, Clone)]
+pub struct PickerDialog {
+    pub title: String,
+    pub items: Vec<PickerItem>,
+    pub selected: usize,
+    pub on_select_action: PickerAction,
+}
+
+/// An item in a picker dialog.
+#[derive(Debug, Clone)]
+pub struct PickerItem {
+    pub label: String,
+    pub description: String,
+    /// Opaque value — e.g. `"code"` or `"terminal:nvim"`.
+    pub value: String,
+}
+
+/// What happens when a picker item is selected.
+#[derive(Debug, Clone)]
+pub enum PickerAction {
+    OpenInIde { project_dir: String },
 }
 
 /// Table selection state.
@@ -103,6 +129,7 @@ pub struct AppState {
     pub spinner: Option<String>,
     pub toast: Option<String>,
     pub confirm_dialog: Option<ConfirmDialog>,
+    pub picker_dialog: Option<PickerDialog>,
     pub tick: usize,
     pub inbox_messages: Vec<InboxMessage>,
     pub session_filter: SessionFilter,
@@ -149,6 +176,7 @@ impl AppState {
             spinner: None,
             toast: None,
             confirm_dialog: None,
+            picker_dialog: None,
             tick: 0,
             inbox_messages: Vec::new(),
             session_filter: SessionFilter::Active,

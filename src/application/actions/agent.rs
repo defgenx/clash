@@ -37,4 +37,8 @@ pub enum AgentAction {
     },
     /// Open ALL running sessions in new terminal windows.
     AttachAllNewWindows,
+    /// Open a session's project directory in an IDE.
+    OpenInIde {
+        session_id: String,
+    },
 }

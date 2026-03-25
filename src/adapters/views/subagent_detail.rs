@@ -73,6 +73,7 @@ impl DetailView for SubagentDetailView {
     fn context_keybindings() -> Vec<Keybinding> {
         vec![
             Keybinding::new("a", "Attach to parent session"),
+            Keybinding::new("e", "Open in IDE"),
             Keybinding::new("Esc", "Go back"),
         ]
     }

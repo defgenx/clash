@@ -26,6 +26,7 @@
 - **Repo config discovery** — auto-detects MCP servers, custom commands, agent definitions, and setup scripts from the project directory
 - **Teams & tasks** — create, view, and delete teams; organize agents, manage tasks, send messages
 - **Subagent tracking** — view subagent trees per session, expand/collapse in the sessions table
+- **Open in IDE** — press `e` to open a session's project in your editor (auto-detects Cursor, VS Code, Zed, JetBrains, nvim, vim; configurable)
 - **Keyboard-driven** — vim-style navigation, command mode (`:`), fuzzy filter (`/`), context help (`?`)
 - **UI state persistence** — restores navigation, selection, filters, and expanded sessions on restart
 - **Single-instance lock** — prevents multiple clash instances from running simultaneously
@@ -113,6 +114,7 @@ clash detects session status through three layers (in priority order):
 | Key | Action |
 |-----|--------|
 | `a` | Attach (inline terminal) |
+| `e` | Open project in IDE (auto-detect + picker) |
 | `o` | Open in new pane / tab / window |
 | `O` | Open ALL running sessions (smart layout) |
 | `c` / `n` | New session (two-step: directory, then name) |
@@ -147,6 +149,7 @@ clash detects session status through three layers (in priority order):
 | `t` | Linked team |
 | `m` | Team members |
 | `a` | Attach |
+| `e` | Open in IDE |
 | `d` | Drop |
 
 ### Team Detail

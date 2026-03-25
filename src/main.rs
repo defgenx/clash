@@ -150,7 +150,7 @@ async fn main() -> Result<()> {
         std::io::stdout().write_all(b"\x1b[?1000h\x1b[?1006h")?;
         std::io::stdout().flush()?;
     }
-    let mut app = infrastructure::app::App::new(data_dir, args.claude_bin, args.debug);
+    let mut app = infrastructure::app::App::new(data_dir, args.claude_bin, args.debug, config);
     let result = app.run(&mut terminal).await;
     restore_terminal();
 

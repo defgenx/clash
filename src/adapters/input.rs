@@ -24,6 +24,7 @@ pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
         | InputMode::NewSessionName
         | InputMode::NewSessionWorktree => handle_input_mode(key),
         InputMode::Confirm => handle_confirm_mode(key, state),
+        InputMode::Picker => handle_picker_mode(key),
         InputMode::Attached => Action::Noop,
     }
 }
@@ -105,6 +106,7 @@ fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
         KeyCode::Char('m') => handle_message(state),
         KeyCode::Char('t') => handle_t_key(state),
         KeyCode::Char('n') => handle_new_session(state),
+        KeyCode::Char('e') => handle_open_in_ide(state),
         KeyCode::Char('o') => handle_attach_new_window(state),
         KeyCode::Char('O') => handle_attach_all_new_windows(state),
         KeyCode::Char('w') => handle_worktree(state),
@@ -130,6 +132,16 @@ fn handle_confirm_mode(key: KeyEvent, _state: &AppState) -> Action {
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => Action::Ui(UiAction::ConfirmYes),
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::Ui(UiAction::ConfirmNo),
+        _ => Action::Noop,
+    }
+}
+
+fn handle_picker_mode(key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Action::Ui(UiAction::PickerDown),
+        KeyCode::Char('k') | KeyCode::Up => Action::Ui(UiAction::PickerUp),
+        KeyCode::Enter => Action::Ui(UiAction::PickerSelect),
+        KeyCode::Esc => Action::Ui(UiAction::PickerCancel),
         _ => Action::Noop,
     }
 }
@@ -304,11 +316,18 @@ fn handle_attach_or_assign(state: &AppState) -> Action {
     }
 }
 
+fn handle_open_in_ide(state: &AppState) -> Action {
+    if let Some(session_id) = resolve_session_id(state) {
+        return Action::Agent(AgentAction::OpenInIde { session_id });
+    }
+    Action::Ui(UiAction::Toast("No session selected".to_string()))
+}
+
 fn handle_attach_new_window(state: &AppState) -> Action {
     if let Some(session_id) = resolve_session_id(state) {
         return Action::Agent(AgentAction::AttachNewWindow { session_id });
     }
-    Action::Noop
+    Action::Ui(UiAction::Toast("No session selected".to_string()))
 }
 
 fn handle_attach_all_new_windows(state: &AppState) -> Action {
@@ -678,17 +697,6 @@ mod tests {
     }
 
     #[test]
-    fn test_o_key_on_teams_view_is_noop() {
-        let mut state = AppState::new();
-        state.nav.push(ViewKind::Teams, None);
-        let key = KeyEvent::new(KeyCode::Char('o'), crossterm::event::KeyModifiers::NONE);
-        match handle_key(key, &state) {
-            Action::Noop => {}
-            other => panic!("Expected Noop on Teams view, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn test_shift_o_on_sessions_shows_confirm() {
         let mut state = AppState::new();
         state.store.sessions = vec![crate::domain::entities::Session {
@@ -766,6 +774,81 @@ mod tests {
                 assert_eq!(context, "my-team");
             }
             other => panic!("Expected DrillIn to TeamDetail, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_e_key_sessions_view() {
+        let mut state = AppState::new();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "s1".to_string(),
+            is_running: true,
+            ..Default::default()
+        }];
+        state.table_state.selected = 0;
+        let key = KeyEvent::new(KeyCode::Char('e'), crossterm::event::KeyModifiers::NONE);
+        match handle_key(key, &state) {
+            Action::Agent(AgentAction::OpenInIde { session_id }) => {
+                assert_eq!(session_id, "s1");
+            }
+            other => panic!("Expected OpenInIde, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_e_key_non_session_view_toasts() {
+        let mut state = AppState::new();
+        state
+            .nav
+            .push(crate::adapters::views::ViewKind::Teams, None);
+        let key = KeyEvent::new(KeyCode::Char('e'), crossterm::event::KeyModifiers::NONE);
+        match handle_key(key, &state) {
+            Action::Ui(UiAction::Toast(msg)) => {
+                assert!(msg.contains("No session selected"));
+            }
+            other => panic!("Expected Toast, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_picker_mode_keys() {
+        let key_j = KeyEvent::new(KeyCode::Char('j'), crossterm::event::KeyModifiers::NONE);
+        match handle_picker_mode(key_j) {
+            Action::Ui(UiAction::PickerDown) => {}
+            other => panic!("Expected PickerDown, got {:?}", other),
+        }
+
+        let key_k = KeyEvent::new(KeyCode::Char('k'), crossterm::event::KeyModifiers::NONE);
+        match handle_picker_mode(key_k) {
+            Action::Ui(UiAction::PickerUp) => {}
+            other => panic!("Expected PickerUp, got {:?}", other),
+        }
+
+        let key_enter = KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
+        match handle_picker_mode(key_enter) {
+            Action::Ui(UiAction::PickerSelect) => {}
+            other => panic!("Expected PickerSelect, got {:?}", other),
+        }
+
+        let key_esc = KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE);
+        match handle_picker_mode(key_esc) {
+            Action::Ui(UiAction::PickerCancel) => {}
+            other => panic!("Expected PickerCancel, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_o_key_on_teams_view_toasts() {
+        let mut state = AppState::new();
+        state
+            .nav
+            .push(crate::adapters::views::ViewKind::Teams, None);
+        let key = KeyEvent::new(KeyCode::Char('o'), crossterm::event::KeyModifiers::NONE);
+        match handle_key(key, &state) {
+            Action::Ui(UiAction::Toast(msg)) => {
+                assert!(msg.contains("No session selected"));
+            }
+            other => panic!("Expected Toast, got {:?}", other),
         }
     }
 

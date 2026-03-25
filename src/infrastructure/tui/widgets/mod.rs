@@ -5,6 +5,7 @@ pub mod detail;
 pub mod help_overlay;
 pub mod input_bar;
 pub mod logo;
+pub mod picker_dialog;
 pub mod spinner;
 pub mod table;
 pub mod terminal;

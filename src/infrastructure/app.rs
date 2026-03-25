@@ -30,13 +30,19 @@ pub struct App {
     state: AppState,
     backend: FsBackend,
     cli_runner: RealCliRunner,
+    config: crate::infrastructure::config::Config,
     _watcher: Option<FsWatcher>,
     fs_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Vec<PathBuf>>>,
     daemon: DaemonClient,
 }
 
 impl App {
-    pub fn new(data_dir: PathBuf, claude_bin: String, debug: bool) -> Self {
+    pub fn new(
+        data_dir: PathBuf,
+        claude_bin: String,
+        debug: bool,
+        config: crate::infrastructure::config::Config,
+    ) -> Self {
         let backend = FsBackend::new(data_dir.clone());
         let cli_runner = RealCliRunner::with_bin(claude_bin);
 
@@ -87,6 +93,7 @@ impl App {
             state,
             backend,
             cli_runner,
+            config,
             _watcher: watcher,
             fs_event_rx: Some(fs_rx),
             daemon,
@@ -1507,6 +1514,71 @@ impl App {
                         if let Ok(infos) = self.daemon.list_sessions().await {
                             for info in infos {
                                 let _ = self.daemon.kill_session(&info.session_id).await;
+                            }
+                        }
+                    }
+                }
+
+                // ── IDE effects ────────────────────────────────
+                Effect::DetectIdes { project_dir } => {
+                    tracing::debug!("DetectIdes effect: project_dir={}", project_dir);
+                    let items = crate::infrastructure::ide::detect_ides(&self.config.ides);
+                    tracing::debug!("DetectIdes: found {} IDEs", items.len());
+                    if items.is_empty() {
+                        self.state.toast = Some("No IDEs detected".to_string());
+                    } else {
+                        let follow_up_effects = reducer::reduce(
+                            &mut self.state,
+                            Action::Ui(crate::application::actions::UiAction::ShowPicker {
+                                title: "Open in IDE".to_string(),
+                                items,
+                                on_select: crate::application::state::PickerAction::OpenInIde {
+                                    project_dir,
+                                },
+                            }),
+                        );
+                        for (i, e) in follow_up_effects.into_iter().enumerate() {
+                            queue.insert(i, e);
+                        }
+                    }
+                }
+                Effect::OpenIde {
+                    command,
+                    project_dir,
+                    terminal,
+                } => {
+                    if terminal {
+                        let term = std::env::var("TERM_PROGRAM").ok();
+                        let in_tmux = std::env::var("TMUX").is_ok();
+                        let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
+                        match crate::infrastructure::windowing::terminal_spawn::open_command(
+                            &command,
+                            &[&project_dir],
+                            term.as_deref(),
+                            in_tmux,
+                            cols,
+                            rows,
+                        ) {
+                            Ok(mode) => {
+                                let label = match mode {
+                                    crate::infrastructure::windowing::terminal_spawn::OpenMode::Pane => "pane",
+                                    crate::infrastructure::windowing::terminal_spawn::OpenMode::Tab => "tab",
+                                    crate::infrastructure::windowing::terminal_spawn::OpenMode::Window => "window",
+                                };
+                                self.state.toast =
+                                    Some(format!("Opened {} in new {}", command, label));
+                            }
+                            Err(e) => {
+                                self.state.toast = Some(format!("Failed: {}", e));
+                            }
+                        }
+                    } else {
+                        match crate::infrastructure::ide::open_ide(&command, &project_dir) {
+                            Ok(()) => {
+                                // Toast already set by reducer
+                            }
+                            Err(e) => {
+                                self.state.toast = Some(e);
                             }
                         }
                     }

@@ -13,7 +13,8 @@ use crate::application::state::{AppState, InputMode};
 use crate::infrastructure::tui::layout::FrameLayout;
 use crate::infrastructure::tui::theme;
 use crate::infrastructure::tui::widgets::{
-    busy_overlay, confirm_dialog, detail, help_overlay, input_bar, logo, table, terminal, toast,
+    busy_overlay, confirm_dialog, detail, help_overlay, input_bar, logo, picker_dialog, table,
+    terminal, toast,
 };
 
 /// Draw the clash UI.
@@ -95,6 +96,9 @@ pub fn draw(state: &AppState, frame: &mut Frame) {
     }
     if let Some(ref dialog) = state.confirm_dialog {
         confirm_dialog::render_confirm_dialog(&dialog.message, frame, frame.area());
+    }
+    if let Some(ref picker) = state.picker_dialog {
+        picker_dialog::render_picker_dialog(picker, frame, frame.area());
     }
 
     // Busy overlay — drawn last, on top of everything, on any view
@@ -311,6 +315,7 @@ fn draw_help(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect) {
         Keybinding::new("Esc", "Go back"),
         Keybinding::new("a", "Attach to session (inline)"),
         Keybinding::new("o", "Open in new pane/tab"),
+        Keybinding::new("e", "Open in IDE"),
         Keybinding::new("O", "Open ALL running sessions"),
         Keybinding::new("w", "Open in git worktree"),
         Keybinding::new(":", "Command mode"),

@@ -396,6 +396,30 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 name: session_name,
             }]
         }
+        AgentAction::OpenInIde { session_id } => {
+            let session = state.store.find_session(&session_id).cloned();
+            match session {
+                Some(s) => {
+                    let project_dir = s
+                        .cwd
+                        .as_deref()
+                        .filter(|c| !c.is_empty())
+                        .or(Some(s.project_path.as_str()).filter(|p| !p.is_empty()))
+                        .unwrap_or("")
+                        .to_string();
+                    if project_dir.is_empty() {
+                        state.toast = Some("No project directory for this session".to_string());
+                        vec![]
+                    } else {
+                        vec![Effect::DetectIdes { project_dir }]
+                    }
+                }
+                None => {
+                    state.toast = Some("Session not found".to_string());
+                    vec![]
+                }
+            }
+        }
         AgentAction::AttachNewWindow { session_id } => {
             if state.externally_opened.contains(&session_id) {
                 state.toast = Some("Session already open externally".to_string());
@@ -705,6 +729,59 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             }
             vec![]
         }
+        UiAction::ShowPicker {
+            title,
+            items,
+            on_select,
+        } => {
+            if items.is_empty() {
+                state.toast = Some("No IDEs detected".to_string());
+                return vec![];
+            }
+            if items.len() == 1 {
+                // Single item — skip picker, emit effect directly
+                let item = &items[0];
+                state.toast = Some(format!("Opening in {}...", item.label));
+                return emit_picker_effect(&on_select, &item.value);
+            }
+            state.picker_dialog = Some(crate::application::state::PickerDialog {
+                title,
+                items,
+                selected: 0,
+                on_select_action: on_select,
+            });
+            state.input_mode = InputMode::Picker;
+            vec![]
+        }
+        UiAction::PickerUp => {
+            if let Some(ref mut picker) = state.picker_dialog {
+                picker.selected = picker.selected.saturating_sub(1);
+            }
+            vec![]
+        }
+        UiAction::PickerDown => {
+            if let Some(ref mut picker) = state.picker_dialog {
+                if picker.selected + 1 < picker.items.len() {
+                    picker.selected += 1;
+                }
+            }
+            vec![]
+        }
+        UiAction::PickerSelect => {
+            if let Some(picker) = state.picker_dialog.take() {
+                state.input_mode = InputMode::Normal;
+                if let Some(item) = picker.items.get(picker.selected) {
+                    state.toast = Some(format!("Opening in {}...", item.label));
+                    return emit_picker_effect(&picker.on_select_action, &item.value);
+                }
+            }
+            vec![]
+        }
+        UiAction::PickerCancel => {
+            state.picker_dialog = None;
+            state.input_mode = InputMode::Normal;
+            vec![]
+        }
         UiAction::Tick => {
             state.tick = state.tick.wrapping_add(1);
             if state.toast.is_some() && state.tick.is_multiple_of(300) {
@@ -723,6 +800,28 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
         }
         UiAction::QuitConfirmed => {
             vec![Effect::Quit]
+        }
+    }
+}
+
+/// Emit the appropriate effect for a picker selection.
+fn emit_picker_effect(
+    action: &crate::application::state::PickerAction,
+    value: &str,
+) -> Vec<Effect> {
+    match action {
+        crate::application::state::PickerAction::OpenInIde { project_dir } => {
+            let terminal_prefix = crate::infrastructure::ide::TERMINAL_VALUE_PREFIX;
+            let (command, terminal) = if let Some(cmd) = value.strip_prefix(terminal_prefix) {
+                (cmd.to_string(), true)
+            } else {
+                (value.to_string(), false)
+            };
+            vec![Effect::OpenIde {
+                command,
+                project_dir: project_dir.clone(),
+                terminal,
+            }]
         }
     }
 }
@@ -1314,5 +1413,314 @@ mod tests {
             }
             other => panic!("Expected AttachBatchInNewWindows, got {:?}", other),
         }
+    }
+
+    // ── Open in IDE tests ──────────────────────────────────────
+
+    #[test]
+    fn test_open_in_ide_emits_detect_ides() {
+        let mut state = test_state();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "s1".to_string(),
+            cwd: Some("/tmp/project".to_string()),
+            is_running: true,
+            ..Default::default()
+        }];
+
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::OpenInIde {
+                session_id: "s1".to_string(),
+            }),
+        );
+
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::DetectIdes { project_dir } if project_dir == "/tmp/project"
+        )));
+    }
+
+    #[test]
+    fn test_open_in_ide_prefers_cwd_over_project_path() {
+        let mut state = test_state();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "s1".to_string(),
+            cwd: Some("/tmp/cwd-dir".to_string()),
+            project_path: "/tmp/project-path".to_string(),
+            is_running: true,
+            ..Default::default()
+        }];
+
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::OpenInIde {
+                session_id: "s1".to_string(),
+            }),
+        );
+
+        match &effects[0] {
+            Effect::DetectIdes { project_dir } => {
+                assert_eq!(project_dir, "/tmp/cwd-dir");
+            }
+            other => panic!("Expected DetectIdes, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_open_in_ide_empty_project_dir_toasts() {
+        let mut state = test_state();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "s1".to_string(),
+            cwd: None,
+            project_path: String::new(),
+            is_running: true,
+            ..Default::default()
+        }];
+
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::OpenInIde {
+                session_id: "s1".to_string(),
+            }),
+        );
+
+        assert!(effects.is_empty());
+        assert!(state
+            .toast
+            .as_deref()
+            .unwrap()
+            .contains("No project directory"));
+    }
+
+    #[test]
+    fn test_open_in_ide_missing_session_toasts() {
+        let mut state = test_state();
+
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::OpenInIde {
+                session_id: "nonexistent".to_string(),
+            }),
+        );
+
+        assert!(effects.is_empty());
+        assert!(state.toast.as_deref().unwrap().contains("not found"));
+    }
+
+    // ── Picker tests ──────────────────────────────────────
+
+    #[test]
+    fn test_show_picker_empty_toasts() {
+        let mut state = test_state();
+        let effects = reduce(
+            &mut state,
+            Action::Ui(UiAction::ShowPicker {
+                title: "IDE".to_string(),
+                items: vec![],
+                on_select: crate::application::state::PickerAction::OpenInIde {
+                    project_dir: "/tmp".to_string(),
+                },
+            }),
+        );
+
+        assert!(effects.is_empty());
+        assert!(state.toast.as_deref().unwrap().contains("No IDEs"));
+        assert!(state.picker_dialog.is_none());
+    }
+
+    #[test]
+    fn test_show_picker_single_item_skips_picker() {
+        let mut state = test_state();
+        let effects = reduce(
+            &mut state,
+            Action::Ui(UiAction::ShowPicker {
+                title: "IDE".to_string(),
+                items: vec![crate::application::state::PickerItem {
+                    label: "VS Code".to_string(),
+                    description: "".to_string(),
+                    value: "code".to_string(),
+                }],
+                on_select: crate::application::state::PickerAction::OpenInIde {
+                    project_dir: "/tmp".to_string(),
+                },
+            }),
+        );
+
+        // Should emit OpenIde directly, no picker dialog
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::OpenIde { command, terminal, .. } if command == "code" && !terminal
+        )));
+        assert!(state.picker_dialog.is_none());
+        assert!(state
+            .toast
+            .as_deref()
+            .unwrap()
+            .contains("Opening in VS Code"));
+    }
+
+    #[test]
+    fn test_show_picker_sets_state() {
+        let mut state = test_state();
+        let effects = reduce(
+            &mut state,
+            Action::Ui(UiAction::ShowPicker {
+                title: "IDE".to_string(),
+                items: vec![
+                    crate::application::state::PickerItem {
+                        label: "VS Code".to_string(),
+                        description: "".to_string(),
+                        value: "code".to_string(),
+                    },
+                    crate::application::state::PickerItem {
+                        label: "Neovim".to_string(),
+                        description: "".to_string(),
+                        value: "terminal:nvim".to_string(),
+                    },
+                ],
+                on_select: crate::application::state::PickerAction::OpenInIde {
+                    project_dir: "/tmp".to_string(),
+                },
+            }),
+        );
+
+        assert!(effects.is_empty());
+        assert!(state.picker_dialog.is_some());
+        assert_eq!(state.input_mode, InputMode::Picker);
+        assert_eq!(state.picker_dialog.as_ref().unwrap().items.len(), 2);
+    }
+
+    #[test]
+    fn test_picker_up_at_zero_stays() {
+        let mut state = test_state();
+        state.picker_dialog = Some(crate::application::state::PickerDialog {
+            title: "IDE".to_string(),
+            items: vec![
+                crate::application::state::PickerItem {
+                    label: "A".to_string(),
+                    description: "".to_string(),
+                    value: "a".to_string(),
+                },
+                crate::application::state::PickerItem {
+                    label: "B".to_string(),
+                    description: "".to_string(),
+                    value: "b".to_string(),
+                },
+            ],
+            selected: 0,
+            on_select_action: crate::application::state::PickerAction::OpenInIde {
+                project_dir: "/tmp".to_string(),
+            },
+        });
+        state.input_mode = InputMode::Picker;
+
+        reduce(&mut state, Action::Ui(UiAction::PickerUp));
+        assert_eq!(state.picker_dialog.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn test_picker_down_at_last_stays() {
+        let mut state = test_state();
+        state.picker_dialog = Some(crate::application::state::PickerDialog {
+            title: "IDE".to_string(),
+            items: vec![
+                crate::application::state::PickerItem {
+                    label: "A".to_string(),
+                    description: "".to_string(),
+                    value: "a".to_string(),
+                },
+                crate::application::state::PickerItem {
+                    label: "B".to_string(),
+                    description: "".to_string(),
+                    value: "b".to_string(),
+                },
+            ],
+            selected: 1,
+            on_select_action: crate::application::state::PickerAction::OpenInIde {
+                project_dir: "/tmp".to_string(),
+            },
+        });
+        state.input_mode = InputMode::Picker;
+
+        reduce(&mut state, Action::Ui(UiAction::PickerDown));
+        assert_eq!(state.picker_dialog.as_ref().unwrap().selected, 1);
+    }
+
+    #[test]
+    fn test_picker_select_emits_open_ide() {
+        let mut state = test_state();
+        state.picker_dialog = Some(crate::application::state::PickerDialog {
+            title: "IDE".to_string(),
+            items: vec![crate::application::state::PickerItem {
+                label: "VS Code".to_string(),
+                description: "".to_string(),
+                value: "code".to_string(),
+            }],
+            selected: 0,
+            on_select_action: crate::application::state::PickerAction::OpenInIde {
+                project_dir: "/tmp/project".to_string(),
+            },
+        });
+        state.input_mode = InputMode::Picker;
+
+        let effects = reduce(&mut state, Action::Ui(UiAction::PickerSelect));
+
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::OpenIde { command, project_dir, terminal }
+                if command == "code" && project_dir == "/tmp/project" && !terminal
+        )));
+        assert_eq!(state.input_mode, InputMode::Normal);
+        assert!(state.picker_dialog.is_none());
+    }
+
+    #[test]
+    fn test_picker_select_terminal_ide_emits_terminal_flag() {
+        let mut state = test_state();
+        state.picker_dialog = Some(crate::application::state::PickerDialog {
+            title: "IDE".to_string(),
+            items: vec![crate::application::state::PickerItem {
+                label: "Neovim".to_string(),
+                description: "".to_string(),
+                value: "terminal:nvim".to_string(),
+            }],
+            selected: 0,
+            on_select_action: crate::application::state::PickerAction::OpenInIde {
+                project_dir: "/tmp/project".to_string(),
+            },
+        });
+        state.input_mode = InputMode::Picker;
+
+        let effects = reduce(&mut state, Action::Ui(UiAction::PickerSelect));
+
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::OpenIde { command, terminal, .. } if command == "nvim" && *terminal
+        )));
+    }
+
+    #[test]
+    fn test_picker_cancel_clears_state() {
+        let mut state = test_state();
+        state.picker_dialog = Some(crate::application::state::PickerDialog {
+            title: "IDE".to_string(),
+            items: vec![],
+            selected: 0,
+            on_select_action: crate::application::state::PickerAction::OpenInIde {
+                project_dir: "/tmp".to_string(),
+            },
+        });
+        state.input_mode = InputMode::Picker;
+
+        reduce(&mut state, Action::Ui(UiAction::PickerCancel));
+        assert!(state.picker_dialog.is_none());
+        assert_eq!(state.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_picker_select_when_no_dialog_is_noop() {
+        let mut state = test_state();
+        let effects = reduce(&mut state, Action::Ui(UiAction::PickerSelect));
+        assert!(effects.is_empty());
     }
 }
