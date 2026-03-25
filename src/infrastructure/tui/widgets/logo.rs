@@ -11,12 +11,15 @@ const TAGLINE: &str = "your agents aren't gonna manage themselves";
 
 /// Render the splash/landing page centered in the given area.
 pub fn render_logo(frame: &mut Frame, area: Rect) {
-    // Layout: big_text (4) + glow_line (1) + gap (1) + tagline (1) + gap (1) + hints (4) + gap (1) + version (1) = 14
-    let content_height = 14u16;
+    // Layout: emblem (4) + gap (1) + big_text (4) + glow_line (1) + gap (1) +
+    //         tagline (1) + gap (1) + hints (4) + gap (1) + version (1) = 19
+    let content_height = 19u16;
     let top_pad = area.height.saturating_sub(content_height) / 2;
 
     let layout = Layout::vertical([
         Constraint::Length(top_pad),
+        Constraint::Length(4), // emblem (two peaks colliding)
+        Constraint::Length(1), // gap
         Constraint::Length(4), // big text
         Constraint::Length(1), // glow underline
         Constraint::Length(1), // gap
@@ -28,6 +31,10 @@ pub fn render_logo(frame: &mut Frame, area: Rect) {
         Constraint::Min(0),
     ])
     .split(area);
+
+    // Emblem — two angular peaks colliding with sparkles at the collision points
+    let emblem = Paragraph::new(emblem_lines()).alignment(Alignment::Center);
+    frame.render_widget(emblem, layout[1]);
 
     // Big "clash" text — uses the brighter logo-specific neon color
     let big = BigText::builder()
@@ -41,11 +48,11 @@ pub fn render_logo(frame: &mut Frame, area: Rect) {
         .alignment(Alignment::Center)
         .build();
 
-    frame.render_widget(big, layout[1]);
+    frame.render_widget(big, layout[3]);
 
     // Neon glow underline — gradient fade from dim edges to bright center sparkle
     let glow = Paragraph::new(glow_line()).alignment(Alignment::Center);
-    frame.render_widget(glow, layout[2]);
+    frame.render_widget(glow, layout[4]);
 
     // Sparkle + tagline
     let tagline = Paragraph::new(Line::from(vec![
@@ -58,7 +65,7 @@ pub fn render_logo(frame: &mut Frame, area: Rect) {
         Span::styled(TAGLINE, Style::default().fg(theme::TEXT_DIM)),
     ]))
     .alignment(Alignment::Center);
-    frame.render_widget(tagline, layout[4]);
+    frame.render_widget(tagline, layout[6]);
 
     // Hint blocks
     let hints: Vec<Line> = vec![
@@ -69,7 +76,7 @@ pub fn render_logo(frame: &mut Frame, area: Rect) {
     ];
 
     let hints_widget = Paragraph::new(hints).alignment(Alignment::Center);
-    frame.render_widget(hints_widget, layout[6]);
+    frame.render_widget(hints_widget, layout[8]);
 
     // Version
     let version = format!("v{}", env!("CARGO_PKG_VERSION"));
@@ -78,7 +85,44 @@ pub fn render_logo(frame: &mut Frame, area: Rect) {
         Style::default().fg(theme::MUTED),
     )))
     .alignment(Alignment::Center);
-    frame.render_widget(version_widget, layout[8]);
+    frame.render_widget(version_widget, layout[10]);
+}
+
+/// Build the "two peaks colliding" emblem — an hourglass/diamond shape
+/// representing two mountain silhouettes meeting at collision sparkles.
+fn emblem_lines() -> Vec<Line<'static>> {
+    let peak = Style::default()
+        .fg(theme::LOGO_PRIMARY)
+        .add_modifier(Modifier::BOLD);
+    let glow = Style::default().fg(theme::LOGO_GLOW);
+    let spark = Style::default()
+        .fg(theme::LOGO_ACCENT)
+        .add_modifier(Modifier::BOLD);
+
+    vec![
+        // Top: two peaks converging
+        Line::from(vec![
+            Span::styled("╲", glow),
+            Span::raw("         "),
+            Span::styled("╱", glow),
+        ]),
+        Line::from(vec![
+            Span::styled(" ╲", peak),
+            Span::styled("   ✦   ", spark),
+            Span::styled("╱ ", peak),
+        ]),
+        // Bottom: diverging from collision
+        Line::from(vec![
+            Span::styled(" ╱", peak),
+            Span::styled("   ✦   ", spark),
+            Span::styled("╲ ", peak),
+        ]),
+        Line::from(vec![
+            Span::styled("╱", glow),
+            Span::raw("         "),
+            Span::styled("╲", glow),
+        ]),
+    ]
 }
 
 /// Build the neon glow underline with gradient: dim → bright → sparkle → bright → dim
