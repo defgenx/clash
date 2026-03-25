@@ -190,8 +190,8 @@ fn restore_terminal() {
     let _ = std::io::stdout().write_all(
         concat!(
             "\x1b[2J\x1b[H", // Clear screen + cursor home
-            "\x1b[?25h",      // Show cursor (ratatui may have hidden it)
-            "\x1b[0m",        // Reset text attributes
+            "\x1b[?25h",     // Show cursor (ratatui may have hidden it)
+            "\x1b[0m",       // Reset text attributes
         )
         .as_bytes(),
     );
