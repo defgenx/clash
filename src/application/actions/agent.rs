@@ -41,4 +41,9 @@ pub enum AgentAction {
     OpenInIde {
         session_id: String,
     },
+    /// Rename a session (update its label in the registry).
+    RenameSession {
+        session_id: String,
+        name: String,
+    },
 }

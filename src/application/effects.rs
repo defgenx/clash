@@ -98,6 +98,11 @@ pub enum Effect {
     },
     /// Clear all sessions from the clash session registry.
     ClearSessionRegistry,
+    /// Rename a session in the clash session registry.
+    RenameSession {
+        session_id: String,
+        name: String,
+    },
     /// Mark a session as idle in the clash status file (persists across refreshes).
     MarkSessionIdle {
         session_id: String,

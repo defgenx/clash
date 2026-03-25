@@ -565,6 +565,18 @@ pub fn parse_command(cmd: &str) -> Action {
         ));
     }
 
+    // Handle "rename <name>" — rename the current session (resolved by reducer)
+    if cmd == "rename" || cmd.starts_with("rename ") {
+        let name = cmd.strip_prefix("rename").unwrap().trim();
+        if !name.is_empty() {
+            return Action::Agent(crate::application::actions::AgentAction::RenameSession {
+                session_id: String::new(), // Placeholder — reducer resolves from nav context
+                name: name.to_string(),
+            });
+        }
+        return Action::Ui(UiAction::Toast("Usage: rename <new name>".to_string()));
+    }
+
     // Handle "new [path]" to spawn a session in a specific directory
     if cmd == "new" || cmd.starts_with("new ") {
         let path = cmd.strip_prefix("new").unwrap().trim();
@@ -624,6 +636,27 @@ mod tests {
         match parse_command("foobar") {
             Action::Ui(UiAction::Toast(_)) => {}
             _ => panic!("Expected Toast for unknown command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_command_rename() {
+        match parse_command("rename my-session") {
+            Action::Agent(AgentAction::RenameSession { session_id, name }) => {
+                assert!(session_id.is_empty()); // placeholder, resolved by reducer
+                assert_eq!(name, "my-session");
+            }
+            other => panic!("Expected RenameSession, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_command_rename_no_arg() {
+        match parse_command("rename") {
+            Action::Ui(UiAction::Toast(msg)) => {
+                assert!(msg.contains("Usage"));
+            }
+            other => panic!("Expected Toast with usage hint, got {:?}", other),
         }
     }
 

@@ -1070,6 +1070,9 @@ impl App {
                 Effect::UnregisterSession { session_id } => {
                     crate::infrastructure::hooks::registry::unregister(&session_id);
                 }
+                Effect::RenameSession { session_id, name } => {
+                    crate::infrastructure::hooks::registry::rename(&session_id, &name);
+                }
                 Effect::ClearSessionRegistry => {
                     crate::infrastructure::hooks::registry::clear();
                 }

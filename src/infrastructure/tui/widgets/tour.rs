@@ -92,6 +92,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
         ],
         keys: &[
             (":new <path>", "Create session in a specific directory"),
+            (":rename <name>", "Rename session (from detail view)"),
         ],
     },
     TourStep {

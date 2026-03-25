@@ -172,6 +172,7 @@ clash detects session status through three layers (in priority order):
 | `:delete team <name>` | Delete a team |
 | `:create task <team> <subject>` | Create a task |
 | `:new [path]` | Spawn a new session |
+| `:rename <name>` | Rename session (from detail view) |
 | `:active` / `:all` | Filter sessions |
 | `:tour` | Replay guided tour |
 | `:update` | Update clash |

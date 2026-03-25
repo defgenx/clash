@@ -428,6 +428,35 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 vec![Effect::AttachInNewWindow { session_id }]
             }
         }
+        AgentAction::RenameSession { session_id, name } => {
+            // Resolve session ID: if empty, use the current session from nav context
+            let resolved_id = if session_id.is_empty() {
+                match state.current_session() {
+                    Some(id) => id.to_string(),
+                    None => {
+                        state.toast =
+                            Some("No session selected (use from session detail)".to_string());
+                        return vec![];
+                    }
+                }
+            } else {
+                session_id
+            };
+            // Update in-memory session name
+            if let Some(session) = state
+                .store
+                .sessions
+                .iter_mut()
+                .find(|s| s.id == resolved_id)
+            {
+                session.name = Some(name.clone());
+            }
+            state.toast = Some(format!("Renamed to '{}'", name));
+            vec![Effect::RenameSession {
+                session_id: resolved_id,
+                name,
+            }]
+        }
         AgentAction::AttachAllNewWindows => {
             let ids: Vec<String> = state
                 .filtered_sessions()

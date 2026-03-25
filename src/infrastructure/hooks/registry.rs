@@ -78,6 +78,22 @@ pub fn unregister(session_id: &str) {
     save(&registry);
 }
 
+/// Rename a session in the registry.
+pub fn rename(session_id: &str, new_name: &str) {
+    let mut registry = load();
+    // Look up by key or by claude_session_id
+    let key = registry
+        .iter()
+        .find(|(k, v)| *k == session_id || v.claude_session_id == session_id)
+        .map(|(k, _)| k.clone());
+    if let Some(key) = key {
+        if let Some(entry) = registry.get_mut(&key) {
+            entry.name = new_name.to_string();
+        }
+        save(&registry);
+    }
+}
+
 /// Remove all sessions from the registry.
 pub fn clear() {
     save(&HashMap::new());
