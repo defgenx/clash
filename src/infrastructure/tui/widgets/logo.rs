@@ -11,14 +11,14 @@ const TAGLINE: &str = "your agents aren't gonna manage themselves";
 
 /// Render the splash/landing page centered in the given area.
 pub fn render_logo(frame: &mut Frame, area: Rect) {
-    // Layout: emblem (4) + gap (1) + big_text (4) + glow_line (1) + gap (1) +
-    //         tagline (1) + gap (1) + hints (4) + gap (1) + version (1) = 19
-    let content_height = 19u16;
+    // Layout: emblem (5) + gap (1) + big_text (4) + glow_line (1) + gap (1) +
+    //         tagline (1) + gap (1) + hints (4) + gap (1) + version (1) = 20
+    let content_height = 20u16;
     let top_pad = area.height.saturating_sub(content_height) / 2;
 
     let layout = Layout::vertical([
         Constraint::Length(top_pad),
-        Constraint::Length(4), // emblem (two peaks colliding)
+        Constraint::Length(5), // emblem (big bang starburst)
         Constraint::Length(1), // gap
         Constraint::Length(4), // big text
         Constraint::Length(1), // glow underline
@@ -32,7 +32,7 @@ pub fn render_logo(frame: &mut Frame, area: Rect) {
     ])
     .split(area);
 
-    // Emblem — two angular peaks colliding with sparkles at the collision points
+    // Emblem — big bang starburst radiating from central singularity
     let emblem = Paragraph::new(emblem_lines()).alignment(Alignment::Center);
     frame.render_widget(emblem, layout[1]);
 
@@ -88,39 +88,89 @@ pub fn render_logo(frame: &mut Frame, area: Rect) {
     frame.render_widget(version_widget, layout[10]);
 }
 
-/// Build the "two peaks colliding" emblem — an hourglass/diamond shape
-/// representing two mountain silhouettes meeting at collision sparkles.
+/// Build the "big bang" emblem — an explosive starburst radiating from
+/// a central singularity, representing the moment of collision.
 fn emblem_lines() -> Vec<Line<'static>> {
-    let peak = Style::default()
+    let ray = Style::default()
         .fg(theme::LOGO_PRIMARY)
         .add_modifier(Modifier::BOLD);
-    let glow = Style::default().fg(theme::LOGO_GLOW);
+    let ray_dim = Style::default().fg(theme::LOGO_GLOW);
     let spark = Style::default()
         .fg(theme::LOGO_ACCENT)
         .add_modifier(Modifier::BOLD);
+    let core = Style::default()
+        .fg(theme::LOGO_CORE)
+        .add_modifier(Modifier::BOLD);
+    let particle = Style::default().fg(theme::LOGO_ACCENT);
 
     vec![
-        // Top: two peaks converging
+        // Outer rays — faint diagonals + vertical with scattered particles
         Line::from(vec![
-            Span::styled("╲", glow),
-            Span::raw("         "),
-            Span::styled("╱", glow),
+            Span::styled("·", particle),
+            Span::raw("    "),
+            Span::styled("╲", ray_dim),
+            Span::raw("     "),
+            Span::styled("│", ray_dim),
+            Span::raw("     "),
+            Span::styled("╱", ray_dim),
+            Span::raw("    "),
+            Span::styled("·", particle),
         ]),
+        // Inner rays — bright diagonals with nearby particles
         Line::from(vec![
-            Span::styled(" ╲", peak),
-            Span::styled("   ✦   ", spark),
-            Span::styled("╱ ", peak),
+            Span::raw("  "),
+            Span::styled("✦", spark),
+            Span::raw("   "),
+            Span::styled("╲", ray),
+            Span::raw(" "),
+            Span::styled("·", particle),
+            Span::raw("  "),
+            Span::styled("│", ray),
+            Span::raw("  "),
+            Span::styled("·", particle),
+            Span::raw(" "),
+            Span::styled("╱", ray),
+            Span::raw("   "),
+            Span::styled("✦", spark),
         ]),
-        // Bottom: diverging from collision
+        // Horizontal shockwave — central singularity (✸)
         Line::from(vec![
-            Span::styled(" ╱", peak),
-            Span::styled("   ✦   ", spark),
-            Span::styled("╲ ", peak),
+            Span::styled("── ──", ray_dim),
+            Span::styled(" ── ──", ray),
+            Span::raw(" "),
+            Span::styled("✸", core),
+            Span::raw(" "),
+            Span::styled("── ── ", ray),
+            Span::styled("── ──", ray_dim),
         ]),
+        // Mirror inner rays
         Line::from(vec![
-            Span::styled("╱", glow),
-            Span::raw("         "),
-            Span::styled("╲", glow),
+            Span::raw("  "),
+            Span::styled("✦", spark),
+            Span::raw("   "),
+            Span::styled("╱", ray),
+            Span::raw(" "),
+            Span::styled("·", particle),
+            Span::raw("  "),
+            Span::styled("│", ray),
+            Span::raw("  "),
+            Span::styled("·", particle),
+            Span::raw(" "),
+            Span::styled("╲", ray),
+            Span::raw("   "),
+            Span::styled("✦", spark),
+        ]),
+        // Mirror outer rays
+        Line::from(vec![
+            Span::styled("·", particle),
+            Span::raw("    "),
+            Span::styled("╱", ray_dim),
+            Span::raw("     "),
+            Span::styled("│", ray_dim),
+            Span::raw("     "),
+            Span::styled("╲", ray_dim),
+            Span::raw("    "),
+            Span::styled("·", particle),
         ]),
     ]
 }

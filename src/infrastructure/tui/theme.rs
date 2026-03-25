@@ -66,6 +66,7 @@ pub const PROMPT_COLOR: Color = Color::Rgb(130, 210, 210); // pastel teal for in
 pub const LOGO_PRIMARY: Color = Color::Rgb(175, 130, 255); // vibrant purple
 pub const LOGO_GLOW: Color = Color::Rgb(110, 80, 180); // purple glow
 pub const LOGO_ACCENT: Color = Color::Rgb(255, 140, 200); // neon pink sparkle
+pub const LOGO_CORE: Color = Color::Rgb(255, 245, 250); // white-hot explosion center
 
 // ── Composed styles ────────────────────────────────────────────
 

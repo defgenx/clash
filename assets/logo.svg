@@ -1,22 +1,29 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 280" fill="none">
   <defs>
-    <linearGradient id="peak-l" x1="20%" y1="0%" x2="80%" y2="100%">
-      <stop offset="0%" stop-color="#c49cff"/>
-      <stop offset="100%" stop-color="#7a52cc"/>
-    </linearGradient>
-    <linearGradient id="peak-r" x1="80%" y1="0%" x2="20%" y2="100%">
-      <stop offset="0%" stop-color="#ff8cc8"/>
-      <stop offset="100%" stop-color="#b06cc0"/>
-    </linearGradient>
     <linearGradient id="text-grad" x1="0%" y1="0%" x2="100%" y2="0%">
       <stop offset="0%" stop-color="#b48cff"/>
       <stop offset="40%" stop-color="#ff8cc8"/>
       <stop offset="60%" stop-color="#ff8cc8"/>
       <stop offset="100%" stop-color="#b48cff"/>
     </linearGradient>
-    <linearGradient id="wave" x1="0%" y1="0%" x2="100%" y2="0%">
+    <linearGradient id="ray-h" x1="0%" y1="0%" x2="100%" y2="0%">
       <stop offset="0%" stop-color="#7a52cc" stop-opacity="0"/>
-      <stop offset="50%" stop-color="#9b6ee6" stop-opacity="0.6"/>
+      <stop offset="50%" stop-color="#af82ff" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#7a52cc" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="ray-v" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#7a52cc" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#af82ff" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#7a52cc" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="ray-d1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7a52cc" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#9b6ee6" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#7a52cc" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="ray-d2" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#7a52cc" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#9b6ee6" stop-opacity="0.35"/>
       <stop offset="100%" stop-color="#7a52cc" stop-opacity="0"/>
     </linearGradient>
     <filter id="glow">
@@ -31,46 +38,48 @@
       <feGaussianBlur stdDeviation="14" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="b"/></feMerge>
     </filter>
-    <clipPath id="clip-left"><rect x="0" y="0" width="310" height="280"/></clipPath>
-    <clipPath id="clip-right"><rect x="290" y="0" width="310" height="280"/></clipPath>
   </defs>
 
   <!-- Background -->
   <rect width="600" height="280" rx="16" fill="#0c0c12"/>
 
-  <!-- Ambient glow behind peaks -->
-  <ellipse cx="265" cy="100" rx="100" ry="80" fill="#af82ff" opacity="0.06" filter="url(#glow-xl)"/>
-  <ellipse cx="335" cy="100" rx="100" ry="80" fill="#ff8cc8" opacity="0.06" filter="url(#glow-xl)"/>
+  <!-- Outermost shockwave ring -->
+  <circle cx="300" cy="95" r="115" fill="none" stroke="#7a52cc" stroke-width="0.7" opacity="0.10"/>
+  <!-- Middle shockwave ring -->
+  <circle cx="300" cy="95" r="80" fill="none" stroke="#af82ff" stroke-width="1.0" opacity="0.16"/>
+  <!-- Inner shockwave ring -->
+  <circle cx="300" cy="95" r="48" fill="none" stroke="#c49cff" stroke-width="1.4" opacity="0.24"/>
 
-  <!-- Left peak — clipped to left half for clean overlap -->
-  <g clip-path="url(#clip-left)">
-    <path d="M 145 168 L 218 55 L 268 24 L 310 78 L 355 168 Z" fill="url(#peak-l)" opacity="0.9" filter="url(#glow)"/>
-    <!-- Ridge crack -->
-    <path d="M 268 24 L 263 52 L 272 72 L 258 100 L 268 128 L 260 155" stroke="#0c0c12" stroke-width="2.5" fill="none" opacity="0.45" stroke-linecap="round"/>
-  </g>
+  <!-- Energy rays — cardinal -->
+  <line x1="180" y1="95" x2="420" y2="95" stroke="url(#ray-h)" stroke-width="2.2"/>
+  <line x1="300" y1="0" x2="300" y2="178" stroke="url(#ray-v)" stroke-width="2.2"/>
 
-  <!-- Right peak — clipped to right half for clean overlap -->
-  <g clip-path="url(#clip-right)">
-    <path d="M 245 168 L 290 78 L 332 24 L 382 55 L 455 168 Z" fill="url(#peak-r)" opacity="0.9" filter="url(#glow)"/>
-    <!-- Ridge crack -->
-    <path d="M 332 24 L 337 52 L 328 72 L 342 100 L 332 128 L 340 155" stroke="#0c0c12" stroke-width="2.5" fill="none" opacity="0.45" stroke-linecap="round"/>
-  </g>
+  <!-- Energy rays — diagonal -->
+  <line x1="215" y1="18" x2="385" y2="172" stroke="url(#ray-d1)" stroke-width="1.2"/>
+  <line x1="385" y1="18" x2="215" y2="172" stroke="url(#ray-d2)" stroke-width="1.2"/>
 
-  <!-- Overlap collision zone glow -->
-  <ellipse cx="300" cy="90" rx="24" ry="50" fill="#ffb8e0" opacity="0.12" filter="url(#glow-xl)"/>
-  <ellipse cx="300" cy="95" rx="8" ry="12" fill="#fff0f8" opacity="0.5" filter="url(#glow-lg)"/>
+  <!-- Ambient glow -->
+  <ellipse cx="300" cy="95" rx="90" ry="72" fill="#af82ff" opacity="0.05" filter="url(#glow-xl)"/>
 
-  <!-- Spark particles -->
-  <circle cx="292" cy="68" r="1.8" fill="#ffc8e4" filter="url(#glow)"/>
-  <circle cx="312" cy="74" r="1.4" fill="#d4aaff" filter="url(#glow)"/>
-  <circle cx="298" cy="112" r="1.2" fill="#ffc8e4" filter="url(#glow)"/>
-  <circle cx="306" cy="60" r="1.5" fill="#fff" opacity="0.9" filter="url(#glow)"/>
-  <circle cx="285" cy="88" r="1" fill="#ffc8e4" filter="url(#glow)"/>
-  <circle cx="318" cy="96" r="1.3" fill="#d4aaff" filter="url(#glow)"/>
+  <!-- Central explosion — layered glows from diffuse to white-hot -->
+  <ellipse cx="300" cy="95" rx="50" ry="42" fill="#af82ff" opacity="0.09" filter="url(#glow-xl)"/>
+  <ellipse cx="300" cy="95" rx="28" ry="22" fill="#ffb8e0" opacity="0.18" filter="url(#glow-lg)"/>
+  <circle cx="300" cy="95" r="11" fill="#fff0f8" opacity="0.50" filter="url(#glow-lg)"/>
+  <circle cx="300" cy="95" r="4" fill="#fff5fa" opacity="0.92" filter="url(#glow)"/>
 
-  <!-- Wave lines at base -->
-  <path d="M 100 172 Q 200 162 300 172 Q 400 182 500 172" stroke="url(#wave)" stroke-width="2.2" fill="none"/>
-  <path d="M 125 179 Q 215 172 300 179 Q 385 186 475 179" stroke="url(#wave)" stroke-width="1.4" fill="none" opacity="0.5"/>
+  <!-- Scattered particles — matter born from the explosion -->
+  <circle cx="258" cy="56" r="2.0" fill="#ffc8e4" filter="url(#glow)"/>
+  <circle cx="348" cy="62" r="1.7" fill="#d4aaff" filter="url(#glow)"/>
+  <circle cx="342" cy="124" r="1.8" fill="#ffc8e4" filter="url(#glow)"/>
+  <circle cx="252" cy="122" r="1.4" fill="#d4aaff" filter="url(#glow)"/>
+  <circle cx="314" cy="40" r="1.5" fill="#fff" opacity="0.80" filter="url(#glow)"/>
+  <circle cx="274" cy="142" r="1.3" fill="#ffc8e4" filter="url(#glow)"/>
+  <circle cx="364" cy="84" r="1.2" fill="#d4aaff" filter="url(#glow)"/>
+  <circle cx="236" cy="78" r="1.1" fill="#ffc8e4" filter="url(#glow)"/>
+  <circle cx="326" cy="150" r="1.0" fill="#d4aaff" opacity="0.70" filter="url(#glow)"/>
+  <circle cx="280" cy="44" r="0.9" fill="#ffc8e4" opacity="0.60" filter="url(#glow)"/>
+  <circle cx="356" cy="110" r="1.4" fill="#fff" opacity="0.50" filter="url(#glow)"/>
+  <circle cx="244" cy="104" r="1.0" fill="#ffc8e4" opacity="0.50" filter="url(#glow)"/>
 
   <!-- "clash" text -->
   <text x="300" y="218" text-anchor="middle" font-family="Monaco, 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace" font-size="52" font-weight="bold" fill="url(#text-grad)" filter="url(#glow)">clash</text>
