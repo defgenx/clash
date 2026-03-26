@@ -5,7 +5,7 @@
 //! based on screen width, overflowing to tabs.
 
 use color_eyre::eyre::{self, Context};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Minimum columns for a usable Claude Code pane.
 const MIN_PANE_COLS: u16 = 80;
@@ -240,6 +240,11 @@ fn spawn_pane(
     spawn_pane_cmd(binary, &["attach", session_id], strategy, axis)
 }
 
+/// Spawn a command with stdout/stderr suppressed to prevent TUI corruption.
+fn spawn_detached(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+    cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+}
+
 /// Spawn an arbitrary command in a split pane with the given axis.
 fn spawn_pane_cmd(
     command: &str,
@@ -255,9 +260,7 @@ fn spawn_pane_cmd(
             };
             let mut cmd_args = vec!["split-window", flag, command];
             cmd_args.extend(args);
-            Command::new("tmux")
-                .args(&cmd_args)
-                .spawn()
+            spawn_detached(Command::new("tmux").args(&cmd_args))
                 .wrap_err("Failed to open tmux pane")?;
         }
         SpawnStrategy::ITerm => {
@@ -282,9 +285,7 @@ fn spawn_pane_cmd(
                 ),
                 direction, args_str,
             );
-            Command::new("osascript")
-                .args(["-e", &script])
-                .spawn()
+            spawn_detached(Command::new("osascript").args(["-e", &script]))
                 .wrap_err("Failed to open iTerm2 pane")?;
         }
         SpawnStrategy::WezTerm => {
@@ -294,17 +295,13 @@ fn spawn_pane_cmd(
             };
             let mut cmd_args = vec!["cli", "split-pane", side, "--", command];
             cmd_args.extend(args);
-            Command::new("wezterm")
-                .args(&cmd_args)
-                .spawn()
+            spawn_detached(Command::new("wezterm").args(&cmd_args))
                 .wrap_err("Failed to open WezTerm pane")?;
         }
         SpawnStrategy::Kitty => {
             let mut cmd_args = vec!["@", "launch", "--type=window", command];
             cmd_args.extend(args);
-            Command::new("kitty")
-                .args(&cmd_args)
-                .spawn()
+            spawn_detached(Command::new("kitty").args(&cmd_args))
                 .wrap_err("Failed to open Kitty pane")?;
         }
         _ => {
@@ -344,9 +341,7 @@ fn spawn_tab_cmd(command: &str, args: &[&str], strategy: &SpawnStrategy) -> eyre
                 ),
                 args_str,
             );
-            Command::new("osascript")
-                .args(["-e", &script])
-                .spawn()
+            spawn_detached(Command::new("osascript").args(["-e", &script]))
                 .wrap_err("Failed to open Apple Terminal tab")?;
             Ok(OpenMode::Tab)
         }
@@ -368,54 +363,42 @@ fn spawn_tab_cmd(command: &str, args: &[&str], strategy: &SpawnStrategy) -> eyre
                 ),
                 args_str,
             );
-            Command::new("osascript")
-                .args(["-e", &script])
-                .spawn()
+            spawn_detached(Command::new("osascript").args(["-e", &script]))
                 .wrap_err("Failed to open iTerm2 tab")?;
             Ok(OpenMode::Tab)
         }
         SpawnStrategy::Ghostty => {
             let mut cmd_args = vec!["-e", command];
             cmd_args.extend(args);
-            Command::new("ghostty")
-                .args(&cmd_args)
-                .spawn()
+            spawn_detached(Command::new("ghostty").args(&cmd_args))
                 .wrap_err("Failed to open Ghostty window")?;
             Ok(OpenMode::Window)
         }
         SpawnStrategy::WezTerm => {
             let mut cmd_args = vec!["cli", "spawn", "--", command];
             cmd_args.extend(args);
-            Command::new("wezterm")
-                .args(&cmd_args)
-                .spawn()
+            spawn_detached(Command::new("wezterm").args(&cmd_args))
                 .wrap_err("Failed to open WezTerm tab")?;
             Ok(OpenMode::Tab)
         }
         SpawnStrategy::Alacritty => {
             let mut cmd_args = vec!["-e", command];
             cmd_args.extend(args);
-            Command::new("alacritty")
-                .args(&cmd_args)
-                .spawn()
+            spawn_detached(Command::new("alacritty").args(&cmd_args))
                 .wrap_err("Failed to open Alacritty window")?;
             Ok(OpenMode::Window)
         }
         SpawnStrategy::Kitty => {
             let mut cmd_args = vec!["@", "launch", "--type=tab", command];
             cmd_args.extend(args);
-            Command::new("kitty")
-                .args(&cmd_args)
-                .spawn()
+            spawn_detached(Command::new("kitty").args(&cmd_args))
                 .wrap_err("Failed to open Kitty tab")?;
             Ok(OpenMode::Tab)
         }
         SpawnStrategy::Tmux => {
             let mut cmd_args = vec!["new-window", command];
             cmd_args.extend(args);
-            Command::new("tmux")
-                .args(&cmd_args)
-                .spawn()
+            spawn_detached(Command::new("tmux").args(&cmd_args))
                 .wrap_err("Failed to open tmux window")?;
             Ok(OpenMode::Tab)
         }
@@ -424,28 +407,22 @@ fn spawn_tab_cmd(command: &str, args: &[&str], strategy: &SpawnStrategy) -> eyre
             {
                 let mut cmd_args = vec!["-a", "Terminal", command, "--args"];
                 cmd_args.extend(args);
-                Command::new("open")
-                    .args(&cmd_args)
-                    .spawn()
+                spawn_detached(Command::new("open").args(&cmd_args))
                     .wrap_err("Failed to open terminal window")?;
             }
             #[cfg(target_os = "linux")]
             {
                 let mut cmd_args = vec!["-e", command];
                 cmd_args.extend(args);
-                let result = Command::new("x-terminal-emulator").args(&cmd_args).spawn();
+                let result = spawn_detached(Command::new("x-terminal-emulator").args(&cmd_args));
                 if result.is_err() {
-                    Command::new("xterm")
-                        .args(&cmd_args)
-                        .spawn()
+                    spawn_detached(Command::new("xterm").args(&cmd_args))
                         .wrap_err("Failed to open terminal (tried x-terminal-emulator, xterm)")?;
                 }
             }
             #[cfg(not(any(target_os = "macos", target_os = "linux")))]
             {
-                Command::new(command)
-                    .args(args)
-                    .spawn()
+                spawn_detached(Command::new(command).args(args))
                     .wrap_err("Failed to spawn process")?;
             }
             Ok(OpenMode::Window)

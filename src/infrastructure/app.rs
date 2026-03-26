@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::adapters::{input, renderer};
 use crate::application::actions::Action;
@@ -34,6 +34,7 @@ pub struct App {
     _watcher: Option<FsWatcher>,
     fs_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Vec<PathBuf>>>,
     daemon: DaemonClient,
+    ext_open_times: HashMap<String, Instant>,
 }
 
 impl App {
@@ -97,6 +98,7 @@ impl App {
             _watcher: watcher,
             fs_event_rx: Some(fs_rx),
             daemon,
+            ext_open_times: HashMap::new(),
         }
     }
 
@@ -834,13 +836,14 @@ impl App {
             }
         }
 
-        // Clean up externally_opened: remove sessions whose external viewer disconnected
-        // (attached_clients == 0 means the `clash attach` process exited).
-        self.state.externally_opened.retain(|id| {
-            infos
-                .iter()
-                .any(|i| i.session_id == *id && i.attached_clients > 0)
-        });
+        // Clean up externally_opened: remove sessions whose external viewer disconnected,
+        // but only after a grace period to allow the attach process to connect.
+        cleanup_externally_opened(
+            &mut self.state.externally_opened,
+            &mut self.ext_open_times,
+            &infos,
+            Duration::from_secs(15),
+        );
     }
 
     /// Phase 4: Resolve session names from daemon and disk persistence.
@@ -1290,6 +1293,8 @@ impl App {
                     ) {
                         Ok(mode) => {
                             self.state.externally_opened.insert(session_id.clone());
+                            self.ext_open_times
+                                .insert(session_id.clone(), Instant::now());
                             let label = match mode {
                                 crate::infrastructure::windowing::terminal_spawn::OpenMode::Pane => "pane",
                                 crate::infrastructure::windowing::terminal_spawn::OpenMode::Tab => "tab",
@@ -1327,8 +1332,10 @@ impl App {
                     ) {
                         Ok(result) => {
                             // Track all opened sessions
+                            let now = Instant::now();
                             for id in &session_ids {
                                 self.state.externally_opened.insert(id.clone());
+                                self.ext_open_times.insert(id.clone(), now);
                             }
                             let msg = match (result.panes_opened, result.tabs_opened) {
                                 (p, 0) => format!("Opened {} pane(s)", p),
@@ -1783,5 +1790,101 @@ async fn kill_tmux_session(worktree: &str) {
         Err(e) => {
             tracing::debug!("tmux not available: {}", e);
         }
+    }
+}
+
+/// Remove externally-opened entries that are no longer attached AND past the grace period.
+///
+/// Newly opened sessions get a grace window to allow the `clash attach` process
+/// time to connect before cleanup considers them stale.
+fn cleanup_externally_opened(
+    externally_opened: &mut std::collections::HashSet<String>,
+    open_times: &mut HashMap<String, Instant>,
+    infos: &[crate::infrastructure::daemon::protocol::SessionInfo],
+    grace: Duration,
+) {
+    let now = Instant::now();
+    externally_opened.retain(|id| {
+        let is_attached = infos
+            .iter()
+            .any(|i| i.session_id == *id && i.attached_clients > 0);
+        let within_grace = open_times
+            .get(id)
+            .map(|t| now.duration_since(*t) < grace)
+            .unwrap_or(false);
+        let keep = is_attached || within_grace;
+        if !keep {
+            open_times.remove(id);
+        }
+        keep
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::daemon::protocol::SessionInfo;
+    use std::collections::HashSet;
+
+    fn make_info(session_id: &str, attached: usize) -> SessionInfo {
+        SessionInfo {
+            session_id: session_id.to_string(),
+            pid: 1,
+            is_alive: true,
+            attached_clients: attached,
+            created_at: 0,
+            status: String::new(),
+            cwd: String::new(),
+            name: None,
+        }
+    }
+
+    #[test]
+    fn cleanup_within_grace_no_attachment_kept() {
+        let mut opened = HashSet::from(["s1".to_string()]);
+        let mut times = HashMap::from([("s1".to_string(), Instant::now())]);
+        let infos = vec![make_info("s1", 0)];
+
+        cleanup_externally_opened(&mut opened, &mut times, &infos, Duration::from_secs(15));
+
+        assert!(opened.contains("s1"));
+        assert!(times.contains_key("s1"));
+    }
+
+    #[test]
+    fn cleanup_past_grace_no_attachment_removed() {
+        let mut opened = HashSet::from(["s1".to_string()]);
+        let past = Instant::now() - Duration::from_secs(30);
+        let mut times = HashMap::from([("s1".to_string(), past)]);
+        let infos = vec![make_info("s1", 0)];
+
+        cleanup_externally_opened(&mut opened, &mut times, &infos, Duration::from_secs(15));
+
+        assert!(!opened.contains("s1"));
+        assert!(!times.contains_key("s1"));
+    }
+
+    #[test]
+    fn cleanup_past_grace_with_attachment_kept() {
+        let mut opened = HashSet::from(["s1".to_string()]);
+        let past = Instant::now() - Duration::from_secs(30);
+        let mut times = HashMap::from([("s1".to_string(), past)]);
+        let infos = vec![make_info("s1", 1)];
+
+        cleanup_externally_opened(&mut opened, &mut times, &infos, Duration::from_secs(15));
+
+        assert!(opened.contains("s1"));
+    }
+
+    #[test]
+    fn cleanup_within_grace_with_attachment_kept() {
+        let mut opened = HashSet::from(["s1".to_string()]);
+        let mut times = HashMap::from([("s1".to_string(), Instant::now())]);
+        let infos = vec![make_info("s1", 1)];
+
+        cleanup_externally_opened(&mut opened, &mut times, &infos, Duration::from_secs(15));
+
+        assert!(opened.contains("s1"));
+        assert!(times.contains_key("s1"));
     }
 }
