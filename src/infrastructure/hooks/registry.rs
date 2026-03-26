@@ -69,6 +69,18 @@ pub fn register(session_id: &str, name: &str, cwd: &str, source_branch: Option<&
     save(&registry);
 }
 
+/// Find a registry entry matching the given session ID (by registry key or claude_session_id).
+pub fn find_entry<'a>(
+    registry: &'a HashMap<String, ClashSession>,
+    session_id: &str,
+) -> Option<(&'a String, &'a ClashSession)> {
+    registry.get_key_value(session_id).or_else(|| {
+        registry
+            .iter()
+            .find(|(_, v)| v.claude_session_id == session_id)
+    })
+}
+
 /// Remove a session from the registry.
 pub fn unregister(session_id: &str) {
     let mut registry = load();
@@ -81,11 +93,7 @@ pub fn unregister(session_id: &str) {
 /// Rename a session in the registry.
 pub fn rename(session_id: &str, new_name: &str) {
     let mut registry = load();
-    // Look up by key or by claude_session_id
-    let key = registry
-        .iter()
-        .find(|(k, v)| *k == session_id || v.claude_session_id == session_id)
-        .map(|(k, _)| k.clone());
+    let key = find_entry(&registry, session_id).map(|(k, _)| k.clone());
     if let Some(key) = key {
         if let Some(entry) = registry.get_mut(&key) {
             entry.name = new_name.to_string();
@@ -151,5 +159,42 @@ mod tests {
         let json = serde_json::to_string(&reg).unwrap();
         let loaded: HashMap<String, ClashSession> = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded["test-3"].source_branch.as_deref(), Some("main"));
+    }
+
+    fn make_session(session_id: &str, claude_session_id: &str) -> ClashSession {
+        ClashSession {
+            session_id: session_id.to_string(),
+            name: "test".to_string(),
+            cwd: "/tmp".to_string(),
+            claude_session_id: claude_session_id.to_string(),
+            created_at: String::new(),
+            source_branch: None,
+        }
+    }
+
+    #[test]
+    fn test_find_entry_by_key() {
+        let mut reg = HashMap::new();
+        reg.insert("sess-1".to_string(), make_session("sess-1", "sess-1"));
+        let result = find_entry(&reg, "sess-1");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "sess-1");
+    }
+
+    #[test]
+    fn test_find_entry_by_claude_session_id() {
+        let mut reg = HashMap::new();
+        // Key is the original session ID, but claude_session_id was updated (e.g. after /clear)
+        reg.insert("orig-id".to_string(), make_session("orig-id", "new-id"));
+        let result = find_entry(&reg, "new-id");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "orig-id");
+    }
+
+    #[test]
+    fn test_find_entry_not_found() {
+        let mut reg = HashMap::new();
+        reg.insert("sess-1".to_string(), make_session("sess-1", "sess-1"));
+        assert!(find_entry(&reg, "unknown").is_none());
     }
 }

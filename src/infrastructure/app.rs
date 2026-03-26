@@ -648,18 +648,17 @@ impl App {
         // and populate each session's cwd from the registry entry.
         let registry = crate::infrastructure::hooks::registry::load();
         if !registry.is_empty() {
-            self.state.store.sessions.retain(|s| {
-                registry.contains_key(&s.id)
-                    || registry.values().any(|r| r.claude_session_id == s.id)
-            });
-            // Overlay cwd from registry onto each session
+            use crate::infrastructure::hooks::registry::find_entry;
+            self.state
+                .store
+                .sessions
+                .retain(|s| find_entry(&registry, &s.id).is_some());
+            // Overlay registry fields onto each session
             for session in &mut self.state.store.sessions {
-                let entry = registry.get(&session.id).or_else(|| {
-                    registry
-                        .values()
-                        .find(|r| r.claude_session_id == session.id)
-                });
-                if let Some(entry) = entry {
+                if let Some((_, entry)) = find_entry(&registry, &session.id) {
+                    if !entry.name.is_empty() {
+                        session.name = Some(entry.name.clone());
+                    }
                     if !entry.cwd.is_empty() {
                         session.cwd = Some(entry.cwd.clone());
                     }
@@ -1103,6 +1102,19 @@ impl App {
                 }
                 Effect::RenameSession { session_id, name } => {
                     crate::infrastructure::hooks::registry::rename(&session_id, &name);
+                    let cwd = self
+                        .state
+                        .store
+                        .sessions
+                        .iter()
+                        .find(|s| s.id == session_id)
+                        .and_then(|s| s.cwd.as_deref());
+                    crate::infrastructure::hooks::save_session_name(
+                        self.backend.base_dir(),
+                        &session_id,
+                        &name,
+                        cwd,
+                    );
                 }
                 Effect::ClearSessionRegistry => {
                     crate::infrastructure::hooks::registry::clear();
