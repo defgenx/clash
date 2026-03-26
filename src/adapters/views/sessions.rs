@@ -161,12 +161,12 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
         if current_section != Some(section) {
             let count = section_counts.get(&section).copied().unwrap_or(0);
             let header_text = format!("── {} ({}) ──", section.label(), count);
-            let header_cell = Cell::from(header_text).style(Style::default().fg(theme::BORDER_DIM));
+            let header_cell = Cell::from(header_text).style(Style::default().fg(theme::TEXT_DIM));
             let mut header_cells = vec![header_cell];
             for _ in 1..columns.len() {
                 header_cells.push(Cell::from(""));
             }
-            rows.push(Row::new(header_cells).style(Style::default().fg(theme::BORDER_DIM)));
+            rows.push(Row::new(header_cells).style(Style::default().fg(theme::TEXT_DIM)));
             logical_to_parent.push(usize::MAX); // sentinel — not selectable
             current_section = Some(section);
         }

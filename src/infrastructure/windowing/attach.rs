@@ -98,9 +98,9 @@ pub async fn attach_loop(
     // scrollback buffer — scrolling up shows full session history.
     let raw_history = {
         const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        const IDLE_MS: u64 = 200;
-        const DEADLINE_MS: u64 = 4000;
-        const TICK_MS: u64 = 80;
+        const IDLE_MS: u64 = 80;
+        const DEADLINE_MS: u64 = 1500;
+        const TICK_MS: u64 = 50;
 
         let mut history: Vec<u8> = Vec::new();
         let mut frame = 0usize;
