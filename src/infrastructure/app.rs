@@ -751,11 +751,10 @@ impl App {
         );
 
         // Auto-collapse sessions that transitioned from Active to Done/Fail
-        let old_by_id: std::collections::HashMap<&str, &Session> =
-            previous_for_subagents
-                .iter()
-                .map(|s| (s.id.as_str(), s))
-                .collect();
+        let old_by_id: std::collections::HashMap<&str, &Session> = previous_for_subagents
+            .iter()
+            .map(|s| (s.id.as_str(), s))
+            .collect();
         for session in &self.state.store.sessions {
             if self.state.expanded_sessions.contains(&session.id) {
                 let was_active = old_by_id

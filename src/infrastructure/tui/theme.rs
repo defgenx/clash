@@ -51,16 +51,6 @@ pub const SECTION_ACTIVE: Color = Color::Rgb(140, 185, 240); // pastel blue
 pub const SECTION_DONE: Color = Color::Rgb(120, 220, 150); // pastel green
 pub const SECTION_FAIL: Color = Color::Rgb(235, 120, 130); // pastel rose
 
-// Section header backgrounds (subtle tint over the base BG)
-pub const SECTION_ACTIVE_BG: Color = Color::Rgb(18, 20, 32); // blue tint
-pub const SECTION_DONE_BG: Color = Color::Rgb(16, 22, 20); // green tint
-pub const SECTION_FAIL_BG: Color = Color::Rgb(24, 16, 20); // rose tint
-
-// Section separator (dimmed version of section color for rule lines)
-pub const SECTION_ACTIVE_DIM: Color = Color::Rgb(45, 52, 72); // dim blue
-pub const SECTION_DONE_DIM: Color = Color::Rgb(38, 62, 48); // dim green
-pub const SECTION_FAIL_DIM: Color = Color::Rgb(68, 42, 48); // dim rose
-
 // ── Feedback colors ────────────────────────────────────────────
 pub const ERROR_COLOR: Color = Color::Rgb(235, 120, 130); // pastel rose
 pub const UNREAD_COLOR: Color = Color::Rgb(240, 210, 100); // pastel amber

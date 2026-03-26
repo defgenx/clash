@@ -235,7 +235,7 @@ const CHAR_SPREAD: usize = 6;
 /// Render an inline loading spinner with shimmer text for a section.
 fn render_loading_shimmer(lines: &mut Vec<Line<'_>>, tick: usize) {
     let spinner_char = SPINNER_FRAMES[(tick / TICKS_PER_FRAME) % SPINNER_FRAMES.len()];
-    let full_text = format!("      {} Loading...", spinner_char);
+    let full_text = format!("{} Loading...", spinner_char);
 
     let spans: Vec<Span> = full_text
         .chars()
@@ -251,7 +251,7 @@ fn render_loading_shimmer(lines: &mut Vec<Line<'_>>, tick: usize) {
         })
         .collect();
 
-    lines.push(Line::from(spans));
+    lines.push(Line::from(spans).alignment(ratatui::layout::Alignment::Center));
 }
 
 /// Interpolate the shimmer gradient at position `t` (0.0 -- 1.0).

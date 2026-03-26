@@ -148,9 +148,7 @@ impl DetailView for SessionDetailView {
             .get(&session_id)
             .map(|subs| {
                 subs.iter()
-                    .filter(|sa| {
-                        sa.status != crate::domain::entities::SessionStatus::Done
-                    })
+                    .filter(|sa| sa.status != crate::domain::entities::SessionStatus::Done)
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();

@@ -171,22 +171,10 @@ pub fn render_sessions_table(
         // Insert section header when entering a new section
         if current_section != Some(section) {
             let count = section_counts.get(&section).copied().unwrap_or(0);
-            let (section_color, section_bg, section_dim) = match section {
-                SessionSection::Active => (
-                    theme::SECTION_ACTIVE,
-                    theme::SECTION_ACTIVE_BG,
-                    theme::SECTION_ACTIVE_DIM,
-                ),
-                SessionSection::Done => (
-                    theme::SECTION_DONE,
-                    theme::SECTION_DONE_BG,
-                    theme::SECTION_DONE_DIM,
-                ),
-                SessionSection::Fail => (
-                    theme::SECTION_FAIL,
-                    theme::SECTION_FAIL_BG,
-                    theme::SECTION_FAIL_DIM,
-                ),
+            let section_color = match section {
+                SessionSection::Active => theme::SECTION_ACTIVE,
+                SessionSection::Done => theme::SECTION_DONE,
+                SessionSection::Fail => theme::SECTION_FAIL,
             };
             let icon = match section {
                 SessionSection::Active => "◆",
@@ -195,23 +183,15 @@ pub fn render_sessions_table(
             };
             let label_style = Style::default()
                 .fg(section_color)
-                .bg(section_bg)
                 .add_modifier(Modifier::BOLD);
-            let rule_style = Style::default().fg(section_dim).bg(section_bg);
-            let count_style = Style::default().fg(section_dim).bg(section_bg);
 
+            let label = format!("{} {} ({})", icon, section.label(), count);
             let mut header_cells = Vec::with_capacity(columns.len());
-            header_cells
-                .push(Cell::from(format!("{} {}", icon, section.label())).style(label_style));
-            // Fill middle cells with thin rule
-            for _ in 1..columns.len().saturating_sub(1) {
-                header_cells.push(Cell::from("─────────────").style(rule_style));
+            header_cells.push(Cell::from(label).style(label_style));
+            for _ in 1..columns.len() {
+                header_cells.push(Cell::from(""));
             }
-            // Count in the last cell
-            if columns.len() > 1 {
-                header_cells.push(Cell::from(format!("{}", count)).style(count_style));
-            }
-            rows.push(Row::new(header_cells).style(Style::default().bg(section_bg)));
+            rows.push(Row::new(header_cells));
             logical_to_parent.push(usize::MAX); // sentinel — not selectable
             current_section = Some(section);
         }
@@ -225,10 +205,7 @@ pub fn render_sessions_table(
                 .collect()
         });
 
-        let has_subs = active_subs
-            .as_ref()
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
+        let has_subs = active_subs.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
         let expand_indicator = if has_subs {
             if is_expanded {
                 "▼ "
@@ -356,7 +333,7 @@ impl TableView for SessionsTable {
 
     fn columns() -> Vec<ColumnDef> {
         vec![
-            ColumnDef::flex("STATUS", 10, 16),
+            ColumnDef::flex("STATUS", 15, 18),
             ColumnDef::flex("NAME", 4, 30),
             ColumnDef::flex("PROJECT", 7, 25),
             ColumnDef::new("SUMMARY", 35),
