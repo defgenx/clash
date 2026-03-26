@@ -121,7 +121,10 @@ impl NavigationStack {
     /// Get the current session ID from nav context.
     pub fn current_session(&self) -> Option<&str> {
         for entry in self.stack.iter().rev() {
-            if entry.view == ViewKind::SessionDetail || entry.view == ViewKind::Subagents {
+            if entry.view == ViewKind::SessionDetail
+                || entry.view == ViewKind::Subagents
+                || entry.view == ViewKind::Diff
+            {
                 if let Some(ref ctx) = entry.context {
                     return Some(ctx.as_str());
                 }

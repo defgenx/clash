@@ -298,6 +298,8 @@ fn codesign(path: &Path) {
     {
         let _ = std::process::Command::new("codesign")
             .args(["--force", "--sign", "-", path.to_str().unwrap()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
     }
     #[cfg(not(target_os = "macos"))]
