@@ -123,7 +123,12 @@ fn session_texts(item: &Session, tick: usize) -> Vec<String> {
 }
 
 /// Custom renderer for the Sessions table with expandable subagent rows.
-pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
+pub fn render_sessions_table(
+    state: &AppState,
+    visual_state: &mut ratatui::widgets::TableState,
+    frame: &mut Frame,
+    area: Rect,
+) {
     let sessions = state.filtered_sessions();
     if sessions.is_empty() {
         return;
@@ -160,10 +165,12 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
         // Insert section header when entering a new section
         if current_section != Some(section) {
             let count = section_counts.get(&section).copied().unwrap_or(0);
-            let header_text = format!("── {} ({}) ──", section.label(), count);
-            let header_cell = Cell::from(header_text).style(Style::default().fg(theme::TEXT_DIM));
-            let mut header_cells = vec![header_cell];
-            for _ in 1..columns.len() {
+            let label_text = format!("{} ({})", section.label(), count);
+            let dim = Style::default().fg(theme::TEXT_DIM);
+            let mut header_cells = Vec::with_capacity(columns.len());
+            header_cells.push(Cell::from("──").style(dim));
+            header_cells.push(Cell::from(label_text).style(dim));
+            for _ in 2..columns.len() {
                 header_cells.push(Cell::from(""));
             }
             rows.push(Row::new(header_cells).style(Style::default().fg(theme::TEXT_DIM)));
@@ -295,9 +302,9 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
         .column_spacing(1)
         .row_highlight_style(theme::selected_style());
 
-    let mut ratatui_table_state =
-        ratatui::widgets::TableState::default().with_selected(visual_selected);
-    frame.render_stateful_widget(table, area, &mut ratatui_table_state);
+    // Update selection on the persisted visual state — preserves scroll offset across frames.
+    *visual_state = visual_state.clone().with_selected(visual_selected);
+    frame.render_stateful_widget(table, area, visual_state);
 }
 
 impl TableView for SessionsTable {

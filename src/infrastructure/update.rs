@@ -1,6 +1,6 @@
 //! Self-update functionality — checks for and installs new versions from GitHub releases.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const REPO: &str = "defgenx/clash";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -125,6 +125,7 @@ async fn install_update_phased(
 ) -> Result<(), String> {
     let current_exe = std::env::current_exe()
         .map_err(|e| format!("Cannot determine current binary path: {}", e))?;
+    let install_target = resolve_install_target(&current_exe)?;
 
     let tmpdir = std::env::temp_dir().join("clash-update");
     let _ = std::fs::remove_dir_all(&tmpdir);
@@ -168,8 +169,7 @@ async fn install_update_phased(
 
     let _ = tx.send(crate::application::state::UpdatePhase::Installing);
 
-    // Replace current binary atomically
-    replace_binary(&new_binary, &current_exe)?;
+    replace_binary(&new_binary, &install_target)?;
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&tmpdir);
@@ -181,6 +181,7 @@ async fn install_update_phased(
 async fn install_update(download_url: &str) -> Result<(), String> {
     let current_exe = std::env::current_exe()
         .map_err(|e| format!("Cannot determine current binary path: {}", e))?;
+    let install_target = resolve_install_target(&current_exe)?;
 
     let tmpdir = std::env::temp_dir().join("clash-update");
     let _ = std::fs::remove_dir_all(&tmpdir);
@@ -218,11 +219,42 @@ async fn install_update(download_url: &str) -> Result<(), String> {
         return Err("Binary not found in archive".to_string());
     }
 
-    replace_binary(&new_binary, &current_exe)?;
+    replace_binary(&new_binary, &install_target)?;
 
     let _ = std::fs::remove_dir_all(&tmpdir);
 
     Ok(())
+}
+
+/// Determine where to install the updated binary.
+///
+/// If the directory containing the current executable is writable, install there.
+/// Otherwise fall back to `~/.local/bin` (created if needed).
+fn resolve_install_target(current_exe: &Path) -> Result<PathBuf, String> {
+    if let Some(dir) = current_exe.parent() {
+        if is_dir_writable(dir) {
+            return Ok(current_exe.to_path_buf());
+        }
+    }
+
+    // Fall back to ~/.local/bin
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let fallback_dir = PathBuf::from(home).join(".local").join("bin");
+    std::fs::create_dir_all(&fallback_dir)
+        .map_err(|e| format!("Failed to create {}: {}", fallback_dir.display(), e))?;
+    let target = fallback_dir.join("clash");
+    Ok(target)
+}
+
+/// Check whether a directory is writable by the current user.
+fn is_dir_writable(dir: &std::path::Path) -> bool {
+    let probe = dir.join(".clash-write-probe");
+    if std::fs::write(&probe, b"").is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        true
+    } else {
+        false
+    }
 }
 
 /// Replace the running binary with the new one.
@@ -231,42 +263,23 @@ async fn install_update(download_url: &str) -> Result<(), String> {
 /// (the kernel kills the process with SIGKILL "Code Signature Invalid").
 /// We must remove the old file first so the replacement gets a fresh inode,
 /// then ad-hoc re-sign on macOS.
-fn replace_binary(new: &PathBuf, current: &PathBuf) -> Result<(), String> {
+fn replace_binary(new: &PathBuf, target: &PathBuf) -> Result<(), String> {
     // Remove existing binary first to get a fresh inode (critical for macOS codesigning)
-    let _ = std::fs::remove_file(current);
+    let _ = std::fs::remove_file(target);
 
     // Try direct rename first
-    if std::fs::rename(new, current).is_ok() {
-        set_permissions_and_sign(current);
+    if std::fs::rename(new, target).is_ok() {
+        set_permissions_and_sign(target);
         return Ok(());
     }
 
-    // If rename fails (cross-device, permissions), try copy
-    if std::fs::copy(new, current).is_ok() {
-        set_permissions_and_sign(current);
+    // If rename fails (cross-device), try copy
+    if std::fs::copy(new, target).is_ok() {
+        set_permissions_and_sign(target);
         return Ok(());
     }
 
-    // Last resort: sudo rm + cp + codesign
-    let _ = std::process::Command::new("sudo")
-        .args(["rm", "-f", current.to_str().unwrap()])
-        .status();
-
-    let status = std::process::Command::new("sudo")
-        .args(["cp", new.to_str().unwrap(), current.to_str().unwrap()])
-        .status()
-        .map_err(|e| format!("sudo copy failed: {}", e))?;
-
-    if !status.success() {
-        return Err(format!(
-            "Cannot write to {}. Try: sudo clash update",
-            current.display()
-        ));
-    }
-
-    codesign(current);
-
-    Ok(())
+    Err(format!("Cannot write to {}", target.display()))
 }
 
 /// Set executable permissions and ad-hoc codesign on macOS.
@@ -280,7 +293,7 @@ fn set_permissions_and_sign(path: &PathBuf) {
 }
 
 /// Ad-hoc codesign a binary on macOS (no-op on other platforms).
-fn codesign(path: &PathBuf) {
+fn codesign(path: &Path) {
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("codesign")

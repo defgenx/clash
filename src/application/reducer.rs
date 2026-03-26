@@ -976,7 +976,7 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             }
             // Auto-refresh diff every ~3s (12 ticks at 250ms) when session is active
             let mut effects = check_shutdown(state);
-            if state.current_view() == ViewKind::Diff && !state.diff.loading && state.tick % 12 == 0
+            if state.current_view() == ViewKind::Diff && !state.diff.loading && state.tick.is_multiple_of(12)
             {
                 if let Some(ref session_id) = state.diff.session_id.clone() {
                     let is_active = state
