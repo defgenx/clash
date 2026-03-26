@@ -18,6 +18,7 @@ pub enum UiAction {
     /// Text editing in command/filter/new-session input bar.
     InputEdit(InputEdit),
     CycleSessionFilter,
+    CycleSectionFilter,
     SetSessionFilter(crate::application::state::SessionFilter),
     ScrollDown,
     ScrollUp,

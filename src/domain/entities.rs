@@ -130,6 +130,26 @@ pub struct Task {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
+/// High-level session lifecycle section — groups statuses for display and filtering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SessionSection {
+    Active = 0,  // Thinking, Running, Starting
+    Pending = 1, // Prompting
+    Done = 2,    // Waiting, Idle
+    Fail = 3,    // Errored
+}
+
+impl SessionSection {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Active => "Active",
+            Self::Pending => "Pending",
+            Self::Done => "Done",
+            Self::Fail => "Fail",
+        }
+    }
+}
+
 /// Granular session status — detected by parsing the terminal screen content.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub enum SessionStatus {
@@ -148,6 +168,18 @@ pub enum SessionStatus {
     Prompting,
     /// Session process died shortly after starting (crash, bad resume, etc.).
     Errored,
+}
+
+impl SessionStatus {
+    /// Map this status to its high-level session section.
+    pub fn section(&self) -> SessionSection {
+        match self {
+            Self::Thinking | Self::Running | Self::Starting => SessionSection::Active,
+            Self::Prompting => SessionSection::Pending,
+            Self::Waiting | Self::Idle => SessionSection::Done,
+            Self::Errored => SessionSection::Fail,
+        }
+    }
 }
 
 impl std::str::FromStr for SessionStatus {
@@ -459,5 +491,23 @@ mod tests {
         assert_eq!(team.members.len(), 2);
         assert!(team.members[0].is_active);
         assert!(!team.members[1].is_active);
+    }
+
+    #[test]
+    fn test_session_section_mapping() {
+        assert_eq!(SessionStatus::Thinking.section(), SessionSection::Active);
+        assert_eq!(SessionStatus::Running.section(), SessionSection::Active);
+        assert_eq!(SessionStatus::Starting.section(), SessionSection::Active);
+        assert_eq!(SessionStatus::Prompting.section(), SessionSection::Pending);
+        assert_eq!(SessionStatus::Waiting.section(), SessionSection::Done);
+        assert_eq!(SessionStatus::Idle.section(), SessionSection::Done);
+        assert_eq!(SessionStatus::Errored.section(), SessionSection::Fail);
+    }
+
+    #[test]
+    fn test_session_section_ordering() {
+        assert!(SessionSection::Active < SessionSection::Pending);
+        assert!(SessionSection::Pending < SessionSection::Done);
+        assert!(SessionSection::Done < SessionSection::Fail);
     }
 }

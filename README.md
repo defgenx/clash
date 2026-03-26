@@ -21,7 +21,7 @@
 - **Inline terminal** — attach to sessions with a full vt100 terminal emulator, no window switching
 - **Real-time status** — instant status detection via hooks, daemon PTY screen analysis, and JSONL parsing (three-layer system)
 - **Animated status icons** — active sessions show animated spinners and pulsing icons for visual feedback
-- **Section-based layout** — sessions are split into Busy (actively working) and Pending (waiting/done) sections with stable alphabetical ordering
+- **Section-based layout** — sessions are grouped into Active (working), Pending (approval needed), Done (waiting/idle), and Fail (errored) sections with stable alphabetical ordering; press `S` to cycle section filter
 - **In-process daemon** — embedded PTY daemon manages sessions without a separate process
 - **Git worktree support** — spawn sessions in isolated worktrees for parallel feature branches (`w` key); worktree column shows `⊟ project/worktree` for project context
 - **Repo config discovery** — auto-detects MCP servers, custom commands, agent definitions, and setup scripts from the project directory

@@ -33,8 +33,9 @@ pub const TOUR_STEPS: &[TourStep] = &[
         body: &[
             "The Sessions view is your home screen. It shows every Claude Code session across all your projects.",
             "",
-            "Sessions are split into two sections: Busy (actively working) and Pending (waiting/done).",
+            "Sessions are grouped into four sections: Active (working), Pending (approval needed), Done (waiting/idle), and Fail (errored).",
             "Within each section, sessions are sorted alphabetically by name for stable ordering.",
+            "Press  S  to cycle through showing only one section at a time.",
             "",
             "Each row shows the session's status, project, summary, active agents, git branch, and worktree (⊟ project/name).",
             "",
@@ -69,6 +70,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
             ("D", "Delete ALL sessions"),
             ("Tab", "Expand / collapse subagents"),
             ("A", "Toggle active / all sessions"),
+            ("S", "Cycle section filter (Active/Pending/Done/Fail)"),
             ("/", "Filter sessions by text"),
         ],
     },

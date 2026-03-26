@@ -6,7 +6,7 @@ use ratatui::Frame;
 use crate::adapters::format::{self, or_dash};
 use crate::adapters::views::{ColumnDef, Keybinding, TableView};
 use crate::application::state::AppState;
-use crate::domain::entities::{Session, SessionStatus, Subagent};
+use crate::domain::entities::{Session, SessionSection, SessionStatus, Subagent};
 use crate::infrastructure::tui::{theme, widgets::table::compute_constraints};
 
 pub struct SessionsTable;
@@ -143,34 +143,32 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
         .collect();
     let constraints = compute_constraints(&columns, &content_rows, area.width);
 
-    // Count sessions in each section for the divider label
-    let is_busy = |s: &Session| {
-        matches!(
-            s.status,
-            SessionStatus::Thinking | SessionStatus::Running | SessionStatus::Starting
-        )
-    };
-    let busy_count = sessions.iter().filter(|s| is_busy(s)).count();
-    let pending_count = sessions.len() - busy_count;
+    // Count sessions per section for header labels
+    let mut section_counts: std::collections::HashMap<SessionSection, usize> =
+        std::collections::HashMap::new();
+    for s in &sessions {
+        *section_counts.entry(s.status.section()).or_insert(0) += 1;
+    }
 
-    // Build rows: parent sessions + expanded child subagent rows + section divider
+    // Build rows: parent sessions + expanded child subagent rows + section headers
     let mut rows: Vec<Row> = Vec::new();
     let mut logical_to_parent: Vec<usize> = Vec::new(); // maps row index → parent session index
-    let mut divider_inserted = false;
+    let mut current_section: Option<SessionSection> = None;
 
     for (i, session) in sessions.iter().enumerate() {
-        // Insert section divider between Busy and Pending sessions
-        if !divider_inserted && !is_busy(session) && busy_count > 0 {
-            let divider_text = format!("── Busy ({}) │ Pending ({}) ──", busy_count, pending_count);
-            let divider_cell =
-                Cell::from(divider_text).style(Style::default().fg(theme::BORDER_DIM));
-            let mut divider_cells = vec![divider_cell];
+        let section = session.status.section();
+        // Insert section header when entering a new section
+        if current_section != Some(section) {
+            let count = section_counts.get(&section).copied().unwrap_or(0);
+            let header_text = format!("── {} ({}) ──", section.label(), count);
+            let header_cell = Cell::from(header_text).style(Style::default().fg(theme::BORDER_DIM));
+            let mut header_cells = vec![header_cell];
             for _ in 1..columns.len() {
-                divider_cells.push(Cell::from(""));
+                header_cells.push(Cell::from(""));
             }
-            rows.push(Row::new(divider_cells).style(Style::default().fg(theme::BORDER_DIM)));
+            rows.push(Row::new(header_cells).style(Style::default().fg(theme::BORDER_DIM)));
             logical_to_parent.push(usize::MAX); // sentinel — not selectable
-            divider_inserted = true;
+            current_section = Some(section);
         }
         let is_expanded = state.expanded_sessions.contains(&session.id);
 
@@ -357,6 +355,7 @@ impl TableView for SessionsTable {
             Keybinding::new(":new <path>", "New session in <path>"),
             Keybinding::new("s", "Stash/unstash session"),
             Keybinding::new("A", "Toggle filter: active / all"),
+            Keybinding::new("S", "Cycle section filter"),
             Keybinding::new("w", "Open in git worktree"),
             Keybinding::new("d", "Drop session (kill + unregister)"),
             Keybinding::new("D", "Drop ALL sessions"),

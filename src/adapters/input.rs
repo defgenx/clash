@@ -99,6 +99,13 @@ fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
                 Action::Noop
             }
         }
+        KeyCode::Char('S') => {
+            if state.current_view() == ViewKind::Sessions {
+                Action::Ui(UiAction::CycleSectionFilter)
+            } else {
+                Action::Noop
+            }
+        }
         KeyCode::Char('D') => handle_delete_all(state),
         KeyCode::Char('a') => handle_attach_or_assign(state),
         KeyCode::Char('i') => handle_inspect(state),

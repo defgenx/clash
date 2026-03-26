@@ -113,7 +113,7 @@ These rules must be followed on every change:
 - **Domain port traits stay minimal.** Never leak infrastructure concerns (filesystem paths, watcher events, cache hints) into `DataRepository` or `CliGateway`. If the infrastructure layer needs an optimization API (e.g., cache invalidation), put it on the concrete struct (`FsBackend`), not the trait.
 - **No dead code.** Do not leave unused functions, imports, or fields. If trait obligations force methods that are never called through the generic path (e.g., `SessionsTable::row()` — needed by `TableView` but bypassed by `render_sessions_table()`), document why with a comment.
 - **DRY display helpers.** When the same formatting logic is needed in multiple views, create a single helper function (e.g., `worktree_display_from_cwd()`) rather than repeating the pattern at each call site.
-- **Stable session ordering.** Sessions are sorted by section (Busy/Pending) then alphabetically by name in `DataStore::sort_sessions()`. The backend returns unsorted data; the application layer owns the sort. Selection is stabilized by ID across refreshes.
+- **Stable session ordering.** Sessions are sorted by section (Active/Pending/Done/Fail) then alphabetically by name in `DataStore::sort_sessions()`. The backend returns unsorted data; the application layer owns the sort. Selection is stabilized by ID across refreshes.
 - **Cache transparency.** `FsBackend`'s internal `SessionCache` is invisible to the `DataRepository` trait. Invalidation is driven by the FS watcher in `app.rs` via `invalidate_session_cache()`. On first load, everything is scanned; on subsequent loads, only dirty projects are re-parsed.
 
 ## Testing

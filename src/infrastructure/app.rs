@@ -622,7 +622,7 @@ impl App {
         self.overlay_daemon_sessions().await;
         self.resolve_session_names().await;
 
-        // Re-sort sessions by section (Busy/Pending) + name for stable ordering
+        // Re-sort sessions by section (Active/Pending/Done/Fail) + name for stable ordering
         self.state.store.sort_sessions();
 
         // Restore selection to the same session by ID

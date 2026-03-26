@@ -8,7 +8,7 @@ use crate::adapters::views::ViewKind;
 use crate::application::actions::Action;
 use crate::application::nav::NavigationStack;
 use crate::application::store::DataStore;
-use crate::domain::entities::{InboxMessage, Session};
+use crate::domain::entities::{InboxMessage, Session, SessionSection};
 
 /// Phases of the self-update process (displayed in the update overlay).
 #[derive(Debug, Clone)]
@@ -33,6 +33,9 @@ pub struct UiSnapshot {
     /// Session filter mode: "active" or "all".
     #[serde(default)]
     pub session_filter: String,
+    /// Section filter mode: "all", "active", "pending", "done", or "fail".
+    #[serde(default)]
+    pub section_filter: String,
     /// Session IDs with expanded subagent rows.
     #[serde(default)]
     pub expanded_sessions: Vec<String>,
@@ -59,6 +62,59 @@ impl SessionFilter {
         match self {
             Self::Active => "active",
             Self::All => "all",
+        }
+    }
+}
+
+/// Section filter — narrows the sessions view to a single section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SectionFilter {
+    #[default]
+    All,
+    Active,
+    Pending,
+    Done,
+    Fail,
+}
+
+impl SectionFilter {
+    /// Cycle to the next filter. Skips `Fail` when session filter is `:active`
+    /// (since Fail sessions are already hidden in that mode).
+    pub fn next(self, session_filter: SessionFilter) -> Self {
+        match session_filter {
+            SessionFilter::Active => match self {
+                Self::All => Self::Active,
+                Self::Active => Self::Pending,
+                Self::Pending => Self::Done,
+                Self::Done | Self::Fail => Self::All,
+            },
+            SessionFilter::All => match self {
+                Self::All => Self::Active,
+                Self::Active => Self::Pending,
+                Self::Pending => Self::Done,
+                Self::Done => Self::Fail,
+                Self::Fail => Self::All,
+            },
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Active => "Active",
+            Self::Pending => "Pending",
+            Self::Done => "Done",
+            Self::Fail => "Fail",
+        }
+    }
+
+    fn matches_section(self, section: SessionSection) -> bool {
+        match self {
+            Self::All => true,
+            Self::Active => section == SessionSection::Active,
+            Self::Pending => section == SessionSection::Pending,
+            Self::Done => section == SessionSection::Done,
+            Self::Fail => section == SessionSection::Fail,
         }
     }
 }
@@ -144,6 +200,7 @@ pub struct AppState {
     pub tick: usize,
     pub inbox_messages: Vec<InboxMessage>,
     pub session_filter: SessionFilter,
+    pub section_filter: SectionFilter,
     /// Currently attached daemon session ID.
     pub attached_session: Option<String>,
     /// Sessions with expanded subagent rows in the Sessions table.
@@ -193,6 +250,7 @@ impl AppState {
             tick: 0,
             inbox_messages: Vec::new(),
             session_filter: SessionFilter::Active,
+            section_filter: SectionFilter::default(),
             attached_session: None,
             expanded_sessions: HashSet::new(),
             default_cwd: std::env::current_dir()
@@ -231,6 +289,7 @@ impl AppState {
                 .collect(),
             selected: self.table_state.selected,
             session_filter: self.session_filter.label().to_string(),
+            section_filter: self.section_filter.label().to_string(),
             expanded_sessions: self.expanded_sessions.iter().cloned().collect(),
         }
     }
@@ -241,6 +300,15 @@ impl AppState {
         self.session_filter = match snapshot.session_filter.as_str() {
             "all" => SessionFilter::All,
             _ => SessionFilter::Active,
+        };
+
+        // Restore section filter
+        self.section_filter = match snapshot.section_filter.as_str() {
+            "active" | "Active" => SectionFilter::Active,
+            "pending" | "Pending" => SectionFilter::Pending,
+            "done" | "Done" => SectionFilter::Done,
+            "fail" | "Fail" => SectionFilter::Fail,
+            _ => SectionFilter::All,
         };
 
         // Restore selected row
@@ -265,7 +333,7 @@ impl AppState {
         }
     }
 
-    /// Get filtered sessions based on the current session filter and text filter.
+    /// Get filtered sessions based on the current session filter, section filter, and text filter.
     pub fn filtered_sessions(&self) -> Vec<&Session> {
         let status_filtered: Vec<&Session> = match self.session_filter {
             SessionFilter::All => self.store.sessions.iter().collect(),
@@ -279,11 +347,21 @@ impl AppState {
                 .collect(),
         };
 
+        // Apply section filter
+        let section_filtered: Vec<&Session> = if self.section_filter == SectionFilter::All {
+            status_filtered
+        } else {
+            status_filtered
+                .into_iter()
+                .filter(|s| self.section_filter.matches_section(s.status.section()))
+                .collect()
+        };
+
         if self.filter.is_empty() {
-            return status_filtered;
+            return section_filtered;
         }
 
-        status_filtered
+        section_filtered
             .into_iter()
             .filter(|s| s.matches_filter(&self.filter))
             .collect()
@@ -379,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ordering_busy_before_pending() {
+    fn test_ordering_four_sections() {
         let mut state = AppState::new();
         state.session_filter = SessionFilter::All;
         state.store.sessions = vec![
@@ -387,15 +465,35 @@ mod tests {
             make_session("s2", Some("beta"), SessionStatus::Running),
             make_session("s3", Some("gamma"), SessionStatus::Idle),
             make_session("s4", Some("delta"), SessionStatus::Thinking),
+            make_session("s5", Some("echo"), SessionStatus::Prompting),
+            make_session("s6", Some("foxtrot"), SessionStatus::Errored),
         ];
         sort_sessions_for_test(&mut state);
         let filtered = state.filtered_sessions();
-        // Busy sessions (Running, Thinking) first, then Pending (Waiting, Idle)
-        // Within each section, sorted alphabetically by name
-        assert_eq!(filtered[0].name.as_deref(), Some("beta")); // Busy
-        assert_eq!(filtered[1].name.as_deref(), Some("delta")); // Busy
-        assert_eq!(filtered[2].name.as_deref(), Some("alpha")); // Pending
-        assert_eq!(filtered[3].name.as_deref(), Some("gamma")); // Pending
+        // Active (Running, Thinking), Pending (Prompting), Done (Waiting, Idle), Fail (Errored)
+        assert_eq!(filtered[0].name.as_deref(), Some("beta")); // Active
+        assert_eq!(filtered[1].name.as_deref(), Some("delta")); // Active
+        assert_eq!(filtered[2].name.as_deref(), Some("echo")); // Pending
+        assert_eq!(filtered[3].name.as_deref(), Some("alpha")); // Done
+        assert_eq!(filtered[4].name.as_deref(), Some("gamma")); // Done
+        assert_eq!(filtered[5].name.as_deref(), Some("foxtrot")); // Fail
+    }
+
+    #[test]
+    fn test_ordering_waiting_and_idle_in_done() {
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::All;
+        state.store.sessions = vec![
+            make_session("s1", Some("alpha"), SessionStatus::Idle),
+            make_session("s2", Some("beta"), SessionStatus::Waiting),
+            make_session("s3", Some("gamma"), SessionStatus::Idle),
+        ];
+        sort_sessions_for_test(&mut state);
+        let filtered = state.filtered_sessions();
+        // All in Done section, sorted alphabetically
+        assert_eq!(filtered[0].name.as_deref(), Some("alpha"));
+        assert_eq!(filtered[1].name.as_deref(), Some("beta"));
+        assert_eq!(filtered[2].name.as_deref(), Some("gamma"));
     }
 
     #[test]
@@ -445,10 +543,128 @@ mod tests {
         assert_eq!(state.filtered_sessions()[0].name.as_deref(), Some("alpha"));
         assert_eq!(state.filtered_sessions()[1].name.as_deref(), Some("beta"));
 
-        // alpha transitions to Thinking — still in Busy section, same order
+        // alpha transitions to Thinking — still in Active section, same order
         state.store.sessions[0].status = SessionStatus::Thinking;
         sort_sessions_for_test(&mut state);
         assert_eq!(state.filtered_sessions()[0].name.as_deref(), Some("alpha"));
         assert_eq!(state.filtered_sessions()[1].name.as_deref(), Some("beta"));
+    }
+
+    // ── SectionFilter tests ──────────────────────────────────
+
+    #[test]
+    fn test_section_filter_active_only() {
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::All;
+        state.section_filter = SectionFilter::Active;
+        state.store.sessions = vec![
+            make_session("s1", Some("alpha"), SessionStatus::Running),
+            make_session("s2", Some("beta"), SessionStatus::Waiting),
+            make_session("s3", Some("gamma"), SessionStatus::Thinking),
+            make_session("s4", Some("delta"), SessionStatus::Errored),
+        ];
+        let filtered = state.filtered_sessions();
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].name.as_deref(), Some("alpha"));
+        assert_eq!(filtered[1].name.as_deref(), Some("gamma"));
+    }
+
+    #[test]
+    fn test_section_filter_pending_only() {
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::All;
+        state.section_filter = SectionFilter::Pending;
+        state.store.sessions = vec![
+            make_session("s1", Some("alpha"), SessionStatus::Running),
+            make_session("s2", Some("beta"), SessionStatus::Prompting),
+            make_session("s3", Some("gamma"), SessionStatus::Waiting),
+        ];
+        let filtered = state.filtered_sessions();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name.as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn test_section_filter_done_only() {
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::All;
+        state.section_filter = SectionFilter::Done;
+        state.store.sessions = vec![
+            make_session("s1", Some("alpha"), SessionStatus::Running),
+            make_session("s2", Some("beta"), SessionStatus::Waiting),
+            make_session("s3", Some("gamma"), SessionStatus::Idle),
+        ];
+        let filtered = state.filtered_sessions();
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].name.as_deref(), Some("beta"));
+        assert_eq!(filtered[1].name.as_deref(), Some("gamma"));
+    }
+
+    #[test]
+    fn test_section_filter_fail_only() {
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::All;
+        state.section_filter = SectionFilter::Fail;
+        state.store.sessions = vec![
+            make_session("s1", Some("alpha"), SessionStatus::Running),
+            make_session("s2", Some("beta"), SessionStatus::Errored),
+            make_session("s3", Some("gamma"), SessionStatus::Idle),
+        ];
+        let filtered = state.filtered_sessions();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name.as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn test_section_filter_cycle_skips_fail_in_active_mode() {
+        // In :active mode, cycling should skip Fail
+        let f = SectionFilter::All;
+        let active_mode = SessionFilter::Active;
+        let f = f.next(active_mode); // All -> Active
+        assert_eq!(f, SectionFilter::Active);
+        let f = f.next(active_mode); // Active -> Pending
+        assert_eq!(f, SectionFilter::Pending);
+        let f = f.next(active_mode); // Pending -> Done
+        assert_eq!(f, SectionFilter::Done);
+        let f = f.next(active_mode); // Done -> All (skips Fail)
+        assert_eq!(f, SectionFilter::All);
+    }
+
+    #[test]
+    fn test_section_filter_cycle_includes_fail_in_all_mode() {
+        let f = SectionFilter::All;
+        let all_mode = SessionFilter::All;
+        let f = f.next(all_mode); // All -> Active
+        assert_eq!(f, SectionFilter::Active);
+        let f = f.next(all_mode); // Active -> Pending
+        assert_eq!(f, SectionFilter::Pending);
+        let f = f.next(all_mode); // Pending -> Done
+        assert_eq!(f, SectionFilter::Done);
+        let f = f.next(all_mode); // Done -> Fail
+        assert_eq!(f, SectionFilter::Fail);
+        let f = f.next(all_mode); // Fail -> All
+        assert_eq!(f, SectionFilter::All);
+    }
+
+    #[test]
+    fn test_section_filter_resets_on_session_filter_change() {
+        let mut state = AppState::new();
+        state.section_filter = SectionFilter::Active;
+        // Simulating what the reducer does on CycleSessionFilter
+        state.session_filter = state.session_filter.next();
+        state.section_filter = SectionFilter::All; // reducer resets this
+        assert_eq!(state.section_filter, SectionFilter::All);
+    }
+
+    #[test]
+    fn test_section_filter_snapshot_roundtrip() {
+        let mut state = AppState::new();
+        state.section_filter = SectionFilter::Done;
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.section_filter, "Done");
+
+        let mut state2 = AppState::new();
+        state2.restore(snapshot);
+        assert_eq!(state2.section_filter, SectionFilter::Done);
     }
 }

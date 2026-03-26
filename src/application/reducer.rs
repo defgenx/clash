@@ -694,8 +694,27 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
         }
         UiAction::CycleSessionFilter => {
             state.session_filter = state.session_filter.next();
+            state.section_filter = crate::application::state::SectionFilter::All;
             state.table_state.selected = 0;
             state.toast = Some(format!("Showing {} sessions", state.session_filter.label()));
+            vec![]
+        }
+        UiAction::CycleSectionFilter => {
+            state.section_filter = state.section_filter.next(state.session_filter);
+            state.table_state.selected = 0;
+            if state.section_filter == crate::application::state::SectionFilter::All {
+                state.toast = Some("Showing all sections".to_string());
+            } else if state.filtered_sessions().is_empty() {
+                state.toast = Some(format!(
+                    "No {} sessions — press S to cycle",
+                    state.section_filter.label()
+                ));
+            } else {
+                state.toast = Some(format!(
+                    "Showing {} sessions only",
+                    state.section_filter.label()
+                ));
+            }
             vec![]
         }
         UiAction::SetSessionFilter(filter) => {
