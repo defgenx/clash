@@ -1,12 +1,12 @@
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use ratatui::Frame;
 
-use crate::application::state::{AppState, DiffLine, DiffLineKind};
+use crate::application::state::{AppState, DiffFile, DiffLine, DiffLineKind};
 use crate::infrastructure::tui::theme;
 
 /// Maximum number of raw diff lines to parse (truncate beyond this).
@@ -45,6 +45,71 @@ pub fn parse_diff_lines(raw: &str) -> Vec<DiffLine> {
     }
 
     result
+}
+
+/// Extract file boundaries and change counts from parsed diff lines.
+///
+/// Scans for `DiffLineKind::Meta` lines starting with "diff --git" to find
+/// file boundaries, then counts additions/deletions within each file's range.
+pub fn extract_files(lines: &[DiffLine]) -> Vec<DiffFile> {
+    let mut files: Vec<DiffFile> = Vec::new();
+    let mut current_start: Option<usize> = None;
+    let mut current_path: Option<String> = None;
+
+    for (i, line) in lines.iter().enumerate() {
+        if line.kind == DiffLineKind::Meta && line.content.starts_with("diff --git") {
+            // Close the previous file entry
+            if let (Some(start), Some(path)) = (current_start, current_path.take()) {
+                let (additions, deletions) = count_changes(lines, start, i);
+                files.push(DiffFile {
+                    path,
+                    start_line: start,
+                    end_line: i,
+                    additions,
+                    deletions,
+                });
+            }
+            // Extract path from "diff --git a/path b/path"
+            let path = line
+                .content
+                .strip_prefix("diff --git a/")
+                .and_then(|rest| {
+                    // The format is "a/<path> b/<path>" — find the " b/" separator
+                    rest.find(" b/").map(|pos| rest[..pos].to_string())
+                })
+                .unwrap_or_else(|| line.content.clone());
+            current_start = Some(i);
+            current_path = Some(path);
+        }
+    }
+
+    // Close the last file entry
+    if let (Some(start), Some(path)) = (current_start, current_path) {
+        let (additions, deletions) = count_changes(lines, start, lines.len());
+        files.push(DiffFile {
+            path,
+            start_line: start,
+            end_line: lines.len(),
+            additions,
+            deletions,
+        });
+    }
+
+    files
+}
+
+/// Count Add and Remove lines in the range `[start, end)`.
+fn count_changes(lines: &[DiffLine], start: usize, end: usize) -> (usize, usize) {
+    let mut additions = 0;
+    let mut deletions = 0;
+    for line in &lines[start..end] {
+        match line.kind {
+            DiffLineKind::Add => additions += 1,
+            DiffLineKind::Remove => deletions += 1,
+            _ => {}
+        }
+    }
+    (additions, deletions)
 }
 
 fn classify_line(line: &str) -> DiffLineKind {
@@ -106,22 +171,81 @@ pub fn render_diff(state: &AppState, frame: &mut Frame, area: Rect) {
         .unwrap_or(false);
 
     let title_suffix = if auto_refresh { " [auto-refresh]" } else { "" };
-    let title = format!(" Diff: {} {}", session_name, title_suffix);
 
-    let lines: Vec<Line> = if !state.diff.loaded {
-        vec![Line::from(Span::styled(
+    // Loading / empty states — render as full-width single panel
+    if !state.diff.loaded {
+        let title = format!(" Diff: {} {}", session_name, title_suffix);
+        let block = Block::default()
+            .title(title)
+            .title_style(theme::title_style())
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme::BORDER_COLOR))
+            .style(Style::default().bg(theme::BG));
+        let paragraph = Paragraph::new(Line::from(Span::styled(
             "  Loading...",
             Style::default().fg(theme::MUTED),
-        ))]
-    } else if state.diff.lines.is_empty() {
-        vec![Line::from(Span::styled(
+        )))
+        .block(block);
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    if state.diff.lines.is_empty() || state.diff.files.is_empty() {
+        let title = format!(" Diff: {} {}", session_name, title_suffix);
+        let block = Block::default()
+            .title(title)
+            .title_style(theme::title_style())
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme::BORDER_COLOR))
+            .style(Style::default().bg(theme::BG));
+        let paragraph = Paragraph::new(Line::from(Span::styled(
             "  No changes (working tree clean)",
             Style::default().fg(theme::MUTED),
-        ))]
-    } else {
-        state
-            .diff
-            .lines
+        )))
+        .block(block);
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    // Two-panel layout: 25% file list, 75% diff content
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+        .split(area);
+
+    // ── Left panel: file list ──
+    let file_items: Vec<ListItem> = state
+        .diff
+        .files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let label = format!(" {} [+{}/-{}]", f.path, f.additions, f.deletions);
+            let style = if i == state.diff.selected_file {
+                theme::selected_style()
+            } else {
+                Style::default().fg(theme::TEXT)
+            };
+            ListItem::new(Line::from(Span::styled(label, style)))
+        })
+        .collect();
+
+    let files_block = Block::default()
+        .title(" Files ")
+        .title_style(theme::title_style())
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::BORDER_COLOR))
+        .style(Style::default().bg(theme::BG));
+
+    let file_list = List::new(file_items).block(files_block);
+    frame.render_widget(file_list, chunks[0]);
+
+    // ── Right panel: selected file's diff ──
+    let selected_file = state.diff.files.get(state.diff.selected_file);
+
+    let (diff_lines, file_path): (Vec<Line>, String) = if let Some(file) = selected_file {
+        let slice = &state.diff.lines[file.start_line..file.end_line];
+        let lines: Vec<Line> = slice
             .iter()
             .map(|dl| {
                 Line::from(Span::styled(
@@ -129,26 +253,30 @@ pub fn render_diff(state: &AppState, frame: &mut Frame, area: Rect) {
                     style_for_kind(&dl.kind),
                 ))
             })
-            .collect()
+            .collect();
+        (lines, file.path.clone())
+    } else {
+        (vec![], String::new())
     };
 
-    let total_lines = lines.len() as u16;
-    let visible_height = area.height.saturating_sub(2);
+    let diff_title = format!(" {} {}", file_path, title_suffix);
+    let total_lines = diff_lines.len() as u16;
+    let visible_height = chunks[1].height.saturating_sub(2);
     let max_scroll = total_lines.saturating_sub(visible_height);
-    let scroll_offset = state.scroll_state.offset.min(max_scroll);
+    let scroll_offset = state.diff.file_scroll.min(max_scroll);
 
-    let block = Block::default()
-        .title(title)
+    let diff_block = Block::default()
+        .title(diff_title)
         .title_style(theme::title_style())
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme::BORDER_COLOR))
         .style(Style::default().bg(theme::BG));
 
-    let paragraph = Paragraph::new(lines)
-        .block(block)
+    let paragraph = Paragraph::new(diff_lines)
+        .block(diff_block)
         .scroll((scroll_offset, 0));
 
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, chunks[1]);
 
     if total_lines > visible_height {
         let mut scrollbar_state =
@@ -156,7 +284,7 @@ pub fn render_diff(state: &AppState, frame: &mut Frame, area: Rect) {
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .style(Style::default().fg(theme::BORDER_DIM)),
-            area,
+            chunks[1],
             &mut scrollbar_state,
         );
     }
@@ -294,5 +422,119 @@ index 0000000..abc1234
         assert_eq!(lines[4].kind, DiffLineKind::FilePath); // +++ b/new.rs
         assert_eq!(lines[5].kind, DiffLineKind::Hunk); // @@
         assert_eq!(lines[6].kind, DiffLineKind::Add); // +hello
+    }
+
+    // ── extract_files tests ──────────────────────────────────
+
+    #[test]
+    fn test_extract_files_empty() {
+        let files = extract_files(&[]);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_extract_files_no_diff_headers() {
+        // Lines without any "diff --git" header yield no files
+        let lines = vec![
+            DiffLine {
+                kind: DiffLineKind::Context,
+                content: "some context".to_string(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Add,
+                content: "+added".to_string(),
+            },
+        ];
+        let files = extract_files(&lines);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_extract_files_single_file() {
+        let raw = "\
+diff --git a/foo.rs b/foo.rs
+index abc..def 100644
+--- a/foo.rs
++++ b/foo.rs
+@@ -1,3 +1,4 @@
+ context
++added line
+-removed line
+ more context";
+        let lines = parse_diff_lines(raw);
+        let files = extract_files(&lines);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "foo.rs");
+        assert_eq!(files[0].start_line, 0);
+        assert_eq!(files[0].end_line, lines.len());
+        assert_eq!(files[0].additions, 1);
+        assert_eq!(files[0].deletions, 1);
+    }
+
+    #[test]
+    fn test_extract_files_multi_file() {
+        let raw = "\
+diff --git a/a.rs b/a.rs
+index 111..222 100644
+--- a/a.rs
++++ b/a.rs
+@@ -1 +1 @@
+-old
++new
+diff --git a/b.rs b/b.rs
+index 333..444 100644
+--- a/b.rs
++++ b/b.rs
+@@ -1 +1,3 @@
+-foo
++bar
++baz";
+        let lines = parse_diff_lines(raw);
+        let files = extract_files(&lines);
+        assert_eq!(files.len(), 2);
+
+        assert_eq!(files[0].path, "a.rs");
+        assert_eq!(files[0].additions, 1);
+        assert_eq!(files[0].deletions, 1);
+
+        assert_eq!(files[1].path, "b.rs");
+        assert_eq!(files[1].additions, 2);
+        assert_eq!(files[1].deletions, 1);
+
+        // Boundaries are contiguous
+        assert_eq!(files[0].end_line, files[1].start_line);
+        assert_eq!(files[1].end_line, lines.len());
+    }
+
+    #[test]
+    fn test_extract_files_binary_file() {
+        let raw = "\
+diff --git a/img.png b/img.png
+Binary files a/img.png and b/img.png differ";
+        let lines = parse_diff_lines(raw);
+        let files = extract_files(&lines);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "img.png");
+        assert_eq!(files[0].additions, 0);
+        assert_eq!(files[0].deletions, 0);
+    }
+
+    #[test]
+    fn test_extract_files_new_file() {
+        let raw = "\
+diff --git a/new.rs b/new.rs
+new file mode 100644
+index 0000000..abc1234
+--- /dev/null
++++ b/new.rs
+@@ -0,0 +1,2 @@
++line1
++line2";
+        let lines = parse_diff_lines(raw);
+        let files = extract_files(&lines);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "new.rs");
+        assert_eq!(files[0].additions, 2);
+        assert_eq!(files[0].deletions, 0);
     }
 }

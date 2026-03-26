@@ -846,6 +846,8 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
         UiAction::ScrollDown => {
             if state.show_help {
                 state.help_scroll = state.help_scroll.saturating_add(1);
+            } else if state.current_view() == ViewKind::Diff {
+                state.diff.file_scroll = state.diff.file_scroll.saturating_add(3);
             } else {
                 state.scroll_state.offset = state.scroll_state.offset.saturating_add(3);
             }
@@ -854,6 +856,8 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
         UiAction::ScrollUp => {
             if state.show_help {
                 state.help_scroll = state.help_scroll.saturating_sub(1);
+            } else if state.current_view() == ViewKind::Diff {
+                state.diff.file_scroll = state.diff.file_scroll.saturating_sub(3);
             } else {
                 state.scroll_state.offset = state.scroll_state.offset.saturating_sub(3);
             }
@@ -1028,6 +1032,19 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                     }];
                 }
             }
+            vec![]
+        }
+        UiAction::DiffNextFile => {
+            if !state.diff.files.is_empty() {
+                let max = state.diff.files.len() - 1;
+                state.diff.selected_file = (state.diff.selected_file + 1).min(max);
+                state.diff.file_scroll = 0;
+            }
+            vec![]
+        }
+        UiAction::DiffPrevFile => {
+            state.diff.selected_file = state.diff.selected_file.saturating_sub(1);
+            state.diff.file_scroll = 0;
             vec![]
         }
         UiAction::Tick => {
@@ -1265,18 +1282,24 @@ fn load_effects_for_view(state: &mut AppState, view: ViewKind) -> Vec<Effect> {
         ViewKind::SessionDetail => {
             let mut effects = vec![Effect::RefreshAll];
             if let Some(session_id) = state.current_session() {
-                if let Some(session) = state.store.find_session(session_id) {
+                // Clone fields out of the borrow before mutating state
+                let session_info = state
+                    .store
+                    .find_session(session_id)
+                    .map(|s| (s.project.clone(), s.id.clone()));
+                if let Some((project, sid)) = session_info {
+                    // Reset conversation state so the view shows "Loading..."
+                    state.store.conversation_loaded = false;
+                    state.store.conversation.clear();
                     effects.push(Effect::RefreshSubagents {
-                        project: session.project.clone(),
-                        session_id: session.id.clone(),
+                        project: project.clone(),
+                        session_id: sid.clone(),
                     });
                     effects.push(Effect::LoadConversation {
-                        project: session.project.clone(),
-                        session_id: session.id.clone(),
+                        project,
+                        session_id: sid.clone(),
                     });
-                    effects.push(Effect::LoadRepoConfig {
-                        session_id: session.id.clone(),
-                    });
+                    effects.push(Effect::LoadRepoConfig { session_id: sid });
                 }
             }
             effects
@@ -1300,11 +1323,18 @@ fn load_effects_for_view(state: &mut AppState, view: ViewKind) -> Vec<Effect> {
         ViewKind::SubagentDetail => {
             // Load the subagent's conversation
             if let Some(agent_id) = state.nav.current().context.as_deref() {
-                if let Some(sa) = state.store.find_subagent(agent_id) {
-                    // Find the parent session to get the project
-                    let parent_session_id = sa.parent_session_id.clone();
-                    let project = sa.project.clone();
-                    let agent_id = sa.id.clone();
+                // Clone fields out of the borrow before mutating state
+                let sa_info = state.store.find_subagent(agent_id).map(|sa| {
+                    (
+                        sa.parent_session_id.clone(),
+                        sa.project.clone(),
+                        sa.id.clone(),
+                    )
+                });
+                if let Some((parent_session_id, project, agent_id)) = sa_info {
+                    // Reset conversation state so the view shows "Loading..."
+                    state.store.conversation_loaded = false;
+                    state.store.conversation.clear();
                     return vec![Effect::LoadSubagentConversation {
                         project,
                         session_id: parent_session_id,

@@ -7,6 +7,7 @@ impl DiffView {
         vec![
             Keybinding::new("r", "Refresh diff"),
             Keybinding::new("j/k", "Scroll"),
+            Keybinding::new("n/p", "Next/prev file"),
             Keybinding::new("Esc", "Go back"),
         ]
     }

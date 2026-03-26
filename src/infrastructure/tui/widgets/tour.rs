@@ -141,14 +141,15 @@ pub const TOUR_STEPS: &[TourStep] = &[
         body: &[
             "Press  p  on a session (or  :diff  in command mode) to view its git diff.",
             "",
-            "The diff view shows  git diff HEAD  for the session's project, with syntax-highlighted additions and removals.",
-            "It auto-refreshes every ~3 seconds while the session is active.",
+            "The diff view shows a two-panel layout: a file list on the left and the selected file's diff on the right.",
+            "Each file shows its addition/deletion counts. The diff auto-refreshes every ~3 seconds while the session is active.",
         ],
         keys: &[
             ("p", "Open diff from Sessions or Session Detail"),
             (":diff", "Open diff via command mode"),
             ("r", "Refresh diff manually"),
-            ("j / k", "Scroll"),
+            ("j / k", "Scroll diff content"),
+            ("n / p", "Next / previous file"),
             ("Esc", "Go back"),
         ],
     },

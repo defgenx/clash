@@ -59,7 +59,12 @@ impl DetailView for SubagentDetailView {
         // Conversation transcript (latest first)
         let mut conversation = Section::new("Conversation");
         if state.store.conversation.is_empty() {
-            conversation = conversation.row("", "Loading...");
+            if state.store.conversation_loaded {
+                conversation =
+                    conversation.row("", "No messages (session file may have been removed)");
+            } else {
+                conversation = conversation.with_loading();
+            }
         } else {
             for msg in state.store.conversation.iter().rev() {
                 let role_label = if msg.role == "user" { "USER" } else { "CLAUDE" };

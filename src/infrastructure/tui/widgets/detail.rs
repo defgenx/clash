@@ -1,5 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
@@ -48,7 +48,9 @@ pub fn render_detail<V: DetailView>(state: &AppState, frame: &mut Frame, area: R
         ]));
         lines.push(Line::from(""));
 
-        if is_conversation {
+        if section.loading {
+            render_loading_shimmer(&mut lines, state.tick);
+        } else if is_conversation {
             render_conversation_section(&section.rows, &mut lines, area.width);
         } else {
             render_info_section(&section.rows, &mut lines);
@@ -213,4 +215,63 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
     } else {
         result
     }
+}
+
+/// Spinner frames matching `spinner.rs`.
+const SPINNER_FRAMES: &[&str] = &["○", "◔", "◑", "◕", "●", "◕", "◑", "◔"];
+const TICKS_PER_FRAME: usize = 8;
+
+/// Shimmer gradient keyframes (same as `spinner.rs`).
+const SHIMMER: &[(u8, u8, u8)] = &[
+    (180, 140, 255),
+    (220, 150, 215),
+    (140, 200, 240),
+    (130, 210, 210),
+    (180, 140, 255),
+];
+const CYCLE_TICKS: usize = 120;
+const CHAR_SPREAD: usize = 6;
+
+/// Render an inline loading spinner with shimmer text for a section.
+fn render_loading_shimmer(lines: &mut Vec<Line<'_>>, tick: usize) {
+    let spinner_char = SPINNER_FRAMES[(tick / TICKS_PER_FRAME) % SPINNER_FRAMES.len()];
+    let full_text = format!("      {} Loading...", spinner_char);
+
+    let spans: Vec<Span> = full_text
+        .chars()
+        .enumerate()
+        .map(|(i, ch)| {
+            let phase = ((i.wrapping_mul(CHAR_SPREAD).wrapping_add(tick)) % CYCLE_TICKS) as f32
+                / CYCLE_TICKS as f32;
+            let color = shimmer_at(phase);
+            Span::styled(
+                ch.to_string(),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )
+        })
+        .collect();
+
+    lines.push(Line::from(spans));
+}
+
+/// Interpolate the shimmer gradient at position `t` (0.0 -- 1.0).
+fn shimmer_at(t: f32) -> Color {
+    let n = SHIMMER.len() - 1;
+    let scaled = t * n as f32;
+    let idx = (scaled as usize).min(n - 1);
+    let frac = scaled - idx as f32;
+
+    let (r1, g1, b1) = SHIMMER[idx];
+    let (r2, g2, b2) = SHIMMER[idx + 1];
+
+    Color::Rgb(
+        lerp_u8(r1, r2, frac),
+        lerp_u8(g1, g2, frac),
+        lerp_u8(b1, b2, frac),
+    )
+}
+
+#[inline]
+fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t) as u8
 }

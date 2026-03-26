@@ -153,6 +153,8 @@ impl Keybinding {
 pub struct Section {
     pub title: String,
     pub rows: Vec<(String, String)>,
+    /// When true, the section shows a loading spinner instead of rows.
+    pub loading: bool,
 }
 
 impl Section {
@@ -160,11 +162,18 @@ impl Section {
         Self {
             title: title.to_string(),
             rows: Vec::new(),
+            loading: false,
         }
     }
 
     pub fn row(mut self, label: &str, value: &str) -> Self {
         self.rows.push((label.to_string(), value.to_string()));
+        self
+    }
+
+    /// Mark this section as loading — the detail widget will render a spinner.
+    pub fn with_loading(mut self) -> Self {
+        self.loading = true;
         self
     }
 }

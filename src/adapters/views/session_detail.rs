@@ -183,7 +183,7 @@ impl DetailView for SessionDetailView {
                 conversation =
                     conversation.row("", "No messages (session file may have been removed)");
             } else {
-                conversation = conversation.row("", "Loading...");
+                conversation = conversation.with_loading();
             }
         } else {
             for msg in state.store.conversation.iter().rev() {

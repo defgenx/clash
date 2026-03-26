@@ -171,6 +171,27 @@ pub struct DiffState {
     pub loading: bool,
     /// Which session this diff belongs to.
     pub session_id: Option<String>,
+    /// Extracted file boundaries from the parsed diff lines.
+    pub files: Vec<DiffFile>,
+    /// Currently selected file index in the file list panel.
+    pub selected_file: usize,
+    /// Scroll offset within the selected file's diff (independent per file).
+    pub file_scroll: u16,
+}
+
+/// A file entry extracted from parsed diff output — tracks line boundaries and change counts.
+#[derive(Debug, Clone)]
+pub struct DiffFile {
+    /// File path, e.g. "src/main.rs".
+    pub path: String,
+    /// Index into `DiffState.lines` where this file's diff starts.
+    pub start_line: usize,
+    /// Exclusive end index into `DiffState.lines`.
+    pub end_line: usize,
+    /// Count of `DiffLineKind::Add` lines in this file.
+    pub additions: usize,
+    /// Count of `DiffLineKind::Remove` lines in this file.
+    pub deletions: usize,
 }
 
 /// A single line from git diff output, classified by kind.

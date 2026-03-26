@@ -115,7 +115,7 @@ clash detects session status through three layers (in priority order):
 | Key | Action |
 |-----|--------|
 | `a` | Attach (inline terminal) |
-| `p` | Open diff in IDE |
+| `p` | View git diff |
 | `e` | Open project in IDE (auto-detect + picker) |
 | `o` | Open in new pane / tab / window |
 | `O` | Open ALL running sessions (smart layout) |
@@ -151,10 +151,19 @@ clash detects session status through three layers (in priority order):
 | `s` | Subagents |
 | `t` | Linked team |
 | `m` | Team members |
-| `p` | Open diff in IDE |
+| `p` | View git diff |
 | `a` | Attach |
 | `e` | Open in IDE |
 | `d` | Drop |
+
+### Diff View
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Scroll diff content |
+| `n` / `p` | Next / previous file |
+| `r` | Refresh diff |
+| `Esc` | Go back |
 
 ### Team Detail
 
@@ -181,7 +190,7 @@ clash detects session status through three layers (in priority order):
 | `:create task <team> <subject>` | Create a task |
 | `:new [path]` | Spawn a new session |
 | `:new --preset <name>` | Spawn session from a preset |
-| `:diff` | Open diff in IDE for current session |
+| `:diff` | View git diff for current session |
 | `:rename <name>` | Rename session (from detail view) |
 | `:active` / `:all` | Filter sessions |
 | `:tour` | Replay guided tour |

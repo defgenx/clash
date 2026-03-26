@@ -52,6 +52,10 @@ pub enum UiAction {
     PickerCancel,
     /// Manual diff refresh (from `r` key on Diff view).
     RefreshDiff,
+    /// Select the next file in the diff file list.
+    DiffNextFile,
+    /// Select the previous file in the diff file list.
+    DiffPrevFile,
     /// Tick event — advances animation frame counter, clears stale toasts.
     Tick,
 }

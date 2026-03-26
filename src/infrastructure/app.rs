@@ -1206,6 +1206,12 @@ impl App {
                             content: "No project directory for this session".to_string(),
                         }];
                     }
+                    self.state.diff.files =
+                        crate::infrastructure::tui::widgets::diff_widget::extract_files(
+                            &self.state.diff.lines,
+                        );
+                    self.state.diff.selected_file = 0;
+                    self.state.diff.file_scroll = 0;
                     self.state.diff.loaded = true;
                     self.state.diff.loading = false;
                 }

@@ -116,12 +116,24 @@ fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
         KeyCode::Char('s') => handle_s_key(state),
         KeyCode::Char('m') => handle_message(state),
         KeyCode::Char('t') => handle_t_key(state),
-        KeyCode::Char('n') => handle_new_session(state),
+        KeyCode::Char('n') => {
+            if state.current_view() == ViewKind::Diff {
+                Action::Ui(UiAction::DiffNextFile)
+            } else {
+                handle_new_session(state)
+            }
+        }
         KeyCode::Char('e') => handle_open_in_ide(state),
         KeyCode::Char('o') => handle_attach_new_window(state),
         KeyCode::Char('O') => handle_attach_all_new_windows(state),
         KeyCode::Char('w') => handle_worktree(state),
-        KeyCode::Char('p') => handle_diff_view(state),
+        KeyCode::Char('p') => {
+            if state.current_view() == ViewKind::Diff {
+                Action::Ui(UiAction::DiffPrevFile)
+            } else {
+                handle_diff_view(state)
+            }
+        }
         KeyCode::Char('r') => handle_refresh(state),
         KeyCode::Tab => Action::Ui(UiAction::ToggleExpand),
 
