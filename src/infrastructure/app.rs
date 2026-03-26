@@ -16,6 +16,7 @@ use crate::application::actions::Action;
 use crate::application::effects::Effect;
 use crate::application::reducer;
 use crate::application::state::{AppState, InputMode};
+use crate::domain::entities::{Session, SessionSection};
 use crate::domain::ports::{CliGateway, DataRepository};
 use crate::infrastructure::cli::commands;
 use crate::infrastructure::cli::runner::RealCliRunner;
@@ -749,7 +750,22 @@ impl App {
             &recently_removed_set,
         );
 
-        // Post-processing: subagent delta reload + member rebuild
+        // Auto-collapse sessions that transitioned from Active to Done/Fail
+        let old_by_id: std::collections::HashMap<&str, &Session> =
+            previous_for_subagents
+                .iter()
+                .map(|s| (s.id.as_str(), s))
+                .collect();
+        for session in &self.state.store.sessions {
+            if self.state.expanded_sessions.contains(&session.id) {
+                let was_active = old_by_id
+                    .get(session.id.as_str())
+                    .is_some_and(|old| old.status.section() == SessionSection::Active);
+                if was_active && session.status.section() != SessionSection::Active {
+                    self.state.expanded_sessions.remove(&session.id);
+                }
+            }
+        }
         self.state
             .store
             .refresh_changed_subagents(&self.backend, &previous_for_subagents);
