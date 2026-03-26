@@ -509,6 +509,7 @@ impl App {
                         | crate::adapters::views::ViewKind::SessionDetail
                         | crate::adapters::views::ViewKind::Subagents
                         | crate::adapters::views::ViewKind::SubagentDetail
+                        | crate::adapters::views::ViewKind::Diff
                 ))
         {
             self.refresh_daemon_sessions().await;

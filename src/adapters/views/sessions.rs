@@ -167,8 +167,8 @@ pub fn render_sessions_table(
             let count = section_counts.get(&section).copied().unwrap_or(0);
             let dim = Style::default().fg(theme::TEXT_DIM);
             let mut header_cells = Vec::with_capacity(columns.len());
-            header_cells.push(Cell::from(format!("── {}", section.label())).style(dim));
-            header_cells.push(Cell::from(format!("({})", count)).style(dim));
+            header_cells.push(Cell::from(format!("▸ {}", section.label())).style(dim));
+            header_cells.push(Cell::from(format!("— {}", count)).style(dim));
             for _ in 2..columns.len() {
                 header_cells.push(Cell::from(""));
             }
@@ -311,7 +311,7 @@ impl TableView for SessionsTable {
 
     fn columns() -> Vec<ColumnDef> {
         vec![
-            ColumnDef::flex("STATUS", 8, 16),
+            ColumnDef::flex("STATUS", 10, 16),
             ColumnDef::flex("NAME", 4, 30),
             ColumnDef::flex("PROJECT", 7, 25),
             ColumnDef::new("SUMMARY", 35),
