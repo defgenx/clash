@@ -45,6 +45,7 @@ pub fn status_icon(status: SessionStatus, tick: usize) -> &'static str {
         SessionStatus::Waiting => "◉",
         SessionStatus::Errored => "✗",
         SessionStatus::Stashed => "○",
+        SessionStatus::Done => "✓",
     }
 }
 
@@ -67,6 +68,7 @@ pub fn status_display(status: SessionStatus, tick: usize) -> String {
         SessionStatus::Prompting => format!("{} PROMPTING (approval needed)", icon),
         SessionStatus::Errored => format!("{} ERRORED (process died)", icon),
         SessionStatus::Stashed => format!("{} STASHED", icon),
+        SessionStatus::Done => format!("{} DONE", icon),
     }
 }
 
@@ -80,6 +82,7 @@ pub fn status_style(status: SessionStatus) -> Style {
         SessionStatus::Prompting => theme::STATUS_PROMPTING,
         SessionStatus::Errored => theme::ERROR_COLOR,
         SessionStatus::Stashed => theme::STATUS_IDLE,
+        SessionStatus::Done => theme::STATUS_IDLE,
     };
     Style::default().fg(color)
 }

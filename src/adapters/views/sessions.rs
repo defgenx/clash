@@ -58,14 +58,7 @@ fn agents_summary(subagents: &[Subagent]) -> String {
 
 /// Build a subagent child row (indented) for expanded sessions.
 fn subagent_row(sa: &Subagent, tick: usize) -> Vec<Cell<'static>> {
-    let (status, style) = if matches!(sa.status, SessionStatus::Stashed) {
-        (
-            "○ Done".to_string(),
-            ratatui::style::Style::default().fg(theme::STATUS_IDLE),
-        )
-    } else {
-        format::status_cell(sa.status, tick)
-    };
+    let (status, style) = format::status_cell(sa.status, tick);
     let display_id = format::truncate(&sa.id, 15, "…");
     let summary = if sa.summary.is_empty() {
         "—".to_string()
@@ -202,13 +195,8 @@ pub fn render_sessions_table(
         // Get subagents for this session
         let subs = state.store.subagents_by_session.get(&session.id);
 
-        let has_active_subs = subs
-            .map(|s| {
-                s.iter()
-                    .any(|sa| !matches!(sa.status, SessionStatus::Stashed))
-            })
-            .unwrap_or(false);
-        let expand_indicator = if has_active_subs {
+        let has_subs = subs.map(|s| !s.is_empty()).unwrap_or(false);
+        let expand_indicator = if has_subs {
             if is_expanded {
                 "▼ "
             } else {
@@ -283,13 +271,10 @@ pub fn render_sessions_table(
         rows.push(row);
         logical_to_parent.push(i);
 
-        // Add child rows if expanded (only active subagents)
+        // Add child rows if expanded
         if is_expanded {
             if let Some(subs) = subs {
-                for sa in subs
-                    .iter()
-                    .filter(|sa| !matches!(sa.status, SessionStatus::Stashed))
-                {
+                for sa in subs.iter() {
                     let child = Row::new(subagent_row(sa, state.tick))
                         .style(Style::default().fg(theme::TEXT_DIM));
                     rows.push(child);

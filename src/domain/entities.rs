@@ -167,6 +167,9 @@ pub enum SessionStatus {
     Prompting,
     /// Session process died shortly after starting (crash, bad resume, etc.).
     Errored,
+    /// Subagent completed its work (not a session-level status).
+    #[serde(rename = "done")]
+    Done,
 }
 
 impl SessionStatus {
@@ -176,7 +179,7 @@ impl SessionStatus {
             Self::Thinking | Self::Running | Self::Starting | Self::Prompting | Self::Waiting => {
                 SessionSection::Active
             }
-            Self::Stashed => SessionSection::Done,
+            Self::Stashed | Self::Done => SessionSection::Done,
             Self::Errored => SessionSection::Fail,
         }
     }
@@ -194,6 +197,7 @@ impl std::str::FromStr for SessionStatus {
             "waiting" => Ok(SessionStatus::Waiting),
             "prompting" => Ok(SessionStatus::Prompting),
             "errored" => Ok(SessionStatus::Errored),
+            "done" => Ok(SessionStatus::Done),
             _ => Err(()),
         }
     }
@@ -209,6 +213,7 @@ impl std::fmt::Display for SessionStatus {
             SessionStatus::Waiting => write!(f, "Waiting"),
             SessionStatus::Prompting => write!(f, "Prompting"),
             SessionStatus::Errored => write!(f, "Errored"),
+            SessionStatus::Done => write!(f, "Done"),
         }
     }
 }

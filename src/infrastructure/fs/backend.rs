@@ -721,12 +721,20 @@ impl DataRepository for FsBackend {
                 .unwrap_or_else(|| "unknown".to_string());
 
             let mut status = Self::detect_session_status(&path);
-            // Subagents don't wait for user input — a "Waiting" subagent has
-            // finished its work and should display as Stashed (done).
-            if matches!(status, crate::domain::entities::SessionStatus::Waiting) {
-                status = crate::domain::entities::SessionStatus::Stashed;
+            // Subagents don't wait for user input — a Waiting or Stashed
+            // subagent has finished its work.
+            if matches!(
+                status,
+                crate::domain::entities::SessionStatus::Waiting
+                    | crate::domain::entities::SessionStatus::Stashed
+            ) {
+                status = crate::domain::entities::SessionStatus::Done;
             }
-            let is_running = !matches!(status, crate::domain::entities::SessionStatus::Stashed);
+            let is_running = !matches!(
+                status,
+                crate::domain::entities::SessionStatus::Done
+                    | crate::domain::entities::SessionStatus::Stashed
+            );
 
             // Decode project name to path
             let decoded_path = format!("/{}", project.trim_start_matches('-').replace('-', "/"));
