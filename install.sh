@@ -113,18 +113,19 @@ main() {
     info "Extracting..."
     tar xzf "${tmpdir}/${artifact}" -C "$tmpdir"
 
+    # Fall back to ~/.local/bin if the chosen INSTALL_DIR is not writable
+    if [ ! -w "$INSTALL_DIR" ]; then
+        INSTALL_DIR="${HOME}/.local/bin"
+        warn "Cannot write to original install dir, falling back to ${INSTALL_DIR}"
+        mkdir -p "$INSTALL_DIR"
+    fi
+
     info "Installing to ${INSTALL_DIR}/${BINARY}..."
     # Remove existing binary first so the new file gets a fresh inode.
     # On macOS, overwriting in-place invalidates the code signature and
     # the kernel kills the process with SIGKILL.
-    if [ -w "$INSTALL_DIR" ]; then
-        rm -f "${INSTALL_DIR}/${BINARY}"
-        mv "${tmpdir}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
-    else
-        warn "Need sudo to install to ${INSTALL_DIR}"
-        sudo rm -f "${INSTALL_DIR}/${BINARY}"
-        sudo mv "${tmpdir}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
-    fi
+    rm -f "${INSTALL_DIR}/${BINARY}"
+    mv "${tmpdir}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
     chmod +x "${INSTALL_DIR}/${BINARY}"
     # Ad-hoc codesign on macOS
     if [ "$(uname)" = "Darwin" ]; then
@@ -133,6 +134,13 @@ main() {
 
     ok "clash ${version} installed to ${INSTALL_DIR}/${BINARY}"
     echo ""
+    # Warn if the install dir is not on PATH
+    case ":${PATH}:" in
+        *":${INSTALL_DIR}:"*) ;;
+        *) warn "${INSTALL_DIR} is not in your PATH. Add it with:"
+           warn "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+           ;;
+    esac
     info "Run 'clash' to start, or 'clash --help' for options."
 }
 
