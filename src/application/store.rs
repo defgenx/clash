@@ -292,7 +292,7 @@ mod tests {
         store.sessions = vec![Session {
             id: "s1".to_string(),
             is_running: false,
-            status: SessionStatus::Idle,
+            status: SessionStatus::Stashed,
             ..Default::default()
         }];
 
@@ -310,7 +310,7 @@ mod tests {
 
         // Old idle status should be preserved — overlays are authoritative
         assert!(!store.sessions[0].is_running);
-        assert_eq!(store.sessions[0].status, SessionStatus::Idle);
+        assert_eq!(store.sessions[0].status, SessionStatus::Stashed);
     }
 
     #[test]
@@ -329,7 +329,7 @@ mod tests {
             sessions: vec![Session {
                 id: "s1".to_string(),
                 is_running: false,
-                status: SessionStatus::Idle,
+                status: SessionStatus::Stashed,
                 ..Default::default()
             }],
         };

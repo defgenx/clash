@@ -183,7 +183,10 @@ pub fn render_sessions_table(
 
         // Only show expand arrow if there are active (non-idle) subagents
         let has_active_subs = subs
-            .map(|s| s.iter().any(|sa| !matches!(sa.status, SessionStatus::Idle)))
+            .map(|s| {
+                s.iter()
+                    .any(|sa| !matches!(sa.status, SessionStatus::Stashed))
+            })
             .unwrap_or(false);
         let expand_indicator = if has_active_subs {
             if is_expanded {
@@ -265,7 +268,7 @@ pub fn render_sessions_table(
             if let Some(subs) = subs {
                 for sa in subs
                     .iter()
-                    .filter(|sa| !matches!(sa.status, SessionStatus::Idle))
+                    .filter(|sa| !matches!(sa.status, SessionStatus::Stashed))
                 {
                     let child = Row::new(subagent_row(sa, state.tick))
                         .style(Style::default().fg(theme::TEXT_DIM));

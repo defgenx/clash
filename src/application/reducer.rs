@@ -374,7 +374,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             let session = state.store.find_session(&session_id).cloned();
             match session {
                 Some(s)
-                    if s.status == crate::domain::entities::SessionStatus::Idle
+                    if s.status == crate::domain::entities::SessionStatus::Stashed
                         && !s.is_running =>
                 {
                     // Unstash: restart in the background (don't attach)
@@ -396,7 +396,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                     if let Some(session) =
                         state.store.sessions.iter_mut().find(|x| x.id == session_id)
                     {
-                        session.status = crate::domain::entities::SessionStatus::Idle;
+                        session.status = crate::domain::entities::SessionStatus::Stashed;
                         session.is_running = false;
                     }
                     // Clamp selection index since the session may vanish from Active filter
@@ -436,7 +436,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 .sessions
                 .iter()
                 .filter(|s| {
-                    s.status == crate::domain::entities::SessionStatus::Idle && !s.is_running
+                    s.status == crate::domain::entities::SessionStatus::Stashed && !s.is_running
                 })
                 .map(|s| s.id.clone())
                 .collect();
@@ -444,7 +444,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             if !running.is_empty() {
                 // Stash all running sessions
                 for session in state.store.sessions.iter_mut().filter(|s| s.is_running) {
-                    session.status = crate::domain::entities::SessionStatus::Idle;
+                    session.status = crate::domain::entities::SessionStatus::Stashed;
                     session.is_running = false;
                 }
                 let count = state.filtered_sessions().len();
@@ -1829,7 +1829,7 @@ mod tests {
             crate::domain::entities::Session {
                 id: "idle1".to_string(),
                 is_running: false,
-                status: crate::domain::entities::SessionStatus::Idle,
+                status: crate::domain::entities::SessionStatus::Stashed,
                 ..Default::default()
             },
         ];

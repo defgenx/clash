@@ -302,14 +302,7 @@ impl PtySession {
         let bottom_text = self.read_bottom_lines(10);
 
         // Pattern-match against Claude Code UI states
-        let result = detect_claude_status(&bottom_text, last);
-        tracing::debug!(
-            session_id = %self.session_id,
-            status = result,
-            bottom_text = %bottom_text.lines().filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join(" | "),
-            "status detection"
-        );
-        result
+        detect_claude_status(&bottom_text, last)
     }
 
     /// Read the bottom N lines of the vt100 screen as plain text.

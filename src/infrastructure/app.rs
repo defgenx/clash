@@ -792,7 +792,7 @@ impl App {
                     // Idle from hooks: only apply if the hook file is newer than
                     // the JSONL file — otherwise the session was restarted externally
                     // and the hook file is stale.
-                    SessionStatus::Idle => {
+                    SessionStatus::Stashed => {
                         let jsonl_mtime = self
                             .backend
                             .session_jsonl_mtime(&session.project, &session.id);
@@ -802,7 +802,7 @@ impl App {
                             _ => false,
                         };
                         if hook_is_fresher {
-                            session.status = SessionStatus::Idle;
+                            session.status = SessionStatus::Stashed;
                             session.is_running = false;
                         }
                     }
@@ -842,25 +842,25 @@ impl App {
         for info in &infos {
             let hook_says_idle = hook_statuses
                 .get(&info.session_id)
-                .is_some_and(|(s, _)| matches!(s, SessionStatus::Idle));
+                .is_some_and(|(s, _)| matches!(s, SessionStatus::Stashed));
 
             let mut status = info
                 .status
                 .parse::<SessionStatus>()
-                .unwrap_or(SessionStatus::Idle);
+                .unwrap_or(SessionStatus::Stashed);
 
             // If the process died shortly after creation, mark as errored
             // so the user can see something went wrong (instead of disappearing).
             // Skip this heuristic when the hook says idle — the session was
             // intentionally killed (stash/drop), not a crash.
-            if !hook_says_idle && !info.is_alive && matches!(status, SessionStatus::Idle) {
+            if !hook_says_idle && !info.is_alive && matches!(status, SessionStatus::Stashed) {
                 let age_secs = now.saturating_sub(info.created_at);
                 if age_secs < 120 {
                     status = SessionStatus::Errored;
                 }
             }
 
-            let is_running = !matches!(status, SessionStatus::Idle);
+            let is_running = !matches!(status, SessionStatus::Stashed);
 
             let matched_by_id = self
                 .state
@@ -879,10 +879,10 @@ impl App {
                 // intentionally stopped — the daemon may still report it as
                 // running/waiting during the graceful kill window.
                 let dominated = (matches!(existing.status, SessionStatus::Prompting)
-                    && matches!(status, SessionStatus::Waiting | SessionStatus::Idle))
-                    || (matches!(existing.status, SessionStatus::Idle)
+                    && matches!(status, SessionStatus::Waiting | SessionStatus::Stashed))
+                    || (matches!(existing.status, SessionStatus::Stashed)
                         && matches!(status, SessionStatus::Errored))
-                    || (hook_says_idle && !matches!(status, SessionStatus::Idle));
+                    || (hook_says_idle && !matches!(status, SessionStatus::Stashed));
                 if !dominated {
                     existing.status = status;
                     existing.is_running = is_running;
@@ -921,10 +921,10 @@ impl App {
                 if let Some(idx) = matched_by_cwd {
                     let existing = &mut self.state.store.sessions[idx];
                     let dominated = (matches!(existing.status, SessionStatus::Prompting)
-                        && matches!(status, SessionStatus::Waiting | SessionStatus::Idle))
-                        || (matches!(existing.status, SessionStatus::Idle)
+                        && matches!(status, SessionStatus::Waiting | SessionStatus::Stashed))
+                        || (matches!(existing.status, SessionStatus::Stashed)
                             && matches!(status, SessionStatus::Errored))
-                        || (hook_says_idle && !matches!(status, SessionStatus::Idle));
+                        || (hook_says_idle && !matches!(status, SessionStatus::Stashed));
                     if !dominated {
                         existing.status = status;
                         existing.is_running = is_running;

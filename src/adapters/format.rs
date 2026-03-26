@@ -44,7 +44,7 @@ pub fn status_icon(status: SessionStatus, tick: usize) -> &'static str {
         }
         SessionStatus::Waiting => "◉",
         SessionStatus::Errored => "✗",
-        SessionStatus::Idle => "○",
+        SessionStatus::Stashed => "○",
     }
 }
 
@@ -66,7 +66,7 @@ pub fn status_display(status: SessionStatus, tick: usize) -> String {
         SessionStatus::Starting => format!("{} STARTING", icon),
         SessionStatus::Prompting => format!("{} PROMPTING (approval needed)", icon),
         SessionStatus::Errored => format!("{} ERRORED (process died)", icon),
-        SessionStatus::Idle => format!("{} IDLE", icon),
+        SessionStatus::Stashed => format!("{} STASHED", icon),
     }
 }
 
@@ -79,10 +79,10 @@ pub fn status_style(status: SessionStatus) -> Style {
         SessionStatus::Starting => theme::STATUS_STARTING,
         SessionStatus::Prompting => theme::STATUS_PROMPTING,
         SessionStatus::Errored => theme::ERROR_COLOR,
-        SessionStatus::Idle => theme::STATUS_IDLE,
+        SessionStatus::Stashed => theme::STATUS_IDLE,
     };
     let base = Style::default().fg(color);
-    if matches!(status, SessionStatus::Idle) {
+    if matches!(status, SessionStatus::Stashed) {
         base
     } else {
         base.add_modifier(Modifier::BOLD)

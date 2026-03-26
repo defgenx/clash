@@ -813,7 +813,7 @@ mod tests {
         state.store.sessions = vec![crate::domain::entities::Session {
             id: "idle1".to_string(),
             is_running: false,
-            status: crate::domain::entities::SessionStatus::Idle,
+            status: crate::domain::entities::SessionStatus::Stashed,
             ..Default::default()
         }];
         let key = KeyEvent::new(KeyCode::Char('O'), crossterm::event::KeyModifiers::SHIFT);

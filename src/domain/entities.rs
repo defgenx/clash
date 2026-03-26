@@ -134,7 +134,7 @@ pub struct Task {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SessionSection {
     Active = 0, // Thinking, Running, Starting, Prompting, Waiting
-    Done = 1,   // Idle
+    Done = 1,   // Stashed
     Fail = 2,   // Errored
 }
 
@@ -153,7 +153,8 @@ impl SessionSection {
 pub enum SessionStatus {
     /// Session process is dead or exited.
     #[default]
-    Idle,
+    #[serde(rename = "idle", alias = "Idle")]
+    Stashed,
     /// Just spawned, not yet producing output.
     Starting,
     /// Actively producing output — Claude is executing tools, writing code.
@@ -175,7 +176,7 @@ impl SessionStatus {
             Self::Thinking | Self::Running | Self::Starting | Self::Prompting | Self::Waiting => {
                 SessionSection::Active
             }
-            Self::Idle => SessionSection::Done,
+            Self::Stashed => SessionSection::Done,
             Self::Errored => SessionSection::Fail,
         }
     }
@@ -186,7 +187,7 @@ impl std::str::FromStr for SessionStatus {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
-            "idle" => Ok(SessionStatus::Idle),
+            "idle" => Ok(SessionStatus::Stashed),
             "starting" => Ok(SessionStatus::Starting),
             "running" => Ok(SessionStatus::Running),
             "thinking" => Ok(SessionStatus::Thinking),
@@ -201,7 +202,7 @@ impl std::str::FromStr for SessionStatus {
 impl std::fmt::Display for SessionStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SessionStatus::Idle => write!(f, "IDLE"),
+            SessionStatus::Stashed => write!(f, "STASHED"),
             SessionStatus::Starting => write!(f, "STARTING"),
             SessionStatus::Running => write!(f, "RUNNING"),
             SessionStatus::Thinking => write!(f, "THINKING"),
@@ -555,8 +556,9 @@ mod tests {
         assert_eq!(SessionStatus::Starting.section(), SessionSection::Active);
         assert_eq!(SessionStatus::Prompting.section(), SessionSection::Active);
         assert_eq!(SessionStatus::Waiting.section(), SessionSection::Active);
-        assert_eq!(SessionStatus::Idle.section(), SessionSection::Done);
+        assert_eq!(SessionStatus::Stashed.section(), SessionSection::Done);
         assert_eq!(SessionStatus::Errored.section(), SessionSection::Fail);
+        assert_eq!(SessionStatus::Stashed.to_string(), "STASHED");
     }
 
     #[test]

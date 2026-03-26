@@ -130,7 +130,7 @@ impl FsBackend {
         let file_mtime = file_meta.as_ref().and_then(|m| m.modified().ok());
 
         let status = Self::detect_session_status(jsonl_path);
-        let is_running = !matches!(status, crate::domain::entities::SessionStatus::Idle);
+        let is_running = !matches!(status, crate::domain::entities::SessionStatus::Stashed);
 
         // Format last_modified from actual file mtime for accuracy
         let last_modified = file_mtime
@@ -721,7 +721,7 @@ impl DataRepository for FsBackend {
                 .unwrap_or_else(|| "unknown".to_string());
 
             let status = Self::detect_session_status(&path);
-            let is_running = !matches!(status, crate::domain::entities::SessionStatus::Idle);
+            let is_running = !matches!(status, crate::domain::entities::SessionStatus::Stashed);
 
             // Decode project name to path
             let decoded_path = format!("/{}", project.trim_start_matches('-').replace('-', "/"));
@@ -810,7 +810,7 @@ impl FsBackend {
 
         let mut file = match std::fs::File::open(jsonl_path) {
             Ok(f) => f,
-            Err(_) => return SessionStatus::Idle,
+            Err(_) => return SessionStatus::Stashed,
         };
 
         let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
@@ -819,7 +819,7 @@ impl FsBackend {
 
         let mut tail = String::new();
         if file.read_to_string(&mut tail).is_err() {
-            return SessionStatus::Idle;
+            return SessionStatus::Stashed;
         }
 
         // Track the last meaningful entry's type and metadata

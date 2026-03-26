@@ -495,7 +495,7 @@ mod tests {
             id: id.to_string(),
             name: name.map(|n| n.to_string()),
             status,
-            is_running: !matches!(status, SessionStatus::Idle),
+            is_running: !matches!(status, SessionStatus::Stashed),
             ..Default::default()
         }
     }
@@ -512,7 +512,7 @@ mod tests {
         state.store.sessions = vec![
             make_session("s1", Some("alpha"), SessionStatus::Waiting),
             make_session("s2", Some("beta"), SessionStatus::Running),
-            make_session("s3", Some("gamma"), SessionStatus::Idle),
+            make_session("s3", Some("gamma"), SessionStatus::Stashed),
             make_session("s4", Some("delta"), SessionStatus::Thinking),
             make_session("s5", Some("echo"), SessionStatus::Prompting),
             make_session("s6", Some("foxtrot"), SessionStatus::Errored),
@@ -611,7 +611,7 @@ mod tests {
         state.store.sessions = vec![
             make_session("s1", Some("alpha"), SessionStatus::Running),
             make_session("s2", Some("beta"), SessionStatus::Waiting),
-            make_session("s3", Some("gamma"), SessionStatus::Idle),
+            make_session("s3", Some("gamma"), SessionStatus::Stashed),
             make_session("s4", Some("delta"), SessionStatus::Prompting),
         ];
         let filtered = state.filtered_sessions();
@@ -627,7 +627,7 @@ mod tests {
         state.store.sessions = vec![
             make_session("s1", Some("alpha"), SessionStatus::Running),
             make_session("s2", Some("beta"), SessionStatus::Errored),
-            make_session("s3", Some("gamma"), SessionStatus::Idle),
+            make_session("s3", Some("gamma"), SessionStatus::Stashed),
         ];
         let filtered = state.filtered_sessions();
         assert_eq!(filtered.len(), 1);
