@@ -378,6 +378,14 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                         && !s.is_running =>
                 {
                     // Unstash: restart in the background (don't attach)
+                    // Update in-memory state immediately so the UI reflects the change
+                    // (mirrors stash path which also updates immediately)
+                    if let Some(session) =
+                        state.store.sessions.iter_mut().find(|x| x.id == session_id)
+                    {
+                        session.status = crate::domain::entities::SessionStatus::Starting;
+                        session.is_running = true;
+                    }
                     state.toast = Some("Session starting...".to_string());
                     vec![
                         Effect::DaemonStart {
@@ -464,6 +472,13 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 ]
             } else if !idle.is_empty() {
                 // Unstash all idle sessions
+                // Update in-memory state immediately so the UI reflects the change
+                for id in &idle {
+                    if let Some(session) = state.store.sessions.iter_mut().find(|x| x.id == *id) {
+                        session.status = crate::domain::entities::SessionStatus::Starting;
+                        session.is_running = true;
+                    }
+                }
                 let mut effects = Vec::new();
                 for id in &idle {
                     effects.push(Effect::DaemonStart {

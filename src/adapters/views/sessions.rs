@@ -28,10 +28,12 @@ fn agents_summary(subagents: &[Subagent]) -> String {
         match sa.status {
             SessionStatus::Thinking => thinking += 1,
             SessionStatus::Running => running += 1,
-            SessionStatus::Prompting | SessionStatus::Waiting => prompting += 1,
+            SessionStatus::Prompting => prompting += 1,
+            // Waiting/Stashed subagents are done — don't count them
             _ => {}
         }
     }
+    let active = (thinking + running + prompting) as usize;
     let total = subagents.len();
     let mut parts = Vec::new();
     if prompting > 0 {
@@ -43,10 +45,14 @@ fn agents_summary(subagents: &[Subagent]) -> String {
     if running > 0 {
         parts.push(format!("{}●", running));
     }
-    if parts.is_empty() {
-        format!("{}", total)
+    if active == 0 {
+        if total > 0 {
+            format!("{}", total)
+        } else {
+            "—".to_string()
+        }
     } else {
-        format!("{} ({})", total, parts.join(" "))
+        format!("{}/{} ({})", active, total, parts.join(" "))
     }
 }
 
@@ -189,7 +195,6 @@ pub fn render_sessions_table(
         // Get subagents for this session
         let subs = state.store.subagents_by_session.get(&session.id);
 
-        // Only show expand arrow if there are active (non-idle) subagents
         let has_active_subs = subs
             .map(|s| {
                 s.iter()
