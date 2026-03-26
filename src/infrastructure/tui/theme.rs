@@ -46,6 +46,11 @@ pub const TASK_BLOCKED: Color = Color::Rgb(235, 120, 130); // pastel rose
 pub const TASK_PENDING: Color = Color::Rgb(95, 88, 115); // muted
 pub const TASK_UNKNOWN: Color = Color::Rgb(180, 140, 255); // soft violet
 
+// ── Section header colors ─────────────────────────────────────
+pub const SECTION_ACTIVE: Color = Color::Rgb(140, 185, 240); // pastel blue
+pub const SECTION_DONE: Color = Color::Rgb(120, 220, 150); // pastel green
+pub const SECTION_FAIL: Color = Color::Rgb(235, 120, 130); // pastel rose
+
 // ── Feedback colors ────────────────────────────────────────────
 pub const ERROR_COLOR: Color = Color::Rgb(235, 120, 130); // pastel rose
 pub const UNREAD_COLOR: Color = Color::Rgb(240, 210, 100); // pastel amber

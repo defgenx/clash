@@ -7,6 +7,7 @@ use crate::adapters::format::{self, or_dash};
 use crate::adapters::views::{ColumnDef, Keybinding, TableView};
 use crate::application::state::AppState;
 use crate::domain::entities::{Session, SessionSection, SessionStatus, Subagent};
+use ratatui::style::Modifier;
 use crate::infrastructure::tui::{theme, widgets::table::compute_constraints};
 
 pub struct SessionsTable;
@@ -165,14 +166,21 @@ pub fn render_sessions_table(
         // Insert section header when entering a new section
         if current_section != Some(section) {
             let count = section_counts.get(&section).copied().unwrap_or(0);
-            let dim = Style::default().fg(theme::TEXT_DIM);
+            let section_color = match section {
+                SessionSection::Active => theme::SECTION_ACTIVE,
+                SessionSection::Done => theme::SECTION_DONE,
+                SessionSection::Fail => theme::SECTION_FAIL,
+            };
+            let bold_color = Style::default()
+                .fg(section_color)
+                .add_modifier(Modifier::BOLD);
             let mut header_cells = Vec::with_capacity(columns.len());
-            header_cells.push(Cell::from(format!("── {}", section.label())).style(dim));
-            header_cells.push(Cell::from(format!("({})", count)).style(dim));
+            header_cells.push(Cell::from(format!("── {}", section.label())).style(bold_color));
+            header_cells.push(Cell::from(format!("({})", count)).style(bold_color));
             for _ in 2..columns.len() {
                 header_cells.push(Cell::from(""));
             }
-            rows.push(Row::new(header_cells).style(Style::default().fg(theme::TEXT_DIM)));
+            rows.push(Row::new(header_cells));
             logical_to_parent.push(usize::MAX); // sentinel — not selectable
             current_section = Some(section);
         }
