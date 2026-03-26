@@ -808,7 +808,7 @@ impl App {
         }
     }
 
-    /// Auto-refresh conversation if viewing SessionDetail or SubagentDetail.
+    /// Auto-refresh conversation and subagents if viewing SessionDetail or SubagentDetail.
     /// Returns `true` if a refresh was performed (caller should redraw).
     fn auto_refresh_conversation(&mut self) -> bool {
         use crate::adapters::views::ViewKind;
@@ -821,6 +821,18 @@ impl App {
                             &session.project,
                             &session.id,
                         );
+                        // Also refresh subagents so the detail view stays current
+                        let _ = self.state.store.refresh_subagents(
+                            &self.backend,
+                            &session.project,
+                            &session.id,
+                        );
+                        return true;
+                    } else {
+                        // Session no longer exists — clear stale data
+                        self.state.store.conversation.clear();
+                        self.state.store.conversation_loaded = true;
+                        self.state.store.subagents.clear();
                         return true;
                     }
                 }
@@ -835,14 +847,7 @@ impl App {
                     .as_deref()
                     .map(|s| s.to_string())
                 {
-                    if let Some(sa) = self
-                        .state
-                        .store
-                        .subagents
-                        .iter()
-                        .find(|s| s.id == agent_id)
-                        .cloned()
-                    {
+                    if let Some(sa) = self.state.store.find_subagent(&agent_id).cloned() {
                         let _ = self.state.store.load_subagent_conversation(
                             &self.backend,
                             &sa.project,

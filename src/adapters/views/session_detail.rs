@@ -141,13 +141,19 @@ impl DetailView for SessionDetailView {
             sections.push(members_section);
         }
 
-        // Subagents section
+        // Subagents section (uses auto-refreshed data, excludes Done)
         let subagents_for_session: Vec<_> = state
             .store
-            .subagents
-            .iter()
-            .filter(|sa| sa.parent_session_id == session_id)
-            .collect();
+            .subagents_by_session
+            .get(&session_id)
+            .map(|subs| {
+                subs.iter()
+                    .filter(|sa| {
+                        sa.status != crate::domain::entities::SessionStatus::Done
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
 
         let agents_section = if !subagents_for_session.is_empty() {
             let mut section = Section::new("Subagents");

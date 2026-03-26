@@ -19,7 +19,7 @@ impl SessionsTable {
 }
 
 /// Build the AGENTS column text from subagents: shows compact status summary.
-fn agents_summary(subagents: &[Subagent]) -> String {
+fn agents_summary_refs(subagents: &[&Subagent]) -> String {
     if subagents.is_empty() {
         return "—".to_string();
     }
@@ -29,7 +29,6 @@ fn agents_summary(subagents: &[Subagent]) -> String {
             SessionStatus::Thinking => thinking += 1,
             SessionStatus::Running => running += 1,
             SessionStatus::Prompting => prompting += 1,
-            // Waiting/Stashed subagents are done — don't count them
             _ => {}
         }
     }
@@ -192,10 +191,18 @@ pub fn render_sessions_table(
         }
         let is_expanded = state.expanded_sessions.contains(&session.id);
 
-        // Get subagents for this session
+        // Get subagents for this session (excluding Done)
         let subs = state.store.subagents_by_session.get(&session.id);
+        let active_subs: Option<Vec<_>> = subs.map(|s| {
+            s.iter()
+                .filter(|sa| sa.status != crate::domain::entities::SessionStatus::Done)
+                .collect()
+        });
 
-        let has_subs = subs.map(|s| !s.is_empty()).unwrap_or(false);
+        let has_subs = active_subs
+            .as_ref()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
         let expand_indicator = if has_subs {
             if is_expanded {
                 "▼ "
@@ -205,8 +212,12 @@ pub fn render_sessions_table(
         } else {
             "  "
         };
-        let agents_text = if let Some(subs) = subs {
-            agents_summary(subs)
+        let agents_text = if let Some(ref active) = active_subs {
+            if active.is_empty() {
+                "—".to_string()
+            } else {
+                agents_summary_refs(active)
+            }
         } else if session.subagent_count > 0 {
             format!("{}", session.subagent_count)
         } else {
@@ -271,10 +282,10 @@ pub fn render_sessions_table(
         rows.push(row);
         logical_to_parent.push(i);
 
-        // Add child rows if expanded
+        // Add child rows if expanded (Done already filtered out)
         if is_expanded {
-            if let Some(subs) = subs {
-                for sa in subs.iter() {
+            if let Some(ref active) = active_subs {
+                for sa in active {
                     let child = Row::new(subagent_row(sa, state.tick))
                         .style(Style::default().fg(theme::TEXT_DIM));
                     rows.push(child);
