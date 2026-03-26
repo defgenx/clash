@@ -31,6 +31,8 @@ pub enum AgentAction {
     StashSession {
         session_id: String,
     },
+    /// Stash all running sessions, or unstash all idle sessions.
+    StashAllSessions,
     /// Attach to a session in a new terminal window (TUI stays active).
     AttachNewWindow {
         session_id: String,

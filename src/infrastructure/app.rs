@@ -515,8 +515,7 @@ impl App {
             self.needs_redraw = true;
         }
         // Refresh conversation every ~1s (100 ticks)
-        if self.state.tick.is_multiple_of(100) {
-            self.auto_refresh_conversation();
+        if self.state.tick.is_multiple_of(100) && self.auto_refresh_conversation() {
             self.needs_redraw = true;
         }
         if !effects.is_empty() {
@@ -994,7 +993,8 @@ impl App {
     }
 
     /// Auto-refresh conversation if viewing SessionDetail or SubagentDetail.
-    fn auto_refresh_conversation(&mut self) {
+    /// Returns `true` if a refresh was performed (caller should redraw).
+    fn auto_refresh_conversation(&mut self) -> bool {
         use crate::adapters::views::ViewKind;
         match self.state.current_view() {
             ViewKind::SessionDetail => {
@@ -1005,8 +1005,10 @@ impl App {
                             &session.project,
                             &session.id,
                         );
+                        return true;
                     }
                 }
+                false
             }
             ViewKind::SubagentDetail => {
                 if let Some(agent_id) = self
@@ -1031,10 +1033,12 @@ impl App {
                             &sa.parent_session_id,
                             &sa.id,
                         );
+                        return true;
                     }
                 }
+                false
             }
-            _ => {}
+            _ => false,
         }
     }
 

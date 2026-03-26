@@ -423,6 +423,68 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 }
             }
         }
+        AgentAction::StashAllSessions => {
+            let running: Vec<_> = state
+                .store
+                .sessions
+                .iter()
+                .filter(|s| s.is_running)
+                .map(|s| s.id.clone())
+                .collect();
+            let idle: Vec<_> = state
+                .store
+                .sessions
+                .iter()
+                .filter(|s| {
+                    s.status == crate::domain::entities::SessionStatus::Idle && !s.is_running
+                })
+                .map(|s| s.id.clone())
+                .collect();
+
+            if !running.is_empty() {
+                // Stash all running sessions
+                for session in state.store.sessions.iter_mut().filter(|s| s.is_running) {
+                    session.status = crate::domain::entities::SessionStatus::Idle;
+                    session.is_running = false;
+                }
+                let count = state.filtered_sessions().len();
+                if count > 0 && state.table_state.selected >= count {
+                    state.table_state.selected = count - 1;
+                }
+                state.toast = Some(format!(
+                    "{} session{} stashed",
+                    running.len(),
+                    if running.len() == 1 { "" } else { "s" }
+                ));
+                vec![
+                    Effect::DaemonKillAll,
+                    Effect::TerminateAllProcesses,
+                    Effect::MarkAllSessionsIdle,
+                    Effect::RefreshSessions,
+                ]
+            } else if !idle.is_empty() {
+                // Unstash all idle sessions
+                let mut effects = Vec::new();
+                for id in &idle {
+                    effects.push(Effect::DaemonStart {
+                        session_id: id.clone(),
+                        args: vec![],
+                        cwd: None,
+                        name: None,
+                    });
+                }
+                effects.push(Effect::RefreshSessions);
+                state.toast = Some(format!(
+                    "{} session{} starting...",
+                    idle.len(),
+                    if idle.len() == 1 { "" } else { "s" }
+                ));
+                effects
+            } else {
+                state.toast = Some("No sessions to stash or unstash".to_string());
+                vec![]
+            }
+        }
         AgentAction::SpawnSessionInWorktree { cwd, name } => {
             let new_session_id = uuid::Uuid::now_v7().to_string();
             let short = &new_session_id[..8];
@@ -817,13 +879,6 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                     }
                 }
             }
-            vec![]
-        }
-        UiAction::CycleSessionFilter => {
-            state.session_filter = state.session_filter.next();
-            state.section_filter = crate::application::state::SectionFilter::All;
-            state.table_state.selected = 0;
-            state.toast = Some(format!("Showing {} sessions", state.session_filter.label()));
             vec![]
         }
         UiAction::CycleSectionFilter => {

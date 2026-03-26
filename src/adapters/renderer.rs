@@ -122,14 +122,29 @@ fn draw_header(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
     let breadcrumbs = state.nav.breadcrumbs().join(" > ");
     let now = chrono::Local::now().format("%H:%M").to_string();
 
-    let filter_indicator = if state.current_view() == crate::adapters::views::ViewKind::Sessions {
-        match state.session_filter {
-            crate::application::state::SessionFilter::Active => " [active]",
-            crate::application::state::SessionFilter::All => " [all]",
-        }
-    } else {
-        ""
-    };
+    let filter_indicator: String =
+        if state.current_view() == crate::adapters::views::ViewKind::Sessions {
+            let session_label = match state.session_filter {
+                crate::application::state::SessionFilter::Active => "active",
+                crate::application::state::SessionFilter::All => "all",
+            };
+            use crate::application::state::SectionFilter;
+            let section_label = match state.section_filter {
+                SectionFilter::All => None,
+                SectionFilter::Active => Some("running"),
+                SectionFilter::Pending => Some("prompting"),
+                SectionFilter::Done => Some("idle"),
+                SectionFilter::Fail => Some("errored"),
+            };
+            if let Some(section) = section_label {
+                let count = state.filtered_sessions().len();
+                format!(" [{}:{} ({})]", session_label, section, count)
+            } else {
+                format!(" [{}]", session_label)
+            }
+        } else {
+            String::new()
+        };
 
     // Count sessions needing approval (Prompting) vs waiting for input (Waiting)
     let approval_count = state

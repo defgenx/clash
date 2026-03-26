@@ -56,7 +56,6 @@ impl DetailView for SessionDetailView {
                     None => "no".to_string(),
                 },
             )
-            .row("Messages", &session.message_count.to_string())
             .row("Modified", &session.last_modified);
         info = info.row(
             "Summary",
@@ -202,7 +201,7 @@ impl DetailView for SessionDetailView {
         vec![
             Keybinding::new("Enter", "View subagents"),
             Keybinding::new("a", "Attach to session"),
-            Keybinding::new("p", "Open diff in IDE"),
+            Keybinding::new("p", "View diff"),
             Keybinding::new("e", "Open in IDE"),
             Keybinding::new("o", "Open in new window"),
             Keybinding::new("s", "View subagents"),

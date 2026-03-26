@@ -233,8 +233,6 @@ pub struct Session {
     #[serde(default)]
     pub subagent_count: usize,
     #[serde(default)]
-    pub message_count: usize,
-    #[serde(default)]
     pub git_branch: String,
     /// Whether this session is currently active (file modified recently).
     #[serde(default)]

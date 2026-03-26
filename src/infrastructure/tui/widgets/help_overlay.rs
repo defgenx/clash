@@ -68,7 +68,7 @@ pub fn render_help_overlay(
         (":prompts", "Navigate to Prompts"),
         (":new <path>", "New session in directory"),
         (":new --preset X", "New session from preset"),
-        (":diff", "Open diff in IDE"),
+        (":diff", "View diff for session"),
         (":rename <name>", "Rename session (detail view)"),
         (":create team X", "Create team"),
         (":delete team X", "Delete team"),

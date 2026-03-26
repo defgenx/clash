@@ -51,13 +51,6 @@ pub enum SessionFilter {
 }
 
 impl SessionFilter {
-    pub fn next(self) -> Self {
-        match self {
-            Self::Active => Self::All,
-            Self::All => Self::Active,
-        }
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             Self::Active => "active",
@@ -706,16 +699,6 @@ mod tests {
         assert_eq!(f, SectionFilter::Fail);
         let f = f.next(all_mode); // Fail -> All
         assert_eq!(f, SectionFilter::All);
-    }
-
-    #[test]
-    fn test_section_filter_resets_on_session_filter_change() {
-        let mut state = AppState::new();
-        state.section_filter = SectionFilter::Active;
-        // Simulating what the reducer does on CycleSessionFilter
-        state.session_filter = state.session_filter.next();
-        state.section_filter = SectionFilter::All; // reducer resets this
-        assert_eq!(state.section_filter, SectionFilter::All);
     }
 
     #[test]
