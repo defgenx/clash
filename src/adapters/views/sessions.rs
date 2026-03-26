@@ -167,8 +167,8 @@ pub fn render_sessions_table(
             let count = section_counts.get(&section).copied().unwrap_or(0);
             let dim = Style::default().fg(theme::TEXT_DIM);
             let mut header_cells = Vec::with_capacity(columns.len());
-            header_cells.push(Cell::from(format!("▸ {}", section.label())).style(dim));
-            header_cells.push(Cell::from(format!("— {}", count)).style(dim));
+            header_cells.push(Cell::from(format!("── {}", section.label())).style(dim));
+            header_cells.push(Cell::from(format!("({})", count)).style(dim));
             for _ in 2..columns.len() {
                 header_cells.push(Cell::from(""));
             }
