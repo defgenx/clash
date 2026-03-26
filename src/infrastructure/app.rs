@@ -344,6 +344,14 @@ impl App {
                 self.state.terminal_screen = None;
                 self.state.spinner = None;
 
+                // Draw cached state immediately so the user sees content right
+                // away instead of a blank/splash screen during the async refresh.
+                {
+                    let state = &self.state;
+                    let vs = &mut self.sessions_visual_state;
+                    let _ = terminal.draw(|f| renderer::draw(state, vs, f));
+                }
+
                 self.refresh_daemon_sessions().await;
                 self.needs_redraw = true;
             }
@@ -690,9 +698,11 @@ impl App {
             .await;
     }
 
-    /// Refresh sessions: load from disk, overlay hook statuses, then daemon.
+    /// Refresh sessions: gather input, build session list (pure), swap atomically.
     /// Preserves the selected session by ID across the refresh.
     async fn refresh_daemon_sessions(&mut self) {
+        use crate::infrastructure::session_refresh;
+
         // Save the selected session ID before refresh
         let selected_id = self
             .state
@@ -700,13 +710,32 @@ impl App {
             .get(self.state.table_state.selected)
             .map(|s| s.id.clone());
 
-        self.load_disk_sessions();
-        self.overlay_hook_statuses();
-        self.overlay_daemon_sessions().await;
-        self.resolve_session_names().await;
+        // Gather all input (IO)
+        let previous = &self.state.store.sessions;
+        let mut input = session_refresh::gather_sync_input(&self.backend, previous);
+        let daemon_infos = session_refresh::gather_daemon_input(&mut self.daemon).await;
+        input.daemon_infos = daemon_infos.clone();
 
-        // Re-sort sessions by section (Active/Pending/Done/Fail) + name for stable ordering
-        self.state.store.sort_sessions();
+        // Build complete session list (pure, no IO)
+        let new_sessions = session_refresh::build_session_list(&input);
+
+        // Atomic swap + post-processing
+        let previous_for_subagents = std::mem::take(&mut self.state.store.sessions);
+        self.state.store.sessions = new_sessions;
+        self.state
+            .store
+            .refresh_changed_subagents(&self.backend, &previous_for_subagents);
+        self.state.store.rebuild_all_members();
+
+        // Clean up externally_opened (uses App-owned state, stays here)
+        if let Some(ref infos) = daemon_infos {
+            cleanup_externally_opened(
+                &mut self.state.externally_opened,
+                &mut self.ext_open_times,
+                infos,
+                Duration::from_secs(15),
+            );
+        }
 
         // Restore selection to the same session by ID
         if let Some(ref id) = selected_id {
@@ -718,292 +747,6 @@ impl App {
                 let count = sessions.len();
                 if count > 0 && self.state.table_state.selected >= count {
                     self.state.table_state.selected = count - 1;
-                }
-            }
-        }
-    }
-
-    /// Phase 1: Load sessions from JSONL files, filtered by clash registry, and preload subagents.
-    fn load_disk_sessions(&mut self) {
-        let _ = self.state.store.refresh_sessions(&self.backend);
-
-        // Filter sessions to only those registered in the clash session registry,
-        // and populate each session's cwd from the registry entry.
-        let registry = crate::infrastructure::hooks::registry::load();
-        if !registry.is_empty() {
-            use crate::infrastructure::hooks::registry::find_entry;
-            self.state
-                .store
-                .sessions
-                .retain(|s| find_entry(&registry, &s.id).is_some());
-            // Overlay registry fields onto each session
-            for session in &mut self.state.store.sessions {
-                if let Some((_, entry)) = find_entry(&registry, &session.id) {
-                    if !entry.name.is_empty() {
-                        session.name = Some(entry.name.clone());
-                    }
-                    if !entry.cwd.is_empty() {
-                        session.cwd = Some(entry.cwd.clone());
-                    }
-                    if entry.source_branch.is_some() {
-                        session.source_branch = entry.source_branch.clone();
-                    }
-                }
-            }
-        } else {
-            // Empty registry = no clash sessions yet; show nothing from disk
-            self.state.store.sessions.clear();
-        }
-
-        self.state.store.refresh_all_subagents(&self.backend);
-    }
-
-    /// Phase 2: Overlay hook-based statuses (instant, from Claude Code lifecycle events).
-    ///
-    /// Hooks provide authoritative signals for specific statuses that screen
-    /// detection cannot reliably determine:
-    /// - `prompting`: from PermissionRequest event (approval prompt shown)
-    /// - `starting`: from SessionStart event (session just spawned)
-    /// - `idle`: from SessionEnd event (session ended)
-    ///
-    /// Other hook statuses (`waiting`, `thinking`) are ignored here — the daemon's
-    /// real-time screen detection (Phase 3) is more accurate for these since hooks
-    /// fire asynchronously and `Stop` events can arrive after the session has
-    /// already moved to a different state.
-    fn overlay_hook_statuses(&mut self) {
-        use crate::domain::entities::SessionStatus;
-
-        let hook_statuses =
-            crate::infrastructure::hooks::read_all_statuses(self.backend.base_dir());
-        for session in &mut self.state.store.sessions {
-            if let Some((hook_status, hook_mtime)) = hook_statuses.get(&session.id) {
-                match hook_status {
-                    // Prompting is authoritative — hooks fire from the actual
-                    // PermissionRequest event which screen detection often misses.
-                    SessionStatus::Prompting => {
-                        session.status = SessionStatus::Prompting;
-                        session.is_running = true;
-                    }
-                    // Starting is authoritative — only hooks know this state.
-                    SessionStatus::Starting => {
-                        session.status = SessionStatus::Starting;
-                        session.is_running = true;
-                    }
-                    // Idle from hooks: only apply if the hook file is newer than
-                    // the JSONL file — otherwise the session was restarted externally
-                    // and the hook file is stale.
-                    SessionStatus::Stashed => {
-                        let jsonl_mtime = self
-                            .backend
-                            .session_jsonl_mtime(&session.project, &session.id);
-                        let hook_is_fresher = match (hook_mtime, jsonl_mtime) {
-                            (Some(h), Some(j)) => h >= &j,
-                            (Some(_), None) => true,
-                            _ => false,
-                        };
-                        if hook_is_fresher {
-                            session.status = SessionStatus::Stashed;
-                            session.is_running = false;
-                        }
-                    }
-                    // Waiting/Thinking/Running: defer to daemon screen detection
-                    // (Phase 3) which has real-time terminal content.
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    /// Phase 3: Overlay daemon status on matching sessions, add daemon-only sessions.
-    async fn overlay_daemon_sessions(&mut self) {
-        use crate::domain::entities::SessionStatus;
-
-        if !self.daemon.is_connected() {
-            return;
-        }
-        let infos = match self.daemon.list_sessions().await {
-            Ok(infos) => infos,
-            Err(_) => return,
-        };
-
-        let mut claimed_indices = std::collections::HashSet::new();
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        // Load hook statuses so we can distinguish intentional kills (stash/drop)
-        // from genuine crashes. Sessions with a hook-derived "idle" were
-        // intentionally stopped and should not be marked as errored.
-        let hook_statuses =
-            crate::infrastructure::hooks::read_all_statuses(self.backend.base_dir());
-
-        for info in &infos {
-            let hook_says_idle = hook_statuses
-                .get(&info.session_id)
-                .is_some_and(|(s, _)| matches!(s, SessionStatus::Stashed));
-
-            let mut status = info
-                .status
-                .parse::<SessionStatus>()
-                .unwrap_or(SessionStatus::Stashed);
-
-            // If the process died shortly after creation, mark as errored
-            // so the user can see something went wrong (instead of disappearing).
-            // Skip this heuristic when the hook says idle — the session was
-            // intentionally killed (stash/drop), not a crash.
-            if !hook_says_idle && !info.is_alive && matches!(status, SessionStatus::Stashed) {
-                let age_secs = now.saturating_sub(info.created_at);
-                if age_secs < 120 {
-                    status = SessionStatus::Errored;
-                }
-            }
-
-            let is_running = !matches!(status, SessionStatus::Stashed);
-
-            let matched_by_id = self
-                .state
-                .store
-                .sessions
-                .iter()
-                .position(|s| s.id == info.session_id);
-
-            if let Some(idx) = matched_by_id {
-                let existing = &mut self.state.store.sessions[idx];
-                // Don't let daemon screen-detection downgrade a hook-derived
-                // "prompting" to "waiting". Hooks fire from Claude Code's actual
-                // PermissionRequest event and are more authoritative than screen
-                // pattern matching for approval prompts.
-                // Also don't let the daemon override an idle session that was
-                // intentionally stopped — the daemon may still report it as
-                // running/waiting during the graceful kill window.
-                let dominated = (matches!(existing.status, SessionStatus::Prompting)
-                    && matches!(status, SessionStatus::Waiting | SessionStatus::Stashed))
-                    || (matches!(existing.status, SessionStatus::Stashed)
-                        && matches!(status, SessionStatus::Errored))
-                    || (hook_says_idle && !matches!(status, SessionStatus::Stashed));
-                if !dominated {
-                    existing.status = status;
-                    existing.is_running = is_running;
-                }
-                if existing.name.is_none() && info.name.is_some() {
-                    existing.name = info.name.clone();
-                }
-                claimed_indices.insert(idx);
-            } else if info.name.is_some() && !info.cwd.is_empty() {
-                // Don't re-add sessions that were intentionally killed or are
-                // already dead — they were likely dropped by the user and the
-                // daemon's reaper hasn't cleaned them up yet.
-                if hook_says_idle || !info.is_alive {
-                    continue;
-                }
-
-                let daemon_cwd = info.cwd.trim_end_matches('/');
-                let matched_by_cwd =
-                    self.state
-                        .store
-                        .sessions
-                        .iter()
-                        .enumerate()
-                        .find_map(|(idx, s)| {
-                            let disk_path = s.project_path.trim_end_matches('/');
-                            if disk_path == daemon_cwd
-                                && s.name.is_none()
-                                && !claimed_indices.contains(&idx)
-                            {
-                                Some(idx)
-                            } else {
-                                None
-                            }
-                        });
-
-                if let Some(idx) = matched_by_cwd {
-                    let existing = &mut self.state.store.sessions[idx];
-                    let dominated = (matches!(existing.status, SessionStatus::Prompting)
-                        && matches!(status, SessionStatus::Waiting | SessionStatus::Stashed))
-                        || (matches!(existing.status, SessionStatus::Stashed)
-                            && matches!(status, SessionStatus::Errored))
-                        || (hook_says_idle && !matches!(status, SessionStatus::Stashed));
-                    if !dominated {
-                        existing.status = status;
-                        existing.is_running = is_running;
-                    }
-                    existing.name = info.name.clone();
-                    claimed_indices.insert(idx);
-                } else {
-                    self.state.store.sessions.push(session_from_daemon_info(
-                        info,
-                        String::new(),
-                        status,
-                        is_running,
-                    ));
-                }
-            } else {
-                // Don't add dead/idle-hooked daemon sessions as new entries.
-                if hook_says_idle || !info.is_alive {
-                    continue;
-                }
-
-                let summary = if !info.cwd.is_empty() {
-                    format!("New session in {}", info.cwd)
-                } else {
-                    let clients_info = if info.attached_clients > 0 {
-                        format!("{} attached", info.attached_clients)
-                    } else {
-                        "detached".to_string()
-                    };
-                    format!("PID {} | {}", info.pid, clients_info)
-                };
-                self.state
-                    .store
-                    .sessions
-                    .push(session_from_daemon_info(info, summary, status, is_running));
-            }
-        }
-
-        // Clean up externally_opened: remove sessions whose external viewer disconnected,
-        // but only after a grace period to allow the attach process to connect.
-        cleanup_externally_opened(
-            &mut self.state.externally_opened,
-            &mut self.ext_open_times,
-            &infos,
-            Duration::from_secs(15),
-        );
-    }
-
-    /// Phase 4: Resolve session names from daemon and disk persistence.
-    async fn resolve_session_names(&mut self) {
-        if self.daemon.is_connected() {
-            if let Ok(infos) = self.daemon.list_sessions().await {
-                for info in &infos {
-                    if let Some(ref daemon_name) = info.name {
-                        if info.cwd.is_empty() {
-                            continue;
-                        }
-                        let daemon_project = path_last_component(&info.cwd);
-                        if daemon_project.is_empty() {
-                            continue;
-                        }
-                        for session in &mut self.state.store.sessions {
-                            if session.name.is_some() {
-                                continue;
-                            }
-                            if path_last_component(&session.project_path) == daemon_project {
-                                session.name = Some(daemon_name.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let saved_names =
-            crate::infrastructure::hooks::read_all_session_names(self.backend.base_dir());
-        for session in &mut self.state.store.sessions {
-            if session.name.is_none() {
-                if let Some(name) = saved_names.get(&session.id) {
-                    session.name = Some(name.clone());
                 }
             }
         }
@@ -1963,44 +1706,6 @@ impl App {
         }
         false
     }
-}
-
-/// Build a `Session` from daemon `SessionInfo` for sessions with no disk file.
-fn session_from_daemon_info(
-    info: &crate::infrastructure::daemon::protocol::SessionInfo,
-    summary: String,
-    status: crate::domain::entities::SessionStatus,
-    is_running: bool,
-) -> crate::domain::entities::Session {
-    let cwd = if info.cwd.is_empty() {
-        // Fall back to registry
-        let registry = crate::infrastructure::hooks::registry::load();
-        registry
-            .get(&info.session_id)
-            .map(|e| e.cwd.clone())
-            .filter(|c| !c.is_empty())
-    } else {
-        Some(info.cwd.clone())
-    };
-    crate::domain::entities::Session {
-        id: info.session_id.clone(),
-        project: path_last_component(&info.cwd).to_string(),
-        project_path: info.cwd.clone(),
-        summary,
-        is_running,
-        status,
-        name: info.name.clone(),
-        cwd,
-        ..Default::default()
-    }
-}
-
-/// Extract the last component of a path string (e.g. "/foo/bar" → "bar").
-fn path_last_component(path: &str) -> &str {
-    std::path::Path::new(path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
 }
 
 /// Gracefully stop external Claude Code processes for a session.

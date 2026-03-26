@@ -8,6 +8,7 @@ pub mod fs;
 pub mod hooks;
 pub mod ide;
 pub mod lock;
+pub mod session_refresh;
 pub mod tui;
 pub mod update;
 pub mod windowing;

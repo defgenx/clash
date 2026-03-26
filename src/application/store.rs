@@ -69,6 +69,8 @@ impl DataStore {
         Ok(())
     }
 
+    /// Superseded by `session_refresh::build_session_list` — kept for tests only.
+    #[cfg(test)]
     pub fn refresh_sessions(&mut self, backend: &dyn DataRepository) -> Result<()> {
         let new_sessions = backend.load_sessions()?;
 
@@ -103,9 +105,8 @@ impl DataStore {
 
     /// Sort sessions by section (Active → Pending → Done → Fail), then alphabetically by name.
     ///
-    /// Called after all status overlays (hooks, daemon) are applied so the sort
-    /// reflects final statuses. Sorting lives here (application layer) because
-    /// it's a presentation concern, not a data-loading concern.
+    /// Superseded by sort step in `session_refresh::build_session_list` — kept for tests only.
+    #[cfg(test)]
     pub fn sort_sessions(&mut self) {
         self.sessions.sort_by(|a, b| {
             let name_key = |s: &Session| s.name.clone().unwrap_or_else(|| s.id.clone());
@@ -126,28 +127,70 @@ impl DataStore {
         Ok(())
     }
 
-    /// Load subagents for all sessions that have them, indexed by session ID.
-    pub fn refresh_all_subagents(&mut self, backend: &dyn DataRepository) {
-        self.subagents_by_session.clear();
+    /// Delta-based subagent reloading: only reload subagents for sessions whose
+    /// status or subagent_count changed since the last refresh.
+    pub fn refresh_changed_subagents(
+        &mut self,
+        backend: &dyn DataRepository,
+        previous_sessions: &[Session],
+    ) {
+        let old_by_id: HashMap<&str, &Session> = previous_sessions
+            .iter()
+            .map(|s| (s.id.as_str(), s))
+            .collect();
+
         for session in &self.sessions {
-            if session.subagent_count > 0 && !session.project.is_empty() {
+            if session.subagent_count == 0 || session.project.is_empty() {
+                self.subagents_by_session.remove(&session.id);
+                continue;
+            }
+            let changed = !old_by_id.get(session.id.as_str()).is_some_and(|old| {
+                old.subagent_count == session.subagent_count && old.status == session.status
+            });
+            if changed {
                 if let Ok(subs) = backend.load_subagents(&session.project, &session.id) {
-                    if !subs.is_empty() {
+                    if subs.is_empty() {
+                        self.subagents_by_session.remove(&session.id);
+                    } else {
                         self.subagents_by_session.insert(session.id.clone(), subs);
                     }
                 }
             }
         }
+        // Remove entries for sessions that no longer exist
+        let current_ids: std::collections::HashSet<&str> =
+            self.sessions.iter().map(|s| s.id.as_str()).collect();
+        self.subagents_by_session
+            .retain(|k, _| current_ids.contains(k.as_str()));
         self.rebuild_flat_subagents();
     }
 
     /// Flatten teams->members into `all_members`, setting `team_name` on each.
+    /// Cross-references `is_active` with session liveness — if config.json says
+    /// active but no matching running session exists, marks the agent as inactive.
     pub fn rebuild_all_members(&mut self) {
         self.all_members.clear();
         for team in &self.teams {
             for member in &team.members {
                 let mut m = member.clone();
                 m.team_name = team.name.clone();
+                // Cross-reference: if config.json says active but no matching
+                // running session exists (by CWD), mark as inactive.
+                if m.is_active {
+                    let has_running = self.sessions.iter().any(|s| {
+                        s.is_running
+                            && m.cwd.as_deref().is_some_and(|cwd| {
+                                let cwd = cwd.trim_end_matches('/');
+                                s.project_path.trim_end_matches('/') == cwd
+                                    || s.cwd
+                                        .as_deref()
+                                        .is_some_and(|sc| sc.trim_end_matches('/') == cwd)
+                            })
+                    });
+                    if !has_running {
+                        m.is_active = false;
+                    }
+                }
                 self.all_members.push(m);
             }
         }
@@ -405,5 +448,136 @@ mod tests {
         );
         store.rebuild_flat_subagents();
         assert_eq!(store.all_subagents.len(), 3);
+    }
+
+    #[test]
+    fn test_rebuild_members_cross_ref_active_with_running_session() {
+        let mut store = DataStore::new();
+        store.sessions = vec![Session {
+            id: "s1".to_string(),
+            is_running: true,
+            status: SessionStatus::Running,
+            project_path: "/home/user/project".to_string(),
+            ..Default::default()
+        }];
+        store.teams = vec![Team {
+            name: "team1".to_string(),
+            members: vec![Member {
+                name: "alice".to_string(),
+                is_active: true,
+                cwd: Some("/home/user/project".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        store.rebuild_all_members();
+        assert!(store.all_members[0].is_active);
+    }
+
+    #[test]
+    fn test_rebuild_members_cross_ref_stale_active() {
+        let mut store = DataStore::new();
+        // No running sessions
+        store.sessions = vec![Session {
+            id: "s1".to_string(),
+            is_running: false,
+            status: SessionStatus::Stashed,
+            project_path: "/home/user/project".to_string(),
+            ..Default::default()
+        }];
+        store.teams = vec![Team {
+            name: "team1".to_string(),
+            members: vec![Member {
+                name: "alice".to_string(),
+                is_active: true,
+                cwd: Some("/home/user/project".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        store.rebuild_all_members();
+        // Agent should be marked inactive since no running session matches
+        assert!(!store.all_members[0].is_active);
+    }
+
+    #[test]
+    fn test_rebuild_members_cross_ref_trailing_slash_normalized() {
+        let mut store = DataStore::new();
+        store.sessions = vec![Session {
+            id: "s1".to_string(),
+            is_running: true,
+            status: SessionStatus::Running,
+            project_path: "/home/user/project/".to_string(),
+            ..Default::default()
+        }];
+        store.teams = vec![Team {
+            name: "team1".to_string(),
+            members: vec![Member {
+                name: "bob".to_string(),
+                is_active: true,
+                cwd: Some("/home/user/project".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        store.rebuild_all_members();
+        assert!(store.all_members[0].is_active);
+    }
+
+    #[test]
+    fn test_refresh_changed_subagents_only_reloads_changed() {
+        let mut store = DataStore::new();
+        store.sessions = vec![
+            Session {
+                id: "s1".to_string(),
+                project: "proj".to_string(),
+                subagent_count: 2,
+                status: SessionStatus::Running,
+                ..Default::default()
+            },
+            Session {
+                id: "s2".to_string(),
+                project: "proj".to_string(),
+                subagent_count: 1,
+                status: SessionStatus::Waiting,
+                ..Default::default()
+            },
+        ];
+        // Pre-populate s2 subagents (unchanged)
+        store.subagents_by_session.insert(
+            "s2".to_string(),
+            vec![Subagent {
+                id: "sa-existing".to_string(),
+                parent_session_id: "s2".to_string(),
+                ..Default::default()
+            }],
+        );
+
+        // Previous: s1 had different status, s2 was the same
+        let previous = vec![
+            Session {
+                id: "s1".to_string(),
+                project: "proj".to_string(),
+                subagent_count: 2,
+                status: SessionStatus::Thinking, // changed
+                ..Default::default()
+            },
+            Session {
+                id: "s2".to_string(),
+                project: "proj".to_string(),
+                subagent_count: 1,
+                status: SessionStatus::Waiting, // same
+                ..Default::default()
+            },
+        ];
+
+        let backend = MockBackend { sessions: vec![] };
+        store.refresh_changed_subagents(&backend, &previous);
+
+        // s1 was changed → reloaded (MockBackend returns empty → removed)
+        assert!(!store.subagents_by_session.contains_key("s1"));
+        // s2 was unchanged → kept from before
+        assert!(store.subagents_by_session.contains_key("s2"));
+        assert_eq!(store.subagents_by_session["s2"][0].id, "sa-existing");
     }
 }

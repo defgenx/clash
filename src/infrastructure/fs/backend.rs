@@ -662,8 +662,8 @@ impl DataRepository for FsBackend {
             cache.initialized = true;
         }
 
-        // No sorting here — the application layer (app.rs) sorts after status
-        // overlays are applied, using sort_sessions() for the final order.
+        // No sorting here — session_refresh::build_session_list() sorts after
+        // all status overlays are applied.
         Ok(sessions)
     }
 
