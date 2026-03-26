@@ -4,7 +4,7 @@ use clash::adapters::views::ViewKind;
 use clash::application::actions::{Action, NavAction, TableAction, TaskAction, UiAction};
 use clash::application::effects::Effect;
 use clash::application::reducer;
-use clash::application::state::AppState;
+use clash::application::state::{AppState, InputMode, PickerAction, PickerItem};
 use clash::infrastructure::fs::backend::FsBackend;
 
 use helpers::test_data_dir::TestDataDir;
@@ -182,4 +182,55 @@ fn test_quit_confirmed_produces_effect() {
     let (_dir, _backend, mut state) = setup();
     let effects = reducer::reduce(&mut state, Action::Ui(UiAction::QuitConfirmed));
     assert!(effects.iter().any(|e| matches!(e, Effect::Quit)));
+}
+
+#[test]
+fn test_open_in_ide_picker_cycle() {
+    let (_dir, _backend, mut state) = setup();
+
+    // ShowPicker with multiple items → sets picker dialog
+    let items = vec![
+        PickerItem {
+            label: "VS Code".to_string(),
+            description: "Visual Studio Code".to_string(),
+            value: "code".to_string(),
+        },
+        PickerItem {
+            label: "Neovim".to_string(),
+            description: "Terminal editor".to_string(),
+            value: "terminal:nvim".to_string(),
+        },
+    ];
+    let effects = reducer::reduce(
+        &mut state,
+        Action::Ui(UiAction::ShowPicker {
+            title: "Open in IDE".to_string(),
+            items,
+            on_select: PickerAction::OpenInIde {
+                project_dir: "/tmp/project".to_string(),
+            },
+        }),
+    );
+    assert!(effects.is_empty());
+    assert!(state.picker_dialog.is_some());
+    assert!(matches!(state.input_mode, InputMode::Picker));
+    assert_eq!(state.picker_dialog.as_ref().unwrap().selected, 0);
+
+    // PickerDown → moves selection to 1
+    let effects = reducer::reduce(&mut state, Action::Ui(UiAction::PickerDown));
+    assert!(effects.is_empty());
+    assert_eq!(state.picker_dialog.as_ref().unwrap().selected, 1);
+
+    // PickerSelect → emits OpenIde with terminal flag (nvim is terminal:)
+    let effects = reducer::reduce(&mut state, Action::Ui(UiAction::PickerSelect));
+    assert!(state.picker_dialog.is_none());
+    assert!(matches!(state.input_mode, InputMode::Normal));
+    assert!(effects.iter().any(|e| matches!(
+        e,
+        Effect::OpenIde {
+            command,
+            project_dir,
+            terminal: true,
+        } if command == "nvim" && project_dir == "/tmp/project"
+    )));
 }
