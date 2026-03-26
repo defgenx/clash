@@ -141,9 +141,9 @@ pub enum SessionSection {
 impl SessionSection {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Active => "Active",
-            Self::Done => "Done",
-            Self::Fail => "Fail",
+            Self::Active => "ACTIVE",
+            Self::Done => "DONE",
+            Self::Fail => "FAIL",
         }
     }
 }
