@@ -65,7 +65,6 @@ pub enum SectionFilter {
     #[default]
     All,
     Active,
-    Pending,
     Done,
     Fail,
 }
@@ -77,14 +76,12 @@ impl SectionFilter {
         match session_filter {
             SessionFilter::Active => match self {
                 Self::All => Self::Active,
-                Self::Active => Self::Pending,
-                Self::Pending => Self::Done,
+                Self::Active => Self::Done,
                 Self::Done | Self::Fail => Self::All,
             },
             SessionFilter::All => match self {
                 Self::All => Self::Active,
-                Self::Active => Self::Pending,
-                Self::Pending => Self::Done,
+                Self::Active => Self::Done,
                 Self::Done => Self::Fail,
                 Self::Fail => Self::All,
             },
@@ -95,7 +92,6 @@ impl SectionFilter {
         match self {
             Self::All => "All",
             Self::Active => "Active",
-            Self::Pending => "Pending",
             Self::Done => "Done",
             Self::Fail => "Fail",
         }
@@ -105,7 +101,6 @@ impl SectionFilter {
         match self {
             Self::All => true,
             Self::Active => section == SessionSection::Active,
-            Self::Pending => section == SessionSection::Pending,
             Self::Done => section == SessionSection::Done,
             Self::Fail => section == SessionSection::Fail,
         }
@@ -360,7 +355,6 @@ impl AppState {
         // Restore section filter
         self.section_filter = match snapshot.section_filter.as_str() {
             "active" | "Active" => SectionFilter::Active,
-            "pending" | "Pending" => SectionFilter::Pending,
             "done" | "Done" => SectionFilter::Done,
             "fail" | "Fail" => SectionFilter::Fail,
             _ => SectionFilter::All,
@@ -512,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ordering_four_sections() {
+    fn test_ordering_three_sections() {
         let mut state = AppState::new();
         state.session_filter = SessionFilter::All;
         state.store.sessions = vec![
@@ -525,30 +519,13 @@ mod tests {
         ];
         sort_sessions_for_test(&mut state);
         let filtered = state.filtered_sessions();
-        // Active (Running, Thinking), Pending (Prompting), Done (Waiting, Idle), Fail (Errored)
-        assert_eq!(filtered[0].name.as_deref(), Some("beta")); // Active
-        assert_eq!(filtered[1].name.as_deref(), Some("delta")); // Active
-        assert_eq!(filtered[2].name.as_deref(), Some("echo")); // Pending
-        assert_eq!(filtered[3].name.as_deref(), Some("alpha")); // Done
+        // Active (Running, Thinking, Prompting, Waiting), Done (Idle), Fail (Errored)
+        assert_eq!(filtered[0].name.as_deref(), Some("alpha")); // Active
+        assert_eq!(filtered[1].name.as_deref(), Some("beta")); // Active
+        assert_eq!(filtered[2].name.as_deref(), Some("delta")); // Active
+        assert_eq!(filtered[3].name.as_deref(), Some("echo")); // Active
         assert_eq!(filtered[4].name.as_deref(), Some("gamma")); // Done
         assert_eq!(filtered[5].name.as_deref(), Some("foxtrot")); // Fail
-    }
-
-    #[test]
-    fn test_ordering_waiting_and_idle_in_done() {
-        let mut state = AppState::new();
-        state.session_filter = SessionFilter::All;
-        state.store.sessions = vec![
-            make_session("s1", Some("alpha"), SessionStatus::Idle),
-            make_session("s2", Some("beta"), SessionStatus::Waiting),
-            make_session("s3", Some("gamma"), SessionStatus::Idle),
-        ];
-        sort_sessions_for_test(&mut state);
-        let filtered = state.filtered_sessions();
-        // All in Done section, sorted alphabetically
-        assert_eq!(filtered[0].name.as_deref(), Some("alpha"));
-        assert_eq!(filtered[1].name.as_deref(), Some("beta"));
-        assert_eq!(filtered[2].name.as_deref(), Some("gamma"));
     }
 
     #[test]
@@ -619,24 +596,11 @@ mod tests {
             make_session("s4", Some("delta"), SessionStatus::Errored),
         ];
         let filtered = state.filtered_sessions();
-        assert_eq!(filtered.len(), 2);
+        // Running, Waiting, Thinking are all Active now
+        assert_eq!(filtered.len(), 3);
         assert_eq!(filtered[0].name.as_deref(), Some("alpha"));
-        assert_eq!(filtered[1].name.as_deref(), Some("gamma"));
-    }
-
-    #[test]
-    fn test_section_filter_pending_only() {
-        let mut state = AppState::new();
-        state.session_filter = SessionFilter::All;
-        state.section_filter = SectionFilter::Pending;
-        state.store.sessions = vec![
-            make_session("s1", Some("alpha"), SessionStatus::Running),
-            make_session("s2", Some("beta"), SessionStatus::Prompting),
-            make_session("s3", Some("gamma"), SessionStatus::Waiting),
-        ];
-        let filtered = state.filtered_sessions();
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].name.as_deref(), Some("beta"));
+        assert_eq!(filtered[1].name.as_deref(), Some("beta"));
+        assert_eq!(filtered[2].name.as_deref(), Some("gamma"));
     }
 
     #[test]
@@ -648,11 +612,11 @@ mod tests {
             make_session("s1", Some("alpha"), SessionStatus::Running),
             make_session("s2", Some("beta"), SessionStatus::Waiting),
             make_session("s3", Some("gamma"), SessionStatus::Idle),
+            make_session("s4", Some("delta"), SessionStatus::Prompting),
         ];
         let filtered = state.filtered_sessions();
-        assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0].name.as_deref(), Some("beta"));
-        assert_eq!(filtered[1].name.as_deref(), Some("gamma"));
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name.as_deref(), Some("gamma"));
     }
 
     #[test]
@@ -677,9 +641,7 @@ mod tests {
         let active_mode = SessionFilter::Active;
         let f = f.next(active_mode); // All -> Active
         assert_eq!(f, SectionFilter::Active);
-        let f = f.next(active_mode); // Active -> Pending
-        assert_eq!(f, SectionFilter::Pending);
-        let f = f.next(active_mode); // Pending -> Done
+        let f = f.next(active_mode); // Active -> Done
         assert_eq!(f, SectionFilter::Done);
         let f = f.next(active_mode); // Done -> All (skips Fail)
         assert_eq!(f, SectionFilter::All);
@@ -691,9 +653,7 @@ mod tests {
         let all_mode = SessionFilter::All;
         let f = f.next(all_mode); // All -> Active
         assert_eq!(f, SectionFilter::Active);
-        let f = f.next(all_mode); // Active -> Pending
-        assert_eq!(f, SectionFilter::Pending);
-        let f = f.next(all_mode); // Pending -> Done
+        let f = f.next(all_mode); // Active -> Done
         assert_eq!(f, SectionFilter::Done);
         let f = f.next(all_mode); // Done -> Fail
         assert_eq!(f, SectionFilter::Fail);

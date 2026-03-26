@@ -132,7 +132,6 @@ fn draw_header(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
             let section_label = match state.section_filter {
                 SectionFilter::All => None,
                 SectionFilter::Active => Some("running"),
-                SectionFilter::Pending => Some("prompting"),
                 SectionFilter::Done => Some("idle"),
                 SectionFilter::Fail => Some("errored"),
             };

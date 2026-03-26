@@ -71,7 +71,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
             ("d", "Delete selected session"),
             ("D", "Delete ALL sessions"),
             ("Tab", "Expand / collapse subagents"),
-            ("A", "Cycle section filter (Active/Pending/Done/Fail)"),
+            ("A", "Cycle section filter (Active/Done/Fail)"),
             ("/", "Filter sessions by text"),
         ],
     },
