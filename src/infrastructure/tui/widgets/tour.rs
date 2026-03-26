@@ -60,7 +60,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
             ("g / G", "Jump to first / last"),
             ("i / Enter", "Inspect session details"),
             ("a", "Attach to a session (live terminal)"),
-            ("p", "View git diff for session"),
+            ("p", "Open diff in IDE"),
             ("e", "Open project in IDE"),
             ("o", "Open session in new pane/tab"),
             ("O", "Open ALL running sessions (confirm first)"),
@@ -137,19 +137,15 @@ pub const TOUR_STEPS: &[TourStep] = &[
         ],
     },
     TourStep {
-        title: "Diff View",
+        title: "Diff in IDE",
         body: &[
-            "Press  p  on a session (or  :diff  in command mode) to view its git diff.",
+            "Press  p  on a session (or  :diff  in command mode) to open the project in your IDE.",
             "",
-            "The diff view shows  git diff HEAD  for the session's project, with syntax-highlighted additions and removals.",
-            "It auto-refreshes every ~3 seconds while the session is active.",
+            "Your IDE's built-in diff viewer will show the changes. If multiple IDEs are available, a picker dialog appears.",
         ],
         keys: &[
-            ("p", "Open diff from Sessions or Session Detail"),
-            (":diff", "Open diff via command mode"),
-            ("r", "Refresh diff manually"),
-            ("j / k", "Scroll"),
-            ("Esc", "Go back"),
+            ("p", "Open diff in IDE from Sessions or Session Detail"),
+            (":diff", "Open diff in IDE via command mode"),
         ],
     },
     TourStep {

@@ -495,13 +495,12 @@ fn handle_inspect(state: &AppState) -> Action {
 }
 
 fn handle_diff_view(state: &AppState) -> Action {
+    // Open the session's project in an IDE — the IDE's built-in diff viewer
+    // is a much better experience than the inline TUI diff.
     if let Some(session_id) = resolve_session_id(state) {
-        return Action::Nav(NavAction::DrillIn {
-            view: ViewKind::Diff,
-            context: session_id,
-        });
+        return Action::Agent(crate::application::actions::AgentAction::OpenInIde { session_id });
     }
-    Action::Noop
+    Action::Ui(UiAction::Toast("No session selected".to_string()))
 }
 
 fn handle_refresh(state: &AppState) -> Action {
@@ -632,11 +631,11 @@ pub fn parse_command(cmd: &str) -> Action {
         return Action::Ui(UiAction::Toast("Use :new to see preset picker".to_string()));
     }
 
-    // Handle "diff" — navigate to diff view (session resolved by reducer)
+    // Handle "diff" — open the session's project in an IDE (built-in diff viewer).
+    // Context is resolved later by the reducer from the navigation stack.
     if cmd == "diff" {
-        return Action::Nav(NavAction::DrillIn {
-            view: ViewKind::Diff,
-            context: String::new(), // resolved from nav context
+        return Action::Agent(crate::application::actions::AgentAction::OpenInIde {
+            session_id: String::new(),
         });
     }
 

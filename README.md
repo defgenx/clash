@@ -115,7 +115,7 @@ clash detects session status through three layers (in priority order):
 | Key | Action |
 |-----|--------|
 | `a` | Attach (inline terminal) |
-| `p` | View diff (`git diff HEAD`) |
+| `p` | Open diff in IDE |
 | `e` | Open project in IDE (auto-detect + picker) |
 | `o` | Open in new pane / tab / window |
 | `O` | Open ALL running sessions (smart layout) |
@@ -151,20 +151,10 @@ clash detects session status through three layers (in priority order):
 | `s` | Subagents |
 | `t` | Linked team |
 | `m` | Team members |
-| `p` | View diff |
+| `p` | Open diff in IDE |
 | `a` | Attach |
 | `e` | Open in IDE |
 | `d` | Drop |
-
-### Diff View
-
-| Key | Action |
-|-----|--------|
-| `r` | Refresh diff |
-| `j` / `k` | Scroll |
-| `Esc` | Go back |
-
-Auto-refreshes every ~3 seconds while the session is active.
 
 ### Team Detail
 
@@ -191,7 +181,7 @@ Auto-refreshes every ~3 seconds while the session is active.
 | `:create task <team> <subject>` | Create a task |
 | `:new [path]` | Spawn a new session |
 | `:new --preset <name>` | Spawn session from a preset |
-| `:diff` | View diff for current session |
+| `:diff` | Open diff in IDE for current session |
 | `:rename <name>` | Rename session (from detail view) |
 | `:active` / `:all` | Filter sessions |
 | `:tour` | Replay guided tour |

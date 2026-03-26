@@ -314,6 +314,24 @@ impl AppState {
         self.nav.current().view
     }
 
+    /// Returns `true` when the UI has active animations that need periodic redraws
+    /// (spinners, animated status icons for running sessions, update overlay, etc.).
+    pub fn needs_animation(&self) -> bool {
+        use crate::domain::entities::SessionStatus;
+        self.spinner.is_some()
+            || self.update_progress.is_some()
+            || self.shutting_down.is_some()
+            || self.store.sessions.iter().any(|s| {
+                matches!(
+                    s.status,
+                    SessionStatus::Prompting
+                        | SessionStatus::Thinking
+                        | SessionStatus::Running
+                        | SessionStatus::Starting
+                )
+            })
+    }
+
     pub fn current_team(&self) -> Option<&str> {
         self.nav.current_team()
     }

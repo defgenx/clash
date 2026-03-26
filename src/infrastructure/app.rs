@@ -226,11 +226,10 @@ impl App {
                             if self.handle_tick(terminal, &mut events).await {
                                 return Ok(()); // Quit requested (shutdown complete)
                             }
-                            // Redraw on animation frame boundaries (every 12 ticks = ~120ms)
-                            // or when a data refresh happened (every 50 ticks = ~500ms)
-                            if self.state.tick.is_multiple_of(12)
-                                || self.state.tick.is_multiple_of(50)
-                            {
+                            // Only redraw on animation frames when something is actually
+                            // animating (spinners, active session icons, update overlay).
+                            // Static screens stay untouched — zero flicker.
+                            if self.state.needs_animation() && self.state.tick.is_multiple_of(12) {
                                 self.needs_redraw = true;
                             }
                         }
@@ -330,8 +329,15 @@ impl App {
                 crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)
                     .ok();
 
-                // Force a full redraw so the TUI is visible immediately
-                let _ = terminal.clear();
+                // Force ratatui to repaint every cell on the next draw by
+                // resizing the internal buffers. Unlike terminal.clear(), this
+                // does NOT send a visible clear-screen escape to the terminal,
+                // so the alternate screen stays blank until the first full
+                // frame is flushed — eliminating the flash/flicker on detach.
+                if let Ok(size) = terminal.size() {
+                    let _ =
+                        terminal.resize(ratatui::layout::Rect::new(0, 0, size.width, size.height));
+                }
 
                 self.state.input_mode = InputMode::Normal;
                 self.state.attached_session = None;
@@ -506,10 +512,12 @@ impl App {
                 ))
         {
             self.refresh_daemon_sessions().await;
+            self.needs_redraw = true;
         }
         // Refresh conversation every ~1s (100 ticks)
         if self.state.tick.is_multiple_of(100) {
             self.auto_refresh_conversation();
+            self.needs_redraw = true;
         }
         if !effects.is_empty() {
             return self.execute_effects(effects, terminal, events).await;

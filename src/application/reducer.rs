@@ -439,7 +439,13 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             }]
         }
         AgentAction::OpenInIde { session_id } => {
-            let session = state.store.find_session(&session_id).cloned();
+            // Resolve session ID: use the explicit ID, or fall back to nav context
+            let resolved_id = if session_id.is_empty() {
+                state.current_session().map(|s| s.to_string())
+            } else {
+                Some(session_id)
+            };
+            let session = resolved_id.and_then(|id| state.store.find_session(&id).cloned());
             match session {
                 Some(s) => {
                     let project_dir = s
