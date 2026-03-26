@@ -257,6 +257,9 @@ pub struct Session {
     /// The original branch a worktree session was created from.
     #[serde(default)]
     pub source_branch: Option<String>,
+    /// Which preset was used to create this session (for teardown lookup).
+    #[serde(default)]
+    pub preset_name: Option<String>,
     /// Repo-level configuration discovered from the session's cwd (lazy-loaded, not serialized).
     #[serde(skip)]
     pub repo_config: Option<RepoConfig>,
@@ -336,6 +339,61 @@ pub struct RepoConfig {
     pub custom_commands: Vec<String>,
     pub agent_definitions: Vec<String>,
     pub has_claude_settings: bool,
+}
+
+/// A session preset — reusable template for session creation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Preset {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// Working directory (relative or absolute).
+    #[serde(default)]
+    pub directory: String,
+    /// Initial prompt for Claude.
+    #[serde(default)]
+    pub prompt: String,
+    /// None = ask, Some = auto-decide.
+    #[serde(default)]
+    pub worktree: Option<bool>,
+    #[serde(default)]
+    pub setup: Vec<String>,
+    #[serde(default)]
+    pub teardown: Vec<String>,
+    #[serde(skip)]
+    pub source: PresetSource,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// Where a preset was loaded from.
+#[derive(Debug, Clone, Default)]
+pub enum PresetSource {
+    #[default]
+    Project,
+    Global,
+    Superset,
+}
+
+/// Container for .clash/presets.json.
+#[derive(Debug, Default, Deserialize)]
+pub struct PresetFile {
+    #[serde(default)]
+    pub presets: HashMap<String, Preset>,
+}
+
+/// Superset-compatible config (.superset/config.json).
+#[derive(Debug, Default, Deserialize)]
+pub struct SupersetConfig {
+    #[serde(default)]
+    pub setup: Vec<String>,
+    #[serde(default)]
+    pub teardown: Vec<String>,
+    /// Consumed by Superset; retained for forward-compat deserialization.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub run: Vec<String>,
 }
 
 /// An inbox message.

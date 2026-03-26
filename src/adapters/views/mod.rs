@@ -4,6 +4,7 @@
 
 pub mod agent_detail;
 pub mod agents;
+pub mod diff;
 pub mod inbox;
 pub mod prompts;
 pub mod session_detail;
@@ -32,6 +33,7 @@ pub enum ViewKind {
     Prompts,
     Sessions,
     SessionDetail,
+    Diff,
     Subagents,
     SubagentDetail,
 }
@@ -49,6 +51,7 @@ impl ViewKind {
             Self::Prompts => "Prompts",
             Self::Sessions => "Sessions",
             Self::SessionDetail => "Session",
+            Self::Diff => "Diff",
             Self::Subagents => "Subagents",
             Self::SubagentDetail => "Subagent",
         }
@@ -67,6 +70,7 @@ impl ViewKind {
             Self::Prompts => "prompts",
             Self::Sessions => "sessions",
             Self::SessionDetail => "session_detail",
+            Self::Diff => "diff",
             Self::Subagents => "subagents",
             Self::SubagentDetail => "subagent_detail",
         }
@@ -85,6 +89,7 @@ impl ViewKind {
             "prompts" => Some(Self::Prompts),
             "sessions" => Some(Self::Sessions),
             "session_detail" => Some(Self::SessionDetail),
+            "diff" => Some(Self::Diff),
             "subagents" => Some(Self::Subagents),
             "subagent_detail" => Some(Self::SubagentDetail),
             _ => None,

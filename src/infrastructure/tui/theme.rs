@@ -50,6 +50,12 @@ pub const TASK_UNKNOWN: Color = Color::Rgb(180, 140, 255); // soft violet
 pub const ERROR_COLOR: Color = Color::Rgb(235, 120, 130); // pastel rose
 pub const UNREAD_COLOR: Color = Color::Rgb(240, 210, 100); // pastel amber
 
+// ── Diff colors ───────────────────────────────────────────────
+pub const DIFF_ADD: Color = STATUS_RUNNING; // pastel green
+pub const DIFF_REMOVE: Color = ERROR_COLOR; // pastel rose
+pub const DIFF_HUNK: Color = NAME_COLOR; // pastel teal
+pub const DIFF_META: Color = ACCENT; // soft violet
+
 // ── Dialog / overlay colors ────────────────────────────────────
 pub const DIALOG_BORDER: Color = Color::Rgb(140, 200, 240); // pastel sky
 pub const DIALOG_TITLE: Color = Color::Rgb(140, 200, 240); // pastel sky

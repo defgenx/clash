@@ -80,6 +80,10 @@ pub enum Effect {
     LoadRepoConfig {
         session_id: String,
     },
+    /// Run `git diff HEAD` in a session's project directory.
+    LoadDiff {
+        session_id: String,
+    },
     LoadSubagentConversation {
         project: String,
         session_id: String,
@@ -139,6 +143,24 @@ pub enum Effect {
         command: String,
         project_dir: String,
         terminal: bool,
+    },
+
+    // ── Preset effects ──────────────────────────────────────────
+    /// Load presets from .clash/presets.json, global config, .superset/config.json.
+    LoadPresets {
+        project_dir: String,
+    },
+    /// Run setup scripts after session creation.
+    RunSetupScripts {
+        session_id: String,
+        scripts: Vec<String>,
+        cwd: String,
+    },
+    /// Run teardown scripts before session drop, then dispatch on_complete.
+    RunTeardownScripts {
+        scripts: Vec<String>,
+        cwd: String,
+        on_complete: Action,
     },
 
     // ── UI state effects ────────────────────────────────────────

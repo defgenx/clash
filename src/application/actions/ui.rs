@@ -51,6 +51,8 @@ pub enum UiAction {
     PickerDown,
     PickerSelect,
     PickerCancel,
+    /// Manual diff refresh (from `r` key on Diff view).
+    RefreshDiff,
     /// Tick event — advances animation frame counter, clears stale toasts.
     Tick,
 }

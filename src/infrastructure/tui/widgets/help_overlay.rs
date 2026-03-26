@@ -64,6 +64,8 @@ pub fn render_help_overlay(
         (":agents", "Navigate to Agents"),
         (":tasks", "Navigate to Tasks"),
         (":new <path>", "New session in directory"),
+        (":new --preset X", "New session from preset"),
+        (":diff", "View diff for session"),
         (":rename <name>", "Rename session (detail view)"),
         (":create team X", "Create team"),
         (":delete team X", "Delete team"),

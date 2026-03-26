@@ -2,6 +2,7 @@ pub mod busy_overlay;
 pub mod centered;
 pub mod confirm_dialog;
 pub mod detail;
+pub mod diff_widget;
 pub mod help_overlay;
 pub mod input_bar;
 pub mod logo;

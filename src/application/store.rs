@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::domain::entities::{ConversationMessage, Member, Session, Subagent, Task, Team};
+use crate::domain::entities::{ConversationMessage, Member, Preset, Session, Subagent, Task, Team};
 use crate::domain::error::Result;
 use crate::domain::ports::DataRepository;
 
@@ -23,6 +23,8 @@ pub struct DataStore {
     pub all_members: Vec<Member>,
     /// Flattened subagents from all sessions.
     pub all_subagents: Vec<Subagent>,
+    /// Cached presets (loaded from .clash/presets.json, global config, .superset/config.json).
+    pub presets: Vec<Preset>,
 }
 
 impl Default for DataStore {
@@ -43,6 +45,7 @@ impl DataStore {
             conversation_loaded: false,
             all_members: Vec::new(),
             all_subagents: Vec::new(),
+            presets: Vec::new(),
         }
     }
 

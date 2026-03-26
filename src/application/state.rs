@@ -8,7 +8,7 @@ use crate::adapters::views::ViewKind;
 use crate::application::actions::Action;
 use crate::application::nav::NavigationStack;
 use crate::application::store::DataStore;
-use crate::domain::entities::{InboxMessage, Session, SessionSection};
+use crate::domain::entities::{InboxMessage, Preset, Session, SessionSection};
 
 /// Phases of the self-update process (displayed in the update overlay).
 #[derive(Debug, Clone)]
@@ -160,6 +160,47 @@ pub struct PickerItem {
 #[derive(Debug, Clone)]
 pub enum PickerAction {
     OpenInIde { project_dir: String },
+    SelectPreset { project_dir: String },
+}
+
+/// Pending session creation state — replaces scattered fields.
+#[derive(Debug, Clone)]
+pub struct PendingSession {
+    pub cwd: String,
+    pub name: Option<String>,
+    pub worktree: bool,
+    pub preset: Option<Preset>,
+}
+
+/// Diff viewer state — transient UI state, not domain data.
+#[derive(Debug, Clone, Default)]
+pub struct DiffState {
+    /// Parsed diff lines (parsed once on load, widget maps to styled Lines per frame).
+    pub lines: Vec<DiffLine>,
+    /// true = diff has been loaded at least once.
+    pub loaded: bool,
+    /// true = git diff subprocess is in flight (prevents concurrent spawns).
+    pub loading: bool,
+    /// Which session this diff belongs to.
+    pub session_id: Option<String>,
+}
+
+/// A single line from git diff output, classified by kind.
+#[derive(Debug, Clone)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    pub content: String,
+}
+
+/// Classification of a git diff line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffLineKind {
+    Add,
+    Remove,
+    Hunk,
+    Meta,
+    FilePath,
+    Context,
 }
 
 /// Table selection state.
@@ -207,10 +248,8 @@ pub struct AppState {
     pub expanded_sessions: HashSet<String>,
     /// Default working directory for new sessions (where clash was started).
     pub default_cwd: String,
-    /// Pending CWD for new session (set during the two-step creation flow).
-    pub pending_session_cwd: Option<String>,
-    /// Whether the pending new session should use a worktree.
-    pub pending_session_worktree: bool,
+    /// Pending session creation state (replaces old cwd/worktree fields).
+    pub pending_session: Option<PendingSession>,
     /// Guided tour state: Some(step_index) when active, None when inactive.
     pub tour_step: Option<usize>,
     /// vt100 screen for inline terminal rendering when attached to a session.
@@ -218,6 +257,8 @@ pub struct AppState {
     /// Sessions currently open in external panes/tabs/windows.
     /// Tracked in-memory only — cleared on restart.
     pub externally_opened: HashSet<String>,
+    /// Diff viewer state (transient — not persisted).
+    pub diff: DiffState,
     /// Debug mode flag — enables verbose logging.
     pub debug_mode: bool,
     /// Self-update progress (shown as an overlay when active).
@@ -258,11 +299,11 @@ impl AppState {
             default_cwd: std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default(),
-            pending_session_cwd: None,
-            pending_session_worktree: false,
+            pending_session: None,
             tour_step: None,
             terminal_screen: None,
             externally_opened: HashSet::new(),
+            diff: DiffState::default(),
             debug_mode: false,
             update_progress: None,
             shutting_down: None,

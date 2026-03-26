@@ -61,6 +61,7 @@ fn reduce_nav(state: &mut AppState, action: NavAction) -> Vec<Effect> {
                     | ViewKind::TaskDetail
                     | ViewKind::SessionDetail
                     | ViewKind::SubagentDetail
+                    | ViewKind::Diff
             );
 
             if let Some(ctx) = ctx {
@@ -81,6 +82,10 @@ fn reduce_nav(state: &mut AppState, action: NavAction) -> Vec<Effect> {
             }
         }
         NavAction::GoBack => {
+            // Reset diff state when leaving Diff view
+            if state.current_view() == ViewKind::Diff {
+                state.diff = crate::application::state::DiffState::default();
+            }
             state.nav.pop();
             state.table_state.selected = 0;
             state.scroll_state.offset = 0;
@@ -223,22 +228,25 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             }]
         }
         AgentAction::SpawnSession { cwd, name } => {
-            // Create a new daemon-managed session and attach inline.
-            // Pass --session-id to Claude so the daemon ID matches the
-            // filesystem session ID — this links them and prevents duplication.
             let session_id = uuid::Uuid::now_v7().to_string();
             state.input_mode = InputMode::Attached;
             state.attached_session = Some(session_id.clone());
 
-            // Default name: "clash-{short_uuid}"
             let session_name = name.unwrap_or_else(|| {
                 let short = &session_id[..8];
                 format!("clash-{}", short)
             });
 
+            // Check for preset with setup scripts
+            let pending_preset = state.pending_session.take().and_then(|p| p.preset);
+            let setup_scripts = pending_preset
+                .as_ref()
+                .map(|p| p.setup.clone())
+                .unwrap_or_default();
+
             state.spinner = Some(format!("Starting session {}...", session_name));
             state.scroll_state.offset = 0;
-            vec![
+            let mut effects = vec![
                 Effect::RegisterSession {
                     session_id: session_id.clone(),
                     name: session_name.clone(),
@@ -247,18 +255,52 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 },
                 Effect::DaemonAttach {
                     session_id: session_id.clone(),
-                    args: vec!["--session-id".to_string(), session_id],
-                    cwd: Some(cwd),
+                    args: vec!["--session-id".to_string(), session_id.clone()],
+                    cwd: Some(cwd.clone()),
                     name: Some(session_name),
                 },
-            ]
+            ];
+            if !setup_scripts.is_empty() {
+                effects.push(Effect::RunSetupScripts {
+                    session_id,
+                    scripts: setup_scripts,
+                    cwd,
+                });
+            }
+            effects
         }
         AgentAction::DropSession { session_id } => {
+            // Check if the session has a preset with teardown scripts
+            let session = state.store.find_session(&session_id).cloned();
+            if let Some(ref s) = session {
+                if let Some(ref preset_name) = s.preset_name {
+                    if let Some(preset) =
+                        state.store.presets.iter().find(|p| &p.name == preset_name)
+                    {
+                        if !preset.teardown.is_empty() {
+                            let cwd = s
+                                .cwd
+                                .as_deref()
+                                .or(Some(&s.project_path))
+                                .filter(|p| !p.is_empty())
+                                .unwrap_or(".")
+                                .to_string();
+                            state.spinner = Some("Running teardown...".to_string());
+                            return vec![Effect::RunTeardownScripts {
+                                scripts: preset.teardown.clone(),
+                                cwd,
+                                on_complete: Action::Agent(AgentAction::DropSessionAfterTeardown {
+                                    session_id,
+                                }),
+                            }];
+                        }
+                    }
+                }
+            }
+
+            // No teardown — proceed with immediate drop
             state.spinner = Some("Dropping session...".to_string());
-            let worktree = state
-                .store
-                .find_session(&session_id)
-                .and_then(|s| s.worktree.clone());
+            let worktree = session.and_then(|s| s.worktree.clone());
             // Remove from store immediately so the UI doesn't show a stale entry
             state.store.sessions.retain(|s| s.id != session_id);
             // Clamp selection to valid range
@@ -457,6 +499,59 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 name,
             }]
         }
+        AgentAction::SpawnSessionFromPreset { preset_name } => {
+            // Look up preset in cache
+            let exists = state.store.presets.iter().any(|p| p.name == preset_name);
+            if exists {
+                return handle_preset_selection(state, &preset_name, &state.default_cwd.clone());
+            }
+            // Not found — toast available presets
+            let available: Vec<String> =
+                state.store.presets.iter().map(|p| p.name.clone()).collect();
+            if available.is_empty() {
+                state.toast = Some(format!(
+                    "Unknown preset '{}'. No presets loaded.",
+                    preset_name
+                ));
+            } else {
+                state.toast = Some(format!(
+                    "Unknown preset '{}'. Available: {}",
+                    preset_name,
+                    available.join(", ")
+                ));
+            }
+            vec![]
+        }
+        AgentAction::DropSessionAfterTeardown { session_id } => {
+            // Two-phase drop: teardown has completed — now do the actual kill/unregister
+            state.spinner = Some("Dropping session...".to_string());
+            let worktree = state
+                .store
+                .find_session(&session_id)
+                .and_then(|s| s.worktree.clone());
+            state.store.sessions.retain(|s| s.id != session_id);
+            let count = state.filtered_sessions().len();
+            if count > 0 && state.table_state.selected >= count {
+                state.table_state.selected = count - 1;
+            }
+            state.nav.pop();
+            vec![
+                Effect::UnregisterSession {
+                    session_id: session_id.clone(),
+                },
+                Effect::MarkSessionIdle {
+                    session_id: session_id.clone(),
+                },
+                Effect::DaemonKill {
+                    session_id: session_id.clone(),
+                },
+                Effect::TerminateProcess {
+                    session_id: session_id.clone(),
+                    worktree,
+                },
+                Effect::RefreshSessions,
+            ]
+        }
         AgentAction::AttachAllNewWindows => {
             let ids: Vec<String> = state
                 .filtered_sessions()
@@ -551,6 +646,47 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             vec![]
         }
         UiAction::EnterNewSessionMode => {
+            if !state.store.presets.is_empty() {
+                // Show preset picker
+                let mut items: Vec<crate::application::state::PickerItem> = state
+                    .store
+                    .presets
+                    .iter()
+                    .map(|p| crate::application::state::PickerItem {
+                        label: p.name.clone(),
+                        description: if p.description.is_empty() {
+                            match p.source {
+                                crate::domain::entities::PresetSource::Global => {
+                                    "(global)".to_string()
+                                }
+                                crate::domain::entities::PresetSource::Superset => {
+                                    "From .superset/config.json".to_string()
+                                }
+                                _ => String::new(),
+                            }
+                        } else {
+                            p.description.clone()
+                        },
+                        value: p.name.clone(),
+                    })
+                    .collect();
+                items.push(crate::application::state::PickerItem {
+                    label: "No preset".to_string(),
+                    description: "Manual setup".to_string(),
+                    value: String::new(),
+                });
+                return reduce(
+                    state,
+                    Action::Ui(UiAction::ShowPicker {
+                        title: "Select Preset".to_string(),
+                        items,
+                        on_select: crate::application::state::PickerAction::SelectPreset {
+                            project_dir: state.default_cwd.clone(),
+                        },
+                    }),
+                );
+            }
+            // No presets — enter manual 3-step flow
             state.input_mode = InputMode::NewSession;
             state.input_buffer = state.default_cwd.clone();
             state.input_cursor = state.input_buffer.len();
@@ -560,8 +696,7 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             state.input_mode = InputMode::Normal;
             state.input_buffer.clear();
             state.input_cursor = 0;
-            state.pending_session_cwd = None;
-            state.pending_session_worktree = false;
+            state.pending_session = None;
             vec![]
         }
         UiAction::SubmitInput(text) => {
@@ -591,11 +726,14 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                     } else {
                         cwd
                     };
-                    // Default name: "clash-{short_uuid}"
                     let uid = uuid::Uuid::now_v7().to_string();
                     let default_name = format!("clash-{}", &uid[..8]);
-                    // Step 1 done — store cwd and prompt for name
-                    state.pending_session_cwd = Some(cwd);
+                    state.pending_session = Some(crate::application::state::PendingSession {
+                        cwd,
+                        name: None,
+                        worktree: false,
+                        preset: None,
+                    });
                     state.input_mode = InputMode::NewSessionName;
                     state.input_buffer = default_name;
                     state.input_cursor = state.input_buffer.len();
@@ -603,41 +741,24 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                 }
                 InputMode::NewSessionName => {
                     let name_input = input.trim().to_string();
-                    // Store the name for the worktree prompt step
-                    state.pending_session_worktree = false;
+                    if let Some(ref mut pending) = state.pending_session {
+                        pending.name = if name_input.is_empty() {
+                            None
+                        } else {
+                            Some(name_input)
+                        };
+                    }
                     state.input_mode = InputMode::NewSessionWorktree;
                     state.input_buffer = "n".to_string();
                     state.input_cursor = 1;
-                    // Stash the name in toast temporarily (pending_session_cwd still holds cwd)
-                    // We re-use pending_session_worktree as a flag; store name in a new temp field
-                    // Actually, let's store in a simpler way: put cwd back and keep name in buffer context
-                    // The cleanest approach: store name in state.toast won't work (visible).
-                    // Instead: re-set pending_session_cwd to "cwd\0name" encoding, split later.
-                    let cwd = state
-                        .pending_session_cwd
-                        .take()
-                        .unwrap_or_else(|| state.default_cwd.clone());
-                    let name = if name_input.is_empty() {
-                        String::new()
-                    } else {
-                        name_input
-                    };
-                    state.pending_session_cwd = Some(format!("{}\0{}", cwd, name));
                     vec![]
                 }
                 InputMode::NewSessionWorktree => {
                     let wants_worktree = input.trim().eq_ignore_ascii_case("y");
-                    let combined = state.pending_session_cwd.take().unwrap_or_default();
-                    let (cwd, name_str) = combined.split_once('\0').unwrap_or((&combined, ""));
-                    let cwd = if cwd.is_empty() {
-                        state.default_cwd.clone()
-                    } else {
-                        cwd.to_string()
-                    };
-                    let name = if name_str.is_empty() {
-                        None
-                    } else {
-                        Some(name_str.to_string())
+                    let pending = state.pending_session.take();
+                    let (cwd, name) = match pending {
+                        Some(p) => (p.cwd, p.name),
+                        None => (state.default_cwd.clone(), None),
                     };
                     if wants_worktree {
                         reduce(
@@ -819,6 +940,13 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             if let Some(picker) = state.picker_dialog.take() {
                 state.input_mode = InputMode::Normal;
                 if let Some(item) = picker.items.get(picker.selected) {
+                    // Handle preset picker specially (needs state access)
+                    if let crate::application::state::PickerAction::SelectPreset {
+                        ref project_dir,
+                    } = picker.on_select_action
+                    {
+                        return handle_preset_selection(state, &item.value, project_dir);
+                    }
                     state.toast = Some(format!("Opening in {}...", item.label));
                     return emit_picker_effect(&picker.on_select_action, &item.value);
                 }
@@ -830,12 +958,41 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             state.input_mode = InputMode::Normal;
             vec![]
         }
+        UiAction::RefreshDiff => {
+            if let Some(ref session_id) = state.diff.session_id.clone() {
+                if !state.diff.loading {
+                    state.diff.loading = true;
+                    return vec![Effect::LoadDiff {
+                        session_id: session_id.clone(),
+                    }];
+                }
+            }
+            vec![]
+        }
         UiAction::Tick => {
             state.tick = state.tick.wrapping_add(1);
             if state.toast.is_some() && state.tick.is_multiple_of(300) {
                 state.toast = None;
             }
-            check_shutdown(state)
+            // Auto-refresh diff every ~3s (12 ticks at 250ms) when session is active
+            let mut effects = check_shutdown(state);
+            if state.current_view() == ViewKind::Diff && !state.diff.loading && state.tick % 12 == 0
+            {
+                if let Some(ref session_id) = state.diff.session_id.clone() {
+                    let is_active = state
+                        .store
+                        .find_session(session_id)
+                        .map(|s| s.is_running)
+                        .unwrap_or(false);
+                    if is_active {
+                        state.diff.loading = true;
+                        effects.push(Effect::LoadDiff {
+                            session_id: session_id.clone(),
+                        });
+                    }
+                }
+            }
+            effects
         }
         UiAction::Quit => {
             let running = state.store.sessions.iter().filter(|s| s.is_running).count();
@@ -876,6 +1033,89 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
 }
 
 /// Emit the appropriate effect for a picker selection.
+/// Handle preset picker selection — either start from preset or fall through to manual.
+fn handle_preset_selection(
+    state: &mut AppState,
+    preset_name: &str,
+    project_dir: &str,
+) -> Vec<Effect> {
+    if preset_name.is_empty() {
+        // "No preset" selected — fall through to manual flow
+        state.input_mode = InputMode::NewSession;
+        state.input_buffer = state.default_cwd.clone();
+        state.input_cursor = state.input_buffer.len();
+        return vec![];
+    }
+
+    let preset = state
+        .store
+        .presets
+        .iter()
+        .find(|p| p.name == preset_name)
+        .cloned();
+
+    if let Some(preset) = preset {
+        // Resolve directory relative to project_dir
+        let cwd = if preset.directory.is_empty() || preset.directory == "." {
+            project_dir.to_string()
+        } else if std::path::Path::new(&preset.directory).is_absolute() {
+            preset.directory.clone()
+        } else {
+            std::path::Path::new(project_dir)
+                .join(&preset.directory)
+                .to_string_lossy()
+                .to_string()
+        };
+
+        let uid = uuid::Uuid::now_v7().to_string();
+        let default_name = format!("{}-{}", preset.name, &uid[..8]);
+
+        // If worktree is specified, skip the prompt
+        if let Some(wants_worktree) = preset.worktree {
+            let name = Some(default_name);
+            state.pending_session = Some(crate::application::state::PendingSession {
+                cwd: cwd.clone(),
+                name: name.clone(),
+                worktree: wants_worktree,
+                preset: Some(preset),
+            });
+            let pending = state.pending_session.take().unwrap();
+            if pending.worktree {
+                return reduce(
+                    state,
+                    Action::Agent(AgentAction::SpawnSessionInWorktree {
+                        cwd: pending.cwd,
+                        name: pending.name,
+                    }),
+                );
+            } else {
+                return reduce(
+                    state,
+                    Action::Agent(AgentAction::SpawnSession {
+                        cwd: pending.cwd,
+                        name: pending.name,
+                    }),
+                );
+            }
+        }
+
+        // Store preset in pending and go to name step
+        state.pending_session = Some(crate::application::state::PendingSession {
+            cwd,
+            name: None,
+            worktree: false,
+            preset: Some(preset),
+        });
+        state.input_mode = InputMode::NewSessionName;
+        state.input_buffer = default_name;
+        state.input_cursor = state.input_buffer.len();
+        vec![]
+    } else {
+        state.toast = Some(format!("Unknown preset '{}'", preset_name));
+        vec![]
+    }
+}
+
 fn emit_picker_effect(
     action: &crate::application::state::PickerAction,
     value: &str,
@@ -894,6 +1134,8 @@ fn emit_picker_effect(
                 terminal,
             }]
         }
+        // SelectPreset is handled directly in PickerSelect before calling this function
+        crate::application::state::PickerAction::SelectPreset { .. } => vec![],
     }
 }
 
@@ -939,10 +1181,15 @@ fn current_item_count(state: &AppState) -> usize {
 }
 
 /// Return effects needed to load data for a view.
-fn load_effects_for_view(state: &AppState, view: ViewKind) -> Vec<Effect> {
+fn load_effects_for_view(state: &mut AppState, view: ViewKind) -> Vec<Effect> {
     match view {
         ViewKind::Teams => vec![Effect::RefreshAll],
-        ViewKind::Sessions => vec![Effect::RefreshSessions],
+        ViewKind::Sessions => vec![
+            Effect::RefreshSessions,
+            Effect::LoadPresets {
+                project_dir: state.default_cwd.clone(),
+            },
+        ],
         ViewKind::Tasks => {
             if let Some(team) = state.current_team() {
                 vec![Effect::RefreshTeamTasks {
@@ -1003,6 +1250,17 @@ fn load_effects_for_view(state: &AppState, view: ViewKind) -> Vec<Effect> {
                 }
             }
             vec![]
+        }
+        ViewKind::Diff => {
+            let session_id = state.current_session().map(|s| s.to_string());
+            if let Some(session_id) = session_id {
+                state.diff.loading = true;
+                state.diff.loaded = false;
+                state.diff.session_id = Some(session_id.clone());
+                vec![Effect::LoadDiff { session_id }]
+            } else {
+                vec![]
+            }
         }
         _ => vec![],
     }
@@ -1323,7 +1581,7 @@ mod tests {
         assert_eq!(state.input_mode, InputMode::NewSessionName);
         assert!(state.input_buffer.starts_with("clash-")); // default name "clash-{short_uuid}"
         assert_eq!(
-            state.pending_session_cwd.as_deref(),
+            state.pending_session.as_ref().map(|p| p.cwd.as_str()),
             Some("/tmp/my-project")
         );
 
@@ -1353,7 +1611,12 @@ mod tests {
 
         // Set up pending session state (as if NewSession + NewSessionName completed)
         state.input_mode = InputMode::NewSessionWorktree;
-        state.pending_session_cwd = Some("/tmp/project\0my-session".to_string());
+        state.pending_session = Some(crate::application::state::PendingSession {
+            cwd: "/tmp/project".to_string(),
+            name: Some("my-session".to_string()),
+            worktree: false,
+            preset: None,
+        });
         state.input_buffer = "y".to_string();
         state.input_cursor = 1;
 

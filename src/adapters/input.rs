@@ -61,6 +61,7 @@ fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
             | ViewKind::SessionDetail
             | ViewKind::SubagentDetail
             | ViewKind::Prompts
+            | ViewKind::Diff
     );
 
     match key.code {
@@ -117,7 +118,8 @@ fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
         KeyCode::Char('o') => handle_attach_new_window(state),
         KeyCode::Char('O') => handle_attach_all_new_windows(state),
         KeyCode::Char('w') => handle_worktree(state),
-        KeyCode::Char('r') => Action::Team(crate::application::actions::TeamAction::Refresh),
+        KeyCode::Char('p') => handle_diff_view(state),
+        KeyCode::Char('r') => handle_refresh(state),
         KeyCode::Tab => Action::Ui(UiAction::ToggleExpand),
 
         // Quit
@@ -492,6 +494,24 @@ fn handle_inspect(state: &AppState) -> Action {
     }
 }
 
+fn handle_diff_view(state: &AppState) -> Action {
+    if let Some(session_id) = resolve_session_id(state) {
+        return Action::Nav(NavAction::DrillIn {
+            view: ViewKind::Diff,
+            context: session_id,
+        });
+    }
+    Action::Noop
+}
+
+fn handle_refresh(state: &AppState) -> Action {
+    if state.current_view() == ViewKind::Diff {
+        // Manual refresh on the diff view — reload the diff
+        return Action::Ui(UiAction::RefreshDiff);
+    }
+    Action::Team(crate::application::actions::TeamAction::Refresh)
+}
+
 fn handle_new_session(state: &AppState) -> Action {
     match state.current_view() {
         ViewKind::Sessions | ViewKind::SessionDetail => Action::Ui(UiAction::EnterNewSessionMode),
@@ -584,16 +604,39 @@ pub fn parse_command(cmd: &str) -> Action {
         return Action::Ui(UiAction::Toast("Usage: rename <new name>".to_string()));
     }
 
-    // Handle "new [path]" to spawn a session in a specific directory
+    // Handle "new [--preset <name>] [path]" to spawn a session
     if cmd == "new" || cmd.starts_with("new ") {
-        let path = cmd.strip_prefix("new").unwrap().trim();
-        if path.is_empty() {
-            // No path — prompt for it
+        let rest = cmd.strip_prefix("new").unwrap().trim();
+        // Check for --preset flag
+        if let Some(after_flag) = rest.strip_prefix("--preset") {
+            let preset_name = after_flag.trim();
+            if preset_name.is_empty() {
+                return Action::Ui(UiAction::Toast("Usage: new --preset <name>".to_string()));
+            }
+            return Action::Agent(AgentAction::SpawnSessionFromPreset {
+                preset_name: preset_name.to_string(),
+            });
+        }
+        if rest.is_empty() {
+            // No path — prompt for it (or show preset picker)
             return Action::Ui(UiAction::EnterNewSessionMode);
         }
-        return Action::Agent(crate::application::actions::AgentAction::SpawnSession {
-            cwd: path.to_string(),
+        return Action::Agent(AgentAction::SpawnSession {
+            cwd: rest.to_string(),
             name: None,
+        });
+    }
+
+    // Handle "presets" — list available presets
+    if cmd == "presets" {
+        return Action::Ui(UiAction::Toast("Use :new to see preset picker".to_string()));
+    }
+
+    // Handle "diff" — navigate to diff view (session resolved by reducer)
+    if cmd == "diff" {
+        return Action::Nav(NavAction::DrillIn {
+            view: ViewKind::Diff,
+            context: String::new(), // resolved from nav context
         });
     }
 

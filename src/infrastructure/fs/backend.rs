@@ -220,6 +220,7 @@ impl FsBackend {
             name: None,
             cwd: None,
             source_branch: None,
+            preset_name: None,
             repo_config: None,
         }
     }

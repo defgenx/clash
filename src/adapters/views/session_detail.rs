@@ -202,6 +202,7 @@ impl DetailView for SessionDetailView {
         vec![
             Keybinding::new("Enter", "View subagents"),
             Keybinding::new("a", "Attach to session"),
+            Keybinding::new("p", "View diff"),
             Keybinding::new("e", "Open in IDE"),
             Keybinding::new("o", "Open in new window"),
             Keybinding::new("s", "View subagents"),

@@ -115,6 +115,7 @@ clash detects session status through three layers (in priority order):
 | Key | Action |
 |-----|--------|
 | `a` | Attach (inline terminal) |
+| `p` | View diff (`git diff HEAD`) |
 | `e` | Open project in IDE (auto-detect + picker) |
 | `o` | Open in new pane / tab / window |
 | `O` | Open ALL running sessions (smart layout) |
@@ -149,9 +150,20 @@ clash detects session status through three layers (in priority order):
 | `s` | Subagents |
 | `t` | Linked team |
 | `m` | Team members |
+| `p` | View diff |
 | `a` | Attach |
 | `e` | Open in IDE |
 | `d` | Drop |
+
+### Diff View
+
+| Key | Action |
+|-----|--------|
+| `r` | Refresh diff |
+| `j` / `k` | Scroll |
+| `Esc` | Go back |
+
+Auto-refreshes every ~3 seconds while the session is active.
 
 ### Team Detail
 
@@ -173,6 +185,8 @@ clash detects session status through three layers (in priority order):
 | `:delete team <name>` | Delete a team |
 | `:create task <team> <subject>` | Create a task |
 | `:new [path]` | Spawn a new session |
+| `:new --preset <name>` | Spawn session from a preset |
+| `:diff` | View diff for current session |
 | `:rename <name>` | Rename session (from detail view) |
 | `:active` / `:all` | Filter sessions |
 | `:tour` | Replay guided tour |
@@ -208,6 +222,52 @@ clash also maintains its own state in `~/.claude/clash/`:
 ```
 
 Single-instance lock file: `~/.local/share/clash/clash.lock`
+
+## Session Presets
+
+Presets are reusable templates for session creation. When presets are available, pressing `n` shows a picker; otherwise the manual 3-step flow is used.
+
+### Project presets (`.clash/presets.json`)
+
+```json
+{
+  "presets": {
+    "backend-fix": {
+      "description": "Backend bugfix workflow",
+      "directory": "./",
+      "worktree": true,
+      "setup": ["./.clash/setup-backend.sh"],
+      "teardown": ["./.clash/teardown.sh"]
+    },
+    "frontend-feature": {
+      "description": "New frontend feature",
+      "directory": "./frontend",
+      "worktree": false
+    }
+  }
+}
+```
+
+### Global presets (`~/.config/clash/presets.json`)
+
+Same format as project presets. Project presets override global presets with the same name.
+
+### Superset compatibility
+
+If `.superset/config.json` exists, it appears as a synthetic "superset" preset with the `setup` and `teardown` fields mapped directly.
+
+### Preset fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `description` | string | Shown in the preset picker |
+| `directory` | string | Working directory (relative or absolute) |
+| `prompt` | string | Initial prompt for Claude |
+| `worktree` | bool? | `true`/`false` = auto, omit = ask |
+| `setup` | string[] | Scripts to run after session creation |
+| `teardown` | string[] | Scripts to run before session drop |
+
+Setup scripts receive `CLASH_ROOT_PATH` and `CLASH_SESSION_ID` env vars. Each script has a 30s timeout.
 
 ## Architecture
 

@@ -35,6 +35,10 @@ pub struct App {
     fs_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Vec<PathBuf>>>,
     daemon: DaemonClient,
     ext_open_times: HashMap<String, Instant>,
+    /// Persisted ratatui table state for the sessions view — preserves scroll offset across frames.
+    sessions_visual_state: ratatui::widgets::TableState,
+    /// Dirty flag: only redraw when something changed. Set by events, cleared after draw.
+    needs_redraw: bool,
 }
 
 impl App {
@@ -99,6 +103,8 @@ impl App {
             fs_event_rx: Some(fs_rx),
             daemon,
             ext_open_times: HashMap::new(),
+            sessions_visual_state: ratatui::widgets::TableState::default(),
+            needs_redraw: true,
         }
     }
 
@@ -112,7 +118,11 @@ impl App {
 
         // Show loading overlay while startup tasks run
         self.state.spinner = Some("Loading sessions...".to_string());
-        let _ = terminal.draw(|f| renderer::draw(&self.state, f));
+        {
+            let state = &self.state;
+            let vs = &mut self.sessions_visual_state;
+            let _ = terminal.draw(|f| renderer::draw(state, vs, f));
+        }
 
         // Auto-connect to daemon (best-effort)
         let mut daemon_rx = None;
@@ -160,12 +170,18 @@ impl App {
                             {
                                 self.state.toast =
                                     Some(format!("v{} available — :update to install", version));
+                                self.needs_redraw = true;
                             }
                         }
                     }
                 }
 
-                terminal.draw(|f| renderer::draw(&self.state, f))?;
+                if self.needs_redraw {
+                    let visual_state = &mut self.sessions_visual_state;
+                    let state = &self.state;
+                    terminal.draw(|f| renderer::draw(state, visual_state, f))?;
+                    self.needs_redraw = false;
+                }
 
                 // Non-blocking FS event check
                 if let Some(ref mut rx) = fs_rx {
@@ -183,10 +199,12 @@ impl App {
                     if needs_refresh_all {
                         self.backend.invalidate_session_cache_all();
                         let _ = self.state.store.refresh_all(&self.backend);
+                        self.needs_redraw = true;
                     } else if !changed_jsonl_paths.is_empty() {
                         // Invalidate only the affected project directories
                         self.backend.invalidate_session_cache(&changed_jsonl_paths);
                         self.refresh_daemon_sessions().await;
+                        self.needs_redraw = true;
                     }
                 }
 
@@ -202,14 +220,23 @@ impl App {
                             {
                                 return Ok(()); // Quit requested
                             }
+                            self.needs_redraw = true;
                         }
                         Event::Tick => {
                             if self.handle_tick(terminal, &mut events).await {
                                 return Ok(()); // Quit requested (shutdown complete)
                             }
+                            // Redraw on animation frame boundaries (every 12 ticks = ~120ms)
+                            // or when a data refresh happened (every 50 ticks = ~500ms)
+                            if self.state.tick.is_multiple_of(12)
+                                || self.state.tick.is_multiple_of(50)
+                            {
+                                self.needs_redraw = true;
+                            }
                         }
                         Event::Resize(width, height) => {
                             self.handle_resize(width, height).await;
+                            self.needs_redraw = true;
                         }
                         Event::DaemonExited { session_id } => {
                             let action =
@@ -220,10 +247,12 @@ impl App {
                             if self.execute_effects(effects, terminal, &mut events).await {
                                 return Ok(());
                             }
+                            self.needs_redraw = true;
                         }
                         Event::DaemonOutput => {}
                         Event::Mouse(mouse) => {
                             self.handle_mouse(mouse, terminal, &mut events).await;
+                            self.needs_redraw = true;
                         }
                         Event::UpdateProgress(phase) => {
                             use crate::application::state::UpdatePhase;
@@ -249,6 +278,7 @@ impl App {
                                 self.state.update_progress = None;
                                 self.state.spinner = None;
                             }
+                            self.needs_redraw = true;
                         }
                     }
                 } else {
@@ -309,6 +339,7 @@ impl App {
                 self.state.spinner = None;
 
                 self.refresh_daemon_sessions().await;
+                self.needs_redraw = true;
             }
             // Loop back → creates a fresh EventLoop with a new crossterm
         }
@@ -430,7 +461,9 @@ impl App {
 
             let effects = reducer::reduce(&mut self.state, action);
             if self.state.spinner.is_some() {
-                let _ = terminal.draw(|f| renderer::draw(&self.state, f));
+                let state = &self.state;
+                let vs = &mut self.sessions_visual_state;
+                let _ = terminal.draw(|f| renderer::draw(state, vs, f));
             }
             if self.execute_effects(effects, terminal, events).await {
                 return Err(color_eyre::eyre::eyre!("quit"));
@@ -550,7 +583,9 @@ impl App {
     /// Draw a frame immediately if the spinner is active.
     fn draw_if_spinner(&mut self, terminal: &mut ratatui::DefaultTerminal) {
         if self.state.spinner.is_some() {
-            let _ = terminal.draw(|f| renderer::draw(&self.state, f));
+            let state = &self.state;
+            let vs = &mut self.sessions_visual_state;
+            let _ = terminal.draw(|f| renderer::draw(state, vs, f));
         }
     }
 
@@ -1098,6 +1133,52 @@ impl App {
                             }
                         }
                     }
+                }
+                Effect::LoadDiff { session_id } => {
+                    let dir = self.state.store.find_session(&session_id).and_then(|s| {
+                        s.cwd
+                            .as_deref()
+                            .or(Some(&s.project_path))
+                            .filter(|p| !p.is_empty())
+                            .map(|p| p.to_string())
+                    });
+                    if let Some(dir) = dir {
+                        let start = Instant::now();
+                        let output = tokio::process::Command::new("git")
+                            .args(["diff", "HEAD"])
+                            .current_dir(&dir)
+                            .output()
+                            .await;
+                        let elapsed = start.elapsed();
+                        tracing::debug!("git diff HEAD in {} took {:?}", dir, elapsed);
+                        match output {
+                            Ok(out) if out.status.success() => {
+                                let raw = String::from_utf8_lossy(&out.stdout);
+                                self.state.diff.lines =
+                                    crate::infrastructure::tui::widgets::diff_widget::parse_diff_lines(&raw);
+                            }
+                            Ok(out) => {
+                                let err = String::from_utf8_lossy(&out.stderr);
+                                self.state.diff.lines = vec![crate::application::state::DiffLine {
+                                    kind: crate::application::state::DiffLineKind::Context,
+                                    content: format!("Error: {}", err.trim()),
+                                }];
+                            }
+                            Err(e) => {
+                                self.state.diff.lines = vec![crate::application::state::DiffLine {
+                                    kind: crate::application::state::DiffLineKind::Context,
+                                    content: format!("Failed to run git: {}", e),
+                                }];
+                            }
+                        }
+                    } else {
+                        self.state.diff.lines = vec![crate::application::state::DiffLine {
+                            kind: crate::application::state::DiffLineKind::Context,
+                            content: "No project directory for this session".to_string(),
+                        }];
+                    }
+                    self.state.diff.loaded = true;
+                    self.state.diff.loading = false;
                 }
                 Effect::LoadConversation {
                     project,
@@ -1735,6 +1816,108 @@ impl App {
                     tokio::spawn(async move {
                         crate::infrastructure::update::perform_update(tx).await;
                     });
+                }
+
+                // ── Preset effects ────────────────────────────────
+                Effect::LoadPresets { project_dir } => {
+                    let global_config_dir = dirs::config_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                        .join("clash");
+                    self.state.store.presets = crate::infrastructure::fs::presets::load_presets(
+                        std::path::Path::new(&project_dir),
+                        &global_config_dir,
+                    );
+                    tracing::debug!(
+                        "Loaded {} presets from {}",
+                        self.state.store.presets.len(),
+                        project_dir
+                    );
+                }
+                Effect::RunSetupScripts {
+                    session_id,
+                    scripts,
+                    cwd,
+                } => {
+                    for script in &scripts {
+                        tracing::debug!("Running setup script: {} in {}", script, cwd);
+                        let result = tokio::time::timeout(
+                            Duration::from_secs(30),
+                            tokio::process::Command::new("sh")
+                                .args(["-c", script])
+                                .current_dir(&cwd)
+                                .env("CLASH_ROOT_PATH", &cwd)
+                                .env("CLASH_SESSION_ID", &session_id)
+                                .output(),
+                        )
+                        .await;
+                        match result {
+                            Ok(Ok(out)) if out.status.success() => {
+                                tracing::debug!("Setup script succeeded: {}", script);
+                            }
+                            Ok(Ok(out)) => {
+                                let err = String::from_utf8_lossy(&out.stderr);
+                                self.state.toast =
+                                    Some(format!("Setup script failed: {}", err.trim()));
+                                tracing::warn!("Setup script failed: {} — {}", script, err.trim());
+                                break;
+                            }
+                            Ok(Err(e)) => {
+                                self.state.toast = Some(format!("Setup script error: {}", e));
+                                tracing::warn!("Setup script error: {} — {}", script, e);
+                                break;
+                            }
+                            Err(_) => {
+                                self.state.toast =
+                                    Some(format!("Setup script timed out: {}", script));
+                                tracing::warn!("Setup script timed out (30s): {}", script);
+                                break;
+                            }
+                        }
+                    }
+                    if self.state.toast.is_none() && !scripts.is_empty() {
+                        self.state.toast = Some("Setup scripts completed".to_string());
+                    }
+                }
+                Effect::RunTeardownScripts {
+                    scripts,
+                    cwd,
+                    on_complete,
+                } => {
+                    for script in &scripts {
+                        tracing::debug!("Running teardown script: {} in {}", script, cwd);
+                        let result = tokio::time::timeout(
+                            Duration::from_secs(30),
+                            tokio::process::Command::new("sh")
+                                .args(["-c", script])
+                                .current_dir(&cwd)
+                                .output(),
+                        )
+                        .await;
+                        match result {
+                            Ok(Ok(out)) if out.status.success() => {
+                                tracing::debug!("Teardown script succeeded: {}", script);
+                            }
+                            Ok(Ok(out)) => {
+                                let err = String::from_utf8_lossy(&out.stderr);
+                                tracing::warn!(
+                                    "Teardown script failed: {} — {}",
+                                    script,
+                                    err.trim()
+                                );
+                            }
+                            Ok(Err(e)) => {
+                                tracing::warn!("Teardown script error: {} — {}", script, e);
+                            }
+                            Err(_) => {
+                                tracing::warn!("Teardown script timed out (30s): {}", script);
+                            }
+                        }
+                    }
+                    // Dispatch the follow-up action (e.g. DropSessionAfterTeardown)
+                    let follow_up_effects = reducer::reduce(&mut self.state, on_complete);
+                    for (i, e) in follow_up_effects.into_iter().enumerate() {
+                        queue.insert(i, e);
+                    }
                 }
             }
         }

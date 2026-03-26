@@ -13,12 +13,16 @@ use crate::application::state::{AppState, InputMode};
 use crate::infrastructure::tui::layout::FrameLayout;
 use crate::infrastructure::tui::theme;
 use crate::infrastructure::tui::widgets::{
-    busy_overlay, confirm_dialog, detail, help_overlay, input_bar, logo, picker_dialog, table,
-    terminal, toast, update_overlay,
+    busy_overlay, confirm_dialog, detail, diff_widget, help_overlay, input_bar, logo,
+    picker_dialog, table, terminal, toast, update_overlay,
 };
 
 /// Draw the clash UI.
-pub fn draw(state: &AppState, frame: &mut Frame) {
+pub fn draw(
+    state: &AppState,
+    sessions_visual_state: &mut ratatui::widgets::TableState,
+    frame: &mut Frame,
+) {
     let layout = FrameLayout::new(frame.area());
 
     // When attached: render inline terminal
@@ -85,7 +89,7 @@ pub fn draw(state: &AppState, frame: &mut Frame) {
     }
 
     draw_header(state, frame, layout.header);
-    draw_body(state, frame, layout.body);
+    draw_body(state, sessions_visual_state, frame, layout.body);
     draw_footer(state, frame, layout.footer);
 
     // Overlays (drawn on top)
@@ -196,7 +200,12 @@ fn draw_header(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
     frame.render_widget(time_paragraph, area);
 }
 
-fn draw_body(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect) {
+fn draw_body(
+    state: &AppState,
+    sessions_visual_state: &mut ratatui::widgets::TableState,
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+) {
     match state.current_view() {
         ViewKind::Teams => table::render_table::<teams::TeamsTable>(state, frame, area),
         ViewKind::TeamDetail => {
@@ -214,7 +223,7 @@ fn draw_body(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect) {
         ViewKind::Prompts => detail::render_detail::<prompts::PromptsView>(state, frame, area),
         ViewKind::Sessions => {
             if sessions::SessionsTable::has_items(state) {
-                sessions::render_sessions_table(state, frame, area);
+                sessions::render_sessions_table(state, sessions_visual_state, frame, area);
             } else {
                 logo::render_logo(frame, area);
             }
@@ -222,6 +231,7 @@ fn draw_body(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect) {
         ViewKind::SessionDetail => {
             detail::render_detail::<session_detail::SessionDetailView>(state, frame, area)
         }
+        ViewKind::Diff => diff_widget::render_diff(state, frame, area),
         ViewKind::Subagents => table::render_table::<subagents::SubagentsTable>(state, frame, area),
         ViewKind::SubagentDetail => {
             detail::render_detail::<subagent_detail::SubagentDetailView>(state, frame, area)
@@ -322,6 +332,7 @@ fn draw_help(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect) {
         Keybinding::new("o", "Open in new pane/tab"),
         Keybinding::new("e", "Open in IDE"),
         Keybinding::new("O", "Open ALL running sessions"),
+        Keybinding::new("p", "View diff"),
         Keybinding::new("w", "Open in git worktree"),
         Keybinding::new(":", "Command mode"),
         Keybinding::new("/", "Filter mode"),
@@ -340,6 +351,7 @@ fn draw_help(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect) {
         ViewKind::Prompts => prompts::PromptsView::context_keybindings(),
         ViewKind::Sessions => sessions::SessionsTable::context_keybindings(),
         ViewKind::SessionDetail => session_detail::SessionDetailView::context_keybindings(),
+        ViewKind::Diff => diff::DiffView::context_keybindings(),
         ViewKind::Subagents => subagents::SubagentsTable::context_keybindings(),
         ViewKind::SubagentDetail => subagent_detail::SubagentDetailView::context_keybindings(),
     };

@@ -46,4 +46,12 @@ pub enum AgentAction {
         session_id: String,
         name: String,
     },
+    /// Spawn a session from a named preset (resolved by reducer against store.presets).
+    SpawnSessionFromPreset {
+        preset_name: String,
+    },
+    /// Drop a session after teardown scripts have completed.
+    DropSessionAfterTeardown {
+        session_id: String,
+    },
 }
