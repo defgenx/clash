@@ -827,7 +827,7 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                 state.toast = Some("Showing all sections".to_string());
             } else if state.filtered_sessions().is_empty() {
                 state.toast = Some(format!(
-                    "No {} sessions — press S to cycle",
+                    "No {} sessions — press A to cycle",
                     state.section_filter.label()
                 ));
             } else {

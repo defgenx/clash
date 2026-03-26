@@ -21,7 +21,7 @@
 - **Inline terminal** — attach to sessions with a full vt100 terminal emulator, no window switching
 - **Real-time status** — instant status detection via hooks, daemon PTY screen analysis, and JSONL parsing (three-layer system)
 - **Animated status icons** — active sessions show animated spinners and pulsing icons for visual feedback
-- **Section-based layout** — sessions are grouped into Active (working), Pending (approval needed), Done (waiting/idle), and Fail (errored) sections with stable alphabetical ordering; press `S` to cycle section filter
+- **Section-based layout** — sessions are grouped into Active (working), Pending (approval needed), Done (waiting/idle), and Fail (errored) sections with stable alphabetical ordering; press `A` to cycle section filter
 - **In-process daemon** — embedded PTY daemon manages sessions without a separate process
 - **Git worktree support** — spawn sessions in isolated worktrees for parallel feature branches (`w` key); worktree column shows `⊟ project/worktree` for project context
 - **Repo config discovery** — auto-detects MCP servers, custom commands, agent definitions, and setup scripts from the project directory
@@ -123,7 +123,8 @@ clash detects session status through three layers (in priority order):
 | `s` | Stash / unstash session (stop process, keep in registry) |
 | `w` | Spawn session in a git worktree |
 | `Tab` | Expand / collapse subagents |
-| `A` | Toggle active / all |
+| `A` | Cycle section filter (Active/Pending/Done/Fail) |
+| `S` | Toggle active / all |
 | `d` | Drop session |
 | `D` | Drop ALL sessions |
 | `i` | Inspect (drill into detail) |
@@ -180,7 +181,11 @@ Auto-refreshes every ~3 seconds while the session is active.
 |---------|--------|
 | `:teams` | Navigate to Teams view |
 | `:sessions` | Navigate to Sessions view |
+| `:agents` | Navigate to Agents view |
+| `:tasks` | Navigate to Tasks view |
 | `:subagents` | Navigate to Subagents view |
+| `:inbox` | Navigate to Inbox view |
+| `:prompts` | Navigate to Prompts view |
 | `:create team <name>` | Create a new team |
 | `:delete team <name>` | Delete a team |
 | `:create task <team> <subject>` | Create a task |

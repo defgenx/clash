@@ -165,12 +165,11 @@ pub fn render_sessions_table(
         // Insert section header when entering a new section
         if current_section != Some(section) {
             let count = section_counts.get(&section).copied().unwrap_or(0);
-            let label_text = format!("{} ({})", section.label(), count);
+            let label_text = format!("── {} ({}) ──", section.label(), count);
             let dim = Style::default().fg(theme::TEXT_DIM);
             let mut header_cells = Vec::with_capacity(columns.len());
-            header_cells.push(Cell::from("──").style(dim));
             header_cells.push(Cell::from(label_text).style(dim));
-            for _ in 2..columns.len() {
+            for _ in 1..columns.len() {
                 header_cells.push(Cell::from(""));
             }
             rows.push(Row::new(header_cells).style(Style::default().fg(theme::TEXT_DIM)));
@@ -361,8 +360,8 @@ impl TableView for SessionsTable {
             Keybinding::new("c/n", "New session (prompts for dir, then name)"),
             Keybinding::new(":new <path>", "New session in <path>"),
             Keybinding::new("s", "Stash/unstash session"),
-            Keybinding::new("A", "Toggle filter: active / all"),
-            Keybinding::new("S", "Cycle section filter"),
+            Keybinding::new("A", "Cycle section filter"),
+            Keybinding::new("S", "Toggle filter: active / all"),
             Keybinding::new("w", "Open in git worktree"),
             Keybinding::new("d", "Drop session (kill + unregister)"),
             Keybinding::new("D", "Drop ALL sessions"),

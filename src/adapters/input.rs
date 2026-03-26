@@ -95,14 +95,14 @@ fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
         KeyCode::Char('d') => handle_delete(state),
         KeyCode::Char('A') => {
             if state.current_view() == ViewKind::Sessions {
-                Action::Ui(UiAction::CycleSessionFilter)
+                Action::Ui(UiAction::CycleSectionFilter)
             } else {
                 Action::Noop
             }
         }
         KeyCode::Char('S') => {
             if state.current_view() == ViewKind::Sessions {
-                Action::Ui(UiAction::CycleSectionFilter)
+                Action::Ui(UiAction::CycleSessionFilter)
             } else {
                 Action::Noop
             }
