@@ -1,6 +1,9 @@
 //! Filesystem implementation of the DataRepository port.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 use crate::adapters::format;
 use crate::domain::entities::{Session, Subagent, Task, Team};
@@ -8,14 +11,27 @@ use crate::domain::error::Result;
 use crate::domain::ports::DataRepository;
 use crate::infrastructure::fs::atomic::write_atomic;
 
+/// Minimal struct for counting user messages from JSONL lines.
+/// Only deserializes the `type` field, ignoring everything else.
+#[derive(serde::Deserialize)]
+struct TypeOnly {
+    #[serde(default)]
+    r#type: String,
+}
+
 /// Production filesystem-based data repository.
 pub struct FsBackend {
     base_dir: PathBuf,
+    /// Cache of message counts keyed by path, storing (mtime, count).
+    message_count_cache: Mutex<HashMap<PathBuf, (SystemTime, usize)>>,
 }
 
 impl FsBackend {
     pub fn new(base_dir: PathBuf) -> Self {
-        Self { base_dir }
+        Self {
+            base_dir,
+            message_count_cache: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn base_dir(&self) -> &Path {
@@ -269,6 +285,60 @@ impl FsBackend {
 
         meta
     }
+
+    /// Count user messages (conversation turns) in a JSONL file.
+    /// Only counts top-level entries where `"type": "user"`.
+    fn count_user_messages(path: &Path) -> usize {
+        use std::io::BufRead;
+
+        let file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(_) => return 0,
+        };
+
+        let reader = std::io::BufReader::new(file);
+        let mut count = 0;
+
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => continue,
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_str::<TypeOnly>(&line) {
+                if entry.r#type == "user" {
+                    count += 1;
+                }
+            }
+        }
+
+        count
+    }
+
+    /// Get the user message count for a JSONL file, using an mtime-based cache.
+    fn cached_message_count(&self, path: &Path) -> usize {
+        let mtime = match path.metadata().ok().and_then(|m| m.modified().ok()) {
+            Some(t) => t,
+            None => return Self::count_user_messages(path),
+        };
+
+        let mut cache = self
+            .message_count_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        if let Some(&(cached_mtime, cached_count)) = cache.get(path) {
+            if cached_mtime == mtime {
+                return cached_count;
+            }
+        }
+
+        let count = Self::count_user_messages(path);
+        cache.insert(path.to_path_buf(), (mtime, count));
+        count
+    }
 }
 
 /// Metadata extracted from JSONL file header entries.
@@ -454,11 +524,8 @@ impl DataRepository for FsBackend {
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
                                     .to_string();
-                                let message_count = entry
-                                    .get("messageCount")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0)
-                                    as usize;
+                                let jsonl_path = project_path.join(format!("{}.jsonl", session_id));
+                                let message_count = self.cached_message_count(&jsonl_path);
                                 let index_git_branch = entry
                                     .get("gitBranch")
                                     .and_then(|v| v.as_str())
@@ -471,7 +538,6 @@ impl DataRepository for FsBackend {
                                     .to_string();
 
                                 // Read JSONL metadata for accurate cwd/gitBranch
-                                let jsonl_path = project_path.join(format!("{}.jsonl", session_id));
                                 let jsonl_meta = Self::extract_session_metadata(&jsonl_path);
 
                                 // Priority: JSONL cwd > index projectPath > lossy decode
@@ -540,6 +606,8 @@ impl DataRepository for FsBackend {
                         decoded_project_path.clone()
                     };
 
+                    let message_count = self.cached_message_count(&path);
+
                     let session = Self::build_session(
                         &path,
                         &session_id,
@@ -547,7 +615,7 @@ impl DataRepository for FsBackend {
                         &resolved_path,
                         &meta.summary,
                         "",
-                        0,
+                        message_count,
                         &meta.git_branch,
                         "",
                         &project_path,
@@ -970,5 +1038,89 @@ mod tests {
         let (_dir, backend) = setup_test_dir();
         let tasks = backend.load_tasks("nonexistent").unwrap();
         assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn test_count_user_messages_mixed_types() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let content = r#"{"type":"user","message":{"content":"hello"}}
+{"type":"assistant","message":{"content":"hi"}}
+{"type":"user","message":{"content":"how are you"}}
+{"type":"progress","content":"running tool"}
+{"type":"system","content":"system msg"}
+{"type":"user","message":{"content":"thanks"}}
+{"type":"assistant","message":{"content":"welcome"}}
+"#;
+        std::fs::write(&path, content).unwrap();
+        assert_eq!(FsBackend::count_user_messages(&path), 3);
+    }
+
+    #[test]
+    fn test_count_user_messages_nested_type_user() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        // A progress line that contains "type":"user" nested inside content — should NOT count
+        let content = r#"{"type":"progress","content":{"nested":{"type":"user"}}}
+{"type":"user","message":{"content":"real user msg"}}
+"#;
+        std::fs::write(&path, content).unwrap();
+        assert_eq!(FsBackend::count_user_messages(&path), 1);
+    }
+
+    #[test]
+    fn test_count_user_messages_empty_and_missing() {
+        let dir = TempDir::new().unwrap();
+
+        // Empty file
+        let empty_path = dir.path().join("empty.jsonl");
+        std::fs::write(&empty_path, "").unwrap();
+        assert_eq!(FsBackend::count_user_messages(&empty_path), 0);
+
+        // Nonexistent file
+        let missing_path = dir.path().join("nonexistent.jsonl");
+        assert_eq!(FsBackend::count_user_messages(&missing_path), 0);
+    }
+
+    #[test]
+    fn test_message_count_cache_hit() {
+        let (dir, backend) = setup_test_dir();
+        let path = dir.path().join("cached.jsonl");
+        let content = r#"{"type":"user","message":{"content":"hello"}}
+{"type":"assistant","message":{"content":"hi"}}
+{"type":"user","message":{"content":"bye"}}
+"#;
+        std::fs::write(&path, content).unwrap();
+
+        // First call populates cache
+        assert_eq!(backend.cached_message_count(&path), 2);
+
+        // Overwrite file with different content but preserve mtime
+        // Since we can't easily control mtime, verify the cache contains the entry
+        let cache = backend.message_count_cache.lock().unwrap();
+        assert!(cache.contains_key(&path));
+        let &(_, count) = cache.get(&path).unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_message_count_cache_invalidation() {
+        let (dir, backend) = setup_test_dir();
+        let path = dir.path().join("changing.jsonl");
+
+        // Write initial content
+        std::fs::write(&path, r#"{"type":"user","message":{"content":"one"}}"#).unwrap();
+        assert_eq!(backend.cached_message_count(&path), 1);
+
+        // Wait a moment so mtime differs, then write new content
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let new_content = r#"{"type":"user","message":{"content":"one"}}
+{"type":"user","message":{"content":"two"}}
+{"type":"user","message":{"content":"three"}}
+"#;
+        std::fs::write(&path, new_content).unwrap();
+
+        // Should detect mtime change and recount
+        assert_eq!(backend.cached_message_count(&path), 3);
     }
 }
