@@ -65,7 +65,7 @@ fn subagent_row(sa: &Subagent, tick: usize) -> Vec<Cell<'static>> {
     };
 
     let worktree_display = match &sa.worktree {
-        Some(name) => format!("⊟ {}", name),
+        Some(name) => format::worktree_display(name, sa.worktree_project.as_deref()),
         None => "".to_string(),
     };
 
@@ -107,7 +107,7 @@ fn session_texts(item: &Session, tick: usize) -> Vec<String> {
         .unwrap_or(&item.git_branch);
     let branch = or_dash(branch).to_string();
     let worktree_display = match &item.worktree {
-        Some(name) => format!("⊟ {}", name),
+        Some(name) => format::worktree_display(name, item.worktree_project.as_deref()),
         None => "—".to_string(),
     };
 
@@ -143,11 +143,35 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
         .collect();
     let constraints = compute_constraints(&columns, &content_rows, area.width);
 
-    // Build rows: parent sessions + expanded child subagent rows
+    // Count sessions in each section for the divider label
+    let is_busy = |s: &Session| {
+        matches!(
+            s.status,
+            SessionStatus::Thinking | SessionStatus::Running | SessionStatus::Starting
+        )
+    };
+    let busy_count = sessions.iter().filter(|s| is_busy(s)).count();
+    let pending_count = sessions.len() - busy_count;
+
+    // Build rows: parent sessions + expanded child subagent rows + section divider
     let mut rows: Vec<Row> = Vec::new();
     let mut logical_to_parent: Vec<usize> = Vec::new(); // maps row index → parent session index
+    let mut divider_inserted = false;
 
     for (i, session) in sessions.iter().enumerate() {
+        // Insert section divider between Busy and Pending sessions
+        if !divider_inserted && !is_busy(session) && busy_count > 0 {
+            let divider_text = format!("── Busy ({}) │ Pending ({}) ──", busy_count, pending_count);
+            let divider_cell =
+                Cell::from(divider_text).style(Style::default().fg(theme::BORDER_DIM));
+            let mut divider_cells = vec![divider_cell];
+            for _ in 1..columns.len() {
+                divider_cells.push(Cell::from(""));
+            }
+            rows.push(Row::new(divider_cells).style(Style::default().fg(theme::BORDER_DIM)));
+            logical_to_parent.push(usize::MAX); // sentinel — not selectable
+            divider_inserted = true;
+        }
         let is_expanded = state.expanded_sessions.contains(&session.id);
 
         // Get subagents for this session
@@ -193,7 +217,7 @@ pub fn render_sessions_table(state: &AppState, frame: &mut Frame, area: Rect) {
             .unwrap_or(&session.git_branch);
         let branch = or_dash(branch_str);
         let worktree_display = match &session.worktree {
-            Some(name) => format!("⊟ {}", name),
+            Some(name) => format::worktree_display(name, session.worktree_project.as_deref()),
             None => "—".to_string(),
         };
 

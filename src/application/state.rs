@@ -357,4 +357,98 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, "s1");
     }
+
+    // ── Section ordering tests ──────────────────────────────────
+
+    use crate::domain::entities::SessionStatus;
+
+    /// Helper to create a session with a given name and status.
+    fn make_session(id: &str, name: Option<&str>, status: SessionStatus) -> Session {
+        Session {
+            id: id.to_string(),
+            name: name.map(|n| n.to_string()),
+            status,
+            is_running: !matches!(status, SessionStatus::Idle),
+            ..Default::default()
+        }
+    }
+
+    /// Sort sessions using the same logic as DataStore::sort_sessions().
+    fn sort_sessions_for_test(state: &mut AppState) {
+        state.store.sort_sessions();
+    }
+
+    #[test]
+    fn test_ordering_busy_before_pending() {
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::All;
+        state.store.sessions = vec![
+            make_session("s1", Some("alpha"), SessionStatus::Waiting),
+            make_session("s2", Some("beta"), SessionStatus::Running),
+            make_session("s3", Some("gamma"), SessionStatus::Idle),
+            make_session("s4", Some("delta"), SessionStatus::Thinking),
+        ];
+        sort_sessions_for_test(&mut state);
+        let filtered = state.filtered_sessions();
+        // Busy sessions (Running, Thinking) first, then Pending (Waiting, Idle)
+        // Within each section, sorted alphabetically by name
+        assert_eq!(filtered[0].name.as_deref(), Some("beta")); // Busy
+        assert_eq!(filtered[1].name.as_deref(), Some("delta")); // Busy
+        assert_eq!(filtered[2].name.as_deref(), Some("alpha")); // Pending
+        assert_eq!(filtered[3].name.as_deref(), Some("gamma")); // Pending
+    }
+
+    #[test]
+    fn test_ordering_alphabetical_within_section() {
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::All;
+        state.store.sessions = vec![
+            make_session("s1", Some("zebra"), SessionStatus::Running),
+            make_session("s2", Some("apple"), SessionStatus::Thinking),
+            make_session("s3", Some("mango"), SessionStatus::Running),
+        ];
+        sort_sessions_for_test(&mut state);
+        let filtered = state.filtered_sessions();
+        // All Busy, sorted alphabetically: apple, mango, zebra
+        assert_eq!(filtered[0].name.as_deref(), Some("apple"));
+        assert_eq!(filtered[1].name.as_deref(), Some("mango"));
+        assert_eq!(filtered[2].name.as_deref(), Some("zebra"));
+    }
+
+    #[test]
+    fn test_ordering_unnamed_sessions_by_id() {
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::All;
+        state.store.sessions = vec![
+            make_session("zzz-unnamed", None, SessionStatus::Running),
+            make_session("aaa-unnamed", None, SessionStatus::Running),
+            make_session("mmm-unnamed", None, SessionStatus::Running),
+        ];
+        sort_sessions_for_test(&mut state);
+        let filtered = state.filtered_sessions();
+        // Unnamed sessions sort by ID (alphabetically)
+        assert_eq!(filtered[0].id, "aaa-unnamed");
+        assert_eq!(filtered[1].id, "mmm-unnamed");
+        assert_eq!(filtered[2].id, "zzz-unnamed");
+    }
+
+    #[test]
+    fn test_ordering_stable_across_status_change() {
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::All;
+        // Both running — sorted by name
+        state.store.sessions = vec![
+            make_session("s1", Some("alpha"), SessionStatus::Running),
+            make_session("s2", Some("beta"), SessionStatus::Running),
+        ];
+        sort_sessions_for_test(&mut state);
+        assert_eq!(state.filtered_sessions()[0].name.as_deref(), Some("alpha"));
+        assert_eq!(state.filtered_sessions()[1].name.as_deref(), Some("beta"));
+
+        // alpha transitions to Thinking — still in Busy section, same order
+        state.store.sessions[0].status = SessionStatus::Thinking;
+        sort_sessions_for_test(&mut state);
+        assert_eq!(state.filtered_sessions()[0].name.as_deref(), Some("alpha"));
+        assert_eq!(state.filtered_sessions()[1].name.as_deref(), Some("beta"));
+    }
 }

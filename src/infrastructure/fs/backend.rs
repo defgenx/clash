@@ -1,8 +1,8 @@
 //! Filesystem implementation of the DataRepository port.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use crate::adapters::format;
@@ -19,11 +19,33 @@ struct TypeOnly {
     r#type: String,
 }
 
+/// Per-project cached session data with cheap shared ownership.
+struct SessionCache {
+    /// Cached sessions per project directory.
+    projects: HashMap<PathBuf, Arc<Vec<Session>>>,
+    /// Project directories that need re-scanning on next load.
+    dirty_projects: HashSet<PathBuf>,
+    /// Whether the cache has been populated at least once.
+    initialized: bool,
+}
+
+impl SessionCache {
+    fn new() -> Self {
+        Self {
+            projects: HashMap::new(),
+            dirty_projects: HashSet::new(),
+            initialized: false,
+        }
+    }
+}
+
 /// Production filesystem-based data repository.
 pub struct FsBackend {
     base_dir: PathBuf,
     /// Cache of message counts keyed by path, storing (mtime, count).
     message_count_cache: Mutex<HashMap<PathBuf, (SystemTime, usize)>>,
+    /// Per-project session cache to avoid re-parsing unchanged projects.
+    session_cache: Mutex<SessionCache>,
 }
 
 impl FsBackend {
@@ -31,6 +53,7 @@ impl FsBackend {
         Self {
             base_dir,
             message_count_cache: Mutex::new(HashMap::new()),
+            session_cache: Mutex::new(SessionCache::new()),
         }
     }
 
@@ -40,6 +63,44 @@ impl FsBackend {
 
     pub fn projects_dir(&self) -> PathBuf {
         self.base_dir.join("projects")
+    }
+
+    /// Mark specific project directories as dirty so their sessions are re-loaded next time.
+    ///
+    /// Extracts the project directory from each changed path (parent of the file)
+    /// and marks it for re-scanning.
+    pub fn invalidate_session_cache(&self, changed_paths: &[PathBuf]) {
+        let projects_dir = self.projects_dir();
+        if let Ok(mut cache) = self.session_cache.lock() {
+            for path in changed_paths {
+                // The project dir is the parent of the changed file
+                if let Some(parent) = path.parent() {
+                    // Only invalidate if it's a direct child of the projects directory
+                    if parent.parent() == Some(projects_dir.as_path()) || parent == projects_dir {
+                        cache.dirty_projects.insert(parent.to_path_buf());
+                    } else if parent.starts_with(&projects_dir) {
+                        // Nested path (e.g., subagent JSONL) — find the project dir
+                        let relative = parent
+                            .strip_prefix(&projects_dir)
+                            .unwrap_or(parent.as_ref());
+                        if let Some(first_component) = relative.components().next() {
+                            cache
+                                .dirty_projects
+                                .insert(projects_dir.join(first_component));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Force a full re-scan of all project directories on next load.
+    pub fn invalidate_session_cache_all(&self) {
+        if let Ok(mut cache) = self.session_cache.lock() {
+            cache.initialized = false;
+            cache.projects.clear();
+            cache.dirty_projects.clear();
+        }
     }
 
     /// Get the mtime of a session's JSONL file (for freshness comparison).
@@ -135,7 +196,11 @@ impl FsBackend {
         };
 
         // Detect if running inside a git worktree
-        let worktree = Self::detect_worktree(project_path_str);
+        let wt_info = Self::detect_worktree(project_path_str);
+        let (worktree, worktree_project) = match wt_info {
+            Some(info) => (Some(info.name), info.parent_project),
+            None => (None, None),
+        };
 
         Session {
             id: session_id.to_string(),
@@ -151,6 +216,7 @@ impl FsBackend {
             is_running,
             status,
             worktree,
+            worktree_project,
             name: None,
             cwd: None,
             source_branch: None,
@@ -198,10 +264,9 @@ impl FsBackend {
     }
 
     /// Detect if a project path is inside a git worktree.
-    /// Returns the worktree name if detected, None otherwise.
     ///
     /// Delegates to `adapters::format::detect_worktree` — the shared implementation.
-    pub fn detect_worktree(project_path: &str) -> Option<String> {
+    pub fn detect_worktree(project_path: &str) -> Option<format::WorktreeInfo> {
         format::detect_worktree(project_path)
     }
 
@@ -461,9 +526,20 @@ impl DataRepository for FsBackend {
             return Ok(Vec::new());
         }
 
+        // Determine which projects need re-scanning vs can use cached data
+        let (needs_full_scan, dirty_projects, cached_projects) = {
+            let cache = self.session_cache.lock().unwrap_or_else(|e| e.into_inner());
+            if !cache.initialized {
+                (true, HashSet::new(), HashMap::new())
+            } else {
+                (false, cache.dirty_projects.clone(), cache.projects.clone())
+            }
+        };
+
         let mut sessions = Vec::new();
         let mut global_seen_ids = std::collections::HashSet::new();
         let now = std::time::SystemTime::now();
+        let mut new_cache_entries: HashMap<PathBuf, Arc<Vec<Session>>> = HashMap::new();
 
         let project_entries = std::fs::read_dir(&projects_dir)?;
         for project_entry in project_entries {
@@ -472,6 +548,22 @@ impl DataRepository for FsBackend {
             if !project_path.is_dir() {
                 continue;
             }
+
+            // Check if we can use cached data for this project
+            if !needs_full_scan && !dirty_projects.contains(&project_path) {
+                if let Some(cached) = cached_projects.get(&project_path) {
+                    for s in cached.iter() {
+                        if global_seen_ids.insert(s.id.clone()) {
+                            sessions.push(s.clone());
+                        }
+                    }
+                    new_cache_entries.insert(project_path, Arc::clone(cached));
+                    continue;
+                }
+            }
+
+            // Cache miss or dirty — scan this project
+            let mut project_sessions = Vec::new();
 
             let project_dir_name = match project_path.file_name().and_then(|n| n.to_str()) {
                 Some(n) => n.to_string(),
@@ -569,7 +661,7 @@ impl DataRepository for FsBackend {
                                     &project_path,
                                     now,
                                 );
-                                sessions.push(session);
+                                project_sessions.push(session);
                             }
                         }
                     }
@@ -621,28 +713,29 @@ impl DataRepository for FsBackend {
                         &project_path,
                         now,
                     );
-                    sessions.push(session);
+                    project_sessions.push(session);
                 }
             }
+
+            // Move project sessions to the main list and cache them
+            for s in &project_sessions {
+                if global_seen_ids.insert(s.id.clone()) {
+                    sessions.push(s.clone());
+                }
+            }
+            new_cache_entries.insert(project_path, Arc::new(project_sessions));
         }
 
-        // Sort: waiting first, then running, then idle, then by last_modified descending
-        use crate::domain::entities::SessionStatus;
-        sessions.sort_by(|a, b| {
-            let status_ord = |s: &SessionStatus| match s {
-                SessionStatus::Prompting => 0,
-                SessionStatus::Waiting => 1,
-                SessionStatus::Thinking => 2,
-                SessionStatus::Running => 3,
-                SessionStatus::Starting => 4,
-                SessionStatus::Errored => 5,
-                SessionStatus::Idle => 6,
-            };
-            status_ord(&a.status)
-                .cmp(&status_ord(&b.status))
-                .then(b.last_modified.cmp(&a.last_modified))
-                .then(a.id.cmp(&b.id))
-        });
+        // Update the session cache
+        {
+            let mut cache = self.session_cache.lock().unwrap_or_else(|e| e.into_inner());
+            cache.projects = new_cache_entries;
+            cache.dirty_projects.clear();
+            cache.initialized = true;
+        }
+
+        // No sorting here — the application layer (app.rs) sorts after status
+        // overlays are applied, using sort_sessions() for the final order.
         Ok(sessions)
     }
 
@@ -713,7 +806,11 @@ impl DataRepository for FsBackend {
             } else {
                 decoded_path.clone()
             };
-            let worktree = Self::detect_worktree(&sub_cwd);
+            let wt_info = Self::detect_worktree(&sub_cwd);
+            let (worktree, worktree_project) = match wt_info {
+                Some(info) => (Some(info.name), info.parent_project),
+                None => (None, None),
+            };
 
             subagents.push(Subagent {
                 id: agent_id,
@@ -726,6 +823,7 @@ impl DataRepository for FsBackend {
                 is_running,
                 status,
                 worktree,
+                worktree_project,
             });
         }
 

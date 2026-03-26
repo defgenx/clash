@@ -33,7 +33,10 @@ pub const TOUR_STEPS: &[TourStep] = &[
         body: &[
             "The Sessions view is your home screen. It shows every Claude Code session across all your projects.",
             "",
-            "Each row shows the session's status, project, summary, active agents, and git branch.",
+            "Sessions are split into two sections: Busy (actively working) and Pending (waiting/done).",
+            "Within each section, sessions are sorted alphabetically by name for stable ordering.",
+            "",
+            "Each row shows the session's status, project, summary, active agents, git branch, and worktree (⊟ project/name).",
             "",
             "Status indicators:",
         ],

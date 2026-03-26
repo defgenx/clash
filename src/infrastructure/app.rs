@@ -170,19 +170,22 @@ impl App {
                 // Non-blocking FS event check
                 if let Some(ref mut rx) = fs_rx {
                     let mut needs_refresh_all = false;
-                    let mut jsonl_changed = false;
+                    let mut changed_jsonl_paths: Vec<std::path::PathBuf> = Vec::new();
                     while let Ok(paths) = rx.try_recv() {
                         for p in &paths {
                             if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                                jsonl_changed = true;
+                                changed_jsonl_paths.push(p.clone());
                             } else {
                                 needs_refresh_all = true;
                             }
                         }
                     }
                     if needs_refresh_all {
+                        self.backend.invalidate_session_cache_all();
                         let _ = self.state.store.refresh_all(&self.backend);
-                    } else if jsonl_changed {
+                    } else if !changed_jsonl_paths.is_empty() {
+                        // Invalidate only the affected project directories
+                        self.backend.invalidate_session_cache(&changed_jsonl_paths);
                         self.refresh_daemon_sessions().await;
                     }
                 }
@@ -605,11 +608,36 @@ impl App {
     }
 
     /// Refresh sessions: load from disk, overlay hook statuses, then daemon.
+    /// Preserves the selected session by ID across the refresh.
     async fn refresh_daemon_sessions(&mut self) {
+        // Save the selected session ID before refresh
+        let selected_id = self
+            .state
+            .filtered_sessions()
+            .get(self.state.table_state.selected)
+            .map(|s| s.id.clone());
+
         self.load_disk_sessions();
         self.overlay_hook_statuses();
         self.overlay_daemon_sessions().await;
         self.resolve_session_names().await;
+
+        // Re-sort sessions by section (Busy/Pending) + name for stable ordering
+        self.state.store.sort_sessions();
+
+        // Restore selection to the same session by ID
+        if let Some(ref id) = selected_id {
+            let sessions = self.state.filtered_sessions();
+            if let Some(pos) = sessions.iter().position(|s| s.id == *id) {
+                self.state.table_state.selected = pos;
+            } else {
+                // Session was removed — clamp to valid range
+                let count = sessions.len();
+                if count > 0 && self.state.table_state.selected >= count {
+                    self.state.table_state.selected = count - 1;
+                }
+            }
+        }
     }
 
     /// Phase 1: Load sessions from JSONL files, filtered by clash registry, and preload subagents.

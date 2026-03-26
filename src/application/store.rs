@@ -98,6 +98,28 @@ impl DataStore {
         Ok(())
     }
 
+    /// Sort sessions by section (Busy before Pending), then alphabetically by name.
+    ///
+    /// Called after all status overlays (hooks, daemon) are applied so the sort
+    /// reflects final statuses. Sorting lives here (application layer) because
+    /// it's a presentation concern, not a data-loading concern.
+    pub fn sort_sessions(&mut self) {
+        use crate::domain::entities::SessionStatus;
+        self.sessions.sort_by(|a, b| {
+            let section_ord = |s: &SessionStatus| match s {
+                SessionStatus::Thinking | SessionStatus::Running | SessionStatus::Starting => 0,
+                SessionStatus::Prompting
+                | SessionStatus::Waiting
+                | SessionStatus::Errored
+                | SessionStatus::Idle => 1,
+            };
+            let name_key = |s: &Session| s.name.clone().unwrap_or_else(|| s.id.clone());
+            section_ord(&a.status)
+                .cmp(&section_ord(&b.status))
+                .then_with(|| name_key(a).to_lowercase().cmp(&name_key(b).to_lowercase()))
+        });
+    }
+
     pub fn refresh_subagents(
         &mut self,
         backend: &dyn DataRepository,

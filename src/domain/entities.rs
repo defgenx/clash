@@ -213,6 +213,9 @@ pub struct Session {
     /// Git worktree name, if the session is running inside a worktree.
     #[serde(default)]
     pub worktree: Option<String>,
+    /// Parent project name for the worktree (display only, computed at runtime).
+    #[serde(skip)]
+    pub worktree_project: Option<String>,
     /// Optional human-readable label for the session.
     #[serde(default)]
     pub name: Option<String>,
@@ -277,6 +280,9 @@ pub struct Subagent {
     /// Git worktree name, if the subagent is running inside a worktree.
     #[serde(default)]
     pub worktree: Option<String>,
+    /// Parent project name for the worktree (display only, computed at runtime).
+    #[serde(skip)]
+    pub worktree_project: Option<String>,
 }
 
 /// A conversation message from a session or subagent .jsonl file.

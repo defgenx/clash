@@ -47,7 +47,15 @@ impl DetailView for SessionDetailView {
             info = info.row("Branch", or_dash(&session.git_branch));
         }
         info = info
-            .row("Worktree", session.worktree.as_deref().unwrap_or("no"))
+            .row(
+                "Worktree",
+                &match &session.worktree {
+                    Some(name) => {
+                        format::worktree_display(name, session.worktree_project.as_deref())
+                    }
+                    None => "no".to_string(),
+                },
+            )
             .row("Messages", &session.message_count.to_string())
             .row("Modified", &session.last_modified);
         info = info.row(

@@ -58,7 +58,12 @@ impl DetailView for TeamDetailView {
                     .cwd
                     .as_deref()
                     .and_then(format::detect_worktree)
-                    .map(|w| format!(" ⊟ {}", w))
+                    .map(|info| {
+                        format!(
+                            " {}",
+                            format::worktree_display(&info.name, info.parent_project.as_deref())
+                        )
+                    })
                     .unwrap_or_default();
                 members_section = members_section.row(
                     &member.name,

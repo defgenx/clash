@@ -44,10 +44,14 @@ impl DetailView for AgentDetailView {
             .row("Mode", member.mode.as_deref().unwrap_or("—"))
             .row("Color", &member.color);
 
-        let worktree = member.cwd.as_deref().and_then(format::detect_worktree);
+        let worktree_info = member.cwd.as_deref().and_then(format::detect_worktree);
+        let worktree_str = match &worktree_info {
+            Some(info) => format::worktree_display(&info.name, info.parent_project.as_deref()),
+            None => "no".to_string(),
+        };
         let runtime = Section::new("Runtime")
             .row("CWD", member.cwd.as_deref().unwrap_or("—"))
-            .row("Worktree", worktree.as_deref().unwrap_or("no"))
+            .row("Worktree", &worktree_str)
             .row("Tmux Pane", member.tmux_pane_id.as_deref().unwrap_or("—"))
             .row("Backend", member.backend_type.as_deref().unwrap_or("—"));
 

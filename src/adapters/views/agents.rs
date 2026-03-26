@@ -14,9 +14,8 @@ fn agent_texts(item: &Member) -> Vec<String> {
     } else {
         item.team_name.clone()
     };
-    let worktree = item.cwd.as_deref().and_then(fmt::detect_worktree);
-    let worktree_display = match &worktree {
-        Some(name) => format!("⊟ {}", name),
+    let worktree_display = match item.cwd.as_deref() {
+        Some(cwd) => fmt::worktree_display_from_cwd(cwd),
         None => "—".to_string(),
     };
     vec![
