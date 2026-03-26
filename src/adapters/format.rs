@@ -3,7 +3,7 @@
 //! Reusable helpers for status rendering, string truncation, and display
 //! formatting used across multiple view files.
 
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 
 use crate::domain::entities::{Session, SessionStatus};
 use crate::infrastructure::tui::theme;
@@ -81,12 +81,7 @@ pub fn status_style(status: SessionStatus) -> Style {
         SessionStatus::Errored => theme::ERROR_COLOR,
         SessionStatus::Stashed => theme::STATUS_IDLE,
     };
-    let base = Style::default().fg(color);
-    if matches!(status, SessionStatus::Stashed) {
-        base
-    } else {
-        base.add_modifier(Modifier::BOLD)
-    }
+    Style::default().fg(color)
 }
 
 // ── String utilities ─────────────────────────────────────────────

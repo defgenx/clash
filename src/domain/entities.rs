@@ -202,13 +202,13 @@ impl std::str::FromStr for SessionStatus {
 impl std::fmt::Display for SessionStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SessionStatus::Stashed => write!(f, "STASHED"),
-            SessionStatus::Starting => write!(f, "STARTING"),
-            SessionStatus::Running => write!(f, "RUNNING"),
-            SessionStatus::Thinking => write!(f, "THINKING"),
-            SessionStatus::Waiting => write!(f, "WAITING"),
-            SessionStatus::Prompting => write!(f, "PROMPTING"),
-            SessionStatus::Errored => write!(f, "ERRORED"),
+            SessionStatus::Stashed => write!(f, "Stashed"),
+            SessionStatus::Starting => write!(f, "Starting"),
+            SessionStatus::Running => write!(f, "Running"),
+            SessionStatus::Thinking => write!(f, "Thinking"),
+            SessionStatus::Waiting => write!(f, "Waiting"),
+            SessionStatus::Prompting => write!(f, "Prompting"),
+            SessionStatus::Errored => write!(f, "Errored"),
         }
     }
 }
@@ -558,7 +558,7 @@ mod tests {
         assert_eq!(SessionStatus::Waiting.section(), SessionSection::Active);
         assert_eq!(SessionStatus::Stashed.section(), SessionSection::Done);
         assert_eq!(SessionStatus::Errored.section(), SessionSection::Fail);
-        assert_eq!(SessionStatus::Stashed.to_string(), "STASHED");
+        assert_eq!(SessionStatus::Stashed.to_string(), "Stashed");
     }
 
     #[test]
