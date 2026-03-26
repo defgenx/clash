@@ -114,13 +114,22 @@ main() {
     tar xzf "${tmpdir}/${artifact}" -C "$tmpdir"
 
     info "Installing to ${INSTALL_DIR}/${BINARY}..."
+    # Remove existing binary first so the new file gets a fresh inode.
+    # On macOS, overwriting in-place invalidates the code signature and
+    # the kernel kills the process with SIGKILL.
     if [ -w "$INSTALL_DIR" ]; then
+        rm -f "${INSTALL_DIR}/${BINARY}"
         mv "${tmpdir}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
     else
         warn "Need sudo to install to ${INSTALL_DIR}"
+        sudo rm -f "${INSTALL_DIR}/${BINARY}"
         sudo mv "${tmpdir}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
     fi
     chmod +x "${INSTALL_DIR}/${BINARY}"
+    # Ad-hoc codesign on macOS
+    if [ "$(uname)" = "Darwin" ]; then
+        codesign --force --sign - "${INSTALL_DIR}/${BINARY}" 2>/dev/null || true
+    fi
 
     ok "clash ${version} installed to ${INSTALL_DIR}/${BINARY}"
     echo ""

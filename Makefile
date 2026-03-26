@@ -7,7 +7,11 @@ ifeq ($(shell uname),Darwin)
 endif
 
 install: build
+	rm -f /usr/local/bin/clash
 	cp target/release/clash /usr/local/bin/clash
+ifeq ($(shell uname),Darwin)
+	codesign --force --sign - /usr/local/bin/clash
+endif
 
 clean:
 	cargo clean

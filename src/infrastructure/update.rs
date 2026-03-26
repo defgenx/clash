@@ -226,29 +226,32 @@ async fn install_update(download_url: &str) -> Result<(), String> {
 }
 
 /// Replace the running binary with the new one.
-/// Uses rename for atomicity where possible, falls back to sudo if needed.
+///
+/// On macOS, overwriting a binary in-place invalidates its code signature
+/// (the kernel kills the process with SIGKILL "Code Signature Invalid").
+/// We must remove the old file first so the replacement gets a fresh inode,
+/// then ad-hoc re-sign on macOS.
 fn replace_binary(new: &PathBuf, current: &PathBuf) -> Result<(), String> {
+    // Remove existing binary first to get a fresh inode (critical for macOS codesigning)
+    let _ = std::fs::remove_file(current);
+
     // Try direct rename first
     if std::fs::rename(new, current).is_ok() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(current, std::fs::Permissions::from_mode(0o755));
-        }
+        set_permissions_and_sign(current);
         return Ok(());
     }
 
     // If rename fails (cross-device, permissions), try copy
     if std::fs::copy(new, current).is_ok() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(current, std::fs::Permissions::from_mode(0o755));
-        }
+        set_permissions_and_sign(current);
         return Ok(());
     }
 
-    // Last resort: sudo mv
+    // Last resort: sudo rm + cp + codesign
+    let _ = std::process::Command::new("sudo")
+        .args(["rm", "-f", current.to_str().unwrap()])
+        .status();
+
     let status = std::process::Command::new("sudo")
         .args(["cp", new.to_str().unwrap(), current.to_str().unwrap()])
         .status()
@@ -261,7 +264,33 @@ fn replace_binary(new: &PathBuf, current: &PathBuf) -> Result<(), String> {
         ));
     }
 
+    codesign(current);
+
     Ok(())
+}
+
+/// Set executable permissions and ad-hoc codesign on macOS.
+fn set_permissions_and_sign(path: &PathBuf) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+    }
+    codesign(path);
+}
+
+/// Ad-hoc codesign a binary on macOS (no-op on other platforms).
+fn codesign(path: &PathBuf) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("codesign")
+            .args(["--force", "--sign", "-", path.to_str().unwrap()])
+            .status();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+    }
 }
 
 /// Build the platform-specific download URL for a given tag.
