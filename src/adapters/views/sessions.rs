@@ -7,8 +7,8 @@ use crate::adapters::format::{self, or_dash};
 use crate::adapters::views::{ColumnDef, Keybinding, TableView};
 use crate::application::state::AppState;
 use crate::domain::entities::{Session, SessionSection, SessionStatus, Subagent};
-use ratatui::style::Modifier;
 use crate::infrastructure::tui::{theme, widgets::table::compute_constraints};
+use ratatui::style::Modifier;
 
 pub struct SessionsTable;
 
