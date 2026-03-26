@@ -171,21 +171,47 @@ pub fn render_sessions_table(
         // Insert section header when entering a new section
         if current_section != Some(section) {
             let count = section_counts.get(&section).copied().unwrap_or(0);
-            let section_color = match section {
-                SessionSection::Active => theme::SECTION_ACTIVE,
-                SessionSection::Done => theme::SECTION_DONE,
-                SessionSection::Fail => theme::SECTION_FAIL,
+            let (section_color, section_bg, section_dim) = match section {
+                SessionSection::Active => (
+                    theme::SECTION_ACTIVE,
+                    theme::SECTION_ACTIVE_BG,
+                    theme::SECTION_ACTIVE_DIM,
+                ),
+                SessionSection::Done => (
+                    theme::SECTION_DONE,
+                    theme::SECTION_DONE_BG,
+                    theme::SECTION_DONE_DIM,
+                ),
+                SessionSection::Fail => (
+                    theme::SECTION_FAIL,
+                    theme::SECTION_FAIL_BG,
+                    theme::SECTION_FAIL_DIM,
+                ),
             };
-            let bold_color = Style::default()
+            let icon = match section {
+                SessionSection::Active => "◆",
+                SessionSection::Done => "◇",
+                SessionSection::Fail => "✦",
+            };
+            let label_style = Style::default()
                 .fg(section_color)
+                .bg(section_bg)
                 .add_modifier(Modifier::BOLD);
+            let rule_style = Style::default().fg(section_dim).bg(section_bg);
+            let count_style = Style::default().fg(section_dim).bg(section_bg);
+
             let mut header_cells = Vec::with_capacity(columns.len());
-            header_cells.push(Cell::from(format!("── {}", section.label())).style(bold_color));
-            header_cells.push(Cell::from(format!("({})", count)).style(bold_color));
-            for _ in 2..columns.len() {
-                header_cells.push(Cell::from(""));
+            header_cells
+                .push(Cell::from(format!("{} {}", icon, section.label())).style(label_style));
+            // Fill middle cells with thin rule
+            for _ in 1..columns.len().saturating_sub(1) {
+                header_cells.push(Cell::from("─────────────").style(rule_style));
             }
-            rows.push(Row::new(header_cells));
+            // Count in the last cell
+            if columns.len() > 1 {
+                header_cells.push(Cell::from(format!("{}", count)).style(count_style));
+            }
+            rows.push(Row::new(header_cells).style(Style::default().bg(section_bg)));
             logical_to_parent.push(usize::MAX); // sentinel — not selectable
             current_section = Some(section);
         }
