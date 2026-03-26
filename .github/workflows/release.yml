@@ -129,6 +129,10 @@ jobs:
           fi
           cargo build --release --target ${{ matrix.target }}
 
+      - name: Codesign (macOS)
+        if: runner.os == 'macOS'
+        run: codesign --force --sign - target/${{ matrix.target }}/release/${{ matrix.artifact }}
+
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
