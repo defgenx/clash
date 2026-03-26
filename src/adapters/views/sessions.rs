@@ -58,7 +58,14 @@ fn agents_summary(subagents: &[Subagent]) -> String {
 
 /// Build a subagent child row (indented) for expanded sessions.
 fn subagent_row(sa: &Subagent, tick: usize) -> Vec<Cell<'static>> {
-    let (status, style) = format::status_cell(sa.status, tick);
+    let (status, style) = if matches!(sa.status, SessionStatus::Stashed) {
+        (
+            "○ Done".to_string(),
+            ratatui::style::Style::default().fg(theme::STATUS_IDLE),
+        )
+    } else {
+        format::status_cell(sa.status, tick)
+    };
     let display_id = format::truncate(&sa.id, 15, "…");
     let summary = if sa.summary.is_empty() {
         "—".to_string()
