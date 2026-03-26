@@ -39,6 +39,8 @@ pub enum UiAction {
     Quit,
     /// Actually quit (after confirmation).
     QuitConfirmed,
+    /// Immediate quit, bypassing graceful shutdown (Ctrl+C escape hatch).
+    ForceQuit,
     /// Show a picker dialog.
     ShowPicker {
         title: String,

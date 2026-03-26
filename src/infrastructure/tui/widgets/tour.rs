@@ -165,7 +165,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
             (":active / :all", "Filter active or all sessions"),
             (":update", "Update clash to latest version"),
             ("Esc", "Go back / cancel"),
-            ("q", "Quit clash"),
+            ("q", "Quit clash (stashes sessions)"),
         ],
     },
     TourStep {

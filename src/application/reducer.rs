@@ -835,20 +835,43 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             if state.toast.is_some() && state.tick.is_multiple_of(300) {
                 state.toast = None;
             }
-            vec![]
+            check_shutdown(state)
         }
         UiAction::Quit => {
-            // Show confirmation dialog before quitting
+            let running = state.store.sessions.iter().filter(|s| s.is_running).count();
+            let message = if running > 0 {
+                format!(
+                    "Quit? {} running session{} will be stashed.",
+                    running,
+                    if running == 1 { "" } else { "s" }
+                )
+            } else {
+                "Are you sure you want to quit?".to_string()
+            };
             state.confirm_dialog = Some(crate::application::state::ConfirmDialog {
-                message: "Are you sure you want to quit?".to_string(),
+                message,
                 on_confirm: Action::Ui(UiAction::QuitConfirmed),
             });
             state.input_mode = InputMode::Confirm;
             vec![]
         }
         UiAction::QuitConfirmed => {
-            vec![Effect::Quit]
+            let running = state.store.sessions.iter().filter(|s| s.is_running).count();
+            if running == 0 {
+                vec![Effect::Quit]
+            } else {
+                state.shutting_down = Some(state.tick);
+                state.confirm_dialog = None;
+                state.input_mode = InputMode::Normal;
+                state.spinner = Some(shutdown_spinner_msg(running));
+                vec![
+                    Effect::DaemonKillAll,
+                    Effect::TerminateAllProcesses,
+                    Effect::MarkAllSessionsIdle,
+                ]
+            }
         }
+        UiAction::ForceQuit => vec![Effect::Quit],
     }
 }
 
@@ -985,6 +1008,37 @@ fn load_effects_for_view(state: &AppState, view: ViewKind) -> Vec<Effect> {
     }
 }
 
+/// Spinner message for the shutdown phase.
+fn shutdown_spinner_msg(running: usize) -> String {
+    format!(
+        "Stashing {} session{}...",
+        running,
+        if running == 1 { "" } else { "s" }
+    )
+}
+
+/// Check shutdown progress on each tick; returns `Effect::Quit` when all sessions
+/// are dead or the timeout (~15 s) has elapsed.
+fn check_shutdown(state: &mut AppState) -> Vec<Effect> {
+    let Some(start_tick) = state.shutting_down else {
+        return vec![];
+    };
+    let elapsed = state.tick.wrapping_sub(start_tick);
+    // Timeout: ~15s = 1500 ticks at 10ms/tick
+    if elapsed >= 1500 {
+        return vec![Effect::Quit];
+    }
+    let running = state.store.sessions.iter().filter(|s| s.is_running).count();
+    if running == 0 {
+        return vec![Effect::Quit];
+    }
+    // Update spinner message every ~1s
+    if elapsed.is_multiple_of(100) {
+        state.spinner = Some(shutdown_spinner_msg(running));
+    }
+    vec![]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1015,6 +1069,60 @@ mod tests {
         let mut state = test_state();
         let effects = reduce(&mut state, Action::Ui(UiAction::QuitConfirmed));
         assert!(matches!(effects.first(), Some(Effect::Quit)));
+    }
+
+    #[test]
+    fn test_shutdown_spinner_msg_singular() {
+        assert_eq!(shutdown_spinner_msg(1), "Stashing 1 session...");
+    }
+
+    #[test]
+    fn test_shutdown_spinner_msg_plural() {
+        assert_eq!(shutdown_spinner_msg(3), "Stashing 3 sessions...");
+    }
+
+    #[test]
+    fn test_check_shutdown_not_active() {
+        let mut state = test_state();
+        assert!(check_shutdown(&mut state).is_empty());
+    }
+
+    #[test]
+    fn test_check_shutdown_quits_when_all_dead() {
+        let mut state = test_state();
+        state.shutting_down = Some(0);
+        state.tick = 50;
+        // No running sessions in store → should quit
+        let effects = check_shutdown(&mut state);
+        assert!(effects.iter().any(|e| matches!(e, Effect::Quit)));
+    }
+
+    #[test]
+    fn test_check_shutdown_timeout() {
+        let mut state = test_state();
+        state.shutting_down = Some(0);
+        state.tick = 1500;
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "s1".to_string(),
+            is_running: true,
+            ..Default::default()
+        }];
+        let effects = check_shutdown(&mut state);
+        assert!(effects.iter().any(|e| matches!(e, Effect::Quit)));
+    }
+
+    #[test]
+    fn test_check_shutdown_continues_when_running() {
+        let mut state = test_state();
+        state.shutting_down = Some(0);
+        state.tick = 50; // Not a multiple of 100, not timed out
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "s1".to_string(),
+            is_running: true,
+            ..Default::default()
+        }];
+        let effects = check_shutdown(&mut state);
+        assert!(effects.is_empty());
     }
 
     #[test]

@@ -222,6 +222,8 @@ pub struct AppState {
     pub debug_mode: bool,
     /// Self-update progress (shown as an overlay when active).
     pub update_progress: Option<UpdatePhase>,
+    /// Graceful shutdown: Some(start_tick) when stashing sessions before quit.
+    pub shutting_down: Option<usize>,
 }
 
 impl Default for AppState {
@@ -263,6 +265,7 @@ impl AppState {
             externally_opened: HashSet::new(),
             debug_mode: false,
             update_progress: None,
+            shutting_down: None,
         }
     }
 

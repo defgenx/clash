@@ -204,7 +204,9 @@ impl App {
                             }
                         }
                         Event::Tick => {
-                            self.handle_tick().await;
+                            if self.handle_tick(terminal, &mut events).await {
+                                return Ok(()); // Quit requested (shutdown complete)
+                            }
                         }
                         Event::Resize(width, height) => {
                             self.handle_resize(width, height).await;
@@ -214,11 +216,14 @@ impl App {
                                 Action::Ui(crate::application::actions::UiAction::SessionExited {
                                     session_id,
                                 });
-                            let _ = reducer::reduce(&mut self.state, action);
+                            let effects = reducer::reduce(&mut self.state, action);
+                            if self.execute_effects(effects, terminal, &mut events).await {
+                                return Ok(());
+                            }
                         }
                         Event::DaemonOutput => {}
                         Event::Mouse(mouse) => {
-                            self.handle_mouse(mouse).await;
+                            self.handle_mouse(mouse, terminal, &mut events).await;
                         }
                         Event::UpdateProgress(phase) => {
                             use crate::application::state::UpdatePhase;
@@ -345,6 +350,24 @@ impl App {
         terminal: &mut ratatui::DefaultTerminal,
         events: &mut EventLoop,
     ) -> color_eyre::Result<()> {
+        // During graceful shutdown: only Ctrl+C → ForceQuit allowed
+        if self.state.shutting_down.is_some() {
+            if key.code == crossterm::event::KeyCode::Char('c')
+                && key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL)
+            {
+                let effects = reducer::reduce(
+                    &mut self.state,
+                    Action::Ui(crate::application::actions::UiAction::ForceQuit),
+                );
+                if self.execute_effects(effects, terminal, events).await {
+                    return Err(color_eyre::eyre::eyre!("quit"));
+                }
+            }
+            return Ok(());
+        }
+
         // Ctrl+C: cancel current mode, or quit from normal mode
         if key.code == crossterm::event::KeyCode::Char('c')
             && key
@@ -425,23 +448,29 @@ impl App {
         Ok(())
     }
 
-    /// Handle periodic tick events.
-    async fn handle_tick(&mut self) {
-        let _ = reducer::reduce(
+    /// Handle periodic tick events. Returns `true` when the app should quit.
+    async fn handle_tick(
+        &mut self,
+        terminal: &mut ratatui::DefaultTerminal,
+        events: &mut EventLoop,
+    ) -> bool {
+        let effects = reducer::reduce(
             &mut self.state,
             Action::Ui(crate::application::actions::UiAction::Tick),
         );
-        // Refresh sessions every ~500ms (50 ticks) on session-related views
-        // Skip while attached — daemon client is busy with attach stream
+        // Refresh sessions every ~500ms (50 ticks) on session-related views.
+        // Also refresh during shutdown to detect dead sessions regardless of view.
+        let is_shutting_down = self.state.shutting_down.is_some();
         if self.state.input_mode != InputMode::Attached
             && self.state.tick.is_multiple_of(50)
-            && matches!(
-                self.state.current_view(),
-                crate::adapters::views::ViewKind::Sessions
-                    | crate::adapters::views::ViewKind::SessionDetail
-                    | crate::adapters::views::ViewKind::Subagents
-                    | crate::adapters::views::ViewKind::SubagentDetail
-            )
+            && (is_shutting_down
+                || matches!(
+                    self.state.current_view(),
+                    crate::adapters::views::ViewKind::Sessions
+                        | crate::adapters::views::ViewKind::SessionDetail
+                        | crate::adapters::views::ViewKind::Subagents
+                        | crate::adapters::views::ViewKind::SubagentDetail
+                ))
         {
             self.refresh_daemon_sessions().await;
         }
@@ -449,6 +478,10 @@ impl App {
         if self.state.tick.is_multiple_of(100) {
             self.auto_refresh_conversation();
         }
+        if !effects.is_empty() {
+            return self.execute_effects(effects, terminal, events).await;
+        }
+        false
     }
 
     /// Handle mouse events (scroll).
@@ -456,7 +489,12 @@ impl App {
     /// When attached: forward scroll as escape sequences to the PTY
     /// with coordinates adjusted for the body area (row offset by 1 for header).
     /// When not attached: translate scroll into table navigation actions.
-    async fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+    async fn handle_mouse(
+        &mut self,
+        mouse: crossterm::event::MouseEvent,
+        terminal: &mut ratatui::DefaultTerminal,
+        events: &mut EventLoop,
+    ) {
         use crossterm::event::MouseEventKind;
 
         match mouse.kind {
@@ -474,7 +512,8 @@ impl App {
                     }
                 } else {
                     let action = Action::Ui(crate::application::actions::UiAction::ScrollUp);
-                    let _ = reducer::reduce(&mut self.state, action);
+                    let effects = reducer::reduce(&mut self.state, action);
+                    let _ = self.execute_effects(effects, terminal, events).await;
                 }
             }
             MouseEventKind::ScrollDown => {
@@ -489,7 +528,8 @@ impl App {
                     }
                 } else {
                     let action = Action::Ui(crate::application::actions::UiAction::ScrollDown);
-                    let _ = reducer::reduce(&mut self.state, action);
+                    let effects = reducer::reduce(&mut self.state, action);
+                    let _ = self.execute_effects(effects, terminal, events).await;
                 }
             }
             _ => {}
@@ -1586,6 +1626,7 @@ impl App {
                     });
                 }
                 Effect::TerminateAllProcesses => {
+                    let base_dir = self.backend.base_dir().to_path_buf();
                     let sessions: Vec<(String, Option<String>)> = self
                         .state
                         .store
@@ -1599,6 +1640,11 @@ impl App {
                             if let Some(wt) = worktree {
                                 kill_tmux_session(&wt).await;
                             }
+                            // Re-write "idle" after process dies, so any Stop hook
+                            // the dying Claude fires ("waiting") is overwritten.
+                            crate::infrastructure::hooks::write_session_status(
+                                &base_dir, &id, "idle",
+                            );
                         }
                     });
                 }
@@ -1692,8 +1738,11 @@ impl App {
                 }
             }
         }
-        // Clear spinner after all effects have executed
-        self.state.spinner = None;
+        // Clear spinner after all effects have executed.
+        // During graceful shutdown the spinner must persist until quit.
+        if self.state.shutting_down.is_none() {
+            self.state.spinner = None;
+        }
         false
     }
 }

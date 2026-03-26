@@ -71,7 +71,7 @@ pub fn render_help_overlay(
         (":all", "Show all sessions"),
         (":tour", "Start guided tour"),
         (":update", "Update clash to latest"),
-        (":quit", "Quit"),
+        (":quit", "Quit (stashes running sessions)"),
     ] {
         lines.push(Line::from(vec![
             Span::styled(format!("  {:<16}", cmd), theme::help_key_style()),

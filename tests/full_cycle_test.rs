@@ -178,9 +178,182 @@ fn test_quit_shows_confirm_dialog() {
 }
 
 #[test]
-fn test_quit_confirmed_produces_effect() {
+fn test_quit_confirmed_immediate_when_no_running_sessions() {
     let (_dir, _backend, mut state) = setup();
+    // No running sessions in the default test fixtures
     let effects = reducer::reduce(&mut state, Action::Ui(UiAction::QuitConfirmed));
+    assert!(effects.iter().any(|e| matches!(e, Effect::Quit)));
+    assert!(state.shutting_down.is_none());
+}
+
+#[test]
+fn test_quit_confirmed_graceful_when_sessions_running() {
+    let (_dir, _backend, mut state) = setup();
+    state.store.sessions = vec![
+        clash::domain::entities::Session {
+            id: "s1".to_string(),
+            is_running: true,
+            ..Default::default()
+        },
+        clash::domain::entities::Session {
+            id: "s2".to_string(),
+            is_running: true,
+            ..Default::default()
+        },
+    ];
+    let effects = reducer::reduce(&mut state, Action::Ui(UiAction::QuitConfirmed));
+    assert!(state.shutting_down.is_some());
+    assert!(state.spinner.is_some());
+    assert!(state.confirm_dialog.is_none());
+    assert!(effects.iter().any(|e| matches!(e, Effect::DaemonKillAll)));
+    assert!(effects
+        .iter()
+        .any(|e| matches!(e, Effect::TerminateAllProcesses)));
+    assert!(effects
+        .iter()
+        .any(|e| matches!(e, Effect::MarkAllSessionsIdle)));
+    assert!(!effects.iter().any(|e| matches!(e, Effect::Quit)));
+}
+
+#[test]
+fn test_shutdown_tick_quits_when_all_dead() {
+    let (_dir, _backend, mut state) = setup();
+    state.shutting_down = Some(0);
+    state.tick = 50;
+    // No running sessions → should quit
+    let effects = reducer::reduce(&mut state, Action::Ui(UiAction::Tick));
+    assert!(effects.iter().any(|e| matches!(e, Effect::Quit)));
+}
+
+#[test]
+fn test_shutdown_tick_timeout() {
+    let (_dir, _backend, mut state) = setup();
+    state.shutting_down = Some(0);
+    state.tick = 1499; // Will be incremented to 1500 by Tick
+    state.store.sessions = vec![clash::domain::entities::Session {
+        id: "s1".to_string(),
+        is_running: true,
+        ..Default::default()
+    }];
+    let effects = reducer::reduce(&mut state, Action::Ui(UiAction::Tick));
+    assert!(effects.iter().any(|e| matches!(e, Effect::Quit)));
+}
+
+#[test]
+fn test_shutdown_tick_updates_spinner() {
+    let (_dir, _backend, mut state) = setup();
+    state.shutting_down = Some(0);
+    state.tick = 99; // Will be incremented to 100 (multiple of 100)
+    state.store.sessions = vec![
+        clash::domain::entities::Session {
+            id: "s1".to_string(),
+            is_running: true,
+            ..Default::default()
+        },
+        clash::domain::entities::Session {
+            id: "s2".to_string(),
+            is_running: true,
+            ..Default::default()
+        },
+    ];
+    let effects = reducer::reduce(&mut state, Action::Ui(UiAction::Tick));
+    assert!(effects.is_empty()); // Not quitting yet
+    assert_eq!(state.spinner.as_deref(), Some("Stashing 2 sessions..."));
+}
+
+#[test]
+fn test_force_quit() {
+    let (_dir, _backend, mut state) = setup();
+    state.shutting_down = Some(0); // Even during shutdown
+    let effects = reducer::reduce(&mut state, Action::Ui(UiAction::ForceQuit));
+    assert!(effects.iter().any(|e| matches!(e, Effect::Quit)));
+}
+
+#[test]
+fn test_quit_dialog_message_no_running() {
+    let (_dir, _backend, mut state) = setup();
+    // No running sessions
+    reducer::reduce(&mut state, Action::Ui(UiAction::Quit));
+    let dialog = state.confirm_dialog.as_ref().unwrap();
+    assert_eq!(dialog.message, "Are you sure you want to quit?");
+}
+
+#[test]
+fn test_quit_dialog_message_one_running() {
+    let (_dir, _backend, mut state) = setup();
+    state.store.sessions = vec![clash::domain::entities::Session {
+        id: "s1".to_string(),
+        is_running: true,
+        ..Default::default()
+    }];
+    reducer::reduce(&mut state, Action::Ui(UiAction::Quit));
+    let dialog = state.confirm_dialog.as_ref().unwrap();
+    assert_eq!(dialog.message, "Quit? 1 running session will be stashed.");
+}
+
+#[test]
+fn test_quit_dialog_message_multiple_running() {
+    let (_dir, _backend, mut state) = setup();
+    state.store.sessions = vec![
+        clash::domain::entities::Session {
+            id: "s1".to_string(),
+            is_running: true,
+            ..Default::default()
+        },
+        clash::domain::entities::Session {
+            id: "s2".to_string(),
+            is_running: true,
+            ..Default::default()
+        },
+        clash::domain::entities::Session {
+            id: "s3".to_string(),
+            is_running: true,
+            ..Default::default()
+        },
+    ];
+    reducer::reduce(&mut state, Action::Ui(UiAction::Quit));
+    let dialog = state.confirm_dialog.as_ref().unwrap();
+    assert_eq!(dialog.message, "Quit? 3 running sessions will be stashed.");
+}
+
+#[test]
+fn test_graceful_shutdown_full_flow() {
+    let (_dir, _backend, mut state) = setup();
+
+    // 1. Set up 2 running sessions
+    state.store.sessions = vec![
+        clash::domain::entities::Session {
+            id: "s1".to_string(),
+            is_running: true,
+            ..Default::default()
+        },
+        clash::domain::entities::Session {
+            id: "s2".to_string(),
+            is_running: true,
+            ..Default::default()
+        },
+    ];
+
+    // 2. Quit → confirm dialog
+    let effects = reducer::reduce(&mut state, Action::Ui(UiAction::Quit));
+    assert!(effects.is_empty());
+    assert!(state.confirm_dialog.is_some());
+    assert_eq!(state.input_mode, InputMode::Confirm);
+
+    // 3. Confirm → graceful shutdown starts
+    let effects = reducer::reduce(&mut state, Action::Ui(UiAction::ConfirmYes));
+    assert!(state.shutting_down.is_some());
+    assert!(state.spinner.is_some());
+    assert!(effects.iter().any(|e| matches!(e, Effect::DaemonKillAll)));
+    assert!(!effects.iter().any(|e| matches!(e, Effect::Quit)));
+
+    // 4. Simulate sessions dying
+    for s in &mut state.store.sessions {
+        s.is_running = false;
+    }
+
+    // 5. Next tick detects all dead → quits
+    let effects = reducer::reduce(&mut state, Action::Ui(UiAction::Tick));
     assert!(effects.iter().any(|e| matches!(e, Effect::Quit)));
 }
 
