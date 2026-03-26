@@ -39,9 +39,14 @@ pub struct App {
     sessions_visual_state: ratatui::widgets::TableState,
     /// Dirty flag: only redraw when something changed. Set by events, cleared after draw.
     needs_redraw: bool,
-    /// Consecutive refresh cycles that returned 0 sessions when previous was non-empty.
-    /// After threshold (5) cycles, the empty list is accepted (self-healing).
-    stability_guard_streak: u8,
+    /// Per-session streak counter: how many consecutive refresh cycles a session has
+    /// been absent from the incoming list. Once the streak exceeds
+    /// `MISSING_STREAK_THRESHOLD`, the session is removed.
+    missing_streaks: HashMap<String, u8>,
+    /// Sessions that were intentionally dropped/killed. Keyed by session ID, value
+    /// is the age counter (incremented each refresh cycle). Prevents the merge from
+    /// re-adding a session that was just dropped but may still appear from the daemon.
+    recently_removed: HashMap<String, u8>,
     /// Cached session registry — avoids re-reading sessions.json from disk every cycle.
     registry_cache: crate::infrastructure::hooks::registry::RegistryCache,
 }
@@ -112,7 +117,8 @@ impl App {
             ext_open_times: HashMap::new(),
             sessions_visual_state: ratatui::widgets::TableState::default(),
             needs_redraw: true,
-            stability_guard_streak: 0,
+            missing_streaks: HashMap::new(),
+            recently_removed: HashMap::new(),
             registry_cache: crate::infrastructure::hooks::registry::RegistryCache::new(),
         }
     }
@@ -708,7 +714,7 @@ impl App {
             .await;
     }
 
-    /// Refresh sessions: gather input, build session list (pure), swap atomically.
+    /// Refresh sessions: gather input, build session list (pure), merge in-place.
     /// Preserves the selected session by ID across the refresh.
     async fn refresh_daemon_sessions(&mut self) {
         use crate::infrastructure::session_refresh;
@@ -720,11 +726,12 @@ impl App {
             .get(self.state.table_state.selected)
             .map(|s| s.id.clone());
 
+        // Save snapshot for subagent delta reload (before merge modifies the list)
+        let previous_for_subagents = self.state.store.sessions.clone();
+
         // Gather all input (IO)
         let previous = &self.state.store.sessions;
-        let prev_count = previous.len();
         let registry = self.registry_cache.get();
-        let registry_empty = registry.is_empty();
         let mut input = session_refresh::gather_sync_input(&self.backend, previous, registry);
         let daemon_infos = session_refresh::gather_daemon_input(&mut self.daemon).await;
         input.daemon_infos = daemon_infos.clone();
@@ -732,34 +739,33 @@ impl App {
         // Build complete session list (pure, no IO)
         let new_sessions = session_refresh::build_session_list(&input);
 
-        // Stability guard: don't go from N>0 to 0 due to transient failures
-        const STABILITY_THRESHOLD: u8 = 5;
-        if session_refresh::should_keep_previous(
-            new_sessions.len(),
-            prev_count,
-            registry_empty,
-            self.stability_guard_streak,
-            STABILITY_THRESHOLD,
-        ) {
-            self.stability_guard_streak += 1;
-            tracing::warn!(
-                "Session refresh returned 0 sessions (previous had {}, streak {}); keeping previous list",
-                prev_count,
-                self.stability_guard_streak,
-            );
-            return;
-        }
-        if !new_sessions.is_empty() {
-            self.stability_guard_streak = 0;
-        }
+        // Merge incoming into existing list (in-place, streak-based removal)
+        let recently_removed_set: std::collections::HashSet<String> =
+            self.recently_removed.keys().cloned().collect();
+        session_refresh::merge_sessions(
+            &mut self.state.store.sessions,
+            new_sessions,
+            &mut self.missing_streaks,
+            &recently_removed_set,
+        );
 
-        // Atomic swap + post-processing
-        let previous_for_subagents = std::mem::take(&mut self.state.store.sessions);
-        self.state.store.sessions = new_sessions;
+        // Post-processing: subagent delta reload + member rebuild
         self.state
             .store
             .refresh_changed_subagents(&self.backend, &previous_for_subagents);
         self.state.store.rebuild_all_members();
+
+        // Only redraw if sessions actually changed (PartialEq comparison)
+        if session_refresh::sessions_changed(&previous_for_subagents, &self.state.store.sessions) {
+            self.needs_redraw = true;
+        }
+
+        // Tick recently_removed counters: increment all, remove expired
+        self.recently_removed
+            .values_mut()
+            .for_each(|v| *v = v.saturating_add(1));
+        self.recently_removed
+            .retain(|_, v| *v <= session_refresh::MISSING_STREAK_THRESHOLD);
 
         // Clean up externally_opened (uses App-owned state, stays here)
         if let Some(ref infos) = daemon_infos {
@@ -1032,6 +1038,8 @@ impl App {
                 }
                 Effect::UnregisterSession { session_id } => {
                     crate::infrastructure::hooks::registry::unregister(&session_id);
+                    // Prevent the merge from re-adding this session on the next cycle
+                    self.recently_removed.insert(session_id, 0);
                 }
                 Effect::RenameSession { session_id, name } => {
                     crate::infrastructure::hooks::registry::rename(&session_id, &name);
@@ -1050,6 +1058,10 @@ impl App {
                     );
                 }
                 Effect::ClearSessionRegistry => {
+                    // Mark all current sessions as recently removed before clearing
+                    for session in &self.state.store.sessions {
+                        self.recently_removed.insert(session.id.clone(), 0);
+                    }
                     crate::infrastructure::hooks::registry::clear();
                 }
                 Effect::MarkSessionIdle { session_id } => {

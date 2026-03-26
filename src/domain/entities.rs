@@ -214,7 +214,7 @@ impl std::fmt::Display for SessionStatus {
 }
 
 /// A Claude Code session (from ~/.claude/projects/*/sessions-index.json).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     #[serde(default)]
     pub id: String,
@@ -327,7 +327,7 @@ pub struct ConversationMessage {
 
 /// Repo-level configuration discovered from a session's working directory.
 /// Built programmatically by infrastructure — not deserialized from a single JSON file.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct RepoConfig {
     pub setup_scripts: Vec<String>,
     pub teardown_scripts: Vec<String>,

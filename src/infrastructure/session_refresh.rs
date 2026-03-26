@@ -5,6 +5,11 @@
 //! **pure** (no IO, no mutation of external state) and produces a fully sorted,
 //! ready-to-display session vector.
 //!
+//! After `build_session_list` produces incoming sessions, `merge_sessions`
+//! performs an in-place merge against the existing list: updating existing
+//! sessions, adding new ones, and removing stale ones only after they have
+//! been absent for `MISSING_STREAK_THRESHOLD` consecutive cycles.
+//!
 //! # Architecture
 //!
 //! ```text
@@ -15,7 +20,7 @@
 //! build_session_list()         Pure: filter, merge, overlay, sort
 //!         │
 //!         ▼
-//! store.sessions = result      Atomic swap in app.rs
+//! merge_sessions()             In-place merge into store.sessions
 //! ```
 
 use std::collections::{HashMap, HashSet};
@@ -24,6 +29,10 @@ use std::time::SystemTime;
 use crate::domain::entities::{Session, SessionStatus};
 use crate::infrastructure::daemon::protocol::SessionInfo;
 use crate::infrastructure::hooks::registry::ClashSession;
+
+/// Number of consecutive refresh cycles a session can be absent from the
+/// incoming list before it is removed from the displayed list.
+pub const MISSING_STREAK_THRESHOLD: u8 = 3;
 
 // ── Input ────────────────────────────────────────────────────────
 
@@ -136,13 +145,7 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
     resolve_names(&mut sessions, &input.daemon_infos, &input.saved_names);
 
     // Phase 6: Sort by section (Active/Done/Fail) then name
-    sessions.sort_by(|a, b| {
-        let name_key = |s: &Session| s.name.clone().unwrap_or_else(|| s.id.clone());
-        a.status
-            .section()
-            .cmp(&b.status.section())
-            .then_with(|| name_key(a).to_lowercase().cmp(&name_key(b).to_lowercase()))
-    });
+    sort_sessions_by_section(&mut sessions);
 
     sessions
 }
@@ -474,21 +477,100 @@ fn resolve_names(
     }
 }
 
-// ── Stability guard ──────────────────────────────────────────────
+// ── Merge-based refresh ──────────────────────────────────────────
 
-/// Decide whether to keep the previous session list instead of accepting an
-/// empty new list. Returns `true` (keep previous) when:
-/// - The new list is empty but the previous was not
-/// - The registry is non-empty (ruling out genuine first-launch / all-unregistered)
-/// - The consecutive-empty streak hasn't exceeded the threshold (self-healing)
-pub fn should_keep_previous(
-    new_count: usize,
-    prev_count: usize,
-    registry_empty: bool,
-    streak: u8,
-    threshold: u8,
+/// Sort sessions by section (Active/Done/Fail) then alphabetically by name.
+pub fn sort_sessions_by_section(sessions: &mut [Session]) {
+    sessions.sort_by(|a, b| {
+        let name_key = |s: &Session| s.name.clone().unwrap_or_else(|| s.id.clone());
+        a.status
+            .section()
+            .cmp(&b.status.section())
+            .then_with(|| name_key(a).to_lowercase().cmp(&name_key(b).to_lowercase()))
+    });
+}
+
+/// Merge incoming sessions into the existing list in-place.
+///
+/// - Sessions present in both lists are replaced (incoming wins), but the
+///   existing `name` is preserved when the incoming name is `None`.
+/// - Sessions in `existing` but absent from `incoming` have their
+///   `missing_streaks` counter incremented; they are removed once the
+///   counter exceeds `MISSING_STREAK_THRESHOLD`.
+/// - New sessions from `incoming` are appended unless their ID appears in
+///   `recently_removed` (prevents zombies after drop/kill).
+/// - The list is re-sorted only when something changed.
+///
+/// Returns `true` if the session list was modified (addition, removal, or
+/// any field change detected via `PartialEq`).
+pub fn merge_sessions(
+    existing: &mut Vec<Session>,
+    incoming: Vec<Session>,
+    missing_streaks: &mut HashMap<String, u8>,
+    recently_removed: &HashSet<String>,
 ) -> bool {
-    new_count == 0 && prev_count > 0 && !registry_empty && streak < threshold
+    let mut changed = false;
+
+    // Build owned map of incoming sessions, consuming the vec
+    let mut incoming_by_id: HashMap<String, Session> =
+        incoming.into_iter().map(|s| (s.id.clone(), s)).collect();
+
+    // Update existing sessions
+    for session in existing.iter_mut() {
+        if let Some(mut inc) = incoming_by_id.remove(&session.id) {
+            // Preserve name if incoming doesn't have one
+            if inc.name.is_none() && session.name.is_some() {
+                inc.name = session.name.clone();
+            }
+            if *session != inc {
+                changed = true;
+                *session = inc;
+            }
+            // Reset streak — session is present
+            missing_streaks.remove(&session.id);
+        } else {
+            // Session not in incoming — increment streak
+            let streak = missing_streaks.entry(session.id.clone()).or_insert(0);
+            *streak += 1;
+        }
+    }
+
+    // Remove sessions that have exceeded the threshold
+    let len_before = existing.len();
+    existing.retain(|s| {
+        let streak = missing_streaks.get(&s.id).copied().unwrap_or(0);
+        streak <= MISSING_STREAK_THRESHOLD
+    });
+    if existing.len() != len_before {
+        changed = true;
+        // Clean up streaks for removed sessions
+        missing_streaks.retain(|id, _| existing.iter().any(|s| s.id == *id));
+    }
+
+    // Add new sessions (not in existing, not recently removed)
+    for (_id, session) in incoming_by_id {
+        if !recently_removed.contains(&session.id) {
+            existing.push(session);
+            changed = true;
+        }
+    }
+
+    // Re-sort only when something changed
+    if changed {
+        sort_sessions_by_section(existing);
+    }
+
+    changed
+}
+
+/// Returns `true` if the two session lists differ (using derived `PartialEq`).
+///
+/// Currently used by tests to validate PartialEq-based change detection.
+/// The primary caller (`merge_sessions`) uses inline comparison instead,
+/// but this function is kept as a public utility for callers that compare
+/// snapshots directly (e.g., future event-based refresh paths).
+pub fn sessions_changed(old: &[Session], new: &[Session]) -> bool {
+    old != new
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -988,35 +1070,179 @@ mod tests {
         assert_eq!(result[2].id, "s3"); // Errored → Fail
     }
 
-    // ── Stability guard ─────────────────────────────────────────
+    // ── Merge-based refresh ───────────────────────────────────────
 
-    #[test]
-    fn test_should_keep_previous_fires_on_transient_empty() {
-        assert!(should_keep_previous(0, 5, false, 0, 5));
+    fn make_named_session(id: &str, name: Option<&str>, status: SessionStatus) -> Session {
+        Session {
+            id: id.to_string(),
+            name: name.map(|n| n.to_string()),
+            status,
+            is_running: !matches!(status, SessionStatus::Stashed),
+            ..Default::default()
+        }
     }
 
     #[test]
-    fn test_should_keep_previous_allows_empty_when_registry_empty() {
-        // Registry genuinely empty (first launch) — let it through
-        assert!(!should_keep_previous(0, 5, true, 0, 5));
+    fn test_merge_updates_existing() {
+        let mut existing = vec![make_named_session(
+            "s1",
+            Some("alpha"),
+            SessionStatus::Stashed,
+        )];
+        let incoming = vec![make_named_session(
+            "s1",
+            Some("alpha"),
+            SessionStatus::Running,
+        )];
+        let mut streaks = HashMap::new();
+        let recently_removed = HashSet::new();
+
+        let changed = merge_sessions(&mut existing, incoming, &mut streaks, &recently_removed);
+        assert!(changed);
+        assert_eq!(existing.len(), 1);
+        assert_eq!(existing[0].status, SessionStatus::Running);
+        assert!(existing[0].is_running);
     }
 
     #[test]
-    fn test_should_keep_previous_allows_empty_when_no_previous() {
-        // Nothing to preserve
-        assert!(!should_keep_previous(0, 0, false, 0, 5));
+    fn test_merge_adds_new_session() {
+        let mut existing = vec![make_named_session(
+            "s1",
+            Some("alpha"),
+            SessionStatus::Running,
+        )];
+        let incoming = vec![
+            make_named_session("s1", Some("alpha"), SessionStatus::Running),
+            make_named_session("s2", Some("beta"), SessionStatus::Waiting),
+        ];
+        let mut streaks = HashMap::new();
+        let recently_removed = HashSet::new();
+
+        let changed = merge_sessions(&mut existing, incoming, &mut streaks, &recently_removed);
+        assert!(changed);
+        assert_eq!(existing.len(), 2);
+        assert!(existing.iter().any(|s| s.id == "s2"));
     }
 
     #[test]
-    fn test_should_keep_previous_allows_nonempty_result() {
-        // New list has sessions — no guard needed
-        assert!(!should_keep_previous(3, 5, false, 0, 5));
+    fn test_merge_removes_after_threshold() {
+        let mut existing = vec![make_named_session(
+            "s1",
+            Some("alpha"),
+            SessionStatus::Running,
+        )];
+        let mut streaks = HashMap::new();
+        streaks.insert("s1".to_string(), MISSING_STREAK_THRESHOLD); // already at threshold
+        let recently_removed = HashSet::new();
+
+        // Incoming has no s1 — streak will be incremented past threshold
+        let changed = merge_sessions(&mut existing, vec![], &mut streaks, &recently_removed);
+        assert!(changed);
+        assert!(existing.is_empty());
     }
 
     #[test]
-    fn test_should_keep_previous_threshold_reached() {
-        // After 5 consecutive failures, accept empty (self-healing)
-        assert!(!should_keep_previous(0, 5, false, 5, 5));
+    fn test_merge_retains_below_threshold() {
+        let mut existing = vec![make_named_session(
+            "s1",
+            Some("alpha"),
+            SessionStatus::Running,
+        )];
+        let mut streaks = HashMap::new();
+        streaks.insert("s1".to_string(), MISSING_STREAK_THRESHOLD - 1);
+        let recently_removed = HashSet::new();
+
+        // Incoming has no s1 — streak incremented but still at threshold (not above)
+        let changed = merge_sessions(&mut existing, vec![], &mut streaks, &recently_removed);
+        // s1 is still retained (streak == MISSING_STREAK_THRESHOLD, which is <= threshold)
+        assert_eq!(existing.len(), 1);
+        assert_eq!(existing[0].id, "s1");
+        // The list itself didn't shrink, but the streak changed — however merge only reports
+        // changed=true when sessions are added/removed/field-changed, not just streak bumps.
+        // The session was not in incoming and streak was bumped but not removed, so no field change.
+        // changed should be false here since the session stayed.
+        assert!(!changed);
+    }
+
+    #[test]
+    fn test_merge_skips_recently_removed() {
+        let mut existing = vec![];
+        let incoming = vec![make_named_session(
+            "s1",
+            Some("alpha"),
+            SessionStatus::Running,
+        )];
+        let mut streaks = HashMap::new();
+        let recently_removed: HashSet<String> = ["s1".to_string()].into_iter().collect();
+
+        let changed = merge_sessions(&mut existing, incoming, &mut streaks, &recently_removed);
+        assert!(!changed);
+        assert!(existing.is_empty());
+    }
+
+    #[test]
+    fn test_merge_preserves_name() {
+        let mut existing = vec![make_named_session(
+            "s1",
+            Some("my-name"),
+            SessionStatus::Running,
+        )];
+        // Incoming has None for name
+        let incoming = vec![make_named_session("s1", None, SessionStatus::Running)];
+        let mut streaks = HashMap::new();
+        let recently_removed = HashSet::new();
+
+        merge_sessions(&mut existing, incoming, &mut streaks, &recently_removed);
+        assert_eq!(existing[0].name.as_deref(), Some("my-name"));
+    }
+
+    #[test]
+    fn test_merge_empty_incoming() {
+        let mut existing = vec![
+            make_named_session("s1", Some("alpha"), SessionStatus::Running),
+            make_named_session("s2", Some("beta"), SessionStatus::Waiting),
+        ];
+        let mut streaks = HashMap::new();
+        let recently_removed = HashSet::new();
+
+        let changed = merge_sessions(&mut existing, vec![], &mut streaks, &recently_removed);
+        // Streaks incremented but sessions still within threshold — no removal
+        assert!(!changed);
+        assert_eq!(existing.len(), 2);
+        assert_eq!(streaks.get("s1").copied(), Some(1));
+        assert_eq!(streaks.get("s2").copied(), Some(1));
+    }
+
+    #[test]
+    fn test_merge_sort_order() {
+        let mut existing = vec![];
+        let incoming = vec![
+            make_named_session("s1", Some("charlie"), SessionStatus::Stashed),
+            make_named_session("s2", Some("alpha"), SessionStatus::Running),
+            make_named_session("s3", Some("bravo"), SessionStatus::Running),
+        ];
+        let mut streaks = HashMap::new();
+        let recently_removed = HashSet::new();
+
+        merge_sessions(&mut existing, incoming, &mut streaks, &recently_removed);
+        // Active sessions first (alphabetically), then Done
+        assert_eq!(existing[0].id, "s2"); // alpha (Active)
+        assert_eq!(existing[1].id, "s3"); // bravo (Active)
+        assert_eq!(existing[2].id, "s1"); // charlie (Done)
+    }
+
+    #[test]
+    fn test_sessions_changed_identical() {
+        let a = vec![make_session("s1", SessionStatus::Running, true)];
+        let b = vec![make_session("s1", SessionStatus::Running, true)];
+        assert!(!sessions_changed(&a, &b));
+    }
+
+    #[test]
+    fn test_sessions_changed_status_diff() {
+        let a = vec![make_session("s1", SessionStatus::Running, true)];
+        let b = vec![make_session("s1", SessionStatus::Waiting, true)];
+        assert!(sessions_changed(&a, &b));
     }
 
     // ── Empty daemon list handling ──────────────────────────────
