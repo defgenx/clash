@@ -760,12 +760,16 @@ impl App {
 
     /// Phase 2: Overlay hook-based statuses (instant, from Claude Code lifecycle events).
     ///
-    /// Hook statuses come from real Claude Code lifecycle events and are generally
-    /// more accurate than JSONL heuristics. Non-idle statuses always apply.
+    /// Hooks provide authoritative signals for specific statuses that screen
+    /// detection cannot reliably determine:
+    /// - `prompting`: from PermissionRequest event (approval prompt shown)
+    /// - `starting`: from SessionStart event (session just spawned)
+    /// - `idle`: from SessionEnd event (session ended)
     ///
-    /// For idle: only apply when the hook file is fresher than the JSONL file.
-    /// This prevents a stale "idle" hook from hiding externally-started sessions
-    /// that were restarted after the hook last wrote.
+    /// Other hook statuses (`waiting`, `thinking`) are ignored here — the daemon's
+    /// real-time screen detection (Phase 3) is more accurate for these since hooks
+    /// fire asynchronously and `Stop` events can arrive after the session has
+    /// already moved to a different state.
     fn overlay_hook_statuses(&mut self) {
         use crate::domain::entities::SessionStatus;
 
@@ -773,26 +777,38 @@ impl App {
             crate::infrastructure::hooks::read_all_statuses(self.backend.base_dir());
         for session in &mut self.state.store.sessions {
             if let Some((hook_status, hook_mtime)) = hook_statuses.get(&session.id) {
-                if !matches!(hook_status, SessionStatus::Idle) {
-                    // Non-idle hook statuses always win (real lifecycle event)
-                    session.status = *hook_status;
-                    session.is_running = true;
-                } else {
+                match hook_status {
+                    // Prompting is authoritative — hooks fire from the actual
+                    // PermissionRequest event which screen detection often misses.
+                    SessionStatus::Prompting => {
+                        session.status = SessionStatus::Prompting;
+                        session.is_running = true;
+                    }
+                    // Starting is authoritative — only hooks know this state.
+                    SessionStatus::Starting => {
+                        session.status = SessionStatus::Starting;
+                        session.is_running = true;
+                    }
                     // Idle from hooks: only apply if the hook file is newer than
                     // the JSONL file — otherwise the session was restarted externally
                     // and the hook file is stale.
-                    let jsonl_mtime = self
-                        .backend
-                        .session_jsonl_mtime(&session.project, &session.id);
-                    let hook_is_fresher = match (hook_mtime, jsonl_mtime) {
-                        (Some(h), Some(j)) => h >= &j,
-                        (Some(_), None) => true, // hook exists, no JSONL → trust hook
-                        _ => false,              // no hook mtime → don't apply idle
-                    };
-                    if hook_is_fresher {
-                        session.status = SessionStatus::Idle;
-                        session.is_running = false;
+                    SessionStatus::Idle => {
+                        let jsonl_mtime = self
+                            .backend
+                            .session_jsonl_mtime(&session.project, &session.id);
+                        let hook_is_fresher = match (hook_mtime, jsonl_mtime) {
+                            (Some(h), Some(j)) => h >= &j,
+                            (Some(_), None) => true,
+                            _ => false,
+                        };
+                        if hook_is_fresher {
+                            session.status = SessionStatus::Idle;
+                            session.is_running = false;
+                        }
                     }
+                    // Waiting/Thinking/Running: defer to daemon screen detection
+                    // (Phase 3) which has real-time terminal content.
+                    _ => {}
                 }
             }
         }
