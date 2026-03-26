@@ -39,6 +39,11 @@ pub struct App {
     sessions_visual_state: ratatui::widgets::TableState,
     /// Dirty flag: only redraw when something changed. Set by events, cleared after draw.
     needs_redraw: bool,
+    /// Consecutive refresh cycles that returned 0 sessions when previous was non-empty.
+    /// After threshold (5) cycles, the empty list is accepted (self-healing).
+    stability_guard_streak: u8,
+    /// Cached session registry — avoids re-reading sessions.json from disk every cycle.
+    registry_cache: crate::infrastructure::hooks::registry::RegistryCache,
 }
 
 impl App {
@@ -63,8 +68,10 @@ impl App {
             backend.tasks_dir(),
             backend.projects_dir(),
             status_dir,
+            crate::infrastructure::hooks::registry::RegistryCache::watched_path(),
         ];
-        let watcher = FsWatcher::new(&watch_paths, fs_tx).ok();
+        let debounce = std::time::Duration::from_millis(config.debounce_ms);
+        let watcher = FsWatcher::new(&watch_paths, fs_tx, debounce).ok();
 
         let mut state = AppState::new();
         state.debug_mode = debug;
@@ -105,6 +112,8 @@ impl App {
             ext_open_times: HashMap::new(),
             sessions_visual_state: ratatui::widgets::TableState::default(),
             needs_redraw: true,
+            stability_guard_streak: 0,
+            registry_cache: crate::infrastructure::hooks::registry::RegistryCache::new(),
         }
     }
 
@@ -198,6 +207,7 @@ impl App {
                     }
                     if needs_refresh_all {
                         self.backend.invalidate_session_cache_all();
+                        self.registry_cache.invalidate();
                         let _ = self.state.store.refresh_all(&self.backend);
                         self.needs_redraw = true;
                     } else if !changed_jsonl_paths.is_empty() {
@@ -712,12 +722,36 @@ impl App {
 
         // Gather all input (IO)
         let previous = &self.state.store.sessions;
-        let mut input = session_refresh::gather_sync_input(&self.backend, previous);
+        let prev_count = previous.len();
+        let registry = self.registry_cache.get();
+        let registry_empty = registry.is_empty();
+        let mut input = session_refresh::gather_sync_input(&self.backend, previous, registry);
         let daemon_infos = session_refresh::gather_daemon_input(&mut self.daemon).await;
         input.daemon_infos = daemon_infos.clone();
 
         // Build complete session list (pure, no IO)
         let new_sessions = session_refresh::build_session_list(&input);
+
+        // Stability guard: don't go from N>0 to 0 due to transient failures
+        const STABILITY_THRESHOLD: u8 = 5;
+        if session_refresh::should_keep_previous(
+            new_sessions.len(),
+            prev_count,
+            registry_empty,
+            self.stability_guard_streak,
+            STABILITY_THRESHOLD,
+        ) {
+            self.stability_guard_streak += 1;
+            tracing::warn!(
+                "Session refresh returned 0 sessions (previous had {}, streak {}); keeping previous list",
+                prev_count,
+                self.stability_guard_streak,
+            );
+            return;
+        }
+        if !new_sessions.is_empty() {
+            self.stability_guard_streak = 0;
+        }
 
         // Atomic swap + post-processing
         let previous_for_subagents = std::mem::take(&mut self.state.store.sessions);

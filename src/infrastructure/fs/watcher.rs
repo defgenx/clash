@@ -15,9 +15,10 @@ impl FsWatcher {
     pub fn new(
         paths: &[PathBuf],
         event_tx: tokio::sync::mpsc::UnboundedSender<Vec<PathBuf>>,
+        debounce: Duration,
     ) -> Result<Self> {
         let (tx, rx) = mpsc::channel();
-        let mut debouncer = new_debouncer(Duration::from_millis(10), None, tx)?;
+        let mut debouncer = new_debouncer(debounce, None, tx)?;
 
         for path in paths {
             if path.exists() {

@@ -5,13 +5,46 @@
 //! `sessions.json` in the clash data directory.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use super::clash_data_dir;
 
 const REGISTRY_FILE: &str = "sessions.json";
+
+/// Cached registry that avoids re-reading `sessions.json` on every refresh cycle.
+/// Invalidated by FS-watcher when the file changes.
+#[derive(Default)]
+pub struct RegistryCache {
+    cached: Option<HashMap<String, ClashSession>>,
+}
+
+impl RegistryCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Return the cached registry, loading from disk on first call or after invalidation.
+    pub fn get(&mut self) -> HashMap<String, ClashSession> {
+        if let Some(ref cached) = self.cached {
+            return cached.clone();
+        }
+        let registry = load();
+        self.cached = Some(registry.clone());
+        registry
+    }
+
+    /// Clear the cache so the next `get()` re-reads from disk.
+    pub fn invalidate(&mut self) {
+        self.cached = None;
+    }
+
+    /// Path to the registry file, for adding to FS watcher.
+    pub fn watched_path() -> PathBuf {
+        clash_data_dir()
+    }
+}
 
 /// A clash-managed session entry in the registry.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -54,14 +54,16 @@ pub struct RefreshInput<'a> {
 /// Gather all synchronous input data (disk + hooks + registry + mtimes).
 ///
 /// Called from `app.rs` before the pure `build_session_list`.
+/// The `registry` parameter is pre-loaded (typically from `RegistryCache`) to
+/// avoid re-reading `sessions.json` from disk on every refresh cycle.
 pub fn gather_sync_input<'a>(
     backend: &crate::infrastructure::fs::backend::FsBackend,
     previous: &'a [Session],
+    registry: HashMap<String, ClashSession>,
 ) -> RefreshInput<'a> {
     use crate::domain::ports::DataRepository;
 
     let disk_sessions = backend.load_sessions().unwrap_or_default();
-    let registry = crate::infrastructure::hooks::registry::load();
     let hook_statuses = crate::infrastructure::hooks::read_all_statuses(backend.base_dir());
     let saved_names = crate::infrastructure::hooks::read_all_session_names(backend.base_dir());
 
@@ -261,11 +263,23 @@ fn overlay_daemon_sessions(
     previous_sessions: &[Session],
 ) {
     let infos = match daemon_infos {
-        Some(infos) => infos,
+        Some(infos) if !infos.is_empty() => infos,
         None => {
-            // Daemon unreachable — preserve running daemon-only sessions from
-            // previous cycle to prevent flickering.
+            // Daemon unreachable — always preserve running daemon-only sessions.
             preserve_daemon_only_sessions(sessions, previous_sessions);
+            return;
+        }
+        Some(_) => {
+            // Empty list — preserve only if previous had running daemon-only
+            // sessions (suspicious hiccup). If no previous running sessions
+            // existed, this is a genuine "all stopped" response.
+            let current_ids: HashSet<String> = sessions.iter().map(|s| s.id.clone()).collect();
+            if previous_sessions
+                .iter()
+                .any(|s| s.is_running && !current_ids.contains(&s.id))
+            {
+                preserve_daemon_only_sessions(sessions, previous_sessions);
+            }
             return;
         }
     };
@@ -458,6 +472,23 @@ fn resolve_names(
             }
         }
     }
+}
+
+// ── Stability guard ──────────────────────────────────────────────
+
+/// Decide whether to keep the previous session list instead of accepting an
+/// empty new list. Returns `true` (keep previous) when:
+/// - The new list is empty but the previous was not
+/// - The registry is non-empty (ruling out genuine first-launch / all-unregistered)
+/// - The consecutive-empty streak hasn't exceeded the threshold (self-healing)
+pub fn should_keep_previous(
+    new_count: usize,
+    prev_count: usize,
+    registry_empty: bool,
+    streak: u8,
+    threshold: u8,
+) -> bool {
+    new_count == 0 && prev_count > 0 && !registry_empty && streak < threshold
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -955,5 +986,125 @@ mod tests {
         assert_eq!(result[0].id, "s2"); // Running → Active
         assert_eq!(result[1].id, "s1"); // Stashed → Done
         assert_eq!(result[2].id, "s3"); // Errored → Fail
+    }
+
+    // ── Stability guard ─────────────────────────────────────────
+
+    #[test]
+    fn test_should_keep_previous_fires_on_transient_empty() {
+        assert!(should_keep_previous(0, 5, false, 0, 5));
+    }
+
+    #[test]
+    fn test_should_keep_previous_allows_empty_when_registry_empty() {
+        // Registry genuinely empty (first launch) — let it through
+        assert!(!should_keep_previous(0, 5, true, 0, 5));
+    }
+
+    #[test]
+    fn test_should_keep_previous_allows_empty_when_no_previous() {
+        // Nothing to preserve
+        assert!(!should_keep_previous(0, 0, false, 0, 5));
+    }
+
+    #[test]
+    fn test_should_keep_previous_allows_nonempty_result() {
+        // New list has sessions — no guard needed
+        assert!(!should_keep_previous(3, 5, false, 0, 5));
+    }
+
+    #[test]
+    fn test_should_keep_previous_threshold_reached() {
+        // After 5 consecutive failures, accept empty (self-healing)
+        assert!(!should_keep_previous(0, 5, false, 5, 5));
+    }
+
+    // ── Empty daemon list handling ──────────────────────────────
+
+    #[test]
+    fn test_daemon_empty_list_preserves_when_previous_had_running() {
+        let mut sessions = vec![make_session("s1", SessionStatus::Waiting, true)];
+        let previous = vec![
+            make_session("s1", SessionStatus::Waiting, true),
+            make_session("s2", SessionStatus::Running, true), // daemon-only from previous
+        ];
+        // Some(vec![]) — empty daemon response
+        overlay_daemon_sessions(
+            &mut sessions,
+            &Some(vec![]),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &previous,
+        );
+        // s2 was running in previous and not in current → should be preserved
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.iter().any(|s| s.id == "s2" && s.is_running));
+    }
+
+    #[test]
+    fn test_daemon_empty_list_accepts_when_no_previous_running() {
+        let mut sessions = vec![make_session("s1", SessionStatus::Stashed, false)];
+        let previous = vec![make_session("s1", SessionStatus::Stashed, false)];
+        // Some(vec![]) — empty daemon response, but no running daemon-only sessions
+        overlay_daemon_sessions(
+            &mut sessions,
+            &Some(vec![]),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &previous,
+        );
+        // No daemon-only running sessions to preserve — list unchanged
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "s1");
+    }
+
+    // ── Multi-cycle stability with empty daemon ─────────────────
+
+    #[test]
+    fn test_multi_cycle_stability_empty_daemon() {
+        // Simulate 3 refresh cycles: daemon present → empty → present
+        let registry = {
+            let mut r = HashMap::new();
+            r.insert(
+                "s1".to_string(),
+                make_registry_entry("s1", "sess-1", "/tmp"),
+            );
+            r
+        };
+        let disk = vec![make_disk_session("s1", "proj", "summary")];
+
+        // Cycle 1: daemon present, reports s1 running + s2 daemon-only
+        let mut input = empty_input(&[]);
+        input.disk_sessions = disk.clone();
+        input.registry = registry.clone();
+        input.daemon_infos = Some(vec![
+            make_daemon_info("s1", "/tmp", "running", true),
+            make_daemon_info("s2", "/tmp/other", "waiting", true),
+        ]);
+        let cycle1 = build_session_list(&input);
+        assert_eq!(cycle1.len(), 2);
+
+        // Cycle 2: daemon returns empty list (hiccup)
+        let mut input2 = empty_input(&cycle1);
+        input2.disk_sessions = disk.clone();
+        input2.registry = registry.clone();
+        input2.daemon_infos = Some(vec![]); // empty, not None
+        let cycle2 = build_session_list(&input2);
+        // s2 was running+daemon-only → should be preserved
+        assert_eq!(cycle2.len(), 2);
+        assert!(cycle2.iter().any(|s| s.id == "s2"));
+
+        // Cycle 3: daemon back, reports same sessions
+        let mut input3 = empty_input(&cycle2);
+        input3.disk_sessions = disk;
+        input3.registry = registry;
+        input3.daemon_infos = Some(vec![
+            make_daemon_info("s1", "/tmp", "running", true),
+            make_daemon_info("s2", "/tmp/other", "waiting", true),
+        ]);
+        let cycle3 = build_session_list(&input3);
+        assert_eq!(cycle3.len(), 2);
     }
 }
