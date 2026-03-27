@@ -49,7 +49,7 @@ pub fn render_detail<V: DetailView>(state: &AppState, frame: &mut Frame, area: R
         lines.push(Line::from(""));
 
         if section.loading {
-            render_loading_shimmer(&mut lines, state.tick);
+            render_loading_shimmer(&mut lines, state.tick, area.width);
         } else if is_conversation {
             render_conversation_section(&section.rows, &mut lines, area.width);
         } else {
@@ -233,9 +233,12 @@ const CYCLE_TICKS: usize = 120;
 const CHAR_SPREAD: usize = 6;
 
 /// Render an inline loading spinner with shimmer text for a section.
-fn render_loading_shimmer(lines: &mut Vec<Line<'_>>, tick: usize) {
+fn render_loading_shimmer(lines: &mut Vec<Line<'_>>, tick: usize, width: u16) {
     let spinner_char = SPINNER_FRAMES[(tick / TICKS_PER_FRAME) % SPINNER_FRAMES.len()];
-    let full_text = format!("{} Loading...", spinner_char);
+    let text = format!("{} Loading...", spinner_char);
+    let text_len = text.chars().count();
+    let pad = (width.saturating_sub(4) as usize).saturating_sub(text_len) / 2;
+    let full_text = format!("{}{}", " ".repeat(pad), text);
 
     let spans: Vec<Span> = full_text
         .chars()
@@ -251,7 +254,7 @@ fn render_loading_shimmer(lines: &mut Vec<Line<'_>>, tick: usize) {
         })
         .collect();
 
-    lines.push(Line::from(spans).alignment(ratatui::layout::Alignment::Center));
+    lines.push(Line::from(spans));
 }
 
 /// Interpolate the shimmer gradient at position `t` (0.0 -- 1.0).

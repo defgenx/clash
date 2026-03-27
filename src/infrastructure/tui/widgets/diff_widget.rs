@@ -182,10 +182,11 @@ pub fn render_diff(state: &AppState, frame: &mut Frame, area: Rect) {
             .border_style(Style::default().fg(theme::BORDER_COLOR))
             .style(Style::default().bg(theme::BG));
         let paragraph = Paragraph::new(Line::from(Span::styled(
-            "  Loading...",
+            "Loading...",
             Style::default().fg(theme::MUTED),
         )))
-        .block(block);
+        .block(block)
+        .alignment(ratatui::layout::Alignment::Center);
         frame.render_widget(paragraph, area);
         return;
     }
@@ -199,10 +200,11 @@ pub fn render_diff(state: &AppState, frame: &mut Frame, area: Rect) {
             .border_style(Style::default().fg(theme::BORDER_COLOR))
             .style(Style::default().bg(theme::BG));
         let paragraph = Paragraph::new(Line::from(Span::styled(
-            "  No changes (working tree clean)",
+            "No changes (working tree clean)",
             Style::default().fg(theme::MUTED),
         )))
-        .block(block);
+        .block(block)
+        .alignment(ratatui::layout::Alignment::Center);
         frame.render_widget(paragraph, area);
         return;
     }
