@@ -17,43 +17,43 @@ pub const TEXT_DIM: Color = Color::Rgb(155, 148, 178); // dusty lilac
 pub const MUTED: Color = Color::Rgb(95, 88, 115); // muted plum
 
 // ── Accent & titles ────────────────────────────────────────────
-pub const ACCENT: Color = Color::Rgb(180, 140, 255); // soft violet
-pub const TITLE_COLOR: Color = Color::Rgb(140, 200, 240); // pastel sky blue
+pub const ACCENT: Color = Color::Rgb(165, 145, 215); // soft lavender
+pub const TITLE_COLOR: Color = Color::Rgb(145, 180, 210); // soft sky
 
 // ── Role colors (conversation) ─────────────────────────────────
-pub const USER_COLOR: Color = Color::Rgb(140, 220, 170); // pastel mint
-pub const CLAUDE_COLOR: Color = Color::Rgb(140, 185, 240); // pastel blue
+pub const USER_COLOR: Color = Color::Rgb(135, 195, 165); // soft mint
+pub const CLAUDE_COLOR: Color = Color::Rgb(145, 175, 210); // soft steel blue
 
 // ── Semantic entity colors ─────────────────────────────────────
-pub const NAME_COLOR: Color = Color::Rgb(130, 210, 210); // pastel teal — entity names
-pub const PATH_COLOR: Color = Color::Rgb(145, 205, 155); // pastel sage — file paths, CWDs
-pub const BRANCH_COLOR: Color = Color::Rgb(230, 200, 120); // soft gold — git branches
-pub const COUNT_COLOR: Color = Color::Rgb(185, 165, 230); // pastel violet — counts, numbers
-pub const DESCRIPTION_COLOR: Color = Color::Rgb(165, 160, 190); // silver lavender — descriptions
+pub const NAME_COLOR: Color = Color::Rgb(135, 190, 190); // soft teal — entity names
+pub const PATH_COLOR: Color = Color::Rgb(140, 185, 150); // soft sage — file paths, CWDs
+pub const BRANCH_COLOR: Color = Color::Rgb(200, 185, 125); // muted gold — git branches
+pub const COUNT_COLOR: Color = Color::Rgb(170, 158, 205); // soft violet — counts, numbers
+pub const DESCRIPTION_COLOR: Color = Color::Rgb(160, 155, 180); // silver lavender — descriptions
 
 // ── Status colors ──────────────────────────────────────────────
-pub const STATUS_RUNNING: Color = Color::Rgb(120, 220, 150); // pastel green
-pub const STATUS_THINKING: Color = Color::Rgb(140, 185, 240); // pastel blue
-pub const STATUS_WAITING: Color = Color::Rgb(240, 210, 100); // pastel amber
-pub const STATUS_STARTING: Color = Color::Rgb(180, 140, 255); // soft violet
-pub const STATUS_PROMPTING: Color = Color::Rgb(240, 140, 120); // pastel coral
+pub const STATUS_RUNNING: Color = Color::Rgb(130, 195, 150); // soft sage
+pub const STATUS_THINKING: Color = Color::Rgb(145, 175, 210); // soft steel blue
+pub const STATUS_WAITING: Color = Color::Rgb(210, 190, 120); // muted gold
+pub const STATUS_STARTING: Color = Color::Rgb(165, 145, 215); // soft lavender
+pub const STATUS_PROMPTING: Color = Color::Rgb(210, 145, 135); // muted salmon
 pub const STATUS_IDLE: Color = Color::Rgb(95, 88, 115); // muted plum
 
 // ── Task status colors ─────────────────────────────────────────
-pub const TASK_COMPLETED: Color = Color::Rgb(120, 220, 150); // pastel green
-pub const TASK_IN_PROGRESS: Color = Color::Rgb(240, 210, 100); // pastel amber
-pub const TASK_BLOCKED: Color = Color::Rgb(235, 120, 130); // pastel rose
-pub const TASK_PENDING: Color = Color::Rgb(95, 88, 115); // muted
-pub const TASK_UNKNOWN: Color = Color::Rgb(180, 140, 255); // soft violet
+pub const TASK_COMPLETED: Color = Color::Rgb(130, 195, 150); // soft sage
+pub const TASK_IN_PROGRESS: Color = Color::Rgb(210, 190, 120); // muted gold
+pub const TASK_BLOCKED: Color = Color::Rgb(200, 130, 135); // muted rose
+pub const TASK_PENDING: Color = Color::Rgb(95, 88, 115); // muted plum
+pub const TASK_UNKNOWN: Color = Color::Rgb(165, 145, 215); // soft lavender
 
 // ── Section header colors ─────────────────────────────────────
-pub const SECTION_ACTIVE: Color = Color::Rgb(140, 185, 240); // pastel blue
-pub const SECTION_DONE: Color = Color::Rgb(120, 220, 150); // pastel green
-pub const SECTION_FAIL: Color = Color::Rgb(235, 120, 130); // pastel rose
+pub const SECTION_ACTIVE: Color = Color::Rgb(145, 175, 210); // soft steel blue
+pub const SECTION_DONE: Color = Color::Rgb(130, 195, 150); // soft sage
+pub const SECTION_FAIL: Color = Color::Rgb(200, 130, 135); // muted rose
 
 // ── Feedback colors ────────────────────────────────────────────
-pub const ERROR_COLOR: Color = Color::Rgb(235, 120, 130); // pastel rose
-pub const UNREAD_COLOR: Color = Color::Rgb(240, 210, 100); // pastel amber
+pub const ERROR_COLOR: Color = Color::Rgb(200, 130, 135); // muted rose
+pub const UNREAD_COLOR: Color = Color::Rgb(210, 190, 120); // muted gold
 
 // ── Diff colors ───────────────────────────────────────────────
 pub const DIFF_ADD: Color = STATUS_RUNNING; // pastel green
@@ -62,16 +62,16 @@ pub const DIFF_HUNK: Color = NAME_COLOR; // pastel teal
 pub const DIFF_META: Color = ACCENT; // soft violet
 
 // ── Dialog / overlay colors ────────────────────────────────────
-pub const DIALOG_BORDER: Color = Color::Rgb(140, 200, 240); // pastel sky
-pub const DIALOG_TITLE: Color = Color::Rgb(140, 200, 240); // pastel sky
-pub const CONFIRM_BORDER: Color = Color::Rgb(240, 210, 100); // pastel amber
+pub const DIALOG_BORDER: Color = Color::Rgb(145, 180, 210); // soft sky
+pub const DIALOG_TITLE: Color = Color::Rgb(145, 180, 210); // soft sky
+pub const CONFIRM_BORDER: Color = Color::Rgb(210, 190, 120); // muted gold
 pub const BUSY_FG: Color = Color::Rgb(55, 48, 72); // dimmed plum
 pub const BUSY_BG: Color = Color::Rgb(8, 8, 14); // near-black
 
 // ── Input mode colors ──────────────────────────────────────────
-pub const COMMAND_COLOR: Color = Color::Rgb(230, 200, 120); // soft gold for : command mode
-pub const FILTER_COLOR: Color = Color::Rgb(140, 220, 170); // pastel mint for / filter mode
-pub const PROMPT_COLOR: Color = Color::Rgb(130, 210, 210); // pastel teal for input prompts
+pub const COMMAND_COLOR: Color = Color::Rgb(200, 185, 125); // muted gold for : command mode
+pub const FILTER_COLOR: Color = Color::Rgb(135, 195, 165); // soft mint for / filter mode
+pub const PROMPT_COLOR: Color = Color::Rgb(135, 190, 190); // soft teal for input prompts
 
 // ── Logo neon colors (intentionally brighter than the pastel UI) ──
 pub const LOGO_PRIMARY: Color = Color::Rgb(175, 130, 255); // vibrant purple

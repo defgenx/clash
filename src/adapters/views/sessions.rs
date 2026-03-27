@@ -184,12 +184,13 @@ pub fn render_sessions_table(
             let label_style = Style::default()
                 .fg(section_color)
                 .add_modifier(Modifier::BOLD);
+            let rule_style = Style::default().fg(theme::SEPARATOR);
 
             let label = format!("{} {} ({})", icon, section.label(), count);
             let mut header_cells = Vec::with_capacity(columns.len());
             header_cells.push(Cell::from(label).style(label_style));
             for _ in 1..columns.len() {
-                header_cells.push(Cell::from(""));
+                header_cells.push(Cell::from("───────────").style(rule_style));
             }
             rows.push(Row::new(header_cells));
             logical_to_parent.push(usize::MAX); // sentinel — not selectable
