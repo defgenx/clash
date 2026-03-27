@@ -141,16 +141,12 @@ impl DetailView for SessionDetailView {
             sections.push(members_section);
         }
 
-        // Subagents section (uses auto-refreshed data, excludes Done)
+        // Subagents section — show all subagents inline
         let subagents_for_session: Vec<_> = state
             .store
             .subagents_by_session
             .get(&session_id)
-            .map(|subs| {
-                subs.iter()
-                    .filter(|sa| sa.status != crate::domain::entities::SessionStatus::Done)
-                    .collect::<Vec<_>>()
-            })
+            .map(|subs| subs.iter().collect::<Vec<_>>())
             .unwrap_or_default();
 
         let agents_section = if !subagents_for_session.is_empty() {
@@ -172,10 +168,6 @@ impl DetailView for SessionDetailView {
                 section = section.row(sid, &desc);
             }
             section
-        } else if session.subagent_count > 0 {
-            Section::new("Subagents")
-                .row("Count", &session.subagent_count.to_string())
-                .row("", "Press Enter to view")
         } else {
             Section::new("Subagents").row("", "No subagents")
         };
