@@ -393,10 +393,6 @@ pub struct SupersetConfig {
     pub setup: Vec<String>,
     #[serde(default)]
     pub teardown: Vec<String>,
-    /// Consumed by Superset; retained for forward-compat deserialization.
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub run: Vec<String>,
 }
 
 /// An inbox message.

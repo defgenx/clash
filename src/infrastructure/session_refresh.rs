@@ -522,6 +522,23 @@ pub fn merge_sessions(
             if inc.name.is_none() && session.name.is_some() {
                 inc.name = session.name.clone();
             }
+            // Preserve visible fields when incoming has empty values —
+            // prevents flickering when a refresh cycle produces incomplete data.
+            if inc.source_branch.is_none() && session.source_branch.is_some() {
+                inc.source_branch = session.source_branch.clone();
+            }
+            if inc.git_branch.is_empty() && !session.git_branch.is_empty() {
+                inc.git_branch = session.git_branch.clone();
+            }
+            if inc.worktree.is_none() && session.worktree.is_some() {
+                inc.worktree = session.worktree.clone();
+            }
+            if inc.worktree_project.is_none() && session.worktree_project.is_some() {
+                inc.worktree_project = session.worktree_project.clone();
+            }
+            if inc.summary.is_empty() && !session.summary.is_empty() {
+                inc.summary = session.summary.clone();
+            }
             if *session != inc {
                 changed = true;
                 *session = inc;

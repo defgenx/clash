@@ -54,16 +54,6 @@ impl NavigationStack {
         }
     }
 
-    /// Replace the entire stack with a single view.
-    #[allow(dead_code)]
-    pub fn replace(&mut self, view: ViewKind) {
-        self.stack.clear();
-        self.stack.push(NavEntry {
-            view,
-            context: None,
-        });
-    }
-
     /// Get breadcrumb trail as strings.
     pub fn breadcrumbs(&self) -> Vec<String> {
         self.stack
@@ -160,15 +150,6 @@ mod tests {
     fn test_pop_at_root() {
         let mut nav = NavigationStack::new();
         assert!(!nav.pop());
-    }
-
-    #[test]
-    fn test_replace() {
-        let mut nav = NavigationStack::new();
-        nav.push(ViewKind::Tasks, None);
-        nav.replace(ViewKind::Agents);
-        assert_eq!(nav.breadcrumbs().len(), 1);
-        assert_eq!(nav.current().view, ViewKind::Agents);
     }
 
     #[test]

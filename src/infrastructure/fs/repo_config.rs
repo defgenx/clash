@@ -7,8 +7,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use sha2::{Digest, Sha256};
-
 use crate::domain::entities::RepoConfig;
 
 // ── Private intermediate types for typed JSON parsing ───────────────
@@ -116,118 +114,6 @@ pub fn load_repo_config(cwd: &Path) -> RepoConfig {
     config.has_claude_settings = cwd.join(".claude/settings.json").exists();
 
     config
-}
-
-// ── Trust / Consent Mechanism ───────────────────────────────────────
-
-/// Environment variable keys that must never be overridden by repo config.
-#[allow(dead_code)]
-const BLOCKED_ENV_KEYS: &[&str] = &[
-    "PATH",
-    "HOME",
-    "USER",
-    "SHELL",
-    "TERM",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "TMPDIR",
-    "XDG_CONFIG_HOME",
-    "XDG_DATA_HOME",
-    "SSH_AUTH_SOCK",
-    "ANTHROPIC_API_KEY",
-    "DISPLAY",
-    "COLORTERM",
-    "TERM_PROGRAM",
-];
-
-/// Check if a given env var key is blocked from repo config override.
-#[allow(dead_code)]
-pub fn is_env_blocked(key: &str) -> bool {
-    BLOCKED_ENV_KEYS.contains(&key)
-}
-
-/// Path to the trust store file.
-#[allow(dead_code)]
-fn trust_store_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".claude/clash/trusted_repos.json")
-}
-
-/// Compute a SHA256 hash of the concatenated contents of scripts relative to cwd.
-#[allow(dead_code)]
-fn compute_scripts_hash(cwd: &Path, scripts: &[String]) -> String {
-    let mut hasher = Sha256::new();
-    for script in scripts {
-        let path = cwd.join(script);
-        if let Ok(content) = std::fs::read(&path) {
-            hasher.update(&content);
-        }
-    }
-    format!("{:x}", hasher.finalize())
-}
-
-/// Check if a repo's setup scripts are trusted.
-///
-/// Trusted = repo path + SHA256 hash of setup script contents both match
-/// a previously stored entry. If scripts change, trust is revoked.
-#[allow(dead_code)]
-pub fn is_repo_trusted(cwd: &Path, scripts: &[String]) -> bool {
-    is_repo_trusted_with_store(cwd, scripts, &trust_store_path())
-}
-
-#[allow(dead_code)]
-fn is_repo_trusted_with_store(
-    cwd: &Path,
-    scripts: &[String],
-    store_path: &std::path::Path,
-) -> bool {
-    if scripts.is_empty() {
-        return true;
-    }
-    let store: HashMap<String, String> = std::fs::read_to_string(store_path)
-        .ok()
-        .and_then(|c| serde_json::from_str(&c).ok())
-        .unwrap_or_default();
-
-    let key = cwd
-        .canonicalize()
-        .unwrap_or_else(|_| cwd.to_path_buf())
-        .to_string_lossy()
-        .to_string();
-    let current_hash = compute_scripts_hash(cwd, scripts);
-
-    store.get(&key) == Some(&current_hash)
-}
-
-/// Mark a repo's current setup scripts as trusted.
-#[allow(dead_code)]
-pub fn mark_repo_trusted(cwd: &Path, scripts: &[String]) {
-    mark_repo_trusted_with_store(cwd, scripts, &trust_store_path());
-}
-
-#[allow(dead_code)]
-fn mark_repo_trusted_with_store(cwd: &Path, scripts: &[String], store_path: &std::path::Path) {
-    let mut store: HashMap<String, String> = std::fs::read_to_string(store_path)
-        .ok()
-        .and_then(|c| serde_json::from_str(&c).ok())
-        .unwrap_or_default();
-
-    let key = cwd
-        .canonicalize()
-        .unwrap_or_else(|_| cwd.to_path_buf())
-        .to_string_lossy()
-        .to_string();
-    let hash = compute_scripts_hash(cwd, scripts);
-    store.insert(key, hash);
-
-    if let Ok(json) = serde_json::to_string_pretty(&store) {
-        if let Some(parent) = store_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(store_path, json);
-    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -367,62 +253,5 @@ mod tests {
         std::fs::write(dir.path().join(".superset/config.json"), "{{{bad").unwrap();
         let config = load_repo_config(dir.path());
         assert!(config.setup_scripts.is_empty()); // no panic
-    }
-
-    // ── Trust mechanism tests ──
-
-    #[test]
-    fn test_empty_scripts_always_trusted() {
-        let dir = setup_dir();
-        assert!(is_repo_trusted(dir.path(), &[]));
-    }
-
-    #[test]
-    fn test_untrusted_repo() {
-        let dir = setup_dir();
-        let store = dir.path().join("trust.json");
-        std::fs::write(dir.path().join("setup.sh"), "#!/bin/sh\necho hello").unwrap();
-        assert!(!is_repo_trusted_with_store(
-            dir.path(),
-            &["setup.sh".to_string()],
-            &store
-        ));
-    }
-
-    #[test]
-    fn test_trusted_repo_roundtrip() {
-        let dir = setup_dir();
-        let store = dir.path().join("trust.json");
-        let scripts = vec!["setup.sh".to_string()];
-        std::fs::write(dir.path().join("setup.sh"), "#!/bin/sh\necho test").unwrap();
-
-        mark_repo_trusted_with_store(dir.path(), &scripts, &store);
-        assert!(is_repo_trusted_with_store(dir.path(), &scripts, &store));
-    }
-
-    #[test]
-    fn test_trust_revoked_on_change() {
-        let dir = setup_dir();
-        let store = dir.path().join("trust.json");
-        let scripts = vec!["setup.sh".to_string()];
-        std::fs::write(dir.path().join("setup.sh"), "#!/bin/sh\necho v1").unwrap();
-
-        mark_repo_trusted_with_store(dir.path(), &scripts, &store);
-        assert!(is_repo_trusted_with_store(dir.path(), &scripts, &store));
-
-        // Modify the script
-        std::fs::write(dir.path().join("setup.sh"), "#!/bin/sh\necho v2").unwrap();
-        assert!(!is_repo_trusted_with_store(dir.path(), &scripts, &store));
-    }
-
-    // ── Env var blocklist ──
-
-    #[test]
-    fn test_env_blocked() {
-        assert!(is_env_blocked("PATH"));
-        assert!(is_env_blocked("HOME"));
-        assert!(is_env_blocked("ANTHROPIC_API_KEY"));
-        assert!(!is_env_blocked("CUSTOM_VAR"));
-        assert!(!is_env_blocked("MY_CONFIG"));
     }
 }

@@ -33,7 +33,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
         body: &[
             "The Sessions view is your home screen. It shows every Claude Code session across all your projects.",
             "",
-            "Sessions are grouped into four sections: Active (working), Pending (approval needed), Done (waiting/idle), and Fail (errored).",
+            "Sessions are grouped into three sections: Active (working), Done (idle/stashed), and Fail (errored).",
             "Within each section, sessions are sorted alphabetically by name for stable ordering.",
             "Press  A  to cycle through showing only one section at a time.",
             "",

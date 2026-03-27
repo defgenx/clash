@@ -21,7 +21,7 @@
 - **Inline terminal** — attach to sessions with a full vt100 terminal emulator, no window switching
 - **Real-time status** — instant status detection via hooks, daemon PTY screen analysis, and JSONL parsing (three-layer system)
 - **Animated status icons** — active sessions show animated spinners and pulsing icons for visual feedback
-- **Section-based layout** — sessions are grouped into Active (working), Pending (approval needed), Done (waiting/idle), and Fail (errored) sections with stable alphabetical ordering; press `A` to cycle section filter
+- **Section-based layout** — sessions are grouped into Active (working), Done (idle/stashed), and Fail (errored) sections with stable alphabetical ordering; press `A` to cycle section filter
 - **In-process daemon** — embedded PTY daemon manages sessions without a separate process
 - **Git worktree support** — spawn sessions in isolated worktrees for parallel feature branches (`w` key); worktree column shows `⊟ project/worktree` for project context
 - **Repo config discovery** — auto-detects MCP servers, custom commands, agent definitions, and setup scripts from the project directory
@@ -88,7 +88,7 @@ clash detects session status through three layers (in priority order):
 | `⠋⠙⠹…` | Running | Executing tools — braille spinner |
 | `○◔◑◕●` | Starting | Session just spawned — filling circle |
 | `✗` | Errored | Session crashed shortly after starting |
-| `○` | Idle | Exited or inactive |
+| `○` | Stashed | Exited or inactive |
 
 ## Keybindings
 
@@ -123,7 +123,7 @@ clash detects session status through three layers (in priority order):
 | `s` | Stash / unstash session (stop process, keep in registry) |
 | `w` | Spawn session in a git worktree |
 | `Tab` | Expand / collapse subagents |
-| `A` | Cycle section filter (Active/Pending/Done/Fail) |
+| `A` | Cycle section filter (Active/Done/Fail) |
 | `S` | Toggle active / all |
 | `d` | Drop session |
 | `D` | Drop ALL sessions |

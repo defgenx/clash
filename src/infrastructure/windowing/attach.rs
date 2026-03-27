@@ -58,10 +58,28 @@ fn set_title(title: &str) {
     write_stdout(seq.as_bytes());
 }
 
+/// Visible character count, stripping ANSI escape sequences.
+fn visible_len(s: &str) -> u16 {
+    let mut len = 0u16;
+    let mut in_escape = false;
+    for ch in s.chars() {
+        if in_escape {
+            if ch.is_ascii_alphabetic() {
+                in_escape = false;
+            }
+        } else if ch == '\x1b' {
+            in_escape = true;
+        } else {
+            len += 1;
+        }
+    }
+    len
+}
+
 /// Draw a centered status message (spinner + text) on a cleared screen.
 fn draw_status_screen(cols: u16, rows: u16, message: &str) {
     let mid_row = rows / 2;
-    let msg_col = (cols / 2).saturating_sub(message.len() as u16 / 2);
+    let msg_col = (cols / 2).saturating_sub(visible_len(message) / 2);
     let screen = format!("\x1b[2J\x1b[{mid_row};{msg_col}H{message}");
     write_stdout(screen.as_bytes());
 }

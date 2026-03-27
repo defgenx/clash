@@ -103,7 +103,7 @@ impl DataStore {
         Ok(())
     }
 
-    /// Sort sessions by section (Active → Pending → Done → Fail), then alphabetically by name.
+    /// Sort sessions by section (Active → Done → Fail), then alphabetically by name.
     ///
     /// Superseded by sort step in `session_refresh::build_session_list` — kept for tests only.
     #[cfg(test)]
