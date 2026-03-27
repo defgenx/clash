@@ -161,6 +161,9 @@ pub fn render_sessions_table(
         *section_counts.entry(s.status.section()).or_insert(0) += 1;
     }
 
+    // Section header overlay info: (row_index, label, style)
+    let mut section_overlays: Vec<(usize, String, Style)> = Vec::new();
+
     // Build rows: parent sessions + expanded child subagent rows + section headers
     let mut rows: Vec<Row> = Vec::new();
     let mut logical_to_parent: Vec<usize> = Vec::new(); // maps row index → parent session index
@@ -181,18 +184,20 @@ pub fn render_sessions_table(
                 SessionSection::Done => "◇",
                 SessionSection::Fail => "✦",
             };
-            let label_style = Style::default()
+            let label = format!(" {} {} ({}) ", icon, section.label(), count);
+            let style = Style::default()
                 .fg(section_color)
                 .add_modifier(Modifier::BOLD);
-            let rule_style = Style::default().fg(theme::SEPARATOR);
 
-            let label = format!("{} {} ({})", icon, section.label(), count);
-            let mut header_cells = Vec::with_capacity(columns.len());
-            header_cells.push(Cell::from(label).style(label_style));
-            for _ in 1..columns.len() {
-                header_cells.push(Cell::from("───────────").style(rule_style));
+            // Track for overlay rendering after the table is drawn
+            section_overlays.push((rows.len(), label, style));
+
+            // Empty placeholder row in the table (will be overwritten by overlay)
+            let mut empty_cells = Vec::with_capacity(columns.len());
+            for _ in 0..columns.len() {
+                empty_cells.push(Cell::from(""));
             }
-            rows.push(Row::new(header_cells));
+            rows.push(Row::new(empty_cells));
             logical_to_parent.push(usize::MAX); // sentinel — not selectable
             current_section = Some(section);
         }
@@ -327,6 +332,43 @@ pub fn render_sessions_table(
     // Update selection on the persisted visual state — preserves scroll offset across frames.
     *visual_state = visual_state.clone().with_selected(visual_selected);
     frame.render_stateful_widget(table, area, visual_state);
+
+    // Overlay full-width section headers on top of the empty placeholder rows.
+    // The table has: 1 border top + 1 header row = offset 2 from area.y.
+    // TableState::offset() tells us the scroll position.
+    let scroll_offset = visual_state.offset();
+    let body_y = area.y + 2; // border + column header
+    let body_height = area.height.saturating_sub(3) as usize; // border top + header + border bottom
+    let inner_width = area.width.saturating_sub(2); // left + right borders
+
+    for &(row_idx, ref label, style) in &section_overlays {
+        if row_idx < scroll_offset {
+            continue;
+        }
+        let visible_row = row_idx - scroll_offset;
+        if visible_row >= body_height {
+            continue;
+        }
+        let y = body_y + visible_row as u16;
+
+        // Build the line: label + rule filling the rest of the width
+        let label_len = label.chars().count() as u16;
+        let rule_len = inner_width.saturating_sub(label_len);
+        let rule: String = "─".repeat(rule_len as usize);
+
+        let line = ratatui::text::Line::from(vec![
+            ratatui::text::Span::styled(label.clone(), style),
+            ratatui::text::Span::styled(rule, Style::default().fg(theme::SEPARATOR)),
+        ]);
+
+        let overlay_area = Rect {
+            x: area.x + 1, // inside left border
+            y,
+            width: inner_width,
+            height: 1,
+        };
+        frame.render_widget(ratatui::widgets::Paragraph::new(line), overlay_area);
+    }
 }
 
 impl TableView for SessionsTable {
