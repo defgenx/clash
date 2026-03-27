@@ -36,12 +36,14 @@ pub fn compute_constraints(
             .collect();
     }
 
-    // Measure max content width per column (including header)
+    // Measure max content width per column (including header).
+    // Use char count (not byte length) so Unicode characters like ◎ ● ◆
+    // are measured as 1 column width each, matching terminal rendering.
     let mut measured: Vec<u16> = columns.iter().map(|c| c.name.len() as u16).collect();
     for row in content_rows {
         for (i, cell_text) in row.iter().enumerate() {
             if i < measured.len() {
-                measured[i] = measured[i].max(cell_text.len() as u16);
+                measured[i] = measured[i].max(cell_text.chars().count() as u16);
             }
         }
     }

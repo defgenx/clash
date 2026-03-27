@@ -380,7 +380,7 @@ impl TableView for SessionsTable {
             ColumnDef::flex("NAME", 4, 30),
             ColumnDef::flex("PROJECT", 7, 25),
             ColumnDef::new("SUMMARY", 35),
-            ColumnDef::flex("AGENTS", 4, 12),
+            ColumnDef::flex("AGENTS", 4, 22),
             ColumnDef::flex("BRANCH", 6, 25),
             ColumnDef::flex("WORKTREE", 4, 20),
         ]
