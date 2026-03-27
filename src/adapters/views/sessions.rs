@@ -6,6 +6,7 @@ use ratatui::Frame;
 use crate::adapters::format::{self, or_dash};
 use crate::adapters::views::{ColumnDef, Keybinding, TableView};
 use crate::application::state::AppState;
+use crate::application::store::DataStore;
 use crate::domain::entities::{Session, SessionSection, SessionStatus, Subagent};
 use crate::infrastructure::tui::{theme, widgets::table::compute_constraints};
 use ratatui::style::Modifier;
@@ -55,6 +56,30 @@ fn agents_summary_refs(subagents: &[&Subagent]) -> String {
     }
 }
 
+/// Compute the AGENTS column text for a session using the subagent store.
+///
+/// This is the single source of truth for agents text — used by both
+/// column measurement and cell rendering to prevent width mismatches.
+fn compute_agents_text(session: &Session, store: &DataStore) -> String {
+    let subs = store.subagents_by_session.get(&session.id);
+    let active_subs: Option<Vec<_>> = subs.map(|s| {
+        s.iter()
+            .filter(|sa| sa.status != SessionStatus::Done)
+            .collect()
+    });
+    if let Some(ref active) = active_subs {
+        if active.is_empty() {
+            "—".to_string()
+        } else {
+            agents_summary_refs(active)
+        }
+    } else if session.subagent_count > 0 {
+        format!("{}", session.subagent_count)
+    } else {
+        "—".to_string()
+    }
+}
+
 /// Build a subagent child row (indented) for expanded sessions.
 fn subagent_row(sa: &Subagent, tick: usize) -> Vec<Cell<'static>> {
     let (status, style) = format::status_cell(sa.status, tick);
@@ -87,7 +112,11 @@ fn subagent_row(sa: &Subagent, tick: usize) -> Vec<Cell<'static>> {
 }
 
 /// Extract plain text values from a session row (shared by row() and row_texts()).
-fn session_texts(item: &Session, tick: usize) -> Vec<String> {
+///
+/// When `agents_override` is `Some`, that text is used for the AGENTS column
+/// (the custom renderer pre-computes it via `compute_agents_text`). When `None`,
+/// falls back to the simple subagent count (used by the generic `TableView` path).
+fn session_texts(item: &Session, tick: usize, agents_override: Option<&str>) -> Vec<String> {
     let (status, _) = format::status_cell(item.status, tick);
     let name_display = item.name.clone().unwrap_or_else(|| "—".to_string());
     let display_name = or_dash(if item.summary.is_empty() {
@@ -101,10 +130,15 @@ fn session_texts(item: &Session, tick: usize) -> Vec<String> {
         .next()
         .unwrap_or(&item.project_path)
         .to_string();
-    let agents = if item.subagent_count > 0 {
-        format!("{}", item.subagent_count)
-    } else {
-        "—".to_string()
+    let agents = match agents_override {
+        Some(text) => text.to_string(),
+        None => {
+            if item.subagent_count > 0 {
+                format!("{}", item.subagent_count)
+            } else {
+                "—".to_string()
+            }
+        }
     };
     let branch = item
         .source_branch
@@ -147,10 +181,17 @@ pub fn render_sessions_table(
         .collect();
     let header = Row::new(header_cells).height(1);
 
-    // Measure content for dynamic column sizing
+    // Pre-compute agents text per session for measurement + rendering
+    let agents_texts: Vec<String> = sessions
+        .iter()
+        .map(|s| compute_agents_text(s, &state.store))
+        .collect();
+
+    // Measure content for dynamic column sizing (with correct agents text)
     let content_rows: Vec<Vec<String>> = sessions
         .iter()
-        .map(|s| session_texts(s, state.tick))
+        .enumerate()
+        .map(|(i, s)| session_texts(s, state.tick, Some(&agents_texts[i])))
         .collect();
     let constraints = compute_constraints(&columns, &content_rows, area.width);
 
@@ -221,17 +262,7 @@ pub fn render_sessions_table(
         } else {
             "  "
         };
-        let agents_text = if let Some(ref active) = active_subs {
-            if active.is_empty() {
-                "—".to_string()
-            } else {
-                agents_summary_refs(active)
-            }
-        } else if session.subagent_count > 0 {
-            format!("{}", session.subagent_count)
-        } else {
-            "—".to_string()
-        };
+        let agents_text = agents_texts[i].clone();
 
         let (status, status_style) = format::status_cell(session.status, state.tick);
         let name_display = session.name.as_deref().unwrap_or("—");
@@ -387,11 +418,11 @@ impl TableView for SessionsTable {
     }
 
     fn row_texts(item: &Session, tick: usize) -> Vec<String> {
-        session_texts(item, tick)
+        session_texts(item, tick, None)
     }
 
     fn row(item: &Session, tick: usize) -> Vec<Cell<'static>> {
-        let texts = session_texts(item, tick);
+        let texts = session_texts(item, tick, None);
         let (_, status_style) = format::status_cell(item.status, tick);
 
         vec![
@@ -437,5 +468,129 @@ impl TableView for SessionsTable {
 
     fn empty_message() -> &'static str {
         "No sessions. Press A to cycle filter, or c to start a new session."
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::entities::{SessionStatus, Subagent};
+
+    fn make_subagent(status: SessionStatus) -> Subagent {
+        Subagent {
+            status,
+            ..Default::default()
+        }
+    }
+
+    // ── agents_summary_refs tests ────────────────────────────────────
+
+    #[test]
+    fn agents_summary_empty() {
+        let subs: Vec<&Subagent> = vec![];
+        assert_eq!(agents_summary_refs(&subs), "—");
+    }
+
+    #[test]
+    fn agents_summary_all_idle() {
+        let s1 = make_subagent(SessionStatus::Stashed);
+        let s2 = make_subagent(SessionStatus::Stashed);
+        let s3 = make_subagent(SessionStatus::Stashed);
+        let subs: Vec<&Subagent> = vec![&s1, &s2, &s3];
+        assert_eq!(agents_summary_refs(&subs), "3");
+    }
+
+    #[test]
+    fn agents_summary_single_prompting() {
+        let s1 = make_subagent(SessionStatus::Prompting);
+        let subs: Vec<&Subagent> = vec![&s1];
+        assert_eq!(agents_summary_refs(&subs), "1/1 (1!)");
+    }
+
+    #[test]
+    fn agents_summary_running_only() {
+        let s1 = make_subagent(SessionStatus::Running);
+        let s2 = make_subagent(SessionStatus::Stashed);
+        let s3 = make_subagent(SessionStatus::Stashed);
+        let subs: Vec<&Subagent> = vec![&s1, &s2, &s3];
+        assert_eq!(agents_summary_refs(&subs), "1/3 (1●)");
+    }
+
+    #[test]
+    fn agents_summary_mixed_active() {
+        let s1 = make_subagent(SessionStatus::Prompting);
+        let s2 = make_subagent(SessionStatus::Thinking);
+        let s3 = make_subagent(SessionStatus::Stashed);
+        let s4 = make_subagent(SessionStatus::Stashed);
+        let s5 = make_subagent(SessionStatus::Stashed);
+        let subs: Vec<&Subagent> = vec![&s1, &s2, &s3, &s4, &s5];
+        assert_eq!(agents_summary_refs(&subs), "2/5 (1! 1◎)");
+    }
+
+    #[test]
+    fn agents_summary_all_active_types() {
+        let s1 = make_subagent(SessionStatus::Prompting);
+        let s2 = make_subagent(SessionStatus::Thinking);
+        let s3 = make_subagent(SessionStatus::Running);
+        let subs: Vec<&Subagent> = vec![&s1, &s2, &s3];
+        assert_eq!(agents_summary_refs(&subs), "3/3 (1! 1◎ 1●)");
+    }
+
+    // ── measurement agreement test ───────────────────────────────────
+
+    #[test]
+    fn measurement_matches_rendering() {
+        let session = Session {
+            id: "test-session".to_string(),
+            subagent_count: 3,
+            ..Default::default()
+        };
+
+        let s1 = make_subagent(SessionStatus::Thinking);
+        let s2 = make_subagent(SessionStatus::Running);
+        let s3 = make_subagent(SessionStatus::Stashed);
+
+        let mut store = DataStore::default();
+        store
+            .subagents_by_session
+            .insert("test-session".to_string(), vec![s1, s2, s3]);
+
+        let agents_text = compute_agents_text(&session, &store);
+        let texts = session_texts(&session, 0, Some(&agents_text));
+
+        // Index 4 is the AGENTS column
+        assert_eq!(texts[4], agents_text);
+        // The actual text should be the full summary, not just the count
+        assert_eq!(texts[4], "2/3 (1◎ 1●)");
+    }
+
+    #[test]
+    fn measurement_fallback_without_override() {
+        let session = Session {
+            subagent_count: 5,
+            ..Default::default()
+        };
+
+        let texts = session_texts(&session, 0, None);
+        // Without override, falls back to simple count
+        assert_eq!(texts[4], "5");
+    }
+
+    #[test]
+    fn compute_agents_text_no_subagents() {
+        let session = Session::default();
+        let store = DataStore::default();
+        assert_eq!(compute_agents_text(&session, &store), "—");
+    }
+
+    #[test]
+    fn compute_agents_text_with_count_no_store_data() {
+        let session = Session {
+            subagent_count: 7,
+            ..Default::default()
+        };
+        let store = DataStore::default();
+        // No subagents in store → falls back to count
+        assert_eq!(compute_agents_text(&session, &store), "7");
     }
 }
