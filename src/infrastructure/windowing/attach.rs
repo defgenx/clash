@@ -97,22 +97,21 @@ fn draw_status_screen(cols: u16, rows: u16, message: &str, tick: usize) {
     write_stdout(buf.as_bytes());
 }
 
-/// Buffer daemon history bytes while showing a loading spinner.
+/// Stream daemon history directly to stdout while showing a loading spinner.
 ///
-/// Used by the standalone attach client (`clash attach <id>`) which doesn't
-/// have a TUI to show a busy overlay. The TUI path uses its own buffering
-/// loop in `App::buffer_attach_history()` instead.
-pub async fn buffer_history(
+/// Output is written to the terminal as it arrives — nothing is kept in
+/// memory. The spinner screen is shown until output settles, then cleared
+/// so the replayed session is visible.
+async fn stream_history(
     name: &str,
     daemon_rx: &mut Option<mpsc::UnboundedReceiver<protocol::Event>>,
-) -> Result<Vec<u8>, AttachResult> {
+) -> Result<(), AttachResult> {
     let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
 
     const IDLE_MS: u64 = 80;
-    const DEADLINE_MS: u64 = 1500;
+    const DEADLINE_MS: u64 = 4000;
     const TICK_MS: u64 = 50;
 
-    let mut history: Vec<u8> = Vec::new();
     let mut tick = 0usize;
     let mut got_output = false;
     let mut last_output = tokio::time::Instant::now();
@@ -134,7 +133,10 @@ pub async fn buffer_history(
                 match ev {
                     protocol::Event::Output { data, .. } => {
                         if let Ok(bytes) = protocol::decode_data(&data) {
-                            history.extend_from_slice(&bytes);
+                            // Stream directly to stdout — no memory accumulation.
+                            // Hidden behind the spinner screen; the terminal builds
+                            // its scrollback buffer from this data.
+                            write_stdout(&bytes);
                         }
                         got_output = true;
                         last_output = tokio::time::Instant::now();
@@ -156,7 +158,7 @@ pub async fn buffer_history(
         }
     }
 
-    Ok(history)
+    Ok(())
 }
 
 /// Run the I/O passthrough loop between stdin/stdout and a daemon PTY session.
@@ -185,17 +187,12 @@ pub async fn attach_loop(
     set_title(&format!("clash │ {name}"));
 
     // ── Loading phase ───────────────────────────────────────────
-    // Show a spinner while streaming daemon history directly to stdout.
-    // No in-memory buffering — output goes straight to the terminal so
-    // the user sees Claude Code appearing progressively.
-    let raw_history = match buffer_history(name, daemon_rx).await {
-        Ok(h) => h,
-        Err(result) => return result,
-    };
-    write_stdout(b"\x1b[2J\x1b[H"); // clear loading screen
-    write_stdout(b"\x1b[?25l"); // hide cursor during replay
-    write_stdout(&raw_history); // full history → terminal scrollback
-    write_stdout(b"\x1b[?25h"); // show cursor
+    // Stream daemon history directly to stdout (zero memory overhead).
+    // The spinner screen is shown on top; once output settles the
+    // terminal already has the full session in its scrollback buffer.
+    if let Err(result) = stream_history(name, daemon_rx).await {
+        return result;
+    }
 
     // SIGWINCH for terminal resize detection
     let mut sigwinch =

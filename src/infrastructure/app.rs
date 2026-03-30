@@ -1811,9 +1811,8 @@ impl App {
             }
         }
         // Clear spinner after all effects have executed.
-        // Exceptions: during graceful shutdown the spinner must persist until
-        // quit, and during attach the spinner must persist until
-        // buffer_attach_history completes (so the busy overlay stays visible).
+        // Exceptions: during graceful shutdown the spinner persists until
+        // quit, and during attach it persists until the TUI is torn down.
         if self.state.shutting_down.is_none() && self.state.input_mode != InputMode::Attached {
             if self.state.pending_toast.is_some() {
                 // Keep spinner alive briefly (~500ms) so the busy overlay is
