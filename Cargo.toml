@@ -1,6 +1,6 @@
 [package]
 name = "clash"
-version = "1.28.2"
+version = "1.28.3"
 edition = "2021"
 
 [dependencies]
