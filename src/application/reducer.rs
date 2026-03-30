@@ -218,20 +218,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             // means the user wants it running. Write the status file so the
             // refresh pipeline's hook_says_idle check doesn't block the
             // daemon from updating to Running.
-            let was_stashed = state
-                .store
-                .sessions
-                .iter_mut()
-                .find(|s| s.id == session_id)
-                .is_some_and(|session| {
-                    if session.status == crate::domain::entities::SessionStatus::Stashed {
-                        session.status = crate::domain::entities::SessionStatus::Starting;
-                        session.is_running = true;
-                        true
-                    } else {
-                        false
-                    }
-                });
+            let was_stashed = mark_session_starting(state, &session_id);
 
             // Attach via daemon — leaves alternate screen for direct passthrough
             state.input_mode = InputMode::Attached;
@@ -403,14 +390,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                         && !s.is_running =>
                 {
                     // Unstash: restart in the background (don't attach)
-                    // Update in-memory state immediately so the UI reflects the change
-                    // (mirrors stash path which also updates immediately)
-                    if let Some(session) =
-                        state.store.sessions.iter_mut().find(|x| x.id == session_id)
-                    {
-                        session.status = crate::domain::entities::SessionStatus::Starting;
-                        session.is_running = true;
-                    }
+                    mark_session_starting(state, &session_id);
                     state.spinner = Some("Starting session...".to_string());
                     state.pending_toast = Some("Session starting...".to_string());
                     vec![
@@ -513,12 +493,8 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 ]
             } else if !idle.is_empty() {
                 // Unstash all idle sessions
-                // Update in-memory state immediately so the UI reflects the change
                 for id in &idle {
-                    if let Some(session) = state.store.sessions.iter_mut().find(|x| x.id == *id) {
-                        session.status = crate::domain::entities::SessionStatus::Starting;
-                        session.is_running = true;
-                    }
+                    mark_session_starting(state, id);
                 }
                 let mut effects = Vec::new();
                 for id in &idle {
@@ -1429,6 +1405,20 @@ fn load_effects_for_view(state: &mut AppState, view: ViewKind) -> Vec<Effect> {
         }
         _ => vec![],
     }
+}
+
+/// Mark a session as Starting in memory if it was Stashed. Returns true if
+/// the session was stashed (and is now Starting). The caller should also emit
+/// `Effect::MarkSessionStarting` to write the status file.
+fn mark_session_starting(state: &mut AppState, session_id: &str) -> bool {
+    if let Some(session) = state.store.sessions.iter_mut().find(|s| s.id == session_id) {
+        if session.status == crate::domain::entities::SessionStatus::Stashed {
+            session.status = crate::domain::entities::SessionStatus::Starting;
+            session.is_running = true;
+            return true;
+        }
+    }
+    false
 }
 
 /// Spinner message for the shutdown phase.

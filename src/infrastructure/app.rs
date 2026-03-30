@@ -441,6 +441,7 @@ impl App {
         // start. The TUI stays visible with the busy overlay until output
         // arrives and settles (IDLE_MS), so this only fires as a fallback.
         const DEADLINE_MS: u64 = 30_000;
+        const MAX_HISTORY_BYTES: usize = 50_000_000; // 50 MB cap
 
         let mut daemon_rx = events.take_daemon_rx();
         let mut history: Vec<u8> = Vec::new();
@@ -467,6 +468,9 @@ impl App {
                             }
                             got_output = true;
                             last_output = tokio::time::Instant::now();
+                            if history.len() >= MAX_HISTORY_BYTES {
+                                break;
+                            }
                         }
                         protocol::Event::Exited { .. } => {
                             session_exited = true;
@@ -495,10 +499,12 @@ impl App {
                         }
                         _ => {} // Ignore keys during loading
                     }
-                    // Redraw TUI with busy overlay on every event
-                    let state = &self.state;
-                    let vs = &mut self.sessions_visual_state;
-                    let _ = terminal.draw(|f| renderer::draw(state, vs, f));
+                    // Throttle redraws to match main loop animation rate
+                    if self.state.tick.is_multiple_of(12) {
+                        let state = &self.state;
+                        let vs = &mut self.sessions_visual_state;
+                        let _ = terminal.draw(|f| renderer::draw(state, vs, f));
+                    }
                 }
             }
         }
