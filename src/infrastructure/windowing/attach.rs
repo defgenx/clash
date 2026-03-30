@@ -63,7 +63,7 @@ fn set_title(title: &str) {
 
 /// Draw a dimmed overlay with a shimmer spinner message in the bottom-right
 /// corner, matching the TUI busy overlay style.
-fn draw_status_screen(cols: u16, rows: u16, message: &str, tick: usize) {
+pub fn draw_status_screen(cols: u16, rows: u16, message: &str, tick: usize) {
     // Set BUSY_BG once, then fill screen with spaces (terminal retains BG color)
     let mut buf = String::with_capacity(cols as usize * rows as usize + 256);
     buf.push_str(BUSY_BG);

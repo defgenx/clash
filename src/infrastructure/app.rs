@@ -335,13 +335,30 @@ impl App {
             drop(events);
 
             if let Some(ref session_id) = attach_request {
-                // Leave TUI — switch to main screen for Claude Code
+                // Leave TUI — switch to main screen for Claude Code.
+                // Draw loading spinner immediately to prevent a black flash
+                // between leaving the alternate screen and attach_loop starting.
+                let name = self
+                    .state
+                    .store
+                    .find_session(session_id)
+                    .and_then(|s| s.name.clone())
+                    .unwrap_or_else(|| {
+                        crate::adapters::format::short_id(session_id, 8).to_string()
+                    });
+                let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
                 crossterm::execute!(
                     std::io::stdout(),
                     crossterm::terminal::LeaveAlternateScreen,
                     crossterm::event::DisableMouseCapture
                 )
                 .ok();
+                crate::infrastructure::windowing::attach::draw_status_screen(
+                    cols,
+                    rows,
+                    &format!("Loading {name}…"),
+                    0,
+                );
 
                 // Run the attached session — pure sync loop on fd 0.
                 // No crossterm, no EventStream, no race. Sole reader on stdin.
