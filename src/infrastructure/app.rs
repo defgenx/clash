@@ -437,7 +437,10 @@ impl App {
         use crate::infrastructure::daemon::protocol;
 
         const IDLE_MS: u64 = 80;
-        const DEADLINE_MS: u64 = 1500;
+        // Safety timeout — prevents hanging forever if the session fails to
+        // start. The TUI stays visible with the busy overlay until output
+        // arrives and settles (IDLE_MS), so this only fires as a fallback.
+        const DEADLINE_MS: u64 = 30_000;
 
         let mut daemon_rx = events.take_daemon_rx();
         let mut history: Vec<u8> = Vec::new();
@@ -481,6 +484,8 @@ impl App {
 
                             let now = tokio::time::Instant::now();
                             let idle = now.duration_since(last_output).as_millis() as u64 >= IDLE_MS;
+                            // Only transition once output has arrived and settled.
+                            // The TUI stays visible until then — no black screen gap.
                             if (got_output && idle) || now >= deadline {
                                 break;
                             }
