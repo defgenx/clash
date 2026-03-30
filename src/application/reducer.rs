@@ -214,6 +214,15 @@ fn reduce_task(state: &mut AppState, action: TaskAction) -> Vec<Effect> {
 fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
     match action {
         AgentAction::Attach { session_id } => {
+            // Auto-unstash if the session is stashed — attaching implicitly
+            // means the user wants it running.
+            if let Some(session) = state.store.sessions.iter_mut().find(|s| s.id == session_id) {
+                if session.status == crate::domain::entities::SessionStatus::Stashed {
+                    session.status = crate::domain::entities::SessionStatus::Starting;
+                    session.is_running = true;
+                }
+            }
+
             // Attach via daemon — leaves alternate screen for direct passthrough
             state.input_mode = InputMode::Attached;
             state.attached_session = Some(session_id.clone());

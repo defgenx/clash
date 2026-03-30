@@ -97,6 +97,68 @@ fn draw_status_screen(cols: u16, rows: u16, message: &str, tick: usize) {
     write_stdout(buf.as_bytes());
 }
 
+/// Buffer daemon history bytes while showing a loading spinner.
+///
+/// Used by the standalone attach client (`clash attach <id>`) which doesn't
+/// have a TUI to show a busy overlay. The TUI path uses its own buffering
+/// loop in `App::buffer_attach_history()` instead.
+pub async fn buffer_history(
+    name: &str,
+    daemon_rx: &mut Option<mpsc::UnboundedReceiver<protocol::Event>>,
+) -> Result<Vec<u8>, AttachResult> {
+    let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
+
+    const IDLE_MS: u64 = 80;
+    const DEADLINE_MS: u64 = 1500;
+    const TICK_MS: u64 = 50;
+
+    let mut history: Vec<u8> = Vec::new();
+    let mut tick = 0usize;
+    let mut got_output = false;
+    let mut last_output = tokio::time::Instant::now();
+    let deadline = last_output + std::time::Duration::from_millis(DEADLINE_MS);
+
+    let loading_msg = format!("Loading {name}…");
+    draw_status_screen(cols, rows, &loading_msg, tick);
+
+    loop {
+        tokio::select! {
+            biased;
+
+            Some(ev) = async {
+                match daemon_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match ev {
+                    protocol::Event::Output { data, .. } => {
+                        if let Ok(bytes) = protocol::decode_data(&data) {
+                            history.extend_from_slice(&bytes);
+                        }
+                        got_output = true;
+                        last_output = tokio::time::Instant::now();
+                    }
+                    protocol::Event::Exited { .. } => return Err(AttachResult::SessionExited),
+                    _ => {}
+                }
+            }
+
+            _ = tokio::time::sleep(std::time::Duration::from_millis(TICK_MS)) => {
+                let now = tokio::time::Instant::now();
+                let idle = now.duration_since(last_output).as_millis() as u64 >= IDLE_MS;
+                if (got_output && idle) || now >= deadline {
+                    break;
+                }
+                tick += 1;
+                draw_status_screen(cols, rows, &loading_msg, tick);
+            }
+        }
+    }
+
+    Ok(history)
+}
+
 /// Run the I/O passthrough loop between stdin/stdout and a daemon PTY session.
 ///
 /// Reads input from a freshly opened `/dev/tty` fd to avoid competing with
@@ -106,6 +168,9 @@ fn draw_status_screen(cols: u16, rows: u16, message: &str, tick: usize) {
 /// Session info is shown in the terminal title bar instead.
 ///
 /// - `name` is the session display name (shown in title bar and loading screen).
+/// - `pre_history` — if provided, skips the loading phase and replays this
+///   history immediately. Used by the TUI which buffers history while showing
+///   its own busy overlay.
 /// - Returns an `AttachResult` indicating why the loop ended.
 /// - The caller is responsible for calling `daemon.detach()` afterwards.
 pub async fn attach_loop(
@@ -113,6 +178,7 @@ pub async fn attach_loop(
     session_id: &str,
     name: &str,
     daemon_rx: &mut Option<mpsc::UnboundedReceiver<protocol::Event>>,
+    pre_history: Option<Vec<u8>>,
 ) -> AttachResult {
     let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
 
@@ -123,60 +189,14 @@ pub async fn attach_loop(
     set_title(&format!("clash │ {name}"));
 
     // ── Loading phase ───────────────────────────────────────────
-    // Buffer raw history bytes from the daemon while showing a spinner.
-    // Once output settles (200ms idle) or 4s elapses, write the raw
-    // bytes directly to stdout so the terminal emulator builds its own
-    // scrollback buffer — scrolling up shows full session history.
-    let raw_history = {
-        const IDLE_MS: u64 = 80;
-        const DEADLINE_MS: u64 = 1500;
-        const TICK_MS: u64 = 50;
-
-        let mut history: Vec<u8> = Vec::new();
-        let mut tick = 0usize;
-        let mut got_output = false;
-        let mut last_output = tokio::time::Instant::now();
-        let deadline = last_output + std::time::Duration::from_millis(DEADLINE_MS);
-
-        let loading_msg = format!("Loading {name}…");
-        draw_status_screen(cols, rows, &loading_msg, tick);
-
-        loop {
-            tokio::select! {
-                biased;
-
-                Some(ev) = async {
-                    match daemon_rx.as_mut() {
-                        Some(rx) => rx.recv().await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    match ev {
-                        protocol::Event::Output { data, .. } => {
-                            if let Ok(bytes) = protocol::decode_data(&data) {
-                                history.extend_from_slice(&bytes);
-                            }
-                            got_output = true;
-                            last_output = tokio::time::Instant::now();
-                        }
-                        protocol::Event::Exited { .. } => return AttachResult::SessionExited,
-                        _ => {}
-                    }
-                }
-
-                _ = tokio::time::sleep(std::time::Duration::from_millis(TICK_MS)) => {
-                    let now = tokio::time::Instant::now();
-                    let idle = now.duration_since(last_output).as_millis() as u64 >= IDLE_MS;
-                    if (got_output && idle) || now >= deadline {
-                        break;
-                    }
-                    tick += 1;
-                    draw_status_screen(cols, rows, &loading_msg, tick);
-                }
-            }
-        }
-
-        history
+    // If pre-buffered history is provided (TUI path), skip loading.
+    // Otherwise buffer history here with a spinner (standalone client path).
+    let raw_history = match pre_history {
+        Some(h) => h,
+        None => match buffer_history(name, daemon_rx).await {
+            Ok(h) => h,
+            Err(result) => return result,
+        },
     };
 
     // Replay raw history directly through the terminal emulator so its
@@ -333,7 +353,7 @@ pub async fn run_attach_client(session_id: String) -> eyre::Result<()> {
         .map_err(|e| eyre::eyre!("tcsetattr failed: {}", e))?;
 
     let name = short_id(&session_id, 8);
-    let _result = attach_loop(&mut daemon, &session_id, name, &mut daemon_rx).await;
+    let _result = attach_loop(&mut daemon, &session_id, name, &mut daemon_rx, None).await;
 
     // Restore terminal
     nix::sys::termios::tcsetattr(&tty, nix::sys::termios::SetArg::TCSANOW, &orig_termios).ok();
