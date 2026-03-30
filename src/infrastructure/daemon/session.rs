@@ -182,9 +182,16 @@ impl PtySession {
                     parser.process(&data);
                 }
 
-                // Append to history buffer (capped)
+                // Append to history buffer (capped).
+                // Detect screen-clear escape sequences — if present, truncate
+                // so reattach only replays post-clear content (fixes /clear).
                 if let Ok(mut h) = history2.lock() {
-                    h.extend_from_slice(&data);
+                    if let Some(clear_pos) = find_last_screen_clear(&data) {
+                        h.clear();
+                        h.extend_from_slice(&data[clear_pos..]);
+                    } else {
+                        h.extend_from_slice(&data);
+                    }
                     if h.len() > MAX_HISTORY_BYTES {
                         let excess = h.len() - MAX_HISTORY_BYTES;
                         h.drain(..excess);
@@ -388,6 +395,23 @@ impl Drop for PtySession {
         self.alive.store(false, Ordering::SeqCst);
         // _master_owned (OwnedFd) is dropped automatically, closing the master fd
     }
+}
+
+/// Find the last screen-clear escape sequence in a byte slice.
+///
+/// Detects `\x1b[2J` (ED 2 — erase entire display) and `\x1b[3J` (ED 3 —
+/// erase scrollback). Returns the offset of the `\x1b` that starts the
+/// last matching sequence, so the history buffer can be truncated there.
+fn find_last_screen_clear(data: &[u8]) -> Option<usize> {
+    if data.len() < 4 {
+        return None;
+    }
+    (0..=data.len() - 4).rev().find(|&i| {
+        data[i] == 0x1b
+            && data[i + 1] == b'['
+            && (data[i + 2] == b'2' || data[i + 2] == b'3')
+            && data[i + 3] == b'J'
+    })
 }
 
 /// Analyze screen text to detect Claude Code's current state.
@@ -620,5 +644,45 @@ mod tests {
             .unwrap()
             .as_secs();
         assert_eq!(detect_claude_status(screen, now - 10), "prompting");
+    }
+
+    #[test]
+    fn test_find_last_screen_clear_ed2() {
+        // \x1b[2J = Erase entire display
+        let data = b"hello\x1b[2Jworld";
+        assert_eq!(find_last_screen_clear(data), Some(5));
+    }
+
+    #[test]
+    fn test_find_last_screen_clear_ed3() {
+        // \x1b[3J = Erase scrollback
+        let data = b"old stuff\x1b[3Jnew stuff";
+        assert_eq!(find_last_screen_clear(data), Some(9));
+    }
+
+    #[test]
+    fn test_find_last_screen_clear_multiple() {
+        // Multiple clears — returns the last one
+        let data = b"a\x1b[2Jb\x1b[2Jc";
+        assert_eq!(find_last_screen_clear(data), Some(6));
+    }
+
+    #[test]
+    fn test_find_last_screen_clear_none() {
+        let data = b"no clear sequences here";
+        assert_eq!(find_last_screen_clear(data), None);
+    }
+
+    #[test]
+    fn test_find_last_screen_clear_too_short() {
+        let data = b"\x1b[2";
+        assert_eq!(find_last_screen_clear(data), None);
+    }
+
+    #[test]
+    fn test_find_last_screen_clear_with_cursor_home() {
+        // Common pattern: cursor home + clear = \x1b[H\x1b[2J
+        let data = b"old\x1b[H\x1b[2Jnew";
+        assert_eq!(find_last_screen_clear(data), Some(6));
     }
 }
