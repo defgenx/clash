@@ -772,66 +772,30 @@ impl App {
             }
         }
 
-        let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
-
         for (id, entry) in &registry {
             if existing.contains(id) {
                 continue;
             }
 
-            // Skip restore if the session was stashed (quit marker or status file)
-            if quit_stashed.contains(id) {
+            // All sessions start stashed on launch. The user explicitly
+            // unstashes or attaches when they want a session running.
+            // Ensure the status file says "idle" so the refresh pipeline
+            // picks them up as stashed.
+            let is_stashed = quit_stashed.contains(id)
+                || statuses
+                    .get(id.as_str())
+                    .is_some_and(|(s, _)| *s == crate::domain::entities::SessionStatus::Stashed);
+            if !is_stashed {
                 tracing::info!(
-                    "Skipping restore of quit-stashed session {} ({})",
+                    "Marking session {} ({}) as stashed on startup",
                     id,
                     entry.name
                 );
-                continue;
-            }
-            if let Some((status, _)) = statuses.get(id.as_str()) {
-                if *status == crate::domain::entities::SessionStatus::Stashed {
-                    tracing::info!(
-                        "Skipping restore of stashed session {} ({})",
-                        id,
-                        entry.name
-                    );
-                    continue;
-                }
-            }
-
-            // Skip restore if the cwd no longer exists (e.g. deleted worktree)
-            if !entry.cwd.is_empty() && !std::path::Path::new(&entry.cwd).is_dir() {
-                tracing::warn!(
-                    "Skipping restore of session {} — cwd '{}' no longer exists",
+                crate::infrastructure::hooks::write_session_status(
+                    self.backend.base_dir(),
                     id,
-                    entry.cwd
+                    "idle",
                 );
-                continue;
-            }
-
-            let args = vec!["--resume".to_string(), entry.claude_session_id.clone()];
-            let cwd = if entry.cwd.is_empty() {
-                None
-            } else {
-                Some(entry.cwd.as_str())
-            };
-
-            tracing::info!("Restoring session {} ({})", id, entry.name);
-            if let Err(e) = self
-                .daemon
-                .create_session(
-                    id,
-                    &self.cli_runner.claude_bin,
-                    &args,
-                    cwd,
-                    Some(entry.name.clone()),
-                    cols,
-                    rows,
-                    HashMap::new(),
-                )
-                .await
-            {
-                tracing::warn!("Failed to restore session {}: {}", id, e);
             }
         }
     }
