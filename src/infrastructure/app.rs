@@ -641,8 +641,32 @@ impl App {
             Err(_) => std::collections::HashSet::new(),
         };
 
-        // Read stash status files so we can skip sessions that were stashed
+        // Read quit stash marker (takes + deletes) and status files.
+        // The marker is the authoritative source for quit-stashed sessions because
+        // dying Claude processes can overwrite status files with "waiting".
+        let quit_stashed: std::collections::HashSet<String> =
+            crate::infrastructure::hooks::take_quit_stashed()
+                .into_iter()
+                .collect();
         let statuses = crate::infrastructure::hooks::read_all_statuses(self.backend.base_dir());
+
+        // Re-write "idle" for quit-stashed sessions whose status was overwritten
+        // by a dying Claude hook (e.g. "waiting") so the session refresh sees them
+        // as stashed.
+        for id in &quit_stashed {
+            let needs_repair = statuses
+                .get(id.as_str())
+                .map(|(s, _)| *s != crate::domain::entities::SessionStatus::Stashed)
+                .unwrap_or(true);
+            if needs_repair {
+                tracing::info!("Repairing stash status for session {}", id);
+                crate::infrastructure::hooks::write_session_status(
+                    self.backend.base_dir(),
+                    id,
+                    "idle",
+                );
+            }
+        }
 
         let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
 
@@ -651,7 +675,15 @@ impl App {
                 continue;
             }
 
-            // Skip restore if the session was stashed (status = idle)
+            // Skip restore if the session was stashed (quit marker or status file)
+            if quit_stashed.contains(id) {
+                tracing::info!(
+                    "Skipping restore of quit-stashed session {} ({})",
+                    id,
+                    entry.name
+                );
+                continue;
+            }
             if let Some((status, _)) = statuses.get(id.as_str()) {
                 if *status == crate::domain::entities::SessionStatus::Stashed {
                     tracing::info!(
@@ -1109,6 +1141,16 @@ impl App {
                     );
                 }
                 Effect::MarkAllSessionsIdle => {
+                    let all_ids: Vec<String> = self
+                        .state
+                        .store
+                        .sessions
+                        .iter()
+                        .map(|s| s.id.clone())
+                        .collect();
+                    // Write durable marker BEFORE status files — survives the race
+                    // where dying Claude processes overwrite "idle" with "waiting".
+                    crate::infrastructure::hooks::write_quit_stashed(&all_ids);
                     for session in &self.state.store.sessions {
                         crate::infrastructure::hooks::write_session_status(
                             self.backend.base_dir(),
@@ -1129,6 +1171,14 @@ impl App {
                     cwd,
                     name,
                 } => {
+                    // Force a draw so the dark busy overlay is visible while
+                    // the daemon session is being created/connected.
+                    {
+                        let state = &self.state;
+                        let vs = &mut self.sessions_visual_state;
+                        let _ = terminal.draw(|f| renderer::draw(state, vs, f));
+                    }
+
                     // Save session name if provided (for new sessions)
                     if let Some(ref n) = name {
                         crate::infrastructure::hooks::save_session_name(

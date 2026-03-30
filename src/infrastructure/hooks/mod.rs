@@ -247,6 +247,33 @@ pub fn read_all_statuses(
     statuses
 }
 
+/// Marker file name for sessions stashed during quit.
+/// Written atomically before process termination so that startup can trust it
+/// even if dying Claude processes overwrite the status files.
+const QUIT_STASHED_FILE: &str = "quit_stashed.json";
+
+/// Write a marker file listing session IDs that were stashed during quit.
+/// This survives the race where dying Claude processes overwrite "idle" with "waiting".
+pub fn write_quit_stashed(session_ids: &[String]) {
+    let path = clash_data_dir().join(QUIT_STASHED_FILE);
+    if let Ok(json) = serde_json::to_string(session_ids) {
+        let _ = crate::infrastructure::fs::atomic::write_atomic(&path, json.as_bytes());
+    }
+}
+
+/// Read and delete the quit stash marker file. Returns session IDs that were
+/// stashed during the previous quit, or an empty vec if no marker exists.
+pub fn take_quit_stashed() -> Vec<String> {
+    let path = clash_data_dir().join(QUIT_STASHED_FILE);
+    let ids = match std::fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    // Clean up marker file
+    let _ = std::fs::remove_file(&path);
+    ids
+}
+
 /// Merge clash hook configuration into the Claude Code settings file.
 /// Preserves any existing hooks the user has configured.
 fn merge_hook_settings(settings_path: &Path, script_path: &Path) -> std::io::Result<()> {

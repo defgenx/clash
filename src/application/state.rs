@@ -331,7 +331,6 @@ impl AppState {
     pub fn needs_animation(&self) -> bool {
         use crate::domain::entities::SessionStatus;
         self.spinner.is_some()
-            || self.toast.is_some()
             || self.update_progress.is_some()
             || self.shutting_down.is_some()
             || self.store.sessions.iter().any(|s| {

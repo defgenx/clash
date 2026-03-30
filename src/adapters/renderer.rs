@@ -290,7 +290,7 @@ fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
             width: msg_width,
             ..area
         };
-        toast::render_toast(toast_msg, state.tick, frame, right_area);
+        toast::render_toast(toast_msg, frame, right_area);
     } else {
         // Show version on the right side of the footer
         let version = format!("v{}  ", env!("CARGO_PKG_VERSION"));
