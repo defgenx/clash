@@ -111,6 +111,12 @@ pub enum Effect {
     MarkSessionIdle {
         session_id: String,
     },
+    /// Mark a session as starting in the clash status file.
+    /// Clears the "idle" hook so the refresh pipeline allows daemon status
+    /// to override (otherwise `hook_says_idle` blocks the update).
+    MarkSessionStarting {
+        session_id: String,
+    },
     /// Mark all sessions as idle in their clash status files.
     MarkAllSessionsIdle,
     /// Write the quit-stash marker with pre-captured session IDs.

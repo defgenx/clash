@@ -504,6 +504,7 @@ impl App {
             self.state.input_mode = InputMode::Normal;
             self.state.attached_session = None;
             self.state.spinner = None;
+            self.state.pending_toast = None;
             None
         } else {
             Some(history)
@@ -1201,6 +1202,13 @@ impl App {
                     }
                     crate::infrastructure::hooks::registry::clear();
                 }
+                Effect::MarkSessionStarting { session_id } => {
+                    crate::infrastructure::hooks::write_session_status(
+                        self.backend.base_dir(),
+                        &session_id,
+                        "starting",
+                    );
+                }
                 Effect::MarkSessionIdle { session_id } => {
                     crate::infrastructure::hooks::write_session_status(
                         self.backend.base_dir(),
@@ -1894,8 +1902,10 @@ impl App {
             }
         }
         // Clear spinner after all effects have executed.
-        // During graceful shutdown the spinner must persist until quit.
-        if self.state.shutting_down.is_none() {
+        // Exceptions: during graceful shutdown the spinner must persist until
+        // quit, and during attach the spinner must persist until
+        // buffer_attach_history completes (so the busy overlay stays visible).
+        if self.state.shutting_down.is_none() && self.state.input_mode != InputMode::Attached {
             self.state.spinner = None;
             // Promote pending toast (e.g. stash completion message)
             if let Some(toast) = self.state.pending_toast.take() {

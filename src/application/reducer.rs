@@ -215,13 +215,23 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
     match action {
         AgentAction::Attach { session_id } => {
             // Auto-unstash if the session is stashed — attaching implicitly
-            // means the user wants it running.
-            if let Some(session) = state.store.sessions.iter_mut().find(|s| s.id == session_id) {
-                if session.status == crate::domain::entities::SessionStatus::Stashed {
-                    session.status = crate::domain::entities::SessionStatus::Starting;
-                    session.is_running = true;
-                }
-            }
+            // means the user wants it running. Write the status file so the
+            // refresh pipeline's hook_says_idle check doesn't block the
+            // daemon from updating to Running.
+            let was_stashed = state
+                .store
+                .sessions
+                .iter_mut()
+                .find(|s| s.id == session_id)
+                .is_some_and(|session| {
+                    if session.status == crate::domain::entities::SessionStatus::Stashed {
+                        session.status = crate::domain::entities::SessionStatus::Starting;
+                        session.is_running = true;
+                        true
+                    } else {
+                        false
+                    }
+                });
 
             // Attach via daemon — leaves alternate screen for direct passthrough
             state.input_mode = InputMode::Attached;
@@ -229,12 +239,19 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             state.spinner = Some("Attaching...".to_string());
 
             state.scroll_state.offset = 0;
-            vec![Effect::DaemonAttach {
+            let mut effects = vec![];
+            if was_stashed {
+                effects.push(Effect::MarkSessionStarting {
+                    session_id: session_id.clone(),
+                });
+            }
+            effects.push(Effect::DaemonAttach {
                 session_id,
                 args: vec![],
                 cwd: None,
                 name: None,
-            }]
+            });
+            effects
         }
         AgentAction::SpawnSession { cwd, name } => {
             let session_id = uuid::Uuid::now_v7().to_string();
@@ -397,6 +414,9 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                     state.spinner = Some("Starting session...".to_string());
                     state.pending_toast = Some("Session starting...".to_string());
                     vec![
+                        Effect::MarkSessionStarting {
+                            session_id: session_id.clone(),
+                        },
                         Effect::DaemonStart {
                             session_id,
                             args: vec![],
@@ -502,6 +522,9 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 }
                 let mut effects = Vec::new();
                 for id in &idle {
+                    effects.push(Effect::MarkSessionStarting {
+                        session_id: id.clone(),
+                    });
                     effects.push(Effect::DaemonStart {
                         session_id: id.clone(),
                         args: vec![],
