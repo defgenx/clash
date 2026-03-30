@@ -1140,17 +1140,10 @@ impl App {
                         "idle",
                     );
                 }
+                Effect::WriteQuitStash { session_ids } => {
+                    crate::infrastructure::hooks::write_quit_stashed(&session_ids);
+                }
                 Effect::MarkAllSessionsIdle => {
-                    let all_ids: Vec<String> = self
-                        .state
-                        .store
-                        .sessions
-                        .iter()
-                        .map(|s| s.id.clone())
-                        .collect();
-                    // Write durable marker BEFORE status files — survives the race
-                    // where dying Claude processes overwrite "idle" with "waiting".
-                    crate::infrastructure::hooks::write_quit_stashed(&all_ids);
                     for session in &self.state.store.sessions {
                         crate::infrastructure::hooks::write_session_status(
                             self.backend.base_dir(),

@@ -5,12 +5,12 @@ use ratatui::Frame;
 
 use ratatui::style::Color;
 
-const SPINNER_FRAMES: &[&str] = &["○", "◔", "◑", "◕", "●", "◕", "◑", "◔"];
+pub const SPINNER_FRAMES: &[&str] = &["○", "◔", "◑", "◕", "●", "◕", "◑", "◔"];
 /// Ticks per spinner frame. At 10ms/tick this gives ~80ms per frame.
-const TICKS_PER_FRAME: usize = 8;
+pub const TICKS_PER_FRAME: usize = 8;
 
 /// Shimmer gradient keyframes — loops back to the first color.
-const SHIMMER: &[(u8, u8, u8)] = &[
+pub const SHIMMER: &[(u8, u8, u8)] = &[
     (180, 140, 255), // soft violet
     (220, 150, 215), // pastel pink
     (140, 200, 240), // pastel sky
@@ -19,9 +19,9 @@ const SHIMMER: &[(u8, u8, u8)] = &[
 ];
 
 /// Ticks for one full gradient cycle across the text.
-const CYCLE_TICKS: usize = 120;
+pub const CYCLE_TICKS: usize = 120;
 /// Phase offset between adjacent characters (higher = tighter wave).
-const CHAR_SPREAD: usize = 6;
+pub const CHAR_SPREAD: usize = 6;
 
 /// Render a spinner with a shimmer-animated message.
 pub fn render_spinner(message: &str, tick: usize, frame: &mut Frame, area: Rect) {
@@ -47,8 +47,8 @@ pub fn render_spinner(message: &str, tick: usize, frame: &mut Frame, area: Rect)
     frame.render_widget(paragraph, area);
 }
 
-/// Interpolate the shimmer gradient at position `t` (0.0 – 1.0).
-fn shimmer_at(t: f32) -> Color {
+/// Interpolate the shimmer gradient at position `t` (0.0 – 1.0), returning raw RGB.
+pub fn shimmer_rgb_at(t: f32) -> (u8, u8, u8) {
     let n = SHIMMER.len() - 1;
     let scaled = t * n as f32;
     let idx = (scaled as usize).min(n - 1);
@@ -57,11 +57,17 @@ fn shimmer_at(t: f32) -> Color {
     let (r1, g1, b1) = SHIMMER[idx];
     let (r2, g2, b2) = SHIMMER[idx + 1];
 
-    Color::Rgb(
+    (
         lerp_u8(r1, r2, frac),
         lerp_u8(g1, g2, frac),
         lerp_u8(b1, b2, frac),
     )
+}
+
+/// Interpolate the shimmer gradient at position `t` (0.0 – 1.0).
+fn shimmer_at(t: f32) -> Color {
+    let (r, g, b) = shimmer_rgb_at(t);
+    Color::Rgb(r, g, b)
 }
 
 #[inline]

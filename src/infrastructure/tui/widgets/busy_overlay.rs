@@ -29,7 +29,7 @@ pub fn render_busy_overlay(message: &str, tick: usize, frame: &mut Frame, area: 
     let msg_width = (message.len() as u16 + 4).min(area.width);
     let msg_area = Rect {
         x: area.x + area.width.saturating_sub(msg_width + 2),
-        y: area.y + area.height.saturating_sub(2),
+        y: area.y + area.height.saturating_sub(1),
         width: msg_width,
         height: 1,
     };

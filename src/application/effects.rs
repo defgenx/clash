@@ -113,6 +113,13 @@ pub enum Effect {
     },
     /// Mark all sessions as idle in their clash status files.
     MarkAllSessionsIdle,
+    /// Write the quit-stash marker with pre-captured session IDs.
+    /// Must execute before DaemonKillAll to avoid the race where daemon
+    /// kill → SessionExited → refresh removes sessions from store before
+    /// their IDs are captured. See QuitConfirmed in reducer.rs.
+    WriteQuitStash {
+        session_ids: Vec<String>,
+    },
     /// Create a git worktree, then spawn a new daemon session inside it.
     CreateWorktreeAndAttach {
         /// For existing-session flow: the session whose project_path/git_branch to use.

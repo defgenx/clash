@@ -12,9 +12,12 @@ use crate::adapters::format::short_id;
 use crate::infrastructure::daemon::client::DaemonClient;
 use crate::infrastructure::daemon::protocol;
 
+use crate::infrastructure::tui::widgets::spinner::{
+    self as shimmer, CHAR_SPREAD, CYCLE_TICKS, SPINNER_FRAMES, TICKS_PER_FRAME,
+};
+
 // ── ANSI color constants (matching theme.rs) ────────────────────
-const ACCENT: &str = "\x1b[38;2;180;140;255m";
-const MUTED: &str = "\x1b[38;2;90;90;110m";
+const BUSY_BG: &str = "\x1b[48;2;8;8;14m";
 const RESET: &str = "\x1b[0m";
 
 /// Detect Ctrl+B in any of the three common terminal encodings:
@@ -58,30 +61,40 @@ fn set_title(title: &str) {
     write_stdout(seq.as_bytes());
 }
 
-/// Visible character count, stripping ANSI escape sequences.
-fn visible_len(s: &str) -> u16 {
-    let mut len = 0u16;
-    let mut in_escape = false;
-    for ch in s.chars() {
-        if in_escape {
-            if ch.is_ascii_alphabetic() {
-                in_escape = false;
-            }
-        } else if ch == '\x1b' {
-            in_escape = true;
-        } else {
-            len += 1;
-        }
+/// Draw a dimmed overlay with a shimmer spinner message in the bottom-right
+/// corner, matching the TUI busy overlay style.
+fn draw_status_screen(cols: u16, rows: u16, message: &str, tick: usize) {
+    // Set BUSY_BG once, then fill screen with spaces (terminal retains BG color)
+    let mut buf = String::with_capacity(cols as usize * rows as usize + 256);
+    buf.push_str(BUSY_BG);
+    buf.push_str("\x1b[H");
+    let row = " ".repeat(cols as usize);
+    for _r in 0..rows {
+        buf.push_str(&row);
     }
-    len
-}
 
-/// Draw a centered status message (spinner + text) on a cleared screen.
-fn draw_status_screen(cols: u16, rows: u16, message: &str) {
-    let mid_row = rows / 2;
-    let msg_col = (cols / 2).saturating_sub(visible_len(message) / 2);
-    let screen = format!("\x1b[2J\x1b[{mid_row};{msg_col}H{message}");
-    write_stdout(screen.as_bytes());
+    // Build shimmer spinner text
+    let spinner_char = SPINNER_FRAMES[(tick / TICKS_PER_FRAME) % SPINNER_FRAMES.len()];
+    let full_text = format!("{spinner_char} {message}");
+
+    // Position in bottom-right corner (matching busy_overlay.rs layout)
+    let msg_len = full_text.chars().count() as u16;
+    let msg_width = (msg_len + 4).min(cols);
+    let msg_x = cols.saturating_sub(msg_width + 2) + 1; // ANSI cols are 1-based
+    let msg_y = rows; // last row (1-based)
+
+    buf.push_str(&format!("\x1b[{msg_y};{msg_x}H"));
+
+    // Render each character with shimmer color
+    for (i, ch) in full_text.chars().enumerate() {
+        let phase = ((i.wrapping_mul(CHAR_SPREAD).wrapping_add(tick)) % CYCLE_TICKS) as f32
+            / CYCLE_TICKS as f32;
+        let (r, g, b) = shimmer::shimmer_rgb_at(phase);
+        buf.push_str(&format!("\x1b[1;38;2;{r};{g};{b}m{ch}"));
+    }
+    buf.push_str(RESET);
+
+    write_stdout(buf.as_bytes());
 }
 
 /// Run the I/O passthrough loop between stdin/stdout and a daemon PTY session.
@@ -115,19 +128,18 @@ pub async fn attach_loop(
     // bytes directly to stdout so the terminal emulator builds its own
     // scrollback buffer — scrolling up shows full session history.
     let raw_history = {
-        const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         const IDLE_MS: u64 = 80;
         const DEADLINE_MS: u64 = 1500;
         const TICK_MS: u64 = 50;
 
         let mut history: Vec<u8> = Vec::new();
-        let mut frame = 0usize;
+        let mut tick = 0usize;
         let mut got_output = false;
         let mut last_output = tokio::time::Instant::now();
         let deadline = last_output + std::time::Duration::from_millis(DEADLINE_MS);
 
-        let loading_msg = format!("{ACCENT}{}{MUTED} Loading {name}…{RESET}", SPINNER[0]);
-        draw_status_screen(cols, rows, &loading_msg);
+        let loading_msg = format!("Loading {name}…");
+        draw_status_screen(cols, rows, &loading_msg, tick);
 
         loop {
             tokio::select! {
@@ -158,9 +170,8 @@ pub async fn attach_loop(
                     if (got_output && idle) || now >= deadline {
                         break;
                     }
-                    frame = (frame + 1) % SPINNER.len();
-                    let msg = format!("{ACCENT}{}{MUTED} Loading {name}…{RESET}", SPINNER[frame]);
-                    draw_status_screen(cols, rows, &msg);
+                    tick += 1;
+                    draw_status_screen(cols, rows, &loading_msg, tick);
                 }
             }
         }
@@ -260,9 +271,9 @@ pub async fn attach_loop(
         }
     }
 
-    // Show detaching feedback
-    let detach_msg = format!("{ACCENT}⏎{MUTED} Detaching {name}…{RESET}");
-    draw_status_screen(cols, rows, &detach_msg);
+    // Show detaching feedback (same busy overlay style)
+    let (cols, rows) = crossterm::terminal::size().unwrap_or((cols, rows));
+    draw_status_screen(cols, rows, &format!("Detaching {name}…"), 0);
 
     // Reset terminal title
     set_title("");

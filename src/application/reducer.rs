@@ -332,7 +332,6 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             state.table_state.selected = 0;
             vec![
                 Effect::ClearSessionRegistry,
-                Effect::MarkAllSessionsIdle,
                 Effect::DaemonKillAll,
                 Effect::TerminateAllProcesses,
                 Effect::RefreshSessions,
@@ -471,7 +470,13 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                     running.len(),
                     if running.len() == 1 { "" } else { "s" }
                 ));
+                // Capture all IDs (running + already stashed) so the marker
+                // protects every session if the app crashes before status
+                // files are re-written.
+                let session_ids: Vec<String> =
+                    state.store.sessions.iter().map(|s| s.id.clone()).collect();
                 vec![
+                    Effect::WriteQuitStash { session_ids },
                     Effect::DaemonKillAll,
                     Effect::TerminateAllProcesses,
                     Effect::MarkAllSessionsIdle,
@@ -1128,10 +1133,18 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                 state.confirm_dialog = None;
                 state.input_mode = InputMode::Normal;
                 state.spinner = Some(shutdown_spinner_msg(running));
+                // ⚠️ Effect ordering matters: WriteQuitStash MUST run before
+                // DaemonKillAll. Killing daemon sessions triggers SessionExited
+                // events → refresh → sessions removed from store. Capturing IDs
+                // here (in the reducer, before any effects execute) guarantees
+                // the stash marker contains all sessions.
+                let session_ids: Vec<String> =
+                    state.store.sessions.iter().map(|s| s.id.clone()).collect();
                 vec![
+                    Effect::WriteQuitStash { session_ids },
+                    Effect::MarkAllSessionsIdle,
                     Effect::DaemonKillAll,
                     Effect::TerminateAllProcesses,
-                    Effect::MarkAllSessionsIdle,
                 ]
             }
         }
@@ -1447,6 +1460,77 @@ mod tests {
         let mut state = test_state();
         let effects = reduce(&mut state, Action::Ui(UiAction::QuitConfirmed));
         assert!(matches!(effects.first(), Some(Effect::Quit)));
+    }
+
+    #[test]
+    fn test_quit_confirmed_with_running_sessions() {
+        let mut state = test_state();
+        state.store.sessions = vec![
+            crate::domain::entities::Session {
+                id: "s1".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+            crate::domain::entities::Session {
+                id: "s2".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        ];
+        let effects = reduce(&mut state, Action::Ui(UiAction::QuitConfirmed));
+
+        // WriteQuitStash must be first with all session IDs
+        assert!(matches!(&effects[0], Effect::WriteQuitStash { .. }));
+        if let Effect::WriteQuitStash { ref session_ids } = effects[0] {
+            assert_eq!(session_ids.len(), 2);
+            assert!(session_ids.contains(&"s1".to_string()));
+            assert!(session_ids.contains(&"s2".to_string()));
+        }
+        // MarkAllSessionsIdle before DaemonKillAll
+        assert!(matches!(effects[1], Effect::MarkAllSessionsIdle));
+        assert!(matches!(effects[2], Effect::DaemonKillAll));
+        assert!(matches!(effects[3], Effect::TerminateAllProcesses));
+        assert!(state.shutting_down.is_some());
+        assert!(state.spinner.is_some());
+    }
+
+    #[test]
+    fn test_stash_all_sessions_writes_quit_stash() {
+        let mut state = test_state();
+        state.store.sessions = vec![
+            crate::domain::entities::Session {
+                id: "run1".to_string(),
+                is_running: true,
+                status: crate::domain::entities::SessionStatus::Running,
+                ..Default::default()
+            },
+            crate::domain::entities::Session {
+                id: "idle1".to_string(),
+                is_running: false,
+                status: crate::domain::entities::SessionStatus::Stashed,
+                ..Default::default()
+            },
+        ];
+        let effects = reduce(
+            &mut state,
+            Action::Agent(crate::application::actions::AgentAction::StashAllSessions),
+        );
+
+        // WriteQuitStash must be first with ALL session IDs (running + stashed)
+        assert!(matches!(&effects[0], Effect::WriteQuitStash { .. }));
+        if let Effect::WriteQuitStash { ref session_ids } = effects[0] {
+            assert_eq!(session_ids.len(), 2);
+            assert!(session_ids.contains(&"run1".to_string()));
+            assert!(session_ids.contains(&"idle1".to_string()));
+        }
+        assert!(effects.iter().any(|e| matches!(e, Effect::DaemonKillAll)));
+        assert!(effects
+            .iter()
+            .any(|e| matches!(e, Effect::TerminateAllProcesses)));
+        assert!(effects
+            .iter()
+            .any(|e| matches!(e, Effect::MarkAllSessionsIdle)));
+        assert!(effects.iter().any(|e| matches!(e, Effect::RefreshSessions)));
     }
 
     #[test]
