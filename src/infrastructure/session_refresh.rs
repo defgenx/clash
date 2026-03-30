@@ -141,10 +141,15 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
         input.previous_sessions,
     );
 
-    // Phase 5: Resolve names from daemon infos and saved names
+    // Phase 5: Add registry-only sessions (no disk file, no daemon) as stashed.
+    // These are sessions that were registered but Claude hadn't written JSONL
+    // yet (e.g., immediately quit after creation), or whose files were cleaned up.
+    add_registry_only_sessions(&mut sessions, &input.registry, &input.hook_statuses);
+
+    // Phase 6: Resolve names from daemon infos and saved names
     resolve_names(&mut sessions, &input.daemon_infos, &input.saved_names);
 
-    // Phase 6: Sort by section (Active/Done/Fail) then name
+    // Phase 7: Sort by section (Active/Done/Fail) then name
     sort_sessions_by_section(&mut sessions);
 
     sessions
@@ -435,7 +440,46 @@ fn enrich_from_disk(session: &mut Session, disk: &Session) {
     }
 }
 
-// ── Phase 5: Name resolution ─────────────────────────────────────
+// ── Phase 5: Registry-only sessions ──────────────────────────────
+
+/// Add sessions that exist in the registry but have no disk or daemon
+/// presence. These are stashed sessions whose JSONL files don't exist
+/// (e.g., session was created and quit before Claude wrote anything).
+fn add_registry_only_sessions(
+    sessions: &mut Vec<Session>,
+    registry: &HashMap<String, ClashSession>,
+    hook_statuses: &HashMap<String, (SessionStatus, Option<std::time::SystemTime>)>,
+) {
+    let existing_ids: std::collections::HashSet<String> =
+        sessions.iter().map(|s| s.id.clone()).collect();
+
+    for (id, entry) in registry {
+        if existing_ids.contains(id.as_str()) {
+            continue;
+        }
+
+        let status = hook_statuses
+            .get(id.as_str())
+            .map(|(s, _)| *s)
+            .unwrap_or(SessionStatus::Stashed);
+        let is_running = !matches!(
+            status,
+            SessionStatus::Stashed | SessionStatus::Done | SessionStatus::Errored
+        );
+
+        sessions.push(Session {
+            id: id.clone(),
+            name: Some(entry.name.clone()),
+            cwd: Some(entry.cwd.clone()),
+            source_branch: entry.source_branch.clone(),
+            status,
+            is_running,
+            ..Default::default()
+        });
+    }
+}
+
+// ── Phase 6: Name resolution ─────────────────────────────────────
 
 /// Resolve session names from daemon infos and saved disk names.
 /// Single pass — no second daemon IPC call.
