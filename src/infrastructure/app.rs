@@ -624,6 +624,8 @@ impl App {
 
     /// Restore registered sessions by creating daemon PTY sessions.
     /// Called once at startup — resumes Claude conversations from where they left off.
+    /// Sessions that were stashed (status file = "idle") are skipped so they remain
+    /// stashed across restarts instead of being automatically restarted.
     async fn restore_sessions(&mut self) {
         if !self.daemon.is_connected() {
             return;
@@ -639,11 +641,26 @@ impl App {
             Err(_) => std::collections::HashSet::new(),
         };
 
+        // Read stash status files so we can skip sessions that were stashed
+        let statuses = crate::infrastructure::hooks::read_all_statuses(self.backend.base_dir());
+
         let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
 
         for (id, entry) in &registry {
             if existing.contains(id) {
                 continue;
+            }
+
+            // Skip restore if the session was stashed (status = idle)
+            if let Some((status, _)) = statuses.get(id.as_str()) {
+                if *status == crate::domain::entities::SessionStatus::Stashed {
+                    tracing::info!(
+                        "Skipping restore of stashed session {} ({})",
+                        id,
+                        entry.name
+                    );
+                    continue;
+                }
             }
 
             // Skip restore if the cwd no longer exists (e.g. deleted worktree)
@@ -1769,6 +1786,10 @@ impl App {
         // During graceful shutdown the spinner must persist until quit.
         if self.state.shutting_down.is_none() {
             self.state.spinner = None;
+            // Promote pending toast (e.g. stash completion message)
+            if let Some(toast) = self.state.pending_toast.take() {
+                self.state.toast = Some(toast);
+            }
         }
         false
     }

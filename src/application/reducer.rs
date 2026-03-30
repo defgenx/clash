@@ -386,7 +386,8 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                         session.status = crate::domain::entities::SessionStatus::Starting;
                         session.is_running = true;
                     }
-                    state.toast = Some("Session starting...".to_string());
+                    state.spinner = Some("Starting session...".to_string());
+                    state.pending_toast = Some("Session starting...".to_string());
                     vec![
                         Effect::DaemonStart {
                             session_id,
@@ -412,7 +413,8 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                     if count > 0 && state.table_state.selected >= count {
                         state.table_state.selected = count - 1;
                     }
-                    state.toast = Some("Session stashed".to_string());
+                    state.spinner = Some("Stashing session...".to_string());
+                    state.pending_toast = Some("Session stashed".to_string());
                     vec![
                         Effect::DaemonKill {
                             session_id: session_id.clone(),
@@ -459,7 +461,12 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 if count > 0 && state.table_state.selected >= count {
                     state.table_state.selected = count - 1;
                 }
-                state.toast = Some(format!(
+                state.spinner = Some(format!(
+                    "Stashing {} session{}...",
+                    running.len(),
+                    if running.len() == 1 { "" } else { "s" }
+                ));
+                state.pending_toast = Some(format!(
                     "{} session{} stashed",
                     running.len(),
                     if running.len() == 1 { "" } else { "s" }
@@ -489,7 +496,12 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                     });
                 }
                 effects.push(Effect::RefreshSessions);
-                state.toast = Some(format!(
+                state.spinner = Some(format!(
+                    "Starting {} session{}...",
+                    idle.len(),
+                    if idle.len() == 1 { "" } else { "s" }
+                ));
+                state.pending_toast = Some(format!(
                     "{} session{} starting...",
                     idle.len(),
                     if idle.len() == 1 { "" } else { "s" }

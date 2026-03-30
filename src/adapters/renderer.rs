@@ -283,12 +283,14 @@ fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
     frame.render_widget(left_paragraph, area);
 
     if let Some(ref toast_msg) = state.toast {
+        // Size the toast area to the message length (+ padding) and right-align it
+        let msg_width = (toast_msg.len() as u16 + 2).min(area.width);
         let right_area = ratatui::layout::Rect {
-            x: area.x + area.width.saturating_sub(40),
-            width: 40.min(area.width),
+            x: area.x + area.width.saturating_sub(msg_width),
+            width: msg_width,
             ..area
         };
-        toast::render_toast(toast_msg, frame, right_area);
+        toast::render_toast(toast_msg, state.tick, frame, right_area);
     } else {
         // Show version on the right side of the footer
         let version = format!("v{}  ", env!("CARGO_PKG_VERSION"));

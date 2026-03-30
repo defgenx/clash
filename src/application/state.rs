@@ -272,6 +272,8 @@ pub struct AppState {
     pub debug_mode: bool,
     /// Self-update progress (shown as an overlay when active).
     pub update_progress: Option<UpdatePhase>,
+    /// Toast to show after the current spinner clears.
+    pub pending_toast: Option<String>,
     /// Graceful shutdown: Some(start_tick) when stashing sessions before quit.
     pub shutting_down: Option<usize>,
 }
@@ -315,6 +317,7 @@ impl AppState {
             diff: DiffState::default(),
             debug_mode: false,
             update_progress: None,
+            pending_toast: None,
             shutting_down: None,
         }
     }
@@ -328,6 +331,7 @@ impl AppState {
     pub fn needs_animation(&self) -> bool {
         use crate::domain::entities::SessionStatus;
         self.spinner.is_some()
+            || self.toast.is_some()
             || self.update_progress.is_some()
             || self.shutting_down.is_some()
             || self.store.sessions.iter().any(|s| {

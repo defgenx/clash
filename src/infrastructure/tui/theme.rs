@@ -32,7 +32,7 @@ pub const COUNT_COLOR: Color = Color::Rgb(170, 158, 205); // soft violet — cou
 pub const DESCRIPTION_COLOR: Color = Color::Rgb(160, 155, 180); // silver lavender — descriptions
 
 // ── Status colors ──────────────────────────────────────────────
-pub const STATUS_RUNNING: Color = Color::Rgb(130, 195, 150); // soft sage
+pub const STATUS_RUNNING: Color = Color::Rgb(100, 170, 235); // clear sky blue
 pub const STATUS_THINKING: Color = Color::Rgb(145, 175, 210); // soft steel blue
 pub const STATUS_WAITING: Color = Color::Rgb(210, 190, 120); // muted gold
 pub const STATUS_STARTING: Color = Color::Rgb(165, 145, 215); // soft lavender
@@ -119,10 +119,6 @@ pub fn value_style() -> Style {
 
 pub fn muted_style() -> Style {
     Style::default().fg(MUTED)
-}
-
-pub fn toast_style() -> Style {
-    Style::default().fg(TEXT).bg(Color::Rgb(40, 35, 55))
 }
 
 pub fn help_key_style() -> Style {
