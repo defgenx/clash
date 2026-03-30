@@ -63,7 +63,7 @@ fn set_title(title: &str) {
 
 /// Draw a dimmed overlay with a shimmer spinner message in the bottom-right
 /// corner, matching the TUI busy overlay style.
-pub fn draw_status_screen(cols: u16, rows: u16, message: &str, tick: usize) {
+fn draw_status_screen(cols: u16, rows: u16, message: &str, tick: usize) {
     // Set BUSY_BG once, then fill screen with spaces (terminal retains BG color)
     let mut buf = String::with_capacity(cols as usize * rows as usize + 256);
     buf.push_str(BUSY_BG);
@@ -168,9 +168,6 @@ pub async fn buffer_history(
 /// Session info is shown in the terminal title bar instead.
 ///
 /// - `name` is the session display name (shown in title bar and loading screen).
-/// - `pre_history` — if provided, skips the loading phase and replays this
-///   history immediately. Used by the TUI which buffers history while showing
-///   its own busy overlay.
 /// - Returns an `AttachResult` indicating why the loop ended.
 /// - The caller is responsible for calling `daemon.detach()` afterwards.
 pub async fn attach_loop(
@@ -178,7 +175,6 @@ pub async fn attach_loop(
     session_id: &str,
     name: &str,
     daemon_rx: &mut Option<mpsc::UnboundedReceiver<protocol::Event>>,
-    pre_history: Option<Vec<u8>>,
 ) -> AttachResult {
     let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
 
@@ -189,19 +185,17 @@ pub async fn attach_loop(
     set_title(&format!("clash │ {name}"));
 
     // ── Loading phase ───────────────────────────────────────────
-    // If pre-buffered history is provided, the caller already replayed it
-    // to stdout — skip loading and replay entirely. Otherwise buffer here
-    // with a spinner (standalone client path), then replay.
-    if pre_history.is_none() {
-        let raw_history = match buffer_history(name, daemon_rx).await {
-            Ok(h) => h,
-            Err(result) => return result,
-        };
-        write_stdout(b"\x1b[2J\x1b[H"); // clear loading screen
-        write_stdout(b"\x1b[?25l"); // hide cursor during replay
-        write_stdout(&raw_history); // full history → terminal scrollback
-        write_stdout(b"\x1b[?25h"); // show cursor
-    }
+    // Show a spinner while streaming daemon history directly to stdout.
+    // No in-memory buffering — output goes straight to the terminal so
+    // the user sees Claude Code appearing progressively.
+    let raw_history = match buffer_history(name, daemon_rx).await {
+        Ok(h) => h,
+        Err(result) => return result,
+    };
+    write_stdout(b"\x1b[2J\x1b[H"); // clear loading screen
+    write_stdout(b"\x1b[?25l"); // hide cursor during replay
+    write_stdout(&raw_history); // full history → terminal scrollback
+    write_stdout(b"\x1b[?25h"); // show cursor
 
     // SIGWINCH for terminal resize detection
     let mut sigwinch =
@@ -350,7 +344,7 @@ pub async fn run_attach_client(session_id: String) -> eyre::Result<()> {
         .map_err(|e| eyre::eyre!("tcsetattr failed: {}", e))?;
 
     let name = short_id(&session_id, 8);
-    let _result = attach_loop(&mut daemon, &session_id, name, &mut daemon_rx, None).await;
+    let _result = attach_loop(&mut daemon, &session_id, name, &mut daemon_rx).await;
 
     // Restore terminal
     nix::sys::termios::tcsetattr(&tty, nix::sys::termios::SetArg::TCSANOW, &orig_termios).ok();
