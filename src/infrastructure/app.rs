@@ -50,6 +50,9 @@ pub struct App {
     recently_removed: HashMap<String, u8>,
     /// Cached session registry — avoids re-reading sessions.json from disk every cycle.
     registry_cache: crate::infrastructure::hooks::registry::RegistryCache,
+    /// Tick at which the transient spinner should auto-clear. Set by execute_effects()
+    /// when a pending_toast is present, so the busy overlay stays visible briefly.
+    pending_spinner_clear: Option<usize>,
 }
 
 impl App {
@@ -121,6 +124,7 @@ impl App {
             missing_streaks: HashMap::new(),
             recently_removed: HashMap::new(),
             registry_cache: crate::infrastructure::hooks::registry::RegistryCache::new(),
+            pending_spinner_clear: None,
         }
     }
 
@@ -648,6 +652,17 @@ impl App {
         // Refresh conversation every ~1s (100 ticks)
         if self.state.tick.is_multiple_of(100) && self.auto_refresh_conversation() {
             self.needs_redraw = true;
+        }
+        // Auto-clear transient spinner after the scheduled delay
+        if let Some(clear_at) = self.pending_spinner_clear {
+            if self.state.tick >= clear_at {
+                self.state.spinner = None;
+                if let Some(toast) = self.state.pending_toast.take() {
+                    self.state.toast = Some(toast);
+                }
+                self.pending_spinner_clear = None;
+                self.needs_redraw = true;
+            }
         }
         if !effects.is_empty() {
             return self.execute_effects(effects, terminal, events).await;
@@ -1906,10 +1921,12 @@ impl App {
         // quit, and during attach the spinner must persist until
         // buffer_attach_history completes (so the busy overlay stays visible).
         if self.state.shutting_down.is_none() && self.state.input_mode != InputMode::Attached {
-            self.state.spinner = None;
-            // Promote pending toast (e.g. stash completion message)
-            if let Some(toast) = self.state.pending_toast.take() {
-                self.state.toast = Some(toast);
+            if self.state.pending_toast.is_some() {
+                // Keep spinner alive briefly (~500ms) so the busy overlay is
+                // visible for transient operations (stash, unstash, etc.).
+                self.pending_spinner_clear = Some(self.state.tick.wrapping_add(50));
+            } else {
+                self.state.spinner = None;
             }
         }
         false
