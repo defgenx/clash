@@ -203,7 +203,6 @@ pub async fn attach_loop(
         write_stdout(b"\x1b[?25l"); // hide cursor during replay
         write_stdout(&raw_history); // full history → terminal scrollback
         write_stdout(b"\x1b[?25h"); // show cursor
-                                    // raw_history dropped here — buffer released right after replay
     }
 
     // SIGWINCH for terminal resize detection

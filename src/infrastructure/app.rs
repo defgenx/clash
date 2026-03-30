@@ -452,9 +452,8 @@ impl App {
 
     /// Buffer daemon history while the TUI stays visible with its busy overlay.
     ///
-    /// Takes daemon_rx from the event loop to receive output directly, while
-    /// the event loop continues delivering tick events for animation. Returns
-    /// the buffered history (or None if the session exited during loading).
+    /// Waits until output arrives and settles (80ms idle), or 30s hard limit.
+    /// Returns the buffered history, or None if the session exited during loading.
     async fn buffer_attach_history(
         &mut self,
         terminal: &mut ratatui::DefaultTerminal,
