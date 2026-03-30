@@ -343,15 +343,16 @@ impl App {
                 )
                 .ok();
 
-                // Clear the main screen so sessions start clean
-                unsafe {
-                    libc::write(1, b"\x1b[2J\x1b[H".as_ptr() as *const libc::c_void, 10);
-                }
-
                 // Run the attached session — pure sync loop on fd 0.
                 // No crossterm, no EventStream, no race. Sole reader on stdin.
-                self.run_attached(session_id, &mut daemon_rx, Some(pre_history))
-                    .await;
+                // Pass pre-buffered history if non-empty; otherwise let
+                // attach_loop show its own loading spinner on the main screen.
+                let history = if pre_history.is_empty() {
+                    None
+                } else {
+                    Some(pre_history)
+                };
+                self.run_attached(session_id, &mut daemon_rx, history).await;
 
                 // Re-enter TUI on alternate screen
                 crossterm::terminal::enable_raw_mode().ok();
