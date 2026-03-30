@@ -10,7 +10,7 @@ pub const SPINNER_FRAMES: &[&str] = &["○", "◔", "◑", "◕", "●", "◕", 
 pub const TICKS_PER_FRAME: usize = 8;
 
 /// Shimmer gradient keyframes — loops back to the first color.
-pub const SHIMMER: &[(u8, u8, u8)] = &[
+const SHIMMER: &[(u8, u8, u8)] = &[
     (180, 140, 255), // soft violet
     (220, 150, 215), // pastel pink
     (140, 200, 240), // pastel sky
