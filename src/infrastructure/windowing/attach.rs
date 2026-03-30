@@ -190,9 +190,11 @@ pub async fn attach_loop(
 
     // ── Loading phase ───────────────────────────────────────────
     // If pre-buffered history is provided, the caller already replayed it
-    // to stdout — skip loading and replay entirely. Otherwise buffer here
-    // with a spinner (standalone client path), then replay.
-    if pre_history.is_none() {
+    // to stdout — drop the buffer and skip loading. Otherwise buffer here
+    // with a spinner (standalone client path), then replay + drop.
+    let needs_loading = pre_history.is_none();
+    drop(pre_history);
+    if needs_loading {
         let raw_history = match buffer_history(name, daemon_rx).await {
             Ok(h) => h,
             Err(result) => return result,
@@ -201,6 +203,7 @@ pub async fn attach_loop(
         write_stdout(b"\x1b[?25l"); // hide cursor during replay
         write_stdout(&raw_history); // full history → terminal scrollback
         write_stdout(b"\x1b[?25h"); // show cursor
+                                    // raw_history dropped here — buffer released right after replay
     }
 
     // SIGWINCH for terminal resize detection
