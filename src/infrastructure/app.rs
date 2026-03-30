@@ -308,12 +308,22 @@ impl App {
                 // Check if an attach was requested (set by DaemonAttach effect)
                 if let Some(ref _session_id) = self.state.attached_session {
                     if self.state.input_mode == InputMode::Attached {
-                        break self.state.attached_session.clone();
+                        // Buffer daemon history while the TUI stays visible
+                        // with its busy overlay. Only switch to raw mode once
+                        // the session output has settled.
+                        if let Some(history) =
+                            self.buffer_attach_history(terminal, &mut events).await
+                        {
+                            break (self.state.attached_session.clone(), history);
+                        }
+                        // Session exited during loading — state was reset,
+                        // continue TUI event loop.
+                        self.needs_redraw = true;
                     }
                 }
             };
 
-            let attach_request = attach_result;
+            let (attach_request, pre_history) = attach_result;
 
             // ── Attach phase ────────────────────────────────────────
             // Save daemon_rx before dropping EventLoop
@@ -333,11 +343,41 @@ impl App {
                 )
                 .ok();
 
+                // If we have buffered history, replay it immediately so the
+                // user sees the Claude Code session on screen (no black gap).
+                // If empty, show a loading spinner until output arrives.
+                let history = if pre_history.is_empty() {
+                    let name = self
+                        .state
+                        .store
+                        .find_session(session_id)
+                        .and_then(|s| s.name.clone())
+                        .unwrap_or_else(|| {
+                            crate::adapters::format::short_id(session_id, 8).to_string()
+                        });
+                    let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
+                    crate::infrastructure::windowing::attach::draw_status_screen(
+                        cols,
+                        rows,
+                        &format!("Loading {name}…"),
+                        0,
+                    );
+                    None
+                } else {
+                    // Replay history right now — Claude Code is visible instantly
+                    unsafe {
+                        libc::write(
+                            1,
+                            pre_history.as_ptr() as *const libc::c_void,
+                            pre_history.len(),
+                        );
+                    }
+                    Some(pre_history)
+                };
+
                 // Run the attached session — pure sync loop on fd 0.
                 // No crossterm, no EventStream, no race. Sole reader on stdin.
-                // attach_loop shows a loading spinner while streaming daemon
-                // history directly to stdout (no in-memory buffering).
-                self.run_attached(session_id, &mut daemon_rx).await;
+                self.run_attached(session_id, &mut daemon_rx, history).await;
 
                 // Re-enter TUI on alternate screen
                 crossterm::terminal::enable_raw_mode().ok();
@@ -389,6 +429,7 @@ impl App {
         daemon_rx: &mut Option<
             mpsc::UnboundedReceiver<crate::infrastructure::daemon::protocol::Event>,
         >,
+        pre_history: Option<Vec<u8>>,
     ) {
         use crate::infrastructure::windowing::attach::{attach_loop, AttachResult};
 
@@ -400,13 +441,115 @@ impl App {
             .and_then(|s| s.name.clone())
             .unwrap_or_else(|| crate::adapters::format::short_id(session_id, 8).to_string());
 
-        let result = attach_loop(&mut self.daemon, session_id, &name, daemon_rx).await;
+        let result = attach_loop(&mut self.daemon, session_id, &name, daemon_rx, pre_history).await;
 
         if result == AttachResult::SessionExited {
             self.state.toast = Some("Session exited".to_string());
         }
 
         let _ = self.daemon.detach(session_id).await;
+    }
+
+    /// Buffer daemon history while the TUI stays visible with its busy overlay.
+    ///
+    /// Takes daemon_rx from the event loop to receive output directly, while
+    /// the event loop continues delivering tick events for animation. Returns
+    /// the buffered history (or None if the session exited during loading).
+    async fn buffer_attach_history(
+        &mut self,
+        terminal: &mut ratatui::DefaultTerminal,
+        events: &mut EventLoop,
+    ) -> Option<Vec<u8>> {
+        use crate::infrastructure::daemon::protocol;
+
+        const IDLE_MS: u64 = 80;
+        // Safety timeout — prevents hanging forever if the session fails to
+        // start. The TUI stays visible with the busy overlay until output
+        // arrives and settles (IDLE_MS), so this only fires as a fallback.
+        const DEADLINE_MS: u64 = 30_000;
+        const MAX_HISTORY_BYTES: usize = 50_000_000; // 50 MB cap
+
+        let mut daemon_rx = events.take_daemon_rx();
+        let mut history: Vec<u8> = Vec::new();
+        let mut got_output = false;
+        let mut last_output = tokio::time::Instant::now();
+        let deadline = last_output + std::time::Duration::from_millis(DEADLINE_MS);
+        let mut session_exited = false;
+
+        loop {
+            tokio::select! {
+                biased;
+
+                // Buffer daemon output directly (taken from event loop)
+                Some(ev) = async {
+                    match daemon_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match ev {
+                        protocol::Event::Output { data, .. } => {
+                            if let Ok(bytes) = protocol::decode_data(&data) {
+                                history.extend_from_slice(&bytes);
+                            }
+                            got_output = true;
+                            last_output = tokio::time::Instant::now();
+                            if history.len() >= MAX_HISTORY_BYTES {
+                                break;
+                            }
+                        }
+                        protocol::Event::Exited { .. } => {
+                            session_exited = true;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+
+                // TUI events — ticks keep the busy overlay animating
+                Some(event) = events.next() => {
+                    match event {
+                        Event::Tick => {
+                            self.state.tick = self.state.tick.wrapping_add(1);
+
+                            let now = tokio::time::Instant::now();
+                            let idle = now.duration_since(last_output).as_millis() as u64 >= IDLE_MS;
+                            // Only transition once output has arrived and settled.
+                            // The TUI stays visible until then — no black screen gap.
+                            if (got_output && idle) || now >= deadline {
+                                break;
+                            }
+                        }
+                        Event::Resize(w, h) => {
+                            self.handle_resize(w, h).await;
+                        }
+                        _ => {} // Ignore keys during loading
+                    }
+                    // Throttle redraws to match main loop animation rate
+                    if self.state.tick.is_multiple_of(12) {
+                        let state = &self.state;
+                        let vs = &mut self.sessions_visual_state;
+                        let _ = terminal.draw(|f| renderer::draw(state, vs, f));
+                    }
+                }
+            }
+        }
+
+        // Put daemon_rx back for the attach phase
+        if let Some(rx) = daemon_rx {
+            events.set_daemon_rx(rx);
+        }
+
+        if session_exited {
+            self.state.toast = Some("Session exited".to_string());
+            self.state.input_mode = InputMode::Normal;
+            self.state.attached_session = None;
+            self.state.spinner = None;
+            self.state.pending_toast = None;
+            None
+        } else {
+            Some(history)
+        }
     }
 
     async fn handle_key_event(
@@ -1811,8 +1954,9 @@ impl App {
             }
         }
         // Clear spinner after all effects have executed.
-        // Exceptions: during graceful shutdown the spinner persists until
-        // quit, and during attach it persists until the TUI is torn down.
+        // Exceptions: during graceful shutdown the spinner must persist until
+        // quit, and during attach the spinner must persist until
+        // buffer_attach_history completes (so the busy overlay stays visible).
         if self.state.shutting_down.is_none() && self.state.input_mode != InputMode::Attached {
             if self.state.pending_toast.is_some() {
                 // Keep spinner alive briefly (~500ms) so the busy overlay is
