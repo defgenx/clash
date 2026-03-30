@@ -189,22 +189,19 @@ pub async fn attach_loop(
     set_title(&format!("clash │ {name}"));
 
     // ── Loading phase ───────────────────────────────────────────
-    // If pre-buffered history is provided (TUI path), skip loading.
-    // Otherwise buffer history here with a spinner (standalone client path).
-    let raw_history = match pre_history {
-        Some(h) => h,
-        None => match buffer_history(name, daemon_rx).await {
+    // If pre-buffered history is provided, the caller already replayed it
+    // to stdout — skip loading and replay entirely. Otherwise buffer here
+    // with a spinner (standalone client path), then replay.
+    if pre_history.is_none() {
+        let raw_history = match buffer_history(name, daemon_rx).await {
             Ok(h) => h,
             Err(result) => return result,
-        },
-    };
-
-    // Replay raw history directly through the terminal emulator so its
-    // scrollback buffer captures the full session output.
-    write_stdout(b"\x1b[2J\x1b[H"); // clear loading screen
-    write_stdout(b"\x1b[?25l"); // hide cursor during replay
-    write_stdout(&raw_history); // full history → terminal scrollback
-    write_stdout(b"\x1b[?25h"); // show cursor
+        };
+        write_stdout(b"\x1b[2J\x1b[H"); // clear loading screen
+        write_stdout(b"\x1b[?25l"); // hide cursor during replay
+        write_stdout(&raw_history); // full history → terminal scrollback
+        write_stdout(b"\x1b[?25h"); // show cursor
+    }
 
     // SIGWINCH for terminal resize detection
     let mut sigwinch =
