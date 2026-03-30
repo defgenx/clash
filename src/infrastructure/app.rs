@@ -336,39 +336,47 @@ impl App {
 
             if let Some(ref session_id) = attach_request {
                 // Leave TUI — switch to main screen for Claude Code.
-                // Draw loading spinner immediately to prevent a black flash
-                // between leaving the alternate screen and attach_loop starting.
-                let name = self
-                    .state
-                    .store
-                    .find_session(session_id)
-                    .and_then(|s| s.name.clone())
-                    .unwrap_or_else(|| {
-                        crate::adapters::format::short_id(session_id, 8).to_string()
-                    });
-                let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
                 crossterm::execute!(
                     std::io::stdout(),
                     crossterm::terminal::LeaveAlternateScreen,
                     crossterm::event::DisableMouseCapture
                 )
                 .ok();
-                crate::infrastructure::windowing::attach::draw_status_screen(
-                    cols,
-                    rows,
-                    &format!("Loading {name}…"),
-                    0,
-                );
+
+                // If we have buffered history, replay it immediately so the
+                // user sees the Claude Code session on screen (no black gap).
+                // If empty, show a loading spinner until output arrives.
+                let history = if pre_history.is_empty() {
+                    let name = self
+                        .state
+                        .store
+                        .find_session(session_id)
+                        .and_then(|s| s.name.clone())
+                        .unwrap_or_else(|| {
+                            crate::adapters::format::short_id(session_id, 8).to_string()
+                        });
+                    let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
+                    crate::infrastructure::windowing::attach::draw_status_screen(
+                        cols,
+                        rows,
+                        &format!("Loading {name}…"),
+                        0,
+                    );
+                    None
+                } else {
+                    // Replay history right now — Claude Code is visible instantly
+                    unsafe {
+                        libc::write(
+                            1,
+                            pre_history.as_ptr() as *const libc::c_void,
+                            pre_history.len(),
+                        );
+                    }
+                    Some(pre_history)
+                };
 
                 // Run the attached session — pure sync loop on fd 0.
                 // No crossterm, no EventStream, no race. Sole reader on stdin.
-                // Pass pre-buffered history if non-empty; otherwise let
-                // attach_loop show its own loading spinner on the main screen.
-                let history = if pre_history.is_empty() {
-                    None
-                } else {
-                    Some(pre_history)
-                };
                 self.run_attached(session_id, &mut daemon_rx, history).await;
 
                 // Re-enter TUI on alternate screen
