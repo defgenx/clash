@@ -343,6 +343,14 @@ impl App {
                 )
                 .ok();
 
+                // Clear the restored main screen so no pre-clash terminal
+                // content bleeds through when replaying session history.
+                {
+                    use std::io::Write;
+                    std::io::stdout().write_all(b"\x1b[2J\x1b[H").ok();
+                    std::io::stdout().flush().ok();
+                }
+
                 // If we have buffered history, replay it immediately so the
                 // user sees the Claude Code session on screen (no black gap).
                 // If empty, show a loading spinner until output arrives.
