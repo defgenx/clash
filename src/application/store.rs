@@ -105,8 +105,8 @@ impl DataStore {
 
     /// Sort sessions by section (Active → Done → Fail), then alphabetically by name.
     ///
-    /// Superseded by sort step in `session_refresh::build_session_list` — kept for tests only.
-    #[cfg(test)]
+    /// Re-sort sessions by section then name. Called after in-memory name
+    /// changes so the list stays ordered between merge-based refresh cycles.
     pub fn sort_sessions(&mut self) {
         self.sessions.sort_by(|a, b| {
             let name_key = |s: &Session| s.name.clone().unwrap_or_else(|| s.id.clone());
@@ -114,6 +114,7 @@ impl DataStore {
                 .section()
                 .cmp(&b.status.section())
                 .then_with(|| name_key(a).to_lowercase().cmp(&name_key(b).to_lowercase()))
+                .then_with(|| a.id.cmp(&b.id))
         });
     }
 

@@ -531,6 +531,7 @@ pub fn sort_sessions_by_section(sessions: &mut [Session]) {
             .section()
             .cmp(&b.status.section())
             .then_with(|| name_key(a).to_lowercase().cmp(&name_key(b).to_lowercase()))
+            .then_with(|| a.id.cmp(&b.id))
     });
 }
 

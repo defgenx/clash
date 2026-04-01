@@ -592,7 +592,9 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             } else {
                 session_id
             };
-            // Update in-memory session name
+            // Update in-memory session name and re-sort so the list reflects the
+            // new alphabetical position immediately (merge_sessions won't detect a
+            // change if the incoming name already matches, skipping its re-sort).
             if let Some(session) = state
                 .store
                 .sessions
@@ -601,6 +603,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             {
                 session.name = Some(name.clone());
             }
+            state.store.sort_sessions();
             state.toast = Some(format!("Renamed to '{}'", name));
             vec![Effect::RenameSession {
                 session_id: resolved_id,
