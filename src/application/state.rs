@@ -30,6 +30,9 @@ pub struct UiSnapshot {
     /// Selected row index in the current table view.
     #[serde(default)]
     pub selected: usize,
+    /// Session ID of the selected row (survives ordering changes across restarts).
+    #[serde(default)]
+    pub selected_session_id: Option<String>,
     /// Session filter mode: "active" or "all".
     #[serde(default)]
     pub session_filter: String,
@@ -276,6 +279,9 @@ pub struct AppState {
     pub pending_toast: Option<String>,
     /// Graceful shutdown: Some(start_tick) when stashing sessions before quit.
     pub shutting_down: Option<usize>,
+    /// Pending session selection by ID — set on restore, consumed by the first
+    /// daemon refresh to find the correct row index.
+    pub pending_selection_id: Option<String>,
 }
 
 impl Default for AppState {
@@ -319,6 +325,7 @@ impl AppState {
             update_progress: None,
             pending_toast: None,
             shutting_down: None,
+            pending_selection_id: None,
         }
     }
 
@@ -354,6 +361,10 @@ impl AppState {
 
     /// Capture current UI state for persistence.
     pub fn snapshot(&self) -> UiSnapshot {
+        let selected_session_id = self
+            .filtered_sessions()
+            .get(self.table_state.selected)
+            .map(|s| s.id.clone());
         UiSnapshot {
             nav_stack: self
                 .nav
@@ -362,6 +373,7 @@ impl AppState {
                 .map(|entry| (entry.view.key().to_string(), entry.context.clone()))
                 .collect(),
             selected: self.table_state.selected,
+            selected_session_id,
             session_filter: self.session_filter.label().to_string(),
             section_filter: self.section_filter.label().to_string(),
             expanded_sessions: self.expanded_sessions.iter().cloned().collect(),
@@ -384,8 +396,21 @@ impl AppState {
             _ => SectionFilter::All,
         };
 
-        // Restore selected row
-        self.table_state.selected = snapshot.selected;
+        // Restore selected session: try by ID first (survives reordering),
+        // fall back to saved index, and defer to daemon refresh if needed.
+        if let Some(ref id) = snapshot.selected_session_id {
+            let sessions = self.filtered_sessions();
+            if let Some(pos) = sessions.iter().position(|s| s.id == *id) {
+                self.table_state.selected = pos;
+            } else {
+                // Session not loaded yet (daemon sessions arrive async) —
+                // stash the ID so refresh_daemon_sessions() can resolve it.
+                self.pending_selection_id = snapshot.selected_session_id.clone();
+                self.table_state.selected = snapshot.selected;
+            }
+        } else {
+            self.table_state.selected = snapshot.selected;
+        }
 
         // Restore expanded sessions
         self.expanded_sessions = snapshot.expanded_sessions.into_iter().collect();
@@ -695,5 +720,57 @@ mod tests {
         let mut state2 = AppState::new();
         state2.restore(snapshot);
         assert_eq!(state2.section_filter, SectionFilter::Done);
+    }
+
+    #[test]
+    fn test_snapshot_captures_selected_session_id() {
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::All;
+        state.store.sessions = vec![
+            make_session("s1", Some("alpha"), SessionStatus::Running),
+            make_session("s2", Some("beta"), SessionStatus::Running),
+        ];
+        state.table_state.selected = 1;
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.selected_session_id, Some("s2".to_string()));
+    }
+
+    #[test]
+    fn test_restore_finds_session_by_id_after_reorder() {
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::All;
+        // Sessions are in different order than when snapshot was taken
+        state.store.sessions = vec![
+            make_session("s2", Some("beta"), SessionStatus::Running),
+            make_session("s1", Some("alpha"), SessionStatus::Running),
+        ];
+        let snapshot = UiSnapshot {
+            selected: 1, // was index 1 originally
+            selected_session_id: Some("s2".to_string()),
+            session_filter: "all".to_string(),
+            ..Default::default()
+        };
+        state.restore(snapshot);
+        // Should find s2 at index 0 (not use saved index 1)
+        assert_eq!(state.table_state.selected, 0);
+        assert!(state.pending_selection_id.is_none());
+    }
+
+    #[test]
+    fn test_restore_defers_to_pending_when_session_not_loaded() {
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::All;
+        // No sessions loaded yet (daemon hasn't connected)
+        state.store.sessions = vec![];
+        let snapshot = UiSnapshot {
+            selected: 2,
+            selected_session_id: Some("s3".to_string()),
+            session_filter: "all".to_string(),
+            ..Default::default()
+        };
+        state.restore(snapshot);
+        // Session not found — should set pending_selection_id
+        assert_eq!(state.pending_selection_id, Some("s3".to_string()));
+        assert_eq!(state.table_state.selected, 2); // falls back to index
     }
 }

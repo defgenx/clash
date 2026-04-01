@@ -965,11 +965,18 @@ impl App {
             );
         }
 
-        // Restore selection to the same session by ID
-        if let Some(ref id) = selected_id {
+        // Restore selection: prefer pending_selection_id (from a restored
+        // snapshot, not yet resolved) over the pre-refresh selected_id.
+        let pending = self.state.pending_selection_id.take();
+        let target_id = pending.as_ref().or(selected_id.as_ref());
+        if let Some(id) = target_id {
             let sessions = self.state.filtered_sessions();
             if let Some(pos) = sessions.iter().position(|s| s.id == *id) {
                 self.state.table_state.selected = pos;
+            } else if pending.is_some() {
+                // Pending selection not found yet — daemon sessions may still
+                // be loading. Put it back for the next refresh cycle.
+                self.state.pending_selection_id = pending;
             } else {
                 // Session was removed — clamp to valid range
                 let count = sessions.len();
