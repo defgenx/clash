@@ -183,8 +183,9 @@ impl PtySession {
                 }
 
                 // Append to history buffer (capped).
-                // Detect screen-clear escape sequences — if present, truncate
-                // so reattach only replays post-clear content (fixes /clear).
+                // Detect scrollback-clear (\x1b[3J) — if present, truncate
+                // so reattach only replays post-clear content (handles /clear).
+                // Normal display clears (\x1b[2J) are ignored to preserve history.
                 if let Ok(mut h) = history2.lock() {
                     if let Some(clear_pos) = find_last_screen_clear(&data) {
                         h.clear();
@@ -397,20 +398,21 @@ impl Drop for PtySession {
     }
 }
 
-/// Find the last screen-clear escape sequence in a byte slice.
+/// Find the last scrollback-clear escape sequence in a byte slice.
 ///
-/// Detects `\x1b[2J` (ED 2 — erase entire display) and `\x1b[3J` (ED 3 —
-/// erase scrollback). Returns the offset of the `\x1b` that starts the
-/// last matching sequence, so the history buffer can be truncated there.
+/// Only detects `\x1b[3J` (ED 3 — erase scrollback buffer), which is the
+/// explicit "wipe all history" signal used by commands like `/clear`.
+///
+/// `\x1b[2J` (ED 2 — erase visible display) is intentionally ignored because
+/// TUI apps like Claude Code emit it routinely during normal rendering. Treating
+/// it as a history-clear caused the entire replay buffer to be wiped on every
+/// redraw, making re-attach show only the last screenful of output.
 fn find_last_screen_clear(data: &[u8]) -> Option<usize> {
     if data.len() < 4 {
         return None;
     }
     (0..=data.len() - 4).rev().find(|&i| {
-        data[i] == 0x1b
-            && data[i + 1] == b'['
-            && (data[i + 2] == b'2' || data[i + 2] == b'3')
-            && data[i + 3] == b'J'
+        data[i] == 0x1b && data[i + 1] == b'[' && data[i + 2] == b'3' && data[i + 3] == b'J'
     })
 }
 
@@ -647,23 +649,31 @@ mod tests {
     }
 
     #[test]
-    fn test_find_last_screen_clear_ed2() {
-        // \x1b[2J = Erase entire display
+    fn test_find_last_screen_clear_ed2_ignored() {
+        // \x1b[2J = Erase entire display — should NOT trigger history truncation
+        // because TUI apps emit this routinely during normal rendering.
         let data = b"hello\x1b[2Jworld";
-        assert_eq!(find_last_screen_clear(data), Some(5));
+        assert_eq!(find_last_screen_clear(data), None);
     }
 
     #[test]
     fn test_find_last_screen_clear_ed3() {
-        // \x1b[3J = Erase scrollback
+        // \x1b[3J = Erase scrollback — the explicit "clear history" signal
         let data = b"old stuff\x1b[3Jnew stuff";
         assert_eq!(find_last_screen_clear(data), Some(9));
     }
 
     #[test]
-    fn test_find_last_screen_clear_multiple() {
-        // Multiple clears — returns the last one
-        let data = b"a\x1b[2Jb\x1b[2Jc";
+    fn test_find_last_screen_clear_multiple_ed3() {
+        // Multiple scrollback clears — returns the last one
+        let data = b"a\x1b[3Jb\x1b[3Jc";
+        assert_eq!(find_last_screen_clear(data), Some(6));
+    }
+
+    #[test]
+    fn test_find_last_screen_clear_ed2_with_ed3() {
+        // Mixed: ED2 (ignored) + ED3 (detected) — only ED3 triggers truncation
+        let data = b"a\x1b[2Jb\x1b[3Jc";
         assert_eq!(find_last_screen_clear(data), Some(6));
     }
 
@@ -680,9 +690,9 @@ mod tests {
     }
 
     #[test]
-    fn test_find_last_screen_clear_with_cursor_home() {
-        // Common pattern: cursor home + clear = \x1b[H\x1b[2J
+    fn test_find_last_screen_clear_ed2_with_cursor_home_ignored() {
+        // Common TUI pattern: cursor home + clear display — should NOT truncate
         let data = b"old\x1b[H\x1b[2Jnew";
-        assert_eq!(find_last_screen_clear(data), Some(6));
+        assert_eq!(find_last_screen_clear(data), None);
     }
 }
