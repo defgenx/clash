@@ -184,20 +184,26 @@ async fn shutdown_signal() {
 
 /// Fully restore the terminal to a clean state.
 ///
-/// Resets everything that Clash may have changed:
-/// - Scroll region (from attached mode's header/footer)
-/// - Mouse tracking
-/// - Kitty keyboard protocol
-/// - Raw mode + alternate screen (via ratatui::restore)
+/// Resets everything that Clash or an attached session (Claude Code) may have
+/// changed. Attached sessions write escape sequences directly to the terminal,
+/// so modes they enable (bracketed paste, focus reporting, extra mouse modes,
+/// Kitty keyboard protocol) persist beyond detach and must be cleaned up here.
 fn restore_terminal() {
     use std::io::Write;
-    // Reset terminal modes while still on the alternate screen
+    // Reset terminal modes while still on the alternate screen.
+    // This covers both modes Clash enables and modes an attached Claude Code
+    // session may have enabled.
     let _ = std::io::stdout().write_all(
         concat!(
             "\x1b[?6l",    // Disable origin mode
             "\x1b[r",      // Reset scroll region to full terminal
             "\x1b[?1000l", // Disable mouse button tracking
+            "\x1b[?1002l", // Disable cell-motion mouse tracking
+            "\x1b[?1003l", // Disable all-motion mouse tracking
             "\x1b[?1006l", // Disable SGR mouse mode
+            "\x1b[?1015l", // Disable urxvt mouse mode
+            "\x1b[?2004l", // Disable bracketed paste mode
+            "\x1b[?1004l", // Disable focus reporting
             "\x1b[<u",     // Pop Kitty keyboard protocol (if active)
         )
         .as_bytes(),

@@ -387,7 +387,24 @@ impl App {
                 // No crossterm, no EventStream, no race. Sole reader on stdin.
                 self.run_attached(session_id, &mut daemon_rx, history).await;
 
-                // Re-enter TUI on alternate screen
+                // Re-enter TUI on alternate screen.
+                // First, clean up any terminal modes the attached Claude Code
+                // session may have enabled (bracketed paste, focus reporting,
+                // extra mouse modes). These persist beyond detach and would
+                // otherwise leak into the shell on quit.
+                {
+                    use std::io::Write;
+                    std::io::stdout()
+                        .write_all(concat!(
+                            "\x1b[?1002l", // Disable cell-motion mouse tracking
+                            "\x1b[?1003l", // Disable all-motion mouse tracking
+                            "\x1b[?1015l", // Disable urxvt mouse mode
+                            "\x1b[?2004l", // Disable bracketed paste mode
+                            "\x1b[?1004l", // Disable focus reporting
+                        ).as_bytes())
+                        .ok();
+                    std::io::stdout().flush().ok();
+                }
                 crossterm::terminal::enable_raw_mode().ok();
                 {
                     use std::io::Write;
