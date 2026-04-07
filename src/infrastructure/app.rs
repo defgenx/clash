@@ -351,35 +351,11 @@ impl App {
                     std::io::stdout().flush().ok();
                 }
 
-                // If we have buffered history, replay it immediately so the
-                // user sees the Claude Code session on screen (no black gap).
-                // If empty, show a loading spinner until output arrives.
+                // Pass buffered history to attach_loop which sets up the scroll
+                // region before replaying, so output stays above the status bar.
                 let history = if pre_history.is_empty() {
-                    let name = self
-                        .state
-                        .store
-                        .find_session(session_id)
-                        .and_then(|s| s.name.clone())
-                        .unwrap_or_else(|| {
-                            crate::adapters::format::short_id(session_id, 8).to_string()
-                        });
-                    let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
-                    crate::infrastructure::windowing::attach::draw_status_screen(
-                        cols,
-                        rows,
-                        &format!("Loading {name}…"),
-                        0,
-                    );
                     None
                 } else {
-                    // Replay history right now — Claude Code is visible instantly
-                    unsafe {
-                        libc::write(
-                            1,
-                            pre_history.as_ptr() as *const libc::c_void,
-                            pre_history.len(),
-                        );
-                    }
                     Some(pre_history)
                 };
 
@@ -395,13 +371,16 @@ impl App {
                 {
                     use std::io::Write;
                     std::io::stdout()
-                        .write_all(concat!(
-                            "\x1b[?1002l", // Disable cell-motion mouse tracking
-                            "\x1b[?1003l", // Disable all-motion mouse tracking
-                            "\x1b[?1015l", // Disable urxvt mouse mode
-                            "\x1b[?2004l", // Disable bracketed paste mode
-                            "\x1b[?1004l", // Disable focus reporting
-                        ).as_bytes())
+                        .write_all(
+                            concat!(
+                                "\x1b[?1002l", // Disable cell-motion mouse tracking
+                                "\x1b[?1003l", // Disable all-motion mouse tracking
+                                "\x1b[?1015l", // Disable urxvt mouse mode
+                                "\x1b[?2004l", // Disable bracketed paste mode
+                                "\x1b[?1004l", // Disable focus reporting
+                            )
+                            .as_bytes(),
+                        )
                         .ok();
                     std::io::stdout().flush().ok();
                 }
@@ -456,17 +435,19 @@ impl App {
         >,
         pre_history: Option<Vec<u8>>,
     ) {
-        use crate::infrastructure::windowing::attach::{attach_loop, AttachResult};
+        use crate::infrastructure::windowing::attach::{attach_loop, AttachInfo, AttachResult};
 
-        // Resolve session display name from store
-        let name = self
-            .state
-            .store
-            .find_session(session_id)
-            .and_then(|s| s.name.clone())
-            .unwrap_or_else(|| crate::adapters::format::short_id(session_id, 8).to_string());
+        // Gather session metadata for the status bar
+        let session = self.state.store.find_session(session_id);
+        let info = AttachInfo {
+            name: session
+                .and_then(|s| s.name.clone())
+                .unwrap_or_else(|| crate::adapters::format::short_id(session_id, 8).to_string()),
+            project: session.map(|s| s.project.clone()).unwrap_or_default(),
+            branch: session.map(|s| s.git_branch.clone()).unwrap_or_default(),
+        };
 
-        let result = attach_loop(&mut self.daemon, session_id, &name, daemon_rx, pre_history).await;
+        let result = attach_loop(&mut self.daemon, session_id, &info, daemon_rx, pre_history).await;
 
         if result == AttachResult::SessionExited {
             self.state.toast = Some("Session exited".to_string());

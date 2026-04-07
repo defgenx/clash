@@ -18,7 +18,7 @@
 ## Features
 
 - **Session management** — list, attach, detach, create, stash, and delete Claude Code sessions
-- **Inline terminal** — attach to sessions with a full vt100 terminal emulator, no window switching
+- **Inline terminal** — attach to sessions with a full terminal passthrough, status bar showing session name / project / branch
 - **Real-time status** — instant status detection via hooks, daemon PTY screen analysis, and JSONL parsing (three-layer system)
 - **Animated status icons** — active sessions show animated spinners and pulsing icons for visual feedback
 - **Section-based layout** — sessions are grouped into Active (working), Done (idle/stashed), and Fail (errored) sections with stable alphabetical ordering; press `A` to cycle section filter
@@ -138,6 +138,8 @@ clash detects session status through three layers (in priority order):
 | `Enter` | View team detail |
 
 ### Attached Mode
+
+A status bar at the bottom shows session name, project, and git branch. The PTY is resized to fit above the bar.
 
 | Key | Action |
 |-----|--------|

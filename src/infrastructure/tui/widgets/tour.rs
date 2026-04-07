@@ -80,6 +80,8 @@ pub const TOUR_STEPS: &[TourStep] = &[
         body: &[
             "Press  a  to attach inline — the TUI suspends and you interact with Claude directly. Press  o  to open in a new pane or tab instead (clash stays visible).",
             "",
+            "A status bar at the bottom shows the session name, project, and git branch while attached.",
+            "",
             "While attached:",
         ],
         keys: &[
