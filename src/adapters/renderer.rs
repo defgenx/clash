@@ -60,20 +60,49 @@ pub fn draw(
                 frame.set_cursor_position(ratatui::layout::Position { x: px, y: py });
             }
         }
-        let session_label = state
+        let session = state
             .attached_session
             .as_deref()
-            .map(|s| crate::adapters::format::short_id(s, 8))
-            .unwrap_or("?");
-        let hint = Line::from(vec![
+            .and_then(|id| state.store.find_session(id));
+        let session_label = session
+            .and_then(|s| s.name.as_deref())
+            .unwrap_or_else(|| {
+                state
+                    .attached_session
+                    .as_deref()
+                    .map(|s| crate::adapters::format::short_id(s, 8))
+                    .unwrap_or("?")
+            });
+        let mut spans = vec![
             Span::styled(
-                format!(" {} ", session_label),
+                " clash ",
+                Style::default()
+                    .fg(theme::FOOTER_FG)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+            Span::styled("│ ", Style::default().fg(theme::SEPARATOR)),
+            Span::styled(
+                format!("{} ", session_label),
                 Style::default()
                     .fg(theme::ACCENT)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ),
-            Span::styled("  Ctrl+B detach", Style::default().fg(theme::MUTED)),
-        ]);
+        ];
+        if let Some(s) = session {
+            if !s.project.is_empty() {
+                spans.push(Span::styled(" │ ", Style::default().fg(theme::SEPARATOR)));
+                spans.push(Span::styled(&s.project, Style::default().fg(theme::FOOTER_FG)));
+            }
+            if !s.git_branch.is_empty() {
+                spans.push(Span::styled(" │ ", Style::default().fg(theme::SEPARATOR)));
+                spans.push(Span::styled(
+                    format!("⎇ {}", s.git_branch),
+                    Style::default().fg(theme::BRANCH_COLOR),
+                ));
+            }
+        }
+        spans.push(Span::styled("  Ctrl+B detach", Style::default().fg(theme::MUTED)));
+        let hint = Line::from(spans);
         frame.render_widget(
             Paragraph::new(hint).style(theme::footer_style()),
             layout.footer,

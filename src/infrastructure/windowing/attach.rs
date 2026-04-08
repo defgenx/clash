@@ -105,15 +105,24 @@ fn draw_status_bar(cols: u16, rows: u16, info: &AttachInfo) {
     buf.push_str("\x1b7"); // save cursor
     buf.push_str(&format!("\x1b[{};1H", rows)); // position at bottom row
 
-    // Build left side: name │ project │ ⎇ branch
+    // Build left side: clash │ name │ project │ ⎇ branch
     buf.push_str(BAR_BG);
     buf.push(' ');
+    buf.push_str(BAR_FG);
+    buf.push_str("\x1b[1m"); // bold
+    buf.push_str("clash");
+    buf.push_str(RESET);
+    buf.push_str(BAR_BG);
+    buf.push(' ');
+    buf.push_str(BAR_SEP);
+    buf.push_str(BAR_BG);
+    buf.push_str("│ ");
     buf.push_str(BAR_ACCENT);
     buf.push_str(&info.name);
     buf.push_str(RESET);
     buf.push_str(BAR_BG);
 
-    let mut used = 1 + info.name.len(); // leading space + name
+    let mut used = 1 + 5 + 3 + info.name.len(); // " clash │ " + name
 
     if !info.project.is_empty() {
         buf.push(' ');
@@ -285,7 +294,7 @@ pub async fn attach_loop(
     daemon_rx: &mut Option<mpsc::UnboundedReceiver<protocol::Event>>,
     pre_history: Option<Vec<u8>>,
 ) -> AttachResult {
-    let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
+    let (mut cols, mut rows) = crossterm::terminal::size().unwrap_or((120, 40));
     let content_rows = rows.saturating_sub(1).max(1);
 
     // Reserve bottom row for status bar via scroll region, resize PTY to fit
@@ -380,6 +389,8 @@ pub async fn attach_loop(
                 }
             } => {
                 if let Ok((w, h)) = crossterm::terminal::size() {
+                    cols = w;
+                    rows = h;
                     let cr = h.saturating_sub(1).max(1);
                     set_scroll_region(cr);
                     let _ = daemon.resize(session_id, w, cr).await;
@@ -397,6 +408,9 @@ pub async fn attach_loop(
                     protocol::Event::Output { data, .. } => {
                         if let Ok(bytes) = protocol::decode_data(&data) {
                             write_stdout(&bytes);
+                            // Redraw status bar — Claude Code's screen clears
+                            // (ED2, etc.) erase outside the scroll region too.
+                            draw_status_bar(cols, rows, info);
                         }
                     }
                     protocol::Event::Exited { .. } => {
