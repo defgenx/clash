@@ -89,9 +89,14 @@ pub fn draw(
             ),
         ];
         if let Some(s) = session {
-            if !s.project.is_empty() {
+            let project_display = s
+                .project_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&s.project_path);
+            if !project_display.is_empty() {
                 spans.push(Span::styled(" │ ", Style::default().fg(theme::SEPARATOR)));
-                spans.push(Span::styled(&s.project, Style::default().fg(theme::FOOTER_FG)));
+                spans.push(Span::styled(project_display, Style::default().fg(theme::FOOTER_FG)));
             }
             if !s.git_branch.is_empty() {
                 spans.push(Span::styled(" │ ", Style::default().fg(theme::SEPARATOR)));

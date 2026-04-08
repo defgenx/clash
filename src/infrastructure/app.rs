@@ -443,7 +443,15 @@ impl App {
             name: session
                 .and_then(|s| s.name.clone())
                 .unwrap_or_else(|| crate::adapters::format::short_id(session_id, 8).to_string()),
-            project: session.map(|s| s.project.clone()).unwrap_or_default(),
+            project: session
+                .map(|s| {
+                    s.project_path
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&s.project_path)
+                        .to_string()
+                })
+                .unwrap_or_default(),
             branch: session.map(|s| s.git_branch.clone()).unwrap_or_default(),
         };
 
