@@ -80,6 +80,22 @@ fn set_title(title: &str) {
     write_stdout(seq.as_bytes());
 }
 
+/// Check if output bytes contain an Erase in Display (ED) sequence
+/// that would clear the status bar row outside the scroll region.
+/// Matches CSI J, CSI 0 J, CSI 2 J, and CSI 3 J.
+fn contains_screen_clear(bytes: &[u8]) -> bool {
+    // CSI J (3 bytes) — equivalent to CSI 0 J
+    bytes
+        .windows(3)
+        .any(|w| w[0] == 0x1b && w[1] == b'[' && w[2] == b'J')
+        || bytes.windows(4).any(|w| {
+            w[0] == 0x1b
+                && w[1] == b'['
+                && matches!(w[2], b'0' | b'2' | b'3')
+                && w[3] == b'J'
+        })
+}
+
 // ── Status bar helpers ─────────────────────────────────────────
 
 /// Set the terminal scroll region to rows 1..content_rows (1-indexed, inclusive),
@@ -408,9 +424,12 @@ pub async fn attach_loop(
                     protocol::Event::Output { data, .. } => {
                         if let Ok(bytes) = protocol::decode_data(&data) {
                             write_stdout(&bytes);
-                            // Redraw status bar — Claude Code's screen clears
-                            // (ED2, etc.) erase outside the scroll region too.
-                            draw_status_bar(cols, rows, info);
+                            // Only redraw when output contains Erase in Display
+                            // sequences (ED) that clear outside the scroll region.
+                            // Redrawing on every chunk breaks Claude Code's input.
+                            if contains_screen_clear(&bytes) {
+                                draw_status_bar(cols, rows, info);
+                            }
                         }
                     }
                     protocol::Event::Exited { .. } => {
