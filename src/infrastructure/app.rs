@@ -485,6 +485,13 @@ impl App {
         let hard_limit = last_output + std::time::Duration::from_millis(HARD_LIMIT_MS);
         let mut session_exited = false;
 
+        // Draw the busy overlay immediately so it's visible from the start
+        {
+            let state = &self.state;
+            let vs = &mut self.sessions_visual_state;
+            let _ = terminal.draw(|f| renderer::draw(state, vs, f));
+        }
+
         loop {
             tokio::select! {
                 biased;
@@ -534,8 +541,9 @@ impl App {
                         }
                         _ => {} // Ignore keys during loading
                     }
-                    // Throttle redraws to match main loop animation rate
-                    if self.state.tick.is_multiple_of(12) {
+                    // Redraw every tick to keep the busy overlay animating.
+                    // This is a short-lived loading phase so no throttle needed.
+                    {
                         let state = &self.state;
                         let vs = &mut self.sessions_visual_state;
                         let _ = terminal.draw(|f| renderer::draw(state, vs, f));
