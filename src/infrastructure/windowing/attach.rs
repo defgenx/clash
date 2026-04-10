@@ -96,6 +96,33 @@ fn contains_screen_clear(bytes: &[u8]) -> bool {
         })
 }
 
+// ── History snapshot ──────────────────────────────────────────
+
+/// Process raw PTY history through a vt100 parser and render only the final
+/// screen state. This avoids visible scrolling when replaying large histories.
+fn render_history_snapshot(history: &[u8], content_rows: u16, cols: u16) {
+    if history.is_empty() {
+        return;
+    }
+
+    // Process history offscreen
+    let mut parser = vt100::Parser::new(content_rows, cols, 0);
+    parser.process(history);
+    let screen = parser.screen();
+
+    // Render the final screen image
+    write_stdout(b"\x1b[?25l"); // hide cursor
+    write_stdout(b"\x1b[H"); // cursor home
+    let rendered = screen.contents_formatted();
+    write_stdout(&rendered);
+
+    // Restore cursor to its correct position
+    let (cy, cx) = screen.cursor_position();
+    let seq = format!("\x1b[{};{}H", cy + 1, cx + 1);
+    write_stdout(seq.as_bytes());
+    write_stdout(b"\x1b[?25h"); // show cursor
+}
+
 // ── Status bar helpers ─────────────────────────────────────────
 
 /// Set the terminal scroll region to rows 1..content_rows (1-indexed, inclusive),
@@ -326,9 +353,7 @@ pub async fn attach_loop(
     // If pre-buffered history is provided, replay it now.  Otherwise buffer
     // from the daemon with a spinner (standalone client path).
     if let Some(history) = pre_history {
-        write_stdout(b"\x1b[?25l"); // hide cursor during replay
-        write_stdout(&history);
-        write_stdout(b"\x1b[?25h"); // show cursor
+        render_history_snapshot(&history, content_rows, cols);
         draw_status_bar(cols, rows, info);
     } else {
         let raw_history = match buffer_history(&info.name, daemon_rx).await {
@@ -340,11 +365,7 @@ pub async fn attach_loop(
         };
         // Clear loading screen within scroll region, replay history
         set_scroll_region(content_rows); // re-set after loading
-        write_stdout(b"\x1b[H"); // cursor home (top of scroll region)
-        write_stdout(b"\x1b[J"); // clear from cursor down (within region)
-        write_stdout(b"\x1b[?25l"); // hide cursor during replay
-        write_stdout(&raw_history); // full history → scroll region
-        write_stdout(b"\x1b[?25h"); // show cursor
+        render_history_snapshot(&raw_history, content_rows, cols);
         draw_status_bar(cols, rows, info);
     }
 
