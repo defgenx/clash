@@ -276,15 +276,16 @@ async fn handle_client(
                 let map = sessions.lock().await;
                 match map.get(&session_id) {
                     Some(session) => {
-                        if output_tasks.contains_key(&session_id) {
-                            send_event(
-                                &writer,
-                                &Event::Error {
-                                    message: "Already attached".into(),
-                                },
-                            )
-                            .await;
-                            continue;
+                        // Idempotent attach: if the same connection is
+                        // already attached (e.g. a prior detach RPC failed
+                        // silently), abort the old forwarding task and
+                        // start a new one instead of rejecting the client.
+                        if let Some(old) = output_tasks.remove(&session_id) {
+                            tracing::debug!(
+                                "Re-attach for {}: aborting previous output task",
+                                session_id
+                            );
+                            old.abort();
                         }
 
                         let replay = session.output_history();

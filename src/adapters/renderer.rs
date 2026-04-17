@@ -64,15 +64,13 @@ pub fn draw(
             .attached_session
             .as_deref()
             .and_then(|id| state.store.find_session(id));
-        let session_label = session
-            .and_then(|s| s.name.as_deref())
-            .unwrap_or_else(|| {
-                state
-                    .attached_session
-                    .as_deref()
-                    .map(|s| crate::adapters::format::short_id(s, 8))
-                    .unwrap_or("?")
-            });
+        let session_label = session.and_then(|s| s.name.as_deref()).unwrap_or_else(|| {
+            state
+                .attached_session
+                .as_deref()
+                .map(|s| crate::adapters::format::short_id(s, 8))
+                .unwrap_or("?")
+        });
         let mut spans = vec![
             Span::styled(
                 " clash ",
@@ -89,14 +87,13 @@ pub fn draw(
             ),
         ];
         if let Some(s) = session {
-            let project_display = s
-                .project_path
-                .rsplit('/')
-                .next()
-                .unwrap_or(&s.project_path);
+            let project_display = s.project_path.rsplit('/').next().unwrap_or(&s.project_path);
             if !project_display.is_empty() {
                 spans.push(Span::styled(" │ ", Style::default().fg(theme::SEPARATOR)));
-                spans.push(Span::styled(project_display, Style::default().fg(theme::FOOTER_FG)));
+                spans.push(Span::styled(
+                    project_display,
+                    Style::default().fg(theme::FOOTER_FG),
+                ));
             }
             if !s.git_branch.is_empty() {
                 spans.push(Span::styled(" │ ", Style::default().fg(theme::SEPARATOR)));
@@ -106,7 +103,10 @@ pub fn draw(
                 ));
             }
         }
-        spans.push(Span::styled("  Ctrl+B detach", Style::default().fg(theme::MUTED)));
+        spans.push(Span::styled(
+            "  Ctrl+B detach",
+            Style::default().fg(theme::MUTED),
+        ));
         let hint = Line::from(spans);
         frame.render_widget(
             Paragraph::new(hint).style(theme::footer_style()),

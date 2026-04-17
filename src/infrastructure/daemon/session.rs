@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use nix::pty::openpty;
+use nix::sys::termios::{cfmakeraw, tcgetattr, tcsetattr, SetArg};
 use tokio::sync::broadcast;
 
 /// Backpressure: max buffered output frames per client before dropping.
@@ -71,6 +72,17 @@ impl PtySession {
 
         let master_fd = pty.master.as_raw_fd();
         let slave_fd = pty.slave.as_raw_fd();
+
+        // Put the PTY slave into raw mode before the child exec's. Default
+        // openpty termios has ICANON/ECHO/ISIG/OPOST on — that line-buffers
+        // input, echoes typed bytes back into the output stream (corrupting
+        // our history buffer), and queues multi-byte escape sequences until
+        // Enter (breaking arrow-key/word-nav in Claude's input widget).
+        // Claude resets termios to its own liking later; this only closes
+        // the racy cooked-mode window at startup.
+        let mut tio = tcgetattr(&pty.slave).map_err(std::io::Error::other)?;
+        cfmakeraw(&mut tio);
+        tcsetattr(&pty.slave, SetArg::TCSANOW, &tio).map_err(std::io::Error::other)?;
 
         // Set terminal size
         if cols > 0 && rows > 0 {

@@ -349,10 +349,11 @@ impl App {
                 // transition from alt-screen overlay to raw screen stays in
                 // the same dark shade instead of flashing to terminal default.
                 {
+                    use crate::infrastructure::windowing::attach::BUSY_BG;
                     use std::io::Write;
-                    std::io::stdout()
-                        .write_all(b"\x1b[48;2;8;8;14m\x1b[2J\x1b[H")
-                        .ok();
+                    let mut bytes = BUSY_BG.as_bytes().to_vec();
+                    bytes.extend_from_slice(b"\x1b[2J\x1b[H");
+                    std::io::stdout().write_all(&bytes).ok();
                     std::io::stdout().flush().ok();
                 }
 
@@ -371,22 +372,12 @@ impl App {
                 // Re-enter TUI on alternate screen.
                 // First, clean up any terminal modes the attached Claude Code
                 // session may have enabled (bracketed paste, focus reporting,
-                // extra mouse modes). These persist beyond detach and would
-                // otherwise leak into the shell on quit.
+                // extra mouse modes, Kitty keyboard). These persist beyond
+                // detach and would otherwise leak into the shell on quit.
                 {
+                    use crate::infrastructure::tui::terminal_reset::MODES_RESET;
                     use std::io::Write;
-                    std::io::stdout()
-                        .write_all(
-                            concat!(
-                                "\x1b[?1002l", // Disable cell-motion mouse tracking
-                                "\x1b[?1003l", // Disable all-motion mouse tracking
-                                "\x1b[?1015l", // Disable urxvt mouse mode
-                                "\x1b[?2004l", // Disable bracketed paste mode
-                                "\x1b[?1004l", // Disable focus reporting
-                            )
-                            .as_bytes(),
-                        )
-                        .ok();
+                    std::io::stdout().write_all(MODES_RESET).ok();
                     std::io::stdout().flush().ok();
                 }
                 crossterm::terminal::enable_raw_mode().ok();
@@ -466,7 +457,12 @@ impl App {
             self.state.toast = Some("Session exited".to_string());
         }
 
-        let _ = self.daemon.detach(session_id).await;
+        // Log detach failures instead of swallowing them. Silent failures
+        // used to wedge the next attach with "Already attached" — the
+        // server is now idempotent, but diagnostics still matter.
+        if let Err(e) = self.daemon.detach(session_id).await {
+            tracing::warn!("detach {} failed: {}", session_id, e);
+        }
     }
 
     /// Buffer daemon history while the TUI stays visible with its busy overlay.
@@ -483,11 +479,12 @@ impl App {
         events: &mut EventLoop,
     ) -> Option<Vec<u8>> {
         use crate::infrastructure::daemon::protocol;
+        use crate::infrastructure::windowing::attach::{
+            should_break_history_buffer, ATTACH_EMPTY_TIMEOUT_MS, ATTACH_HARD_LIMIT_MS,
+            ATTACH_IDLE_MS, ATTACH_MIN_VISIBLE_MS,
+        };
         use tokio::time::{interval, MissedTickBehavior};
 
-        const IDLE_MS: u64 = 80;
-        const MIN_VISIBLE_MS: u64 = 450;
-        const HARD_LIMIT_MS: u64 = 1_500;
         const REDRAW_MS: u64 = 50;
 
         let mut daemon_rx = events.take_daemon_rx();
@@ -495,7 +492,6 @@ impl App {
         let mut got_output = false;
         let started = tokio::time::Instant::now();
         let mut last_output = started;
-        let hard_limit = started + std::time::Duration::from_millis(HARD_LIMIT_MS);
         let mut session_exited = false;
 
         // Draw the busy overlay immediately so it's visible from the start
@@ -552,16 +548,17 @@ impl App {
 
                     let now = tokio::time::Instant::now();
                     let elapsed_ms = now.duration_since(started).as_millis() as u64;
-                    let min_met = elapsed_ms >= MIN_VISIBLE_MS;
-
-                    if now >= hard_limit && min_met {
+                    let idle_ms = now.duration_since(last_output).as_millis() as u64;
+                    if should_break_history_buffer(
+                        got_output,
+                        elapsed_ms,
+                        idle_ms,
+                        ATTACH_MIN_VISIBLE_MS,
+                        ATTACH_HARD_LIMIT_MS,
+                        ATTACH_EMPTY_TIMEOUT_MS,
+                        ATTACH_IDLE_MS,
+                    ) {
                         break;
-                    }
-                    if got_output && min_met {
-                        let idle = now.duration_since(last_output).as_millis() as u64 >= IDLE_MS;
-                        if idle {
-                            break;
-                        }
                     }
 
                     let state = &self.state;

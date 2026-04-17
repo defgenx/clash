@@ -187,41 +187,23 @@ async fn shutdown_signal() {
 /// Resets everything that Clash or an attached session (Claude Code) may have
 /// changed. Attached sessions write escape sequences directly to the terminal,
 /// so modes they enable (bracketed paste, focus reporting, extra mouse modes,
-/// Kitty keyboard protocol) persist beyond detach and must be cleaned up here.
+/// Kitty keyboard protocol, cursor shape) persist beyond detach and must be
+/// cleaned up here.
 fn restore_terminal() {
+    use crate::infrastructure::tui::terminal_reset::{FINAL_RESET, MODES_RESET};
     use std::io::Write;
-    // Reset terminal modes while still on the alternate screen.
-    // This covers both modes Clash enables and modes an attached Claude Code
-    // session may have enabled.
-    let _ = std::io::stdout().write_all(
-        concat!(
-            "\x1b[?6l",    // Disable origin mode
-            "\x1b[r",      // Reset scroll region to full terminal
-            "\x1b[?1000l", // Disable mouse button tracking
-            "\x1b[?1002l", // Disable cell-motion mouse tracking
-            "\x1b[?1003l", // Disable all-motion mouse tracking
-            "\x1b[?1006l", // Disable SGR mouse mode
-            "\x1b[?1015l", // Disable urxvt mouse mode
-            "\x1b[?2004l", // Disable bracketed paste mode
-            "\x1b[?1004l", // Disable focus reporting
-            "\x1b[<u",     // Pop Kitty keyboard protocol (if active)
-        )
-        .as_bytes(),
-    );
+
+    // Reset mode toggles while still on the alternate screen. Covers both
+    // modes Clash enables and modes an attached Claude Code session may have.
+    let _ = std::io::stdout().write_all(MODES_RESET);
     let _ = std::io::stdout().flush();
 
-    // Leave alternate screen + disable raw mode
+    // Leave alternate screen + disable raw mode.
     ratatui::restore();
 
-    // Clear the main screen so attach session output doesn't linger
-    let _ = std::io::stdout().write_all(
-        concat!(
-            "\x1b[2J\x1b[H", // Clear screen + cursor home
-            "\x1b[?25h",     // Show cursor (ratatui may have hidden it)
-            "\x1b[0m",       // Reset text attributes
-        )
-        .as_bytes(),
-    );
+    // Clear + reset visual state on the main screen so attach-session output
+    // doesn't linger and the cursor shape/visibility/attrs are sane.
+    let _ = std::io::stdout().write_all(FINAL_RESET);
     let _ = std::io::stdout().flush();
 }
 

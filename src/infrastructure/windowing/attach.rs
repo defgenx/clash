@@ -17,7 +17,7 @@ use crate::infrastructure::tui::widgets::spinner::{
 };
 
 // ── ANSI color constants (matching theme.rs) ────────────────────
-const BUSY_BG: &str = "\x1b[48;2;8;8;14m";
+pub(crate) const BUSY_BG: &str = "\x1b[48;2;8;8;14m";
 const RESET: &str = "\x1b[0m";
 
 // Status bar colors (matching theme.rs FOOTER_BG / FOOTER_FG / ACCENT / MUTED)
@@ -89,10 +89,7 @@ fn contains_screen_clear(bytes: &[u8]) -> bool {
         .windows(3)
         .any(|w| w[0] == 0x1b && w[1] == b'[' && w[2] == b'J')
         || bytes.windows(4).any(|w| {
-            w[0] == 0x1b
-                && w[1] == b'['
-                && matches!(w[2], b'0' | b'2' | b'3')
-                && w[3] == b'J'
+            w[0] == 0x1b && w[1] == b'[' && matches!(w[2], b'0' | b'2' | b'3') && w[3] == b'J'
         })
 }
 
@@ -255,6 +252,50 @@ pub fn draw_status_screen(cols: u16, rows: u16, message: &str, tick: usize) {
     write_stdout(buf.as_bytes());
 }
 
+// ── History-buffer exit predicate ─────────────────────────────
+
+/// Attach history-buffer timings. Shared between the TUI
+/// (`App::buffer_attach_history`) and the standalone client
+/// (`buffer_history`) so both loops have identical pacing.
+pub(crate) const ATTACH_MIN_VISIBLE_MS: u64 = 150;
+pub(crate) const ATTACH_HARD_LIMIT_MS: u64 = 500;
+pub(crate) const ATTACH_EMPTY_TIMEOUT_MS: u64 = 80;
+pub(crate) const ATTACH_IDLE_MS: u64 = 80;
+
+/// Pure predicate deciding when the history-buffering phase should end.
+///
+/// Returns `true` once any of:
+/// - the hard limit has elapsed (cap regardless of activity);
+/// - no output has arrived after `empty_timeout_ms` (new session — nothing to
+///   coalesce, stop waiting);
+/// - output has arrived and gone idle for at least `idle_threshold_ms`.
+///
+/// Never returns `true` before `min_visible_ms`, so the busy overlay can't
+/// flash. Kept pure so the four-way truth table is unit-testable.
+pub(crate) fn should_break_history_buffer(
+    got_output: bool,
+    elapsed_ms: u64,
+    idle_ms: u64,
+    min_visible_ms: u64,
+    hard_limit_ms: u64,
+    empty_timeout_ms: u64,
+    idle_threshold_ms: u64,
+) -> bool {
+    if elapsed_ms < min_visible_ms {
+        return false;
+    }
+    if elapsed_ms >= hard_limit_ms {
+        return true;
+    }
+    if !got_output && elapsed_ms >= empty_timeout_ms {
+        return true;
+    }
+    if got_output && idle_ms >= idle_threshold_ms {
+        return true;
+    }
+    false
+}
+
 /// Buffer daemon history bytes while showing a loading spinner.
 ///
 /// Used by the standalone attach client (`clash attach <id>`) which doesn't
@@ -266,15 +307,13 @@ pub async fn buffer_history(
 ) -> Result<Vec<u8>, AttachResult> {
     let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
 
-    const IDLE_MS: u64 = 80;
-    const DEADLINE_MS: u64 = 1500;
     const TICK_MS: u64 = 50;
 
     let mut history: Vec<u8> = Vec::new();
     let mut tick = 0usize;
     let mut got_output = false;
-    let mut last_output = tokio::time::Instant::now();
-    let deadline = last_output + std::time::Duration::from_millis(DEADLINE_MS);
+    let started = tokio::time::Instant::now();
+    let mut last_output = started;
 
     let loading_msg = format!("Loading {name}…");
     draw_status_screen(cols, rows, &loading_msg, tick);
@@ -304,8 +343,17 @@ pub async fn buffer_history(
 
             _ = tokio::time::sleep(std::time::Duration::from_millis(TICK_MS)) => {
                 let now = tokio::time::Instant::now();
-                let idle = now.duration_since(last_output).as_millis() as u64 >= IDLE_MS;
-                if (got_output && idle) || now >= deadline {
+                let elapsed_ms = now.duration_since(started).as_millis() as u64;
+                let idle_ms = now.duration_since(last_output).as_millis() as u64;
+                if should_break_history_buffer(
+                    got_output,
+                    elapsed_ms,
+                    idle_ms,
+                    ATTACH_MIN_VISIBLE_MS,
+                    ATTACH_HARD_LIMIT_MS,
+                    ATTACH_EMPTY_TIMEOUT_MS,
+                    ATTACH_IDLE_MS,
+                ) {
                     break;
                 }
                 tick += 1;
@@ -483,6 +531,38 @@ pub async fn attach_loop(
 
 // ── Standalone attach client ───────────────────────────────────────
 
+/// RAII guard that flips `/dev/tty` into raw mode on construction and
+/// restores the original termios on drop. Drop runs on panic unwind, so
+/// the client's terminal is never left wedged if the attach loop explodes.
+struct RawModeGuard {
+    tty: std::fs::File,
+    orig: nix::sys::termios::Termios,
+}
+
+impl RawModeGuard {
+    fn enter(tty: std::fs::File) -> eyre::Result<Self> {
+        use nix::sys::termios::{cfmakeraw, tcgetattr, tcsetattr, SetArg};
+        let orig = tcgetattr(&tty).map_err(|e| eyre::eyre!("tcgetattr failed: {}", e))?;
+        // Build the guard first so any later failure unwinds through Drop
+        // and restores the untouched original termios (a no-op restore is
+        // harmless; leaving raw mode active with no guard would not be).
+        let guard = Self { tty, orig };
+        let mut raw = guard.orig.clone();
+        cfmakeraw(&mut raw);
+        tcsetattr(&guard.tty, SetArg::TCSANOW, &raw)
+            .map_err(|e| eyre::eyre!("tcsetattr failed: {}", e))?;
+        Ok(guard)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        use nix::sys::termios::{tcsetattr, SetArg};
+        let _ = tcsetattr(&self.tty, SetArg::TCSANOW, &self.orig);
+        write_stdout(crate::infrastructure::tui::terminal_reset::FINAL_RESET);
+    }
+}
+
 /// Entry point for `clash attach <session_id>`.
 ///
 /// Connects to the running daemon, attaches to the specified session,
@@ -520,29 +600,30 @@ pub async fn run_attach_client(session_id: String) -> eyre::Result<()> {
     }
 
     // Enter raw mode via nix termios directly — avoids initializing crossterm's
-    // internal reader thread, which would compete with attach_loop's /dev/tty reader.
+    // internal reader thread, which would compete with attach_loop's /dev/tty
+    // reader. The guard restores termios + FINAL_RESET on Drop (incl. panic).
     let tty = std::fs::File::open("/dev/tty").wrap_err("Could not open /dev/tty")?;
-    let orig_termios =
-        nix::sys::termios::tcgetattr(&tty).map_err(|e| eyre::eyre!("tcgetattr failed: {}", e))?;
-    let mut raw = orig_termios.clone();
-    nix::sys::termios::cfmakeraw(&mut raw);
-    nix::sys::termios::tcsetattr(&tty, nix::sys::termios::SetArg::TCSANOW, &raw)
-        .map_err(|e| eyre::eyre!("tcsetattr failed: {}", e))?;
+    let guard = RawModeGuard::enter(tty)?;
 
     let name = short_id(&session_id, 8);
     let info = AttachInfo {
         name: name.to_string(),
         ..Default::default()
     };
-    let _result = attach_loop(&mut daemon, &session_id, &info, &mut daemon_rx, None).await;
-
-    // Restore terminal
-    nix::sys::termios::tcsetattr(&tty, nix::sys::termios::SetArg::TCSANOW, &orig_termios).ok();
-    write_stdout(b"\x1b[r"); // reset scroll region
-    write_stdout(b"\x1b[2J\x1b[H");
+    let result = attach_loop(&mut daemon, &session_id, &info, &mut daemon_rx, None).await;
 
     let _ = daemon.detach(&session_id).await;
-    std::process::exit(0);
+
+    // Drop the guard explicitly before any user-facing eprintln, so termios
+    // is back in cooked mode and \n renders with proper CR/LF.
+    drop(guard);
+
+    match result {
+        AttachResult::SessionExited => eprintln!("Session exited."),
+        AttachResult::Disconnected => eprintln!("Disconnected from daemon."),
+        AttachResult::Detached => {}
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -590,6 +671,55 @@ mod tests {
     #[test]
     fn not_ctrl_b_other_escape_sequence() {
         assert!(!is_ctrl_b(b"\x1b[27;5;97~"));
+    }
+
+    // ── should_break_history_buffer ────────────────────────────
+
+    // Helper: call with the production constants so tests mirror real pacing.
+    fn sbhb(got_output: bool, elapsed_ms: u64, idle_ms: u64) -> bool {
+        should_break_history_buffer(
+            got_output,
+            elapsed_ms,
+            idle_ms,
+            ATTACH_MIN_VISIBLE_MS,
+            ATTACH_HARD_LIMIT_MS,
+            ATTACH_EMPTY_TIMEOUT_MS,
+            ATTACH_IDLE_MS,
+        )
+    }
+
+    #[test]
+    fn buffer_never_breaks_before_min_visible() {
+        // Even if the hard limit, empty timeout, and idle all say "break",
+        // we must hold until min_visible_ms so the overlay doesn't flash.
+        assert!(!sbhb(false, 0, 0));
+        assert!(!sbhb(true, 100, 100));
+        assert!(!sbhb(false, ATTACH_MIN_VISIBLE_MS - 1, 999));
+    }
+
+    #[test]
+    fn buffer_breaks_for_empty_session_after_min_visible() {
+        // New session: no output ever arrives. Once min_visible is met and
+        // empty_timeout has elapsed, break immediately — don't wait the full
+        // hard limit.
+        assert!(sbhb(false, ATTACH_MIN_VISIBLE_MS, 0));
+    }
+
+    #[test]
+    fn buffer_breaks_when_output_idles() {
+        // Session has history; output streamed in and then went quiet for
+        // at least idle_threshold_ms past min_visible_ms.
+        assert!(sbhb(true, ATTACH_MIN_VISIBLE_MS + 10, ATTACH_IDLE_MS));
+        // Still streaming (not idle) — do not break.
+        assert!(!sbhb(true, ATTACH_MIN_VISIBLE_MS + 10, 0));
+    }
+
+    #[test]
+    fn buffer_breaks_at_hard_limit() {
+        // Pathological case: output keeps streaming past hard limit. Break
+        // anyway so attach never gets stuck in the busy overlay.
+        assert!(sbhb(true, ATTACH_HARD_LIMIT_MS, 0));
+        assert!(sbhb(false, ATTACH_HARD_LIMIT_MS, 0));
     }
 
     #[test]
