@@ -345,9 +345,14 @@ impl App {
 
                 // Clear the restored main screen so no pre-clash terminal
                 // content bleeds through when replaying session history.
+                // Paint with BUSY_BG (matches the TUI busy overlay) so the
+                // transition from alt-screen overlay to raw screen stays in
+                // the same dark shade instead of flashing to terminal default.
                 {
                     use std::io::Write;
-                    std::io::stdout().write_all(b"\x1b[2J\x1b[H").ok();
+                    std::io::stdout()
+                        .write_all(b"\x1b[48;2;8;8;14m\x1b[2J\x1b[H")
+                        .ok();
                     std::io::stdout().flush().ok();
                 }
 
@@ -466,7 +471,11 @@ impl App {
 
     /// Buffer daemon history while the TUI stays visible with its busy overlay.
     ///
-    /// Waits until output arrives and settles (80ms idle), or 30s hard limit.
+    /// Shows the animated overlay for at least MIN_VISIBLE_MS, then breaks once
+    /// output has settled (80ms idle) or the hard limit hits. A standalone redraw
+    /// interval animates the shimmer independently of Event::Tick, which does not
+    /// fire during continuous daemon output bursts.
+    ///
     /// Returns the buffered history, or None if the session exited during loading.
     async fn buffer_attach_history(
         &mut self,
@@ -474,15 +483,19 @@ impl App {
         events: &mut EventLoop,
     ) -> Option<Vec<u8>> {
         use crate::infrastructure::daemon::protocol;
+        use tokio::time::{interval, MissedTickBehavior};
 
         const IDLE_MS: u64 = 80;
-        const HARD_LIMIT_MS: u64 = 30_000;
+        const MIN_VISIBLE_MS: u64 = 450;
+        const HARD_LIMIT_MS: u64 = 1_500;
+        const REDRAW_MS: u64 = 50;
 
         let mut daemon_rx = events.take_daemon_rx();
         let mut history: Vec<u8> = Vec::new();
         let mut got_output = false;
-        let mut last_output = tokio::time::Instant::now();
-        let hard_limit = last_output + std::time::Duration::from_millis(HARD_LIMIT_MS);
+        let started = tokio::time::Instant::now();
+        let mut last_output = started;
+        let hard_limit = started + std::time::Duration::from_millis(HARD_LIMIT_MS);
         let mut session_exited = false;
 
         // Draw the busy overlay immediately so it's visible from the start
@@ -491,6 +504,13 @@ impl App {
             let vs = &mut self.sessions_visual_state;
             let _ = terminal.draw(|f| renderer::draw(state, vs, f));
         }
+
+        // Periodic redraw — runs even when daemon output is continuous and
+        // Event::Tick never fires. This is what keeps the shimmer animating
+        // during the loading phase.
+        let mut redraw = interval(std::time::Duration::from_millis(REDRAW_MS));
+        redraw.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        redraw.tick().await; // consume the immediate first tick
 
         loop {
             tokio::select! {
@@ -519,35 +539,34 @@ impl App {
                     }
                 }
 
-                // TUI events — ticks keep the busy overlay animating
+                // TUI events — handle resize, ignore keys during loading
                 Some(event) = events.next() => {
-                    match event {
-                        Event::Tick => {
-                            self.state.tick = self.state.tick.wrapping_add(1);
+                    if let Event::Resize(w, h) = event {
+                        self.handle_resize(w, h).await;
+                    }
+                }
 
-                            let now = tokio::time::Instant::now();
-                            if now >= hard_limit {
-                                break;
-                            }
-                            if got_output {
-                                let idle = now.duration_since(last_output).as_millis() as u64 >= IDLE_MS;
-                                if idle {
-                                    break;
-                                }
-                            }
-                        }
-                        Event::Resize(w, h) => {
-                            self.handle_resize(w, h).await;
-                        }
-                        _ => {} // Ignore keys during loading
+                // Periodic redraw — animates the shimmer and gates the break.
+                _ = redraw.tick() => {
+                    self.state.tick = self.state.tick.wrapping_add(1);
+
+                    let now = tokio::time::Instant::now();
+                    let elapsed_ms = now.duration_since(started).as_millis() as u64;
+                    let min_met = elapsed_ms >= MIN_VISIBLE_MS;
+
+                    if now >= hard_limit && min_met {
+                        break;
                     }
-                    // Redraw every tick to keep the busy overlay animating.
-                    // This is a short-lived loading phase so no throttle needed.
-                    {
-                        let state = &self.state;
-                        let vs = &mut self.sessions_visual_state;
-                        let _ = terminal.draw(|f| renderer::draw(state, vs, f));
+                    if got_output && min_met {
+                        let idle = now.duration_since(last_output).as_millis() as u64 >= IDLE_MS;
+                        if idle {
+                            break;
+                        }
                     }
+
+                    let state = &self.state;
+                    let vs = &mut self.sessions_visual_state;
+                    let _ = terminal.draw(|f| renderer::draw(state, vs, f));
                 }
             }
         }
