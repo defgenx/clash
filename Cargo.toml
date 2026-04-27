@@ -26,6 +26,7 @@ color-eyre = "0.6"
 
 # TUI widgets
 tui-big-text = "0.7"
+tui-input = { version = "0.12", default-features = false }
 
 # Logging
 tracing = "0.1"

@@ -31,12 +31,33 @@ const BAR_SEP: &str = "\x1b[38;2;50;42;72m"; // SEPARATOR
 /// Session metadata displayed in the attach status bar.
 #[derive(Clone, Default)]
 pub struct AttachInfo {
-    /// Display name (user-set name or short session ID).
+    /// Display name. Prefer `Session.name` when set; otherwise `display_name`
+    /// derives a meaningful identifier from project/branch (UUID prefix is the
+    /// last-resort fallback).
     pub name: String,
-    /// Project name.
+    /// Project name (typically the basename of cwd).
     pub project: String,
     /// Git branch.
     pub branch: String,
+}
+
+/// Build the `name` field for `AttachInfo`. Mirrors the session-list display
+/// rule so users see the same identifier in the footer as in the table.
+///
+/// Fallback chain:
+///   1. `Session.name`, if set
+///   2. `"{project} · {branch}"` (or whichever piece is non-empty)
+///   3. 8-char UUID prefix
+pub fn display_name(name: Option<&str>, project: &str, branch: &str, id: &str) -> String {
+    if let Some(n) = name.map(str::trim).filter(|s| !s.is_empty()) {
+        return n.to_string();
+    }
+    match (project.is_empty(), branch.is_empty()) {
+        (false, false) => format!("{project} · {branch}"),
+        (false, true) => project.to_string(),
+        (true, false) => branch.to_string(),
+        (true, true) => short_id(id, 8).to_string(),
+    }
 }
 
 /// Detect Ctrl+B in any of the three common terminal encodings:
@@ -134,6 +155,24 @@ fn reset_scroll_region() {
     write_stdout(b"\x1b[r");
 }
 
+/// Compute the visual character width of the status-bar content (left + right).
+/// `.chars().count()` is used instead of `.len()` because `info.{name,project,branch}`
+/// can contain multibyte UTF-8 (accents, emoji, non-ASCII branch names) and we
+/// need *cell* counts to compute padding, not byte counts.
+fn status_bar_width(info: &AttachInfo, hint_chars: usize) -> usize {
+    // " clash │ " (1 + 5 + 3 cells) + name
+    let mut used = 1 + 5 + 3 + info.name.chars().count();
+    if !info.project.is_empty() {
+        // " │ " (3 cells) + project
+        used += 3 + info.project.chars().count();
+    }
+    if !info.branch.is_empty() {
+        // " │ ⎇ " (5 cells) + branch
+        used += 5 + info.branch.chars().count();
+    }
+    used + hint_chars
+}
+
 /// Draw the status bar on the reserved bottom row (outside the scroll region).
 ///
 /// Layout: ` {name} │ {project} │ ⎇ {branch}         Ctrl+B detach `
@@ -162,8 +201,6 @@ fn draw_status_bar(cols: u16, rows: u16, info: &AttachInfo) {
     buf.push_str(RESET);
     buf.push_str(BAR_BG);
 
-    let mut used = 1 + 5 + 3 + info.name.len(); // " clash │ " + name
-
     if !info.project.is_empty() {
         buf.push(' ');
         buf.push_str(BAR_SEP);
@@ -175,7 +212,6 @@ fn draw_status_bar(cols: u16, rows: u16, info: &AttachInfo) {
         buf.push_str(&info.project);
         buf.push_str(RESET);
         buf.push_str(BAR_BG);
-        used += 3 + info.project.len(); // " │ " + project
     }
 
     if !info.branch.is_empty() {
@@ -190,13 +226,11 @@ fn draw_status_bar(cols: u16, rows: u16, info: &AttachInfo) {
         buf.push_str(&info.branch);
         buf.push_str(RESET);
         buf.push_str(BAR_BG);
-        used += 5 + info.branch.len(); // " │ ⎇ " + branch
     }
 
-    // Right side: hint
+    // Right side: hint. ASCII-only so `chars().count() == len()`.
     let hint = "Ctrl+B detach ";
-    let hint_with_color_len = hint.len();
-    let total_content = used + hint_with_color_len;
+    let total_content = status_bar_width(info, hint.chars().count());
 
     // Fill middle with spaces
     if (cols as usize) > total_content {
@@ -563,6 +597,41 @@ impl Drop for RawModeGuard {
     }
 }
 
+/// Look up a session on the daemon and build a footer `AttachInfo` from it.
+///
+/// `cwd` and `name` come straight from `SessionInfo`; the branch is read from
+/// `.git/HEAD` in `cwd` (the daemon doesn't track branch — it's a property of
+/// the working tree, not the PTY). Failures fall back to a UUID-prefix name so
+/// the bar always renders something.
+async fn build_attach_info_from_daemon(daemon: &mut DaemonClient, session_id: &str) -> AttachInfo {
+    let session_meta = match daemon.list_sessions().await {
+        Ok(list) => list.into_iter().find(|s| s.session_id == session_id),
+        Err(e) => {
+            tracing::warn!("list_sessions failed during attach: {}", e);
+            None
+        }
+    };
+
+    let (name_opt, cwd) = match session_meta {
+        Some(s) => (s.name, s.cwd),
+        None => (None, String::new()),
+    };
+
+    let project = cwd
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&cwd)
+        .to_string();
+    let branch = crate::infrastructure::fs::backend::FsBackend::detect_git_branch(&cwd);
+
+    AttachInfo {
+        name: display_name(name_opt.as_deref(), &project, &branch, session_id),
+        project,
+        branch,
+    }
+}
+
 /// Entry point for `clash attach <session_id>`.
 ///
 /// Connects to the running daemon, attaches to the specified session,
@@ -605,11 +674,11 @@ pub async fn run_attach_client(session_id: String) -> eyre::Result<()> {
     let tty = std::fs::File::open("/dev/tty").wrap_err("Could not open /dev/tty")?;
     let guard = RawModeGuard::enter(tty)?;
 
-    let name = short_id(&session_id, 8);
-    let info = AttachInfo {
-        name: name.to_string(),
-        ..Default::default()
-    };
+    // Fetch session metadata from the daemon so the footer shows the real
+    // session name (or project · branch fallback) instead of a UUID prefix.
+    // Best-effort: if the lookup fails the footer still shows the short ID.
+    let info = build_attach_info_from_daemon(&mut daemon, &session_id).await;
+
     let result = attach_loop(&mut daemon, &session_id, &info, &mut daemon_rx, None).await;
 
     let _ = daemon.detach(&session_id).await;
@@ -742,5 +811,82 @@ mod tests {
             branch: String::new(),
         };
         let _ = &info;
+    }
+
+    #[test]
+    fn status_bar_width_ascii_matches_visual_columns() {
+        // " clash │ test │ proj │ ⎇ main " (left) + "Ctrl+B detach " (right).
+        // 5 prefix + 4 + 6 + 4 + 14 hint = 33. (See helper for breakdown.)
+        let info = AttachInfo {
+            name: "test".to_string(),
+            project: "proj".to_string(),
+            branch: "main".to_string(),
+        };
+        let hint_len = "Ctrl+B detach ".chars().count();
+        let w = status_bar_width(&info, hint_len);
+        // Sanity: hand-computed width.
+        // " clash │ "(9) + "test"(4) + " │ "(3) + "proj"(4)
+        //     + " │ ⎇ "(5) + "main"(4) + hint(14) = 43
+        assert_eq!(w, 43);
+    }
+
+    // ── display_name fallback chain ─────────────────────────────
+
+    #[test]
+    fn display_name_uses_session_name_when_set() {
+        assert_eq!(
+            display_name(Some("my-session"), "proj", "main", "abc12345xxxx"),
+            "my-session"
+        );
+    }
+
+    #[test]
+    fn display_name_treats_blank_name_as_unset() {
+        assert_eq!(
+            display_name(Some("   "), "proj", "main", "abc12345xxxx"),
+            "proj · main"
+        );
+    }
+
+    #[test]
+    fn display_name_falls_back_to_project_dot_branch() {
+        assert_eq!(
+            display_name(None, "clash", "feature/utf8", "abc12345xxxx"),
+            "clash · feature/utf8"
+        );
+    }
+
+    #[test]
+    fn display_name_falls_back_to_project_only_when_no_branch() {
+        assert_eq!(display_name(None, "clash", "", "abc12345xxxx"), "clash");
+    }
+
+    #[test]
+    fn display_name_falls_back_to_branch_only_when_no_project() {
+        assert_eq!(display_name(None, "", "main", "abc12345xxxx"), "main");
+    }
+
+    #[test]
+    fn display_name_falls_back_to_short_id_as_last_resort() {
+        assert_eq!(display_name(None, "", "", "abcdef1234567890"), "abcdef12");
+    }
+
+    #[test]
+    fn status_bar_width_counts_multibyte_as_single_cells() {
+        // Regression: bytes (.len()) used to be conflated with cells.
+        // "café" is 5 bytes but 4 cells; "feature/café" is 13 bytes but 12 cells.
+        let info = AttachInfo {
+            name: "café".to_string(),
+            project: "tiramisú".to_string(),
+            branch: "feature/café".to_string(),
+        };
+        let hint_len = "Ctrl+B detach ".chars().count();
+        let w = status_bar_width(&info, hint_len);
+        // 9 + 4 + 3 + 8 + 5 + 12 + 14 = 55 cells.
+        assert_eq!(w, 55);
+        // And — the bug we're fixing — must not equal the byte-based total.
+        let bytes_based =
+            1 + 5 + 3 + info.name.len() + 3 + info.project.len() + 5 + info.branch.len() + hint_len;
+        assert_ne!(w, bytes_based);
     }
 }

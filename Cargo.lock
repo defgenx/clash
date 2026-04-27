@@ -261,6 +261,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tui-big-text",
+ "tui-input",
  "uuid",
  "vt100",
 ]
@@ -1624,6 +1625,15 @@ dependencies = [
  "font8x8",
  "itertools 0.14.0",
  "ratatui",
+]
+
+[[package]]
+name = "tui-input"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dce25d24adf2c5350c57426f25cf12bc767455a6d9202be155458fc768ea1268"
+dependencies = [
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

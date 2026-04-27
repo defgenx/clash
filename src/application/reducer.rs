@@ -746,14 +746,12 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
         }
         UiAction::EnterCommandMode => {
             state.input_mode = InputMode::Command;
-            state.input_buffer.clear();
-            state.input_cursor = 0;
+            state.input = tui_input::Input::default();
             vec![]
         }
         UiAction::EnterFilterMode => {
             state.input_mode = InputMode::Filter;
-            state.input_buffer.clear();
-            state.input_cursor = 0;
+            state.input = tui_input::Input::default();
             vec![]
         }
         UiAction::EnterNewSessionMode => {
@@ -799,27 +797,24 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             }
             // No presets — enter manual 3-step flow
             state.input_mode = InputMode::NewSession;
-            state.input_buffer = state.default_cwd.clone();
-            state.input_cursor = state.input_buffer.len();
+            state.input = tui_input::Input::new(state.default_cwd.clone());
             vec![]
         }
         UiAction::ExitInputMode => {
             state.input_mode = InputMode::Normal;
-            state.input_buffer.clear();
-            state.input_cursor = 0;
+            state.input = tui_input::Input::default();
             state.pending_session = None;
             vec![]
         }
         UiAction::SubmitInput(text) => {
             let input = if text.is_empty() {
-                state.input_buffer.clone()
+                state.input.value().to_string()
             } else {
                 text
             };
             let mode = state.input_mode.clone();
             state.input_mode = InputMode::Normal;
-            state.input_buffer.clear();
-            state.input_cursor = 0;
+            state.input = tui_input::Input::default();
 
             match mode {
                 InputMode::Command => {
@@ -846,8 +841,7 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                         preset: None,
                     });
                     state.input_mode = InputMode::NewSessionName;
-                    state.input_buffer = default_name;
-                    state.input_cursor = state.input_buffer.len();
+                    state.input = tui_input::Input::new(default_name);
                     vec![]
                 }
                 InputMode::NewSessionName => {
@@ -860,8 +854,7 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                         };
                     }
                     state.input_mode = InputMode::NewSessionWorktree;
-                    state.input_buffer = "n".to_string();
-                    state.input_cursor = 1;
+                    state.input = tui_input::Input::new("n".to_string());
                     vec![]
                 }
                 InputMode::NewSessionWorktree => {
@@ -955,54 +948,6 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                 state.nav.push(ViewKind::Sessions, None);
                 state.filter.clear();
                 return vec![Effect::RefreshSessions];
-            }
-            vec![]
-        }
-        UiAction::InputEdit(edit) => {
-            use crate::application::actions::ui::InputEdit;
-            match edit {
-                InputEdit::InsertChar(c) => {
-                    let pos = state.input_cursor;
-                    state.input_buffer.insert(pos, c);
-                    state.input_cursor += 1;
-                    if state.input_mode == InputMode::Filter {
-                        state.filter = state.input_buffer.clone();
-                        state.table_state.selected = 0;
-                    }
-                }
-                InputEdit::Backspace => {
-                    if state.input_cursor > 0 {
-                        state.input_buffer.remove(state.input_cursor - 1);
-                        state.input_cursor -= 1;
-                        if state.input_mode == InputMode::Filter {
-                            state.filter = state.input_buffer.clone();
-                            state.table_state.selected = 0;
-                        }
-                    }
-                }
-                InputEdit::Delete => {
-                    if state.input_cursor < state.input_buffer.len() {
-                        state.input_buffer.remove(state.input_cursor);
-                        if state.input_mode == InputMode::Filter {
-                            state.filter = state.input_buffer.clone();
-                            state.table_state.selected = 0;
-                        }
-                    }
-                }
-                InputEdit::CursorLeft => {
-                    state.input_cursor = state.input_cursor.saturating_sub(1);
-                }
-                InputEdit::CursorRight => {
-                    if state.input_cursor < state.input_buffer.len() {
-                        state.input_cursor += 1;
-                    }
-                }
-                InputEdit::CursorHome => {
-                    state.input_cursor = 0;
-                }
-                InputEdit::CursorEnd => {
-                    state.input_cursor = state.input_buffer.len();
-                }
             }
             vec![]
         }
@@ -1173,8 +1118,7 @@ fn handle_preset_selection(
     if preset_name.is_empty() {
         // "No preset" selected — fall through to manual flow
         state.input_mode = InputMode::NewSession;
-        state.input_buffer = state.default_cwd.clone();
-        state.input_cursor = state.input_buffer.len();
+        state.input = tui_input::Input::new(state.default_cwd.clone());
         return vec![];
     }
 
@@ -1238,8 +1182,7 @@ fn handle_preset_selection(
             preset: Some(preset),
         });
         state.input_mode = InputMode::NewSessionName;
-        state.input_buffer = default_name;
-        state.input_cursor = state.input_buffer.len();
+        state.input = tui_input::Input::new(default_name);
         vec![]
     } else {
         state.toast = Some(format!("Unknown preset '{}'", preset_name));
@@ -1752,7 +1695,7 @@ mod tests {
         reduce(&mut state, Action::Ui(UiAction::EnterFilterMode));
         assert!(matches!(state.input_mode, InputMode::Filter));
 
-        state.input_buffer = "test".to_string();
+        state.input = tui_input::Input::new("test".to_string());
         reduce(&mut state, Action::Ui(UiAction::SubmitInput(String::new())));
         assert_eq!(state.filter, "test");
     }
@@ -1795,11 +1738,10 @@ mod tests {
         // Step 1: Enter new session mode
         reduce(&mut state, Action::Ui(UiAction::EnterNewSessionMode));
         assert_eq!(state.input_mode, InputMode::NewSession);
-        assert!(!state.input_buffer.is_empty()); // pre-filled with default_cwd
+        assert!(!state.input.value().is_empty()); // pre-filled with default_cwd
 
         // Simulate typing a path
-        state.input_buffer = "/tmp/my-project".to_string();
-        state.input_cursor = state.input_buffer.len();
+        state.input = tui_input::Input::new("/tmp/my-project".to_string());
 
         // Step 2: Submit directory — should transition to NewSessionName
         let effects = reduce(
@@ -1808,7 +1750,7 @@ mod tests {
         );
         assert!(effects.is_empty());
         assert_eq!(state.input_mode, InputMode::NewSessionName);
-        assert!(state.input_buffer.starts_with("clash-")); // default name "clash-{short_uuid}"
+        assert!(state.input.value().starts_with("clash-")); // default name "clash-{short_uuid}"
         assert_eq!(
             state.pending_session.as_ref().map(|p| p.cwd.as_str()),
             Some("/tmp/my-project")
@@ -1821,7 +1763,7 @@ mod tests {
         );
         assert!(effects.is_empty());
         assert_eq!(state.input_mode, InputMode::NewSessionWorktree);
-        assert_eq!(state.input_buffer, "n"); // default: no worktree
+        assert_eq!(state.input.value(), "n"); // default: no worktree
 
         // Step 4a: Answer "n" — should spawn session normally
         let effects = reduce(
@@ -1846,8 +1788,7 @@ mod tests {
             worktree: false,
             preset: None,
         });
-        state.input_buffer = "y".to_string();
-        state.input_cursor = 1;
+        state.input = tui_input::Input::new("y".to_string());
 
         let effects = reduce(
             &mut state,

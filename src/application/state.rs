@@ -241,8 +241,10 @@ pub struct AppState {
     pub table_state: TableState,
     pub scroll_state: ScrollState,
     pub input_mode: InputMode,
-    pub input_buffer: String,
-    pub input_cursor: usize,
+    /// Bottom-bar text input (command, filter, new-session prompts).
+    /// Backed by `tui-input` for standard line-editing semantics
+    /// (word jump, kill-word, kill-line, Home/End, Ctrl+A/E, …).
+    pub input: tui_input::Input,
     pub filter: String,
     pub show_help: bool,
     pub help_scroll: u16,
@@ -298,8 +300,7 @@ impl AppState {
             table_state: TableState::default(),
             scroll_state: ScrollState::default(),
             input_mode: InputMode::Normal,
-            input_buffer: String::new(),
-            input_cursor: 0,
+            input: tui_input::Input::default(),
             filter: String::new(),
             show_help: false,
             help_scroll: 0,

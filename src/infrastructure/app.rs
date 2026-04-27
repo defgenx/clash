@@ -431,24 +431,32 @@ impl App {
         >,
         pre_history: Option<Vec<u8>>,
     ) {
-        use crate::infrastructure::windowing::attach::{attach_loop, AttachInfo, AttachResult};
+        use crate::infrastructure::windowing::attach::{
+            attach_loop, display_name, AttachInfo, AttachResult,
+        };
 
-        // Gather session metadata for the status bar
+        // Gather session metadata for the status bar.
         let session = self.state.store.find_session(session_id);
+        let project = session
+            .map(|s| {
+                s.project_path
+                    .rsplit('/')
+                    .next()
+                    .filter(|p| !p.is_empty())
+                    .unwrap_or(&s.project_path)
+                    .to_string()
+            })
+            .unwrap_or_default();
+        let branch = session.map(|s| s.git_branch.clone()).unwrap_or_default();
         let info = AttachInfo {
-            name: session
-                .and_then(|s| s.name.clone())
-                .unwrap_or_else(|| crate::adapters::format::short_id(session_id, 8).to_string()),
-            project: session
-                .map(|s| {
-                    s.project_path
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or(&s.project_path)
-                        .to_string()
-                })
-                .unwrap_or_default(),
-            branch: session.map(|s| s.git_branch.clone()).unwrap_or_default(),
+            name: display_name(
+                session.and_then(|s| s.name.as_deref()),
+                &project,
+                &branch,
+                session_id,
+            ),
+            project,
+            branch,
         };
 
         let result = attach_loop(&mut self.daemon, session_id, &info, daemon_rx, pre_history).await;
@@ -627,7 +635,11 @@ impl App {
             return Ok(());
         }
 
-        // Text input mode (command, filter, new-session)
+        // Text input mode (command, filter, new-session). Submit/cancel flow
+        // through the reducer as actions; everything else (typing, cursor
+        // motion, word jump, kill-word, kill-line, …) is delegated to
+        // `tui-input`'s crossterm handler so we don't have to enumerate every
+        // modifier+key combo by hand.
         if matches!(
             self.state.input_mode,
             InputMode::Command
@@ -636,47 +648,40 @@ impl App {
                 | InputMode::NewSessionName
                 | InputMode::NewSessionWorktree
         ) {
-            use crate::application::actions::ui::InputEdit;
+            use crate::adapters::input::key_to_input_request;
             use crate::application::actions::UiAction;
 
-            let action = match key.code {
+            match key.code {
                 crossterm::event::KeyCode::Enter => {
-                    let input = self.state.input_buffer.clone();
-                    Action::Ui(UiAction::SubmitInput(input))
+                    let input = self.state.input.value().to_string();
+                    let effects =
+                        reducer::reduce(&mut self.state, Action::Ui(UiAction::SubmitInput(input)));
+                    if self.execute_effects(effects, terminal, events).await {
+                        return Err(color_eyre::eyre::eyre!("quit"));
+                    }
                 }
-                crossterm::event::KeyCode::Esc => Action::Ui(UiAction::ExitInputMode),
-                crossterm::event::KeyCode::Backspace => {
-                    Action::Ui(UiAction::InputEdit(InputEdit::Backspace))
+                crossterm::event::KeyCode::Esc => {
+                    let effects =
+                        reducer::reduce(&mut self.state, Action::Ui(UiAction::ExitInputMode));
+                    if self.execute_effects(effects, terminal, events).await {
+                        return Err(color_eyre::eyre::eyre!("quit"));
+                    }
                 }
-                crossterm::event::KeyCode::Delete => {
-                    Action::Ui(UiAction::InputEdit(InputEdit::Delete))
+                _ => {
+                    if let Some(req) = key_to_input_request(key) {
+                        self.state.input.handle(req);
+                        // Live-filter sessions while typing in Filter mode.
+                        if self.state.input_mode == InputMode::Filter {
+                            self.state.filter = self.state.input.value().to_string();
+                            self.state.table_state.selected = 0;
+                        }
+                    }
+                    if self.state.spinner.is_some() {
+                        let state = &self.state;
+                        let vs = &mut self.sessions_visual_state;
+                        let _ = terminal.draw(|f| renderer::draw(state, vs, f));
+                    }
                 }
-                crossterm::event::KeyCode::Left => {
-                    Action::Ui(UiAction::InputEdit(InputEdit::CursorLeft))
-                }
-                crossterm::event::KeyCode::Right => {
-                    Action::Ui(UiAction::InputEdit(InputEdit::CursorRight))
-                }
-                crossterm::event::KeyCode::Home => {
-                    Action::Ui(UiAction::InputEdit(InputEdit::CursorHome))
-                }
-                crossterm::event::KeyCode::End => {
-                    Action::Ui(UiAction::InputEdit(InputEdit::CursorEnd))
-                }
-                crossterm::event::KeyCode::Char(c) => {
-                    Action::Ui(UiAction::InputEdit(InputEdit::InsertChar(c)))
-                }
-                _ => return Ok(()),
-            };
-
-            let effects = reducer::reduce(&mut self.state, action);
-            if self.state.spinner.is_some() {
-                let state = &self.state;
-                let vs = &mut self.sessions_visual_state;
-                let _ = terminal.draw(|f| renderer::draw(state, vs, f));
-            }
-            if self.execute_effects(effects, terminal, events).await {
-                return Err(color_eyre::eyre::eyre!("quit"));
             }
             return Ok(());
         }

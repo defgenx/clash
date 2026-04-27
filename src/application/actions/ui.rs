@@ -15,8 +15,6 @@ pub enum UiAction {
     EnterNewSessionMode,
     ExitInputMode,
     SubmitInput(String),
-    /// Text editing in command/filter/new-session input bar.
-    InputEdit(InputEdit),
     CycleSectionFilter,
     SetSessionFilter(crate::application::state::SessionFilter),
     ScrollDown,
@@ -58,16 +56,4 @@ pub enum UiAction {
     DiffPrevFile,
     /// Tick event — advances animation frame counter, clears stale toasts.
     Tick,
-}
-
-/// Text editing operations for the input bar.
-#[derive(Debug, Clone)]
-pub enum InputEdit {
-    InsertChar(char),
-    Backspace,
-    Delete,
-    CursorLeft,
-    CursorRight,
-    CursorHome,
-    CursorEnd,
 }

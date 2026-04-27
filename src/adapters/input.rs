@@ -152,6 +152,67 @@ fn handle_input_mode(key: KeyEvent) -> Action {
     }
 }
 
+/// Translate a crossterm `KeyEvent` into a `tui_input::InputRequest`.
+///
+/// Mirrors the table built into `tui-input`'s own crossterm bridge — duplicated
+/// here because we depend on `tui-input` with `default-features = false` to
+/// avoid pulling its (newer) crossterm version into the dep graph alongside
+/// our own.
+///
+/// Covers the standard line-editing repertoire: char insert, Backspace/Delete,
+/// Left/Right (char), Alt+Left/Right and Ctrl+Left/Right (word), Home/End,
+/// Ctrl+A/E (start/end), Ctrl+W and Alt+Backspace (kill-word back), Ctrl+Delete
+/// and Alt+D (kill-word forward), Ctrl+U (kill-line), Ctrl+K (kill to end).
+/// Returns `None` for keys that are not editing actions (callers should treat
+/// those as "do nothing" within input mode — `Enter` and `Esc` are handled
+/// separately at the call site).
+pub fn key_to_input_request(key: KeyEvent) -> Option<tui_input::InputRequest> {
+    use crossterm::event::{KeyEventKind, KeyModifiers};
+    use tui_input::InputRequest::*;
+    use KeyCode::*;
+
+    // Ignore `Release` events; treat `Press` and `Repeat` identically.
+    if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return None;
+    }
+
+    match (key.code, key.modifiers) {
+        (Backspace, KeyModifiers::NONE) | (Char('h'), KeyModifiers::CONTROL) => {
+            Some(DeletePrevChar)
+        }
+        (Delete, KeyModifiers::NONE) => Some(DeleteNextChar),
+
+        (Left, KeyModifiers::NONE) | (Char('b'), KeyModifiers::CONTROL) => Some(GoToPrevChar),
+        (Left, KeyModifiers::CONTROL)
+        | (Left, KeyModifiers::ALT)
+        | (Char('b'), KeyModifiers::ALT)
+        | (Char('b'), KeyModifiers::META) => Some(GoToPrevWord),
+
+        (Right, KeyModifiers::NONE) | (Char('f'), KeyModifiers::CONTROL) => Some(GoToNextChar),
+        (Right, KeyModifiers::CONTROL)
+        | (Right, KeyModifiers::ALT)
+        | (Char('f'), KeyModifiers::ALT)
+        | (Char('f'), KeyModifiers::META) => Some(GoToNextWord),
+
+        (Char('u'), KeyModifiers::CONTROL) => Some(DeleteLine),
+        (Char('w'), KeyModifiers::CONTROL)
+        | (Char('d'), KeyModifiers::ALT)
+        | (Char('d'), KeyModifiers::META)
+        | (Backspace, KeyModifiers::ALT)
+        | (Backspace, KeyModifiers::META) => Some(DeletePrevWord),
+
+        (Delete, KeyModifiers::CONTROL) => Some(DeleteNextWord),
+        (Char('k'), KeyModifiers::CONTROL) => Some(DeleteTillEnd),
+
+        (Char('a'), KeyModifiers::CONTROL) | (Home, KeyModifiers::NONE) => Some(GoToStart),
+        (Char('e'), KeyModifiers::CONTROL) | (End, KeyModifiers::NONE) => Some(GoToEnd),
+
+        (Char(c), KeyModifiers::NONE) | (Char(c), KeyModifiers::SHIFT) => Some(InsertChar(c)),
+
+        _ => None,
+    }
+}
+
 fn handle_confirm_mode(key: KeyEvent, _state: &AppState) -> Action {
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => Action::Ui(UiAction::ConfirmYes),
@@ -997,6 +1058,151 @@ mod tests {
                 );
             }
             other => panic!("Expected ShowConfirm, got {:?}", other),
+        }
+    }
+
+    // ── key_to_input_request ──────────────────────────────────────
+
+    mod input_request {
+        use super::super::key_to_input_request;
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+        use tui_input::InputRequest;
+
+        fn ev(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+            KeyEvent {
+                code,
+                modifiers,
+                kind: KeyEventKind::Press,
+                state: KeyEventState::NONE,
+            }
+        }
+
+        #[test]
+        fn plain_char_inserts() {
+            assert_eq!(
+                key_to_input_request(ev(KeyCode::Char('a'), KeyModifiers::NONE)),
+                Some(InputRequest::InsertChar('a'))
+            );
+        }
+
+        #[test]
+        fn shifted_char_inserts() {
+            assert_eq!(
+                key_to_input_request(ev(KeyCode::Char('A'), KeyModifiers::SHIFT)),
+                Some(InputRequest::InsertChar('A'))
+            );
+        }
+
+        #[test]
+        fn alt_left_jumps_word_back() {
+            assert_eq!(
+                key_to_input_request(ev(KeyCode::Left, KeyModifiers::ALT)),
+                Some(InputRequest::GoToPrevWord)
+            );
+        }
+
+        #[test]
+        fn alt_right_jumps_word_forward() {
+            assert_eq!(
+                key_to_input_request(ev(KeyCode::Right, KeyModifiers::ALT)),
+                Some(InputRequest::GoToNextWord)
+            );
+        }
+
+        #[test]
+        fn ctrl_left_jumps_word_back() {
+            assert_eq!(
+                key_to_input_request(ev(KeyCode::Left, KeyModifiers::CONTROL)),
+                Some(InputRequest::GoToPrevWord)
+            );
+        }
+
+        #[test]
+        fn ctrl_w_kills_word() {
+            assert_eq!(
+                key_to_input_request(ev(KeyCode::Char('w'), KeyModifiers::CONTROL)),
+                Some(InputRequest::DeletePrevWord)
+            );
+        }
+
+        #[test]
+        fn alt_backspace_kills_word() {
+            assert_eq!(
+                key_to_input_request(ev(KeyCode::Backspace, KeyModifiers::ALT)),
+                Some(InputRequest::DeletePrevWord)
+            );
+        }
+
+        #[test]
+        fn ctrl_u_kills_line() {
+            assert_eq!(
+                key_to_input_request(ev(KeyCode::Char('u'), KeyModifiers::CONTROL)),
+                Some(InputRequest::DeleteLine)
+            );
+        }
+
+        #[test]
+        fn ctrl_k_kills_to_end() {
+            assert_eq!(
+                key_to_input_request(ev(KeyCode::Char('k'), KeyModifiers::CONTROL)),
+                Some(InputRequest::DeleteTillEnd)
+            );
+        }
+
+        #[test]
+        fn ctrl_a_goes_to_start() {
+            assert_eq!(
+                key_to_input_request(ev(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+                Some(InputRequest::GoToStart)
+            );
+            assert_eq!(
+                key_to_input_request(ev(KeyCode::Home, KeyModifiers::NONE)),
+                Some(InputRequest::GoToStart)
+            );
+        }
+
+        #[test]
+        fn ctrl_e_goes_to_end() {
+            assert_eq!(
+                key_to_input_request(ev(KeyCode::Char('e'), KeyModifiers::CONTROL)),
+                Some(InputRequest::GoToEnd)
+            );
+            assert_eq!(
+                key_to_input_request(ev(KeyCode::End, KeyModifiers::NONE)),
+                Some(InputRequest::GoToEnd)
+            );
+        }
+
+        #[test]
+        fn backspace_deletes_prev_char() {
+            assert_eq!(
+                key_to_input_request(ev(KeyCode::Backspace, KeyModifiers::NONE)),
+                Some(InputRequest::DeletePrevChar)
+            );
+        }
+
+        #[test]
+        fn delete_deletes_next_char() {
+            assert_eq!(
+                key_to_input_request(ev(KeyCode::Delete, KeyModifiers::NONE)),
+                Some(InputRequest::DeleteNextChar)
+            );
+        }
+
+        #[test]
+        fn release_events_are_ignored() {
+            let mut e = ev(KeyCode::Char('a'), KeyModifiers::NONE);
+            e.kind = KeyEventKind::Release;
+            assert_eq!(key_to_input_request(e), None);
+        }
+
+        #[test]
+        fn unknown_combos_return_none() {
+            // Ctrl+Z isn't an editing action — leave it for the parent to handle.
+            assert_eq!(
+                key_to_input_request(ev(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+                None
+            );
         }
     }
 }

@@ -296,8 +296,8 @@ fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
         | crate::application::state::InputMode::NewSessionWorktree => {
             input_bar::render_input_bar(
                 &state.input_mode,
-                &state.input_buffer,
-                state.input_cursor,
+                state.input.value(),
+                state.input.visual_cursor(),
                 frame,
                 area,
             );
