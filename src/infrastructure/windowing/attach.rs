@@ -666,6 +666,58 @@ async fn build_attach_info_from_daemon(daemon: &mut DaemonClient, session_id: &s
     }
 }
 
+/// If running inside an iTerm2 session, ask iTerm2 to close THIS specific
+/// session by `unique id`, which we read out of `ITERM_SESSION_ID`.
+///
+/// Why: iTerm2's "Session > When Done" profile setting defaults to "Don't
+/// close" — when `clash attach` exits, the pane stays around showing
+/// "[Process completed]". Other terminals (tmux, WezTerm, Kitty) close on
+/// foreground exit by default, so this only affects iTerm2.
+///
+/// We close by UUID rather than `current session of current window` so a
+/// user who clicked into a sibling pane mid-session doesn't get the wrong
+/// pane closed. The osascript call is synchronous: iTerm2 will close the
+/// pane (killing the foreground process) while osascript is in-flight, so
+/// this function effectively never returns when it succeeds.
+fn close_iterm2_session_if_inside() {
+    if std::env::var("TERM_PROGRAM").as_deref() != Ok("iTerm.app") {
+        return;
+    }
+    let raw = match std::env::var("ITERM_SESSION_ID") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return,
+    };
+    // ITERM_SESSION_ID is shaped like "w0t0p0:UUID". The UUID is what
+    // matches `unique id of session` in iTerm2's AppleScript dictionary.
+    let uuid = raw.rsplit(':').next().unwrap_or(&raw);
+    let script = format!(
+        concat!(
+            r#"tell application "iTerm2""#,
+            "\n  repeat with theWindow in windows",
+            "\n    repeat with theTab in tabs of theWindow",
+            "\n      repeat with theSession in sessions of theTab",
+            "\n        if (unique id of theSession as string) is \"{uuid}\" then",
+            "\n          tell theSession to close",
+            "\n          return",
+            "\n        end if",
+            "\n      end repeat",
+            "\n    end repeat",
+            "\n  end repeat",
+            "\nend tell",
+        ),
+        uuid = uuid
+    );
+    // Synchronous wait: iTerm2 will SIGHUP us mid-script when it closes the
+    // pane, which terminates this process. If iTerm2 isn't running (rare —
+    // we just verified TERM_PROGRAM), osascript exits cleanly and we return.
+    let _ = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 /// Entry point for `clash attach <session_id>`.
 ///
 /// Connects to the running daemon, attaches to the specified session,
@@ -726,6 +778,13 @@ pub async fn run_attach_client(session_id: String) -> eyre::Result<()> {
         AttachResult::Disconnected => eprintln!("Disconnected from daemon."),
         AttachResult::Detached => {}
     }
+
+    // If we're running inside an iTerm2 pane/tab spawned by `o`/`O`, close
+    // it. iTerm2's default profile keeps the pane open after the foreground
+    // command exits (showing "[Process completed]"); we want it to vanish
+    // so the user's `o → Ctrl+B` flow leaves no zombie panes behind.
+    close_iterm2_session_if_inside();
+
     Ok(())
 }
 
