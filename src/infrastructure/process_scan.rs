@@ -348,8 +348,13 @@ impl ProcessProbe for LiveProcessProbe {
 // ── IO: gather wild processes ────────────────────────────────────
 
 /// Three-stage discovery:
-///   1. `pgrep -fl '^claude($|\\s)'` narrows the process table down to
-///      processes whose cmdline begins with the `claude` basename.
+///   1. `pgrep -fl '^claude($|[[:space:]])'` narrows the process table
+///      down to processes whose cmdline begins with the `claude`
+///      basename. `[[:space:]]` is POSIX-portable; `\s` is a Perl-ism
+///      that macOS pgrep treats as the literal letter `s`, which would
+///      silently exclude every `claude --resume …` / `claude
+///      --session-id …` process — exactly the wild sessions we want
+///      to see.
 ///   2. `ps -p <pids> -o pid=,state=,command=` enriches with state and
 ///      the full command (so [`parse_ps_line`] can drop zombies).
 ///   3. Per surviving PID, the [`FdProbe`] populates `cwd` and the
@@ -359,7 +364,7 @@ impl ProcessProbe for LiveProcessProbe {
 /// wild processes detected this cycle" rather than an error.
 pub fn gather_wild_processes(probe: &impl FdProbe) -> Vec<WildProcess> {
     let pgrep = Command::new("pgrep")
-        .args(["-fl", r"^claude($|\s)"])
+        .args(["-fl", r"^claude($|[[:space:]])"])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output();
