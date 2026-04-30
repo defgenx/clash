@@ -272,10 +272,7 @@ async fn handle_client(
                 }
             }
 
-            Request::Attach {
-                session_id,
-                skip_replay,
-            } => {
+            Request::Attach { session_id } => {
                 let map = sessions.lock().await;
                 match map.get(&session_id) {
                     Some(session) => {
@@ -291,14 +288,7 @@ async fn handle_client(
                             old.abort();
                         }
 
-                        // Only fetch the history if the client wants it;
-                        // building the chunked replay below is wasted work
-                        // when skip_replay is set.
-                        let replay = if skip_replay {
-                            Vec::new()
-                        } else {
-                            session.output_history()
-                        };
+                        let replay = session.output_history();
                         let mut rx = session.subscribe();
                         let w = writer.clone();
                         let sid = session_id.clone();

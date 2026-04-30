@@ -198,14 +198,13 @@ impl DaemonClient {
 
     /// Attach to a session (start receiving output events).
     ///
-    /// When `skip_replay` is true the server forwards only live output —
-    /// the historical replay buffer is not sent, and the caller is
-    /// expected to trigger a fresh repaint on the child (e.g. via a size
-    /// toggle) so the user actually sees something.
-    pub async fn attach(&mut self, session_id: &str, skip_replay: bool) -> std::io::Result<()> {
+    /// The server replays the session's output history in chunks after
+    /// the Ok response so the caller can paint Claude's last screen
+    /// state — including background colors and SGR — before live output
+    /// begins.
+    pub async fn attach(&mut self, session_id: &str) -> std::io::Result<()> {
         self.send(&Request::Attach {
             session_id: session_id.to_string(),
-            skip_replay,
         })
         .await?;
         match self.recv_response().await? {
