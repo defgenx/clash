@@ -114,33 +114,6 @@ fn contains_screen_clear(bytes: &[u8]) -> bool {
         })
 }
 
-// ── History snapshot ──────────────────────────────────────────
-
-/// Process raw PTY history through a vt100 parser and render only the final
-/// screen state. This avoids visible scrolling when replaying large histories.
-fn render_history_snapshot(history: &[u8], content_rows: u16, cols: u16) {
-    if history.is_empty() {
-        return;
-    }
-
-    // Process history offscreen
-    let mut parser = vt100::Parser::new(content_rows, cols, 0);
-    parser.process(history);
-    let screen = parser.screen();
-
-    // Render the final screen image
-    write_stdout(b"\x1b[?25l"); // hide cursor
-    write_stdout(b"\x1b[H"); // cursor home
-    let rendered = screen.contents_formatted();
-    write_stdout(&rendered);
-
-    // Restore cursor to its correct position
-    let (cy, cx) = screen.cursor_position();
-    let seq = format!("\x1b[{};{}H", cy + 1, cx + 1);
-    write_stdout(seq.as_bytes());
-    write_stdout(b"\x1b[?25h"); // show cursor
-}
-
 // ── Status bar helpers ─────────────────────────────────────────
 
 /// Set the terminal scroll region to rows 1..content_rows (1-indexed, inclusive),
@@ -286,139 +259,6 @@ pub fn draw_status_screen(cols: u16, rows: u16, message: &str, tick: usize) {
     write_stdout(buf.as_bytes());
 }
 
-// ── History-buffer exit predicate ─────────────────────────────
-
-/// Attach history-buffer timings. Shared between the TUI
-/// (`App::buffer_attach_history`) and the standalone client
-/// (`buffer_history`) so both loops have identical pacing.
-pub(crate) const ATTACH_MIN_VISIBLE_MS: u64 = 150;
-pub(crate) const ATTACH_HARD_LIMIT_MS: u64 = 500;
-pub(crate) const ATTACH_EMPTY_TIMEOUT_MS: u64 = 80;
-pub(crate) const ATTACH_IDLE_MS: u64 = 80;
-
-/// Pure predicate deciding when the history-buffering phase should end.
-///
-/// Returns `true` once any of:
-/// - the hard limit has elapsed (cap regardless of activity);
-/// - no output has arrived after `empty_timeout_ms` (new session — nothing to
-///   coalesce, stop waiting);
-/// - output has arrived and gone idle for at least `idle_threshold_ms`.
-///
-/// Never returns `true` before `min_visible_ms`, so the busy overlay can't
-/// flash. Kept pure so the four-way truth table is unit-testable.
-pub(crate) fn should_break_history_buffer(
-    got_output: bool,
-    elapsed_ms: u64,
-    idle_ms: u64,
-    min_visible_ms: u64,
-    hard_limit_ms: u64,
-    empty_timeout_ms: u64,
-    idle_threshold_ms: u64,
-) -> bool {
-    if elapsed_ms < min_visible_ms {
-        return false;
-    }
-    if elapsed_ms >= hard_limit_ms {
-        return true;
-    }
-    if !got_output && elapsed_ms >= empty_timeout_ms {
-        return true;
-    }
-    if got_output && idle_ms >= idle_threshold_ms {
-        return true;
-    }
-    false
-}
-
-/// Buffer daemon history bytes while showing a loading spinner.
-///
-/// Used by the standalone attach client (`clash attach <id>`) which doesn't
-/// have a TUI to show a busy overlay. The TUI path uses its own buffering
-/// loop in `App::buffer_attach_history()` instead.
-///
-/// `session_id` is required so we can drop Output events from any other
-/// session — the daemon's mpsc fan-in does not pre-filter, and a stale
-/// forwarder (e.g. from a prior attach on the same connection) can leave
-/// bytes belonging to another session in the receive queue.
-pub async fn buffer_history(
-    session_id: &str,
-    name: &str,
-    daemon_rx: &mut Option<mpsc::UnboundedReceiver<protocol::Event>>,
-) -> Result<Vec<u8>, AttachResult> {
-    let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
-
-    const TICK_MS: u64 = 50;
-
-    let mut history: Vec<u8> = Vec::new();
-    let mut tick = 0usize;
-    let mut got_output = false;
-    let started = tokio::time::Instant::now();
-    let mut last_output = started;
-
-    let loading_msg = format!("Loading {name}…");
-    draw_status_screen(cols, rows, &loading_msg, tick);
-
-    loop {
-        tokio::select! {
-            biased;
-
-            Some(ev) = async {
-                match daemon_rx.as_mut() {
-                    Some(rx) => rx.recv().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                match ev {
-                    protocol::Event::Output {
-                        session_id: ev_sid,
-                        data,
-                    } => {
-                        // Drop output from any other session — see function-doc on
-                        // why filtering is required even on the standalone path.
-                        if ev_sid != session_id {
-                            continue;
-                        }
-                        if let Ok(bytes) = protocol::decode_data(&data) {
-                            history.extend_from_slice(&bytes);
-                        }
-                        got_output = true;
-                        last_output = tokio::time::Instant::now();
-                    }
-                    protocol::Event::Exited {
-                        session_id: ev_sid, ..
-                    } => {
-                        if ev_sid == session_id {
-                            return Err(AttachResult::SessionExited);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            _ = tokio::time::sleep(std::time::Duration::from_millis(TICK_MS)) => {
-                let now = tokio::time::Instant::now();
-                let elapsed_ms = now.duration_since(started).as_millis() as u64;
-                let idle_ms = now.duration_since(last_output).as_millis() as u64;
-                if should_break_history_buffer(
-                    got_output,
-                    elapsed_ms,
-                    idle_ms,
-                    ATTACH_MIN_VISIBLE_MS,
-                    ATTACH_HARD_LIMIT_MS,
-                    ATTACH_EMPTY_TIMEOUT_MS,
-                    ATTACH_IDLE_MS,
-                ) {
-                    break;
-                }
-                tick += 1;
-                draw_status_screen(cols, rows, &loading_msg, tick);
-            }
-        }
-    }
-
-    Ok(history)
-}
-
 /// Run the I/O passthrough loop between stdin/stdout and a daemon PTY session.
 ///
 /// Reads input from a freshly opened `/dev/tty` fd to avoid competing with
@@ -427,9 +267,14 @@ pub async fn buffer_history(
 /// ANSI scroll regions to keep it outside the scrollable area.
 ///
 /// - `info` contains session metadata for the status bar.
-/// - `pre_history` — if provided, skips the loading phase and replays this
-///   history immediately. Used by the TUI which buffers history while showing
-///   its own busy overlay.
+/// - `_pre_history` — kept for ABI compatibility with callers that still
+///   pass buffered history. The bytes are now ignored: the live phase
+///   relies on Claude repainting itself in response to the PTY size
+///   toggle below, which is faster (no vt100 parse) and avoids the
+///   stale-replay visual artifacts (wrong wrap when the captured size
+///   differs from the current one, SGR bleed, cursor in the wrong place,
+///   garbled escapes the parser couldn't handle) that the snapshot path
+///   produced.
 /// - Returns an `AttachResult` indicating why the loop ended.
 /// - The caller is responsible for calling `daemon.detach()` afterwards.
 pub async fn attach_loop(
@@ -437,39 +282,33 @@ pub async fn attach_loop(
     session_id: &str,
     info: &AttachInfo,
     daemon_rx: &mut Option<mpsc::UnboundedReceiver<protocol::Event>>,
-    pre_history: Option<Vec<u8>>,
+    _pre_history: Option<Vec<u8>>,
 ) -> AttachResult {
     let (mut cols, mut rows) = crossterm::terminal::size().unwrap_or((120, 40));
     let content_rows = rows.saturating_sub(1).max(1);
 
-    // Reserve bottom row for status bar via scroll region, resize PTY to fit
+    // Reserve bottom row for status bar via scroll region.
     set_scroll_region(content_rows);
-    let _ = daemon.resize(session_id, cols, content_rows).await;
+
+    // Clear the content area so we don't show whatever the previous
+    // foreground app left behind (the TUI's overlay, an old shell prompt,
+    // etc.) before Claude paints. We deliberately do not replay any
+    // history snapshot here — see attach_loop's doc comment.
+    write_stdout(b"\x1b[H\x1b[J");
     draw_status_bar(cols, rows, info);
 
     // Set terminal title bar
     set_title(&format!("clash │ {}", info.name));
 
-    // ── History replay / loading phase ──────────────────────────
-    // The scroll region is already active, so all output stays above the bar.
-    // If pre-buffered history is provided, replay it now.  Otherwise buffer
-    // from the daemon with a spinner (standalone client path).
-    if let Some(history) = pre_history {
-        render_history_snapshot(&history, content_rows, cols);
-        draw_status_bar(cols, rows, info);
-    } else {
-        let raw_history = match buffer_history(session_id, &info.name, daemon_rx).await {
-            Ok(h) => h,
-            Err(result) => {
-                reset_scroll_region();
-                return result;
-            }
-        };
-        // Clear loading screen within scroll region, replay history
-        set_scroll_region(content_rows); // re-set after loading
-        render_history_snapshot(&raw_history, content_rows, cols);
-        draw_status_bar(cols, rows, info);
-    }
+    // Force Claude to repaint its UI from scratch. Resize sends SIGWINCH
+    // and resets the daemon-side screen mirror; doing it twice with a
+    // different intermediate size guarantees the child sees a real
+    // dimension change even when the user attaches at the exact size the
+    // PTY already had. The intermediate (cols-1) resize is sub-frame fast
+    // and Claude redraws over it before any flicker becomes visible.
+    let nudge_cols = cols.saturating_sub(1).max(1);
+    let _ = daemon.resize(session_id, nudge_cols, content_rows).await;
+    let _ = daemon.resize(session_id, cols, content_rows).await;
 
     // SIGWINCH for terminal resize detection
     let mut sigwinch =
@@ -805,10 +644,13 @@ pub async fn run_attach_client(session_id: String) -> eyre::Result<()> {
 
     let mut daemon_rx = daemon.take_stream_rx();
 
-    // Retry attach — the TUI may still be creating the session
+    // Retry attach — the TUI may still be creating the session.
+    // Skip the replay buffer; attach_loop forces Claude to repaint via a
+    // PTY size-toggle, which is faster than parsing+rendering the history
+    // snapshot and avoids the stale-replay visual artifacts.
     let mut last_err = None;
     for attempt in 0..3 {
-        match daemon.attach(&session_id).await {
+        match daemon.attach(&session_id, true).await {
             Ok(()) => {
                 last_err = None;
                 break;
@@ -904,55 +746,6 @@ mod tests {
     #[test]
     fn not_ctrl_b_other_escape_sequence() {
         assert!(!is_ctrl_b(b"\x1b[27;5;97~"));
-    }
-
-    // ── should_break_history_buffer ────────────────────────────
-
-    // Helper: call with the production constants so tests mirror real pacing.
-    fn sbhb(got_output: bool, elapsed_ms: u64, idle_ms: u64) -> bool {
-        should_break_history_buffer(
-            got_output,
-            elapsed_ms,
-            idle_ms,
-            ATTACH_MIN_VISIBLE_MS,
-            ATTACH_HARD_LIMIT_MS,
-            ATTACH_EMPTY_TIMEOUT_MS,
-            ATTACH_IDLE_MS,
-        )
-    }
-
-    #[test]
-    fn buffer_never_breaks_before_min_visible() {
-        // Even if the hard limit, empty timeout, and idle all say "break",
-        // we must hold until min_visible_ms so the overlay doesn't flash.
-        assert!(!sbhb(false, 0, 0));
-        assert!(!sbhb(true, 100, 100));
-        assert!(!sbhb(false, ATTACH_MIN_VISIBLE_MS - 1, 999));
-    }
-
-    #[test]
-    fn buffer_breaks_for_empty_session_after_min_visible() {
-        // New session: no output ever arrives. Once min_visible is met and
-        // empty_timeout has elapsed, break immediately — don't wait the full
-        // hard limit.
-        assert!(sbhb(false, ATTACH_MIN_VISIBLE_MS, 0));
-    }
-
-    #[test]
-    fn buffer_breaks_when_output_idles() {
-        // Session has history; output streamed in and then went quiet for
-        // at least idle_threshold_ms past min_visible_ms.
-        assert!(sbhb(true, ATTACH_MIN_VISIBLE_MS + 10, ATTACH_IDLE_MS));
-        // Still streaming (not idle) — do not break.
-        assert!(!sbhb(true, ATTACH_MIN_VISIBLE_MS + 10, 0));
-    }
-
-    #[test]
-    fn buffer_breaks_at_hard_limit() {
-        // Pathological case: output keeps streaming past hard limit. Break
-        // anyway so attach never gets stuck in the busy overlay.
-        assert!(sbhb(true, ATTACH_HARD_LIMIT_MS, 0));
-        assert!(sbhb(false, ATTACH_HARD_LIMIT_MS, 0));
     }
 
     #[test]

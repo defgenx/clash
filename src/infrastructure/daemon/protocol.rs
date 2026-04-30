@@ -40,7 +40,19 @@ pub enum Request {
     },
 
     /// Attach to an existing session (start receiving output).
-    Attach { session_id: String },
+    Attach {
+        session_id: String,
+        /// If true, the server skips replaying the session's output history
+        /// to this client and only forwards live PTY output going forward.
+        /// Used by the TUI to avoid re-rendering stale bytes that cause
+        /// wrong-wrap / SGR-bleed visual corruption — the client instead
+        /// asks the daemon to bump the PTY size, which makes Claude Code
+        /// repaint its UI from scratch.
+        ///
+        /// Default false → existing behavior (replay sent in chunks after Ok).
+        #[serde(default)]
+        skip_replay: bool,
+    },
 
     /// Detach from a session (stop receiving output).
     Detach { session_id: String },

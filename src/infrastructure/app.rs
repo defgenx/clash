@@ -473,158 +473,39 @@ impl App {
         }
     }
 
-    /// Buffer daemon history while the TUI stays visible with its busy overlay.
+    /// Hand off from the TUI to the live attach phase, instantly.
     ///
-    /// Shows the animated overlay for at least MIN_VISIBLE_MS, then breaks once
-    /// output has settled (80ms idle) or the hard limit hits. A standalone redraw
-    /// interval animates the shimmer independently of Event::Tick, which does not
-    /// fire during continuous daemon output bursts.
+    /// Previously this function spent up to ~1.5s buffering daemon output
+    /// behind a busy overlay so the inline `attach_loop` could replay a
+    /// rendered snapshot. That snapshot path has been retired (it caused
+    /// wrong-wrap, SGR bleed, and cursor-position glitches whenever the
+    /// captured size differed from the current one); attach_loop now
+    /// forces Claude to repaint via a PTY size-toggle on entry.
     ///
-    /// Returns the buffered history, or None if the session exited during loading.
+    /// What's left is just bookkeeping: drain any stale events queued in
+    /// the persistent daemon connection from a prior attach (defense in
+    /// depth alongside attach_loop's session_id filter), put the receiver
+    /// back, and signal the caller to proceed. Returns `Some(empty)` for
+    /// the normal case so the existing run() loop transitions; `None`
+    /// only if the session was already gone before we started.
     async fn buffer_attach_history(
         &mut self,
-        terminal: &mut ratatui::DefaultTerminal,
+        _terminal: &mut ratatui::DefaultTerminal,
         events: &mut EventLoop,
     ) -> Option<Vec<u8>> {
-        use crate::infrastructure::daemon::protocol;
-        use crate::infrastructure::windowing::attach::{
-            should_break_history_buffer, ATTACH_EMPTY_TIMEOUT_MS, ATTACH_HARD_LIMIT_MS,
-            ATTACH_IDLE_MS, ATTACH_MIN_VISIBLE_MS,
-        };
-        use tokio::time::{interval, MissedTickBehavior};
-
-        const REDRAW_MS: u64 = 50;
-
-        let mut daemon_rx = events.take_daemon_rx();
-
-        // Snapshot the session_id we're entering attach for — the loop below
-        // filters Output/Exited events to this id so stale bytes from a prior
-        // attach (still queued in the receiver) cannot leak into the new view.
-        let session_id_owned = self.state.attached_session.clone();
-        let session_id_for_filter: Option<&str> = session_id_owned.as_deref();
-
-        // Drain stale events left in the receiver from a previous attach on
-        // this same persistent connection. The server-side forwarder for the
-        // prior session may have pushed bytes between our Detach RPC and the
-        // forwarder task actually being aborted; those bytes belong to the
-        // OLD session. Toss them. The filter above is correctness; this is
-        // the optimization that keeps the busy overlay snappy.
-        if let Some(rx) = daemon_rx.as_mut() {
+        // Drain stale events from any prior attach on this persistent
+        // connection. The server-side forwarder for the previous session
+        // may have pushed bytes between our Detach RPC and the forwarder
+        // task actually being aborted; those bytes belong to the OLD
+        // session. Toss them.
+        if let Some(rx) = events.daemon_rx_mut() {
             while rx.try_recv().is_ok() {
                 // discard stale events
             }
         }
 
-        let mut history: Vec<u8> = Vec::new();
-        let mut got_output = false;
-        let started = tokio::time::Instant::now();
-        let mut last_output = started;
-        let mut session_exited = false;
-
-        // Draw the busy overlay immediately so it's visible from the start
-        {
-            let state = &self.state;
-            let vs = &mut self.sessions_visual_state;
-            let _ = terminal.draw(|f| renderer::draw(state, vs, f));
-        }
-
-        // Periodic redraw — runs even when daemon output is continuous and
-        // Event::Tick never fires. This is what keeps the shimmer animating
-        // during the loading phase.
-        let mut redraw = interval(std::time::Duration::from_millis(REDRAW_MS));
-        redraw.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        redraw.tick().await; // consume the immediate first tick
-
-        loop {
-            tokio::select! {
-                biased;
-
-                // Buffer daemon output directly (taken from event loop)
-                Some(ev) = async {
-                    match daemon_rx.as_mut() {
-                        Some(rx) => rx.recv().await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    match ev {
-                        protocol::Event::Output {
-                            session_id: ev_sid,
-                            data,
-                        } => {
-                            // Drop output from any other session — the daemon's
-                            // mpsc fan-in does not pre-filter, and stale forwarder
-                            // bytes from a prior attach on the persistent TUI
-                            // connection can leak into the queue (cross-session
-                            // bleed). Defense in depth alongside the drain below.
-                            if Some(ev_sid.as_str()) != session_id_for_filter {
-                                continue;
-                            }
-                            if let Ok(bytes) = protocol::decode_data(&data) {
-                                history.extend_from_slice(&bytes);
-                            }
-                            got_output = true;
-                            last_output = tokio::time::Instant::now();
-                        }
-                        protocol::Event::Exited {
-                            session_id: ev_sid, ..
-                        } => {
-                            if Some(ev_sid.as_str()) == session_id_for_filter {
-                                session_exited = true;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                // TUI events — handle resize, ignore keys during loading
-                Some(event) = events.next() => {
-                    if let Event::Resize(w, h) = event {
-                        self.handle_resize(w, h).await;
-                    }
-                }
-
-                // Periodic redraw — animates the shimmer and gates the break.
-                _ = redraw.tick() => {
-                    self.state.tick = self.state.tick.wrapping_add(1);
-
-                    let now = tokio::time::Instant::now();
-                    let elapsed_ms = now.duration_since(started).as_millis() as u64;
-                    let idle_ms = now.duration_since(last_output).as_millis() as u64;
-                    if should_break_history_buffer(
-                        got_output,
-                        elapsed_ms,
-                        idle_ms,
-                        ATTACH_MIN_VISIBLE_MS,
-                        ATTACH_HARD_LIMIT_MS,
-                        ATTACH_EMPTY_TIMEOUT_MS,
-                        ATTACH_IDLE_MS,
-                    ) {
-                        break;
-                    }
-
-                    let state = &self.state;
-                    let vs = &mut self.sessions_visual_state;
-                    let _ = terminal.draw(|f| renderer::draw(state, vs, f));
-                }
-            }
-        }
-
-        // Put daemon_rx back for the attach phase
-        if let Some(rx) = daemon_rx {
-            events.set_daemon_rx(rx);
-        }
-
-        if session_exited {
-            self.state.toast = Some("Session exited".to_string());
-            self.state.input_mode = InputMode::Normal;
-            self.state.attached_session = None;
-            self.state.spinner = None;
-            self.state.pending_toast = None;
-            None
-        } else {
-            Some(history)
-        }
+        // No buffered history; attach_loop forces Claude to repaint.
+        Some(Vec::new())
     }
 
     async fn handle_key_event(
@@ -1442,8 +1323,12 @@ impl App {
                         let _ = self.daemon.resize(&session_id, cols, rows).await;
                     }
 
-                    // Attach to daemon output stream
-                    if let Err(e) = self.daemon.attach(&session_id).await {
+                    // Attach to daemon output stream — skip the replay buffer.
+                    // We force Claude to repaint via the size-toggle in
+                    // attach_loop, which is faster and avoids the stale-replay
+                    // visual artifacts (wrong wrap, SGR bleed, cursor in the
+                    // wrong place) that the snapshot rendering produced.
+                    if let Err(e) = self.daemon.attach(&session_id, true).await {
                         self.state.toast = Some(format!("Attach failed: {}", e));
                         self.state.input_mode = InputMode::Normal;
                         self.state.attached_session = None;
@@ -1760,8 +1645,10 @@ impl App {
                                     .await;
                             }
 
-                            // Attach to daemon output stream
-                            if let Err(e) = self.daemon.attach(&new_session_id).await {
+                            // Attach to daemon output stream — skip replay
+                            // (see attach_loop for the matching size-toggle
+                            // that forces a fresh Claude repaint).
+                            if let Err(e) = self.daemon.attach(&new_session_id, true).await {
                                 self.state.toast = Some(format!("Attach failed: {}", e));
                                 self.state.input_mode = InputMode::Normal;
                                 self.state.attached_session = None;

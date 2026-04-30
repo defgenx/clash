@@ -79,6 +79,15 @@ impl EventLoop {
         self.daemon_rx.take()
     }
 
+    /// Mutable reference to the daemon event receiver, if attached. Used by
+    /// the pre-attach drain that flushes stale events without disturbing the
+    /// receiver's ownership in the event loop.
+    pub fn daemon_rx_mut(
+        &mut self,
+    ) -> Option<&mut mpsc::UnboundedReceiver<crate::infrastructure::daemon::protocol::Event>> {
+        self.daemon_rx.as_mut()
+    }
+
     fn reset_tick(&mut self) {
         self.tick_sleep
             .as_mut()
