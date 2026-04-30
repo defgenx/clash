@@ -452,7 +452,10 @@ impl TableView for SessionsTable {
             Keybinding::new("Enter", "View session details"),
             Keybinding::new("Tab", "Expand/collapse subagents"),
             Keybinding::new("i", "Inspect session details"),
-            Keybinding::new("a", "Attach to session"),
+            Keybinding::new(
+                "a",
+                "Attach (Daemon) / Adopt (Wild/External — opens dialog)",
+            ),
             Keybinding::new("e", "Open in IDE"),
             Keybinding::new("o", "Open in new tab"),
             Keybinding::new("O", "Open ALL in new tabs"),

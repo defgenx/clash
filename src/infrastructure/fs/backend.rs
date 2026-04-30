@@ -209,6 +209,7 @@ impl FsBackend {
             preset_name: None,
             repo_config: None,
             source: crate::domain::entities::SessionSource::default(),
+            wild_pid: None,
         }
     }
 

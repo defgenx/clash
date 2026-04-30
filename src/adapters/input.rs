@@ -25,7 +25,33 @@ pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
         | InputMode::NewSessionWorktree => handle_input_mode(key),
         InputMode::Confirm => handle_confirm_mode(key, state),
         InputMode::Picker => handle_picker_mode(key),
+        InputMode::AdoptDialog => handle_adopt_dialog_mode(key, state),
         InputMode::Attached => Action::Noop,
+    }
+}
+
+fn handle_adopt_dialog_mode(key: KeyEvent, state: &AppState) -> Action {
+    let dialog = match &state.adopt_dialog {
+        Some(d) => d,
+        None => return Action::Agent(AgentAction::CloseAdoptDialog),
+    };
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => Action::Agent(AgentAction::CloseAdoptDialog),
+        KeyCode::Char('v') if dialog.options.view_only => {
+            Action::Agent(AgentAction::AdoptViewOnly {
+                session_id: dialog.session_id.clone(),
+            })
+        }
+        KeyCode::Char('t') if dialog.options.takeover => match dialog.pid {
+            Some(pid) => Action::Agent(AgentAction::TakeoverWild {
+                session_id: dialog.session_id.clone(),
+                pid,
+            }),
+            None => Action::Ui(UiAction::Toast(
+                "No live PID for this session — cannot takeover".to_string(),
+            )),
+        },
+        _ => Action::Noop,
     }
 }
 
@@ -389,6 +415,17 @@ fn resolve_session_id(state: &AppState) -> Option<String> {
 
 fn handle_attach_or_assign(state: &AppState) -> Action {
     if let Some(session_id) = resolve_session_id(state) {
+        // Route based on Session.source: wild/external rows open the
+        // adopt dialog so the user picks View-only vs. Takeover.
+        // Daemon (and Unknown / Stashed-wild rows where neither option
+        // is available) fall through to the existing inline-attach via
+        // the daemon.
+        if let Some(session) = state.store.find_session(&session_id) {
+            let opts = session.adoption_options();
+            if opts.view_only || opts.takeover {
+                return Action::Agent(AgentAction::OpenAdoptDialog { session_id });
+            }
+        }
         return Action::Agent(AgentAction::Attach { session_id });
     }
     // Non-session views: TeamDetail drills into Agents

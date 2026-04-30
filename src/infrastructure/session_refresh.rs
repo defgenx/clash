@@ -208,14 +208,21 @@ fn overlay_session_source(
         crate::infrastructure::process_scan::correlate_wild_to_sessions(wild_processes, sessions);
 
     for session in sessions.iter_mut() {
+        let wild_pid = wild_pids.get(&session.id).copied();
         session.source = if daemon_ids.contains(session.id.as_str()) {
             SessionSource::Daemon
-        } else if externally_opened.contains(&session.id) && wild_pids.contains_key(&session.id) {
+        } else if externally_opened.contains(&session.id) && wild_pid.is_some() {
             SessionSource::External
-        } else if wild_pids.contains_key(&session.id) {
+        } else if wild_pid.is_some() {
             SessionSource::Wild
         } else {
             SessionSource::Unknown
+        };
+        // Carry the matching pid alongside source so the adopt dialog
+        // and takeover effect don't have to re-correlate.
+        session.wild_pid = match session.source {
+            SessionSource::Wild | SessionSource::External => wild_pid,
+            _ => None,
         };
     }
 }

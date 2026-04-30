@@ -158,11 +158,6 @@ impl SessionSection {
 /// requires both a membership in `externally_opened` AND a wild PID match — that
 /// way it self-heals across clash restarts (an empty `externally_opened` after
 /// restart simply demotes the row to `Wild`).
-//
-// `#[allow(dead_code)]` — Daemon/External/Wild variants are constructed by
-// the wild-scan/refresh pipeline (wired up in subsequent tasks of the
-// wild-session-adoption spec). The lib's tests exercise every variant.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum SessionSource {
     /// PTY managed by clash's own daemon. Default — what every session in the
@@ -186,10 +181,6 @@ pub enum SessionSource {
 /// Single source of truth, derived purely from `(Session.source, Session.status)`
 /// via [`Session::adoption_options`]. Consumed by the input handler, the
 /// reducer, and the confirm dialog so the rule never drifts between sites.
-//
-// `#[allow(dead_code)]` until the input handler / reducer / dialog wire it
-// up in subsequent tasks of the wild-session-adoption spec.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AdoptionOptions {
     /// Whether read-only conversation tail is offered (always at least
@@ -203,7 +194,6 @@ pub struct AdoptionOptions {
     pub reason_disabled: Option<&'static str>,
 }
 
-#[allow(dead_code)] // wired up in subsequent wild-session-adoption tasks
 impl AdoptionOptions {
     pub const fn none(reason: &'static str) -> Self {
         Self {
@@ -211,10 +201,6 @@ impl AdoptionOptions {
             takeover: false,
             reason_disabled: Some(reason),
         }
-    }
-
-    pub fn any(&self) -> bool {
-        self.view_only || self.takeover
     }
 }
 
@@ -340,6 +326,12 @@ pub struct Session {
     /// Computed at runtime by the refresh pipeline; never on disk.
     #[serde(skip)]
     pub source: SessionSource,
+    /// PID of the wild claude process backing this session, if `source`
+    /// is `Wild` or `External`. Populated by the precedence overlay
+    /// alongside `source` so the adopt dialog can hand it to the
+    /// takeover effect without a second correlation pass. Never on disk.
+    #[serde(skip)]
+    pub wild_pid: Option<u32>,
 }
 
 impl Session {
@@ -370,7 +362,6 @@ impl Session {
     /// Single source of truth for adoption eligibility — consumed by the input
     /// handler (status-bar hint vs. dialog), the reducer (validates the action
     /// before emitting effects), and the confirm dialog (which buttons render).
-    #[allow(dead_code)] // wired up in subsequent wild-session-adoption tasks
     pub fn adoption_options(&self) -> AdoptionOptions {
         match self.source {
             SessionSource::Daemon => {
@@ -806,11 +797,6 @@ mod tests {
                 *want_reason,
                 "{label}: reason_disabled presence mismatch"
             );
-            assert_eq!(
-                opts.any(),
-                *want_view || *want_takeover,
-                "{label}: any() inconsistent"
-            );
         }
     }
 
@@ -821,7 +807,8 @@ mod tests {
         let s = Session::default();
         assert_eq!(s.source, SessionSource::Unknown);
         let opts = s.adoption_options();
-        assert!(!opts.any());
+        assert!(!opts.view_only);
+        assert!(!opts.takeover);
     }
 
     #[test]

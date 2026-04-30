@@ -1852,6 +1852,86 @@ impl App {
                     // immediately instead of waiting for its next tick.
                     self.wild_scan_wake.notify_one();
                 }
+                Effect::TakeoverWildSession {
+                    session_id,
+                    pid,
+                    cwd,
+                } => {
+                    use crate::infrastructure::process_scan::{
+                        should_signal, LiveProcessProbe, ProcessProbe, SignalDecision,
+                    };
+                    let probe = LiveProcessProbe;
+                    match should_signal(pid, &probe) {
+                        SignalDecision::Allow => {
+                            // SIGTERM, then poll up to 2s for exit, then
+                            // SIGKILL if it's still alive. Poll cadence
+                            // is 100ms — keeps the perceived latency low
+                            // for cooperative quitters while bounding the
+                            // worst case.
+                            let pid_i = pid as i32;
+                            let kill = |sig: libc::c_int| unsafe {
+                                libc::kill(pid_i, sig);
+                            };
+                            kill(libc::SIGTERM);
+                            let deadline =
+                                std::time::Instant::now() + std::time::Duration::from_secs(2);
+                            let mut exited = false;
+                            while std::time::Instant::now() < deadline {
+                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                if !probe.is_alive(pid) {
+                                    exited = true;
+                                    break;
+                                }
+                            }
+                            if !exited {
+                                kill(libc::SIGKILL);
+                                // Give the kernel one tick to reap so
+                                // --resume doesn't race the lock.
+                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            }
+                            // Re-spawn under the daemon as --resume <id>.
+                            let size = terminal
+                                .size()
+                                .unwrap_or(ratatui::layout::Size::new(120, 40));
+                            let cmd_args = vec!["--resume".to_string(), session_id.clone()];
+                            let resolved_cwd = if cwd.is_empty() {
+                                None
+                            } else {
+                                Some(cwd.as_str())
+                            };
+                            if let Err(e) = self
+                                .daemon
+                                .create_session(
+                                    &session_id,
+                                    &self.cli_runner.claude_bin,
+                                    &cmd_args,
+                                    resolved_cwd,
+                                    None,
+                                    size.width,
+                                    size.height,
+                                    HashMap::new(),
+                                )
+                                .await
+                            {
+                                tracing::warn!("Takeover create_session failed: {}", e);
+                                self.state.toast = Some(format!("Takeover failed: {}", e));
+                            } else {
+                                let short = crate::adapters::format::short_id(&session_id, 8);
+                                self.state.toast =
+                                    Some(format!("Took over wild session ({})", short));
+                            }
+                        }
+                        SignalDecision::ProcessExited => {
+                            self.state.toast =
+                                Some("Wild process is no longer running".to_string());
+                        }
+                        SignalDecision::CmdlineChanged => {
+                            self.state.toast = Some(
+                                "PID was reused by another process — refusing takeover".to_string(),
+                            );
+                        }
+                    }
+                }
                 Effect::PerformUpdate => {
                     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                     events.set_update_rx(rx);

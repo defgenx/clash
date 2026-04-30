@@ -37,19 +37,6 @@ pub fn source_glyph(source: SessionSource) -> &'static str {
     }
 }
 
-/// Full-word label for a session's `source`, for the help/tour legend
-/// and any future status-bar surface that wants prose. Empty for the
-/// default cases that have no glyph.
-#[allow(dead_code)] // wired up by status-bar hint in PR 1 — Step 7 (a-key flow)
-pub fn source_label(source: SessionSource) -> &'static str {
-    match source {
-        SessionSource::Daemon => "",
-        SessionSource::External => "external pane",
-        SessionSource::Wild => "wild claude (outside daemon)",
-        SessionSource::Unknown => "",
-    }
-}
-
 /// All view kinds in the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewKind {

@@ -15,14 +15,6 @@
 //! process's cwd; ambiguous cwd matches are treated as Unknown and the
 //! key is left absent from the result map, never picked arbitrarily.
 //!
-//! NOTE: many items here are intentionally unused at the bin call-graph
-//! today — they are wired up in subsequent tasks of the
-//! wild-session-adoption spec (background scan in app.rs, then the
-//! TakeoverWildSession effect translator). The lib's tests exercise
-//! every path.
-
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -145,8 +137,10 @@ pub trait FdProbe {
 
 /// Linux: read `/proc/<pid>/fd/` directly via `read_dir` + `read_link`.
 /// No subprocess; ~10× faster than shelling to `lsof`.
+#[cfg(target_os = "linux")]
 pub struct LinuxProcFs;
 
+#[cfg(target_os = "linux")]
 impl FdProbe for LinuxProcFs {
     fn open_files(&self, pid: u32) -> Vec<PathBuf> {
         read_proc_fd_dir(&format!("/proc/{}/fd", pid))
@@ -160,7 +154,10 @@ impl FdProbe for LinuxProcFs {
 }
 
 /// Pure helper for [`LinuxProcFs`] — exposed for tests that point at a
-/// synthetic fd directory in a tempdir.
+/// synthetic fd directory in a tempdir. Only compiled on Linux (where
+/// LinuxProcFs uses it) and during `cargo test` (so the cross-platform
+/// fixture test still runs on macOS CI).
+#[cfg(any(target_os = "linux", test))]
 pub fn read_proc_fd_dir(dir: &str) -> Vec<PathBuf> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -175,11 +172,13 @@ pub fn read_proc_fd_dir(dir: &str) -> Vec<PathBuf> {
     out
 }
 
-/// macOS: shell out to `lsof` once per PID for files, and again with
-/// `-d cwd` for the working directory. Failures (permission denied,
-/// lsof missing, process gone) yield empty / `None`.
+/// macOS / non-Linux Unix: shell out to `lsof` once per PID for files,
+/// and again with `-d cwd` for the working directory. Failures
+/// (permission denied, lsof missing, process gone) yield empty / `None`.
+#[cfg(not(target_os = "linux"))]
 pub struct DarwinLsof;
 
+#[cfg(not(target_os = "linux"))]
 impl FdProbe for DarwinLsof {
     fn open_files(&self, pid: u32) -> Vec<PathBuf> {
         let output = Command::new("lsof")
@@ -317,15 +316,14 @@ pub struct LiveProcessProbe;
 
 impl ProcessProbe for LiveProcessProbe {
     fn is_alive(&self, pid: u32) -> bool {
-        // kill(pid, 0) returns 0 iff the PID exists and we have permission
-        // to signal it. EPERM (-1, errno=EPERM) also implies the PID
-        // exists; we treat that as alive too.
-        let rc = unsafe { libc::kill(pid as i32, 0) };
-        if rc == 0 {
-            return true;
+        // kill(pid, 0) returns Ok iff the PID exists and we have permission
+        // to signal it. EPERM also implies the PID exists; treat that as
+        // alive too. Use the `nix` errno wrapper for cross-platform errno.
+        match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None) {
+            Ok(()) => true,
+            Err(nix::errno::Errno::EPERM) => true,
+            Err(_) => false,
         }
-        let errno = unsafe { *libc::__error() };
-        errno == libc::EPERM
     }
 
     fn cmdline(&self, pid: u32) -> Option<String> {

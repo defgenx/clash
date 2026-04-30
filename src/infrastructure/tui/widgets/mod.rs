@@ -1,3 +1,4 @@
+pub mod adopt_dialog;
 pub mod busy_overlay;
 pub mod centered;
 pub mod confirm_dialog;

@@ -138,6 +138,13 @@ pub fn draw(
     if let Some(ref picker) = state.picker_dialog {
         picker_dialog::render_picker_dialog(picker, frame, frame.area());
     }
+    if let Some(ref adopt) = state.adopt_dialog {
+        crate::infrastructure::tui::widgets::adopt_dialog::render_adopt_dialog(
+            adopt,
+            frame,
+            frame.area(),
+        );
+    }
 
     // Update progress overlay — on top of everything except busy
     if let Some(ref phase) = state.update_progress {
