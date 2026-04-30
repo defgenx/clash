@@ -161,6 +161,14 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
     // yet (e.g., immediately quit after creation), or whose files were cleaned up.
     add_registry_only_sessions(&mut sessions, &input.registry, &input.hook_statuses);
 
+    // Phase 5.5: Admit wild-only disk sessions — claude processes the
+    // user started outside clash (bare `claude` in some terminal) have
+    // a JSONL on disk but no clash registry entry, so the registry
+    // filter in Phase 1 dropped them. Re-add any disk session whose id
+    // appears in some `WildProcess.open_jsonl_session_ids`. The Phase 7
+    // source overlay then badges them as Wild.
+    admit_wild_disk_sessions(&mut sessions, &input.disk_sessions, &input.wild_processes);
+
     // Phase 6: Resolve names from daemon infos and saved names
     resolve_names(&mut sessions, &input.daemon_infos, &input.saved_names);
 
@@ -180,6 +188,36 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
     sort_sessions_by_section(&mut sessions);
 
     sessions
+}
+
+// ── Phase 5.5: Admit wild-only disk sessions ──────────────────────
+
+/// Re-introduce disk sessions that the registry filter dropped, but only
+/// when the wild scan can vouch for them: a `claude` process holds the
+/// session's `.jsonl` open as a file descriptor (the basename in
+/// `WildProcess.open_jsonl_session_ids` IS the session id).
+///
+/// This is what makes "I started `claude` in another terminal and want
+/// to see it in clash" work without the user having to register the
+/// session up front.
+fn admit_wild_disk_sessions(
+    sessions: &mut Vec<Session>,
+    disk_sessions: &[Session],
+    wild_processes: &[crate::infrastructure::process_scan::WildProcess],
+) {
+    if wild_processes.is_empty() {
+        return;
+    }
+    let already: HashSet<String> = sessions.iter().map(|s| s.id.clone()).collect();
+    let wild_ids: HashSet<&str> = wild_processes
+        .iter()
+        .flat_map(|w| w.open_jsonl_session_ids.iter().map(|s| s.as_str()))
+        .collect();
+    for s in disk_sessions {
+        if !already.contains(&s.id) && wild_ids.contains(s.id.as_str()) {
+            sessions.push(s.clone());
+        }
+    }
 }
 
 // ── Phase 7: Source precedence overlay ────────────────────────────
@@ -1566,6 +1604,47 @@ mod tests {
         let out = build_session_list(&input);
         let row = out.iter().find(|r| r.id == "sid").expect("sid present");
         assert_eq!(row.source, crate::domain::entities::SessionSource::Wild);
+    }
+
+    #[test]
+    fn admit_wild_disk_session_not_in_registry() {
+        // The user runs `claude` in a terminal outside clash. Its JSONL
+        // exists on disk but it's NOT in clash's registry, so the
+        // registry filter in Phase 1 would normally drop it. The wild
+        // scan finds the process holding the JSONL open — Phase 5.5
+        // must admit the session so it appears in the list as Wild.
+        let mut s = make_disk_session("wild-sid", "p", "x");
+        s.cwd = Some("/repo".into());
+        let prev = vec![];
+        let mut input = empty_input(&prev);
+        input.disk_sessions = vec![s];
+        // Empty registry → Phase 1 returns Vec::new(). Without Phase 5.5
+        // the session never enters the list.
+        input.wild_processes = vec![wild_with_open_jsonl(777, "wild-sid")];
+
+        let out = build_session_list(&input);
+        let row = out
+            .iter()
+            .find(|r| r.id == "wild-sid")
+            .expect("wild-sid must be admitted by Phase 5.5");
+        assert_eq!(row.source, crate::domain::entities::SessionSource::Wild);
+        assert_eq!(row.wild_pid, Some(777));
+    }
+
+    #[test]
+    fn admit_wild_disk_session_idempotent_when_already_present() {
+        // Same session in BOTH registry and wild_processes — must not
+        // duplicate the row.
+        let (s, entry) = registered_session("sid", "/repo");
+        let registry = HashMap::from([(s.id.clone(), entry)]);
+        let prev = vec![];
+        let mut input = empty_input(&prev);
+        input.disk_sessions = vec![s];
+        input.registry = registry;
+        input.wild_processes = vec![wild_with_open_jsonl(444, "sid")];
+
+        let out = build_session_list(&input);
+        assert_eq!(out.iter().filter(|r| r.id == "sid").count(), 1);
     }
 
     #[test]
