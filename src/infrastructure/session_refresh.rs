@@ -62,6 +62,13 @@ pub struct RefreshInput<'a> {
     /// `daemon_infos`. Empty when the scan task has not produced a
     /// snapshot yet, or when no `claude` process matches.
     pub wild_processes: Vec<crate::infrastructure::process_scan::WildProcess>,
+    /// Sessions clash spawned in another pane/tab/window via `o`/`O`.
+    /// Required by the `External` source-precedence rule: an id is
+    /// `External` only if it appears here AND the wild scan still finds
+    /// a live PID for it. The "AND wild" requirement self-heals across
+    /// clash restarts (the in-memory set resets to empty, and the row
+    /// falls through to `Wild` if its process is still alive).
+    pub externally_opened: HashSet<String>,
 }
 
 // ── Gathering (IO-touching) ──────────────────────────────────────
@@ -102,6 +109,7 @@ pub fn gather_sync_input<'a>(
         previous_sessions: previous,
         jsonl_mtimes,
         wild_processes: Vec::new(),
+        externally_opened: HashSet::new(),
     }
 }
 
@@ -156,10 +164,60 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
     // Phase 6: Resolve names from daemon infos and saved names
     resolve_names(&mut sessions, &input.daemon_infos, &input.saved_names);
 
-    // Phase 7: Sort by section (Active/Done/Fail) then name
+    // Phase 7: Overlay Session.source per the precedence rule
+    //   Daemon > External > Wild > Unknown
+    // External requires BOTH externally_opened membership AND a wild PID
+    // match — that way clash restarts (which empty externally_opened)
+    // demote the row to Wild rather than silently strand it as External.
+    overlay_session_source(
+        &mut sessions,
+        &input.daemon_infos,
+        &input.wild_processes,
+        &input.externally_opened,
+    );
+
+    // Phase 8: Sort by section (Active/Done/Fail) then name
     sort_sessions_by_section(&mut sessions);
 
     sessions
+}
+
+// ── Phase 7: Source precedence overlay ────────────────────────────
+
+/// Compute and write `Session.source` for every session in `sessions`.
+///
+/// Pure — invokes the (also pure) `correlate_wild_to_sessions` against
+/// the current session list and applies the precedence rule
+/// `Daemon > External > Wild > Unknown`.
+fn overlay_session_source(
+    sessions: &mut [Session],
+    daemon_infos: &Option<Vec<SessionInfo>>,
+    wild_processes: &[crate::infrastructure::process_scan::WildProcess],
+    externally_opened: &HashSet<String>,
+) {
+    use crate::domain::entities::SessionSource;
+
+    let daemon_ids: HashSet<&str> = daemon_infos
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|info| info.session_id.as_str())
+        .collect();
+
+    let wild_pids =
+        crate::infrastructure::process_scan::correlate_wild_to_sessions(wild_processes, sessions);
+
+    for session in sessions.iter_mut() {
+        session.source = if daemon_ids.contains(session.id.as_str()) {
+            SessionSource::Daemon
+        } else if externally_opened.contains(&session.id) && wild_pids.contains_key(&session.id) {
+            SessionSource::External
+        } else if wild_pids.contains_key(&session.id) {
+            SessionSource::Wild
+        } else {
+            SessionSource::Unknown
+        };
+    }
 }
 
 // ── Phase 1: Registry filtering ──────────────────────────────────
@@ -762,6 +820,7 @@ mod tests {
             previous_sessions: previous,
             jsonl_mtimes: HashMap::new(),
             wild_processes: Vec::new(),
+            externally_opened: HashSet::new(),
         }
     }
 
@@ -1402,5 +1461,118 @@ mod tests {
         ]);
         let cycle3 = build_session_list(&input3);
         assert_eq!(cycle3.len(), 2);
+    }
+
+    // ── Source precedence overlay (Issue 3 / Task 4 / Issue T2) ──
+
+    /// Helper: build a registry-bound session and a registered set so
+    /// `filter_by_registry` lets it through.
+    fn registered_session(id: &str, cwd: &str) -> (Session, ClashSession) {
+        let mut s = make_disk_session(id, "proj", "x");
+        s.cwd = Some(cwd.to_string());
+        (s, make_registry_entry(id, id, cwd))
+    }
+
+    fn wild_with_open_jsonl(
+        pid: u32,
+        session_id: &str,
+    ) -> crate::infrastructure::process_scan::WildProcess {
+        crate::infrastructure::process_scan::WildProcess {
+            pid,
+            command: "claude".into(),
+            cwd: None,
+            open_jsonl_session_ids: vec![session_id.to_string()],
+        }
+    }
+
+    #[test]
+    fn source_precedence_daemon_wins_over_wild() {
+        // Session is in BOTH daemon_infos and wild_processes — Daemon
+        // dominance must hold, otherwise we'd badge a daemon-managed
+        // session as wild and offer takeover on it.
+        let (s, entry) = registered_session("sid", "/repo");
+        let registry = HashMap::from([(s.id.clone(), entry)]);
+        let prev = vec![];
+        let mut input = empty_input(&prev);
+        input.disk_sessions = vec![s];
+        input.registry = registry;
+        input.daemon_infos = Some(vec![make_daemon_info("sid", "/repo", "running", true)]);
+        input.wild_processes = vec![wild_with_open_jsonl(99, "sid")];
+
+        let out = build_session_list(&input);
+        let row = out.iter().find(|r| r.id == "sid").expect("sid present");
+        assert_eq!(row.source, crate::domain::entities::SessionSource::Daemon);
+    }
+
+    #[test]
+    fn source_precedence_external_when_in_set_and_pid_match() {
+        // Session is in externally_opened AND wild_processes finds the
+        // PID — must badge as External, not Wild.
+        let (s, entry) = registered_session("sid", "/repo");
+        let registry = HashMap::from([(s.id.clone(), entry)]);
+        let prev = vec![];
+        let mut input = empty_input(&prev);
+        input.disk_sessions = vec![s];
+        input.registry = registry;
+        input.wild_processes = vec![wild_with_open_jsonl(123, "sid")];
+        input.externally_opened = HashSet::from(["sid".to_string()]);
+
+        let out = build_session_list(&input);
+        let row = out.iter().find(|r| r.id == "sid").expect("sid present");
+        assert_eq!(row.source, crate::domain::entities::SessionSource::External);
+    }
+
+    #[test]
+    fn source_precedence_restart_self_heal_externally_opened_alone_demotes_to_unknown() {
+        // After a clash restart externally_opened is empty BUT a wild
+        // process for the session may still be alive — the row must
+        // show as Wild, not "stuck External" (which we'd never recover
+        // from). Conversely, if externally_opened says yes but wild
+        // detection finds no PID, the External condition fails and we
+        // fall through to Unknown (process is gone).
+        let (s, entry) = registered_session("sid", "/repo");
+        let registry = HashMap::from([(s.id.clone(), entry)]);
+        let prev = vec![];
+        let mut input = empty_input(&prev);
+        input.disk_sessions = vec![s];
+        input.registry = registry;
+        // externally_opened says yes; wild_processes empty (no live PID).
+        input.externally_opened = HashSet::from(["sid".to_string()]);
+
+        let out = build_session_list(&input);
+        let row = out.iter().find(|r| r.id == "sid").expect("sid present");
+        assert_eq!(row.source, crate::domain::entities::SessionSource::Unknown);
+    }
+
+    #[test]
+    fn source_precedence_wild_when_pid_match_only() {
+        // Wild PID matches but the session was never externally_opened —
+        // this is the bare `claude` case. Must badge as Wild.
+        let (s, entry) = registered_session("sid", "/repo");
+        let registry = HashMap::from([(s.id.clone(), entry)]);
+        let prev = vec![];
+        let mut input = empty_input(&prev);
+        input.disk_sessions = vec![s];
+        input.registry = registry;
+        input.wild_processes = vec![wild_with_open_jsonl(444, "sid")];
+
+        let out = build_session_list(&input);
+        let row = out.iter().find(|r| r.id == "sid").expect("sid present");
+        assert_eq!(row.source, crate::domain::entities::SessionSource::Wild);
+    }
+
+    #[test]
+    fn source_precedence_unknown_when_no_signals() {
+        let (s, entry) = registered_session("sid", "/repo");
+        let registry = HashMap::from([(s.id.clone(), entry)]);
+        let prev = vec![];
+        let mut input = empty_input(&prev);
+        input.disk_sessions = vec![s];
+        input.registry = registry;
+        // No daemon, no wild, no external.
+
+        let out = build_session_list(&input);
+        let row = out.iter().find(|r| r.id == "sid").expect("sid present");
+        assert_eq!(row.source, crate::domain::entities::SessionSource::Unknown);
     }
 }

@@ -897,6 +897,9 @@ impl App {
         // task. `borrow()` is non-blocking; the watch keeps only the
         // newest value so we never accumulate stale snapshots.
         input.wild_processes = self.wild_processes_rx.borrow().clone();
+        // Clone the in-memory externally_opened set so build_session_list
+        // can apply the External precedence rule purely.
+        input.externally_opened = self.state.externally_opened.clone();
 
         // Build complete session list (pure, no IO)
         let new_sessions = session_refresh::build_session_list(&input);
