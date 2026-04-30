@@ -581,11 +581,11 @@ impl App {
                             got_output = true;
                             last_output = tokio::time::Instant::now();
                         }
-                        protocol::Event::Exited { session_id: ev_sid, .. } => {
-                            if Some(ev_sid.as_str()) == session_id_for_filter {
-                                session_exited = true;
-                                break;
-                            }
+                        protocol::Event::Exited { session_id: ev_sid, .. }
+                            if Some(ev_sid.as_str()) == session_id_for_filter =>
+                        {
+                            session_exited = true;
+                            break;
                         }
                         _ => {}
                     }

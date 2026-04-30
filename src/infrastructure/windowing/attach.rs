@@ -29,7 +29,7 @@ const BAR_BRANCH: &str = "\x1b[38;2;200;185;125m"; // BRANCH_COLOR
 const BAR_SEP: &str = "\x1b[38;2;50;42;72m"; // SEPARATOR
 
 /// Session metadata displayed in the attach status bar.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct AttachInfo {
     /// Display name. Prefer `Session.name` when set; otherwise `display_name`
     /// derives a meaningful identifier from project/branch (UUID prefix is the
@@ -199,10 +199,8 @@ pub async fn buffer_history(
                         got_output = true;
                         last_output = tokio::time::Instant::now();
                     }
-                    protocol::Event::Exited { session_id: ev_sid, .. } => {
-                        if ev_sid == session_id {
-                            return Err(AttachResult::SessionExited);
-                        }
+                    protocol::Event::Exited { session_id: ev_sid, .. } if ev_sid == session_id => {
+                        return Err(AttachResult::SessionExited);
                     }
                     _ => {}
                 }
@@ -234,8 +232,7 @@ pub async fn buffer_history(
 
 // ── History snapshot ──────────────────────────────────────────
 
-/// Process raw PTY history through a vt100 parser and render only the
-/// final screen state.
+/// Render the parser's final screen state to stdout.
 ///
 /// Why parse instead of streaming raw bytes: the daemon's history
 /// covers the entire session lifetime; replaying it raw would scroll
@@ -243,25 +240,27 @@ pub async fn buffer_history(
 /// `contents_formatted()` reduces the whole stream to the last visible
 /// frame (including SGR/background/cursor), which is what the user
 /// expects to see when they attach.
-fn render_history_snapshot(history: &[u8], content_rows: u16, cols: u16) {
-    if history.is_empty() {
+///
+/// The caller is expected to feed the history through the parser
+/// before calling this — the same parser is then reused for live
+/// cursor/SGR tracking by the attach loop, so its perceived state
+/// matches what we just painted.
+fn render_history_snapshot(parser: &vt100::Parser) {
+    let screen = parser.screen();
+    if screen.contents().is_empty() {
         return;
     }
-    let mut parser = vt100::Parser::new(content_rows, cols, 0);
-    parser.process(history);
-    let screen = parser.screen();
 
     write_stdout(b"\x1b[?25l"); // hide cursor while we paint
     write_stdout(b"\x1b[H"); // home
-    let rendered = screen.contents_formatted();
-    write_stdout(&rendered);
+    write_stdout(&screen.contents_formatted());
 
-    // Restore cursor to the position vt100 last saw — claude's redraw
-    // (triggered by the post-replay size-toggle) will overwrite it.
-    let (cy, cx) = screen.cursor_position();
-    let seq = format!("\x1b[{};{}H", cy + 1, cx + 1);
-    write_stdout(seq.as_bytes());
-    write_stdout(b"\x1b[?25h"); // show cursor
+    // Restore cursor + visibility, then SGR pen, both from parser state.
+    // cursor_state_formatted may emit cells to position the cursor and
+    // therefore disturbs SGR — apply attributes_formatted after, per
+    // vt100's documented contract.
+    write_stdout(&screen.cursor_state_formatted());
+    write_stdout(&screen.attributes_formatted());
 }
 
 // ── Status bar helpers ─────────────────────────────────────────
@@ -299,13 +298,21 @@ fn status_bar_width(info: &AttachInfo, hint_chars: usize) -> usize {
 /// Draw the status bar on the reserved bottom row (outside the scroll region).
 ///
 /// Layout: ` {name} │ {project} │ ⎇ {branch}         Ctrl+B detach `
-fn draw_status_bar(cols: u16, rows: u16, info: &AttachInfo) {
-    // Save cursor, move to last row, draw bar, restore cursor.
-    // This avoids disrupting Claude Code's cursor position.
-    let mut buf = String::with_capacity(cols as usize + 128);
+///
+/// We deliberately do NOT use DECSC/DECRC (`\x1b7`/`\x1b8`). Claude Code
+/// uses its own cursor save/restore for modal overlays, and DECSC/DECRC
+/// shares a single save slot per terminal — our redraw between Claude's
+/// save and restore would clobber the saved state and cause text overlap.
+/// Instead, we explicitly restore cursor position, visibility, and SGR
+/// pen state from the vt100 parser that mirrors Claude's output.
+fn draw_status_bar(cols: u16, rows: u16, info: &AttachInfo, parser: &vt100::Parser) {
+    let mut buf = String::with_capacity(cols as usize + 256);
 
-    buf.push_str("\x1b7"); // save cursor
-    buf.push_str(&format!("\x1b[{};1H", rows)); // position at bottom row
+    // Hide cursor while we paint to avoid flicker; cursor_state_formatted
+    // below will restore visibility to whatever Claude expects.
+    buf.push_str("\x1b[?25l");
+    // Position at bottom row column 1, reset SGR before drawing.
+    buf.push_str(&format!("\x1b[{};1H\x1b[0m", rows));
 
     // Build left side: clash │ name │ project │ ⎇ branch
     buf.push_str(BAR_BG);
@@ -368,9 +375,15 @@ fn draw_status_bar(cols: u16, rows: u16, info: &AttachInfo) {
     buf.push_str(hint);
     buf.push_str(RESET);
 
-    buf.push_str("\x1b8"); // restore cursor
-
     write_stdout(buf.as_bytes());
+
+    // Restore Claude's cursor state then SGR pen, both from the parser.
+    // Order matters: cursor_state_formatted may redraw cells (and disturb
+    // SGR) while moving the cursor; attributes_formatted after re-pins
+    // the active pen. See vt100 Screen::cursor_state_formatted docs.
+    let screen = parser.screen();
+    write_stdout(&screen.cursor_state_formatted());
+    write_stdout(&screen.attributes_formatted());
 }
 
 /// Draw a dimmed overlay with a shimmer spinner message in the bottom-right
@@ -456,12 +469,27 @@ pub async fn attach_loop(
             }
         },
     };
+
+    // The parser mirrors Claude's perceived screen for the lifetime of
+    // the attach. Sized to the content area (rows minus our status bar),
+    // matching the daemon-side PTY. We feed it the replay buffer so its
+    // initial state matches what render_history_snapshot paints, then
+    // every live chunk so cursor + SGR tracking stays in sync — this is
+    // what lets draw_status_bar avoid DECSC/DECRC.
+    let mut parser = vt100::Parser::new(content_rows, cols, 0);
+    parser.process(&history);
+
+    // Own a mutable copy so the periodic refresh tick can update branch /
+    // session-name / project labels in place when the user switches
+    // branches inside Claude or renames the session in the TUI.
+    let mut current_info = info.clone();
+
     set_scroll_region(content_rows); // re-set in case buffer_history's spinner moved it
-    render_history_snapshot(&history, content_rows, cols);
-    draw_status_bar(cols, rows, info);
+    render_history_snapshot(&parser);
+    draw_status_bar(cols, rows, &current_info, &parser);
 
     // Set terminal title bar
-    set_title(&format!("clash │ {}", info.name));
+    set_title(&format!("clash │ {}", current_info.name));
 
     // Belt-and-suspenders force-redraw: a tiny size toggle so Claude
     // repaints over whatever vt100 may have mis-rendered. Inexpensive —
@@ -473,6 +501,15 @@ pub async fn attach_loop(
     // SIGWINCH for terminal resize detection
     let mut sigwinch =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change()).ok();
+
+    // Periodic refresh of the status bar's session metadata. Branch can
+    // change mid-session (`git checkout`), session name can be renamed in
+    // the TUI, and we want the footer to reflect that without forcing a
+    // detach/reattach. 3s is responsive without being chatty.
+    let refresh_period = std::time::Duration::from_secs(3);
+    let mut refresh_tick =
+        tokio::time::interval_at(tokio::time::Instant::now() + refresh_period, refresh_period);
+    refresh_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
@@ -530,9 +567,25 @@ pub async fn attach_loop(
                     cols = w;
                     rows = h;
                     let cr = h.saturating_sub(1).max(1);
+                    parser.set_size(cr, w);
                     set_scroll_region(cr);
                     let _ = daemon.resize(session_id, w, cr).await;
-                    draw_status_bar(w, h, info);
+                    draw_status_bar(w, h, &current_info, &parser);
+                }
+            }
+
+            // Periodic metadata refresh — pick up branch switches and
+            // session-name renames without forcing a reattach.
+            _ = refresh_tick.tick() => {
+                if let Some(new_info) = refresh_attach_info(daemon, session_id).await {
+                    if new_info != current_info {
+                        let title_changed = new_info.name != current_info.name;
+                        current_info = new_info;
+                        draw_status_bar(cols, rows, &current_info, &parser);
+                        if title_changed {
+                            set_title(&format!("clash │ {}", current_info.name));
+                        }
+                    }
                 }
             }
 
@@ -555,22 +608,25 @@ pub async fn attach_loop(
                             continue;
                         }
                         if let Ok(bytes) = protocol::decode_data(&data) {
+                            // Mirror Claude's output through the parser BEFORE
+                            // writing — keeps cursor/SGR tracking in sync so
+                            // draw_status_bar can restore Claude's state without
+                            // touching the DECSC slot.
+                            parser.process(&bytes);
                             write_stdout(&bytes);
                             // Only redraw when output contains Erase in Display
                             // sequences (ED) that clear outside the scroll region.
                             // Redrawing on every chunk breaks Claude Code's input.
                             if contains_screen_clear(&bytes) {
-                                draw_status_bar(cols, rows, info);
+                                draw_status_bar(cols, rows, &current_info, &parser);
                             }
                         }
                     }
                     protocol::Event::Exited {
                         session_id: ev_sid, ..
-                    } => {
-                        if ev_sid == session_id {
-                            result = AttachResult::SessionExited;
-                            break;
-                        }
+                    } if ev_sid == session_id => {
+                        result = AttachResult::SessionExited;
+                        break;
                     }
                     _ => {}
                 }
@@ -585,7 +641,7 @@ pub async fn attach_loop(
 
     // Show detaching feedback (same busy overlay style)
     let (cols, rows) = crossterm::terminal::size().unwrap_or((cols, rows));
-    draw_status_screen(cols, rows, &format!("Detaching {}…", info.name), 0);
+    draw_status_screen(cols, rows, &format!("Detaching {}…", current_info.name), 0);
 
     // Reset terminal title
     set_title("");
@@ -630,26 +686,18 @@ impl Drop for RawModeGuard {
     }
 }
 
-/// Look up a session on the daemon and build a footer `AttachInfo` from it.
+/// Look up the current session metadata on the daemon and rebuild
+/// `AttachInfo`. Returns `None` on any failure (daemon unreachable, session
+/// not in list) so callers can leave the previously-displayed info intact
+/// instead of flashing a UUID-prefix fallback during a transient blip.
 ///
-/// `cwd` and `name` come straight from `SessionInfo`; the branch is read from
-/// `.git/HEAD` in `cwd` (the daemon doesn't track branch — it's a property of
-/// the working tree, not the PTY). Failures fall back to a UUID-prefix name so
-/// the bar always renders something.
-async fn build_attach_info_from_daemon(daemon: &mut DaemonClient, session_id: &str) -> AttachInfo {
-    let session_meta = match daemon.list_sessions().await {
-        Ok(list) => list.into_iter().find(|s| s.session_id == session_id),
-        Err(e) => {
-            tracing::warn!("list_sessions failed during attach: {}", e);
-            None
-        }
-    };
-
-    let (name_opt, cwd) = match session_meta {
-        Some(s) => (s.name, s.cwd),
-        None => (None, String::new()),
-    };
-
+/// Used both at attach start and on the periodic refresh tick — branch can
+/// change mid-session (`git checkout`), session name can be renamed in the
+/// TUI, and cwd is the source of truth for the project label.
+async fn refresh_attach_info(daemon: &mut DaemonClient, session_id: &str) -> Option<AttachInfo> {
+    let list = daemon.list_sessions().await.ok()?;
+    let session = list.into_iter().find(|s| s.session_id == session_id)?;
+    let cwd = session.cwd;
     let project = cwd
         .rsplit('/')
         .next()
@@ -657,11 +705,25 @@ async fn build_attach_info_from_daemon(daemon: &mut DaemonClient, session_id: &s
         .unwrap_or(&cwd)
         .to_string();
     let branch = crate::infrastructure::fs::backend::FsBackend::detect_git_branch(&cwd);
-
-    AttachInfo {
-        name: display_name(name_opt.as_deref(), &project, &branch, session_id),
+    Some(AttachInfo {
+        name: display_name(session.name.as_deref(), &project, &branch, session_id),
         project,
         branch,
+    })
+}
+
+/// Initial-attach lookup. Falls back to a UUID-prefix name on failure so the
+/// bar always renders something on first paint (the periodic refresh will
+/// upgrade it once the daemon responds).
+async fn build_attach_info_from_daemon(daemon: &mut DaemonClient, session_id: &str) -> AttachInfo {
+    if let Some(info) = refresh_attach_info(daemon, session_id).await {
+        return info;
+    }
+    tracing::warn!("list_sessions failed during attach for {}", session_id);
+    AttachInfo {
+        name: display_name(None, "", "", session_id),
+        project: String::new(),
+        branch: String::new(),
     }
 }
 
