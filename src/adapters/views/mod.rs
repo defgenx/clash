@@ -19,6 +19,36 @@ pub mod teams;
 use ratatui::widgets::Cell;
 
 use crate::application::state::AppState;
+use crate::domain::entities::SessionSource;
+
+/// Single-character glyph for a session's `source` — drawn as a row
+/// prefix in the sessions list and reused in the help/tour legends.
+///
+/// Centralized here so the visual character is defined exactly once
+/// (mirrors the `worktree_display_from_cwd` precedent in CLAUDE.md).
+/// Returns the empty string for `Daemon` so daemon-managed rows have
+/// no prefix at all — the visual default.
+pub fn source_glyph(source: SessionSource) -> &'static str {
+    match source {
+        SessionSource::Daemon => "",
+        SessionSource::External => "\u{229e} ", // ⊞
+        SessionSource::Wild => "\u{1f33f} ",    // 🌿
+        SessionSource::Unknown => "",
+    }
+}
+
+/// Full-word label for a session's `source`, for the help/tour legend
+/// and any future status-bar surface that wants prose. Empty for the
+/// default cases that have no glyph.
+#[allow(dead_code)] // wired up by status-bar hint in PR 1 — Step 7 (a-key flow)
+pub fn source_label(source: SessionSource) -> &'static str {
+    match source {
+        SessionSource::Daemon => "",
+        SessionSource::External => "external pane",
+        SessionSource::Wild => "wild claude (outside daemon)",
+        SessionSource::Unknown => "",
+    }
+}
 
 /// All view kinds in the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

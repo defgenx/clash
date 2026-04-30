@@ -90,6 +90,18 @@ clash detects session status through three layers (in priority order):
 | `✗` | Errored | Session crashed shortly after starting |
 | `○` | Stashed | Exited or inactive |
 
+### Session Source Prefixes
+
+Each row in the sessions list may carry a single-character prefix indicating where its underlying Claude process lives:
+
+| Prefix | Source | Meaning |
+|--------|--------|---------|
+| (none) | Daemon | clash spawned and manages the PTY — attach with `o` or Enter |
+| `⊞ `  | External | clash spawned the process in another pane/tab/window via `o`/`O` |
+| `🌿 ` | Wild | A `claude` process started outside clash (bare invocation in some terminal). Press `a` to adopt — view the conversation read-only, or take it over (terminate the wild process and re-spawn under the daemon as `--resume <id>`) |
+
+The Wild detection runs in the background every ~2s. If you start `claude` directly anywhere on the same machine, the row appears with `🌿` shortly after.
+
 ## Keybindings
 
 ### Navigation
