@@ -666,56 +666,127 @@ async fn build_attach_info_from_daemon(daemon: &mut DaemonClient, session_id: &s
     }
 }
 
-/// If running inside an iTerm2 session, ask iTerm2 to close THIS specific
-/// session by `unique id`, which we read out of `ITERM_SESSION_ID`.
+/// Close the surrounding pane / tab / window after `clash attach` finishes.
 ///
-/// Why: iTerm2's "Session > When Done" profile setting defaults to "Don't
-/// close" — when `clash attach` exits, the pane stays around showing
-/// "[Process completed]". Other terminals (tmux, WezTerm, Kitty) close on
-/// foreground exit by default, so this only affects iTerm2.
+/// Each host terminal has its own close-by-id mechanism and exports a
+/// dedicated env var that uniquely identifies the calling pane. We try
+/// strategies in order; the first matching env var wins, the matching
+/// command closes that exact pane (so a sibling pane the user clicked
+/// into mid-session is never affected), and unmatched terminals fall
+/// through to whatever close-on-exit default the terminal has.
+fn close_external_pane_if_inside() {
+    for strategy in CLOSE_PANE_STRATEGIES {
+        if (strategy.run)() {
+            return;
+        }
+    }
+}
+
+struct ClosePaneStrategy {
+    run: fn() -> bool,
+}
+
+/// Strategies dispatch on the env var the host terminal exports. First
+/// successful match returns true; later strategies don't run.
+const CLOSE_PANE_STRATEGIES: &[ClosePaneStrategy] = &[
+    ClosePaneStrategy {
+        run: close_via_term_program_iterm,
+    },
+    ClosePaneStrategy {
+        run: close_via_tmux_pane,
+    },
+    ClosePaneStrategy {
+        run: close_via_wezterm_pane,
+    },
+    ClosePaneStrategy {
+        run: close_via_kitty_window,
+    },
+];
+
+/// $TERM_PROGRAM == "iTerm.app" → osascript, close by `unique id` matching
+/// the UUID tail of $ITERM_SESSION_ID = "wXtYpZ:UUID". Required because
+/// the default profile on this terminal keeps panes alive after the
+/// foreground process exits ("[Process completed]").
 ///
-/// We close by UUID rather than `current session of current window` so a
-/// user who clicked into a sibling pane mid-session doesn't get the wrong
-/// pane closed. The osascript call is synchronous: iTerm2 will close the
-/// pane (killing the foreground process) while osascript is in-flight, so
-/// this function effectively never returns when it succeeds.
-fn close_iterm2_session_if_inside() {
+/// The call is synchronous: the terminal SIGHUPs this process mid-script,
+/// so this function effectively never returns when the close succeeds.
+fn close_via_term_program_iterm() -> bool {
     if std::env::var("TERM_PROGRAM").as_deref() != Ok("iTerm.app") {
-        return;
+        return false;
     }
     let raw = match std::env::var("ITERM_SESSION_ID") {
         Ok(v) if !v.is_empty() => v,
-        _ => return,
+        _ => return false,
     };
-    // ITERM_SESSION_ID is shaped like "w0t0p0:UUID". The UUID is what
-    // matches `unique id of session` in iTerm2's AppleScript dictionary.
     let uuid = raw.rsplit(':').next().unwrap_or(&raw);
+    if uuid.is_empty() {
+        return false;
+    }
     let script = format!(
         concat!(
-            r#"tell application "iTerm2""#,
-            "\n  repeat with theWindow in windows",
-            "\n    repeat with theTab in tabs of theWindow",
-            "\n      repeat with theSession in sessions of theTab",
-            "\n        if (unique id of theSession as string) is \"{uuid}\" then",
-            "\n          tell theSession to close",
-            "\n          return",
-            "\n        end if",
-            "\n      end repeat",
-            "\n    end repeat",
-            "\n  end repeat",
-            "\nend tell",
+            "tell application \"iTerm2\"\n",
+            "  repeat with theWindow in windows\n",
+            "    repeat with theTab in tabs of theWindow\n",
+            "      repeat with theSession in sessions of theTab\n",
+            "        if (unique id of theSession as string) is \"{uuid}\" then\n",
+            "          tell theSession to close\n",
+            "          return\n",
+            "        end if\n",
+            "      end repeat\n",
+            "    end repeat\n",
+            "  end repeat\n",
+            "end tell",
         ),
         uuid = uuid
     );
-    // Synchronous wait: iTerm2 will SIGHUP us mid-script when it closes the
-    // pane, which terminates this process. If iTerm2 isn't running (rare —
-    // we just verified TERM_PROGRAM), osascript exits cleanly and we return.
-    let _ = std::process::Command::new("osascript")
-        .args(["-e", &script])
+    run_silent("osascript", &["-e", &script])
+}
+
+/// $TMUX_PANE present (e.g. "%17") → `tmux kill-pane -t $TMUX_PANE`.
+/// Handles `set -g remain-on-exit on` users.
+fn close_via_tmux_pane() -> bool {
+    let pane = match std::env::var("TMUX_PANE") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return false,
+    };
+    run_silent("tmux", &["kill-pane", "-t", &pane])
+}
+
+/// $WEZTERM_PANE present → `wezterm cli kill-pane --pane-id $WEZTERM_PANE`.
+/// Handles `exit_behavior = "Hold"` users.
+fn close_via_wezterm_pane() -> bool {
+    let pane = match std::env::var("WEZTERM_PANE") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return false,
+    };
+    run_silent("wezterm", &["cli", "kill-pane", "--pane-id", &pane])
+}
+
+/// $KITTY_WINDOW_ID present → `kitty @ close-window --match id:N`. Needs
+/// `allow_remote_control yes` in kitty.conf; if not enabled the call is a
+/// silent no-op and we fall back to kitty's default close-on-child-death.
+fn close_via_kitty_window() -> bool {
+    let win = match std::env::var("KITTY_WINDOW_ID") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return false,
+    };
+    run_silent(
+        "kitty",
+        &["@", "close-window", "--match", &format!("id:{}", win)],
+    )
+}
+
+/// Run `cmd args...` synchronously with all stdio silenced. Returns true
+/// when the command was actually launched (regardless of its exit status —
+/// in the close-pane case, success usually kills us before we can read it).
+fn run_silent(cmd: &str, args: &[&str]) -> bool {
+    std::process::Command::new(cmd)
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
+        .status()
+        .is_ok()
 }
 
 /// Entry point for `clash attach <session_id>`.
@@ -779,11 +850,11 @@ pub async fn run_attach_client(session_id: String) -> eyre::Result<()> {
         AttachResult::Detached => {}
     }
 
-    // If we're running inside an iTerm2 pane/tab spawned by `o`/`O`, close
-    // it. iTerm2's default profile keeps the pane open after the foreground
-    // command exits (showing "[Process completed]"); we want it to vanish
-    // so the user's `o → Ctrl+B` flow leaves no zombie panes behind.
-    close_iterm2_session_if_inside();
+    // We were spawned into an external pane/tab/window by clash's `o`/`O`.
+    // Close it explicitly so any host terminal that holds panes after
+    // foreground exit (configurable on every supported terminal, default
+    // on at least one) doesn't leave a zombie pane behind.
+    close_external_pane_if_inside();
 
     Ok(())
 }
