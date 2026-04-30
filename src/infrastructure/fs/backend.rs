@@ -208,6 +208,7 @@ impl FsBackend {
             source_branch: None,
             preset_name: None,
             repo_config: None,
+            source: crate::domain::entities::SessionSource::default(),
         }
     }
 

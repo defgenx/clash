@@ -148,6 +148,66 @@ impl SessionSection {
     }
 }
 
+/// Where the running Claude process for a session lives, from clash's POV.
+///
+/// Computed at runtime from cross-referencing the daemon's session list, the
+/// in-memory `externally_opened` set, and a periodic ps/lsof scan. Never
+/// persisted to disk — `#[serde(skip)]` on the Session field.
+///
+/// Precedence (highest first): `Daemon > External > Wild > Unknown`. `External`
+/// requires both a membership in `externally_opened` AND a wild PID match — that
+/// way it self-heals across clash restarts (an empty `externally_opened` after
+/// restart simply demotes the row to `Wild`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum SessionSource {
+    /// PTY managed by clash's own daemon. Default — what every session in the
+    /// daemon's session list maps to.
+    Daemon,
+    /// Spawned by clash via `o`/`O` into another pane/tab/window AND its
+    /// process is still detectable by the wild scan.
+    External,
+    /// Running `claude` process detected outside clash's daemon — bare
+    /// invocation in some terminal, or a leftover from a crashed clash whose
+    /// `externally_opened` set was lost.
+    Wild,
+    /// No correlation could be made (e.g. session file exists on disk but no
+    /// matching daemon entry and no live PID found).
+    #[default]
+    Unknown,
+}
+
+/// What adoption actions the user can perform on a session row.
+///
+/// Single source of truth, derived purely from `(Session.source, Session.status)`
+/// via [`Session::adoption_options`]. Consumed by the input handler, the
+/// reducer, and the confirm dialog so the rule never drifts between sites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdoptionOptions {
+    /// Whether read-only conversation tail is offered (always at least
+    /// available when *any* adoption action is allowed, since it's strictly
+    /// safer than takeover).
+    pub view_only: bool,
+    /// Whether SIGTERM-and-resume takeover is offered.
+    pub takeover: bool,
+    /// Reason why no option is available, if both are false. Stable strings —
+    /// rendered verbatim in the status-bar hint.
+    pub reason_disabled: Option<&'static str>,
+}
+
+impl AdoptionOptions {
+    pub const fn none(reason: &'static str) -> Self {
+        Self {
+            view_only: false,
+            takeover: false,
+            reason_disabled: Some(reason),
+        }
+    }
+
+    pub fn any(&self) -> bool {
+        self.view_only || self.takeover
+    }
+}
+
 /// Granular session status — detected by parsing the terminal screen content.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub enum SessionStatus {
@@ -266,6 +326,10 @@ pub struct Session {
     /// Repo-level configuration discovered from the session's cwd (lazy-loaded, not serialized).
     #[serde(skip)]
     pub repo_config: Option<RepoConfig>,
+    /// Where the running process for this session lives (Daemon/External/Wild/Unknown).
+    /// Computed at runtime by the refresh pipeline; never on disk.
+    #[serde(skip)]
+    pub source: SessionSource,
 }
 
 impl Session {
@@ -289,6 +353,37 @@ impl Session {
                 .unwrap_or("")
                 .to_lowercase()
                 .contains(&f)
+    }
+
+    /// What the user can do via `a` (adopt) on this session.
+    ///
+    /// Single source of truth for adoption eligibility — consumed by the input
+    /// handler (status-bar hint vs. dialog), the reducer (validates the action
+    /// before emitting effects), and the confirm dialog (which buttons render).
+    pub fn adoption_options(&self) -> AdoptionOptions {
+        match self.source {
+            SessionSource::Daemon => {
+                AdoptionOptions::none("daemon-managed — already attachable with o/Enter")
+            }
+            SessionSource::Unknown => AdoptionOptions::none("no live process detected"),
+            SessionSource::Wild | SessionSource::External => match self.status {
+                // Active statuses: both options offered. Takeover warns about
+                // in-flight tool calls in the confirm dialog itself.
+                SessionStatus::Running
+                | SessionStatus::Thinking
+                | SessionStatus::Starting
+                | SessionStatus::Prompting
+                | SessionStatus::Waiting => AdoptionOptions {
+                    view_only: true,
+                    takeover: true,
+                    reason_disabled: None,
+                },
+                // Process is gone — nothing to adopt or take over.
+                SessionStatus::Stashed | SessionStatus::Done | SessionStatus::Errored => {
+                    AdoptionOptions::none("process is no longer running")
+                }
+            },
+        }
     }
 }
 
@@ -566,5 +661,162 @@ mod tests {
     fn test_session_section_ordering() {
         assert!(SessionSection::Active < SessionSection::Done);
         assert!(SessionSection::Done < SessionSection::Fail);
+    }
+
+    /// Truth-table coverage for `Session::adoption_options` — the central
+    /// business rule of the wild-session-adoption feature. Representative cases
+    /// across (status × source); the rule itself collapses many combinations.
+    #[test]
+    fn test_adoption_options_truth_table() {
+        // (label, source, status, expected view_only, expected takeover, expected has_reason)
+        let cases: &[(&str, SessionSource, SessionStatus, bool, bool, bool)] = &[
+            // Daemon: never adoptable, regardless of status.
+            (
+                "daemon+running",
+                SessionSource::Daemon,
+                SessionStatus::Running,
+                false,
+                false,
+                true,
+            ),
+            (
+                "daemon+stashed",
+                SessionSource::Daemon,
+                SessionStatus::Stashed,
+                false,
+                false,
+                true,
+            ),
+            // Unknown: nothing to do.
+            (
+                "unknown+running",
+                SessionSource::Unknown,
+                SessionStatus::Running,
+                false,
+                false,
+                true,
+            ),
+            // Wild + active statuses → both options.
+            (
+                "wild+running",
+                SessionSource::Wild,
+                SessionStatus::Running,
+                true,
+                true,
+                false,
+            ),
+            (
+                "wild+thinking",
+                SessionSource::Wild,
+                SessionStatus::Thinking,
+                true,
+                true,
+                false,
+            ),
+            (
+                "wild+starting",
+                SessionSource::Wild,
+                SessionStatus::Starting,
+                true,
+                true,
+                false,
+            ),
+            (
+                "wild+waiting",
+                SessionSource::Wild,
+                SessionStatus::Waiting,
+                true,
+                true,
+                false,
+            ),
+            (
+                "wild+prompting",
+                SessionSource::Wild,
+                SessionStatus::Prompting,
+                true,
+                true,
+                false,
+            ),
+            // Wild + dead statuses → no options.
+            (
+                "wild+stashed",
+                SessionSource::Wild,
+                SessionStatus::Stashed,
+                false,
+                false,
+                true,
+            ),
+            (
+                "wild+errored",
+                SessionSource::Wild,
+                SessionStatus::Errored,
+                false,
+                false,
+                true,
+            ),
+            (
+                "wild+done",
+                SessionSource::Wild,
+                SessionStatus::Done,
+                false,
+                false,
+                true,
+            ),
+            // External behaves like Wild for adoption purposes.
+            (
+                "external+running",
+                SessionSource::External,
+                SessionStatus::Running,
+                true,
+                true,
+                false,
+            ),
+            (
+                "external+stashed",
+                SessionSource::External,
+                SessionStatus::Stashed,
+                false,
+                false,
+                true,
+            ),
+        ];
+
+        for (label, source, status, want_view, want_takeover, want_reason) in cases {
+            let s = Session {
+                source: *source,
+                status: *status,
+                ..Default::default()
+            };
+            let opts = s.adoption_options();
+            assert_eq!(opts.view_only, *want_view, "{label}: view_only mismatch");
+            assert_eq!(opts.takeover, *want_takeover, "{label}: takeover mismatch");
+            assert_eq!(
+                opts.reason_disabled.is_some(),
+                *want_reason,
+                "{label}: reason_disabled presence mismatch"
+            );
+            assert_eq!(
+                opts.any(),
+                *want_view || *want_takeover,
+                "{label}: any() inconsistent"
+            );
+        }
+    }
+
+    #[test]
+    fn test_adoption_options_default_session_unknown_source() {
+        // Default Session has source = Unknown; ensures the default doesn't
+        // silently look adoptable.
+        let s = Session::default();
+        assert_eq!(s.source, SessionSource::Unknown);
+        let opts = s.adoption_options();
+        assert!(!opts.any());
+    }
+
+    #[test]
+    fn test_session_source_default_is_unknown() {
+        // The Default impl must not return Daemon — that would silently mark
+        // every session daemon-managed in tests / fixtures.
+        assert_eq!(SessionSource::default(), SessionSource::Unknown);
     }
 }
