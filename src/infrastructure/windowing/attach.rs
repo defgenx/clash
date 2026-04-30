@@ -335,7 +335,13 @@ pub(crate) fn should_break_history_buffer(
 /// Used by the standalone attach client (`clash attach <id>`) which doesn't
 /// have a TUI to show a busy overlay. The TUI path uses its own buffering
 /// loop in `App::buffer_attach_history()` instead.
+///
+/// `session_id` is required so we can drop Output events from any other
+/// session — the daemon's mpsc fan-in does not pre-filter, and a stale
+/// forwarder (e.g. from a prior attach on the same connection) can leave
+/// bytes belonging to another session in the receive queue.
 pub async fn buffer_history(
+    session_id: &str,
     name: &str,
     daemon_rx: &mut Option<mpsc::UnboundedReceiver<protocol::Event>>,
 ) -> Result<Vec<u8>, AttachResult> {
@@ -363,14 +369,28 @@ pub async fn buffer_history(
                 }
             } => {
                 match ev {
-                    protocol::Event::Output { data, .. } => {
+                    protocol::Event::Output {
+                        session_id: ev_sid,
+                        data,
+                    } => {
+                        // Drop output from any other session — see function-doc on
+                        // why filtering is required even on the standalone path.
+                        if ev_sid != session_id {
+                            continue;
+                        }
                         if let Ok(bytes) = protocol::decode_data(&data) {
                             history.extend_from_slice(&bytes);
                         }
                         got_output = true;
                         last_output = tokio::time::Instant::now();
                     }
-                    protocol::Event::Exited { .. } => return Err(AttachResult::SessionExited),
+                    protocol::Event::Exited {
+                        session_id: ev_sid, ..
+                    } => {
+                        if ev_sid == session_id {
+                            return Err(AttachResult::SessionExited);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -438,7 +458,7 @@ pub async fn attach_loop(
         render_history_snapshot(&history, content_rows, cols);
         draw_status_bar(cols, rows, info);
     } else {
-        let raw_history = match buffer_history(&info.name, daemon_rx).await {
+        let raw_history = match buffer_history(session_id, &info.name, daemon_rx).await {
             Ok(h) => h,
             Err(result) => {
                 reset_scroll_region();
@@ -524,7 +544,17 @@ pub async fn attach_loop(
                 }
             } => {
                 match daemon_event {
-                    protocol::Event::Output { data, .. } => {
+                    protocol::Event::Output {
+                        session_id: ev_sid,
+                        data,
+                    } => {
+                        // Drop bytes belonging to a different session — the
+                        // daemon's mpsc fan-in does not pre-filter and stale
+                        // forwarder bytes from a prior attach on this same
+                        // connection can leak into the queue.
+                        if ev_sid != session_id {
+                            continue;
+                        }
                         if let Ok(bytes) = protocol::decode_data(&data) {
                             write_stdout(&bytes);
                             // Only redraw when output contains Erase in Display
@@ -535,9 +565,13 @@ pub async fn attach_loop(
                             }
                         }
                     }
-                    protocol::Event::Exited { .. } => {
-                        result = AttachResult::SessionExited;
-                        break;
+                    protocol::Event::Exited {
+                        session_id: ev_sid, ..
+                    } => {
+                        if ev_sid == session_id {
+                            result = AttachResult::SessionExited;
+                            break;
+                        }
                     }
                     _ => {}
                 }

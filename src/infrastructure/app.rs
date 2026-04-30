@@ -496,6 +496,25 @@ impl App {
         const REDRAW_MS: u64 = 50;
 
         let mut daemon_rx = events.take_daemon_rx();
+
+        // Snapshot the session_id we're entering attach for — the loop below
+        // filters Output/Exited events to this id so stale bytes from a prior
+        // attach (still queued in the receiver) cannot leak into the new view.
+        let session_id_owned = self.state.attached_session.clone();
+        let session_id_for_filter: Option<&str> = session_id_owned.as_deref();
+
+        // Drain stale events left in the receiver from a previous attach on
+        // this same persistent connection. The server-side forwarder for the
+        // prior session may have pushed bytes between our Detach RPC and the
+        // forwarder task actually being aborted; those bytes belong to the
+        // OLD session. Toss them. The filter above is correctness; this is
+        // the optimization that keeps the busy overlay snappy.
+        if let Some(rx) = daemon_rx.as_mut() {
+            while rx.try_recv().is_ok() {
+                // discard stale events
+            }
+        }
+
         let mut history: Vec<u8> = Vec::new();
         let mut got_output = false;
         let started = tokio::time::Instant::now();
@@ -528,16 +547,31 @@ impl App {
                     }
                 } => {
                     match ev {
-                        protocol::Event::Output { data, .. } => {
+                        protocol::Event::Output {
+                            session_id: ev_sid,
+                            data,
+                        } => {
+                            // Drop output from any other session — the daemon's
+                            // mpsc fan-in does not pre-filter, and stale forwarder
+                            // bytes from a prior attach on the persistent TUI
+                            // connection can leak into the queue (cross-session
+                            // bleed). Defense in depth alongside the drain below.
+                            if Some(ev_sid.as_str()) != session_id_for_filter {
+                                continue;
+                            }
                             if let Ok(bytes) = protocol::decode_data(&data) {
                                 history.extend_from_slice(&bytes);
                             }
                             got_output = true;
                             last_output = tokio::time::Instant::now();
                         }
-                        protocol::Event::Exited { .. } => {
-                            session_exited = true;
-                            break;
+                        protocol::Event::Exited {
+                            session_id: ev_sid, ..
+                        } => {
+                            if Some(ev_sid.as_str()) == session_id_for_filter {
+                                session_exited = true;
+                                break;
+                            }
                         }
                         _ => {}
                     }
