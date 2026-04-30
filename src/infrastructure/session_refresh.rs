@@ -56,6 +56,12 @@ pub struct RefreshInput<'a> {
     pub previous_sessions: &'a [Session],
     /// Pre-fetched JSONL file mtimes: (project, session_id) → mtime.
     pub jsonl_mtimes: HashMap<(String, String), SystemTime>,
+    /// Wild claude processes detected by the background scan task. Used
+    /// by `build_session_list` to overlay `Session.source = Wild` /
+    /// `External` for sessions whose process is alive but not in
+    /// `daemon_infos`. Empty when the scan task has not produced a
+    /// snapshot yet, or when no `claude` process matches.
+    pub wild_processes: Vec<crate::infrastructure::process_scan::WildProcess>,
 }
 
 // ── Gathering (IO-touching) ──────────────────────────────────────
@@ -95,6 +101,7 @@ pub fn gather_sync_input<'a>(
         saved_names,
         previous_sessions: previous,
         jsonl_mtimes,
+        wild_processes: Vec::new(),
     }
 }
 
@@ -754,6 +761,7 @@ mod tests {
             saved_names: HashMap::new(),
             previous_sessions: previous,
             jsonl_mtimes: HashMap::new(),
+            wild_processes: Vec::new(),
         }
     }
 

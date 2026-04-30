@@ -32,7 +32,10 @@ use crate::domain::entities::Session;
 // ── Types ─────────────────────────────────────────────────────────
 
 /// A running `claude` process discovered outside clash's daemon.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// All correlation-relevant data is captured at scan time so the pure
+/// [`correlate_wild_to_sessions`] never needs to do IO.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WildProcess {
     pub pid: u32,
     /// Full command line as `ps` reported it.
@@ -40,6 +43,11 @@ pub struct WildProcess {
     /// Working directory, if a probe was able to read it. `None` on
     /// permission errors or if the process exited mid-scan.
     pub cwd: Option<String>,
+    /// Session ids derived from `.jsonl` files the process holds open
+    /// (basename without the `.jsonl` extension). Populated by the probe
+    /// during gather; empty if the probe yielded nothing or the process
+    /// holds no `.jsonl` file (e.g. transient state).
+    pub open_jsonl_session_ids: Vec<String>,
 }
 
 /// Outcome of [`should_signal`] — whether SIGTERM is safe right now.
@@ -101,6 +109,7 @@ pub fn parse_ps_line(line: &str) -> Option<WildProcess> {
         pid,
         command: command.to_string(),
         cwd: None,
+        open_jsonl_session_ids: Vec::new(),
     })
 }
 
@@ -119,18 +128,19 @@ pub fn parse_lsof_n_output(bytes: &[u8]) -> Vec<PathBuf> {
 
 // ── FdProbe ──────────────────────────────────────────────────────
 
-/// Read the file descriptors a process holds open, as filesystem paths.
+/// Read filesystem state about a single process.
 ///
-/// Used to find the open `.jsonl` that uniquely identifies which Claude
-/// session the wild process belongs to. The basename of that `.jsonl`
-/// IS the session id, so this gives an authoritative correlation that
-/// cwd matching cannot.
+/// `open_files` is used to find the `.jsonl` that uniquely identifies
+/// the Claude session — its basename IS the session id, giving an
+/// authoritative correlation that cwd matching cannot. `cwd` is the
+/// fallback used when the probe yields no matching `.jsonl`.
 ///
-/// Implementations return an empty `Vec` on errors (permission denied,
-/// process exited mid-probe, host platform without a working source) —
-/// callers fall back to cwd matching in that case.
+/// Implementations return empty / `None` on any error (permission
+/// denied, process exited mid-probe, host platform without a working
+/// source). Callers tolerate partial probe failures by design.
 pub trait FdProbe {
     fn open_files(&self, pid: u32) -> Vec<PathBuf>;
+    fn cwd(&self, pid: u32) -> Option<String>;
 }
 
 /// Linux: read `/proc/<pid>/fd/` directly via `read_dir` + `read_link`.
@@ -140,6 +150,12 @@ pub struct LinuxProcFs;
 impl FdProbe for LinuxProcFs {
     fn open_files(&self, pid: u32) -> Vec<PathBuf> {
         read_proc_fd_dir(&format!("/proc/{}/fd", pid))
+    }
+    fn cwd(&self, pid: u32) -> Option<String> {
+        let path = format!("/proc/{}/cwd", pid);
+        std::fs::read_link(path)
+            .ok()
+            .and_then(|p| p.to_str().map(str::to_string))
     }
 }
 
@@ -159,9 +175,9 @@ pub fn read_proc_fd_dir(dir: &str) -> Vec<PathBuf> {
     out
 }
 
-/// macOS: shell out to `lsof -p <pid> -F n` (one path per `n`-line),
-/// invoked once per PID. Failures (permission denied, lsof missing,
-/// process gone) yield an empty Vec.
+/// macOS: shell out to `lsof` once per PID for files, and again with
+/// `-d cwd` for the working directory. Failures (permission denied,
+/// lsof missing, process gone) yield empty / `None`.
 pub struct DarwinLsof;
 
 impl FdProbe for DarwinLsof {
@@ -176,43 +192,70 @@ impl FdProbe for DarwinLsof {
             Err(_) => Vec::new(),
         }
     }
+    fn cwd(&self, pid: u32) -> Option<String> {
+        let output = Command::new("lsof")
+            .args(["-p", &pid.to_string(), "-d", "cwd", "-F", "n"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        parse_lsof_n_output(&output.stdout)
+            .into_iter()
+            .next()
+            .and_then(|p| p.to_str().map(str::to_string))
+    }
 }
 
 // ── Correlation ──────────────────────────────────────────────────
 
-/// Map wild processes to session ids — `session_id → pid`.
+/// Run a full probe pass on a single PID and fill the IO-derived fields
+/// of `WildProcess` (cwd + open `.jsonl` session-id basenames).
+///
+/// This is the boundary between the IO trait ([`FdProbe`]) and the pure
+/// correlation function below — once the result is in `WildProcess`,
+/// no probe is needed downstream.
+pub fn fill_wild_process_io(probe: &impl FdProbe, mut w: WildProcess) -> WildProcess {
+    if w.cwd.is_none() {
+        w.cwd = probe.cwd(w.pid);
+    }
+    w.open_jsonl_session_ids = extract_jsonl_session_ids(&probe.open_files(w.pid));
+    w
+}
+
+/// Pure: pull `.jsonl` basenames out of a list of open file paths.
+pub fn extract_jsonl_session_ids(open_files: &[PathBuf]) -> Vec<String> {
+    open_files
+        .iter()
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(str::to_string))
+        .collect()
+}
+
+/// Map wild processes to session ids — `session_id → pid`. **Pure** —
+/// uses only fields already populated on [`WildProcess`].
 ///
 /// Strategy:
-/// 1. Ask the [`FdProbe`] for the process's open files. Any `.jsonl`
-///    whose basename matches a session in `sessions` gives an
-///    authoritative correlation; first match wins.
-/// 2. If the probe yielded no match, fall back to cwd: if **exactly
-///    one** session has the same cwd, correlate. Multiple matches are
+/// 1. If the process has any `open_jsonl_session_ids` and at least one
+///    of them matches a session in `sessions`, that's an authoritative
+///    correlation; first match wins.
+/// 2. If no `.jsonl` match, fall back to cwd: when **exactly one**
+///    session shares the process's cwd, correlate. Multiple matches are
 ///    ambiguous and produce no entry (caller treats absence as Unknown
 ///    rather than guessing).
-/// 3. Process with no probe match and no cwd: no entry.
+/// 3. Process with no `.jsonl` match and no cwd: no entry.
 pub fn correlate_wild_to_sessions(
     wild: &[WildProcess],
-    probe: &impl FdProbe,
     sessions: &[Session],
 ) -> HashMap<String, u32> {
     let mut result = HashMap::new();
     let session_ids: HashSet<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
 
     for w in wild {
-        // 1. FdProbe — open .jsonl basename = session id.
+        // 1. Open .jsonl → session id (authoritative).
         let mut matched: Option<String> = None;
-        for path in probe.open_files(w.pid) {
-            let ext_jsonl = path.extension().and_then(|e| e.to_str()) == Some("jsonl");
-            if !ext_jsonl {
-                continue;
-            }
-            let stem = match path.file_stem().and_then(|s| s.to_str()) {
-                Some(s) => s,
-                None => continue,
-            };
-            if session_ids.contains(stem) {
-                matched = Some(stem.to_string());
+        for sid in &w.open_jsonl_session_ids {
+            if session_ids.contains(sid.as_str()) {
+                matched = Some(sid.clone());
                 break;
             }
         }
@@ -306,15 +349,17 @@ impl ProcessProbe for LiveProcessProbe {
 
 // ── IO: gather wild processes ────────────────────────────────────
 
-/// Two-stage discovery:
-///   1. `pgrep -fl '^claude($|\\s)'` to narrow the process table down to
+/// Three-stage discovery:
+///   1. `pgrep -fl '^claude($|\\s)'` narrows the process table down to
 ///      processes whose cmdline begins with the `claude` basename.
-///   2. `ps -p <pids> -o pid=,state=,command=` to enrich with state
-///      (so [`parse_ps_line`] can drop zombies) and the full command.
+///   2. `ps -p <pids> -o pid=,state=,command=` enriches with state and
+///      the full command (so [`parse_ps_line`] can drop zombies).
+///   3. Per surviving PID, the [`FdProbe`] populates `cwd` and the
+///      `.jsonl` basenames the process holds open.
 ///
 /// Returns an empty Vec on any IO failure — callers treat that as "no
 /// wild processes detected this cycle" rather than an error.
-pub fn gather_wild_processes() -> Vec<WildProcess> {
+pub fn gather_wild_processes(probe: &impl FdProbe) -> Vec<WildProcess> {
     let pgrep = Command::new("pgrep")
         .args(["-fl", r"^claude($|\s)"])
         .stdin(Stdio::null())
@@ -354,7 +399,28 @@ pub fn gather_wild_processes() -> Vec<WildProcess> {
         .unwrap_or("")
         .lines()
         .filter_map(parse_ps_line)
+        .map(|w| fill_wild_process_io(probe, w))
         .collect()
+}
+
+/// The [`FdProbe`] used in production. Linux reads `/proc` directly;
+/// every other Unix shells out to `lsof` (most BSD derivatives ship a
+/// compatible one).
+#[cfg(target_os = "linux")]
+pub type DefaultFdProbe = LinuxProcFs;
+#[cfg(not(target_os = "linux"))]
+pub type DefaultFdProbe = DarwinLsof;
+
+/// Construct the host-appropriate probe.
+pub fn default_fd_probe() -> DefaultFdProbe {
+    #[cfg(target_os = "linux")]
+    {
+        LinuxProcFs
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        DarwinLsof
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────
@@ -467,15 +533,26 @@ mod tests {
         assert!(parse_lsof_n_output(bytes).is_empty());
     }
 
-    // ── correlate_wild_to_sessions ────────────────────────────────
+    // ── extract_jsonl_session_ids ─────────────────────────────────
 
-    /// Test fake — returns canned open-file lists keyed by pid.
-    struct FakeFdProbe(HashMap<u32, Vec<PathBuf>>);
-    impl FdProbe for FakeFdProbe {
-        fn open_files(&self, pid: u32) -> Vec<PathBuf> {
-            self.0.get(&pid).cloned().unwrap_or_default()
-        }
+    #[test]
+    fn extract_jsonl_keeps_basenames_strips_extension() {
+        let paths = vec![
+            PathBuf::from("/dev/tty"),
+            PathBuf::from("/Users/me/.claude/projects/p/abc-def.jsonl"),
+            PathBuf::from("/tmp/ignore.txt"),
+            PathBuf::from("/Users/me/.claude/projects/p/xyz.jsonl"),
+        ];
+        let ids = extract_jsonl_session_ids(&paths);
+        assert_eq!(ids, vec!["abc-def".to_string(), "xyz".to_string()]);
     }
+
+    #[test]
+    fn extract_jsonl_empty_input_empty_output() {
+        assert!(extract_jsonl_session_ids(&[]).is_empty());
+    }
+
+    // ── correlate_wild_to_sessions ────────────────────────────────
 
     fn session_with(id: &str, cwd: Option<&str>) -> Session {
         Session {
@@ -485,113 +562,132 @@ mod tests {
         }
     }
 
+    fn wild(pid: u32, cwd: Option<&str>, open_jsonl: &[&str]) -> WildProcess {
+        WildProcess {
+            pid,
+            command: "claude".into(),
+            cwd: cwd.map(|s| s.to_string()),
+            open_jsonl_session_ids: open_jsonl.iter().map(|s| (*s).to_string()).collect(),
+        }
+    }
+
     #[test]
     fn correlate_basename_match_wins_over_cwd() {
-        let wild = vec![WildProcess {
-            pid: 123,
-            command: "claude --resume sess-A".into(),
-            cwd: Some("/repo".into()),
-        }];
-        let probe = FakeFdProbe(HashMap::from([(
-            123,
-            vec![PathBuf::from("/Users/me/.claude/projects/p/sess-A.jsonl")],
-        )]));
+        // Two sessions share /repo. Open .jsonl points at sess-A — must
+        // pick sess-A, not pick arbitrarily from the cwd-matching pair.
+        let wild = vec![wild(123, Some("/repo"), &["sess-A"])];
         let sessions = vec![
             session_with("sess-A", Some("/repo")),
             session_with("sess-B", Some("/repo")),
         ];
-        let map = correlate_wild_to_sessions(&wild, &probe, &sessions);
+        let map = correlate_wild_to_sessions(&wild, &sessions);
         assert_eq!(map.get("sess-A"), Some(&123));
         assert!(!map.contains_key("sess-B"));
     }
 
     #[test]
     fn correlate_cwd_unique_match_used_when_no_fd_match() {
-        let wild = vec![WildProcess {
-            pid: 200,
-            command: "claude".into(),
-            cwd: Some("/repo".into()),
-        }];
-        let probe = FakeFdProbe(HashMap::new());
+        let wild = vec![wild(200, Some("/repo"), &[])];
         let sessions = vec![session_with("only-one", Some("/repo"))];
-        let map = correlate_wild_to_sessions(&wild, &probe, &sessions);
+        let map = correlate_wild_to_sessions(&wild, &sessions);
         assert_eq!(map.get("only-one"), Some(&200));
     }
 
     #[test]
     fn correlate_cwd_ambiguous_yields_no_entry() {
-        // Two sessions in same repo, no FdProbe info → ambiguous → Unknown.
-        let wild = vec![WildProcess {
-            pid: 300,
-            command: "claude".into(),
-            cwd: Some("/repo".into()),
-        }];
-        let probe = FakeFdProbe(HashMap::new());
+        // Two sessions in same repo, no .jsonl info → ambiguous → Unknown.
+        let wild = vec![wild(300, Some("/repo"), &[])];
         let sessions = vec![
             session_with("a", Some("/repo")),
             session_with("b", Some("/repo")),
         ];
-        let map = correlate_wild_to_sessions(&wild, &probe, &sessions);
+        let map = correlate_wild_to_sessions(&wild, &sessions);
         assert!(map.is_empty(), "ambiguous cwd must NOT pick a session");
     }
 
     #[test]
     fn correlate_no_cwd_no_fd_yields_no_entry() {
-        let wild = vec![WildProcess {
-            pid: 400,
-            command: "claude".into(),
-            cwd: None,
-        }];
-        let probe = FakeFdProbe(HashMap::new());
+        let wild = vec![wild(400, None, &[])];
         let sessions = vec![session_with("a", Some("/repo"))];
-        let map = correlate_wild_to_sessions(&wild, &probe, &sessions);
+        let map = correlate_wild_to_sessions(&wild, &sessions);
         assert!(map.is_empty());
     }
 
     #[test]
-    fn correlate_ignores_non_jsonl_open_files() {
-        // Open files include stuff that is NOT a session jsonl — must not
-        // accidentally correlate via a non-jsonl path.
-        let wild = vec![WildProcess {
-            pid: 500,
-            command: "claude".into(),
-            cwd: None,
-        }];
-        let probe = FakeFdProbe(HashMap::from([(
-            500,
-            vec![
-                PathBuf::from("/dev/tty"),
-                PathBuf::from("/Users/me/repo/log.txt"),
-                PathBuf::from("/Users/me/.claude/projects/p/abc.txt"), // wrong ext
-            ],
-        )]));
+    fn correlate_ignores_open_jsonl_for_unknown_session() {
+        // Process holds a .jsonl open whose basename matches NO session
+        // in the list — that's not the session we're looking for.
+        let wild = vec![wild(500, None, &["stale-id"])];
         let sessions = vec![session_with("abc", None)];
-        let map = correlate_wild_to_sessions(&wild, &probe, &sessions);
+        let map = correlate_wild_to_sessions(&wild, &sessions);
         assert!(map.is_empty());
     }
 
     #[test]
     fn correlate_multiple_processes_independent() {
-        let wild = vec![
-            WildProcess {
-                pid: 11,
-                command: "claude".into(),
-                cwd: Some("/r1".into()),
-            },
-            WildProcess {
-                pid: 22,
-                command: "claude".into(),
-                cwd: Some("/r2".into()),
-            },
-        ];
-        let probe = FakeFdProbe(HashMap::new());
+        let wild = vec![wild(11, Some("/r1"), &[]), wild(22, Some("/r2"), &[])];
         let sessions = vec![
             session_with("s1", Some("/r1")),
             session_with("s2", Some("/r2")),
         ];
-        let map = correlate_wild_to_sessions(&wild, &probe, &sessions);
+        let map = correlate_wild_to_sessions(&wild, &sessions);
         assert_eq!(map.get("s1"), Some(&11));
         assert_eq!(map.get("s2"), Some(&22));
+    }
+
+    // ── fill_wild_process_io ──────────────────────────────────────
+
+    /// Test probe — returns canned cwd + open files keyed by pid.
+    struct FakeProbe {
+        cwds: HashMap<u32, String>,
+        files: HashMap<u32, Vec<PathBuf>>,
+    }
+    impl FdProbe for FakeProbe {
+        fn open_files(&self, pid: u32) -> Vec<PathBuf> {
+            self.files.get(&pid).cloned().unwrap_or_default()
+        }
+        fn cwd(&self, pid: u32) -> Option<String> {
+            self.cwds.get(&pid).cloned()
+        }
+    }
+
+    #[test]
+    fn fill_wild_process_io_populates_cwd_and_open_jsonl() {
+        let probe = FakeProbe {
+            cwds: HashMap::from([(7, "/repo".to_string())]),
+            files: HashMap::from([(
+                7,
+                vec![
+                    PathBuf::from("/dev/tty"),
+                    PathBuf::from("/Users/me/.claude/projects/p/sess.jsonl"),
+                ],
+            )]),
+        };
+        let w = WildProcess {
+            pid: 7,
+            command: "claude".into(),
+            ..Default::default()
+        };
+        let filled = fill_wild_process_io(&probe, w);
+        assert_eq!(filled.cwd.as_deref(), Some("/repo"));
+        assert_eq!(filled.open_jsonl_session_ids, vec!["sess".to_string()]);
+    }
+
+    #[test]
+    fn fill_wild_process_io_does_not_clobber_existing_cwd() {
+        // If cwd was already set (e.g. by a prior probe), keep it.
+        let probe = FakeProbe {
+            cwds: HashMap::from([(7, "/probed".to_string())]),
+            files: HashMap::new(),
+        };
+        let w = WildProcess {
+            pid: 7,
+            command: "claude".into(),
+            cwd: Some("/preexisting".to_string()),
+            ..Default::default()
+        };
+        let filled = fill_wild_process_io(&probe, w);
+        assert_eq!(filled.cwd.as_deref(), Some("/preexisting"));
     }
 
     // ── should_signal ─────────────────────────────────────────────

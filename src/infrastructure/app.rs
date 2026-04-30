@@ -53,6 +53,14 @@ pub struct App {
     /// Tick at which the transient spinner should auto-clear. Set by execute_effects()
     /// when a pending_toast is present, so the busy overlay stays visible briefly.
     pending_spinner_clear: Option<usize>,
+    /// Latest snapshot of wild claude processes from the background scan
+    /// task. Read into `RefreshInput.wild_processes` each refresh cycle.
+    wild_processes_rx:
+        tokio::sync::watch::Receiver<Vec<crate::infrastructure::process_scan::WildProcess>>,
+    /// Notify handle the background scan task listens on. `WakeWildScan`
+    /// effects fire `notify_one()` so the task immediately re-scans
+    /// instead of waiting for its next tick.
+    wild_scan_wake: std::sync::Arc<tokio::sync::Notify>,
 }
 
 impl App {
@@ -110,6 +118,30 @@ impl App {
 
         let daemon = DaemonClient::new(DaemonClient::default_socket_path());
 
+        // Spawn the wild-process background scan task. Pushes the
+        // latest Vec<WildProcess> into a watch channel; the refresh
+        // cycle reads the borrowed snapshot without blocking.
+        let (wild_processes_tx, wild_processes_rx) = tokio::sync::watch::channel(Vec::new());
+        let wild_scan_wake = std::sync::Arc::new(tokio::sync::Notify::new());
+        let wake_for_task = wild_scan_wake.clone();
+        tokio::spawn(async move {
+            use crate::infrastructure::process_scan::{default_fd_probe, gather_wild_processes};
+            let probe = default_fd_probe();
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {}
+                    _ = wake_for_task.notified() => {}
+                }
+                let wild = gather_wild_processes(&probe);
+                if wild_processes_tx.send(wild).is_err() {
+                    // All receivers dropped — App is shutting down.
+                    break;
+                }
+            }
+        });
+
         Self {
             state,
             backend,
@@ -125,6 +157,8 @@ impl App {
             recently_removed: HashMap::new(),
             registry_cache: crate::infrastructure::hooks::registry::RegistryCache::new(),
             pending_spinner_clear: None,
+            wild_processes_rx,
+            wild_scan_wake,
         }
     }
 
@@ -859,6 +893,10 @@ impl App {
         let mut input = session_refresh::gather_sync_input(&self.backend, previous, registry);
         let daemon_infos = session_refresh::gather_daemon_input(&mut self.daemon).await;
         input.daemon_infos = daemon_infos.clone();
+        // Snapshot the latest wild-process list from the background scan
+        // task. `borrow()` is non-blocking; the watch keeps only the
+        // newest value so we never accumulate stale snapshots.
+        input.wild_processes = self.wild_processes_rx.borrow().clone();
 
         // Build complete session list (pure, no IO)
         let new_sessions = session_refresh::build_session_list(&input);
@@ -1805,6 +1843,11 @@ impl App {
                 // ── UI state ────────────────────────────────────
                 Effect::ShowSpinner(msg) => {
                     self.state.spinner = Some(msg);
+                }
+                Effect::WakeWildScan => {
+                    // Nudge the background scan task — it will rescan
+                    // immediately instead of waiting for its next tick.
+                    self.wild_scan_wake.notify_one();
                 }
                 Effect::PerformUpdate => {
                     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();

@@ -180,6 +180,13 @@ pub enum Effect {
     ShowSpinner(String),
     PerformUpdate,
     Quit,
+
+    // ── Wild-session-adoption infrastructure ────────────────────
+    /// Wake the background wild-process scan task immediately. Used
+    /// when the user opens the adopt confirm dialog so the dialog
+    /// shows the freshest possible PID list.
+    #[allow(dead_code)] // emitted by the reducer in PR 1 — Step 7 (a-key binding)
+    WakeWildScan,
 }
 
 /// High-level CLI commands (no raw args — infrastructure translates).
