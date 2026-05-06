@@ -165,10 +165,7 @@ fn draw_header(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
 
     let filter_indicator: String =
         if state.current_view() == crate::adapters::views::ViewKind::Sessions {
-            let session_label = match state.session_filter {
-                crate::application::state::SessionFilter::Active => "active",
-                crate::application::state::SessionFilter::All => "all",
-            };
+            let session_label = state.session_filter.label();
             use crate::application::state::SectionFilter;
             let section_label = match state.section_filter {
                 SectionFilter::All => None,

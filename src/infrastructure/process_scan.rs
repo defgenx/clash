@@ -39,7 +39,30 @@ pub struct WildProcess {
     /// (basename without the `.jsonl` extension). Populated by the probe
     /// during gather; empty if the probe yielded nothing or the process
     /// holds no `.jsonl` file (e.g. transient state).
+    ///
+    /// Note: Claude Code opens the `.jsonl` in append-and-close mode, so
+    /// in practice this is empty for live wild sessions. `argv_session_ids`
+    /// is the workhorse for those.
     pub open_jsonl_session_ids: Vec<String>,
+    /// Session ids parsed out of argv flags `--resume <id>` /
+    /// `--session-id <id>` (and the `=`-form variants). Pure to compute,
+    /// no probe IO required, and survives Claude's append-and-close
+    /// pattern that defeats fd-based correlation.
+    pub argv_session_ids: Vec<String>,
+}
+
+impl WildProcess {
+    /// Iterate over all session ids associated with this process —
+    /// fd-derived first, then argv-derived. Order matters because
+    /// [`correlate_wild_to_sessions`] uses first-match-wins and fd
+    /// evidence (when available) is strictly more authoritative than
+    /// argv (which can lie if a user passed a stale `--resume`).
+    pub fn session_ids(&self) -> impl Iterator<Item = &str> {
+        self.open_jsonl_session_ids
+            .iter()
+            .map(String::as_str)
+            .chain(self.argv_session_ids.iter().map(String::as_str))
+    }
 }
 
 /// Outcome of [`should_signal`] — whether SIGTERM is safe right now.
@@ -97,12 +120,60 @@ pub fn parse_ps_line(line: &str) -> Option<WildProcess> {
         return None;
     }
 
+    let argv_session_ids = parse_argv_session_ids(command);
+
     Some(WildProcess {
         pid,
         command: command.to_string(),
         cwd: None,
         open_jsonl_session_ids: Vec::new(),
+        argv_session_ids,
     })
+}
+
+/// Pull session ids out of a command line — looks for `--resume` and
+/// `--session-id` (and the `--resume=<id>` / `--session-id=<id>` forms).
+///
+/// Pure — pairs with [`parse_ps_line`] which calls it with the same
+/// command string `ps -o command=` produced. The result feeds the
+/// `argv_session_ids` field on [`WildProcess`], which Phase 5.5 in
+/// `session_refresh::admit_wild_disk_sessions` uses to admit wild
+/// sessions whose JSONL is on disk but whose process doesn't hold the
+/// file open as an FD (the common case — Claude appends and closes).
+///
+/// Filters values that don't match a UUID-like shape so we never
+/// admit a `Session` keyed off a mis-parsed token. We don't require
+/// strict RFC 4122 — just ≥ 8 chars and `[0-9a-fA-F-]` only.
+pub fn parse_argv_session_ids(command: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    let mut i = 0;
+    while i < tokens.len() {
+        let tok = tokens[i];
+        let candidate = if let Some(rest) = tok
+            .strip_prefix("--resume=")
+            .or_else(|| tok.strip_prefix("--session-id="))
+        {
+            i += 1;
+            Some(rest.to_string())
+        } else if matches!(tok, "--resume" | "--session-id") {
+            i += 2;
+            tokens.get(i - 1).map(|s| s.to_string())
+        } else {
+            i += 1;
+            None
+        };
+        if let Some(c) = candidate {
+            if looks_like_session_id(&c) {
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
+fn looks_like_session_id(s: &str) -> bool {
+    s.len() >= 8 && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
 /// Parse `lsof -F n` output. Each path appears on its own line prefixed
@@ -250,11 +321,13 @@ pub fn correlate_wild_to_sessions(
     let session_ids: HashSet<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
 
     for w in wild {
-        // 1. Open .jsonl → session id (authoritative).
+        // 1. Open .jsonl OR argv flag → session id (authoritative).
+        //    fd-derived ids come first (see `WildProcess::session_ids`)
+        //    so they win over argv when both are present.
         let mut matched: Option<String> = None;
-        for sid in &w.open_jsonl_session_ids {
-            if session_ids.contains(sid.as_str()) {
-                matched = Some(sid.clone());
+        for sid in w.session_ids() {
+            if session_ids.contains(sid) {
+                matched = Some(sid.to_string());
                 break;
             }
         }
@@ -510,6 +583,76 @@ mod tests {
         assert!(parse_ps_line(line).is_none());
     }
 
+    // ── parse_argv_session_ids ────────────────────────────────────
+
+    #[test]
+    fn parse_argv_session_ids_resume_flag() {
+        let ids = parse_argv_session_ids("claude --resume 019dfd34-0313-70a1-b3f0-27ce3366ebcd");
+        assert_eq!(
+            ids,
+            vec!["019dfd34-0313-70a1-b3f0-27ce3366ebcd".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_argv_session_ids_session_id_flag() {
+        let ids =
+            parse_argv_session_ids("claude --session-id 019dfd46-0545-72b3-86e7-d2b55d8d8c2d");
+        assert_eq!(
+            ids,
+            vec!["019dfd46-0545-72b3-86e7-d2b55d8d8c2d".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_argv_session_ids_eq_form() {
+        let ids = parse_argv_session_ids("claude --resume=019dfd34-0313-70a1-b3f0-27ce3366ebcd");
+        assert_eq!(
+            ids,
+            vec!["019dfd34-0313-70a1-b3f0-27ce3366ebcd".to_string()]
+        );
+        let ids2 = parse_argv_session_ids(
+            "/opt/homebrew/bin/claude --session-id=019dfd34-0313-70a1-b3f0-27ce3366ebcd --foo",
+        );
+        assert_eq!(
+            ids2,
+            vec!["019dfd34-0313-70a1-b3f0-27ce3366ebcd".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_argv_session_ids_bare_returns_empty() {
+        assert!(parse_argv_session_ids("claude").is_empty());
+        assert!(parse_argv_session_ids("claude --foo bar --baz qux").is_empty());
+    }
+
+    #[test]
+    fn parse_argv_session_ids_rejects_non_uuid_shape() {
+        // Defensive: someone aliasing `claude` to take a different flag
+        // value must not poison the session list.
+        let ids = parse_argv_session_ids("claude --resume hi");
+        assert!(ids.is_empty());
+        let ids2 = parse_argv_session_ids("claude --session-id /etc/passwd");
+        assert!(ids2.is_empty());
+    }
+
+    #[test]
+    fn parse_argv_session_ids_missing_value_after_flag() {
+        // `claude --resume` with no following token — must not panic
+        // or produce a phantom id.
+        assert!(parse_argv_session_ids("claude --resume").is_empty());
+    }
+
+    #[test]
+    fn parse_ps_line_populates_argv_session_ids() {
+        let line = "8601 S claude --resume 019dfd34-0313-70a1-b3f0-27ce3366ebcd";
+        let p = parse_ps_line(line).expect("should parse");
+        assert_eq!(
+            p.argv_session_ids,
+            vec!["019dfd34-0313-70a1-b3f0-27ce3366ebcd".to_string()]
+        );
+    }
+
     // ── parse_lsof_n_output ───────────────────────────────────────
 
     #[test]
@@ -571,6 +714,17 @@ mod tests {
             command: "claude".into(),
             cwd: cwd.map(|s| s.to_string()),
             open_jsonl_session_ids: open_jsonl.iter().map(|s| (*s).to_string()).collect(),
+            argv_session_ids: Vec::new(),
+        }
+    }
+
+    fn wild_argv(pid: u32, cwd: Option<&str>, argv_ids: &[&str]) -> WildProcess {
+        WildProcess {
+            pid,
+            command: "claude".into(),
+            cwd: cwd.map(|s| s.to_string()),
+            open_jsonl_session_ids: Vec::new(),
+            argv_session_ids: argv_ids.iter().map(|s| (*s).to_string()).collect(),
         }
     }
 
@@ -624,6 +778,38 @@ mod tests {
         let sessions = vec![session_with("abc", None)];
         let map = correlate_wild_to_sessions(&wild, &sessions);
         assert!(map.is_empty());
+    }
+
+    #[test]
+    fn correlate_argv_session_id_match_when_no_fd() {
+        // The bug we shipped against: lsof returns no .jsonl FD for
+        // real wild claude sessions, but argv has the id. Correlation
+        // must succeed.
+        let wild = vec![wild_argv(8601, None, &["sess-A"])];
+        let sessions = vec![session_with("sess-A", Some("/repo"))];
+        let map = correlate_wild_to_sessions(&wild, &sessions);
+        assert_eq!(map.get("sess-A"), Some(&8601));
+    }
+
+    #[test]
+    fn correlate_fd_wins_over_argv_when_both_present() {
+        // Defense-in-depth: if argv says one thing but the held .jsonl
+        // says another, trust the fd evidence — the user might be in
+        // a `--resume X` invocation that already swapped to session Y.
+        let wild = vec![WildProcess {
+            pid: 99,
+            command: "claude --resume sess-ARGV".into(),
+            cwd: None,
+            open_jsonl_session_ids: vec!["sess-FD".into()],
+            argv_session_ids: vec!["sess-ARGV".into()],
+        }];
+        let sessions = vec![
+            session_with("sess-FD", None),
+            session_with("sess-ARGV", None),
+        ];
+        let map = correlate_wild_to_sessions(&wild, &sessions);
+        assert_eq!(map.get("sess-FD"), Some(&99));
+        assert!(!map.contains_key("sess-ARGV"));
     }
 
     #[test]

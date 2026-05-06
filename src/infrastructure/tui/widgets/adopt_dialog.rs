@@ -1,9 +1,9 @@
 //! Adopt confirm dialog for wild / external sessions.
 //!
-//! Two-option overlay (View-only / Takeover) that gates which buttons
-//! render against the `AdoptionOptions` snapshot taken at dialog-open
-//! time — so a session whose status flipped between Wild→Stashed
-//! mid-dialog still shows whatever was valid then.
+//! Three-option overlay (View-only / Takeover / Convert) that gates
+//! which buttons render against the `AdoptionOptions` snapshot taken
+//! at dialog-open time — so a session whose status flipped between
+//! Wild→Stashed mid-dialog still shows whatever was valid then.
 
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::Style;
@@ -32,6 +32,12 @@ pub fn render_adopt_dialog(dialog: &AdoptDialog, frame: &mut Frame, area: Rect) 
         lines.push(Line::from(vec![
             Span::styled("  v", theme::help_key_style()),
             Span::raw("  View-only — tail the conversation; do not steal the PTY"),
+        ]));
+    }
+    if dialog.options.convert {
+        lines.push(Line::from(vec![
+            Span::styled("  c", theme::help_key_style()),
+            Span::raw("  Convert — register in clash without touching the running process"),
         ]));
     }
     if dialog.options.takeover {

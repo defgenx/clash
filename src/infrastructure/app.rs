@@ -2026,6 +2026,26 @@ impl App {
                         }
                     }
                 }
+                Effect::ConvertWildSession {
+                    session_id,
+                    name,
+                    cwd,
+                    source_branch,
+                } => {
+                    // Non-destructive: just register. The FS watcher on
+                    // sessions.json will pick the change up, but we
+                    // invalidate the cache eagerly so the very next
+                    // refresh sees the new entry without waiting for
+                    // notify-debouncer-full's debounce window.
+                    crate::infrastructure::hooks::registry::register(
+                        &session_id,
+                        &name,
+                        &cwd,
+                        source_branch.as_deref(),
+                    );
+                    self.registry_cache.invalidate();
+                    self.needs_redraw = true;
+                }
                 Effect::PerformUpdate => {
                     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                     events.set_update_rx(rx);

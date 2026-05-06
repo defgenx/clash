@@ -162,11 +162,14 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
     add_registry_only_sessions(&mut sessions, &input.registry, &input.hook_statuses);
 
     // Phase 5.5: Admit wild-only disk sessions — claude processes the
-    // user started outside clash (bare `claude` in some terminal) have
-    // a JSONL on disk but no clash registry entry, so the registry
-    // filter in Phase 1 dropped them. Re-add any disk session whose id
-    // appears in some `WildProcess.open_jsonl_session_ids`. The Phase 7
-    // source overlay then badges them as Wild.
+    // user started outside clash (e.g. `claude --resume <id>` in some
+    // terminal) have a JSONL on disk but no clash registry entry, so
+    // the registry filter in Phase 1 dropped them. Re-add any disk
+    // session whose id appears in some `WildProcess.session_ids()` (a
+    // union of fd-derived and argv-derived ids — Claude opens the
+    // `.jsonl` in append-and-close mode, so fd evidence is rare in
+    // practice and argv parsing of `--resume` / `--session-id` is the
+    // workhorse). The Phase 7 source overlay then badges them as Wild.
     admit_wild_disk_sessions(&mut sessions, &input.disk_sessions, &input.wild_processes);
 
     // Phase 6: Resolve names from daemon infos and saved names
@@ -193,9 +196,14 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
 // ── Phase 5.5: Admit wild-only disk sessions ──────────────────────
 
 /// Re-introduce disk sessions that the registry filter dropped, but only
-/// when the wild scan can vouch for them: a `claude` process holds the
-/// session's `.jsonl` open as a file descriptor (the basename in
-/// `WildProcess.open_jsonl_session_ids` IS the session id).
+/// when the wild scan can vouch for them. Two evidence sources, both
+/// authoritative because the session id is exact:
+///
+/// 1. The process holds the session's `.jsonl` open as a file
+///    descriptor — basename IS the session id (rare in practice;
+///    Claude appends and closes).
+/// 2. The session id appears as the value of a `--resume` /
+///    `--session-id` argv flag (the common path).
 ///
 /// This is what makes "I started `claude` in another terminal and want
 /// to see it in clash" work without the user having to register the
@@ -211,7 +219,7 @@ fn admit_wild_disk_sessions(
     let already: HashSet<String> = sessions.iter().map(|s| s.id.clone()).collect();
     let wild_ids: HashSet<&str> = wild_processes
         .iter()
-        .flat_map(|w| w.open_jsonl_session_ids.iter().map(|s| s.as_str()))
+        .flat_map(|w| w.session_ids())
         .collect();
     for s in disk_sessions {
         if !already.contains(&s.id) && wild_ids.contains(s.id.as_str()) {
@@ -1527,6 +1535,20 @@ mod tests {
             command: "claude".into(),
             cwd: None,
             open_jsonl_session_ids: vec![session_id.to_string()],
+            argv_session_ids: Vec::new(),
+        }
+    }
+
+    fn wild_with_argv(
+        pid: u32,
+        session_id: &str,
+    ) -> crate::infrastructure::process_scan::WildProcess {
+        crate::infrastructure::process_scan::WildProcess {
+            pid,
+            command: format!("claude --resume {}", session_id),
+            cwd: None,
+            open_jsonl_session_ids: Vec::new(),
+            argv_session_ids: vec![session_id.to_string()],
         }
     }
 
@@ -1629,6 +1651,33 @@ mod tests {
             .expect("wild-sid must be admitted by Phase 5.5");
         assert_eq!(row.source, crate::domain::entities::SessionSource::Wild);
         assert_eq!(row.wild_pid, Some(777));
+    }
+
+    #[test]
+    fn admit_wild_disk_session_via_argv_when_no_fd() {
+        // Regression test for the bug fixed alongside the :external
+        // filter: in production, Claude Code opens its .jsonl with
+        // append-and-close, so lsof never reports it as held — the
+        // fd-derived `open_jsonl_session_ids` is empty. Argv parsing
+        // of `claude --resume <id>` is the path that actually finds
+        // wild sessions on real users' machines.
+        let mut s = make_disk_session("argv-sid", "p", "x");
+        s.cwd = Some("/repo".into());
+        let prev = vec![];
+        let mut input = empty_input(&prev);
+        input.disk_sessions = vec![s];
+        // Empty registry (Phase 1 returns Vec::new()); empty
+        // `open_jsonl_session_ids` (the real-world case); the only
+        // signal is `argv_session_ids` populated by parse_ps_line.
+        input.wild_processes = vec![wild_with_argv(8601, "argv-sid")];
+
+        let out = build_session_list(&input);
+        let row = out
+            .iter()
+            .find(|r| r.id == "argv-sid")
+            .expect("argv-sid must be admitted by Phase 5.5 via argv");
+        assert_eq!(row.source, crate::domain::entities::SessionSource::Wild);
+        assert_eq!(row.wild_pid, Some(8601));
     }
 
     #[test]

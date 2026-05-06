@@ -469,6 +469,7 @@ impl TableView for SessionsTable {
             Keybinding::new("D", "Drop ALL sessions"),
             Keybinding::new(":active", "Show active sessions"),
             Keybinding::new(":all", "Show all sessions"),
+            Keybinding::new(":external", "Show only external/wild sessions"),
         ]
     }
 

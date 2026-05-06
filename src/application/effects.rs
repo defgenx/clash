@@ -196,6 +196,18 @@ pub enum Effect {
         pid: u32,
         cwd: String,
     },
+    /// Non-destructive convert: write a clash registry entry for a
+    /// wild/external session without signalling the running process.
+    /// After this, the row is registered (Phase 1 stops dropping it)
+    /// while still rendering 🌿 as long as the wild process is alive.
+    /// When the wild process eventually exits, the registered row
+    /// stays around and is resumable via the normal clash path.
+    ConvertWildSession {
+        session_id: String,
+        name: String,
+        cwd: String,
+        source_branch: Option<String>,
+    },
 }
 
 /// High-level CLI commands (no raw args — infrastructure translates).

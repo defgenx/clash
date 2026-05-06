@@ -98,9 +98,9 @@ Each row in the sessions list may carry a single-character prefix indicating whe
 |--------|--------|---------|
 | (none) | Daemon | clash spawned and manages the PTY — attach with `o` or Enter |
 | `⊞ `  | External | clash spawned the process in another pane/tab/window via `o`/`O` |
-| `🌿 ` | Wild | A `claude` process started outside clash (bare invocation in some terminal). Press `a` to adopt — view the conversation read-only, or take it over (terminate the wild process and re-spawn under the daemon as `--resume <id>`) |
+| `🌿 ` | Wild | A `claude` process started outside clash. Press `a` to choose: view-only (read the conversation without touching the PTY), takeover (SIGTERM the wild process and re-spawn under the daemon as `--resume <id>`), or convert (register in clash without killing — the row stays 🌿 while the wild process lives, but is now persistent across restarts) |
 
-The Wild detection runs in the background every ~2s. If you start `claude` directly anywhere on the same machine, the row appears with `🌿` shortly after.
+The Wild detection runs in the background every ~2s. clash finds wild sessions by parsing `--resume <id>` / `--session-id <id>` out of the live process command line, so any `claude` started in another terminal with one of those flags appears with `🌿` shortly after. List all such rows in one place with `:external`.
 
 ## Keybindings
 
@@ -206,7 +206,7 @@ A status bar at the bottom shows session name, project, and git branch. The PTY 
 | `:new --preset <name>` | Spawn session from a preset |
 | `:diff` | View git diff for current session |
 | `:rename <name>` | Rename session (from detail view) |
-| `:active` / `:all` | Filter sessions |
+| `:active` / `:all` / `:external` | Filter sessions (active only / all / wild + external only) |
 | `:tour` | Replay guided tour |
 | `:update` | Update clash |
 | `:quit` | Exit |

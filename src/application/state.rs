@@ -51,6 +51,11 @@ pub enum SessionFilter {
     Active,
     /// All sessions (active + idle).
     All,
+    /// Only sessions whose `Session.source` is Wild or External — i.e.
+    /// claude processes started outside clash and rows clash spawned
+    /// into another pane via `o`/`O`. Lets the user find non-clash
+    /// sessions quickly without scanning the 🌿 / ⊞ markers in `:all`.
+    External,
 }
 
 impl SessionFilter {
@@ -58,6 +63,7 @@ impl SessionFilter {
         match self {
             Self::Active => "active",
             Self::All => "all",
+            Self::External => "external",
         }
     }
 }
@@ -82,7 +88,7 @@ impl SectionFilter {
                 Self::Active => Self::Done,
                 Self::Done | Self::Fail => Self::All,
             },
-            SessionFilter::All => match self {
+            SessionFilter::All | SessionFilter::External => match self {
                 Self::All => Self::Active,
                 Self::Active => Self::Done,
                 Self::Done => Self::Fail,
@@ -408,6 +414,7 @@ impl AppState {
         // Restore session filter
         self.session_filter = match snapshot.session_filter.as_str() {
             "all" => SessionFilter::All,
+            "external" => SessionFilter::External,
             _ => SessionFilter::Active,
         };
 
@@ -464,6 +471,15 @@ impl AppState {
                 .iter()
                 .filter(|s| {
                     s.is_running || s.status == crate::domain::entities::SessionStatus::Errored
+                })
+                .collect(),
+            SessionFilter::External => self
+                .store
+                .sessions
+                .iter()
+                .filter(|s| {
+                    use crate::domain::entities::SessionSource;
+                    matches!(s.source, SessionSource::Wild | SessionSource::External)
                 })
                 .collect(),
         };
@@ -533,6 +549,75 @@ mod tests {
         let filtered = state.filtered_sessions();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, "s1");
+    }
+
+    #[test]
+    fn test_filtered_sessions_external_includes_wild_and_external() {
+        use crate::domain::entities::SessionSource;
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::External;
+        state.store.sessions = vec![
+            Session {
+                id: "daemon-row".into(),
+                is_running: true,
+                source: SessionSource::Daemon,
+                ..Default::default()
+            },
+            Session {
+                id: "wild-row".into(),
+                is_running: true,
+                source: SessionSource::Wild,
+                ..Default::default()
+            },
+            Session {
+                id: "external-row".into(),
+                is_running: true,
+                source: SessionSource::External,
+                ..Default::default()
+            },
+            Session {
+                id: "unknown-row".into(),
+                is_running: true,
+                source: SessionSource::Unknown,
+                ..Default::default()
+            },
+        ];
+        let ids: Vec<&str> = state
+            .filtered_sessions()
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"wild-row"));
+        assert!(ids.contains(&"external-row"));
+    }
+
+    #[test]
+    fn test_filtered_sessions_external_includes_inactive_wild() {
+        // External filter is independent of is_running — a stashed
+        // wild session must still appear, since the user wants to
+        // see all non-clash rows regardless of status.
+        use crate::domain::entities::SessionSource;
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::External;
+        state.store.sessions = vec![Session {
+            id: "wild-stashed".into(),
+            is_running: false,
+            source: SessionSource::Wild,
+            ..Default::default()
+        }];
+        assert_eq!(state.filtered_sessions().len(), 1);
+    }
+
+    #[test]
+    fn test_session_filter_label_external_round_trip() {
+        let mut state = AppState::new();
+        state.session_filter = SessionFilter::External;
+        let snap = state.snapshot();
+        assert_eq!(snap.session_filter, "external");
+        let mut restored = AppState::new();
+        restored.restore(snap);
+        assert!(matches!(restored.session_filter, SessionFilter::External));
     }
 
     #[test]

@@ -51,6 +51,9 @@ fn handle_adopt_dialog_mode(key: KeyEvent, state: &AppState) -> Action {
                 "No live PID for this session — cannot takeover".to_string(),
             )),
         },
+        KeyCode::Char('c') if dialog.options.convert => Action::Agent(AgentAction::ConvertWild {
+            session_id: dialog.session_id.clone(),
+        }),
         _ => Action::Noop,
     }
 }
@@ -765,6 +768,9 @@ pub fn parse_command(cmd: &str) -> Action {
         )),
         "all" => Action::Ui(UiAction::SetSessionFilter(
             crate::application::state::SessionFilter::All,
+        )),
+        "external" | "wild" => Action::Ui(UiAction::SetSessionFilter(
+            crate::application::state::SessionFilter::External,
         )),
         "subagents" | "subagent" => Action::Nav(NavAction::NavigateTo(ViewKind::Subagents)),
         "tour" | "guide" => Action::Ui(UiAction::StartTour),

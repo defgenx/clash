@@ -77,6 +77,15 @@ pub enum AgentAction {
         session_id: String,
         pid: u32,
     },
+    /// Confirm Convert on a wild/external session — re-validate via
+    /// `adoption_options`, then emit a single `Effect::ConvertWildSession`
+    /// that writes a registry entry for the session without touching the
+    /// running process. The 🌿 marker stays until the user later attaches
+    /// via the daemon, but the row is now persistent across clash and
+    /// process restarts.
+    ConvertWild {
+        session_id: String,
+    },
     /// Dismiss the adopt confirm dialog without taking any action.
     CloseAdoptDialog,
 }

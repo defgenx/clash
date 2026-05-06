@@ -663,6 +663,55 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 }
             }
         }
+        AgentAction::ConvertWild { session_id } => {
+            // Re-validate via the central rule. The row may have been
+            // adopted/dropped between dialog open and this reduce call.
+            let session = state.store.find_session(&session_id).cloned();
+            state.adopt_dialog = None;
+            if state.input_mode == InputMode::AdoptDialog {
+                state.input_mode = InputMode::Normal;
+            }
+            match session {
+                Some(s) if s.adoption_options().convert => {
+                    let cwd = s
+                        .cwd
+                        .clone()
+                        .filter(|c| !c.is_empty())
+                        .or(Some(s.project_path.clone()).filter(|p| !p.is_empty()))
+                        .unwrap_or_default();
+                    let name = s
+                        .name
+                        .clone()
+                        .filter(|n| !n.trim().is_empty())
+                        .unwrap_or_else(|| {
+                            // Fallback name: same shape used elsewhere
+                            // when daemon hasn't supplied one yet.
+                            let prefix: String = s.id.chars().take(8).collect();
+                            format!("wild-{}", prefix)
+                        });
+                    state.toast = Some(format!("Converted '{}' to clash session", name));
+                    vec![Effect::ConvertWildSession {
+                        session_id,
+                        name,
+                        cwd,
+                        source_branch: s.source_branch.clone(),
+                    }]
+                }
+                Some(s) => {
+                    let reason = s
+                        .adoption_options()
+                        .reason_disabled
+                        .map(str::to_string)
+                        .unwrap_or_else(|| "convert unavailable".to_string());
+                    state.toast = Some(reason);
+                    vec![]
+                }
+                None => {
+                    state.toast = Some("Session not found".to_string());
+                    vec![]
+                }
+            }
+        }
         AgentAction::OpenInIde { session_id } => {
             // Resolve session ID: use the explicit ID, or fall back to nav context
             let resolved_id = if session_id.is_empty() {
@@ -2578,6 +2627,95 @@ mod tests {
     }
 
     #[test]
+    fn convert_wild_emits_single_convert_effect() {
+        // Wild + Running session with a name set: Convert should emit
+        // exactly one Effect::ConvertWildSession carrying the existing
+        // name, the resolved cwd, and clear the dialog state.
+        let mut state = test_state();
+        wild_session_in_state(
+            &mut state,
+            "sid",
+            "/repo",
+            Some(1234),
+            SessionStatus::Running,
+            crate::domain::entities::SessionSource::Wild,
+        );
+        if let Some(s) = state.store.sessions.iter_mut().find(|s| s.id == "sid") {
+            s.name = Some("my-wild".into());
+            s.source_branch = Some("feature/x".into());
+        }
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::ConvertWild {
+                session_id: "sid".into(),
+            }),
+        );
+        assert_eq!(effects.len(), 1, "exactly one effect");
+        match &effects[0] {
+            Effect::ConvertWildSession {
+                session_id,
+                name,
+                cwd,
+                source_branch,
+            } => {
+                assert_eq!(session_id, "sid");
+                assert_eq!(name, "my-wild");
+                assert_eq!(cwd, "/repo");
+                assert_eq!(source_branch.as_deref(), Some("feature/x"));
+            }
+            other => panic!("expected ConvertWildSession, got {:?}", other),
+        }
+        assert!(state.adopt_dialog.is_none());
+    }
+
+    #[test]
+    fn convert_wild_falls_back_to_id_prefix_name_when_unnamed() {
+        // No `name` set — handler must synthesize "wild-<id-prefix>"
+        // so the registry entry isn't blank.
+        let mut state = test_state();
+        wild_session_in_state(
+            &mut state,
+            "abcdef0123456789",
+            "/repo",
+            Some(1234),
+            SessionStatus::Running,
+            crate::domain::entities::SessionSource::Wild,
+        );
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::ConvertWild {
+                session_id: "abcdef0123456789".into(),
+            }),
+        );
+        match &effects[0] {
+            Effect::ConvertWildSession { name, .. } => assert_eq!(name, "wild-abcdef01"),
+            other => panic!("expected ConvertWildSession, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn convert_wild_on_stale_daemon_row_refuses_with_toast() {
+        // Source flipped to Daemon between dialog and Convert — refuse.
+        let mut state = test_state();
+        wild_session_in_state(
+            &mut state,
+            "sid",
+            "/repo",
+            None,
+            SessionStatus::Running,
+            crate::domain::entities::SessionSource::Daemon,
+        );
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::ConvertWild {
+                session_id: "sid".into(),
+            }),
+        );
+        assert!(effects.is_empty());
+        assert!(state.toast.is_some());
+    }
+
+    #[test]
     fn close_adopt_dialog_resets_state() {
         let mut state = test_state();
         state.adopt_dialog = Some(crate::application::state::AdoptDialog {
@@ -2587,6 +2725,7 @@ mod tests {
             options: crate::domain::entities::AdoptionOptions {
                 view_only: true,
                 takeover: true,
+                convert: true,
                 reason_disabled: None,
             },
         });

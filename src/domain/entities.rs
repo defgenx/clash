@@ -189,8 +189,14 @@ pub struct AdoptionOptions {
     pub view_only: bool,
     /// Whether SIGTERM-and-resume takeover is offered.
     pub takeover: bool,
-    /// Reason why no option is available, if both are false. Stable strings —
-    /// rendered verbatim in the status-bar hint.
+    /// Whether the non-destructive Convert action is offered. Convert
+    /// adds the wild session to clash's registry without touching the
+    /// running process — the row keeps its 🌿 source until the user
+    /// later attaches via the daemon, but it is now persistent (the
+    /// registry survives clash restarts and the wild process exiting).
+    pub convert: bool,
+    /// Reason why no option is available, if all three are false.
+    /// Stable strings — rendered verbatim in the status-bar hint.
     pub reason_disabled: Option<&'static str>,
 }
 
@@ -199,6 +205,7 @@ impl AdoptionOptions {
         Self {
             view_only: false,
             takeover: false,
+            convert: false,
             reason_disabled: Some(reason),
         }
     }
@@ -378,6 +385,7 @@ impl Session {
                 | SessionStatus::Waiting => AdoptionOptions {
                     view_only: true,
                     takeover: true,
+                    convert: true,
                     reason_disabled: None,
                 },
                 // Process is gone — nothing to adopt or take over.
@@ -670,13 +678,14 @@ mod tests {
     /// across (status × source); the rule itself collapses many combinations.
     #[test]
     fn test_adoption_options_truth_table() {
-        // (label, source, status, expected view_only, expected takeover, expected has_reason)
-        let cases: &[(&str, SessionSource, SessionStatus, bool, bool, bool)] = &[
+        // (label, source, status, want_view_only, want_takeover, want_convert, want_has_reason)
+        let cases: &[(&str, SessionSource, SessionStatus, bool, bool, bool, bool)] = &[
             // Daemon: never adoptable, regardless of status.
             (
                 "daemon+running",
                 SessionSource::Daemon,
                 SessionStatus::Running,
+                false,
                 false,
                 false,
                 true,
@@ -685,6 +694,7 @@ mod tests {
                 "daemon+stashed",
                 SessionSource::Daemon,
                 SessionStatus::Stashed,
+                false,
                 false,
                 false,
                 true,
@@ -696,13 +706,15 @@ mod tests {
                 SessionStatus::Running,
                 false,
                 false,
+                false,
                 true,
             ),
-            // Wild + active statuses → both options.
+            // Wild + active statuses → all three options.
             (
                 "wild+running",
                 SessionSource::Wild,
                 SessionStatus::Running,
+                true,
                 true,
                 true,
                 false,
@@ -713,12 +725,14 @@ mod tests {
                 SessionStatus::Thinking,
                 true,
                 true,
+                true,
                 false,
             ),
             (
                 "wild+starting",
                 SessionSource::Wild,
                 SessionStatus::Starting,
+                true,
                 true,
                 true,
                 false,
@@ -729,12 +743,14 @@ mod tests {
                 SessionStatus::Waiting,
                 true,
                 true,
+                true,
                 false,
             ),
             (
                 "wild+prompting",
                 SessionSource::Wild,
                 SessionStatus::Prompting,
+                true,
                 true,
                 true,
                 false,
@@ -746,6 +762,7 @@ mod tests {
                 SessionStatus::Stashed,
                 false,
                 false,
+                false,
                 true,
             ),
             (
@@ -754,12 +771,14 @@ mod tests {
                 SessionStatus::Errored,
                 false,
                 false,
+                false,
                 true,
             ),
             (
                 "wild+done",
                 SessionSource::Wild,
                 SessionStatus::Done,
+                false,
                 false,
                 false,
                 true,
@@ -771,6 +790,7 @@ mod tests {
                 SessionStatus::Running,
                 true,
                 true,
+                true,
                 false,
             ),
             (
@@ -779,11 +799,12 @@ mod tests {
                 SessionStatus::Stashed,
                 false,
                 false,
+                false,
                 true,
             ),
         ];
 
-        for (label, source, status, want_view, want_takeover, want_reason) in cases {
+        for (label, source, status, want_view, want_takeover, want_convert, want_reason) in cases {
             let s = Session {
                 source: *source,
                 status: *status,
@@ -792,6 +813,7 @@ mod tests {
             let opts = s.adoption_options();
             assert_eq!(opts.view_only, *want_view, "{label}: view_only mismatch");
             assert_eq!(opts.takeover, *want_takeover, "{label}: takeover mismatch");
+            assert_eq!(opts.convert, *want_convert, "{label}: convert mismatch");
             assert_eq!(
                 opts.reason_disabled.is_some(),
                 *want_reason,
@@ -809,6 +831,7 @@ mod tests {
         let opts = s.adoption_options();
         assert!(!opts.view_only);
         assert!(!opts.takeover);
+        assert!(!opts.convert);
     }
 
     #[test]
