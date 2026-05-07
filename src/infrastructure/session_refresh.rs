@@ -1539,6 +1539,7 @@ mod tests {
             cwd: None,
             open_jsonl_session_ids: vec![session_id.to_string()],
             argv_session_ids: Vec::new(),
+            cwd_recent_session_id: None,
         }
     }
 
@@ -1552,6 +1553,22 @@ mod tests {
             cwd: None,
             open_jsonl_session_ids: Vec::new(),
             argv_session_ids: vec![session_id.to_string()],
+            cwd_recent_session_id: None,
+        }
+    }
+
+    fn wild_with_cwd_recent(
+        pid: u32,
+        cwd: &str,
+        session_id: &str,
+    ) -> crate::infrastructure::process_scan::WildProcess {
+        crate::infrastructure::process_scan::WildProcess {
+            pid,
+            command: "claude".into(),
+            cwd: Some(cwd.to_string()),
+            open_jsonl_session_ids: Vec::new(),
+            argv_session_ids: Vec::new(),
+            cwd_recent_session_id: Some(session_id.to_string()),
         }
     }
 
@@ -1681,6 +1698,36 @@ mod tests {
             .expect("argv-sid must be admitted by Phase 5.5 via argv");
         assert_eq!(row.source, crate::domain::entities::SessionSource::Wild);
         assert_eq!(row.wild_pid, Some(8601));
+    }
+
+    #[test]
+    fn admit_wild_disk_session_via_cwd_recent_for_bare_claude() {
+        // Bare `claude` (no `--resume`/`--session-id`, append-and-close
+        // so no held fd) — the only signal is the cwd-recent heuristic
+        // that the gather IO layer populates from the project's
+        // most-recently-modified `.jsonl`. Phase 5.5 must admit the disk
+        // session and Phase 7 must badge it Wild with the wild_pid set.
+        let mut s = make_disk_session("bare-sid", "p", "x");
+        s.cwd = Some("/repo".into());
+        let prev = vec![];
+        let mut input = empty_input(&prev);
+        input.disk_sessions = vec![s];
+        // Empty registry (Phase 1 returns Vec::new()); fd + argv both
+        // empty (the bare-claude reality on macOS); cwd-recent points
+        // at the disk session via mtime-resolution at gather time.
+        input.wild_processes = vec![wild_with_cwd_recent(9001, "/repo", "bare-sid")];
+
+        let out = build_session_list(&input);
+        let row = out
+            .iter()
+            .find(|r| r.id == "bare-sid")
+            .expect("bare-sid must be admitted by Phase 5.5 via cwd-recent");
+        assert_eq!(row.source, crate::domain::entities::SessionSource::Wild);
+        assert_eq!(row.wild_pid, Some(9001));
+        assert_eq!(
+            row.display_section(),
+            crate::domain::entities::SessionSection::External
+        );
     }
 
     #[test]

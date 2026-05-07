@@ -100,7 +100,7 @@ Each row in the sessions list may carry a single-character prefix indicating whe
 | `⊞ `  | External | clash spawned the process in another pane/tab/window via `o`/`O` |
 | `🌿 ` | Wild | A `claude` process started outside clash. Press `a` to choose: view-only (read the conversation without touching the PTY), takeover (SIGTERM the wild process and re-spawn under the daemon as `--resume <id>`), or convert (register in clash without killing — the row stays 🌿 while the wild process lives, but is now persistent across restarts) |
 
-The Wild detection runs in the background every ~2s. clash finds wild sessions by parsing `--resume <id>` / `--session-id <id>` out of the live process command line, so any `claude` started in another terminal with one of those flags appears with `🌿` shortly after. List all such rows in one place with `:external`.
+The Wild detection runs in the background every ~2s. clash finds wild sessions in three ways, in decreasing authority: parsing `--resume <id>` / `--session-id <id>` out of the live process command line, inspecting the process's open file descriptors (rare in practice — Claude appends and closes its `.jsonl`), and a bare-claude fallback that maps the process's cwd to `~/.claude/projects/<encoded_cwd>/` and picks the most-recently-modified `.jsonl` as the session id. The fallback is best-effort: multiple bare claudes in one cwd resolve to the same row, and a still-busy daemon-managed session can mtime-shadow a freshly-started bare one (Phase 7 source precedence keeps the daemon row intact, so the worst case is a missing wild row, never a mislabelled daemon one). Wild rows always group under the EXTERNAL section at the bottom; list them in isolation with `:external`.
 
 ## Keybindings
 
