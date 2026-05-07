@@ -641,13 +641,16 @@ fn resolve_names(
 
 // ── Merge-based refresh ──────────────────────────────────────────
 
-/// Sort sessions by section (Active/Done/Fail) then alphabetically by name.
+/// Sort sessions by display section (Active/Done/Fail/External) then alphabetically by name.
+///
+/// `display_section` (not `status.section`) so wild/external rows always
+/// land in the External bucket at the bottom regardless of their lifecycle
+/// status — keeping non-clash-managed claude out of the global UI mix.
 pub fn sort_sessions_by_section(sessions: &mut [Session]) {
     sessions.sort_by(|a, b| {
         let name_key = |s: &Session| s.name.clone().unwrap_or_else(|| s.id.clone());
-        a.status
-            .section()
-            .cmp(&b.status.section())
+        a.display_section()
+            .cmp(&b.display_section())
             .then_with(|| name_key(a).to_lowercase().cmp(&name_key(b).to_lowercase()))
             .then_with(|| a.id.cmp(&b.id))
     });

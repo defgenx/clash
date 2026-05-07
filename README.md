@@ -21,7 +21,7 @@
 - **Inline terminal** — attach to sessions with a full terminal passthrough, status bar showing session name / project / branch
 - **Real-time status** — instant status detection via hooks, daemon PTY screen analysis, and JSONL parsing (three-layer system)
 - **Animated status icons** — active sessions show animated spinners and pulsing icons for visual feedback
-- **Section-based layout** — sessions are grouped into Active (working), Done (idle/stashed), and Fail (errored) sections with stable alphabetical ordering; press `A` to cycle section filter
+- **Section-based layout** — sessions are grouped into Active (working), Done (idle/stashed), Fail (errored), and External (wild claude processes started outside clash, kept at the bottom so they don't interleave with clash-managed rows) with stable alphabetical ordering; press `A` to cycle section filter
 - **In-process daemon** — embedded PTY daemon manages sessions without a separate process
 - **Git worktree support** — spawn sessions in isolated worktrees for parallel feature branches (`w` key); worktree column shows `⊟ project/worktree` for project context
 - **Repo config discovery** — auto-detects MCP servers, custom commands, agent definitions, and setup scripts from the project directory
@@ -135,7 +135,7 @@ The Wild detection runs in the background every ~2s. clash finds wild sessions b
 | `s` | Stash / unstash session (stop process, keep in registry) |
 | `w` | Spawn session in a git worktree |
 | `Tab` | Expand / collapse subagents |
-| `A` | Cycle section filter (Active/Done/Fail) |
+| `A` | Cycle section filter (Active/Done/Fail/External) |
 | `S` | Toggle active / all |
 | `d` | Drop session |
 | `D` | Drop ALL sessions |

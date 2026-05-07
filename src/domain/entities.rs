@@ -131,11 +131,17 @@ pub struct Task {
 }
 
 /// High-level session lifecycle section — groups statuses for display and filtering.
+///
+/// `External` is distinct from the lifecycle sections: it groups every row
+/// whose `Session.source` is `Wild` or `External` regardless of status,
+/// keeping non-clash-managed claude processes visually separate from the
+/// daemon-managed ones in the global UI. See [`Session::display_section`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SessionSection {
-    Active = 0, // Thinking, Running, Starting, Prompting, Waiting
-    Done = 1,   // Stashed
-    Fail = 2,   // Errored
+    Active = 0,   // Thinking, Running, Starting, Prompting, Waiting
+    Done = 1,     // Stashed
+    Fail = 2,     // Errored
+    External = 3, // Wild / External source — sorts last so it doesn't intrude
 }
 
 impl SessionSection {
@@ -144,6 +150,7 @@ impl SessionSection {
             Self::Active => "ACTIVE",
             Self::Done => "DONE",
             Self::Fail => "FAIL",
+            Self::External => "EXTERNAL",
         }
     }
 }
@@ -362,6 +369,20 @@ impl Session {
                 .unwrap_or("")
                 .to_lowercase()
                 .contains(&f)
+    }
+
+    /// Section this session renders under in the sessions table.
+    ///
+    /// Wild and External sources collapse to [`SessionSection::External`]
+    /// so they group at the bottom of the list regardless of status —
+    /// the global UI keeps clash-managed sessions free of non-clash claude
+    /// processes interleaved by name. All other sources fall through to
+    /// the lifecycle section derived from `status`.
+    pub fn display_section(&self) -> SessionSection {
+        match self.source {
+            SessionSource::Wild | SessionSource::External => SessionSection::External,
+            _ => self.status.section(),
+        }
     }
 
     /// What the user can do via `a` (adopt) on this session.
@@ -671,6 +692,46 @@ mod tests {
     fn test_session_section_ordering() {
         assert!(SessionSection::Active < SessionSection::Done);
         assert!(SessionSection::Done < SessionSection::Fail);
+        // External sorts last so wild claude rows sink to the bottom of the
+        // table, even when their status would otherwise put them in Active.
+        assert!(SessionSection::Fail < SessionSection::External);
+    }
+
+    #[test]
+    fn test_display_section_wild_collapses_to_external() {
+        // A wild Running session should NOT render under Active; the whole
+        // point of the External section is to keep non-clash claude
+        // separated from clash-managed rows.
+        let s = Session {
+            status: SessionStatus::Running,
+            source: SessionSource::Wild,
+            ..Default::default()
+        };
+        assert_eq!(s.display_section(), SessionSection::External);
+
+        // Externally-opened (clash spawned via `o`/`O`) follows the same rule.
+        let s = Session {
+            status: SessionStatus::Waiting,
+            source: SessionSource::External,
+            ..Default::default()
+        };
+        assert_eq!(s.display_section(), SessionSection::External);
+
+        // Daemon-managed: lifecycle section governs as before.
+        let s = Session {
+            status: SessionStatus::Running,
+            source: SessionSource::Daemon,
+            ..Default::default()
+        };
+        assert_eq!(s.display_section(), SessionSection::Active);
+
+        // Unknown source falls through to the lifecycle mapping.
+        let s = Session {
+            status: SessionStatus::Errored,
+            source: SessionSource::Unknown,
+            ..Default::default()
+        };
+        assert_eq!(s.display_section(), SessionSection::Fail);
     }
 
     /// Truth-table coverage for `Session::adoption_options` — the central

@@ -33,7 +33,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
         body: &[
             "The Sessions view is your home screen. It shows every Claude Code session across all your projects.",
             "",
-            "Sessions are grouped into three sections: Active (working), Done (idle/stashed), and Fail (errored).",
+            "Sessions are grouped into four sections: Active (working), Done (idle/stashed), Fail (errored), and External — wild claude processes started outside clash, kept at the bottom so they don't interleave with clash-managed rows.",
             "Within each section, sessions are sorted alphabetically by name for stable ordering.",
             "Press  A  to cycle through showing only one section at a time.",
             "",
@@ -71,7 +71,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
             ("d", "Delete selected session"),
             ("D", "Delete ALL sessions"),
             ("Tab", "Expand / collapse subagents"),
-            ("A", "Cycle section filter (Active/Done/Fail)"),
+            ("A", "Cycle section filter (Active/Done/Fail/External)"),
             ("/", "Filter sessions by text"),
         ],
     },
@@ -118,7 +118,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
             ("\u{229e}", "Session open in external pane/tab"),
             (
                 "\u{1f33f}",
-                "Wild Claude — outside clash. `a` → view / takeover / convert. `:external` lists them all",
+                "Wild Claude — outside clash. Grouped under EXTERNAL section. `a` → view / takeover / convert. `:external` lists them all",
             ),
             ("\u{229f}", "Session in a git worktree"),
         ],

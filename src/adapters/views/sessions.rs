@@ -195,11 +195,13 @@ pub fn render_sessions_table(
         .collect();
     let constraints = compute_constraints(&columns, &content_rows, area.width);
 
-    // Count sessions per section for header labels
+    // Count sessions per section for header labels.
+    // `display_section()` so wild/external rows count under EXTERNAL,
+    // never inflating the lifecycle-section counts.
     let mut section_counts: std::collections::HashMap<SessionSection, usize> =
         std::collections::HashMap::new();
     for s in &sessions {
-        *section_counts.entry(s.status.section()).or_insert(0) += 1;
+        *section_counts.entry(s.display_section()).or_insert(0) += 1;
     }
 
     // Section header overlay info: (row_index, label, style)
@@ -211,7 +213,7 @@ pub fn render_sessions_table(
     let mut current_section: Option<SessionSection> = None;
 
     for (i, session) in sessions.iter().enumerate() {
-        let section = session.status.section();
+        let section = session.display_section();
         // Insert section header when entering a new section
         if current_section != Some(section) {
             let count = section_counts.get(&section).copied().unwrap_or(0);
@@ -219,11 +221,13 @@ pub fn render_sessions_table(
                 SessionSection::Active => theme::SECTION_ACTIVE,
                 SessionSection::Done => theme::SECTION_DONE,
                 SessionSection::Fail => theme::SECTION_FAIL,
+                SessionSection::External => theme::SECTION_EXTERNAL,
             };
             let icon = match section {
                 SessionSection::Active => "◆",
                 SessionSection::Done => "◇",
                 SessionSection::Fail => "✦",
+                SessionSection::External => "🌿",
             };
             let label = format!(" {} {} ({}) ", icon, section.label(), count);
             let style = Style::default()

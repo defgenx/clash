@@ -50,6 +50,7 @@ pub const TASK_UNKNOWN: Color = Color::Rgb(165, 145, 215); // soft lavender
 pub const SECTION_ACTIVE: Color = Color::Rgb(145, 175, 210); // soft steel blue
 pub const SECTION_DONE: Color = Color::Rgb(130, 195, 150); // soft sage
 pub const SECTION_FAIL: Color = Color::Rgb(200, 130, 135); // muted rose
+pub const SECTION_EXTERNAL: Color = Color::Rgb(165, 145, 215); // soft lavender — matches 🌿 vibe
 
 // ── Feedback colors ────────────────────────────────────────────
 pub const ERROR_COLOR: Color = Color::Rgb(200, 130, 135); // muted rose

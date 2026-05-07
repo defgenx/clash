@@ -172,6 +172,7 @@ fn draw_header(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
                 SectionFilter::Active => Some("running"),
                 SectionFilter::Done => Some("stashed"),
                 SectionFilter::Fail => Some("errored"),
+                SectionFilter::External => Some("external"),
             };
             if let Some(section) = section_label {
                 let count = state.filtered_sessions().len();

@@ -76,24 +76,35 @@ pub enum SectionFilter {
     Active,
     Done,
     Fail,
+    /// Wild/External sources — the bottom group introduced when external
+    /// sessions were split out of the global UI mix.
+    External,
 }
 
 impl SectionFilter {
     /// Cycle to the next filter. Skips `Fail` when session filter is `:active`
-    /// (since Fail sessions are already hidden in that mode).
+    /// (since Fail sessions are already hidden in that mode). External is
+    /// always reachable via the cycle so users can drill in even when the
+    /// SessionFilter is the default `:active`.
     pub fn next(self, session_filter: SessionFilter) -> Self {
         match session_filter {
             SessionFilter::Active => match self {
                 Self::All => Self::Active,
                 Self::Active => Self::Done,
-                Self::Done | Self::Fail => Self::All,
+                Self::Done | Self::Fail => Self::External,
+                Self::External => Self::All,
             },
-            SessionFilter::All | SessionFilter::External => match self {
+            SessionFilter::All => match self {
                 Self::All => Self::Active,
                 Self::Active => Self::Done,
                 Self::Done => Self::Fail,
-                Self::Fail => Self::All,
+                Self::Fail => Self::External,
+                Self::External => Self::All,
             },
+            // `:external` SessionFilter already restricts to the External
+            // bucket — section cycling stays within All to avoid
+            // double-filtering rows out.
+            SessionFilter::External => Self::All,
         }
     }
 
@@ -103,6 +114,7 @@ impl SectionFilter {
             Self::Active => "Active",
             Self::Done => "Done",
             Self::Fail => "Fail",
+            Self::External => "External",
         }
     }
 
@@ -112,6 +124,7 @@ impl SectionFilter {
             Self::Active => section == SessionSection::Active,
             Self::Done => section == SessionSection::Done,
             Self::Fail => section == SessionSection::Fail,
+            Self::External => section == SessionSection::External,
         }
     }
 }
@@ -423,6 +436,7 @@ impl AppState {
             "active" | "Active" => SectionFilter::Active,
             "done" | "Done" => SectionFilter::Done,
             "fail" | "Fail" => SectionFilter::Fail,
+            "external" | "External" => SectionFilter::External,
             _ => SectionFilter::All,
         };
 
@@ -490,7 +504,7 @@ impl AppState {
         } else {
             status_filtered
                 .into_iter()
-                .filter(|s| self.section_filter.matches_section(s.status.section()))
+                .filter(|s| self.section_filter.matches_section(s.display_section()))
                 .collect()
         };
 
@@ -793,14 +807,18 @@ mod tests {
 
     #[test]
     fn test_section_filter_cycle_skips_fail_in_active_mode() {
-        // In :active mode, cycling should skip Fail
+        // In :active mode, cycling skips Fail (Fail rows are already hidden
+        // by SessionFilter::Active) but External is reachable so users can
+        // drill into wild claude rows from the default filter.
         let f = SectionFilter::All;
         let active_mode = SessionFilter::Active;
         let f = f.next(active_mode); // All -> Active
         assert_eq!(f, SectionFilter::Active);
         let f = f.next(active_mode); // Active -> Done
         assert_eq!(f, SectionFilter::Done);
-        let f = f.next(active_mode); // Done -> All (skips Fail)
+        let f = f.next(active_mode); // Done -> External (skips Fail)
+        assert_eq!(f, SectionFilter::External);
+        let f = f.next(active_mode); // External -> All
         assert_eq!(f, SectionFilter::All);
     }
 
@@ -814,8 +832,21 @@ mod tests {
         assert_eq!(f, SectionFilter::Done);
         let f = f.next(all_mode); // Done -> Fail
         assert_eq!(f, SectionFilter::Fail);
-        let f = f.next(all_mode); // Fail -> All
+        let f = f.next(all_mode); // Fail -> External
+        assert_eq!(f, SectionFilter::External);
+        let f = f.next(all_mode); // External -> All
         assert_eq!(f, SectionFilter::All);
+    }
+
+    #[test]
+    fn test_section_filter_cycle_collapses_in_external_session_filter() {
+        // `:external` SessionFilter already restricts rows to the External
+        // bucket — section cycling collapses to All so the cycle isn't
+        // double-filtering away every row on the first press.
+        let ext_mode = SessionFilter::External;
+        assert_eq!(SectionFilter::All.next(ext_mode), SectionFilter::All);
+        assert_eq!(SectionFilter::Active.next(ext_mode), SectionFilter::All);
+        assert_eq!(SectionFilter::External.next(ext_mode), SectionFilter::All);
     }
 
     #[test]
