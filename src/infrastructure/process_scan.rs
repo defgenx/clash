@@ -18,6 +18,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::{Duration, SystemTime};
 
 use crate::domain::entities::Session;
 
@@ -49,6 +50,13 @@ pub struct WildProcess {
     /// no probe IO required, and survives Claude's append-and-close
     /// pattern that defeats fd-based correlation.
     pub argv_session_ids: Vec<String>,
+    /// Wall-clock instant the process started, computed at gather time
+    /// as `SystemTime::now() - etime`. `None` when the etime probe
+    /// failed (process exited mid-scan, ps unavailable). Consumers
+    /// filter wild rows so only post-clash-start processes appear in
+    /// the EXTERNAL section — pre-existing claudes from before this
+    /// clash launched are intentionally hidden.
+    pub started_at: Option<SystemTime>,
 }
 
 impl WildProcess {
@@ -128,6 +136,7 @@ pub fn parse_ps_line(line: &str) -> Option<WildProcess> {
         cwd: None,
         open_jsonl_session_ids: Vec::new(),
         argv_session_ids,
+        started_at: None,
     })
 }
 
@@ -174,6 +183,77 @@ pub fn parse_argv_session_ids(command: &str) -> Vec<String> {
 
 fn looks_like_session_id(s: &str) -> bool {
     s.len() >= 8 && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
+/// Parse `ps -o etime=` output (`[[DD-]HH:]MM:SS`) into a Duration.
+///
+/// Pure — POSIX format, no platform branches. Examples:
+/// - `"01:23"` → 1m 23s
+/// - `"12:34:56"` → 12h 34m 56s
+/// - `"5-12:34:56"` → 5d 12h 34m 56s
+///
+/// Returns `None` for any unparseable shape; callers treat that as
+/// "process started time unknown" and drop the row from the visible
+/// list (since we can't tell whether it's pre- or post-clash-start).
+pub fn parse_etime(s: &str) -> Option<Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (days, rest) = if let Some((d, r)) = s.split_once('-') {
+        (d.parse::<u64>().ok()?, r)
+    } else {
+        (0u64, s)
+    };
+    let parts: Vec<&str> = rest.split(':').collect();
+    let (h, m, sec) = match parts.len() {
+        2 => (
+            0u64,
+            parts[0].parse::<u64>().ok()?,
+            parts[1].parse::<u64>().ok()?,
+        ),
+        3 => (
+            parts[0].parse::<u64>().ok()?,
+            parts[1].parse::<u64>().ok()?,
+            parts[2].parse::<u64>().ok()?,
+        ),
+        _ => return None,
+    };
+    Some(Duration::from_secs(days * 86400 + h * 3600 + m * 60 + sec))
+}
+
+/// IO: batch `ps -p <pids> -o pid=,etime=` into a `pid → Duration` map.
+/// Errors silently produce an empty map; per-PID parse failures drop
+/// just that PID's entry.
+fn fetch_etimes(pids: &[u32]) -> HashMap<u32, Duration> {
+    if pids.is_empty() {
+        return HashMap::new();
+    }
+    let pid_arg = pids
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let output = Command::new("ps")
+        .args(["-p", &pid_arg, "-o", "pid=,etime="])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    let mut out = HashMap::new();
+    if let Ok(o) = output {
+        if let Ok(s) = std::str::from_utf8(&o.stdout) {
+            for line in s.lines() {
+                let trimmed = line.trim();
+                let mut parts = trimmed.splitn(2, char::is_whitespace);
+                let pid_str = parts.next().unwrap_or("");
+                let etime_str = parts.next().unwrap_or("").trim();
+                if let (Ok(pid), Some(d)) = (pid_str.parse::<u32>(), parse_etime(etime_str)) {
+                    out.insert(pid, d);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Parse `lsof -F n` output. Each path appears on its own line prefixed
@@ -482,11 +562,19 @@ pub fn gather_wild_processes(probe: &impl FdProbe) -> Vec<WildProcess> {
         Err(_) => return Vec::new(),
     };
 
+    let etimes = fetch_etimes(&pids);
+    let now = SystemTime::now();
+
     std::str::from_utf8(&ps_out)
         .unwrap_or("")
         .lines()
         .filter_map(parse_ps_line)
-        .map(|w| fill_wild_process_io(probe, w))
+        .map(|mut w| {
+            if let Some(etime) = etimes.get(&w.pid) {
+                w.started_at = now.checked_sub(*etime);
+            }
+            fill_wild_process_io(probe, w)
+        })
         .collect()
 }
 
@@ -664,6 +752,42 @@ mod tests {
         );
     }
 
+    // ── parse_etime ────────────────────────────────────────────────
+
+    #[test]
+    fn parse_etime_mm_ss_form() {
+        assert_eq!(parse_etime("01:23"), Some(Duration::from_secs(83)));
+        assert_eq!(parse_etime("00:05"), Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn parse_etime_hh_mm_ss_form() {
+        // 1h 2m 3s = 3723s
+        assert_eq!(parse_etime("01:02:03"), Some(Duration::from_secs(3723)));
+        // ps left-pads HH so single-digit hours can show as `1:02:03` or `01:02:03`
+        assert_eq!(parse_etime("12:34:56"), Some(Duration::from_secs(45296)));
+    }
+
+    #[test]
+    fn parse_etime_dd_form() {
+        // 5d 12h 34m 56s = 5*86400 + 12*3600 + 34*60 + 56 = 477296
+        assert_eq!(parse_etime("5-12:34:56"), Some(Duration::from_secs(477296)));
+    }
+
+    #[test]
+    fn parse_etime_handles_whitespace() {
+        // ps right-aligns etime; tolerate leading/trailing whitespace.
+        assert_eq!(parse_etime("   01:23  "), Some(Duration::from_secs(83)));
+    }
+
+    #[test]
+    fn parse_etime_rejects_unparseable() {
+        assert_eq!(parse_etime(""), None);
+        assert_eq!(parse_etime("garbage"), None);
+        assert_eq!(parse_etime("1:2:3:4"), None);
+        assert_eq!(parse_etime(":"), None);
+    }
+
     // ── parse_lsof_n_output ───────────────────────────────────────
 
     #[test]
@@ -726,6 +850,7 @@ mod tests {
             cwd: cwd.map(|s| s.to_string()),
             open_jsonl_session_ids: open_jsonl.iter().map(|s| (*s).to_string()).collect(),
             argv_session_ids: Vec::new(),
+            started_at: None,
         }
     }
 
@@ -736,6 +861,7 @@ mod tests {
             cwd: cwd.map(|s| s.to_string()),
             open_jsonl_session_ids: Vec::new(),
             argv_session_ids: argv_ids.iter().map(|s| (*s).to_string()).collect(),
+            started_at: None,
         }
     }
 
@@ -813,6 +939,7 @@ mod tests {
             cwd: None,
             open_jsonl_session_ids: vec!["sess-FD".into()],
             argv_session_ids: vec!["sess-ARGV".into()],
+            started_at: None,
         }];
         let sessions = vec![
             session_with("sess-FD", None),

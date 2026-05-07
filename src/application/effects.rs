@@ -55,9 +55,16 @@ pub enum Effect {
     DaemonKillAll,
     /// Find and terminate the external Claude process for this session,
     /// and kill any associated tmux session.
+    ///
+    /// `wild_pid` is the PID of a wild claude correlated to (or
+    /// synthesized for) this row by the wild scan. When `Some`, the
+    /// handler signals it directly — the only way to terminate
+    /// synthetic `wild-pid-<pid>` rows, since they have no real session
+    /// id for the existing pgrep-by-id path to find.
     TerminateProcess {
         session_id: String,
         worktree: Option<String>,
+        wild_pid: Option<u32>,
     },
     /// Find and terminate all external Claude processes for all sessions.
     TerminateAllProcesses,

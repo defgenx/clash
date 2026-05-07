@@ -121,9 +121,13 @@ impl App {
         // Spawn the wild-process background scan task. Pushes the
         // latest Vec<WildProcess> into a watch channel; the refresh
         // cycle reads the borrowed snapshot without blocking.
+        // Filters out wild processes that started before this clash
+        // launched — pre-existing claudes are intentionally hidden, the
+        // EXTERNAL section is for things spawned during this session.
         let (wild_processes_tx, wild_processes_rx) = tokio::sync::watch::channel(Vec::new());
         let wild_scan_wake = std::sync::Arc::new(tokio::sync::Notify::new());
         let wake_for_task = wild_scan_wake.clone();
+        let clash_started_at = std::time::SystemTime::now();
         tokio::spawn(async move {
             use crate::infrastructure::process_scan::{default_fd_probe, gather_wild_processes};
             let probe = default_fd_probe();
@@ -134,7 +138,15 @@ impl App {
                     _ = interval.tick() => {}
                     _ = wake_for_task.notified() => {}
                 }
-                let wild = gather_wild_processes(&probe);
+                let wild: Vec<_> = gather_wild_processes(&probe)
+                    .into_iter()
+                    .filter(|w| {
+                        // Drop conservatively when start time unknown
+                        // (process exited mid-scan, ps unavailable) so
+                        // we never accidentally surface a pre-clash row.
+                        w.started_at.map(|t| t >= clash_started_at).unwrap_or(false)
+                    })
+                    .collect();
                 if wild_processes_tx.send(wild).is_err() {
                     // All receivers dropped — App is shutting down.
                     break;
@@ -1821,9 +1833,16 @@ impl App {
                 Effect::TerminateProcess {
                     session_id,
                     worktree,
+                    wild_pid,
                 } => {
                     let base_dir = self.backend.base_dir().to_path_buf();
                     tokio::spawn(async move {
+                        // Wild/synthetic rows: signal the PID directly.
+                        // The session-id-keyed pgrep below would miss
+                        // synthetic `wild-pid-<pid>` rows entirely.
+                        if let Some(pid) = wild_pid {
+                            terminate_pid_if_safe(pid).await;
+                        }
                         terminate_claude_process(&session_id).await;
                         if let Some(wt) = worktree {
                             kill_tmux_session(&wt).await;
@@ -1841,15 +1860,18 @@ impl App {
                 }
                 Effect::TerminateAllProcesses => {
                     let base_dir = self.backend.base_dir().to_path_buf();
-                    let sessions: Vec<(String, Option<String>)> = self
+                    let sessions: Vec<(String, Option<String>, Option<u32>)> = self
                         .state
                         .store
                         .sessions
                         .iter()
-                        .map(|s| (s.id.clone(), s.worktree.clone()))
+                        .map(|s| (s.id.clone(), s.worktree.clone(), s.wild_pid))
                         .collect();
                     tokio::spawn(async move {
-                        for (id, worktree) in sessions {
+                        for (id, worktree, wild_pid) in sessions {
+                            if let Some(pid) = wild_pid {
+                                terminate_pid_if_safe(pid).await;
+                            }
                             terminate_claude_process(&id).await;
                             if let Some(wt) = worktree {
                                 kill_tmux_session(&wt).await;
@@ -2173,6 +2195,39 @@ impl App {
             }
         }
         false
+    }
+}
+
+/// SIGTERM a wild claude PID, then SIGKILL after a 5s grace period if
+/// the process is still alive and its cmdline still names `claude` (PID
+/// reuse defense via [`process_scan::should_signal`]).
+///
+/// Used for wild/synthetic rows where the session-id-keyed pgrep can't
+/// find the process — a synthetic `wild-pid-<pid>` row carries only the
+/// PID, and bare `claude` invocations have no session id in argv to
+/// match against.
+async fn terminate_pid_if_safe(pid: u32) {
+    use crate::infrastructure::process_scan::{should_signal, LiveProcessProbe, SignalDecision};
+    let probe = LiveProcessProbe;
+    if !matches!(should_signal(pid, &probe), SignalDecision::Allow) {
+        tracing::info!(
+            "Refusing to signal PID {} — no longer claude or already exited",
+            pid
+        );
+        return;
+    }
+    tracing::info!("Sending SIGTERM to wild claude PID {}", pid);
+    let _ = tokio::process::Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .output()
+        .await;
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    if matches!(should_signal(pid, &probe), SignalDecision::Allow) {
+        tracing::info!("SIGKILL escalation for wild claude PID {}", pid);
+        let _ = tokio::process::Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .output()
+            .await;
     }
 }
 

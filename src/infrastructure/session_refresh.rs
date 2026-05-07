@@ -1629,6 +1629,7 @@ mod tests {
             cwd: None,
             open_jsonl_session_ids: vec![session_id.to_string()],
             argv_session_ids: Vec::new(),
+            started_at: None,
         }
     }
 
@@ -1642,6 +1643,7 @@ mod tests {
             cwd: None,
             open_jsonl_session_ids: Vec::new(),
             argv_session_ids: vec![session_id.to_string()],
+            started_at: None,
         }
     }
 
@@ -1652,6 +1654,7 @@ mod tests {
             cwd: Some(cwd.to_string()),
             open_jsonl_session_ids: Vec::new(),
             argv_session_ids: Vec::new(),
+            started_at: None,
         }
     }
 

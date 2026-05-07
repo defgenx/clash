@@ -313,7 +313,11 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
 
             // No teardown — proceed with immediate drop
             state.spinner = Some("Dropping session...".to_string());
-            let worktree = session.and_then(|s| s.worktree.clone());
+            let worktree = session.as_ref().and_then(|s| s.worktree.clone());
+            // For wild/synthetic rows the only signal that actually
+            // terminates the bare claude is its PID — the existing
+            // session-id-keyed pgrep finds nothing for `wild-pid-<pid>`.
+            let wild_pid = session.as_ref().and_then(|s| s.wild_pid);
             // Remove from store immediately so the UI doesn't show a stale entry
             state.store.sessions.retain(|s| s.id != session_id);
             // Clamp selection to valid range
@@ -335,6 +339,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 Effect::TerminateProcess {
                     session_id: session_id.clone(),
                     worktree,
+                    wild_pid,
                 },
                 Effect::RefreshSessions,
             ]
@@ -409,6 +414,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 Some(s) => {
                     // Stash: kill daemon PTY, terminate process, mark idle
                     let worktree = s.worktree.clone();
+                    let wild_pid = s.wild_pid;
                     // Update in-memory state immediately so the UI reflects the change
                     if let Some(session) =
                         state.store.sessions.iter_mut().find(|x| x.id == session_id)
@@ -430,6 +436,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                         Effect::TerminateProcess {
                             session_id: session_id.clone(),
                             worktree,
+                            wild_pid,
                         },
                         Effect::MarkSessionIdle { session_id },
                         Effect::RefreshSessions,
@@ -808,10 +815,9 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
         AgentAction::DropSessionAfterTeardown { session_id } => {
             // Two-phase drop: teardown has completed — now do the actual kill/unregister
             state.spinner = Some("Dropping session...".to_string());
-            let worktree = state
-                .store
-                .find_session(&session_id)
-                .and_then(|s| s.worktree.clone());
+            let session = state.store.find_session(&session_id);
+            let worktree = session.and_then(|s| s.worktree.clone());
+            let wild_pid = session.and_then(|s| s.wild_pid);
             state.store.sessions.retain(|s| s.id != session_id);
             let count = state.filtered_sessions().len();
             if count > 0 && state.table_state.selected >= count {
@@ -831,6 +837,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 Effect::TerminateProcess {
                     session_id: session_id.clone(),
                     worktree,
+                    wild_pid,
                 },
                 Effect::RefreshSessions,
             ]
@@ -2713,6 +2720,76 @@ mod tests {
         );
         assert!(effects.is_empty());
         assert!(state.toast.is_some());
+    }
+
+    #[test]
+    fn drop_session_threads_wild_pid_into_terminate_effect() {
+        // A synthetic wild row carries wild_pid but no real session id
+        // for pgrep to find. The drop reducer must thread wild_pid into
+        // Effect::TerminateProcess so the handler can SIGTERM the bare
+        // claude directly. Without this, the row vanishes from the UI
+        // but the underlying process keeps running.
+        let mut state = test_state();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "wild-pid-12345".to_string(),
+            wild_pid: Some(12345),
+            source: crate::domain::entities::SessionSource::Wild,
+            is_running: true,
+            ..Default::default()
+        }];
+
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::DropSession {
+                session_id: "wild-pid-12345".to_string(),
+            }),
+        );
+
+        let terminate = effects
+            .iter()
+            .find(|e| matches!(e, Effect::TerminateProcess { .. }))
+            .expect("DropSession must emit TerminateProcess");
+        match terminate {
+            Effect::TerminateProcess {
+                session_id,
+                wild_pid,
+                ..
+            } => {
+                assert_eq!(session_id, "wild-pid-12345");
+                assert_eq!(*wild_pid, Some(12345));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn drop_session_wild_pid_none_for_normal_row() {
+        // Daemon-managed (or any row without wild_pid set) keeps
+        // wild_pid=None on the effect — only the existing pgrep-by-id
+        // path fires, no spurious SIGTERM at a daemon-managed PID.
+        let mut state = test_state();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "real-session-id".to_string(),
+            source: crate::domain::entities::SessionSource::Daemon,
+            is_running: true,
+            ..Default::default()
+        }];
+
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::DropSession {
+                session_id: "real-session-id".to_string(),
+            }),
+        );
+
+        match effects
+            .iter()
+            .find(|e| matches!(e, Effect::TerminateProcess { .. }))
+            .unwrap()
+        {
+            Effect::TerminateProcess { wild_pid, .. } => assert_eq!(*wild_pid, None),
+            _ => unreachable!(),
+        }
     }
 
     #[test]
