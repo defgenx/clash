@@ -179,7 +179,12 @@ fn looks_like_session_id(s: &str) -> bool {
 /// Parse `lsof -F n` output. Each path appears on its own line prefixed
 /// with `n`; lines with other prefixes (`p`, `f`, etc.) are ignored.
 ///
-/// Pure so it can be unit-tested without spawning lsof.
+/// Pure so it can be unit-tested without spawning lsof. Linux uses
+/// `/proc/<pid>/fd` directly via [`LinuxProcFs`] and never spawns
+/// lsof — gate the function behind the same predicate as
+/// [`read_proc_fd_dir`] so Linux release builds don't see it as dead
+/// code (the cross-platform fixture tests still keep it on macOS CI).
+#[cfg(any(not(target_os = "linux"), test))]
 pub fn parse_lsof_n_output(bytes: &[u8]) -> Vec<PathBuf> {
     let s = std::str::from_utf8(bytes).unwrap_or("");
     s.lines()
