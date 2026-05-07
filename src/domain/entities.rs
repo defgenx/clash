@@ -385,12 +385,26 @@ impl Session {
         }
     }
 
+    /// True when this row was synthesized by Phase 7.5 from a live wild
+    /// PID with no correlating disk session. Such rows have no real
+    /// Claude session id (the id is `wild-pid-<pid>`), so adoption
+    /// actions that need a session id (view, takeover, convert) cannot
+    /// run.
+    pub fn is_synthetic_wild(&self) -> bool {
+        self.id.starts_with("wild-pid-")
+    }
+
     /// What the user can do via `a` (adopt) on this session.
     ///
     /// Single source of truth for adoption eligibility — consumed by the input
     /// handler (status-bar hint vs. dialog), the reducer (validates the action
     /// before emitting effects), and the confirm dialog (which buttons render).
     pub fn adoption_options(&self) -> AdoptionOptions {
+        if self.is_synthetic_wild() {
+            return AdoptionOptions::none(
+                "bare claude — no session id to view, takeover, or convert",
+            );
+        }
         match self.source {
             SessionSource::Daemon => {
                 AdoptionOptions::none("daemon-managed — already attachable with o/Enter")

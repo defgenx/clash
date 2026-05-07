@@ -16,9 +16,8 @@
 //! key is left absent from the result map, never picked arbitrarily.
 //!
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::SystemTime;
 
 use crate::domain::entities::Session;
 
@@ -50,34 +49,19 @@ pub struct WildProcess {
     /// no probe IO required, and survives Claude's append-and-close
     /// pattern that defeats fd-based correlation.
     pub argv_session_ids: Vec<String>,
-    /// Best-effort fallback for bare `claude` invocations (no flags, no
-    /// held fd): the basename of the most recently modified `.jsonl` in
-    /// the project directory derived from the process's cwd. The
-    /// assumption is that a freshly-started bare claude is the latest
-    /// thing to write into `~/.claude/projects/<encoded_cwd>/`. May be
-    /// wrong when multiple bare claudes share a cwd (last-writer wins
-    /// across all of them) or when a daemon-managed session is the
-    /// most-recently-touched in the dir — Phase 7 source precedence
-    /// handles the daemon overlap by keeping the daemon row's source
-    /// unchanged, so the worst case is one bare-claude row missing
-    /// rather than a daemon row being mislabelled.
-    pub cwd_recent_session_id: Option<String>,
 }
 
 impl WildProcess {
-    /// Iterate over all session ids associated with this process — in
-    /// strictly decreasing authority: fd evidence first (the process
-    /// holds the JSONL open), argv next (`--resume` / `--session-id`
-    /// can lie but is usually right), and the cwd-recent heuristic
-    /// last (best-guess for bare `claude`). [`correlate_wild_to_sessions`]
-    /// uses first-match-wins, so this order ensures we only fall back
-    /// to the imprecise heuristic when the precise sources have nothing.
+    /// Iterate over all session ids associated with this process —
+    /// fd-derived first, then argv-derived. Order matters because
+    /// [`correlate_wild_to_sessions`] uses first-match-wins and fd
+    /// evidence (when available) is strictly more authoritative than
+    /// argv (which can lie if a user passed a stale `--resume`).
     pub fn session_ids(&self) -> impl Iterator<Item = &str> {
         self.open_jsonl_session_ids
             .iter()
             .map(String::as_str)
             .chain(self.argv_session_ids.iter().map(String::as_str))
-            .chain(self.cwd_recent_session_id.iter().map(String::as_str))
     }
 }
 
@@ -144,7 +128,6 @@ pub fn parse_ps_line(line: &str) -> Option<WildProcess> {
         cwd: None,
         open_jsonl_session_ids: Vec::new(),
         argv_session_ids,
-        cwd_recent_session_id: None,
     })
 }
 
@@ -285,8 +268,14 @@ impl FdProbe for DarwinLsof {
         }
     }
     fn cwd(&self, pid: u32) -> Option<String> {
+        // `-a` is critical: without it, lsof OR-combines `-p PID` and
+        // `-d cwd`, dumping the cwd of every process on the system —
+        // and we'd parse the first `n/` (root, owned by some unrelated
+        // PID) as if it were the wild claude's cwd. With `-a`, the two
+        // selectors AND together so we get exactly one record (the cwd
+        // of the named PID) or nothing.
         let output = Command::new("lsof")
-            .args(["-p", &pid.to_string(), "-d", "cwd", "-F", "n"])
+            .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-F", "n"])
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output()
@@ -301,75 +290,17 @@ impl FdProbe for DarwinLsof {
 // ── Correlation ──────────────────────────────────────────────────
 
 /// Run a full probe pass on a single PID and fill the IO-derived fields
-/// of `WildProcess` (cwd + open `.jsonl` session-id basenames + the
-/// most-recently-modified `.jsonl` in the cwd's project directory).
+/// of `WildProcess` (cwd + open `.jsonl` session-id basenames).
 ///
 /// This is the boundary between the IO trait ([`FdProbe`]) and the pure
 /// correlation function below — once the result is in `WildProcess`,
 /// no probe is needed downstream.
-pub fn fill_wild_process_io(
-    probe: &impl FdProbe,
-    projects_dir: &Path,
-    mut w: WildProcess,
-) -> WildProcess {
+pub fn fill_wild_process_io(probe: &impl FdProbe, mut w: WildProcess) -> WildProcess {
     if w.cwd.is_none() {
         w.cwd = probe.cwd(w.pid);
     }
     w.open_jsonl_session_ids = extract_jsonl_session_ids(&probe.open_files(w.pid));
-    if w.open_jsonl_session_ids.is_empty() && w.argv_session_ids.is_empty() {
-        // Only run the cwd-recency probe when fd + argv yielded nothing
-        // — saves a `read_dir` per fully-identified daemon-managed
-        // claude (which is the common case).
-        w.cwd_recent_session_id = w
-            .cwd
-            .as_deref()
-            .and_then(|cwd| find_most_recent_jsonl_id(projects_dir, cwd));
-    }
     w
-}
-
-/// Pure: encode a cwd path to Claude's project-directory naming
-/// convention (`/Users/foo/repo` → `-Users-foo-repo`). Mirrors the rule
-/// `tr '/' '-'` that Claude Code's hook script uses, kept in sync with
-/// `infrastructure::hooks::encode_cwd`.
-pub fn encode_cwd_to_project(cwd: &str) -> String {
-    cwd.replace('/', "-")
-}
-
-/// IO: list `<projects_dir>/<encoded_cwd>/*.jsonl` and return the
-/// basename (without extension) of the file with the most recent mtime.
-/// Returns `None` when the project dir doesn't exist, has no `.jsonl`
-/// files, or every entry's metadata read failed.
-///
-/// This is the bare-`claude`-detection workhorse: when a wild process
-/// has cwd `/Users/foo/repo` but no argv flag and no held fd, its session
-/// id is *probably* the most-recently-touched `.jsonl` in
-/// `~/.claude/projects/-Users-foo-repo/`. Imperfect — multiple bare
-/// claudes in one cwd resolve to the same id, and a still-busy
-/// daemon-managed session can mtime-shadow a freshly-started bare one
-/// — but in the common case (one bare claude, fresh `.jsonl`) it pulls
-/// the row into the EXTERNAL section reliably.
-pub fn find_most_recent_jsonl_id(projects_dir: &Path, cwd: &str) -> Option<String> {
-    let project = encode_cwd_to_project(cwd);
-    let entries = std::fs::read_dir(projects_dir.join(&project)).ok()?;
-    let mut best: Option<(SystemTime, String)> = None;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let mtime = entry.metadata().ok().and_then(|m| m.modified().ok());
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(str::to_string);
-        if let (Some(m), Some(s)) = (mtime, stem) {
-            if best.as_ref().map(|(bm, _)| m > *bm).unwrap_or(true) {
-                best = Some((m, s));
-            }
-        }
-    }
-    best.map(|(_, s)| s)
 }
 
 /// Pure: pull `.jsonl` basenames out of a list of open file paths.
@@ -515,7 +446,7 @@ impl ProcessProbe for LiveProcessProbe {
 ///
 /// Returns an empty Vec on any IO failure — callers treat that as "no
 /// wild processes detected this cycle" rather than an error.
-pub fn gather_wild_processes(probe: &impl FdProbe, projects_dir: &Path) -> Vec<WildProcess> {
+pub fn gather_wild_processes(probe: &impl FdProbe) -> Vec<WildProcess> {
     let pgrep = Command::new("pgrep")
         .args(["-fl", r"^claude($|[[:space:]])"])
         .stdin(Stdio::null())
@@ -555,7 +486,7 @@ pub fn gather_wild_processes(probe: &impl FdProbe, projects_dir: &Path) -> Vec<W
         .unwrap_or("")
         .lines()
         .filter_map(parse_ps_line)
-        .map(|w| fill_wild_process_io(probe, projects_dir, w))
+        .map(|w| fill_wild_process_io(probe, w))
         .collect()
 }
 
@@ -795,7 +726,6 @@ mod tests {
             cwd: cwd.map(|s| s.to_string()),
             open_jsonl_session_ids: open_jsonl.iter().map(|s| (*s).to_string()).collect(),
             argv_session_ids: Vec::new(),
-            cwd_recent_session_id: None,
         }
     }
 
@@ -806,7 +736,6 @@ mod tests {
             cwd: cwd.map(|s| s.to_string()),
             open_jsonl_session_ids: Vec::new(),
             argv_session_ids: argv_ids.iter().map(|s| (*s).to_string()).collect(),
-            cwd_recent_session_id: None,
         }
     }
 
@@ -884,7 +813,6 @@ mod tests {
             cwd: None,
             open_jsonl_session_ids: vec!["sess-FD".into()],
             argv_session_ids: vec!["sess-ARGV".into()],
-            cwd_recent_session_id: None,
         }];
         let sessions = vec![
             session_with("sess-FD", None),
@@ -940,11 +868,9 @@ mod tests {
             command: "claude".into(),
             ..Default::default()
         };
-        let filled = fill_wild_process_io(&probe, Path::new("/nonexistent/projects"), w);
+        let filled = fill_wild_process_io(&probe, w);
         assert_eq!(filled.cwd.as_deref(), Some("/repo"));
         assert_eq!(filled.open_jsonl_session_ids, vec!["sess".to_string()]);
-        // fd evidence present → cwd-recency probe must NOT fire (saves IO).
-        assert_eq!(filled.cwd_recent_session_id, None);
     }
 
     #[test]
@@ -960,7 +886,7 @@ mod tests {
             cwd: Some("/preexisting".to_string()),
             ..Default::default()
         };
-        let filled = fill_wild_process_io(&probe, Path::new("/nonexistent/projects"), w);
+        let filled = fill_wild_process_io(&probe, w);
         assert_eq!(filled.cwd.as_deref(), Some("/preexisting"));
     }
 
@@ -1068,131 +994,5 @@ mod tests {
         let mut want = vec![target_a, target_b];
         want.sort();
         assert_eq!(got, want);
-    }
-
-    // ── encode_cwd_to_project + find_most_recent_jsonl_id ─────────
-
-    #[test]
-    fn encode_cwd_to_project_matches_claude_convention() {
-        // Mirrors `tr '/' '-'` — leading `/` becomes `-`, separators
-        // become `-`, no other transformation. Anything else and clash
-        // would look in the wrong project directory.
-        assert_eq!(
-            encode_cwd_to_project("/Users/foo/Documents/repo"),
-            "-Users-foo-Documents-repo"
-        );
-        assert_eq!(encode_cwd_to_project(""), "");
-        assert_eq!(encode_cwd_to_project("/"), "-");
-    }
-
-    #[test]
-    fn find_most_recent_jsonl_id_picks_newest_mtime() {
-        // Build a synthetic projects/<encoded_cwd>/ dir with three .jsonl
-        // files written sequentially — the last write must win regardless
-        // of name ordering.
-        let tmp = tempfile::tempdir().unwrap();
-        let projects = tmp.path();
-        let project = projects.join("-tmp-repo");
-        std::fs::create_dir_all(&project).unwrap();
-        // Write old, middle, new in that order. Sleep a beat between
-        // writes so mtimes are distinct on filesystems with coarse
-        // resolution (HFS+/APFS are 1ns; ext4 typically 1ns; safe).
-        std::fs::write(project.join("aaa.jsonl"), "x").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::write(project.join("bbb.jsonl"), "x").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::write(project.join("zzz.jsonl"), "x").unwrap();
-        // Decoy non-jsonl that's newer than every jsonl — must be ignored.
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::write(project.join("README.md"), "x").unwrap();
-
-        let got = find_most_recent_jsonl_id(projects, "/tmp/repo");
-        assert_eq!(got.as_deref(), Some("zzz"));
-    }
-
-    #[test]
-    fn find_most_recent_jsonl_id_returns_none_for_missing_project_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let got = find_most_recent_jsonl_id(tmp.path(), "/never/created");
-        assert_eq!(got, None);
-    }
-
-    #[test]
-    fn find_most_recent_jsonl_id_returns_none_for_empty_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let project = tmp.path().join("-empty");
-        std::fs::create_dir_all(&project).unwrap();
-        let got = find_most_recent_jsonl_id(tmp.path(), "/empty");
-        assert_eq!(got, None);
-    }
-
-    #[test]
-    fn session_ids_iter_order_fd_argv_cwd_recent() {
-        // Authority order matters for first-match-wins in
-        // `correlate_wild_to_sessions`: fd > argv > cwd-recent.
-        let w = WildProcess {
-            pid: 1,
-            command: "claude --resume sess-ARGV".into(),
-            cwd: Some("/repo".into()),
-            open_jsonl_session_ids: vec!["sess-FD".into()],
-            argv_session_ids: vec!["sess-ARGV".into()],
-            cwd_recent_session_id: Some("sess-CWD".into()),
-        };
-        let ids: Vec<&str> = w.session_ids().collect();
-        assert_eq!(ids, vec!["sess-FD", "sess-ARGV", "sess-CWD"]);
-    }
-
-    #[test]
-    fn correlate_uses_cwd_recent_when_only_signal() {
-        // Bare `claude` with cwd-recent populated — must correlate even
-        // though fd + argv are both empty.
-        let wild = vec![WildProcess {
-            pid: 4242,
-            command: "claude".into(),
-            cwd: Some("/repo".into()),
-            open_jsonl_session_ids: Vec::new(),
-            argv_session_ids: Vec::new(),
-            cwd_recent_session_id: Some("bare-sid".into()),
-        }];
-        let sessions = vec![Session {
-            id: "bare-sid".into(),
-            cwd: Some("/repo".into()),
-            ..Default::default()
-        }];
-        let map = correlate_wild_to_sessions(&wild, &sessions);
-        assert_eq!(map.get("bare-sid"), Some(&4242));
-    }
-
-    #[test]
-    fn fill_wild_process_io_skips_cwd_recent_when_argv_already_present() {
-        // Argv evidence is present — the cwd-recency probe must NOT fire
-        // (saves a `read_dir` per fully-identified daemon-managed claude
-        // and keeps argv as the authoritative source).
-        struct ProbeNoFiles;
-        impl FdProbe for ProbeNoFiles {
-            fn open_files(&self, _pid: u32) -> Vec<PathBuf> {
-                Vec::new()
-            }
-            fn cwd(&self, _pid: u32) -> Option<String> {
-                None
-            }
-        }
-        // Build a real projects dir with a .jsonl so find_most_recent
-        // would otherwise return Some(...).
-        let tmp = tempfile::tempdir().unwrap();
-        let project = tmp.path().join("-bait");
-        std::fs::create_dir_all(&project).unwrap();
-        std::fs::write(project.join("would-be-cwd-recent.jsonl"), "x").unwrap();
-
-        let w = WildProcess {
-            pid: 1,
-            command: "claude --resume real-id".into(),
-            cwd: Some("/bait".into()),
-            open_jsonl_session_ids: Vec::new(),
-            argv_session_ids: vec!["real-id".into()],
-            cwd_recent_session_id: None,
-        };
-        let filled = fill_wild_process_io(&ProbeNoFiles, tmp.path(), w);
-        assert_eq!(filled.cwd_recent_session_id, None);
     }
 }

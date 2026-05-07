@@ -124,7 +124,6 @@ impl App {
         let (wild_processes_tx, wild_processes_rx) = tokio::sync::watch::channel(Vec::new());
         let wild_scan_wake = std::sync::Arc::new(tokio::sync::Notify::new());
         let wake_for_task = wild_scan_wake.clone();
-        let projects_dir_for_scan = backend.projects_dir();
         tokio::spawn(async move {
             use crate::infrastructure::process_scan::{default_fd_probe, gather_wild_processes};
             let probe = default_fd_probe();
@@ -135,7 +134,7 @@ impl App {
                     _ = interval.tick() => {}
                     _ = wake_for_task.notified() => {}
                 }
-                let wild = gather_wild_processes(&probe, &projects_dir_for_scan);
+                let wild = gather_wild_processes(&probe);
                 if wild_processes_tx.send(wild).is_err() {
                     // All receivers dropped — App is shutting down.
                     break;

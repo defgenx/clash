@@ -187,10 +187,100 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
         &input.externally_opened,
     );
 
-    // Phase 8: Sort by section (Active/Done/Fail) then name
+    // Phase 7.5: Synthesize PID-keyed rows for live wild claudes that
+    // no existing session claimed via fd/argv/cwd correlation. This is
+    // the bare-`claude` path: with no `--resume <id>` / `--session-id <id>`
+    // in argv and no held `.jsonl` fd, there is nothing to match on, so
+    // we just surface the live process itself. The synthetic row carries
+    // wild_pid + cwd-derived project so the user can SEE that a claude
+    // is running there, even though there is no session id to attach
+    // to. When the process exits, the next scan tick stops emitting it
+    // and the existing missing-streak removal sweeps it out — we never
+    // surface stopped/closed bare claudes.
+    synthesize_orphan_wild_rows(&mut sessions, &input.wild_processes);
+
+    // Phase 8: Sort by section (Active/Done/Fail/External) then name
     sort_sessions_by_section(&mut sessions);
 
     sessions
+}
+
+// ── Phase 7.5: Synthesize orphan wild rows ────────────────────────
+
+/// Prefix used for synthetic wild-row session ids. Distinguishable from
+/// real Claude session UUIDs (which are hex+hyphen only, never start
+/// with the literal `wild-pid-`). Used by `Session::adoption_options`
+/// to refuse view/takeover/convert on synthetic rows — there's no
+/// `.jsonl` to read or session id to resume.
+pub const SYNTHETIC_WILD_ID_PREFIX: &str = "wild-pid-";
+
+/// For every live wild claude PID that no existing session row claimed,
+/// push a synthetic Session keyed by `wild-pid-<pid>`.
+///
+/// "Claimed" means: any of the wild process's known session ids
+/// (fd-derived or argv-derived) appears in `sessions`, OR the process's
+/// cwd matches exactly one session in `sessions`. This mirrors the rule
+/// `correlate_wild_to_sessions` uses internally — Phase 7 will already
+/// have set wild_pid on those rows, so we only emit synthetics for the
+/// truly orphaned: bare `claude` invocations with no on-disk session
+/// in their cwd, or with too many (ambiguous) sessions in their cwd.
+fn synthesize_orphan_wild_rows(
+    sessions: &mut Vec<Session>,
+    wild_processes: &[crate::infrastructure::process_scan::WildProcess],
+) {
+    use crate::domain::entities::{SessionSource, SessionStatus};
+
+    if wild_processes.is_empty() {
+        return;
+    }
+    // Snapshot the read-only state up front so the synthesized rows can
+    // be pushed into `sessions` inside the same loop.
+    let session_ids: HashSet<String> = sessions.iter().map(|s| s.id.clone()).collect();
+    let cwd_match_counts: HashMap<String, usize> = sessions
+        .iter()
+        .filter_map(|s| s.cwd.clone())
+        .fold(HashMap::new(), |mut acc, cwd| {
+            *acc.entry(cwd).or_insert(0) += 1;
+            acc
+        });
+
+    for w in wild_processes {
+        // Already claimed by fd/argv: a session with that id is in the list.
+        let claimed_by_id = w.session_ids().any(|id| session_ids.contains(id));
+        if claimed_by_id {
+            continue;
+        }
+        // Already claimed by unique-cwd correlation (Phase 7 set wild_pid).
+        if let Some(cwd) = w.cwd.as_deref() {
+            if cwd_match_counts.get(cwd).copied().unwrap_or(0) == 1 {
+                continue;
+            }
+        }
+        // Already synthesized in a prior cycle (preserved via merge).
+        let synth_id = format!("{}{}", SYNTHETIC_WILD_ID_PREFIX, w.pid);
+        if session_ids.contains(&synth_id) {
+            continue;
+        }
+
+        let project_path = w.cwd.clone().unwrap_or_default();
+        let project = std::path::Path::new(&project_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        sessions.push(Session {
+            id: synth_id,
+            project,
+            project_path,
+            cwd: w.cwd.clone(),
+            name: Some(format!("claude (PID {})", w.pid)),
+            is_running: true,
+            status: SessionStatus::Running,
+            source: SessionSource::Wild,
+            wild_pid: Some(w.pid),
+            ..Default::default()
+        });
+    }
 }
 
 // ── Phase 5.5: Admit wild-only disk sessions ──────────────────────
@@ -1539,7 +1629,6 @@ mod tests {
             cwd: None,
             open_jsonl_session_ids: vec![session_id.to_string()],
             argv_session_ids: Vec::new(),
-            cwd_recent_session_id: None,
         }
     }
 
@@ -1553,22 +1642,16 @@ mod tests {
             cwd: None,
             open_jsonl_session_ids: Vec::new(),
             argv_session_ids: vec![session_id.to_string()],
-            cwd_recent_session_id: None,
         }
     }
 
-    fn wild_with_cwd_recent(
-        pid: u32,
-        cwd: &str,
-        session_id: &str,
-    ) -> crate::infrastructure::process_scan::WildProcess {
+    fn wild_bare(pid: u32, cwd: &str) -> crate::infrastructure::process_scan::WildProcess {
         crate::infrastructure::process_scan::WildProcess {
             pid,
             command: "claude".into(),
             cwd: Some(cwd.to_string()),
             open_jsonl_session_ids: Vec::new(),
             argv_session_ids: Vec::new(),
-            cwd_recent_session_id: Some(session_id.to_string()),
         }
     }
 
@@ -1701,32 +1784,125 @@ mod tests {
     }
 
     #[test]
-    fn admit_wild_disk_session_via_cwd_recent_for_bare_claude() {
-        // Bare `claude` (no `--resume`/`--session-id`, append-and-close
-        // so no held fd) — the only signal is the cwd-recent heuristic
-        // that the gather IO layer populates from the project's
-        // most-recently-modified `.jsonl`. Phase 5.5 must admit the disk
-        // session and Phase 7 must badge it Wild with the wild_pid set.
-        let mut s = make_disk_session("bare-sid", "p", "x");
-        s.cwd = Some("/repo".into());
+    fn synthesize_emits_row_for_bare_claude_with_no_match() {
+        // The user's case: a bare `claude` process running in a project
+        // that clash has no registry entry for. Phase 5.5 admit doesn't
+        // run (no fd/argv ids), correlate-by-cwd in Phase 7 finds nothing
+        // (sessions list is empty). Phase 7.5 must surface the live PID.
         let prev = vec![];
         let mut input = empty_input(&prev);
-        input.disk_sessions = vec![s];
-        // Empty registry (Phase 1 returns Vec::new()); fd + argv both
-        // empty (the bare-claude reality on macOS); cwd-recent points
-        // at the disk session via mtime-resolution at gather time.
-        input.wild_processes = vec![wild_with_cwd_recent(9001, "/repo", "bare-sid")];
+        input.wild_processes = vec![wild_bare(
+            12345,
+            "/Users/adelvecchio/Documents/workspace/alumni_connect",
+        )];
 
         let out = build_session_list(&input);
         let row = out
             .iter()
-            .find(|r| r.id == "bare-sid")
-            .expect("bare-sid must be admitted by Phase 5.5 via cwd-recent");
+            .find(|r| r.id == "wild-pid-12345")
+            .expect("synthetic row for bare claude must exist");
         assert_eq!(row.source, crate::domain::entities::SessionSource::Wild);
-        assert_eq!(row.wild_pid, Some(9001));
+        assert_eq!(row.wild_pid, Some(12345));
+        assert!(row.is_running);
+        assert_eq!(row.status, crate::domain::entities::SessionStatus::Running);
+        assert_eq!(
+            row.cwd.as_deref(),
+            Some("/Users/adelvecchio/Documents/workspace/alumni_connect")
+        );
+        assert_eq!(row.project, "alumni_connect");
         assert_eq!(
             row.display_section(),
             crate::domain::entities::SessionSection::External
+        );
+        // No real session id → adoption refused so the dialog won't
+        // promise actions we cannot perform.
+        assert!(row.is_synthetic_wild());
+        assert!(row.adoption_options().reason_disabled.is_some());
+    }
+
+    #[test]
+    fn synthesize_skips_when_argv_already_matched_a_real_session() {
+        // Daemon-spawned claude carries `--session-id X` in argv — the
+        // existing fd/argv path already claims it via Phase 7. We must
+        // NOT also emit a synthetic row for the same PID, otherwise
+        // every clash-managed session would get a duplicate.
+        let (s, entry) = registered_session("real-sid", "/repo");
+        let registry = HashMap::from([(s.id.clone(), entry)]);
+        let prev = vec![];
+        let mut input = empty_input(&prev);
+        input.disk_sessions = vec![s];
+        input.registry = registry;
+        input.wild_processes = vec![wild_with_argv(7777, "real-sid")];
+
+        let out = build_session_list(&input);
+        assert!(
+            !out.iter().any(|r| r.id == "wild-pid-7777"),
+            "argv-claimed PID must not produce a synthetic row"
+        );
+        // The real session is in the list with wild_pid attached.
+        let real = out
+            .iter()
+            .find(|r| r.id == "real-sid")
+            .expect("real-sid present");
+        assert_eq!(real.wild_pid, Some(7777));
+    }
+
+    #[test]
+    fn synthesize_skips_when_unique_cwd_match_exists() {
+        // Bare claude in a cwd where exactly one disk session lives —
+        // `correlate_wild_to_sessions`'s cwd-fallback already claims it,
+        // so the row is Wild on the real session id, not synthetic.
+        let (s, entry) = registered_session("only-one", "/lonely");
+        let registry = HashMap::from([(s.id.clone(), entry)]);
+        let prev = vec![];
+        let mut input = empty_input(&prev);
+        input.disk_sessions = vec![s];
+        input.registry = registry;
+        input.wild_processes = vec![wild_bare(8888, "/lonely")];
+
+        let out = build_session_list(&input);
+        assert!(
+            !out.iter().any(|r| r.id == "wild-pid-8888"),
+            "unique-cwd-claimed PID must not produce a synthetic row"
+        );
+    }
+
+    #[test]
+    fn synthesize_emits_distinct_rows_when_cwd_is_ambiguous() {
+        // Two disk sessions in same cwd → cwd-fallback can't pick one
+        // unambiguously. The bare claude becomes a synthetic row keyed
+        // by PID, while the disk sessions stay as their own rows.
+        let (a, ea) = registered_session("disk-a", "/shared");
+        let (b, eb) = registered_session("disk-b", "/shared");
+        let registry = HashMap::from([(a.id.clone(), ea), (b.id.clone(), eb)]);
+        let prev = vec![];
+        let mut input = empty_input(&prev);
+        input.disk_sessions = vec![a, b];
+        input.registry = registry;
+        input.wild_processes = vec![wild_bare(9999, "/shared")];
+
+        let out = build_session_list(&input);
+        assert!(out.iter().any(|r| r.id == "wild-pid-9999"));
+    }
+
+    #[test]
+    fn synthesize_idempotent_across_cycles() {
+        // Two ticks in a row with the same wild process — the synthetic
+        // row from cycle 1 must not be duplicated in cycle 2 (id-keyed
+        // dedup catches it).
+        let prev = vec![];
+        let mut input = empty_input(&prev);
+        input.wild_processes = vec![wild_bare(123, "/a")];
+        let cycle1 = build_session_list(&input);
+        assert_eq!(cycle1.iter().filter(|r| r.id == "wild-pid-123").count(), 1);
+
+        let mut input2 = empty_input(&cycle1);
+        input2.wild_processes = vec![wild_bare(123, "/a")];
+        let cycle2 = build_session_list(&input2);
+        assert_eq!(
+            cycle2.iter().filter(|r| r.id == "wild-pid-123").count(),
+            1,
+            "synthetic row must not duplicate across refresh cycles"
         );
     }
 
