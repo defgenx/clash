@@ -45,13 +45,6 @@ pub struct BatchResult {
 
 // ── Public API ───────────────────────────────────────────────────
 
-/// Whether this terminal supports split panes.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn supports_panes(term_program: Option<&str>, in_tmux: bool) -> bool {
-    let strategy = detect_strategy(term_program, in_tmux);
-    strategy_supports_panes(&strategy)
-}
-
 /// Max horizontal session panes that fit alongside clash at the given terminal width.
 /// Subtracts 1 for clash's own pane.
 pub fn max_panes(cols: u16) -> usize {
@@ -245,6 +238,20 @@ fn spawn_detached(cmd: &mut Command) -> std::io::Result<std::process::Child> {
     cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn()
 }
 
+/// Build an AppleScript expression that evaluates to a shell-safe
+/// command line — used by Apple Terminal `do script` and iTerm2
+/// `write text`. Each arg is wrapped in `quoted form of` so shells see
+/// it as a single token even when it contains spaces or special chars.
+fn applescript_command_expr(command: &str, args: &[&str]) -> String {
+    std::iter::once(format!("(quoted form of \"{}\")", command))
+        .chain(
+            args.iter()
+                .map(|a| format!("& \" \" & (quoted form of \"{}\")", a)),
+        )
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Spawn an arbitrary command in a split pane with the given axis.
 fn spawn_pane_cmd(
     command: &str,
@@ -264,26 +271,26 @@ fn spawn_pane_cmd(
                 .wrap_err("Failed to open tmux pane")?;
         }
         SpawnStrategy::ITerm => {
+            // iTerm2 3.6+ silently drops the `command` argument on
+            // `split … with default profile command X` (the script
+            // returns `missing value` and no pane appears). Do it in
+            // two steps instead: split first, then `write text` into
+            // the new session.
             let direction = match axis {
                 SplitAxis::Horizontal => "horizontally",
                 SplitAxis::Vertical => "vertically",
             };
-            let args_str = std::iter::once(format!("(quoted form of \"{}\")", command))
-                .chain(
-                    args.iter()
-                        .map(|a| format!("& \" \" & (quoted form of \"{}\")", a)),
-                )
-                .collect::<Vec<_>>()
-                .join(" ");
             let script = format!(
                 concat!(
                     r#"tell application "iTerm2""#,
                     "\n  tell current session of current window",
-                    "\n    split {} with default profile command {}",
+                    "\n    set newSession to (split {} with default profile)",
+                    "\n    tell newSession to write text {}",
                     "\n  end tell",
                     "\nend tell",
                 ),
-                direction, args_str,
+                direction,
+                applescript_command_expr(command, args),
             );
             spawn_detached(Command::new("osascript").args(["-e", &script]))
                 .wrap_err("Failed to open iTerm2 pane")?;
@@ -325,13 +332,6 @@ fn spawn_tab(binary: &str, session_id: &str, strategy: &SpawnStrategy) -> eyre::
 fn spawn_tab_cmd(command: &str, args: &[&str], strategy: &SpawnStrategy) -> eyre::Result<OpenMode> {
     match strategy {
         SpawnStrategy::AppleTerminal => {
-            let args_str = std::iter::once(format!("(quoted form of \"{}\")", command))
-                .chain(
-                    args.iter()
-                        .map(|a| format!("& \" \" & (quoted form of \"{}\")", a)),
-                )
-                .collect::<Vec<_>>()
-                .join(" ");
             let script = format!(
                 concat!(
                     r#"tell application "Terminal""#,
@@ -339,29 +339,26 @@ fn spawn_tab_cmd(command: &str, args: &[&str], strategy: &SpawnStrategy) -> eyre
                     "\n  do script {} in front window",
                     "\nend tell",
                 ),
-                args_str,
+                applescript_command_expr(command, args),
             );
             spawn_detached(Command::new("osascript").args(["-e", &script]))
                 .wrap_err("Failed to open Apple Terminal tab")?;
             Ok(OpenMode::Tab)
         }
         SpawnStrategy::ITerm => {
-            let args_str = std::iter::once(format!("(quoted form of \"{}\")", command))
-                .chain(
-                    args.iter()
-                        .map(|a| format!("& \" \" & (quoted form of \"{}\")", a)),
-                )
-                .collect::<Vec<_>>()
-                .join(" ");
+            // iTerm2 3.6+ ignores the `command` parameter on
+            // `create tab with default profile command X`; create the
+            // tab first, then `write text` into its session.
             let script = format!(
                 concat!(
                     r#"tell application "iTerm2""#,
                     "\n  tell current window",
-                    "\n    create tab with default profile command {}",
+                    "\n    set newTab to (create tab with default profile)",
+                    "\n    tell current session of newTab to write text {}",
                     "\n  end tell",
                     "\nend tell",
                 ),
-                args_str,
+                applescript_command_expr(command, args),
             );
             spawn_detached(Command::new("osascript").args(["-e", &script]))
                 .wrap_err("Failed to open iTerm2 tab")?;
@@ -541,7 +538,11 @@ mod tests {
         assert_eq!(detect_strategy(None, false), SpawnStrategy::Fallback);
     }
 
-    // ── supports_panes ──
+    // ── strategy_supports_panes ──
+
+    fn supports_panes(term_program: Option<&str>, in_tmux: bool) -> bool {
+        strategy_supports_panes(&detect_strategy(term_program, in_tmux))
+    }
 
     #[test]
     fn panes_supported_tmux() {
