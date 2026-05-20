@@ -19,38 +19,60 @@ pub enum UpdateCheck {
 
 /// Check GitHub for the latest release version.
 /// Returns `None` on network errors (silent fail for background checks).
+///
+/// Reads the redirect target of `github.com/REPO/releases/latest`
+/// rather than the REST API — the API caps unauthenticated callers at
+/// 60 requests/hour/IP and was returning 403s for users behind a busy
+/// NAT. The HTML site has no such limit.
 pub async fn check_for_update() -> Option<UpdateCheck> {
-    let url = format!("https://api.github.com/repos/{}/releases/latest", REPO);
-
-    let output = tokio::process::Command::new("curl")
-        .args([
-            "-fsSL",
-            "-H",
-            "Accept: application/vnd.github.v3+json",
-            &url,
-        ])
-        .output()
-        .await
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let body = String::from_utf8(output.stdout).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
-
-    let tag = json.get("tag_name")?.as_str()?;
-    let latest = tag.strip_prefix('v').unwrap_or(tag);
+    let tag = fetch_latest_tag(&format!("https://github.com/{}/releases/latest", REPO)).await?;
+    let latest = tag.strip_prefix('v').unwrap_or(&tag);
 
     if is_newer(latest, CURRENT_VERSION) {
-        let download_url = build_download_url(tag);
+        let download_url = build_download_url(&tag);
         Some(UpdateCheck::Available {
             version: latest.to_string(),
             download_url,
         })
     } else {
         Some(UpdateCheck::UpToDate)
+    }
+}
+
+/// Send a HEAD to `releases/latest` and return the tag from the
+/// `Location:` header (e.g. `…/releases/tag/v1.2.3` → `"v1.2.3"`).
+async fn fetch_latest_tag(url: &str) -> Option<String> {
+    // -I = HEAD, -s/-S = silent except errors, no -L so the 302 is the
+    // *response we receive*, not a thing curl chases. No -f either:
+    // 302 is the success case here.
+    let output = tokio::process::Command::new("curl")
+        .args(["-sSI", url])
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let body = String::from_utf8(output.stdout).ok()?;
+    parse_latest_tag_from_headers(&body)
+}
+
+/// Pull the tag basename out of a `Location:` header in raw HTTP
+/// response headers. Pure so it can be unit-tested without curl.
+fn parse_latest_tag_from_headers(headers: &str) -> Option<String> {
+    let location = headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if name.trim().eq_ignore_ascii_case("location") {
+            Some(value.trim().to_string())
+        } else {
+            None
+        }
+    })?;
+    let tag = location.rsplit('/').next()?.trim();
+    if tag.is_empty() {
+        None
+    } else {
+        Some(tag.to_string())
     }
 }
 
@@ -378,5 +400,41 @@ mod tests {
         assert!(url.contains("defgenx/clash"));
         assert!(url.contains("v1.2.0"));
         assert!(url.ends_with(".tar.gz"));
+    }
+
+    #[test]
+    fn test_parse_latest_tag_from_headers() {
+        let headers = "HTTP/2 302\n\
+            date: Wed, 20 May 2026 11:55:49 GMT\n\
+            location: https://github.com/defgenx/clash/releases/tag/v1.35.3\n\
+            content-length: 0\n";
+        assert_eq!(
+            parse_latest_tag_from_headers(headers),
+            Some("v1.35.3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_latest_tag_case_insensitive() {
+        // Some proxies upper-case header names.
+        let headers = "HTTP/2 302\nLOCATION: https://github.com/foo/bar/releases/tag/v2.0.0\n";
+        assert_eq!(
+            parse_latest_tag_from_headers(headers),
+            Some("v2.0.0".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_latest_tag_no_location() {
+        let headers = "HTTP/2 200\ncontent-type: text/html\n";
+        assert_eq!(parse_latest_tag_from_headers(headers), None);
+    }
+
+    #[test]
+    fn test_parse_latest_tag_empty_trailing_segment() {
+        // Trailing slash would yield empty basename — must return None
+        // rather than a phantom version string.
+        let headers = "HTTP/2 302\nlocation: https://github.com/foo/bar/releases/tag/\n";
+        assert_eq!(parse_latest_tag_from_headers(headers), None);
     }
 }
