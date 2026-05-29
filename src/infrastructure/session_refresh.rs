@@ -176,10 +176,11 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
     resolve_names(&mut sessions, &input.daemon_infos, &input.saved_names);
 
     // Phase 7: Overlay Session.source per the precedence rule
-    //   Daemon > External > Wild > Unknown
-    // External requires BOTH externally_opened membership AND a wild PID
-    // match — that way clash restarts (which empty externally_opened)
-    // demote the row to Wild rather than silently strand it as External.
+    //   External > Daemon > Wild > Unknown
+    // External requires externally_opened membership AND a liveness signal
+    // (daemon-managed OR a correlated wild PID) — that way clash restarts
+    // (which empty externally_opened) demote the row to Daemon/Wild rather
+    // than silently stranding it as External.
     overlay_session_source(
         &mut sessions,
         &input.daemon_infos,
@@ -324,7 +325,7 @@ fn admit_wild_disk_sessions(
 ///
 /// Pure — invokes the (also pure) `correlate_wild_to_sessions` against
 /// the current session list and applies the precedence rule
-/// `Daemon > External > Wild > Unknown`.
+/// `External > Daemon > Wild > Unknown`.
 fn overlay_session_source(
     sessions: &mut [Session],
     daemon_infos: &Option<Vec<SessionInfo>>,
@@ -345,15 +346,27 @@ fn overlay_session_source(
 
     for session in sessions.iter_mut() {
         let wild_pid = wild_pids.get(&session.id).copied();
-        session.source = if daemon_ids.contains(session.id.as_str()) {
-            SessionSource::Daemon
-        } else if externally_opened.contains(&session.id) && wild_pid.is_some() {
-            SessionSource::External
-        } else if wild_pid.is_some() {
-            SessionSource::Wild
-        } else {
-            SessionSource::Unknown
-        };
+        let is_daemon = daemon_ids.contains(session.id.as_str());
+        session.source =
+            if externally_opened.contains(&session.id) && (is_daemon || wild_pid.is_some()) {
+                // A session the user opened in an external pane/tab/window.
+                // External takes precedence over Daemon here: opening via `o`
+                // runs `ensure_daemon_session`, so an externally-opened session
+                // is almost always daemon-managed too — gating External below
+                // Daemon would hide the ⊞ indicator for every normal external
+                // open. Liveness is confirmed via either the daemon (present in
+                // daemon_infos) or a correlated wild PID, so a stale
+                // externally_opened entry after the process exits still demotes
+                // correctly to Daemon/Wild/Unknown rather than stranding as
+                // External.
+                SessionSource::External
+            } else if is_daemon {
+                SessionSource::Daemon
+            } else if wild_pid.is_some() {
+                SessionSource::Wild
+            } else {
+                SessionSource::Unknown
+            };
         // Carry the matching pid alongside source so the adopt dialog
         // and takeover effect don't have to re-correlate.
         session.wild_pid = match session.source {
@@ -1693,6 +1706,45 @@ mod tests {
         let out = build_session_list(&input);
         let row = out.iter().find(|r| r.id == "sid").expect("sid present");
         assert_eq!(row.source, crate::domain::entities::SessionSource::External);
+    }
+
+    #[test]
+    fn source_precedence_external_wins_over_daemon_when_opened() {
+        // The `o` path: opening a session externally runs
+        // ensure_daemon_session, so the row is BOTH daemon-managed and in
+        // externally_opened. External must win so the ⊞ indicator shows —
+        // gating it below Daemon (the pre-fix bug) hid the glyph for every
+        // normal external open.
+        let (s, entry) = registered_session("sid", "/repo");
+        let registry = HashMap::from([(s.id.clone(), entry)]);
+        let prev = vec![];
+        let mut input = empty_input(&prev);
+        input.disk_sessions = vec![s];
+        input.registry = registry;
+        input.daemon_infos = Some(vec![make_daemon_info("sid", "/repo", "running", true)]);
+        input.externally_opened = HashSet::from(["sid".to_string()]);
+
+        let out = build_session_list(&input);
+        let row = out.iter().find(|r| r.id == "sid").expect("sid present");
+        assert_eq!(row.source, crate::domain::entities::SessionSource::External);
+    }
+
+    #[test]
+    fn source_precedence_daemon_when_not_externally_opened() {
+        // A daemon session the user is viewing in the main TUI but never
+        // opened externally must stay Daemon (no glyph) — externally_opened
+        // is the sole discriminator between Daemon and External.
+        let (s, entry) = registered_session("sid", "/repo");
+        let registry = HashMap::from([(s.id.clone(), entry)]);
+        let prev = vec![];
+        let mut input = empty_input(&prev);
+        input.disk_sessions = vec![s];
+        input.registry = registry;
+        input.daemon_infos = Some(vec![make_daemon_info("sid", "/repo", "running", true)]);
+
+        let out = build_session_list(&input);
+        let row = out.iter().find(|r| r.id == "sid").expect("sid present");
+        assert_eq!(row.source, crate::domain::entities::SessionSource::Daemon);
     }
 
     #[test]
