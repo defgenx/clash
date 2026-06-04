@@ -291,16 +291,21 @@ pub fn render_sessions_table(
             None => "—".to_string(),
         };
 
-        // Prefix glyph reflects Session.source (set in build_session_list's
-        // precedence overlay): "⊞ " for External, "🌿 " for Wild, none
-        // for Daemon/Unknown. The styling stays in sync with the legacy
-        // External-only behavior — non-Daemon rows render dim+bold.
+        // Prefix glyph: "⊞ " when the session is open in an external
+        // pane/tab/window (tracked in `externally_opened`, independent of
+        // source — a daemon-managed clash session opened with `o` keeps its
+        // normal section but gains this marker). Otherwise fall back to the
+        // source glyph: "🌿 " for Wild, "⊞ " for External (non-daemon wild
+        // claudes opened externally), none for Daemon/Unknown. Any row with
+        // a glyph renders dim+bold, matching the legacy external behavior.
         use crate::adapters::views::source_glyph;
-        use crate::domain::entities::SessionSource;
-        let glyph = source_glyph(session.source);
+        let glyph = if state.externally_opened.contains(&session.id) {
+            "\u{229e} " // ⊞
+        } else {
+            source_glyph(session.source)
+        };
         let name_text = format!("{}{}", glyph, name_display);
-        let is_non_daemon = !matches!(session.source, SessionSource::Daemon);
-        let name_style = if is_non_daemon && !glyph.is_empty() {
+        let name_style = if !glyph.is_empty() {
             Style::default()
                 .fg(theme::TEXT_DIM)
                 .add_modifier(ratatui::style::Modifier::BOLD)
