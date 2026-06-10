@@ -8,17 +8,147 @@ const state = {
   sessions: [],
   query: "",
   open: new Map(), // session id -> { term, fitAddon, el, name }
-  panes: [null], // pane slots -> session id or null
-  focusedPane: 0,
+  // cmux-style workspaces: each owns its pane layout and session assignments
+  workspaces: [{ name: "main", panes: [null], focused: 0, zoomed: false }],
+  activeWs: 0,
   activeTab: null, // session id highlighted in the tab bar
   detailsFor: null, // session id shown in the details panel, or null
   teams: [],
   teamsOpen: false,
   renaming: null, // session id with an open inline-rename input
   prevStatuses: new Map(), // session id -> status (attention transitions)
+  unread: new Set(), // session ids with unseen attention events
 };
 
 const $ = (id) => document.getElementById(id);
+
+/// The active workspace.
+function ws() {
+  return state.workspaces[state.activeWs];
+}
+
+// ── Workspace persistence (layout survives restarts) ───────────
+
+function saveWorkspaces() {
+  try {
+    localStorage.setItem(
+      "clash-workspaces",
+      JSON.stringify({
+        workspaces: state.workspaces.map((w) => ({
+          name: w.name,
+          panes: w.panes,
+        })),
+        active: state.activeWs,
+      })
+    );
+  } catch (e) {
+    console.error("saveWorkspaces failed:", e);
+  }
+}
+
+function loadWorkspaces() {
+  try {
+    const raw = localStorage.getItem("clash-workspaces");
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (Array.isArray(data.workspaces) && data.workspaces.length) {
+      state.workspaces = data.workspaces.map((w) => ({
+        name: w.name || "ws",
+        panes: Array.isArray(w.panes) && w.panes.length ? w.panes : [null],
+        focused: 0,
+        zoomed: false,
+      }));
+      state.activeWs = Math.min(data.active || 0, state.workspaces.length - 1);
+    }
+  } catch (e) {
+    console.error("loadWorkspaces failed:", e);
+  }
+}
+
+/// Re-attach running sessions referenced by restored workspace panes.
+/// Stashed/dead sessions are cleared from their slots (no surprise resumes).
+async function restoreWorkspaceSessions() {
+  const running = new Set(
+    state.sessions.filter((s) => s.is_running).map((s) => s.id)
+  );
+  const savedActive = state.activeWs;
+  for (let wi = 0; wi < state.workspaces.length; wi++) {
+    const w = state.workspaces[wi];
+    for (let pi = 0; pi < w.panes.length; pi++) {
+      const sid = w.panes[pi];
+      if (!sid) continue;
+      if (!running.has(sid)) {
+        w.panes[pi] = null;
+        continue;
+      }
+      state.activeWs = wi;
+      w.focused = pi;
+      await openSession(sid);
+    }
+  }
+  state.activeWs = savedActive;
+  renderAll();
+}
+
+function renderAll() {
+  renderWorkspaceBar();
+  renderPanes();
+  renderTabs();
+  renderSidebar();
+}
+
+// ── Workspace bar ───────────────────────────────────────────────
+
+function renderWorkspaceBar() {
+  const chips = $("workspace-chips");
+  chips.innerHTML = "";
+  state.workspaces.forEach((w, i) => {
+    const chip = document.createElement("div");
+    chip.className = "ws-chip" + (i === state.activeWs ? " active" : "");
+    chip.title = `${w.name} — ⌘${i + 1}`;
+    chip.innerHTML = `<span class="n">${i + 1}</span><span class="label">${escapeHtml(
+      w.name
+    )}</span>`;
+    chip.onclick = () => switchWorkspace(i);
+    chip.ondblclick = () => renameWorkspace(i);
+    chips.appendChild(chip);
+  });
+}
+
+function switchWorkspace(i) {
+  if (i < 0 || i >= state.workspaces.length) return;
+  state.activeWs = i;
+  const sid = ws().panes[ws().focused];
+  state.activeTab = sid || state.activeTab;
+  saveWorkspaces();
+  renderAll();
+  if (sid) focusTerm(sid);
+}
+
+function newWorkspace() {
+  state.workspaces.push({
+    name: `ws-${state.workspaces.length + 1}`,
+    panes: [null],
+    focused: 0,
+    zoomed: false,
+  });
+  switchWorkspace(state.workspaces.length - 1);
+}
+
+function renameWorkspace(i) {
+  const name = prompt("Workspace name:", state.workspaces[i].name);
+  if (name && name.trim()) {
+    state.workspaces[i].name = name.trim();
+    saveWorkspaces();
+    renderWorkspaceBar();
+  }
+}
+
+function closeWorkspace() {
+  if (state.workspaces.length <= 1) return;
+  state.workspaces.splice(state.activeWs, 1);
+  switchWorkspace(Math.max(0, state.activeWs - 1));
+}
 
 // ── Session helpers ─────────────────────────────────────────────
 
@@ -160,6 +290,13 @@ function sessionItem(s) {
   meta.appendChild(name);
   meta.appendChild(sub);
 
+  if (state.unread.has(s.id)) {
+    const dot = document.createElement("div");
+    dot.className = "unread-dot";
+    dot.title = "Needs attention";
+    meta.querySelector(".session-name").appendChild(dot);
+  }
+
   const actions = document.createElement("div");
   actions.className = "session-actions";
   actions.appendChild(
@@ -292,23 +429,26 @@ function renderTabs() {
 
 function renderPanes() {
   const host = $("terminal-host");
-  host.className = `layout-${state.panes.length}`;
+  const w = ws();
+  const visible = w.zoomed ? [w.panes[w.focused] ?? null] : w.panes;
+  host.className = `layout-${visible.length}`;
 
   // Detach term elements first so re-appending doesn't destroy them
   for (const entry of state.open.values()) entry.el.remove();
   host.querySelectorAll(".pane").forEach((p) => p.remove());
 
-  const anyOpen = state.open.size > 0;
-  $("empty-state").style.display = anyOpen ? "none" : "flex";
+  const anyAssigned = w.panes.some((p) => p);
+  $("empty-state").style.display = anyAssigned ? "none" : "flex";
 
-  state.panes.forEach((sid, i) => {
+  visible.forEach((sid, vi) => {
+    const i = w.zoomed ? w.focused : vi;
     const pane = document.createElement("div");
-    pane.className = "pane" + (i === state.focusedPane ? " focused" : "");
+    pane.className = "pane" + (i === w.focused ? " focused" : "");
     pane.onclick = () => {
-      state.focusedPane = i;
-      if (state.panes[i]) {
-        state.activeTab = state.panes[i];
-        focusTerm(state.panes[i]);
+      w.focused = i;
+      if (w.panes[i]) {
+        state.activeTab = w.panes[i];
+        focusTerm(w.panes[i]);
       }
       renderPanes();
       renderTabs();
@@ -317,10 +457,10 @@ function renderPanes() {
 
     const entry = sid ? state.open.get(sid) : null;
     if (entry) {
-      if (state.panes.length > 1) {
+      if (visible.length > 1 || w.zoomed) {
         const title = document.createElement("div");
         title.className = "pane-title";
-        title.textContent = entry.name;
+        title.textContent = entry.name + (w.zoomed ? "  (zoomed)" : "");
         pane.appendChild(title);
       }
       pane.appendChild(entry.el);
@@ -338,7 +478,7 @@ function renderPanes() {
 
 function fitAll() {
   requestAnimationFrame(() => {
-    for (const sid of state.panes) {
+    for (const sid of ws().panes) {
       const entry = sid && state.open.get(sid);
       if (entry) entry.fitAddon.fit();
     }
@@ -351,28 +491,56 @@ function focusTerm(sid) {
 }
 
 function addPane() {
-  if (state.panes.length >= 4) return;
-  state.panes.push(null);
-  state.focusedPane = state.panes.length - 1;
+  const w = ws();
+  if (w.panes.length >= 4) return;
+  w.panes.push(null);
+  w.focused = w.panes.length - 1;
+  w.zoomed = false;
+  saveWorkspaces();
   renderPanes();
 }
 
 function removePane() {
-  if (state.panes.length <= 1) return;
-  state.panes.pop();
-  state.focusedPane = Math.min(state.focusedPane, state.panes.length - 1);
+  const w = ws();
+  if (w.panes.length <= 1) return;
+  w.panes.pop();
+  w.focused = Math.min(w.focused, w.panes.length - 1);
+  saveWorkspaces();
   renderPanes();
 }
 
+function toggleZoom() {
+  const w = ws();
+  if (w.panes.length <= 1) return;
+  w.zoomed = !w.zoomed;
+  renderPanes();
+}
+
+function focusPaneDelta(delta) {
+  const w = ws();
+  if (w.panes.length <= 1) return;
+  w.focused = (w.focused + delta + w.panes.length) % w.panes.length;
+  const sid = w.panes[w.focused];
+  if (sid) {
+    state.activeTab = sid;
+    focusTerm(sid);
+  }
+  renderPanes();
+  renderTabs();
+}
+
 function assignToFocusedPane(sid) {
-  // If already visible in a pane, just focus that pane
-  const existing = state.panes.indexOf(sid);
+  const w = ws();
+  // If already visible in a pane of this workspace, just focus that pane
+  const existing = w.panes.indexOf(sid);
   if (existing >= 0) {
-    state.focusedPane = existing;
+    w.focused = existing;
   } else {
-    state.panes[state.focusedPane] = sid;
+    w.panes[w.focused] = sid;
   }
   state.activeTab = sid;
+  state.unread.delete(sid);
+  saveWorkspaces();
   renderPanes();
   renderTabs();
   renderSidebar();
@@ -456,7 +624,10 @@ function dropTerminal(sid) {
   entry.term.dispose();
   entry.el.remove();
   state.open.delete(sid);
-  state.panes = state.panes.map((p) => (p === sid ? null : p));
+  for (const w of state.workspaces) {
+    w.panes = w.panes.map((p) => (p === sid ? null : p));
+  }
+  saveWorkspaces();
   if (state.activeTab === sid) {
     const next = state.open.keys().next();
     state.activeTab = next.done ? null : next.value;
@@ -517,6 +688,7 @@ function renderDetails() {
       <button id="d-diff">Diff</button>
       <button id="d-conv">Conversation</button>
       <button id="d-subs">Subagents</button>
+      <button id="d-ports">Ports</button>
       <button id="d-ide">Open in IDE</button>
       <button id="d-close">Close panel</button>
     </div>
@@ -536,6 +708,25 @@ function renderDetails() {
   $("d-conv").onclick = () => showConversation(s);
   $("d-subs").onclick = () => showSubagents(s);
   $("d-ide").onclick = () => showIdePicker(s);
+  $("d-ports").onclick = async () => {
+    const out = $("d-out");
+    out.innerHTML = "<h4>LISTENING PORTS</h4><p class='hint'>scanning…</p>";
+    try {
+      const ports = await invoke("get_session_ports", { sessionId: s.id });
+      out.innerHTML =
+        "<h4>LISTENING PORTS</h4>" +
+        (ports.length
+          ? ports
+              .map(
+                (p) =>
+                  `<div class="row-item"><span>:${escapeHtml(p)}</span><span class="dim">http://localhost:${escapeHtml(p)}</span></div>`
+              )
+              .join("")
+          : "<p class='hint'>no listening ports</p>");
+    } catch (e) {
+      out.innerHTML = `<h4>LISTENING PORTS</h4><p class='hint'>failed: ${escapeHtml(e)}</p>`;
+    }
+  };
 }
 
 function renderChat(out, msgs) {
@@ -911,6 +1102,17 @@ listen("pty-output", (event) => {
   if (entry) entry.term.write(base64ToBytes(data));
 });
 
+listen("session-attention", (event) => {
+  const { session_id } = event.payload;
+  // Badge unless the session is in a visible pane of the active workspace
+  // and the window is focused (cmux-style suppression).
+  const visible = ws().panes.includes(session_id) && document.hasFocus();
+  if (!visible) {
+    state.unread.add(session_id);
+    renderSidebar();
+  }
+});
+
 listen("pty-exited", (event) => {
   const { session_id, exit_code } = event.payload;
   const entry = state.open.get(session_id);
@@ -1039,7 +1241,44 @@ document.addEventListener("keydown", (e) => {
     addPane();
     return;
   }
-  if (e.metaKey && e.key === "w") {
+  // Workspace shortcuts (cmux layout: ⌘N new, ⌘1-9 switch, ⌘⇧R rename, ⌘⇧W close)
+  if (e.metaKey && !e.shiftKey && e.key === "n") {
+    e.preventDefault();
+    newWorkspace();
+    return;
+  }
+  if (e.metaKey && !e.shiftKey && e.key >= "1" && e.key <= "9") {
+    e.preventDefault();
+    switchWorkspace(Number(e.key) - 1);
+    return;
+  }
+  if (e.metaKey && e.shiftKey && e.key.toLowerCase() === "r") {
+    e.preventDefault();
+    renameWorkspace(state.activeWs);
+    return;
+  }
+  if (e.metaKey && e.shiftKey && e.key.toLowerCase() === "w") {
+    e.preventDefault();
+    closeWorkspace();
+    return;
+  }
+  if (e.metaKey && e.key === "b") {
+    e.preventDefault();
+    $("sidebar").classList.toggle("collapsed");
+    fitAll();
+    return;
+  }
+  if (e.metaKey && e.shiftKey && e.key === "Enter") {
+    e.preventDefault();
+    toggleZoom();
+    return;
+  }
+  if (e.metaKey && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    e.preventDefault();
+    focusPaneDelta(e.key === "ArrowRight" ? 1 : -1);
+    return;
+  }
+  if (e.metaKey && !e.shiftKey && e.key === "w") {
     e.preventDefault();
     if (state.activeTab) detachSession(state.activeTab);
     return;
@@ -1057,9 +1296,12 @@ document.addEventListener("keydown", (e) => {
 
 window.addEventListener("resize", fitAll);
 
+$("new-ws-btn").onclick = newWorkspace;
+
 // ── Boot ────────────────────────────────────────────────────────
 
-refreshSessions();
-renderPanes();
+loadWorkspaces();
+renderAll();
 setVersionLabel();
+refreshSessions().then(restoreWorkspaceSessions);
 setInterval(refreshSessions, 2000);

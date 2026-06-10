@@ -73,6 +73,43 @@ html, body, #app {
   padding: 1px 4px;
 }
 
+/* Workspace bar (cmux-style: each workspace owns its pane layout) */
+#workspace-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px 8px;
+}
+#workspace-chips { display: flex; gap: 4px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.ws-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  cursor: pointer;
+  max-width: 110px;
+}
+.ws-chip:hover { color: var(--fg); }
+.ws-chip.active { border-color: var(--accent); color: var(--fg); }
+.ws-chip .n { color: var(--accent); font-weight: 700; }
+.ws-chip .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+#sidebar.collapsed { display: none; }
+
+.unread-dot {
+  width: 7px;
+  height: 7px;
+  min-width: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: 4px;
+}
+
 #search-wrap { padding: 0 10px 8px; border-bottom: 1px solid var(--border); }
 #search {
   width: 100%;

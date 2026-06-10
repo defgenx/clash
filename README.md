@@ -323,9 +323,22 @@ with session sections and status rings; embedded xterm.js terminals attach to
 the same sessions the TUI manages.
 
 GUI features: fuzzy search (`/` or `⌘F`), inline rename (double-click),
-new session (`⌘T`), stash/kill from hover actions, split panes up to 2×2
-(`⌘D`), session details panel with git diff viewer, teams & tasks browser,
-and a title-bar attention counter for sessions waiting on input.
+new session (`⌘T`) with preset picker and git-worktree option, stash/kill/
+adopt from hover actions, split panes up to 2×2 (`⌘D`, zoom `⌘⇧↩`),
+session details panel (conversation, subagents, git diff, listening ports,
+open-in-IDE), teams browser (members, tasks, agent inboxes, create/delete),
+self-update from the footer, and quit-stash on close.
+
+Workspaces (cmux-style): each workspace owns its own pane layout and session
+assignments — `⌘N` new, `⌘1-9` switch, `⌘⇧R` rename, `⌘⇧W` close, `⌘B`
+toggles the sidebar. Layouts persist across restarts (running sessions
+re-attach automatically).
+
+Notifications: desktop alerts when a session starts waiting for input or
+errors (suppressed while the window is focused), unread badges in the
+sidebar, plus in-band `OSC 9` / `OSC 777` terminal notification sequences —
+`printf '\e]777;notify;Title;Body\a'` from inside any session raises an
+alert, so agents and scripts can ping you.
 
 ```bash
 cargo build --release           # builds BOTH binaries: clash and clash-gui

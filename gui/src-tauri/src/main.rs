@@ -28,6 +28,8 @@ struct GuiState {
     config_ides: Vec<clash::infrastructure::config::IdeEntry>,
     /// Previous session list — input to the merge step of the refresh pipeline.
     previous: Mutex<Vec<Session>>,
+    /// Last seen status per session — attention-transition detection.
+    prev_statuses: Mutex<HashMap<String, clash::domain::entities::SessionStatus>>,
     /// Control-plane client (list/kill). Separate from attach clients so a
     /// streaming attach never blocks a list request.
     control: tokio::sync::Mutex<DaemonClient>,
@@ -49,10 +51,51 @@ struct PtyExited {
     exit_code: Option<i32>,
 }
 
+/// Fire a native desktop notification. Uses platform tools that work from a
+/// bare (unbundled) binary: `osascript` on macOS, `notify-send` on Linux.
+fn native_notify(title: &str, body: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            body.replace('\\', "").replace('"', "'"),
+            title.replace('\\', "").replace('"', "'")
+        );
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = std::process::Command::new("notify-send")
+            .args([title, body])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+}
+
+/// Payload for `session-attention` events (sidebar unread badges).
+#[derive(Clone, serde::Serialize)]
+struct SessionAttention {
+    session_id: String,
+    name: String,
+}
+
 /// Full session list via the same pipeline the TUI uses
 /// (disk + registry + hooks + daemon, merged and sorted by section).
+///
+/// Also detects attention transitions (→ Prompting/Waiting/Errored): fires a
+/// desktop notification when the window is unfocused — cmux-style suppression
+/// when you're already looking at the app — and always emits
+/// `session-attention` so the sidebar can badge the row.
 #[tauri::command]
-async fn list_sessions(state: State<'_, GuiState>) -> Result<Vec<Session>, String> {
+async fn list_sessions(
+    app: tauri::AppHandle,
+    state: State<'_, GuiState>,
+) -> Result<Vec<Session>, String> {
     let registry = clash::infrastructure::hooks::registry::load();
     let previous = state.previous.lock().unwrap().clone();
     let mut input = session_refresh::gather_sync_input(&state.backend, &previous, registry);
@@ -62,6 +105,46 @@ async fn list_sessions(state: State<'_, GuiState>) -> Result<Vec<Session>, Strin
         input.daemon_infos = session_refresh::gather_daemon_input(&mut control).await;
     }
     let sessions = session_refresh::build_session_list(&input);
+
+    let focused = app
+        .get_webview_window("main")
+        .and_then(|w| w.is_focused().ok())
+        .unwrap_or(false);
+    {
+        use clash::domain::entities::SessionStatus;
+        let needs_attention = |s: &SessionStatus| {
+            matches!(
+                s,
+                SessionStatus::Prompting | SessionStatus::Waiting | SessionStatus::Errored
+            )
+        };
+        let mut prev_statuses = state.prev_statuses.lock().unwrap();
+        for s in &sessions {
+            let was = prev_statuses.get(s.id.as_str());
+            if needs_attention(&s.status) && was.is_some_and(|w| !needs_attention(w)) {
+                let name = s
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| s.id.chars().take(8).collect());
+                let _ = app.emit(
+                    "session-attention",
+                    SessionAttention {
+                        session_id: s.id.clone(),
+                        name: name.clone(),
+                    },
+                );
+                if !focused {
+                    let what = match s.status {
+                        SessionStatus::Errored => "errored",
+                        _ => "needs your input",
+                    };
+                    native_notify(&format!("clash · {}", name), what);
+                }
+            }
+        }
+        *prev_statuses = sessions.iter().map(|s| (s.id.clone(), s.status)).collect();
+    }
+
     *state.previous.lock().unwrap() = sessions.clone();
     Ok(sessions)
 }
@@ -138,6 +221,22 @@ async fn open_session(
         while let Some(event) = stream_rx.recv().await {
             match event {
                 Event::Output { session_id, data } => {
+                    // cmux-style in-band notifications: OSC 9 / OSC 777
+                    // escape sequences in the output trigger desktop alerts.
+                    if let Ok(bytes) =
+                        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &data)
+                    {
+                        if let Some((title, body)) = parse_osc_notification(&bytes) {
+                            native_notify(&title, &body);
+                            let _ = app.emit(
+                                "session-attention",
+                                SessionAttention {
+                                    session_id: session_id.clone(),
+                                    name: title,
+                                },
+                            );
+                        }
+                    }
                     let _ = app.emit("pty-output", PtyOutput { session_id, data });
                 }
                 Event::Exited {
@@ -782,6 +881,114 @@ fn get_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// Parse a terminal notification escape sequence from raw PTY output.
+///
+/// Supports the two formats cmux popularized for agent workflows:
+/// - OSC 777: `ESC]777;notify;<title>;<body>(BEL|ESC\)`
+/// - OSC 9:   `ESC]9;<message>(BEL|ESC\)`
+fn parse_osc_notification(bytes: &[u8]) -> Option<(String, String)> {
+    fn payload_until_st(rest: &[u8]) -> Option<&[u8]> {
+        for (i, w) in rest.iter().enumerate() {
+            match w {
+                0x07 => return Some(&rest[..i]),
+                0x1b if rest.get(i + 1) == Some(&b'\\') => return Some(&rest[..i]),
+                _ => {}
+            }
+        }
+        None
+    }
+    // OSC 777
+    if let Some(pos) = bytes.windows(13).position(|w| w == b"\x1b]777;notify;") {
+        let payload = payload_until_st(&bytes[pos + 13..])?;
+        let text = String::from_utf8_lossy(payload);
+        let (title, body) = text.split_once(';').unwrap_or((&text, ""));
+        return Some((title.to_string(), body.to_string()));
+    }
+    // OSC 9
+    if let Some(pos) = bytes.windows(3).position(|w| w == b"\x1b]9") {
+        let rest = &bytes[pos + 3..];
+        // Must be `ESC]9;` exactly — exclude OSC 99, OSC 9;4 progress etc.
+        if rest.first() == Some(&b';') {
+            let payload = payload_until_st(&rest[1..])?;
+            let text = String::from_utf8_lossy(payload).to_string();
+            if !text.is_empty() && !text.starts_with("4;") {
+                return Some(("clash session".to_string(), text));
+            }
+        }
+    }
+    None
+}
+
+/// Listening TCP ports of a session's process tree (cmux shows ports per
+/// workspace; we expose them per session, on demand from the details panel).
+#[tauri::command]
+async fn get_session_ports(
+    state: State<'_, GuiState>,
+    session_id: String,
+) -> Result<Vec<String>, String> {
+    // Root pid: daemon-owned session, or wild pid from the session list
+    let pid = {
+        let mut control = state.control.lock().await;
+        ensure_connected(&mut control).await;
+        let daemon_pid = control
+            .list_sessions()
+            .await
+            .ok()
+            .and_then(|infos| infos.into_iter().find(|i| i.session_id == session_id))
+            .map(|i| i.pid);
+        daemon_pid.or_else(|| {
+            let prev = state.previous.lock().unwrap();
+            prev.iter()
+                .find(|s| s.id == session_id)
+                .and_then(|s| s.wild_pid)
+        })
+    };
+    let Some(root) = pid else {
+        return Ok(Vec::new());
+    };
+
+    // Collect the process tree (root + descendants), then lsof their ports.
+    let mut pids = vec![root.to_string()];
+    if let Ok(out) = tokio::process::Command::new("pgrep")
+        .args(["-P", &root.to_string()])
+        .output()
+        .await
+    {
+        pids.extend(
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty()),
+        );
+    }
+    let out = tokio::process::Command::new("lsof")
+        .args([
+            "-a",
+            "-iTCP",
+            "-sTCP:LISTEN",
+            "-P",
+            "-n",
+            "-p",
+            &pids.join(","),
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("lsof failed: {}", e))?;
+    let mut ports: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            line.split_whitespace()
+                .nth(8)
+                .and_then(|addr| addr.rsplit(':').next())
+                .map(String::from)
+        })
+        .collect();
+    ports.sort();
+    ports.dedup();
+    Ok(ports)
+}
+
 /// (Re)connect the control client if the connection was lost.
 async fn ensure_connected(client: &mut DaemonClient) {
     if !client.is_connected() {
@@ -829,6 +1036,7 @@ fn main() {
         claude_bin,
         config_ides: config.ides.clone(),
         previous: Mutex::new(Vec::new()),
+        prev_statuses: Mutex::new(HashMap::new()),
         control: tokio::sync::Mutex::new(DaemonClient::new(DaemonClient::instance_socket_path())),
         attached: tokio::sync::Mutex::new(HashMap::new()),
     };
@@ -893,7 +1101,8 @@ fn main() {
             create_team,
             delete_team,
             start_update,
-            get_version
+            get_version,
+            get_session_ports
         ])
         .run(tauri::generate_context!())
         .expect("error while running clash GUI");
