@@ -1,3 +1,9 @@
+[workspace]
+members = ["gui/src-tauri"]
+# Keep root-level cargo build/test/clippy scoped to the TUI crate so CI and
+# day-to-day workflows are unaffected. Build the GUI with: cargo build -p clash-gui
+default-members = ["."]
+
 [package]
 name = "clash"
 version = "1.35.7"

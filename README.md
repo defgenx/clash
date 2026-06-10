@@ -313,6 +313,22 @@ cargo fmt --check   # Check formatting
 
 Releases are automatic — push with conventional commits (`feat:`, `fix:`) and CI handles the rest.
 
+## GUI (experimental)
+
+A cmux-style desktop client lives in `gui/` — a Tauri 2 app sharing the same
+core as the TUI (session pipeline, in-process PTY daemon, protocol). Sidebar
+with session sections and status rings; embedded xterm.js terminals attach to
+the same sessions the TUI manages.
+
+```bash
+cargo build -p clash-gui      # build (excluded from default workspace builds)
+./target/debug/clash-gui      # run — TUI and GUI are mutually exclusive
+                              # (single-instance lock: one session owner at a time)
+```
+
+The GUI is fully self-contained: no external daemon, no node build step
+(frontend assets in `gui/dist/` are vendored and embedded in the binary).
+
 ## License
 
 MIT
