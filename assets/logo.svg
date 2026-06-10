@@ -1,95 +1,168 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 280" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="100%" height="100%">
   <defs>
-    <linearGradient id="text-grad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#b48cff"/>
-      <stop offset="40%" stop-color="#ff8cc8"/>
-      <stop offset="60%" stop-color="#ff8cc8"/>
-      <stop offset="100%" stop-color="#b48cff"/>
-    </linearGradient>
-    <linearGradient id="ray-h" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#7a52cc" stop-opacity="0"/>
-      <stop offset="50%" stop-color="#af82ff" stop-opacity="0.6"/>
-      <stop offset="100%" stop-color="#7a52cc" stop-opacity="0"/>
-    </linearGradient>
-    <linearGradient id="ray-v" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#7a52cc" stop-opacity="0"/>
-      <stop offset="50%" stop-color="#af82ff" stop-opacity="0.6"/>
-      <stop offset="100%" stop-color="#7a52cc" stop-opacity="0"/>
-    </linearGradient>
-    <linearGradient id="ray-d1" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#7a52cc" stop-opacity="0"/>
-      <stop offset="50%" stop-color="#9b6ee6" stop-opacity="0.35"/>
-      <stop offset="100%" stop-color="#7a52cc" stop-opacity="0"/>
-    </linearGradient>
-    <linearGradient id="ray-d2" x1="100%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#7a52cc" stop-opacity="0"/>
-      <stop offset="50%" stop-color="#9b6ee6" stop-opacity="0.35"/>
-      <stop offset="100%" stop-color="#7a52cc" stop-opacity="0"/>
-    </linearGradient>
-    <filter id="glow">
-      <feGaussianBlur stdDeviation="3" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    <radialGradient id="bgGlow" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" stop-color="#242424" />
+      <stop offset="100%" stop-color="#141414" />
+    </radialGradient>
+
+    <filter id="fireGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="12" result="blur1" />
+      <feGaussianBlur stdDeviation="25" result="blur2" />
+      <feMerge>
+        <feMergeNode in="blur2" />
+        <feMergeNode in="blur1" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
     </filter>
-    <filter id="glow-lg">
-      <feGaussianBlur stdDeviation="8" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+
+    <linearGradient id="lavaGrad" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#501a06" />
+      <stop offset="30%" stop-color="#b83f0d" />
+      <stop offset="70%" stop-color="#f08313" />
+      <stop offset="100%" stop-color="#ffdf59" />
+    </linearGradient>
+
+    <filter id="blockShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="12" stdDeviation="0" flood-color="#120502" flood-opacity="1" />
     </filter>
-    <filter id="glow-xl">
-      <feGaussianBlur stdDeviation="14" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="b"/></feMerge>
-    </filter>
+
+    <linearGradient id="emberGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffb834" />
+      <stop offset="100%" stop-color="#bf3100" />
+    </linearGradient>
   </defs>
 
-  <!-- Background -->
-  <rect width="600" height="280" rx="16" fill="#0c0c12"/>
+  <rect width="1200" height="600" fill="url(#bgGlow)" />
 
-  <!-- Outermost shockwave ring -->
-  <circle cx="300" cy="95" r="115" fill="none" stroke="#7a52cc" stroke-width="0.7" opacity="0.10"/>
-  <!-- Middle shockwave ring -->
-  <circle cx="300" cy="95" r="80" fill="none" stroke="#af82ff" stroke-width="1.0" opacity="0.16"/>
-  <!-- Inner shockwave ring -->
-  <circle cx="300" cy="95" r="48" fill="none" stroke="#c49cff" stroke-width="1.4" opacity="0.24"/>
+  <g opacity="0.25" stroke="#ffffff" stroke-width="0.5" fill="none">
+    <polyline points="150,120 180,90 220,110 260,170 200,210" />
+    <circle cx="150" cy="120" r="1.5" fill="#fff" />
+    <circle cx="180" cy="90" r="1.5" fill="#fff" />
+    <circle cx="220" cy="110" r="1.5" fill="#fff" />
+    <circle cx="260" cy="170" r="1.5" fill="#fff" />
+    <circle cx="200" cy="210" r="1.5" fill="#fff" />
+    
+    <polyline points="950,510 1020,530 1080,490 1120,540" />
+    <circle cx="950" cy="510" r="1.5" fill="#fff" />
+    <circle cx="1020" cy="530" r="1.5" fill="#fff" />
+    <circle cx="1080" cy="490" r="1.5" fill="#fff" />
+    <path d="M1120,525 L1123,537 L1135,540 L1123,543 L1120,555 L1117,543 L1105,540 L1117,537 Z" fill="#6a6a6a" stroke="none" opacity="0.6"/>
+  </g>
 
-  <!-- Energy rays — cardinal -->
-  <line x1="180" y1="95" x2="420" y2="95" stroke="url(#ray-h)" stroke-width="2.2"/>
-  <line x1="300" y1="0" x2="300" y2="178" stroke="url(#ray-v)" stroke-width="2.2"/>
+  <g fill="#ffffff" opacity="0.4">
+    <circle cx="450" cy="120" r="1" />
+    <circle cx="520" cy="80" r="1.5" />
+    <circle cx="480" cy="220" r="0.8" />
+    <circle cx="720" cy="140" r="1.2" />
+    <circle cx="680" cy="90" r="1" />
+    <circle cx="350" cy="480" r="1.3" />
+    <circle cx="780" cy="520" r="1" />
+  </g>
 
-  <!-- Energy rays — diagonal -->
-  <line x1="215" y1="18" x2="385" y2="172" stroke="url(#ray-d1)" stroke-width="1.2"/>
-  <line x1="385" y1="18" x2="215" y2="172" stroke="url(#ray-d2)" stroke-width="1.2"/>
+  <g filter="url(#fireGlow)" opacity="0.75">
+    <path d="M 180,450 C 130,350 200,200 320,210 C 370,215 420,250 420,250 L 370,300 C 370,300 340,275 310,275 C 250,275 220,340 250,400 C 280,450 350,420 370,410 L 360,460 C 300,480 210,480 180,450 Z
+             M 370,220 L 460,220 L 430,370 L 530,360 L 510,450 L 360,470 Z
+             M 480,470 L 580,220 L 680,220 L 630,480 Z
+             M 650,440 C 630,360 700,290 770,270 C 830,250 880,310 850,370 C 820,430 730,470 650,440 Z
+             M 830,470 L 890,230 L 950,230 L 930,340 L 1030,320 L 990,460 Z" fill="#e65c00"/>
+  </g>
 
-  <!-- Ambient glow -->
-  <ellipse cx="300" cy="95" rx="90" ry="72" fill="#af82ff" opacity="0.05" filter="url(#glow-xl)"/>
+  <g filter="url(#blockShadow)">
+    
+    <g stroke="#260c02" stroke-width="12" stroke-linejoin="miter" stroke-miterlimit="3" fill="url(#lavaGrad)">
+      
+      <path d="M 383,238 
+               C 340,215 285,218 244,249 
+               C 210,275 186,321 193,369 
+               C 201,425 242,467 298,467 
+               C 334,467 369,451 391,437 
+               L 375,411 
+               C 345,426 312,434 286,419 
+               C 253,400 248,348 268,313 
+               C 285,283 325,269 356,284 
+               Z" />
 
-  <!-- Central explosion — layered glows from diffuse to white-hot -->
-  <ellipse cx="300" cy="95" rx="50" ry="42" fill="#af82ff" opacity="0.09" filter="url(#glow-xl)"/>
-  <ellipse cx="300" cy="95" rx="28" ry="22" fill="#ffb8e0" opacity="0.18" filter="url(#glow-lg)"/>
-  <circle cx="300" cy="95" r="11" fill="#fff0f8" opacity="0.50" filter="url(#glow-lg)"/>
-  <circle cx="300" cy="95" r="4" fill="#fff5fa" opacity="0.92" filter="url(#glow)"/>
+      <path d="M 401,235 
+               L 456,220 
+               L 418,365 
+               L 443,360 
+               L 486,345 
+               L 508,355 
+               L 468,402 
+               L 448,392 
+               L 418,445 
+               C 380,455 332,460 320,458 
+               L 352,340 
+               Z" />
 
-  <!-- Scattered particles — matter born from the explosion -->
-  <circle cx="258" cy="56" r="2.0" fill="#ffc8e4" filter="url(#glow)"/>
-  <circle cx="348" cy="62" r="1.7" fill="#d4aaff" filter="url(#glow)"/>
-  <circle cx="342" cy="124" r="1.8" fill="#ffc8e4" filter="url(#glow)"/>
-  <circle cx="252" cy="122" r="1.4" fill="#d4aaff" filter="url(#glow)"/>
-  <circle cx="314" cy="40" r="1.5" fill="#fff" opacity="0.80" filter="url(#glow)"/>
-  <circle cx="274" cy="142" r="1.3" fill="#ffc8e4" filter="url(#glow)"/>
-  <circle cx="364" cy="84" r="1.2" fill="#d4aaff" filter="url(#glow)"/>
-  <circle cx="236" cy="78" r="1.1" fill="#ffc8e4" filter="url(#glow)"/>
-  <circle cx="326" cy="150" r="1.0" fill="#d4aaff" opacity="0.70" filter="url(#glow)"/>
-  <circle cx="280" cy="44" r="0.9" fill="#ffc8e4" opacity="0.60" filter="url(#glow)"/>
-  <circle cx="356" cy="110" r="1.4" fill="#fff" opacity="0.50" filter="url(#glow)"/>
-  <circle cx="244" cy="104" r="1.0" fill="#ffc8e4" opacity="0.50" filter="url(#glow)"/>
+      <path d="M 548,225 
+               L 593,212 
+               L 668,375 
+               L 645,432 
+               L 628,485 
+               L 598,455 
+               L 612,408 
+               L 528,425 
+               L 512,470 
+               L 475,445 
+               Z 
+               M 542,375 
+               L 595,362 
+               L 573,302 
+               Z" />
 
-  <!-- "clash" text -->
-  <text x="300" y="218" text-anchor="middle" font-family="Monaco, 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace" font-size="52" font-weight="bold" fill="url(#text-grad)" filter="url(#glow)">clash</text>
+      <path d="M 752,228 
+               C 702,235 645,272 662,335 
+               C 672,372 732,368 745,392 
+               C 758,415 715,442 672,425 
+               L 652,458 
+               C 712,492 812,465 798,398 
+               C 788,352 715,358 708,328 
+               C 702,302 738,275 778,288 
+               Z" />
 
-  <!-- Tagline -->
-  <text x="300" y="244" text-anchor="middle" font-family="Monaco, 'Cascadia Code', 'Fira Code', monospace" font-size="12" fill="#9b94b2">your agents aren't gonna manage themselves</text>
+      <path d="M 822,232 
+               L 872,218 
+               L 838,342 
+               L 918,325 
+               L 948,212 
+               L 998,198 
+               L 938,412 
+               L 965,402 
+               L 932,495 
+               L 882,478 
+               L 902,412 
+               L 822,432 
+               L 802,485 
+               L 755,462 
+               Z" />
+    </g>
 
-  <!-- Status indicators -->
-  <text x="118" y="268" font-family="Monaco, 'Cascadia Code', monospace" font-size="10" fill="#f08c78" filter="url(#glow)">&#x25C9; PROMPTING</text>
-  <text x="238" y="268" font-family="Monaco, 'Cascadia Code', monospace" font-size="10" fill="#8cb9f0" filter="url(#glow)">&#x25CE; THINKING</text>
-  <text x="353" y="268" font-family="Monaco, 'Cascadia Code', monospace" font-size="10" fill="#78dc96" filter="url(#glow)">&#x25CF; RUNNING</text>
-  <text x="458" y="268" font-family="Monaco, 'Cascadia Code', monospace" font-size="10" fill="#5f5873">&#x25CB; IDLE</text>
+    <g stroke="#ffe699" stroke-width="2" fill="none" opacity="0.85" stroke-linecap="round">
+      <path d="M 220,300 L 245,320 L 235,340 M 205,380 L 235,375 L 250,395 M 320,455 L 310,430" />
+      <path d="M 425,260 L 440,290 M 345,430 L 375,425 L 390,445" />
+      <path d="M 525,270 L 545,295 M 620,415 L 640,445" />
+      <path d="M 690,265 L 705,290 M 740,435 L 765,455" />
+      <path d="M 855,250 L 845,290 M 965,240 L 952,285 M 815,445 L 830,470" />
+    </g>
+  </g>
+
+  <g fill="url(#emberGrad)" filter="drop-shadow(0px 2px 4px rgba(255,85,0,0.6))">
+    <polygon points="185,160 215,190 230,175 195,150" />
+    <polygon points="305,190 320,195 315,180" />
+    <polygon points="145,410 170,415 155,390" />
+    
+    <polygon points="495,215 515,200 505,190" />
+    <polygon points="705,200 720,215 730,195" />
+    
+    <polygon points="1025,255 1060,245 1040,235" />
+    <polygon points="975,430 1010,410 990,400" />
+    <polygon points="895,505 920,480 900,475" />
+
+    <polygon points="285,490 300,505 305,495" />
+    <polygon points="435,460 450,475 440,480" />
+    <polygon points="535,515 545,530 552,520" />
+    <polygon points="705,585 715,600 723,590" />
+    <polygon points="845,515 865,535 855,545" />
+  </g>
 </svg>
