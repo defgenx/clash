@@ -46,11 +46,8 @@ fn agents_summary_refs(subagents: &[&Subagent]) -> String {
         parts.push(format!("{}●", running));
     }
     if active == 0 {
-        if total > 0 {
-            format!("{}", total)
-        } else {
-            "—".to_string()
-        }
+        // total > 0 is guaranteed by the empty-input early return above
+        format!("{}", total)
     } else {
         format!("{}/{} ({})", active, total, parts.join(" "))
     }

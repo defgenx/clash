@@ -88,10 +88,28 @@ pub enum AttachResult {
     Disconnected,
 }
 
-/// Write raw bytes to stdout.
+/// Write raw bytes to stdout, retrying on partial writes and EINTR.
+///
+/// A single `libc::write` may write fewer bytes than requested when the
+/// terminal is slow to drain — dropping the remainder would corrupt the
+/// attached session's output stream.
 fn write_stdout(data: &[u8]) {
-    unsafe {
-        libc::write(1, data.as_ptr() as *const libc::c_void, data.len());
+    let mut remaining = data;
+    while !remaining.is_empty() {
+        let n = unsafe {
+            libc::write(
+                1,
+                remaining.as_ptr() as *const libc::c_void,
+                remaining.len(),
+            )
+        };
+        if n < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return; // unrecoverable (e.g. closed stdout) — nothing useful to do
+        }
+        remaining = &remaining[n as usize..];
     }
 }
 

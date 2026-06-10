@@ -320,11 +320,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             let wild_pid = session.as_ref().and_then(|s| s.wild_pid);
             // Remove from store immediately so the UI doesn't show a stale entry
             state.store.sessions.retain(|s| s.id != session_id);
-            // Clamp selection to valid range
-            let count = state.filtered_sessions().len();
-            if count > 0 && state.table_state.selected >= count {
-                state.table_state.selected = count - 1;
-            }
+            clamp_session_selection(state);
             state.nav.pop();
             vec![
                 Effect::UnregisterSession {
@@ -422,11 +418,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                         session.status = crate::domain::entities::SessionStatus::Stashed;
                         session.is_running = false;
                     }
-                    // Clamp selection index since the session may vanish from Active filter
-                    let count = state.filtered_sessions().len();
-                    if count > 0 && state.table_state.selected >= count {
-                        state.table_state.selected = count - 1;
-                    }
+                    clamp_session_selection(state);
                     state.spinner = Some("Stashing session...".to_string());
                     state.pending_toast = Some("Session stashed".to_string());
                     vec![
@@ -472,10 +464,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                     session.status = crate::domain::entities::SessionStatus::Stashed;
                     session.is_running = false;
                 }
-                let count = state.filtered_sessions().len();
-                if count > 0 && state.table_state.selected >= count {
-                    state.table_state.selected = count - 1;
-                }
+                clamp_session_selection(state);
                 state.spinner = Some(format!(
                     "Stashing {} session{}...",
                     running.len(),
@@ -819,10 +808,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             let worktree = session.and_then(|s| s.worktree.clone());
             let wild_pid = session.and_then(|s| s.wild_pid);
             state.store.sessions.retain(|s| s.id != session_id);
-            let count = state.filtered_sessions().len();
-            if count > 0 && state.table_state.selected >= count {
-                state.table_state.selected = count - 1;
-            }
+            clamp_session_selection(state);
             state.nav.pop();
             vec![
                 Effect::UnregisterSession {
@@ -1392,6 +1378,15 @@ fn emit_picker_effect(
     }
 }
 
+/// Clamp the table selection after the filtered session list may have shrunk
+/// (session removed, stashed, or moved out of the active section filter).
+fn clamp_session_selection(state: &mut AppState) {
+    let count = state.filtered_sessions().len();
+    if count > 0 && state.table_state.selected >= count {
+        state.table_state.selected = count - 1;
+    }
+}
+
 /// Resolve the context string for drill-in based on current selection.
 fn resolve_context(state: &AppState) -> Option<String> {
     let idx = state.table_state.selected;
@@ -1585,6 +1580,40 @@ mod tests {
 
     fn test_state() -> AppState {
         AppState::new()
+    }
+
+    #[test]
+    fn test_clamp_session_selection() {
+        let mut state = test_state();
+        // is_running so the sessions pass the default Active session filter
+        state.store.sessions = vec![
+            Session {
+                id: "s1".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+            Session {
+                id: "s2".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        ];
+
+        // Selection past the end is pulled back to the last item
+        state.table_state.selected = 5;
+        clamp_session_selection(&mut state);
+        assert_eq!(state.table_state.selected, 1);
+
+        // In-range selection is untouched
+        state.table_state.selected = 0;
+        clamp_session_selection(&mut state);
+        assert_eq!(state.table_state.selected, 0);
+
+        // Empty list leaves the index alone (no underflow)
+        state.store.sessions.clear();
+        state.table_state.selected = 3;
+        clamp_session_selection(&mut state);
+        assert_eq!(state.table_state.selected, 3);
     }
 
     #[test]

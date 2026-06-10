@@ -91,7 +91,7 @@ pub async fn perform_update_cli() -> Result<String, String> {
             version,
             download_url,
         } => {
-            install_update(&download_url).await?;
+            install_update(&download_url, None).await?;
             Ok(version)
         }
     }
@@ -130,7 +130,7 @@ pub async fn perform_update(
                 version: version.clone(),
             });
 
-            if let Err(msg) = install_update_phased(&download_url, &tx).await {
+            if let Err(msg) = install_update(&download_url, Some(&tx)).await {
                 let _ = tx.send(UpdatePhase::Failed { message: msg });
                 return;
             }
@@ -140,10 +140,14 @@ pub async fn perform_update(
     }
 }
 
-/// Download the release tarball and replace the current binary, reporting phases.
-async fn install_update_phased(
+/// Download the release tarball and replace the current binary.
+///
+/// When `tx` is provided (TUI path), progress phases are reported through it;
+/// the CLI path passes `None`. Paths are handed to `curl`/`tar` as `OsStr`
+/// arguments directly — no lossy/panicking UTF-8 conversion.
+async fn install_update(
     download_url: &str,
-    tx: &tokio::sync::mpsc::UnboundedSender<crate::application::state::UpdatePhase>,
+    tx: Option<&tokio::sync::mpsc::UnboundedSender<crate::application::state::UpdatePhase>>,
 ) -> Result<(), String> {
     let current_exe = std::env::current_exe()
         .map_err(|e| format!("Cannot determine current binary path: {}", e))?;
@@ -157,7 +161,9 @@ async fn install_update_phased(
 
     // Download
     let status = tokio::process::Command::new("curl")
-        .args(["-fsSL", "-o", tarball.to_str().unwrap(), download_url])
+        .args(["-fsSL", "-o"])
+        .arg(&tarball)
+        .arg(download_url)
         .status()
         .await
         .map_err(|e| format!("Download failed: {}", e))?;
@@ -166,16 +172,16 @@ async fn install_update_phased(
         return Err("Download failed (curl returned non-zero)".to_string());
     }
 
-    let _ = tx.send(crate::application::state::UpdatePhase::Extracting);
+    if let Some(tx) = tx {
+        let _ = tx.send(crate::application::state::UpdatePhase::Extracting);
+    }
 
     // Extract
     let status = tokio::process::Command::new("tar")
-        .args([
-            "xzf",
-            tarball.to_str().unwrap(),
-            "-C",
-            tmpdir.to_str().unwrap(),
-        ])
+        .arg("xzf")
+        .arg(&tarball)
+        .arg("-C")
+        .arg(&tmpdir)
         .status()
         .await
         .map_err(|e| format!("Extraction failed: {}", e))?;
@@ -189,60 +195,13 @@ async fn install_update_phased(
         return Err("Binary not found in archive".to_string());
     }
 
-    let _ = tx.send(crate::application::state::UpdatePhase::Installing);
+    if let Some(tx) = tx {
+        let _ = tx.send(crate::application::state::UpdatePhase::Installing);
+    }
 
     replace_binary(&new_binary, &install_target)?;
 
     // Cleanup
-    let _ = std::fs::remove_dir_all(&tmpdir);
-
-    Ok(())
-}
-
-/// Download the release tarball and replace the current binary (CLI path, no progress).
-async fn install_update(download_url: &str) -> Result<(), String> {
-    let current_exe = std::env::current_exe()
-        .map_err(|e| format!("Cannot determine current binary path: {}", e))?;
-    let install_target = resolve_install_target(&current_exe)?;
-
-    let tmpdir = std::env::temp_dir().join("clash-update");
-    let _ = std::fs::remove_dir_all(&tmpdir);
-    std::fs::create_dir_all(&tmpdir).map_err(|e| format!("Failed to create temp dir: {}", e))?;
-
-    let tarball = tmpdir.join("clash.tar.gz");
-
-    let status = tokio::process::Command::new("curl")
-        .args(["-fsSL", "-o", tarball.to_str().unwrap(), download_url])
-        .status()
-        .await
-        .map_err(|e| format!("Download failed: {}", e))?;
-
-    if !status.success() {
-        return Err("Download failed (curl returned non-zero)".to_string());
-    }
-
-    let status = tokio::process::Command::new("tar")
-        .args([
-            "xzf",
-            tarball.to_str().unwrap(),
-            "-C",
-            tmpdir.to_str().unwrap(),
-        ])
-        .status()
-        .await
-        .map_err(|e| format!("Extraction failed: {}", e))?;
-
-    if !status.success() {
-        return Err("Extraction failed (tar returned non-zero)".to_string());
-    }
-
-    let new_binary = tmpdir.join("clash");
-    if !new_binary.exists() {
-        return Err("Binary not found in archive".to_string());
-    }
-
-    replace_binary(&new_binary, &install_target)?;
-
     let _ = std::fs::remove_dir_all(&tmpdir);
 
     Ok(())
@@ -319,7 +278,8 @@ fn codesign(path: &Path) {
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("codesign")
-            .args(["--force", "--sign", "-", path.to_str().unwrap()])
+            .args(["--force", "--sign", "-"])
+            .arg(path)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();

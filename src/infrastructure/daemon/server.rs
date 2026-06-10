@@ -125,7 +125,7 @@ impl DaemonServer {
                             });
                         }
                         Err(e) => {
-                            tracing::error!("Accept error: {}", e);
+                            tracing::error!("Daemon accept error on {:?}: {}", self.socket_path, e);
                         }
                     }
                 }

@@ -24,9 +24,9 @@ struct Args {
     #[arg(long)]
     data_dir: Option<std::path::PathBuf>,
 
-    /// Path to claude CLI binary
-    #[arg(long, default_value = "claude")]
-    claude_bin: String,
+    /// Path to claude CLI binary (overrides config.toml; default: "claude")
+    #[arg(long)]
+    claude_bin: Option<String>,
 
     /// Enable debug logging (writes verbose logs to clash.log)
     #[arg(long)]
@@ -127,6 +127,8 @@ async fn main() -> Result<()> {
 
     let config = infrastructure::config::Config::load();
     let data_dir = args.data_dir.unwrap_or_else(|| config.claude_dir());
+    // CLI flag wins over config.toml's claude_bin (which defaults to "claude")
+    let claude_bin = args.claude_bin.unwrap_or_else(|| config.claude_bin.clone());
 
     tracing::info!("clash starting, data_dir={:?}", data_dir);
 
@@ -151,7 +153,7 @@ async fn main() -> Result<()> {
         let _ = std::io::stdout().write_all(b"\x1b[?1000h\x1b[?1006h");
         let _ = std::io::stdout().flush();
     }
-    let mut app = infrastructure::app::App::new(data_dir, args.claude_bin, args.debug, config);
+    let mut app = infrastructure::app::App::new(data_dir, claude_bin, args.debug, config);
 
     // Race the TUI against OS signals so we always restore the terminal
     let result = tokio::select! {
@@ -165,7 +167,12 @@ async fn main() -> Result<()> {
 
     // Graceful shutdown: signal daemon to stop, wait briefly
     daemon_shutdown.notify_one();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), daemon_task).await;
+    if tokio::time::timeout(std::time::Duration::from_secs(2), daemon_task)
+        .await
+        .is_err()
+    {
+        tracing::warn!("Daemon did not shut down within 2s, exiting anyway");
+    }
 
     result
 }

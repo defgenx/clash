@@ -17,8 +17,6 @@ pub struct Config {
     pub claude_bin: String,
     #[serde(default)]
     pub claude_dir: Option<PathBuf>,
-    #[serde(default = "default_tick_rate")]
-    pub tick_rate_ms: u64,
     #[serde(default = "default_debounce_ms")]
     pub debounce_ms: u64,
     #[serde(default)]
@@ -27,9 +25,6 @@ pub struct Config {
 
 fn default_claude_bin() -> String {
     "claude".to_string()
-}
-fn default_tick_rate() -> u64 {
-    250
 }
 fn default_debounce_ms() -> u64 {
     200
@@ -40,7 +35,6 @@ impl Default for Config {
         Self {
             claude_bin: default_claude_bin(),
             claude_dir: None,
-            tick_rate_ms: default_tick_rate(),
             debounce_ms: default_debounce_ms(),
             ides: Vec::new(),
         }

@@ -322,8 +322,9 @@ fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
     frame.render_widget(left_paragraph, area);
 
     if let Some(ref toast_msg) = state.toast {
-        // Size the toast area to the message length (+ padding) and right-align it
-        let msg_width = (toast_msg.len() as u16 + 2).min(area.width);
+        // Size the toast area to the message length (+ padding) and right-align it.
+        // Count chars, not bytes — toasts often contain multi-byte glyphs (✓, ⊞).
+        let msg_width = (toast_msg.chars().count() as u16 + 2).min(area.width);
         let right_area = ratatui::layout::Rect {
             x: area.x + area.width.saturating_sub(msg_width),
             width: msg_width,

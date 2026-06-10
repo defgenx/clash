@@ -1,5 +1,3 @@
-#![allow(dead_code, unused_imports)]
-
 // Clean Architecture layers (dependency direction: inward only)
 //
 //   Infrastructure → Adapters → Application → Domain
