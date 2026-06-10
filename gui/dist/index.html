@@ -21,11 +21,16 @@
       </div>
       <div id="session-list"></div>
       <div id="teams-section">
-        <div class="section-label collapsible" id="teams-toggle">TEAMS <span id="teams-caret">▸</span></div>
+        <div class="section-label collapsible" id="teams-toggle">TEAMS <span id="teams-caret">▸</span>
+          <button id="new-team-btn" class="icon-btn mini" title="New team">+</button>
+        </div>
         <div id="teams-list" class="hidden"></div>
       </div>
       <div id="sidebar-footer">
         <span id="session-count"></span>
+        <span class="spacer"></span>
+        <span id="version"></span>
+        <button id="update-btn" class="icon-btn mini" title="Update clash">⟳</button>
       </div>
     </aside>
 
@@ -33,6 +38,7 @@
       <div id="topbar">
         <div id="tabs"></div>
         <div id="topbar-actions">
+          <button id="stash-all-btn" class="icon-btn wide" title="Stash all running sessions">⏸ all</button>
           <button id="split-btn" class="icon-btn" title="Add split pane (⌘D)">◫</button>
           <button id="unsplit-btn" class="icon-btn" title="Remove split pane">◻</button>
           <button id="details-btn" class="icon-btn" title="Toggle details panel">ⓘ</button>
@@ -57,8 +63,12 @@
   <div id="modal-backdrop" class="hidden">
     <div id="new-session-modal">
       <h3>New session</h3>
-      <label>Name <input id="ns-name" type="text" placeholder="my-feature" autocomplete="off" spellcheck="false" /></label>
       <label>Working directory <input id="ns-cwd" type="text" placeholder="/Users/you/project" autocomplete="off" spellcheck="false" /></label>
+      <label id="ns-preset-wrap" class="hidden">Preset
+        <select id="ns-preset"><option value="">— none —</option></select>
+      </label>
+      <label>Name <input id="ns-name" type="text" placeholder="my-feature" autocomplete="off" spellcheck="false" /></label>
+      <label class="check"><input id="ns-worktree" type="checkbox" /> Create git worktree (isolated branch)</label>
       <div class="modal-actions">
         <button id="ns-cancel">Cancel</button>
         <button id="ns-create" class="primary">Create</button>

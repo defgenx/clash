@@ -174,6 +174,27 @@ function sessionItem(s) {
       showDetails(s.id);
     })
   );
+  if (s.source === "Wild") {
+    actions.appendChild(
+      actionBtn("⚡", "Adopt: take over this wild claude process", async (ev) => {
+        ev.stopPropagation();
+        if (!confirm(`Take over wild session "${displayName(s)}"? Its current process is killed and resumed under clash.`))
+          return;
+        try {
+          await invoke("takeover_wild", {
+            sessionId: s.id,
+            pid: s.wild_pid,
+            cwd: s.cwd || s.project_path || "",
+            cols: 120,
+            rows: 40,
+          });
+        } catch (e) {
+          alert(`Adopt failed: ${e}`);
+        }
+        refreshSessions();
+      })
+    );
+  }
   if (s.is_running) {
     actions.appendChild(
       actionBtn("⏸", "Stash (stop, keep resumable)", async (ev) => {
@@ -493,14 +514,17 @@ function renderDetails() {
     <h4>SUMMARY</h4>
     <div class="kv"><span class="v">${escapeHtml(s.summary || s.first_prompt || "—")}</span></div>
     <div class="actions">
-      <button id="d-diff">Show diff</button>
+      <button id="d-diff">Diff</button>
+      <button id="d-conv">Conversation</button>
+      <button id="d-subs">Subagents</button>
+      <button id="d-ide">Open in IDE</button>
       <button id="d-close">Close panel</button>
     </div>
-    <div id="d-diff-out"></div>
+    <div id="d-out"></div>
   `;
   $("d-close").onclick = hideDetails;
   $("d-diff").onclick = async () => {
-    const out = $("d-diff-out");
+    const out = $("d-out");
     out.innerHTML = `<h4>GIT DIFF (HEAD)</h4><div class="diff">loading…</div>`;
     try {
       const diff = await invoke("get_diff", { sessionId: s.id });
@@ -509,6 +533,109 @@ function renderDetails() {
       out.querySelector(".diff").textContent = `diff failed: ${e}`;
     }
   };
+  $("d-conv").onclick = () => showConversation(s);
+  $("d-subs").onclick = () => showSubagents(s);
+  $("d-ide").onclick = () => showIdePicker(s);
+}
+
+function renderChat(out, msgs) {
+  if (!msgs.length) {
+    out.innerHTML += "<p class='hint'>empty conversation</p>";
+    return;
+  }
+  const chat = document.createElement("div");
+  chat.className = "chat";
+  for (const m of msgs) {
+    const div = document.createElement("div");
+    div.className = `msg ${m.role === "user" ? "user" : "assistant"}`;
+    const who = document.createElement("span");
+    who.className = "who";
+    who.textContent = m.role.toUpperCase();
+    div.appendChild(who);
+    div.appendChild(document.createTextNode(m.text));
+    chat.appendChild(div);
+  }
+  out.appendChild(chat);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+async function showConversation(s) {
+  const out = $("d-out");
+  out.innerHTML = "<h4>CONVERSATION</h4>";
+  try {
+    const msgs = await invoke("get_conversation", {
+      project: s.project,
+      sessionId: s.id,
+    });
+    renderChat(out, msgs);
+  } catch (e) {
+    out.innerHTML += `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
+  }
+}
+
+async function showSubagents(s) {
+  const out = $("d-out");
+  out.innerHTML = "<h4>SUBAGENTS</h4>";
+  try {
+    const subs = await invoke("get_subagents", {
+      project: s.project,
+      sessionId: s.id,
+    });
+    if (!subs.length) {
+      out.innerHTML += "<p class='hint'>no subagents</p>";
+      return;
+    }
+    for (const sub of subs) {
+      const row = document.createElement("div");
+      row.className = "row-item";
+      row.innerHTML = `<span>${escapeHtml(sub.agent_type || sub.id)}</span><span class="dim">${escapeHtml(
+        sub.summary || ""
+      )}</span>`;
+      row.onclick = async () => {
+        out.innerHTML = `<h4>SUBAGENT · ${escapeHtml(sub.agent_type || sub.id)}</h4>`;
+        try {
+          const msgs = await invoke("get_subagent_conversation", {
+            project: s.project,
+            sessionId: s.id,
+            agentId: sub.id,
+          });
+          renderChat(out, msgs);
+        } catch (e) {
+          out.innerHTML += `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
+        }
+      };
+      out.appendChild(row);
+    }
+  } catch (e) {
+    out.innerHTML += `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
+  }
+}
+
+async function showIdePicker(s) {
+  const out = $("d-out");
+  out.innerHTML = "<h4>OPEN IN IDE</h4>";
+  const dir = s.worktree || s.cwd || s.project_path;
+  const ides = await invoke("detect_ides").catch(() => []);
+  if (!ides.length) {
+    out.innerHTML += "<p class='hint'>no IDEs detected</p>";
+    return;
+  }
+  for (const ide of ides) {
+    const row = document.createElement("div");
+    row.className = "row-item";
+    row.innerHTML = `<span>${escapeHtml(ide.label)}</span><span class="dim">${escapeHtml(
+      ide.description
+    )}</span>`;
+    row.onclick = async () => {
+      try {
+        await invoke("open_in_ide", { value: ide.value, projectDir: dir });
+        out.innerHTML = `<p class='hint'>opened in ${escapeHtml(ide.label)}</p>`;
+      } catch (e) {
+        out.innerHTML += `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
+      }
+    };
+    out.appendChild(row);
+  }
 }
 
 function renderDiff(text) {
@@ -576,9 +703,6 @@ async function showTeamDetails(team) {
   } catch (e) {
     console.error("list_tasks failed:", e);
   }
-  const members = (team.members || [])
-    .map((m) => kv(m.name, m.agent_type + (m.model ? ` · ${m.model}` : "")))
-    .join("");
   const taskRows = tasks.length
     ? tasks
         .map((t) => {
@@ -592,42 +716,179 @@ async function showTeamDetails(team) {
   body.innerHTML = `
     <h3>${escapeHtml(team.name)}</h3>
     <div class="kv"><span class="v">${escapeHtml(team.description || "")}</span></div>
-    <h4>MEMBERS</h4>
-    ${members || "<p class='hint'>none</p>"}
+    <h4>MEMBERS <span class="dim" style="font-weight:400">(click for inbox)</span></h4>
+    <div id="d-members"></div>
     <h4>TASKS</h4>
     ${taskRows}
-    <div class="actions"><button id="d-close">Close panel</button></div>
+    <div class="actions">
+      <button id="d-team-delete" class="danger">Delete team</button>
+      <button id="d-close">Close panel</button>
+    </div>
+    <div id="d-out"></div>
   `;
+  const membersEl = $("d-members");
+  if ((team.members || []).length === 0) {
+    membersEl.innerHTML = "<p class='hint'>none</p>";
+  }
+  for (const m of team.members || []) {
+    const row = document.createElement("div");
+    row.className = "row-item";
+    row.innerHTML = `<span>${escapeHtml(m.name)}</span><span class="dim">${escapeHtml(
+      m.agent_type + (m.model ? ` · ${m.model}` : "")
+    )}</span>`;
+    row.onclick = () => showInbox(team.name, m.name);
+    membersEl.appendChild(row);
+  }
   $("d-close").onclick = hideDetails;
+  $("d-team-delete").onclick = async () => {
+    if (!confirm(`Delete team "${team.name}" and all its tasks?`)) return;
+    try {
+      await invoke("delete_team", { name: team.name });
+      hideDetails();
+      state.teams = await invoke("list_teams");
+      renderTeams();
+    } catch (e) {
+      alert(`Delete failed: ${e}`);
+    }
+  };
   fitAll();
+}
+
+async function showInbox(team, agent) {
+  const out = $("d-out");
+  out.innerHTML = `<h4>INBOX · ${escapeHtml(agent)}</h4>`;
+  try {
+    const msgs = await invoke("get_inbox", { team, agent });
+    if (!msgs.length) {
+      out.innerHTML += "<p class='hint'>empty inbox</p>";
+      return;
+    }
+    for (const m of msgs) {
+      const div = document.createElement("div");
+      div.className = "inbox-msg" + (m.read ? "" : " unread");
+      const who = document.createElement("div");
+      who.className = "who";
+      who.textContent = m.from || "?";
+      div.appendChild(who);
+      div.appendChild(document.createTextNode(m.text || ""));
+      out.appendChild(div);
+    }
+  } catch (e) {
+    out.innerHTML += `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
+  }
+}
+
+async function createTeamPrompt() {
+  const name = prompt("Team name:");
+  if (!name || !name.trim()) return;
+  const description = prompt("Description (optional):") || "";
+  try {
+    await invoke("create_team", { name: name.trim(), description });
+    state.teams = await invoke("list_teams");
+    renderTeams();
+  } catch (e) {
+    alert(`Create team failed: ${e}`);
+  }
 }
 
 // ── New session modal ───────────────────────────────────────────
 
+let nsPresets = [];
+
 function showNewSessionModal() {
   $("ns-error").classList.add("hidden");
   $("modal-backdrop").classList.remove("hidden");
-  setTimeout(() => $("ns-name").focus(), 0);
+  // Prefill cwd from the focused session's project for fast iteration
+  const cur = state.sessions.find((x) => x.id === state.activeTab);
+  if (cur && !$("ns-cwd").value) {
+    $("ns-cwd").value = cur.cwd || cur.project_path || "";
+    loadPresetsForCwd();
+  }
+  setTimeout(() => $("ns-cwd").focus(), 0);
 }
 
 function hideNewSessionModal() {
   $("modal-backdrop").classList.add("hidden");
 }
 
+async function loadPresetsForCwd() {
+  const cwd = $("ns-cwd").value.trim();
+  const wrap = $("ns-preset-wrap");
+  const select = $("ns-preset");
+  select.innerHTML = `<option value="">— none —</option>`;
+  nsPresets = [];
+  if (!cwd) {
+    wrap.classList.add("hidden");
+    return;
+  }
+  try {
+    nsPresets = await invoke("list_presets", { projectDir: cwd });
+  } catch (e) {
+    console.error("list_presets failed:", e);
+  }
+  if (nsPresets.length === 0) {
+    wrap.classList.add("hidden");
+    return;
+  }
+  nsPresets.forEach((p, i) => {
+    const opt = document.createElement("option");
+    opt.value = String(i);
+    opt.textContent = p.description ? `${p.name} — ${p.description}` : p.name;
+    select.appendChild(opt);
+  });
+  wrap.classList.remove("hidden");
+}
+
+function selectedPreset() {
+  const v = $("ns-preset").value;
+  return v === "" ? null : nsPresets[Number(v)];
+}
+
 async function createSession() {
   const name = $("ns-name").value;
-  const cwd = $("ns-cwd").value;
+  let cwd = $("ns-cwd").value.trim();
+  const preset = selectedPreset();
+  let worktree = $("ns-worktree").checked;
+
+  if (preset) {
+    if (preset.directory && preset.directory !== ".") {
+      cwd = `${cwd.replace(/\/$/, "")}/${preset.directory.replace(/^\.\//, "")}`;
+    }
+    if (preset.worktree === true) worktree = true;
+  }
+
   try {
-    const sid = await invoke("create_new_session", {
-      name,
-      cwd,
-      cols: 120,
-      rows: 40,
-    });
+    let sid;
+    if (worktree) {
+      const wtName = (name || (preset ? preset.name : "")).trim();
+      sid = await invoke("create_worktree_session", {
+        name: wtName,
+        projectPath: cwd,
+        cols: 120,
+        rows: 40,
+      });
+    } else {
+      sid = await invoke("create_new_session", {
+        name: name || (preset ? preset.name : ""),
+        cwd,
+        cols: 120,
+        rows: 40,
+      });
+    }
     hideNewSessionModal();
     $("ns-name").value = "";
+    $("ns-worktree").checked = false;
     await refreshSessions();
-    openSession(sid);
+    await openSession(sid);
+    // Preset prompt: typed into the fresh session once Claude has started
+    if (preset && preset.prompt) {
+      setTimeout(() => {
+        invoke("send_input", {
+          sessionId: sid,
+          text: preset.prompt + "\r",
+        }).catch(console.error);
+      }, 3000);
+    }
   } catch (e) {
     const err = $("ns-error");
     err.textContent = String(e);
@@ -677,6 +938,68 @@ $("modal-backdrop").addEventListener("click", (e) => {
 $("ns-cwd").addEventListener("keydown", (e) => {
   if (e.key === "Enter") createSession();
 });
+$("ns-cwd").addEventListener("blur", loadPresetsForCwd);
+$("ns-preset").addEventListener("change", () => {
+  const p = selectedPreset();
+  if (p && !$("ns-name").value) $("ns-name").value = p.name;
+  if (p && p.worktree === true) $("ns-worktree").checked = true;
+});
+
+$("stash-all-btn").onclick = async () => {
+  if (!confirm("Stash all running sessions?")) return;
+  try {
+    const n = await invoke("stash_all");
+    for (const sid of [...state.open.keys()]) dropTerminal(sid);
+    refreshSessions();
+    console.log(`stashed ${n} sessions`);
+  } catch (e) {
+    alert(`Stash all failed: ${e}`);
+  }
+};
+
+$("new-team-btn").onclick = (e) => {
+  e.stopPropagation();
+  createTeamPrompt();
+};
+
+$("update-btn").onclick = () => {
+  $("version").textContent = "checking…";
+  invoke("start_update").catch(console.error);
+};
+
+listen("update-phase", (event) => {
+  const { phase, version, message } = event.payload;
+  const v = $("version");
+  switch (phase) {
+    case "checking":
+      v.textContent = "checking…";
+      break;
+    case "downloading":
+      v.textContent = `downloading v${version}…`;
+      break;
+    case "extracting":
+      v.textContent = "extracting…";
+      break;
+    case "installing":
+      v.textContent = "installing…";
+      break;
+    case "done":
+      v.textContent = `v${version} installed — restart`;
+      break;
+    case "failed":
+      v.textContent = message || "update failed";
+      setTimeout(setVersionLabel, 5000);
+      break;
+  }
+});
+
+async function setVersionLabel() {
+  try {
+    $("version").textContent = `v${await invoke("get_version")}`;
+  } catch {
+    $("version").textContent = "";
+  }
+}
 
 $("split-btn").onclick = addPane;
 $("unsplit-btn").onclick = removePane;
@@ -738,4 +1061,5 @@ window.addEventListener("resize", fitAll);
 
 refreshSessions();
 renderPanes();
+setVersionLabel();
 setInterval(refreshSessions, 2000);

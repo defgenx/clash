@@ -24,6 +24,8 @@ use tauri::{Emitter, Manager, State};
 struct GuiState {
     backend: FsBackend,
     claude_bin: String,
+    /// Custom IDE entries from config.toml (merged into detection).
+    config_ides: Vec<clash::infrastructure::config::IdeEntry>,
     /// Previous session list — input to the merge step of the refresh pipeline.
     previous: Mutex<Vec<Session>>,
     /// Control-plane client (list/kill). Separate from attach clients so a
@@ -360,11 +362,457 @@ fn list_tasks(
     state.backend.load_tasks(&team).map_err(|e| e.to_string())
 }
 
+/// Conversation message DTO (ConversationMessage has no Serialize derive).
+#[derive(Clone, serde::Serialize)]
+struct MessageDto {
+    role: String,
+    text: String,
+}
+
+fn to_message_dtos(msgs: Vec<clash::domain::entities::ConversationMessage>) -> Vec<MessageDto> {
+    msgs.into_iter()
+        .map(|m| MessageDto {
+            role: m.role,
+            text: m.text,
+        })
+        .collect()
+}
+
+/// Conversation transcript of a session (same parser as the TUI detail view).
+#[tauri::command]
+fn get_conversation(
+    state: State<'_, GuiState>,
+    project: String,
+    session_id: String,
+) -> Result<Vec<MessageDto>, String> {
+    use clash::domain::ports::DataRepository;
+    state
+        .backend
+        .load_conversation(&project, &session_id)
+        .map(to_message_dtos)
+        .map_err(|e| e.to_string())
+}
+
+/// Subagents of a session.
+#[tauri::command]
+fn get_subagents(
+    state: State<'_, GuiState>,
+    project: String,
+    session_id: String,
+) -> Result<Vec<clash::domain::entities::Subagent>, String> {
+    use clash::domain::ports::DataRepository;
+    state
+        .backend
+        .load_subagents(&project, &session_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Conversation transcript of a subagent.
+#[tauri::command]
+fn get_subagent_conversation(
+    state: State<'_, GuiState>,
+    project: String,
+    session_id: String,
+    agent_id: String,
+) -> Result<Vec<MessageDto>, String> {
+    use clash::domain::ports::DataRepository;
+    state
+        .backend
+        .load_subagent_conversation(&project, &session_id, &agent_id)
+        .map(to_message_dtos)
+        .map_err(|e| e.to_string())
+}
+
+/// Inbox messages for a team agent (`teams/{team}/inboxes/{agent}.json`).
+#[tauri::command]
+fn get_inbox(
+    state: State<'_, GuiState>,
+    team: String,
+    agent: String,
+) -> Result<Vec<clash::domain::entities::InboxMessage>, String> {
+    use clash::domain::ports::DataRepository;
+    let path = state
+        .backend
+        .teams_dir()
+        .join(&team)
+        .join("inboxes")
+        .join(format!("{}.json", agent));
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&content).map_err(|e| format!("Malformed inbox: {}", e))
+}
+
+/// Session presets for a project directory (global + project + superset,
+/// same precedence as the TUI's `n` picker).
+#[tauri::command]
+fn list_presets(project_dir: String) -> Vec<clash::domain::entities::Preset> {
+    let global_config_dir = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("clash");
+    clash::infrastructure::fs::presets::load_presets(
+        std::path::Path::new(&project_dir),
+        &global_config_dir,
+    )
+}
+
+/// Create a git worktree and spawn a new session in it — the TUI's
+/// worktree-spawn pipeline (worktree add -b <name> + register + daemon spawn).
+#[tauri::command]
+async fn create_worktree_session(
+    state: State<'_, GuiState>,
+    name: String,
+    project_path: String,
+    cols: u16,
+    rows: u16,
+) -> Result<String, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("Name is required".to_string());
+    }
+    let project_dir = std::path::Path::new(&project_path);
+    if !project_dir.is_dir() {
+        return Err(format!("Not a directory: {}", project_path));
+    }
+
+    // Source branch = current branch of the project
+    let git_branch = {
+        let out = tokio::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&project_path)
+            .output()
+            .await
+            .map_err(|e| format!("git failed: {}", e))?;
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+
+    let project_name = project_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project");
+    let worktree_base = project_dir
+        .parent()
+        .unwrap_or(project_dir)
+        .join(format!("{}-worktrees", project_name));
+    let worktree_path = worktree_base.join(&name);
+    std::fs::create_dir_all(&worktree_base).map_err(|e| e.to_string())?;
+
+    let wt_str = worktree_path.to_string_lossy().to_string();
+    let mut git_args = vec!["worktree", "add", &wt_str, "-b", &name];
+    if !git_branch.is_empty() {
+        git_args.push(&git_branch);
+    }
+    let out = tokio::process::Command::new("git")
+        .args(&git_args)
+        .current_dir(&project_path)
+        .output()
+        .await
+        .map_err(|e| format!("git worktree failed: {}", e))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+
+    let session_id = uuid::Uuid::now_v7().to_string();
+    clash::infrastructure::hooks::registry::register(
+        &session_id,
+        &name,
+        &wt_str,
+        Some(git_branch.as_str()),
+    );
+    clash::infrastructure::hooks::save_session_name(
+        state.backend.base_dir(),
+        &session_id,
+        &name,
+        Some(&wt_str),
+    );
+    clash::infrastructure::hooks::write_session_status(
+        state.backend.base_dir(),
+        &session_id,
+        "starting",
+    );
+
+    let mut control = state.control.lock().await;
+    ensure_connected(&mut control).await;
+    control
+        .create_session(
+            &session_id,
+            &state.claude_bin,
+            &["--session-id".to_string(), session_id.clone()],
+            Some(&wt_str),
+            Some(name),
+            cols,
+            rows,
+            HashMap::new(),
+        )
+        .await
+        .map_err(|e| format!("Failed to spawn session: {}", e))?;
+
+    Ok(session_id)
+}
+
+/// IDE picker item DTO (PickerItem has no Serialize derive).
+#[derive(Clone, serde::Serialize)]
+struct IdeDto {
+    label: String,
+    description: String,
+    value: String,
+}
+
+/// Detected IDEs (same detection as the TUI's `e`).
+#[tauri::command]
+fn detect_ides(state: State<'_, GuiState>) -> Vec<IdeDto> {
+    clash::infrastructure::ide::detect_ides(&state.config_ides)
+        .into_iter()
+        .map(|i| IdeDto {
+            label: i.label,
+            description: i.description,
+            value: i.value,
+        })
+        .collect()
+}
+
+/// Open a project directory in an IDE. `value` is the picker value
+/// ("code", "cursor", or "terminal:nvim" for terminal editors).
+#[tauri::command]
+fn open_in_ide(value: String, project_dir: String) -> Result<(), String> {
+    if let Some(cmd) = value.strip_prefix("terminal:") {
+        // No host terminal in GUI context: Fallback strategy opens the
+        // platform terminal app (Terminal.app / x-terminal-emulator).
+        clash::infrastructure::windowing::terminal_spawn::open_command(
+            cmd,
+            &[&project_dir],
+            None,
+            false,
+            0,
+            0,
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    } else {
+        clash::infrastructure::ide::open_ide(&value, &project_dir)
+    }
+}
+
+/// Stash all running sessions (the TUI's `S`): quit-stash marker first,
+/// then statuses idle, then daemon kill — same order as the reducer.
+#[tauri::command]
+async fn stash_all(state: State<'_, GuiState>) -> Result<usize, String> {
+    let mut control = state.control.lock().await;
+    ensure_connected(&mut control).await;
+    let infos = control.list_sessions().await.unwrap_or_default();
+    let ids: Vec<String> = infos.iter().map(|i| i.session_id.clone()).collect();
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    clash::infrastructure::hooks::write_quit_stashed(&ids);
+    for id in &ids {
+        clash::infrastructure::hooks::write_session_status(state.backend.base_dir(), id, "idle");
+    }
+    for id in &ids {
+        let _ = control.kill_session(id).await;
+    }
+    state.attached.lock().await.clear();
+    Ok(ids.len())
+}
+
+/// Adopt a wild claude process into the daemon (the TUI's takeover):
+/// SIGTERM → wait → SIGKILL, then respawn with --resume under our daemon.
+#[tauri::command]
+async fn takeover_wild(
+    state: State<'_, GuiState>,
+    session_id: String,
+    pid: u32,
+    cwd: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    use clash::infrastructure::process_scan::{should_signal, LiveProcessProbe, SignalDecision};
+    let probe = LiveProcessProbe;
+    match should_signal(pid, &probe) {
+        SignalDecision::Allow => {}
+        _ => return Err("Process exited or changed — refresh and retry".to_string()),
+    }
+    let pid_i = pid as i32;
+    unsafe { libc::kill(pid_i, libc::SIGTERM) };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut exited = false;
+    while std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if unsafe { libc::kill(pid_i, 0) } != 0 {
+            exited = true;
+            break;
+        }
+    }
+    if !exited {
+        unsafe { libc::kill(pid_i, libc::SIGKILL) };
+    }
+
+    let mut control = state.control.lock().await;
+    ensure_connected(&mut control).await;
+    control
+        .create_session(
+            &session_id,
+            &state.claude_bin,
+            &["--resume".to_string(), session_id.clone()],
+            if cwd.is_empty() { None } else { Some(&cwd) },
+            None,
+            cols,
+            rows,
+            HashMap::new(),
+        )
+        .await
+        .map_err(|e| format!("Failed to adopt session: {}", e))
+}
+
+/// Track a wild session in clash without touching its process (the TUI's convert).
+#[tauri::command]
+fn convert_wild(session_id: String, name: String, cwd: String) -> Result<(), String> {
+    clash::infrastructure::hooks::registry::register(
+        &session_id,
+        if name.trim().is_empty() {
+            "session"
+        } else {
+            name.trim()
+        },
+        &cwd,
+        None,
+    );
+    Ok(())
+}
+
+/// Create a team via the claude CLI (same args as the TUI's team create).
+#[tauri::command]
+async fn create_team(
+    state: State<'_, GuiState>,
+    name: String,
+    description: String,
+) -> Result<(), String> {
+    let out = tokio::process::Command::new(&state.claude_bin)
+        .args([
+            "team",
+            "create",
+            "--name",
+            &name,
+            "--description",
+            &description,
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run {}: {}", state.claude_bin, e))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).to_string())
+    }
+}
+
+/// Delete a team and its tasks (same backend call as the TUI).
+#[tauri::command]
+fn delete_team(state: State<'_, GuiState>, name: String) -> Result<(), String> {
+    use clash::domain::ports::DataRepository;
+    state.backend.delete_team(&name).map_err(|e| e.to_string())
+}
+
+/// Update phase DTO (UpdatePhase has no Serialize derive).
+#[derive(Clone, serde::Serialize)]
+struct UpdatePhaseDto {
+    phase: String,
+    version: Option<String>,
+    message: Option<String>,
+}
+
+/// Self-update: runs the shared updater (installs both clash and clash-gui),
+/// streaming phases to the webview as `update-phase` events.
+#[tauri::command]
+fn start_update(app: tauri::AppHandle) {
+    use clash::application::state::UpdatePhase;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tauri::async_runtime::spawn(async move {
+        clash::infrastructure::update::perform_update(tx).await;
+    });
+    tauri::async_runtime::spawn(async move {
+        while let Some(phase) = rx.recv().await {
+            let dto = match phase {
+                UpdatePhase::Checking => UpdatePhaseDto {
+                    phase: "checking".into(),
+                    version: None,
+                    message: None,
+                },
+                UpdatePhase::Downloading { version } => UpdatePhaseDto {
+                    phase: "downloading".into(),
+                    version: Some(version),
+                    message: None,
+                },
+                UpdatePhase::Extracting => UpdatePhaseDto {
+                    phase: "extracting".into(),
+                    version: None,
+                    message: None,
+                },
+                UpdatePhase::Installing => UpdatePhaseDto {
+                    phase: "installing".into(),
+                    version: None,
+                    message: None,
+                },
+                UpdatePhase::Done { version } => UpdatePhaseDto {
+                    phase: "done".into(),
+                    version: Some(version),
+                    message: None,
+                },
+                UpdatePhase::Failed { message } => UpdatePhaseDto {
+                    phase: "failed".into(),
+                    version: None,
+                    message: Some(message),
+                },
+            };
+            let done = matches!(dto.phase.as_str(), "done" | "failed");
+            let _ = app.emit("update-phase", dto);
+            if done {
+                break;
+            }
+        }
+    });
+}
+
+#[tauri::command]
+fn get_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 /// (Re)connect the control client if the connection was lost.
 async fn ensure_connected(client: &mut DaemonClient) {
     if !client.is_connected() {
         let _ = client.connect().await;
     }
+}
+
+/// Quit-stash on app exit — same sequence as the TUI's quit: marker first,
+/// then statuses idle, then daemon kill. Runs synchronously in the close
+/// handler so it completes before the process exits.
+fn quit_stash(state: &GuiState) {
+    tauri::async_runtime::block_on(async {
+        let mut control = state.control.lock().await;
+        ensure_connected(&mut control).await;
+        let infos = control.list_sessions().await.unwrap_or_default();
+        let ids: Vec<String> = infos.iter().map(|i| i.session_id.clone()).collect();
+        if ids.is_empty() {
+            return;
+        }
+        clash::infrastructure::hooks::write_quit_stashed(&ids);
+        for id in &ids {
+            clash::infrastructure::hooks::write_session_status(
+                state.backend.base_dir(),
+                id,
+                "idle",
+            );
+        }
+        for id in &ids {
+            let _ = control.kill_session(id).await;
+        }
+    });
 }
 
 fn main() {
@@ -379,6 +827,7 @@ fn main() {
     let state = GuiState {
         backend: FsBackend::new(data_dir),
         claude_bin,
+        config_ides: config.ides.clone(),
         previous: Mutex::new(Vec::new()),
         control: tokio::sync::Mutex::new(DaemonClient::new(DaemonClient::instance_socket_path())),
         attached: tokio::sync::Mutex::new(HashMap::new()),
@@ -404,6 +853,11 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
+                // Quit-stash before shutdown so sessions show as resumable
+                // (stashed) instead of errored on the next launch.
+                if let Some(state) = window.app_handle().try_state::<GuiState>() {
+                    quit_stash(&state);
+                }
                 if let Some(shutdown) = window
                     .app_handle()
                     .try_state::<std::sync::Arc<tokio::sync::Notify>>()
@@ -422,9 +876,24 @@ fn main() {
             kill_session,
             rename_session,
             create_new_session,
+            create_worktree_session,
             get_diff,
+            get_conversation,
+            get_subagents,
+            get_subagent_conversation,
+            get_inbox,
             list_teams,
-            list_tasks
+            list_tasks,
+            list_presets,
+            detect_ides,
+            open_in_ide,
+            stash_all,
+            takeover_wild,
+            convert_wild,
+            create_team,
+            delete_team,
+            start_update,
+            get_version
         ])
         .run(tauri::generate_context!())
         .expect("error while running clash GUI");

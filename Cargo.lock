@@ -507,6 +507,7 @@ dependencies = [
  "base64 0.22.1",
  "clash",
  "dirs",
+ "libc",
  "serde",
  "serde_json",
  "tauri",

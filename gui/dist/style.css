@@ -42,6 +42,8 @@ html, body, #app {
   line-height: 1;
 }
 .icon-btn:hover { color: var(--fg); background: var(--bg-hover); }
+.icon-btn.mini { width: 18px; height: 18px; font-size: 11px; }
+.icon-btn.wide { width: auto; padding: 0 8px; font-size: 11px; }
 
 /* ── Sidebar ─────────────────────────────────────── */
 #sidebar {
@@ -207,7 +209,12 @@ html, body, #app {
   border-top: 1px solid var(--border);
   font-size: 11px;
   color: var(--fg-dim);
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
+
+.section-label .icon-btn { float: right; margin-top: -2px; }
 
 /* ── Main area ───────────────────────────────────── */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -356,6 +363,59 @@ html, body, #app {
 .task-status.completed { color: var(--green); border-color: var(--green); }
 .task-status.blocked { color: var(--red); border-color: var(--red); }
 
+/* Conversation viewer */
+.chat { margin-top: 6px; max-height: 65vh; overflow-y: auto; user-select: text; }
+.msg {
+  border-left: 3px solid var(--border);
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg);
+  border-radius: 0 4px 4px 0;
+}
+.msg.user { border-left-color: var(--accent); }
+.msg.assistant { border-left-color: var(--blue); }
+.msg .who {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--fg-dim);
+  display: block;
+  margin-bottom: 3px;
+}
+
+/* Subagents / inbox rows */
+.row-item {
+  padding: 5px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.row-item:hover { background: var(--bg-hover); }
+.row-item .dim { color: var(--fg-dim); font-size: 11px; }
+
+.inbox-msg {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 9px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  user-select: text;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.inbox-msg .who { color: var(--accent); font-weight: 600; font-size: 11px; }
+.inbox-msg.unread { border-left: 3px solid var(--accent); }
+
+/* Update progress */
+#update-status { font-size: 10px; color: var(--blue); }
+
 /* ── Modal ───────────────────────────────────────── */
 #modal-backdrop {
   position: fixed;
@@ -392,6 +452,25 @@ html, body, #app {
   outline: none;
 }
 #new-session-modal input:focus { border-color: var(--accent); }
+#new-session-modal select {
+  width: 100%;
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  padding: 6px 8px;
+  font-size: 13px;
+  outline: none;
+}
+#new-session-modal label.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg);
+}
+#new-session-modal label.check input { width: auto; margin: 0; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 .modal-actions button {
   background: var(--bg);
