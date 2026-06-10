@@ -322,6 +322,11 @@ core as the TUI (session pipeline, in-process PTY daemon, protocol). Sidebar
 with session sections and status rings; embedded xterm.js terminals attach to
 the same sessions the TUI manages.
 
+GUI features: fuzzy search (`/` or `⌘F`), inline rename (double-click),
+new session (`⌘T`), stash/kill from hover actions, split panes up to 2×2
+(`⌘D`), session details panel with git diff viewer, teams & tasks browser,
+and a title-bar attention counter for sessions waiting on input.
+
 ```bash
 cargo build --release           # builds BOTH binaries: clash and clash-gui
 ./target/release/clash-gui      # run — can run alongside the TUI

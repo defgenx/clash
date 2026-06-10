@@ -205,18 +205,159 @@ async fn close_session(state: State<'_, GuiState>, session_id: String) -> Result
     Ok(())
 }
 
+/// Stash a session: stop its process but keep it resumable (same semantics
+/// as the TUI's `s` — daemon kill + hook status "idle").
+#[tauri::command]
+async fn stash_session(state: State<'_, GuiState>, session_id: String) -> Result<(), String> {
+    {
+        let mut attached = state.attached.lock().await;
+        attached.remove(&session_id);
+    }
+    {
+        let mut control = state.control.lock().await;
+        ensure_connected(&mut control).await;
+        let _ = control.kill_session(&session_id).await;
+    }
+    clash::infrastructure::hooks::write_session_status(
+        state.backend.base_dir(),
+        &session_id,
+        "idle",
+    );
+    Ok(())
+}
+
+/// Kill a session and remove it from the registry (same as the TUI's `x`).
 #[tauri::command]
 async fn kill_session(state: State<'_, GuiState>, session_id: String) -> Result<(), String> {
     {
         let mut attached = state.attached.lock().await;
         attached.remove(&session_id);
     }
+    {
+        let mut control = state.control.lock().await;
+        ensure_connected(&mut control).await;
+        let _ = control.kill_session(&session_id).await;
+    }
+    clash::infrastructure::hooks::registry::unregister(&session_id);
+    Ok(())
+}
+
+/// Rename a session — same registry write the TUI's rename uses.
+#[tauri::command]
+fn rename_session(session_id: String, name: String) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("Name cannot be empty".to_string());
+    }
+    clash::infrastructure::hooks::registry::rename(&session_id, name.trim());
+    Ok(())
+}
+
+/// Create a brand-new Claude session in `cwd` (same pipeline as the TUI's `n`:
+/// register → save name → status starting → daemon spawn with --session-id).
+#[tauri::command]
+async fn create_new_session(
+    state: State<'_, GuiState>,
+    name: String,
+    cwd: String,
+    cols: u16,
+    rows: u16,
+) -> Result<String, String> {
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return Err("Working directory is required".to_string());
+    }
+    if !std::path::Path::new(cwd).is_dir() {
+        return Err(format!("Not a directory: {}", cwd));
+    }
+    let name = name.trim();
+    let session_id = uuid::Uuid::now_v7().to_string();
+
+    clash::infrastructure::hooks::registry::register(
+        &session_id,
+        if name.is_empty() { "session" } else { name },
+        cwd,
+        None,
+    );
+    if !name.is_empty() {
+        clash::infrastructure::hooks::save_session_name(
+            state.backend.base_dir(),
+            &session_id,
+            name,
+            Some(cwd),
+        );
+    }
+    clash::infrastructure::hooks::write_session_status(
+        state.backend.base_dir(),
+        &session_id,
+        "starting",
+    );
+
     let mut control = state.control.lock().await;
     ensure_connected(&mut control).await;
     control
-        .kill_session(&session_id)
+        .create_session(
+            &session_id,
+            &state.claude_bin,
+            &["--session-id".to_string(), session_id.clone()],
+            Some(cwd),
+            if name.is_empty() {
+                None
+            } else {
+                Some(name.to_string())
+            },
+            cols,
+            rows,
+            HashMap::new(),
+        )
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("Failed to spawn session: {}", e))?;
+
+    Ok(session_id)
+}
+
+/// `git diff HEAD` for a session's working directory (same as the TUI's diff view).
+#[tauri::command]
+async fn get_diff(state: State<'_, GuiState>, session_id: String) -> Result<String, String> {
+    let dir = {
+        let prev = state.previous.lock().unwrap();
+        prev.iter()
+            .find(|s| s.id == session_id)
+            .and_then(|s| {
+                s.cwd
+                    .clone()
+                    .filter(|c| !c.is_empty())
+                    .or_else(|| Some(s.project_path.clone()).filter(|p| !p.is_empty()))
+            })
+            .ok_or_else(|| "No working directory for session".to_string())?
+    };
+    let output = tokio::process::Command::new("git")
+        .args(["diff", "HEAD"])
+        .current_dir(&dir)
+        .output()
+        .await
+        .map_err(|e| format!("git diff failed: {}", e))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+/// All teams (with members), via the same DataRepository the TUI uses.
+#[tauri::command]
+fn list_teams(state: State<'_, GuiState>) -> Result<Vec<clash::domain::entities::Team>, String> {
+    use clash::domain::ports::DataRepository;
+    state.backend.load_teams().map_err(|e| e.to_string())
+}
+
+/// Tasks for a team.
+#[tauri::command]
+fn list_tasks(
+    state: State<'_, GuiState>,
+    team: String,
+) -> Result<Vec<clash::domain::entities::Task>, String> {
+    use clash::domain::ports::DataRepository;
+    state.backend.load_tasks(&team).map_err(|e| e.to_string())
 }
 
 /// (Re)connect the control client if the connection was lost.
@@ -277,7 +418,13 @@ fn main() {
             send_input,
             resize_session,
             close_session,
-            kill_session
+            stash_session,
+            kill_session,
+            rename_session,
+            create_new_session,
+            get_diff,
+            list_teams,
+            list_tasks
         ])
         .run(tauri::generate_context!())
         .expect("error while running clash GUI");

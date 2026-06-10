@@ -13,23 +13,60 @@
       <div id="sidebar-header">
         <span class="logo">clash</span>
         <span class="badge">GUI</span>
+        <span class="spacer"></span>
+        <button id="new-session-btn" class="icon-btn" title="New session (⌘T)">+</button>
+      </div>
+      <div id="search-wrap">
+        <input id="search" type="text" placeholder="Search sessions…  ( / )" autocomplete="off" spellcheck="false" />
       </div>
       <div id="session-list"></div>
+      <div id="teams-section">
+        <div class="section-label collapsible" id="teams-toggle">TEAMS <span id="teams-caret">▸</span></div>
+        <div id="teams-list" class="hidden"></div>
+      </div>
       <div id="sidebar-footer">
         <span id="session-count"></span>
       </div>
     </aside>
+
     <main id="main">
-      <div id="tabs"></div>
-      <div id="terminal-host">
-        <div id="empty-state">
-          <div class="empty-logo">⌘</div>
-          <p>Select a session to attach</p>
-          <p class="hint">Sessions update live from ~/.claude</p>
+      <div id="topbar">
+        <div id="tabs"></div>
+        <div id="topbar-actions">
+          <button id="split-btn" class="icon-btn" title="Add split pane (⌘D)">◫</button>
+          <button id="unsplit-btn" class="icon-btn" title="Remove split pane">◻</button>
+          <button id="details-btn" class="icon-btn" title="Toggle details panel">ⓘ</button>
+        </div>
+      </div>
+      <div id="content">
+        <div id="terminal-host" class="layout-1">
+          <div id="empty-state">
+            <div class="empty-logo">⌘</div>
+            <p>Select a session to attach</p>
+            <p class="hint">/ to search · ⌘T new session · ⌘D split</p>
+          </div>
+        </div>
+        <div id="details" class="hidden">
+          <div id="details-body"></div>
         </div>
       </div>
     </main>
   </div>
+
+  <!-- New session modal -->
+  <div id="modal-backdrop" class="hidden">
+    <div id="new-session-modal">
+      <h3>New session</h3>
+      <label>Name <input id="ns-name" type="text" placeholder="my-feature" autocomplete="off" spellcheck="false" /></label>
+      <label>Working directory <input id="ns-cwd" type="text" placeholder="/Users/you/project" autocomplete="off" spellcheck="false" /></label>
+      <div class="modal-actions">
+        <button id="ns-cancel">Cancel</button>
+        <button id="ns-create" class="primary">Create</button>
+      </div>
+      <div id="ns-error" class="error hidden"></div>
+    </div>
+  </div>
+
   <script src="vendor/xterm.js"></script>
   <script src="vendor/addon-fit.js"></script>
   <script src="app.js"></script>
