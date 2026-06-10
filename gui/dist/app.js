@@ -287,15 +287,40 @@ function visibleSessions() {
 
 function renderSidebar() {
   const list = $("session-list");
-  const sections = { ACTIVE: [], FAILED: [], STASHED: [], DONE: [] };
-  for (const s of visibleSessions()) sections[sectionOf(s)].push(s);
-
   list.innerHTML = "";
+
+  const visible = visibleSessions();
+  const byId = new Map(visible.map((s) => [s.id, s]));
+  const grouped = new Set();
+
+  // Workspace groups first: each workspace regroups the sessions assigned
+  // to its panes. Clicking the header switches to that workspace.
+  state.workspaces.forEach((w, wi) => {
+    const ids = [...new Set(w.panes.filter((id) => id && byId.has(id)))];
+    if (ids.length === 0) return;
+    ids.forEach((id) => grouped.add(id));
+    const header = document.createElement("div");
+    header.className =
+      "section-label ws-group" + (wi === state.activeWs ? " active" : "");
+    header.title = `Switch to workspace (⌘${wi + 1})`;
+    header.innerHTML = `<span class="ws-n">⌘${wi + 1}</span>${escapeHtml(
+      w.name.toUpperCase()
+    )}<span class="count">${ids.length}</span>`;
+    header.onclick = () => switchWorkspace(wi);
+    list.appendChild(header);
+    for (const id of ids) list.appendChild(sessionItem(byId.get(id)));
+  });
+
+  // Everything not assigned to a workspace, in the usual status sections.
+  const sections = { ACTIVE: [], FAILED: [], STASHED: [], DONE: [] };
+  for (const s of visible) {
+    if (!grouped.has(s.id)) sections[sectionOf(s)].push(s);
+  }
   for (const [label, items] of Object.entries(sections)) {
     if (items.length === 0) continue;
     const header = document.createElement("div");
     header.className = "section-label";
-    header.textContent = label;
+    header.innerHTML = `${label}<span class="count">${items.length}</span>`;
     list.appendChild(header);
     for (const s of items) list.appendChild(sessionItem(s));
   }
@@ -376,6 +401,7 @@ function sessionItem(s) {
     sub.appendChild(branch);
   }
   const proj = document.createElement("span");
+  proj.className = "proj";
   proj.textContent = s.worktree_project || s.project;
   sub.appendChild(proj);
 
@@ -555,6 +581,14 @@ async function renameSessionDialog(sid) {
 function tabContextMenu(ev, sid) {
   ev.preventDefault();
   ev.stopPropagation();
+  const entry = state.open.get(sid);
+  if (entry && !entry.term) {
+    // Content tab (conversation/subagents/diff) — only closable
+    showContextMenu(ev.clientX, ev.clientY, [
+      { label: "Close tab", action: () => dropTerminal(sid) },
+    ]);
+    return;
+  }
   showContextMenu(ev.clientX, ev.clientY, [
     { label: "Rename session…", action: () => renameSessionDialog(sid) },
     { label: "Close tab (detach)", action: () => detachSession(sid) },
@@ -676,14 +710,14 @@ function fitAll() {
   requestAnimationFrame(() => {
     for (const sid of ws().panes) {
       const entry = sid && state.open.get(sid);
-      if (entry) entry.fitAddon.fit();
+      if (entry && entry.fitAddon) entry.fitAddon.fit();
     }
   });
 }
 
 function focusTerm(sid) {
   const entry = state.open.get(sid);
-  if (entry) setTimeout(() => entry.term.focus(), 0);
+  if (entry && entry.term) setTimeout(() => entry.term.focus(), 0);
 }
 
 function addPane() {
@@ -803,21 +837,24 @@ async function openSession(sid) {
   focusTerm(sid);
 }
 
-/// Detach (keep session running in the backend).
+/// Detach (keep session running in the backend). View tabs just close.
 async function detachSession(sid) {
-  try {
-    await invoke("close_session", { sessionId: sid });
-  } catch (e) {
-    console.error("close_session failed:", e);
+  const entry = state.open.get(sid);
+  if (entry && entry.term) {
+    try {
+      await invoke("close_session", { sessionId: sid });
+    } catch (e) {
+      console.error("close_session failed:", e);
+    }
   }
   dropTerminal(sid);
 }
 
-/// Remove the local terminal for a session (after detach/stash/kill/exit).
+/// Remove the local terminal/view for a tab (after detach/stash/kill/exit).
 function dropTerminal(sid) {
   const entry = state.open.get(sid);
   if (!entry) return;
-  entry.term.dispose();
+  if (entry.term) entry.term.dispose();
   entry.el.remove();
   state.open.delete(sid);
   for (const w of state.workspaces) {
@@ -833,25 +870,125 @@ function dropTerminal(sid) {
   renderSidebar();
 }
 
+// ── View tabs (conversation / subagents / diff in the main area) ──
+
+/// Open (or focus) a non-terminal content tab. `build(el)` fills it.
+function openViewTab(key, name, build) {
+  if (state.open.has(key)) {
+    // Rebuild content so reopening shows fresh data
+    const entry = state.open.get(key);
+    entry.el.innerHTML = "";
+    assignToFocusedPane(key);
+    build(entry.el);
+    return;
+  }
+  const el = document.createElement("div");
+  el.className = "view-wrap";
+  state.open.set(key, { el, name });
+  assignToFocusedPane(key);
+  build(el);
+}
+
+function openConversationTab(s) {
+  openViewTab(`view:conv:${s.id}`, `🗨 ${displayName(s)}`, async (el) => {
+    el.innerHTML = "<h4>CONVERSATION</h4><p class='hint'>loading…</p>";
+    try {
+      const msgs = await invoke("get_conversation", {
+        project: s.project,
+        sessionId: s.id,
+      });
+      el.innerHTML = "<h4>CONVERSATION</h4>";
+      renderChat(el, msgs);
+    } catch (e) {
+      el.innerHTML = `<h4>CONVERSATION</h4><p class='hint'>failed: ${escapeHtml(e)}</p>`;
+    }
+  });
+}
+
+function openSubagentsTab(s) {
+  openViewTab(`view:subs:${s.id}`, `⛭ ${displayName(s)}`, (el) => buildSubagentsList(el, s));
+}
+
+async function buildSubagentsList(el, s) {
+  el.innerHTML = "<h4>SUBAGENTS</h4><p class='hint'>loading…</p>";
+  try {
+    const subs = await invoke("get_subagents", {
+      project: s.project,
+      sessionId: s.id,
+    });
+    el.innerHTML = "<h4>SUBAGENTS</h4>";
+    if (!subs.length) {
+      el.innerHTML += "<p class='hint'>no subagents</p>";
+      return;
+    }
+    for (const sub of subs) {
+      const row = document.createElement("div");
+      row.className = "row-item";
+      row.innerHTML = `<span>${escapeHtml(sub.agent_type || sub.id)}</span><span class="dim">${escapeHtml(
+        sub.summary || ""
+      )}</span>`;
+      row.onclick = async () => {
+        el.innerHTML = `<div class="row-item back">← all subagents</div><h4>SUBAGENT · ${escapeHtml(
+          sub.agent_type || sub.id
+        )}</h4>`;
+        el.querySelector(".back").onclick = () => buildSubagentsList(el, s);
+        try {
+          const msgs = await invoke("get_subagent_conversation", {
+            project: s.project,
+            sessionId: s.id,
+            agentId: sub.id,
+          });
+          renderChat(el, msgs);
+        } catch (e) {
+          el.innerHTML += `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
+        }
+      };
+      el.appendChild(row);
+    }
+  } catch (e) {
+    el.innerHTML = `<h4>SUBAGENTS</h4><p class='hint'>failed: ${escapeHtml(e)}</p>`;
+  }
+}
+
+function openDiffTab(s) {
+  openViewTab(`view:diff:${s.id}`, `± ${displayName(s)}`, async (el) => {
+    el.innerHTML = "<h4>GIT DIFF (HEAD)</h4><div class='diff'>loading…</div>";
+    try {
+      const diff = await invoke("get_diff", { sessionId: s.id });
+      el.querySelector(".diff").innerHTML = renderDiff(diff);
+    } catch (e) {
+      el.querySelector(".diff").textContent = `diff failed: ${e}`;
+    }
+  });
+}
+
 // ── Details panel ───────────────────────────────────────────────
+
+// Session id whose shell is currently built in #details-body. The shell is
+// rebuilt only when this changes; refresh cycles just update field values
+// in place so #d-out (conversation, subagents, IDE picker…) is never wiped.
+let detailsShellFor = null;
 
 function showDetails(sid) {
   state.detailsFor = sid;
   $("details").classList.remove("hidden");
+  $("details-resizer").classList.remove("hidden");
   renderDetails();
   fitAll();
 }
 
 function hideDetails() {
   state.detailsFor = null;
+  detailsShellFor = null;
   $("details").classList.add("hidden");
+  $("details-resizer").classList.add("hidden");
   fitAll();
 }
 
-function kv(k, v) {
-  return `<div class="kv"><span class="k">${k}</span><span class="v">${escapeHtml(
-    v || "—"
-  )}</span></div>`;
+function kv(k, v, id = "") {
+  return `<div class="kv"><span class="k">${k}</span><span class="v"${
+    id ? ` id="${id}"` : ""
+  }>${escapeHtml(v || "—")}</span></div>`;
 }
 
 function escapeHtml(s) {
@@ -861,48 +998,68 @@ function escapeHtml(s) {
     .replaceAll(">", "&gt;");
 }
 
+function detailsStatusText(s) {
+  return s.is_running ? s.status + " (running)" : s.status;
+}
+
 function renderDetails() {
   const body = $("details-body");
   const s = state.sessions.find((x) => x.id === state.detailsFor);
   if (!s) {
     body.innerHTML = "<p>Session not found.</p>";
+    detailsShellFor = null;
     return;
   }
+  if (detailsShellFor === s.id) {
+    // Refresh tick: update the live fields without touching the DOM tree.
+    const set = (id, v) => {
+      const el = $(id);
+      if (el) el.textContent = v || "—";
+    };
+    set("d-kv-name", displayName(s));
+    set("d-kv-agents", s.subagent_count > 0 ? String(s.subagent_count) : "—");
+    set("d-kv-modified", s.last_modified);
+    set("d-kv-summary", s.summary || s.first_prompt || "—");
+    const st = statusInfo(s);
+    const stEl = $("d-kv-status");
+    if (stEl) {
+      stEl.className = `status-label ${st.cls}`;
+      stEl.textContent = `${st.icon} ${st.label}`;
+    }
+    return;
+  }
+  detailsShellFor = s.id;
+  const st = statusInfo(s);
   body.innerHTML = `
-    <h3>${escapeHtml(displayName(s))}</h3>
-    ${kv("Status", s.is_running ? s.status + " (running)" : s.status)}
+    <h3 id="d-kv-name">${escapeHtml(displayName(s))}</h3>
+    <div class="kv"><span class="k">Status</span><span class="status-label ${st.cls}" id="d-kv-status">${st.icon} ${st.label}</span></div>
     ${kv("Branch", s.git_branch)}
     ${kv("Project", s.worktree_project || s.project)}
-    ${kv("Worktree", s.worktree)}
+    ${s.worktree ? kv("Worktree", s.worktree) : ""}
     ${kv("CWD", s.cwd || s.project_path)}
-    ${kv("Agents", s.subagent_count > 0 ? String(s.subagent_count) : "—")}
-    ${kv("Modified", s.last_modified)}
-    ${kv("ID", s.id)}
+    ${kv("Agents", s.subagent_count > 0 ? String(s.subagent_count) : "—", "d-kv-agents")}
+    ${kv("Modified", s.last_modified, "d-kv-modified")}
     <h4>SUMMARY</h4>
-    <div class="kv"><span class="v">${escapeHtml(s.summary || s.first_prompt || "—")}</span></div>
+    <div class="kv"><span class="v" id="d-kv-summary">${escapeHtml(s.summary || s.first_prompt || "—")}</span></div>
+    <h4>OPEN AS TAB</h4>
     <div class="actions">
-      <button id="d-diff">Diff</button>
-      <button id="d-conv">Conversation</button>
-      <button id="d-subs">Subagents</button>
+      <button id="d-conv">🗨 Conversation</button>
+      <button id="d-subs">⛭ Subagents</button>
+      <button id="d-diff">± Diff</button>
+    </div>
+    <h4>TOOLS</h4>
+    <div class="actions">
       <button id="d-ports">Ports</button>
       <button id="d-ide">Open in IDE</button>
       <button id="d-close">Close panel</button>
     </div>
     <div id="d-out"></div>
+    <div class="kv dim-id" title="${escapeHtml(s.id)}"><span class="k">ID</span><span class="v">${escapeHtml(s.id)}</span></div>
   `;
   $("d-close").onclick = hideDetails;
-  $("d-diff").onclick = async () => {
-    const out = $("d-out");
-    out.innerHTML = `<h4>GIT DIFF (HEAD)</h4><div class="diff">loading…</div>`;
-    try {
-      const diff = await invoke("get_diff", { sessionId: s.id });
-      out.querySelector(".diff").innerHTML = renderDiff(diff);
-    } catch (e) {
-      out.querySelector(".diff").textContent = `diff failed: ${e}`;
-    }
-  };
-  $("d-conv").onclick = () => showConversation(s);
-  $("d-subs").onclick = () => showSubagents(s);
+  $("d-diff").onclick = () => openDiffTab(s);
+  $("d-conv").onclick = () => openConversationTab(s);
+  $("d-subs").onclick = () => openSubagentsTab(s);
   $("d-ide").onclick = () => showIdePicker(s);
   $("d-ports").onclick = async () => {
     const out = $("d-out");
@@ -944,58 +1101,6 @@ function renderChat(out, msgs) {
   }
   out.appendChild(chat);
   chat.scrollTop = chat.scrollHeight;
-}
-
-async function showConversation(s) {
-  const out = $("d-out");
-  out.innerHTML = "<h4>CONVERSATION</h4>";
-  try {
-    const msgs = await invoke("get_conversation", {
-      project: s.project,
-      sessionId: s.id,
-    });
-    renderChat(out, msgs);
-  } catch (e) {
-    out.innerHTML += `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
-  }
-}
-
-async function showSubagents(s) {
-  const out = $("d-out");
-  out.innerHTML = "<h4>SUBAGENTS</h4>";
-  try {
-    const subs = await invoke("get_subagents", {
-      project: s.project,
-      sessionId: s.id,
-    });
-    if (!subs.length) {
-      out.innerHTML += "<p class='hint'>no subagents</p>";
-      return;
-    }
-    for (const sub of subs) {
-      const row = document.createElement("div");
-      row.className = "row-item";
-      row.innerHTML = `<span>${escapeHtml(sub.agent_type || sub.id)}</span><span class="dim">${escapeHtml(
-        sub.summary || ""
-      )}</span>`;
-      row.onclick = async () => {
-        out.innerHTML = `<h4>SUBAGENT · ${escapeHtml(sub.agent_type || sub.id)}</h4>`;
-        try {
-          const msgs = await invoke("get_subagent_conversation", {
-            project: s.project,
-            sessionId: s.id,
-            agentId: sub.id,
-          });
-          renderChat(out, msgs);
-        } catch (e) {
-          out.innerHTML += `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
-        }
-      };
-      out.appendChild(row);
-    }
-  } catch (e) {
-    out.innerHTML += `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
-  }
 }
 
 async function showIdePicker(s) {
@@ -1082,7 +1187,9 @@ function renderTeams() {
 
 async function showTeamDetails(team) {
   $("details").classList.remove("hidden");
+  $("details-resizer").classList.remove("hidden");
   state.detailsFor = null;
+  detailsShellFor = null; // team view replaces the session shell
   const body = $("details-body");
   let tasks = [];
   try {
@@ -1491,6 +1598,63 @@ document.addEventListener("keydown", (e) => {
 });
 
 window.addEventListener("resize", fitAll);
+
+// ── Panel resizing (sidebar / details) ──────────────────────────
+
+function loadPanelSizes() {
+  try {
+    const sizes = JSON.parse(localStorage.getItem("clash-panel-sizes") || "{}");
+    const apply = (el, px) => {
+      el.style.width = px + "px";
+      el.style.minWidth = px + "px";
+    };
+    if (sizes.sidebar) apply($("sidebar"), sizes.sidebar);
+    if (sizes.details) apply($("details"), sizes.details);
+  } catch (e) {
+    console.error("loadPanelSizes failed:", e);
+  }
+}
+
+function savePanelSize(key, px) {
+  try {
+    const sizes = JSON.parse(localStorage.getItem("clash-panel-sizes") || "{}");
+    sizes[key] = px;
+    localStorage.setItem("clash-panel-sizes", JSON.stringify(sizes));
+  } catch (e) {
+    console.error("savePanelSize failed:", e);
+  }
+}
+
+/// Horizontal drag-to-resize. `compute(clientX)` returns the new width.
+function initResizer(handleId, panelId, storageKey, min, max, compute) {
+  const handle = $(handleId);
+  const panel = $(panelId);
+  handle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    handle.classList.add("dragging");
+    document.body.style.cursor = "col-resize";
+    const onMove = (ev) => {
+      const w = Math.max(min, Math.min(max, compute(ev.clientX)));
+      panel.style.width = w + "px";
+      panel.style.minWidth = w + "px";
+      fitAll();
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      handle.classList.remove("dragging");
+      document.body.style.cursor = "";
+      savePanelSize(storageKey, parseInt(panel.style.width, 10));
+      fitAll();
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
+initResizer("sidebar-resizer", "sidebar", "sidebar", 180, 480, (x) => x);
+initResizer("details-resizer", "details", "details", 240, 640, (x) => window.innerWidth - x);
+loadPanelSizes();
 
 $("new-ws-btn").onclick = newWorkspace;
 

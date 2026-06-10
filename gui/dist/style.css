@@ -137,20 +137,39 @@ html, body, #app {
 #session-list { flex: 1; overflow-y: auto; padding: 4px 0; }
 
 .section-label {
-  padding: 10px 14px 4px;
+  padding: 12px 14px 4px;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 1px;
   color: var(--fg-dim);
+  display: flex;
+  align-items: center;
+}
+.section-label .count {
+  margin-left: 7px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--bg-active);
+  font-weight: 600;
+  letter-spacing: 0;
 }
 .section-label.collapsible { cursor: pointer; }
 .section-label.collapsible:hover { color: var(--fg); }
 
+/* Workspace groups — sessions regrouped by owning workspace */
+.section-label.ws-group { cursor: pointer; }
+.section-label.ws-group:hover { color: var(--fg); }
+.section-label.ws-group.active { color: var(--fg); }
+.section-label.ws-group.active .ws-n { color: var(--accent); }
+.section-label .ws-n { margin-right: 7px; font-weight: 600; color: var(--fg-dim); }
+
 .session-item {
-  padding: 6px 10px 6px 14px;
+  padding: 6px 8px;
+  margin: 1px 6px;
+  border-radius: 6px;
   cursor: pointer;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 9px;
   border-left: 2px solid transparent;
   position: relative;
@@ -167,6 +186,7 @@ html, body, #app {
   min-width: 9px;
   border-radius: 50%;
   border: 2px solid var(--fg-dim);
+  margin-top: 4px; /* optically align with the name row */
 }
 .status-ring.running { border-color: var(--st-running); background: var(--st-running); animation: spin-pulse 1s linear infinite; }
 .status-ring.thinking { border-color: var(--st-thinking); background: var(--st-thinking); animation: soft-pulse 1.6s ease-in-out infinite; }
@@ -228,12 +248,22 @@ html, body, #app {
 
 .session-sub {
   display: flex;
-  gap: 6px;
+  gap: 7px;
+  align-items: baseline;
   font-size: 11px;
   color: var(--fg-dim);
   white-space: nowrap;
   overflow: hidden;
+  margin-top: 1px;
+}
+/* Status (and wild badge) always readable; branch/project truncate */
+.session-sub .status-label,
+.session-sub .wild-badge { flex-shrink: 0; }
+.session-sub .branch,
+.session-sub .proj {
+  overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 .branch::before { content: "⎇ "; }
 
@@ -244,9 +274,11 @@ html, body, #app {
   right: 6px;
   top: 50%;
   transform: translateY(-50%);
-  background: var(--bg-hover);
-  border-radius: 4px;
-  padding: 1px;
+  background: var(--bg-active);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
 }
 .session-item:hover .session-actions { display: flex; }
 .session-actions button {
@@ -420,6 +452,37 @@ html, body, #app {
   background: var(--bg-sidebar);
   overflow-y: auto;
 }
+
+/* Drag handles between panels */
+.panel-resizer {
+  width: 4px;
+  min-width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  z-index: 50;
+}
+.panel-resizer:hover,
+.panel-resizer.dragging { background: var(--accent); }
+
+/* View tabs (conversation / subagents / diff in the main area) */
+.view-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 16px;
+  user-select: text;
+}
+.view-wrap h4 {
+  font-size: 11px;
+  color: var(--fg-dim);
+  margin: 4px 0 8px;
+  letter-spacing: 0.5px;
+}
+.view-wrap .chat { max-height: none; }
+.row-item.back { color: var(--accent); margin-bottom: 6px; }
+
+#details .dim-id { margin-top: 14px; opacity: 0.45; font-size: 10px; }
 #details-body { padding: 12px; }
 #details h3 { font-size: 13px; margin-bottom: 8px; }
 #details h4 { font-size: 11px; color: var(--fg-dim); margin: 12px 0 4px; letter-spacing: 0.5px; }

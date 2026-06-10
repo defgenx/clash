@@ -325,9 +325,9 @@ the same sessions the TUI manages.
 GUI features: fuzzy search (`/` or `⌘F`), inline rename (double-click),
 new session (`⌘T`) with preset picker and git-worktree option, stash/kill/
 adopt from hover actions, split panes up to 2×2 (`⌘D`, zoom `⌘⇧↩`),
-session details panel (conversation, subagents, git diff, listening ports,
-open-in-IDE), teams browser (members, tasks, agent inboxes, create/delete),
-self-update from the footer, and quit-stash on close.
+teams browser (members, tasks, agent inboxes, create/delete), self-update
+from the footer, and quit-stash on close. The sidebar and details panel
+are drag-resizable (widths persist).
 
 Sessions carry the same status vocabulary as the TUI — animated
 PROMPTING / THINKING / RUNNING / WAITING / STARTING / STASHED / ERRORED
@@ -336,10 +336,17 @@ processes (started outside clash) appear with a `⚡ wild` badge and can be
 adopted. Right-click a tab for the context menu: rename, close (detach),
 stash, kill, details.
 
+The details panel (ⓘ) is a compact overview — live status, branch,
+project, CWD, summary. Conversation, Subagents, and Diff open as full
+tabs in the main area (closable like terminal tabs); Ports and
+Open-in-IDE pickers live in the panel.
+
 Workspaces (cmux-style): each workspace owns its own pane layout and session
 assignments — `⌘N` new, `⌘1-9` switch, `⌘⇧R` rename, `⌘⇧W` or the chip's
-`×` to close, `⌘B` toggles the sidebar. Layouts persist across restarts
-(running sessions re-attach automatically).
+`×` to close, `⌘B` toggles the sidebar. The sidebar regroups sessions
+under their owning workspace (click a group header to switch), with
+unassigned sessions in the usual status sections. Layouts persist across
+restarts (running sessions re-attach automatically).
 
 Notifications: desktop alerts when a session starts waiting for input or
 errors (suppressed while the window is focused), unread badges in the
