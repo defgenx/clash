@@ -1,8 +1,8 @@
 [workspace]
 members = ["gui/src-tauri"]
-# Keep root-level cargo build/test/clippy scoped to the TUI crate so CI and
-# day-to-day workflows are unaffected. Build the GUI with: cargo build -p clash-gui
-default-members = ["."]
+# Both binaries (clash + clash-gui) build by default: plain `cargo build --release`
+# produces both. CI installs the Tauri Linux system deps (webkit2gtk) for this.
+default-members = [".", "gui/src-tauri"]
 
 [package]
 name = "clash"

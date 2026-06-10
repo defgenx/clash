@@ -201,6 +201,19 @@ async fn install_update(
 
     replace_binary(&new_binary, &install_target)?;
 
+    // Install the GUI binary alongside the TUI when the release ships one.
+    // Older releases (< v1.37) have no clash-gui in the tarball — skip quietly.
+    // A GUI install failure must not fail the TUI update that already landed.
+    let new_gui = tmpdir.join("clash-gui");
+    if new_gui.exists() {
+        if let Some(dir) = install_target.parent() {
+            let gui_target = dir.join("clash-gui");
+            if let Err(e) = replace_binary(&new_gui, &gui_target) {
+                tracing::warn!("clash updated, but clash-gui install failed: {}", e);
+            }
+        }
+    }
+
     // Cleanup
     let _ = std::fs::remove_dir_all(&tmpdir);
 

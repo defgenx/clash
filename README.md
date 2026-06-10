@@ -321,10 +321,14 @@ with session sections and status rings; embedded xterm.js terminals attach to
 the same sessions the TUI manages.
 
 ```bash
-cargo build -p clash-gui      # build (excluded from default workspace builds)
-./target/debug/clash-gui      # run — TUI and GUI are mutually exclusive
-                              # (single-instance lock: one session owner at a time)
+cargo build --release           # builds BOTH binaries: clash and clash-gui
+./target/release/clash-gui      # run — TUI and GUI are mutually exclusive
+                                # (single-instance lock: one session owner at a time)
 ```
+
+Release tarballs ship both binaries, and `clash update` installs/updates both.
+On Linux, building requires the Tauri system deps (webkit2gtk):
+`libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev`.
 
 The GUI is fully self-contained: no external daemon, no node build step
 (frontend assets in `gui/dist/` are vendored and embedded in the binary).
