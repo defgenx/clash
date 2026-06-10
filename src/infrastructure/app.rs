@@ -116,7 +116,7 @@ impl App {
             }
         }
 
-        let daemon = DaemonClient::new(DaemonClient::default_socket_path());
+        let daemon = DaemonClient::new(DaemonClient::instance_socket_path());
 
         // Spawn the wild-process background scan task. Pushes the
         // latest Vec<WildProcess> into a watch channel; the refresh

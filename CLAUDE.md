@@ -165,7 +165,7 @@ Key crates: `ratatui` (TUI), `crossterm` (terminal events, TUI raw mode), `nix` 
 - Inboxes are lazy-loaded with LRU(3) eviction — they're only fetched when navigating to the inbox view.
 - Agent attach uses suspend-and-resume: save state → restore terminal → spawn `claude --resume` → reclaim terminal on exit.
 - External session opening (`o`/`O`) uses the `windowing` module: pane-capable terminals (tmux, iTerm, WezTerm, Kitty) get split panes; others get tabs/windows. Sessions opened externally are tracked in-memory via `externally_opened` and shown with `⊞` prefix.
-- `clash attach <id>` is a lightweight subcommand for external panes — it connects to the in-process daemon, not a standalone daemon. The TUI must be running.
+- `clash attach <id>` is a lightweight subcommand for external panes — it connects to the in-process daemon of a running clash app (TUI or GUI), not a standalone daemon. Multiple instances may run simultaneously, each with its own `daemon-<pid>.sock`; attach probes live sockets and picks the instance that owns the session.
 - The attach loop reads from `/dev/tty` (not fd 0) to avoid racing with crossterm's internal reader thread. The standalone client uses `nix::sys::termios` for raw mode instead of crossterm to prevent crossterm's reader from being initialized.
 - Ctrl+B detach supports three terminal encodings: raw `0x02`, Kitty CSI u (`ESC[98;5u`), and xterm modifyOtherKeys (`ESC[27;5;98~`). iTerm2 uses the xterm format.
 - `--debug` flag enables debug-level logging; the header shows a `DEBUG` indicator when active.

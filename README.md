@@ -30,7 +30,7 @@
 - **Open in IDE** — press `e` to open a session's project in your editor (auto-detects Cursor, VS Code, Zed, JetBrains, nvim, vim; configurable)
 - **Keyboard-driven** — vim-style navigation, command mode (`:`), fuzzy filter (`/`), context help (`?`)
 - **UI state persistence** — restores navigation, selection, filters, and expanded sessions on restart
-- **Single-instance lock** — prevents multiple clash instances from running simultaneously
+- **Multi-instance** — run several clash apps (TUI and/or GUI) side by side; each owns its own sessions via a per-instance daemon socket
 - **Guided tour** — first-launch walkthrough, replay anytime with `:tour`
 - **Debug mode** — `clash --debug` enables verbose logging with a header indicator
 - **Self-updating** — `:update` in the TUI or `clash update` from the CLI
@@ -239,7 +239,9 @@ clash also maintains its own state in `~/.claude/clash/`:
 └── trusted_repos.json                 # SHA256 trust store for repo setup scripts
 ```
 
-Single-instance lock file: `~/.local/share/clash/clash.lock`
+Daemon sockets: `~/Library/Application Support/clash/daemon-<pid>.sock` (one
+per running instance; `clash attach` auto-discovers the instance that owns a
+session).
 
 ## Session Presets
 
@@ -322,8 +324,8 @@ the same sessions the TUI manages.
 
 ```bash
 cargo build --release           # builds BOTH binaries: clash and clash-gui
-./target/release/clash-gui      # run — TUI and GUI are mutually exclusive
-                                # (single-instance lock: one session owner at a time)
+./target/release/clash-gui      # run — can run alongside the TUI
+                                # (each instance owns its own sessions)
 ```
 
 Release tarballs ship both binaries, and `clash update` installs/updates both.

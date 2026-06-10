@@ -38,12 +38,64 @@ impl DaemonClient {
         }
     }
 
-    /// Get the default socket path (~/.clash/daemon.sock).
+    /// Get the legacy shared socket path (`daemon.sock`). Only used by the
+    /// standalone `clash daemon` subcommand and as a discovery fallback.
     pub fn default_socket_path() -> PathBuf {
+        Self::socket_dir().join("daemon.sock")
+    }
+
+    /// Socket path for this process's in-process daemon (`daemon-<pid>.sock`).
+    ///
+    /// Per-instance sockets let multiple clash apps (TUI and/or GUI) run
+    /// simultaneously without fighting over a shared socket.
+    pub fn instance_socket_path() -> PathBuf {
+        Self::socket_dir().join(format!("daemon-{}.sock", std::process::id()))
+    }
+
+    fn socket_dir() -> PathBuf {
         dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("clash")
-            .join("daemon.sock")
+    }
+
+    /// Discover sockets of running clash instances, newest first.
+    ///
+    /// Scans for `daemon-<pid>.sock` files, skipping those whose pid is no
+    /// longer alive. The legacy shared `daemon.sock` is appended last as a
+    /// fallback. Used by `clash attach` to find the instance that owns a
+    /// session.
+    pub fn discover_socket_paths() -> Vec<PathBuf> {
+        let dir = Self::socket_dir();
+        let mut found: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else { continue };
+                let Some(pid) = name
+                    .strip_prefix("daemon-")
+                    .and_then(|s| s.strip_suffix(".sock"))
+                    .and_then(|s| s.parse::<i32>().ok())
+                else {
+                    continue;
+                };
+                // Skip sockets left behind by dead instances
+                if unsafe { libc::kill(pid, 0) } != 0 {
+                    continue;
+                }
+                let mtime = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                found.push((entry.path(), mtime));
+            }
+        }
+        found.sort_by_key(|(_, mtime)| std::cmp::Reverse(*mtime));
+        let mut paths: Vec<PathBuf> = found.into_iter().map(|(p, _)| p).collect();
+        let legacy = Self::default_socket_path();
+        if legacy.exists() {
+            paths.push(legacy);
+        }
+        paths
     }
 
     /// Connect to the daemon (running in-process as a background task).

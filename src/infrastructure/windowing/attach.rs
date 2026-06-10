@@ -868,19 +868,47 @@ fn run_silent(cmd: &str, args: &[&str]) -> bool {
         .is_ok()
 }
 
+/// Connect to the clash instance that owns `session_id`.
+///
+/// Multiple clash apps (TUI/GUI) may run simultaneously, each with its own
+/// `daemon-<pid>.sock`. Probe live sockets (newest first) and pick the one
+/// whose session list contains the id; fall back to the first reachable
+/// socket so the attach retry loop can still wait for a session that is
+/// being created.
+async fn connect_to_owner(session_id: &str) -> eyre::Result<DaemonClient> {
+    let candidates = DaemonClient::discover_socket_paths();
+    if candidates.is_empty() {
+        eyre::bail!("No running clash instance found. Is clash running?");
+    }
+
+    let mut first_reachable: Option<DaemonClient> = None;
+    for path in candidates {
+        let mut client = DaemonClient::new(path);
+        if client.connect().await.is_err() {
+            continue;
+        }
+        match client.list_sessions().await {
+            Ok(infos) if infos.iter().any(|i| i.session_id == session_id) => {
+                return Ok(client);
+            }
+            _ => {
+                if first_reachable.is_none() {
+                    first_reachable = Some(client);
+                }
+            }
+        }
+    }
+
+    first_reachable.ok_or_else(|| eyre::eyre!("Could not connect to any clash daemon socket"))
+}
+
 /// Entry point for `clash attach <session_id>`.
 ///
-/// Connects to the running daemon, attaches to the specified session,
-/// and runs the I/O passthrough loop. The session must already exist
-/// in the daemon (created by the TUI).
+/// Connects to the clash instance that owns the session and runs the
+/// I/O passthrough loop. The session must already exist in (or be being
+/// created by) one of the running instances.
 pub async fn run_attach_client(session_id: String) -> eyre::Result<()> {
-    let socket_path = DaemonClient::default_socket_path();
-    let mut daemon = DaemonClient::new(socket_path);
-
-    daemon
-        .connect()
-        .await
-        .wrap_err("Could not connect to clash daemon. Is clash running?")?;
+    let mut daemon = connect_to_owner(&session_id).await?;
 
     let mut daemon_rx = daemon.take_stream_rx();
 

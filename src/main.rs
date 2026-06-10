@@ -109,15 +109,6 @@ async fn main() -> Result<()> {
         None => {}
     }
 
-    // Single-instance lock — prevent multiple clash TUIs from running
-    let _instance_lock = match infrastructure::lock::SingleInstanceLock::acquire() {
-        Ok(lock) => lock,
-        Err(msg) => {
-            eprintln!("{}", msg.red());
-            std::process::exit(1);
-        }
-    };
-
     // Ensure terminal is restored on panic
     let default_panic = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -135,7 +126,9 @@ async fn main() -> Result<()> {
     // Start the daemon server in-process as a background task.
     // This replaces the old approach of spawning a separate `clash daemon` process.
     // When Clash exits, the daemon shuts down with it — no orphan processes.
-    let socket_path = infrastructure::daemon::client::DaemonClient::default_socket_path();
+    // Per-instance socket (daemon-<pid>.sock): multiple clash apps may run
+    // simultaneously, each owning its own sessions.
+    let socket_path = infrastructure::daemon::client::DaemonClient::instance_socket_path();
     let daemon_server = infrastructure::daemon::server::DaemonServer::new(socket_path);
     let daemon_shutdown = daemon_server.shutdown_handle();
     let daemon_task = tokio::spawn(async move {

@@ -17,7 +17,6 @@ use clash::infrastructure::daemon::client::DaemonClient;
 use clash::infrastructure::daemon::protocol::Event;
 use clash::infrastructure::daemon::server::DaemonServer;
 use clash::infrastructure::fs::backend::FsBackend;
-use clash::infrastructure::lock::SingleInstanceLock;
 use clash::infrastructure::session_refresh;
 use tauri::{Emitter, Manager, State};
 
@@ -92,7 +91,7 @@ async fn open_session(
         }
     };
 
-    let mut client = DaemonClient::new(DaemonClient::default_socket_path());
+    let mut client = DaemonClient::new(DaemonClient::instance_socket_path());
     client.connect().await.map_err(|e| e.to_string())?;
 
     if !alive {
@@ -232,16 +231,6 @@ fn main() {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    // Same one-owner rule as the TUI: only one clash app (TUI or GUI) may
-    // own sessions at a time. Self-contained — no external daemon.
-    let instance_lock = match SingleInstanceLock::acquire() {
-        Ok(lock) => lock,
-        Err(msg) => {
-            eprintln!("{}", msg);
-            std::process::exit(1);
-        }
-    };
-
     let config = Config::load();
     let data_dir: PathBuf = config.claude_dir();
     let claude_bin = config.claude_bin.clone();
@@ -250,7 +239,7 @@ fn main() {
         backend: FsBackend::new(data_dir),
         claude_bin,
         previous: Mutex::new(Vec::new()),
-        control: tokio::sync::Mutex::new(DaemonClient::new(DaemonClient::default_socket_path())),
+        control: tokio::sync::Mutex::new(DaemonClient::new(DaemonClient::instance_socket_path())),
         attached: tokio::sync::Mutex::new(HashMap::new()),
     };
 
@@ -258,17 +247,18 @@ fn main() {
         .manage(state)
         .setup(|app| {
             // In-process PTY session manager — the GUI's backbone, identical
-            // to the TUI's in-process daemon. Dies with the app.
-            let server = DaemonServer::new(DaemonClient::default_socket_path());
+            // to the TUI's in-process daemon. Dies with the app. Per-instance
+            // socket (daemon-<pid>.sock): TUI and GUI can run side by side,
+            // each owning its own sessions.
+            let server = DaemonServer::new(DaemonClient::instance_socket_path());
             let shutdown = server.shutdown_handle();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = server.run().await {
                     tracing::error!("Daemon server error: {}", e);
                 }
             });
-            // Keep the instance lock and shutdown handle alive for the app's lifetime.
+            // Keep the shutdown handle alive for the app's lifetime.
             app.manage(shutdown);
-            app.manage(instance_lock);
             Ok(())
         })
         .on_window_event(|window, event| {
