@@ -191,6 +191,13 @@ async fn open_session(
                 session.and_then(|s| s.name.clone()),
             )
         };
+        // Clear the stale "idle" hook status so the daemon's Starting/Running
+        // status can take effect in reconciliation (same as the TUI's resume).
+        clash::infrastructure::hooks::write_session_status(
+            state.backend.base_dir(),
+            &session_id,
+            "starting",
+        );
         client
             .create_session(
                 &session_id,
@@ -1057,6 +1064,25 @@ fn main() {
             });
             // Keep the shutdown handle alive for the app's lifetime.
             app.manage(shutdown);
+
+            // Dock icon. macOS only reads icons from an .app bundle's
+            // Info.plist; the bare dev binary must set one at runtime.
+            #[cfg(target_os = "macos")]
+            {
+                use objc2::{AnyThread, MainThreadMarker};
+                use objc2_app_kit::{NSApplication, NSImage};
+                use objc2_foundation::NSData;
+                if let Some(mtm) = MainThreadMarker::new() {
+                    let data = NSData::with_bytes(include_bytes!("../icons/icon.png"));
+                    if let Some(img) = NSImage::initWithData(NSImage::alloc(), &data) {
+                        // SAFETY: main thread (MainThreadMarker), valid NSImage.
+                        unsafe {
+                            NSApplication::sharedApplication(mtm)
+                                .setApplicationIconImage(Some(&img));
+                        }
+                    }
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {

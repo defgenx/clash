@@ -519,4 +519,36 @@ html, body, #app {
   cursor: pointer;
 }
 .modal-actions button.primary { background: var(--accent); color: #1b1b1d; border-color: var(--accent); font-weight: 600; }
+.modal-actions button.danger-primary { background: var(--red); color: #1b1b1d; border-color: var(--red); font-weight: 600; }
 .error { color: var(--red); font-size: 12px; margin-top: 8px; }
+
+/* In-app confirm/prompt/alert dialogs (native ones are no-ops in wry) */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+.dialog-box {
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px;
+  width: 380px;
+}
+.dialog-box p { font-size: 13px; margin-bottom: 12px; }
+.dialog-box input {
+  width: 100%;
+  margin-bottom: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  padding: 6px 8px;
+  font-size: 13px;
+  outline: none;
+}
+.dialog-box input:focus { border-color: var(--accent); }

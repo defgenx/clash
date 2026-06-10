@@ -22,6 +22,65 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+// ── In-app dialogs ──────────────────────────────────────────────
+// wry's WKWebView does not implement native alert/confirm/prompt —
+// they silently return undefined — so modal equivalents are built in-page.
+
+function uiDialog({ message, input = null, okLabel = "OK", cancelable = true, danger = false }) {
+  return new Promise((resolve) => {
+    const cancelValue = input !== null ? null : false;
+    const backdrop = document.createElement("div");
+    backdrop.className = "dialog-backdrop";
+    const box = document.createElement("div");
+    box.className = "dialog-box";
+    const msg = document.createElement("p");
+    msg.textContent = message;
+    box.appendChild(msg);
+    let field = null;
+    if (input !== null) {
+      field = document.createElement("input");
+      field.type = "text";
+      field.value = input;
+      field.spellcheck = false;
+      box.appendChild(field);
+    }
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    const ok = document.createElement("button");
+    ok.textContent = okLabel;
+    ok.className = danger ? "danger-primary" : "primary";
+    if (cancelable) {
+      const cancel = document.createElement("button");
+      cancel.textContent = "Cancel";
+      cancel.onclick = () => done(cancelValue);
+      actions.appendChild(cancel);
+    }
+    actions.appendChild(ok);
+    box.appendChild(actions);
+    backdrop.appendChild(box);
+    document.body.appendChild(backdrop);
+    const done = (val) => {
+      backdrop.remove();
+      resolve(val);
+    };
+    ok.onclick = () => done(input !== null ? field.value : true);
+    backdrop.onclick = (e) => {
+      if (e.target === backdrop && cancelable) done(cancelValue);
+    };
+    backdrop.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") done(input !== null ? field.value : true);
+      else if (e.key === "Escape" && cancelable) done(cancelValue);
+    });
+    setTimeout(() => (field || ok).focus(), 0);
+  });
+}
+
+const uiConfirm = (message, okLabel = "Confirm") =>
+  uiDialog({ message, okLabel, danger: true });
+const uiPrompt = (message, def = "") => uiDialog({ message, input: def });
+const uiAlert = (message) => uiDialog({ message, cancelable: false });
+
 /// The active workspace.
 function ws() {
   return state.workspaces[state.activeWs];
@@ -135,8 +194,8 @@ function newWorkspace() {
   switchWorkspace(state.workspaces.length - 1);
 }
 
-function renameWorkspace(i) {
-  const name = prompt("Workspace name:", state.workspaces[i].name);
+async function renameWorkspace(i) {
+  const name = await uiPrompt("Workspace name:", state.workspaces[i].name);
   if (name && name.trim()) {
     state.workspaces[i].name = name.trim();
     saveWorkspaces();
@@ -315,7 +374,12 @@ function sessionItem(s) {
     actions.appendChild(
       actionBtn("⚡", "Adopt: take over this wild claude process", async (ev) => {
         ev.stopPropagation();
-        if (!confirm(`Take over wild session "${displayName(s)}"? Its current process is killed and resumed under clash.`))
+        if (
+          !(await uiConfirm(
+            `Take over wild session "${displayName(s)}"? Its current process is killed and resumed under clash.`,
+            "Take over"
+          ))
+        )
           return;
         try {
           await invoke("takeover_wild", {
@@ -326,7 +390,7 @@ function sessionItem(s) {
             rows: 40,
           });
         } catch (e) {
-          alert(`Adopt failed: ${e}`);
+          uiAlert(`Adopt failed: ${e}`);
         }
         refreshSessions();
       })
@@ -348,7 +412,7 @@ function sessionItem(s) {
       "Kill (remove from clash)",
       async (ev) => {
         ev.stopPropagation();
-        if (!confirm(`Kill session "${displayName(s)}"?`)) return;
+        if (!(await uiConfirm(`Kill session "${displayName(s)}"?`, "Kill"))) return;
         await invoke("kill_session", { sessionId: s.id }).catch(console.error);
         dropTerminal(s.id);
         refreshSessions();
@@ -932,14 +996,14 @@ async function showTeamDetails(team) {
   }
   $("d-close").onclick = hideDetails;
   $("d-team-delete").onclick = async () => {
-    if (!confirm(`Delete team "${team.name}" and all its tasks?`)) return;
+    if (!(await uiConfirm(`Delete team "${team.name}" and all its tasks?`, "Delete"))) return;
     try {
       await invoke("delete_team", { name: team.name });
       hideDetails();
       state.teams = await invoke("list_teams");
       renderTeams();
     } catch (e) {
-      alert(`Delete failed: ${e}`);
+      uiAlert(`Delete failed: ${e}`);
     }
   };
   fitAll();
@@ -970,15 +1034,15 @@ async function showInbox(team, agent) {
 }
 
 async function createTeamPrompt() {
-  const name = prompt("Team name:");
+  const name = await uiPrompt("Team name:");
   if (!name || !name.trim()) return;
-  const description = prompt("Description (optional):") || "";
+  const description = (await uiPrompt("Description (optional):")) || "";
   try {
     await invoke("create_team", { name: name.trim(), description });
     state.teams = await invoke("list_teams");
     renderTeams();
   } catch (e) {
-    alert(`Create team failed: ${e}`);
+    uiAlert(`Create team failed: ${e}`);
   }
 }
 
@@ -1148,14 +1212,14 @@ $("ns-preset").addEventListener("change", () => {
 });
 
 $("stash-all-btn").onclick = async () => {
-  if (!confirm("Stash all running sessions?")) return;
+  if (!(await uiConfirm("Stash all running sessions?", "Stash all"))) return;
   try {
     const n = await invoke("stash_all");
     for (const sid of [...state.open.keys()]) dropTerminal(sid);
     refreshSessions();
     console.log(`stashed ${n} sessions`);
   } catch (e) {
-    alert(`Stash all failed: ${e}`);
+    uiAlert(`Stash all failed: ${e}`);
   }
 };
 
