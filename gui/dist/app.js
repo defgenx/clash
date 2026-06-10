@@ -8,8 +8,9 @@ const state = {
   sessions: [],
   query: "",
   open: new Map(), // session id -> { term, fitAddon, el, name }
-  // cmux-style workspaces: each owns its pane layout and session assignments
-  workspaces: [{ name: "main", panes: [null], focused: 0, zoomed: false }],
+  // cmux-style workspaces: each owns its pane layout AND its sessions —
+  // the sidebar is scoped to the active workspace's sessions.
+  workspaces: [{ name: "main", panes: [null], focused: 0, zoomed: false, sessions: [] }],
   activeWs: 0,
   activeTab: null, // session id highlighted in the tab bar
   detailsFor: null, // session id shown in the details panel, or null
@@ -18,6 +19,7 @@ const state = {
   renaming: null, // session id with an open inline-rename input
   prevStatuses: new Map(), // session id -> status (attention transitions)
   unread: new Set(), // session ids with unseen attention events
+  missingStreak: new Map(), // session id -> consecutive refreshes absent (ownership prune)
 };
 
 const $ = (id) => document.getElementById(id);
@@ -96,6 +98,7 @@ function saveWorkspaces() {
         workspaces: state.workspaces.map((w) => ({
           name: w.name,
           panes: w.panes,
+          sessions: w.sessions,
         })),
         active: state.activeWs,
       })
@@ -116,6 +119,7 @@ function loadWorkspaces() {
         panes: Array.isArray(w.panes) && w.panes.length ? w.panes : [null],
         focused: 0,
         zoomed: false,
+        sessions: Array.isArray(w.sessions) ? w.sessions : [],
       }));
       state.activeWs = Math.min(data.active || 0, state.workspaces.length - 1);
     }
@@ -202,8 +206,22 @@ function newWorkspace() {
     panes: [null],
     focused: 0,
     zoomed: false,
+    sessions: [],
   });
   switchWorkspace(state.workspaces.length - 1);
+}
+
+/// Index of the workspace owning a session, or -1 if unassigned.
+function sessionWorkspace(sid) {
+  return state.workspaces.findIndex((w) => w.sessions.includes(sid));
+}
+
+/// Claim a session for the active workspace if no workspace owns it yet.
+function claimSession(sid) {
+  if (sessionWorkspace(sid) === -1) {
+    ws().sessions.push(sid);
+    saveWorkspaces();
+  }
 }
 
 async function renameWorkspace(i) {
@@ -285,48 +303,58 @@ function visibleSessions() {
 
 // ── Sidebar ─────────────────────────────────────────────────────
 
+function renderStatusSections(list, items) {
+  const sections = { ACTIVE: [], FAILED: [], STASHED: [], DONE: [] };
+  for (const s of items) sections[sectionOf(s)].push(s);
+  for (const [label, group] of Object.entries(sections)) {
+    if (group.length === 0) continue;
+    const header = document.createElement("div");
+    header.className = "section-label";
+    header.innerHTML = `${label}<span class="count">${group.length}</span>`;
+    list.appendChild(header);
+    for (const s of group) list.appendChild(sessionItem(s));
+  }
+}
+
 function renderSidebar() {
   const list = $("session-list");
   list.innerHTML = "";
 
   const visible = visibleSessions();
-  const byId = new Map(visible.map((s) => [s.id, s]));
-  const grouped = new Set();
 
-  // Workspace groups first: each workspace regroups the sessions assigned
-  // to its panes. Clicking the header switches to that workspace.
-  state.workspaces.forEach((w, wi) => {
-    const ids = [...new Set(w.panes.filter((id) => id && byId.has(id)))];
-    if (ids.length === 0) return;
-    ids.forEach((id) => grouped.add(id));
-    const header = document.createElement("div");
-    header.className =
-      "section-label ws-group" + (wi === state.activeWs ? " active" : "");
-    header.title = `Switch to workspace (⌘${wi + 1})`;
-    header.innerHTML = `<span class="ws-n">⌘${wi + 1}</span>${escapeHtml(
-      w.name.toUpperCase()
-    )}<span class="count">${ids.length}</span>`;
-    header.onclick = () => switchWorkspace(wi);
-    list.appendChild(header);
-    for (const id of ids) list.appendChild(sessionItem(byId.get(id)));
-  });
-
-  // Everything not assigned to a workspace, in the usual status sections.
-  const sections = { ACTIVE: [], FAILED: [], STASHED: [], DONE: [] };
-  for (const s of visible) {
-    if (!grouped.has(s.id)) sections[sectionOf(s)].push(s);
-  }
-  for (const [label, items] of Object.entries(sections)) {
-    if (items.length === 0) continue;
-    const header = document.createElement("div");
-    header.className = "section-label";
-    header.innerHTML = `${label}<span class="count">${items.length}</span>`;
-    list.appendChild(header);
-    for (const s of items) list.appendChild(sessionItem(s));
+  if (state.query) {
+    // Searching: global, across all workspaces. Items owned by another
+    // workspace carry a ⌘n badge; clicking switches there and opens.
+    renderStatusSections(list, visible);
+  } else {
+    // Scoped: the active workspace's sessions, then sessions no
+    // workspace has claimed yet. Other workspaces' sessions live in
+    // their own workspace (switch via chips / ⌘1-9 / search).
+    const mine = visible.filter((s) => ws().sessions.includes(s.id));
+    const unassigned = visible.filter((s) => sessionWorkspace(s.id) === -1);
+    renderStatusSections(list, mine);
+    if (unassigned.length) {
+      const header = document.createElement("div");
+      header.className = "section-label unassigned";
+      header.innerHTML = `UNASSIGNED<span class="count">${unassigned.length}</span>`;
+      header.title = "Not in any workspace — opening one claims it for this workspace";
+      list.appendChild(header);
+      for (const s of unassigned) list.appendChild(sessionItem(s));
+    }
+    if (mine.length === 0 && unassigned.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "list-empty";
+      empty.textContent = "no sessions in this workspace — / to search all";
+      list.appendChild(empty);
+    }
   }
 
+  const scoped = state.query ? visible.length : null;
   const n = state.sessions.length;
-  $("session-count").textContent = `${n} session${n === 1 ? "" : "s"}`;
+  $("session-count").textContent =
+    scoped !== null
+      ? `${scoped} match${scoped === 1 ? "" : "es"}`
+      : `${n} session${n === 1 ? "" : "s"}`;
 }
 
 function sessionItem(s) {
@@ -387,6 +415,14 @@ function sessionItem(s) {
   stLabel.className = `status-label ${st.cls}`;
   stLabel.textContent = `${st.icon} ${st.label}`;
   sub.appendChild(stLabel);
+  const owner = sessionWorkspace(s.id);
+  if (owner >= 0 && owner !== state.activeWs) {
+    const wsBadge = document.createElement("span");
+    wsBadge.className = "ws-badge";
+    wsBadge.textContent = `⌘${owner + 1} ${state.workspaces[owner].name}`;
+    wsBadge.title = "Owned by another workspace — click opens it there";
+    sub.appendChild(wsBadge);
+  }
   if (s.source === "Wild") {
     const wild = document.createElement("span");
     wild.className = "wild-badge";
@@ -513,6 +549,29 @@ async function refreshSessions() {
     }
     document.title = attention > 0 ? `clash (${attention}!)` : "clash";
     state.sessions = sessions;
+
+    // Prune workspace ownership of sessions gone from the list for 3
+    // consecutive refreshes (killed/removed) — tolerates transient
+    // daemon hiccups without orphaning the workspace's session list.
+    const known = new Set(sessions.map((s) => s.id));
+    let pruned = false;
+    for (const w of state.workspaces) {
+      for (const id of [...w.sessions]) {
+        if (known.has(id)) {
+          state.missingStreak.delete(id);
+          continue;
+        }
+        const streak = (state.missingStreak.get(id) || 0) + 1;
+        state.missingStreak.set(id, streak);
+        if (streak >= 3) {
+          w.sessions = w.sessions.filter((x) => x !== id);
+          state.missingStreak.delete(id);
+          pruned = true;
+        }
+      }
+    }
+    if (pruned) saveWorkspaces();
+
     renderSidebar();
     renderTabs();
     if (state.detailsFor) renderDetails();
@@ -787,6 +846,12 @@ const TERM_THEME = {
 };
 
 async function openSession(sid) {
+  // Sessions are workspace-scoped: owned elsewhere → switch there first;
+  // unowned → the active workspace claims it.
+  const owner = sessionWorkspace(sid);
+  if (owner >= 0 && owner !== state.activeWs) switchWorkspace(owner);
+  claimSession(sid);
+
   if (state.open.has(sid)) {
     assignToFocusedPane(sid);
     return;

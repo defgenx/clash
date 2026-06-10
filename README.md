@@ -341,12 +341,16 @@ project, CWD, summary. Conversation, Subagents, and Diff open as full
 tabs in the main area (closable like terminal tabs); Ports and
 Open-in-IDE pickers live in the panel.
 
-Workspaces (cmux-style): each workspace owns its own pane layout and session
-assignments — `⌘N` new, `⌘1-9` switch, `⌘⇧R` rename, `⌘⇧W` or the chip's
-`×` to close, `⌘B` toggles the sidebar. The sidebar regroups sessions
-under their owning workspace (click a group header to switch), with
-unassigned sessions in the usual status sections. Layouts persist across
-restarts (running sessions re-attach automatically).
+Workspaces (cmux-style): each workspace owns its pane layout AND its
+sessions — `⌘N` new, `⌘1-9` switch, `⌘⇧R` rename, `⌘⇧W` or the chip's
+`×` to close, `⌘B` toggles the sidebar. The sidebar is scoped to the
+active workspace: its sessions in status sections, plus an UNASSIGNED
+group for sessions no workspace has claimed (opening one claims it).
+Searching (`/`) is global across workspaces — results from other
+workspaces carry a `⌘n` badge and open in their owning workspace.
+Closing a workspace returns its sessions to the unassigned pool.
+Layouts and session ownership persist across restarts (running sessions
+re-attach automatically).
 
 Notifications: desktop alerts when a session starts waiting for input or
 errors (suppressed while the window is focused), unread badges in the

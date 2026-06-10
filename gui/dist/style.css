@@ -156,12 +156,20 @@ html, body, #app {
 .section-label.collapsible { cursor: pointer; }
 .section-label.collapsible:hover { color: var(--fg); }
 
-/* Workspace groups — sessions regrouped by owning workspace */
-.section-label.ws-group { cursor: pointer; }
-.section-label.ws-group:hover { color: var(--fg); }
-.section-label.ws-group.active { color: var(--fg); }
-.section-label.ws-group.active .ws-n { color: var(--accent); }
-.section-label .ws-n { margin-right: 7px; font-weight: 600; color: var(--fg-dim); }
+/* Workspace scoping */
+.section-label.unassigned { color: var(--accent); opacity: 0.75; }
+.ws-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--purple);
+}
+.list-empty {
+  padding: 18px 14px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  text-align: center;
+}
 
 .session-item {
   padding: 6px 8px;
