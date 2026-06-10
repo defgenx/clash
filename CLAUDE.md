@@ -169,4 +169,5 @@ Key crates: `ratatui` (TUI), `crossterm` (terminal events, TUI raw mode), `nix` 
 - The attach loop reads from `/dev/tty` (not fd 0) to avoid racing with crossterm's internal reader thread. The standalone client uses `nix::sys::termios` for raw mode instead of crossterm to prevent crossterm's reader from being initialized.
 - Ctrl+B detach supports three terminal encodings: raw `0x02`, Kitty CSI u (`ESC[98;5u`), and xterm modifyOtherKeys (`ESC[27;5;98~`). iTerm2 uses the xterm format.
 - `--debug` flag enables debug-level logging; the header shows a `DEBUG` indicator when active.
+- Tauri 2 frontend APIs are permission-gated: `gui/src-tauri/capabilities/default.json` must grant `core:default` (includes `core:event:allow-listen`) or every `listen()` in the GUI frontend fails as a silent unhandled rejection — no `pty-output` ever reaches xterm and terminals render blank.
 - Log file (`~/Library/Application Support/clash/clash.log`) appends across restarts and auto-rotates after 24h (configurable via `CLASH_LOG_RETENTION_HOURS`).

@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"Main window permissions — core:default includes the event listen/emit permissions the frontend needs for pty-output streaming.","local":true,"windows":["main"],"permissions":["core:default"]}}
