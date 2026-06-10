@@ -168,6 +168,18 @@ function renderWorkspaceBar() {
     chip.innerHTML = `<span class="n">${i + 1}</span><span class="label">${escapeHtml(
       w.name
     )}</span>`;
+    if (state.workspaces.length > 1) {
+      const close = document.createElement("span");
+      close.className = "ws-close";
+      close.textContent = "×";
+      close.title = "Close workspace (⌘⇧W)";
+      close.onclick = (ev) => {
+        ev.stopPropagation();
+        state.activeWs = i;
+        closeWorkspace();
+      };
+      chip.appendChild(close);
+    }
     chip.onclick = () => switchWorkspace(i);
     chip.ondblclick = () => renameWorkspace(i);
     chips.appendChild(chip);
@@ -212,20 +224,29 @@ function closeWorkspace() {
 // ── Session helpers ─────────────────────────────────────────────
 
 // Mirror of SessionStatus serde values (Stashed -> "idle", Done -> "done").
-function statusClass(s) {
-  if (s.is_running) {
+// Same status vocabulary as the TUI (src/adapters/format.rs).
+function statusInfo(s) {
+  if (s.is_running || s.status === "Starting") {
     switch (s.status) {
       case "Prompting":
+        return { cls: "prompting", icon: "◆", label: "PROMPTING" };
       case "Waiting":
-        return "prompting";
+        return { cls: "waiting", icon: "◉", label: "WAITING" };
       case "Thinking":
-        return "thinking";
+        return { cls: "thinking", icon: "◉", label: "THINKING" };
+      case "Starting":
+        return { cls: "starting", icon: "◔", label: "STARTING" };
       default:
-        return "running";
+        return { cls: "running", icon: "⟳", label: "RUNNING" };
     }
   }
-  if (s.status === "Errored") return "errored";
-  return "done";
+  if (s.status === "Errored") return { cls: "errored", icon: "✗", label: "ERRORED" };
+  if (s.status === "idle") return { cls: "stashed", icon: "○", label: "STASHED" };
+  return { cls: "done", icon: "✓", label: "DONE" };
+}
+
+function statusClass(s) {
+  return statusInfo(s).cls;
 }
 
 function sectionOf(s) {
@@ -336,6 +357,18 @@ function sessionItem(s) {
 
   const sub = document.createElement("div");
   sub.className = "session-sub";
+  const st = statusInfo(s);
+  const stLabel = document.createElement("span");
+  stLabel.className = `status-label ${st.cls}`;
+  stLabel.textContent = `${st.icon} ${st.label}`;
+  sub.appendChild(stLabel);
+  if (s.source === "Wild") {
+    const wild = document.createElement("span");
+    wild.className = "wild-badge";
+    wild.textContent = "⚡ wild";
+    wild.title = "External claude process (not managed by clash)";
+    sub.appendChild(wild);
+  }
   if (s.git_branch) {
     const branch = document.createElement("span");
     branch.className = "branch";
@@ -455,10 +488,100 @@ async function refreshSessions() {
     document.title = attention > 0 ? `clash (${attention}!)` : "clash";
     state.sessions = sessions;
     renderSidebar();
+    renderTabs();
     if (state.detailsFor) renderDetails();
   } catch (e) {
     console.error("list_sessions failed:", e);
   }
+}
+
+// ── Context menu ────────────────────────────────────────────────
+
+function hideContextMenu() {
+  const menu = $("context-menu");
+  if (menu) menu.remove();
+}
+
+/// items: [{ label, action, danger? }] — null entries become separators.
+function showContextMenu(x, y, items) {
+  hideContextMenu();
+  const menu = document.createElement("div");
+  menu.id = "context-menu";
+  for (const it of items) {
+    if (!it) {
+      const sep = document.createElement("div");
+      sep.className = "ctx-sep";
+      menu.appendChild(sep);
+      continue;
+    }
+    const row = document.createElement("div");
+    row.className = "ctx-item" + (it.danger ? " danger" : "");
+    row.textContent = it.label;
+    row.onclick = (ev) => {
+      ev.stopPropagation();
+      hideContextMenu();
+      it.action();
+    };
+    menu.appendChild(row);
+  }
+  document.body.appendChild(menu);
+  // Clamp to the viewport so the menu never opens off-screen
+  const r = menu.getBoundingClientRect();
+  menu.style.left = `${Math.min(x, window.innerWidth - r.width - 4)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - r.height - 4)}px`;
+}
+
+document.addEventListener("click", hideContextMenu);
+window.addEventListener("blur", hideContextMenu);
+
+/// Rename a session via dialog — used by the tab context menu.
+async function renameSessionDialog(sid) {
+  const s = state.sessions.find((x) => x.id === sid);
+  const entry = state.open.get(sid);
+  const current = (s && s.name) || (entry && entry.name) || "";
+  const name = await uiPrompt("Session name:", current);
+  if (!name || !name.trim()) return;
+  try {
+    await invoke("rename_session", { sessionId: sid, name: name.trim() });
+  } catch (e) {
+    uiAlert(`Rename failed: ${e}`);
+    return;
+  }
+  if (entry) entry.name = name.trim();
+  renderTabs();
+  refreshSessions();
+}
+
+function tabContextMenu(ev, sid) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  showContextMenu(ev.clientX, ev.clientY, [
+    { label: "Rename session…", action: () => renameSessionDialog(sid) },
+    { label: "Close tab (detach)", action: () => detachSession(sid) },
+    null,
+    {
+      label: "Stash (stop, keep resumable)",
+      action: async () => {
+        await invoke("stash_session", { sessionId: sid }).catch(console.error);
+        dropTerminal(sid);
+        refreshSessions();
+      },
+    },
+    {
+      label: "Kill session…",
+      danger: true,
+      action: async () => {
+        const s = state.sessions.find((x) => x.id === sid);
+        const label = s ? displayName(s) : sid.slice(0, 8);
+        if (!(await uiConfirm(`Kill session "${label}"?`, "Kill"))) return;
+        await invoke("kill_session", { sessionId: sid }).catch(console.error);
+        dropTerminal(sid);
+        refreshSessions();
+      },
+    },
+    null,
+    { label: "Details", action: () => showDetails(sid) },
+  ]);
 }
 
 // ── Tabs ────────────────────────────────────────────────────────
@@ -470,6 +593,15 @@ function renderTabs() {
     const tab = document.createElement("div");
     tab.className = "tab" + (id === state.activeTab ? " active" : "");
     tab.onclick = () => assignToFocusedPane(id);
+    tab.oncontextmenu = (ev) => tabContextMenu(ev, id);
+
+    const s = state.sessions.find((x) => x.id === id);
+    if (s) {
+      const dot = document.createElement("span");
+      dot.className = `tab-dot ${statusClass(s)}`;
+      dot.title = statusInfo(s).label;
+      tab.appendChild(dot);
+    }
 
     const label = document.createElement("span");
     label.textContent = entry.name;

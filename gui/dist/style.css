@@ -12,6 +12,14 @@
   --red: #e5534b;
   --blue: #539bf5;
   --purple: #b083f0;
+  /* TUI status palette (src/infrastructure/tui/theme.rs) */
+  --st-running: #82c396;
+  --st-thinking: #91afd2;
+  --st-waiting: #d2be78;
+  --st-starting: #a591d7;
+  --st-prompting: #d29187;
+  --st-idle: #5f5873;
+  --st-error: #c88287;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -62,7 +70,7 @@ html, body, #app {
   gap: 8px;
 }
 
-.logo { font-weight: 700; font-size: 15px; letter-spacing: 0.5px; }
+.logo { height: 26px; display: block; }
 
 .badge {
   font-size: 9px;
@@ -98,6 +106,9 @@ html, body, #app {
 .ws-chip.active { border-color: var(--accent); color: var(--fg); }
 .ws-chip .n { color: var(--accent); font-weight: 700; }
 .ws-chip .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-chip .ws-close { opacity: 0; font-size: 13px; margin-left: 2px; }
+.ws-chip:hover .ws-close { opacity: 0.6; }
+.ws-chip .ws-close:hover { opacity: 1; color: var(--red); }
 
 #sidebar.collapsed { display: none; }
 
@@ -157,20 +168,44 @@ html, body, #app {
   border-radius: 50%;
   border: 2px solid var(--fg-dim);
 }
-.status-ring.running { border-color: var(--green); background: var(--green); }
-.status-ring.thinking { border-color: var(--blue); background: var(--blue); }
+.status-ring.running { border-color: var(--st-running); background: var(--st-running); animation: spin-pulse 1s linear infinite; }
+.status-ring.thinking { border-color: var(--st-thinking); background: var(--st-thinking); animation: soft-pulse 1.6s ease-in-out infinite; }
+.status-ring.waiting { border-color: var(--st-waiting); background: var(--st-waiting); }
+.status-ring.starting { border-color: var(--st-starting); background: var(--st-starting); animation: soft-pulse 1.2s ease-in-out infinite; }
 .status-ring.prompting {
-  border-color: var(--accent);
-  background: var(--accent);
+  border-color: var(--st-prompting);
+  background: var(--st-prompting);
   animation: pulse 1.2s ease-in-out infinite;
 }
-.status-ring.errored { border-color: var(--red); background: var(--red); }
+.status-ring.errored { border-color: var(--st-error); background: var(--st-error); }
+.status-ring.stashed { border-color: var(--st-idle); }
 .status-ring.done { border-color: var(--fg-dim); }
 
 @keyframes pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(232, 163, 61, 0.6); }
-  50% { box-shadow: 0 0 0 5px rgba(232, 163, 61, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(210, 145, 135, 0.7); }
+  50% { box-shadow: 0 0 0 5px rgba(210, 145, 135, 0); }
 }
+@keyframes soft-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@keyframes spin-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(130, 195, 150, 0.5); }
+  50% { box-shadow: 0 0 0 3px rgba(130, 195, 150, 0); }
+}
+
+/* Status text label (TUI status vocabulary) */
+.status-label { font-size: 10px; font-weight: 600; letter-spacing: 0.4px; }
+.status-label.running { color: var(--st-running); }
+.status-label.thinking { color: var(--st-thinking); animation: soft-pulse 1.6s ease-in-out infinite; }
+.status-label.waiting { color: var(--st-waiting); }
+.status-label.starting { color: var(--st-starting); animation: soft-pulse 1.2s ease-in-out infinite; }
+.status-label.prompting { color: var(--st-prompting); animation: soft-pulse 0.8s ease-in-out infinite; }
+.status-label.errored { color: var(--st-error); }
+.status-label.stashed { color: var(--st-idle); }
+.status-label.done { color: var(--fg-dim); }
+
+.wild-badge { color: var(--accent); font-size: 10px; font-weight: 600; }
 
 .session-meta { flex: 1; min-width: 0; }
 
@@ -281,6 +316,43 @@ html, body, #app {
 .tab.active { color: var(--fg); background: var(--bg); }
 .tab .close { opacity: 0.5; font-size: 14px; }
 .tab .close:hover { opacity: 1; color: var(--red); }
+
+.tab-dot {
+  width: 7px;
+  height: 7px;
+  min-width: 7px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+}
+.tab-dot.running { background: var(--st-running); }
+.tab-dot.thinking { background: var(--st-thinking); animation: soft-pulse 1.6s ease-in-out infinite; }
+.tab-dot.waiting { background: var(--st-waiting); }
+.tab-dot.starting { background: var(--st-starting); animation: soft-pulse 1.2s ease-in-out infinite; }
+.tab-dot.prompting { background: var(--st-prompting); animation: soft-pulse 0.8s ease-in-out infinite; }
+.tab-dot.errored { background: var(--st-error); }
+.tab-dot.stashed { background: var(--st-idle); }
+
+/* Right-click context menu */
+#context-menu {
+  position: fixed;
+  z-index: 300;
+  min-width: 200px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.ctx-item {
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ctx-item:hover { background: var(--bg-hover); }
+.ctx-item.danger { color: var(--red); }
+.ctx-sep { height: 1px; background: var(--border); margin: 4px 6px; }
 
 #content { flex: 1; display: flex; min-height: 0; }
 

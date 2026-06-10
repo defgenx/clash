@@ -35,6 +35,10 @@ struct GuiState {
     control: tokio::sync::Mutex<DaemonClient>,
     /// One streaming client per attached session.
     attached: tokio::sync::Mutex<HashMap<String, DaemonClient>>,
+    /// Latest wild-process scan snapshot (background task, same scan the
+    /// TUI runs). Read into `RefreshInput.wild_processes` on each refresh.
+    wild_processes_rx:
+        tokio::sync::watch::Receiver<Vec<clash::infrastructure::process_scan::WildProcess>>,
 }
 
 /// Payload for `pty-output` events pushed to the webview.
@@ -104,6 +108,7 @@ async fn list_sessions(
         ensure_connected(&mut control).await;
         input.daemon_infos = session_refresh::gather_daemon_input(&mut control).await;
     }
+    input.wild_processes = state.wild_processes_rx.borrow().clone();
     let sessions = session_refresh::build_session_list(&input);
 
     let focused = app
@@ -1038,6 +1043,8 @@ fn main() {
     let data_dir: PathBuf = config.claude_dir();
     let claude_bin = config.claude_bin.clone();
 
+    let (wild_processes_tx, wild_processes_rx) = tokio::sync::watch::channel(Vec::new());
+
     let state = GuiState {
         backend: FsBackend::new(data_dir),
         claude_bin,
@@ -1046,6 +1053,7 @@ fn main() {
         prev_statuses: Mutex::new(HashMap::new()),
         control: tokio::sync::Mutex::new(DaemonClient::new(DaemonClient::instance_socket_path())),
         attached: tokio::sync::Mutex::new(HashMap::new()),
+        wild_processes_rx,
     };
 
     tauri::Builder::default()
@@ -1064,6 +1072,26 @@ fn main() {
             });
             // Keep the shutdown handle alive for the app's lifetime.
             app.manage(shutdown);
+
+            // Wild-process background scan — same scan the TUI runs.
+            // Unlike the TUI (which hides claudes started before launch),
+            // the GUI shows ALL live external claudes: its session list is
+            // the user's overview of everything running on the machine.
+            tauri::async_runtime::spawn(async move {
+                use clash::infrastructure::process_scan::{
+                    default_fd_probe, gather_wild_processes,
+                };
+                let probe = default_fd_probe();
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    let wild = gather_wild_processes(&probe);
+                    if wild_processes_tx.send(wild).is_err() {
+                        break;
+                    }
+                }
+            });
 
             // Dock icon. macOS only reads icons from an .app bundle's
             // Info.plist; the bare dev binary must set one at runtime.

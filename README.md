@@ -329,10 +329,17 @@ session details panel (conversation, subagents, git diff, listening ports,
 open-in-IDE), teams browser (members, tasks, agent inboxes, create/delete),
 self-update from the footer, and quit-stash on close.
 
+Sessions carry the same status vocabulary as the TUI — animated
+PROMPTING / THINKING / RUNNING / WAITING / STARTING / STASHED / ERRORED
+labels in the sidebar and a colored status dot per tab. External claude
+processes (started outside clash) appear with a `⚡ wild` badge and can be
+adopted. Right-click a tab for the context menu: rename, close (detach),
+stash, kill, details.
+
 Workspaces (cmux-style): each workspace owns its own pane layout and session
-assignments — `⌘N` new, `⌘1-9` switch, `⌘⇧R` rename, `⌘⇧W` close, `⌘B`
-toggles the sidebar. Layouts persist across restarts (running sessions
-re-attach automatically).
+assignments — `⌘N` new, `⌘1-9` switch, `⌘⇧R` rename, `⌘⇧W` or the chip's
+`×` to close, `⌘B` toggles the sidebar. Layouts persist across restarts
+(running sessions re-attach automatically).
 
 Notifications: desktop alerts when a session starts waiting for input or
 errors (suppressed while the window is focused), unread badges in the
