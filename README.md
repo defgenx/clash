@@ -55,6 +55,13 @@ CLASH_INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/defg
 cargo install --git https://github.com/defgenx/clash.git
 ```
 
+Or from a clone — installs **both** binaries (TUI `clash` + GUI `clash-gui`)
+to `/usr/local/bin` (override with `INSTALL_DIR=~/.local/bin`):
+
+```bash
+make install            # or: make install-tui / make install-gui
+```
+
 ### Requirements
 
 - Rust 1.75+ (for building from source)
