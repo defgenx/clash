@@ -8,6 +8,34 @@ use clash::infrastructure::fs::store::DataStore;
 use helpers::test_data_dir::TestDataDir;
 
 #[test]
+fn test_create_team_roundtrip() {
+    let test_dir = TestDataDir::empty();
+    let backend = FsBackend::new(test_dir.path.clone());
+
+    backend.create_team("new-squad", "fresh team").unwrap();
+
+    let teams = backend.load_teams().unwrap();
+    assert_eq!(teams.len(), 1);
+    assert_eq!(teams[0].name, "new-squad");
+    assert_eq!(teams[0].description, "fresh team");
+    // Matches the on-disk layout Claude Code's team feature uses.
+    assert!(test_dir.path.join("teams/new-squad/inboxes").is_dir());
+
+    // Creating the same team again must fail, not overwrite.
+    assert!(backend.create_team("new-squad", "dup").is_err());
+}
+
+#[test]
+fn test_create_team_rejects_bad_names() {
+    let test_dir = TestDataDir::empty();
+    let backend = FsBackend::new(test_dir.path.clone());
+
+    assert!(backend.create_team("", "x").is_err());
+    assert!(backend.create_team("a/b", "x").is_err());
+    assert!(backend.create_team("..", "x").is_err());
+}
+
+#[test]
 fn test_load_all_teams_from_fixtures() {
     let test_dir = TestDataDir::new();
     let backend = FsBackend::new(test_dir.path.clone());

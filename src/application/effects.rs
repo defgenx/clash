@@ -19,14 +19,12 @@ pub enum Effect {
         team: String,
         task: Task,
     },
+    CreateTeam {
+        name: String,
+        description: String,
+    },
     RemoveTeam {
         name: String,
-    },
-
-    // ── CLI effects ─────────────────────────────────────────────
-    RunCli {
-        command: CliCommand,
-        on_complete: Action,
     },
 
     // ── Session effects ────────────────────────────────────────
@@ -184,7 +182,6 @@ pub enum Effect {
     },
 
     // ── UI state effects ────────────────────────────────────────
-    ShowSpinner(String),
     PerformUpdate,
     Quit,
 
@@ -198,10 +195,4 @@ pub enum Effect {
     KillWildProcess {
         pid: u32,
     },
-}
-
-/// High-level CLI commands (no raw args — infrastructure translates).
-#[derive(Debug, Clone)]
-pub enum CliCommand {
-    CreateTeam { name: String, description: String },
 }

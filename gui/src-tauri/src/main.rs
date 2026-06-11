@@ -467,6 +467,43 @@ fn rename_session(
     Ok(())
 }
 
+/// Is a clash TUI process running anywhere? Exact binary-name match so
+/// `clash-gui` (this process) never counts.
+#[tauri::command]
+fn tui_running() -> bool {
+    std::process::Command::new("pgrep")
+        .args(["-x", "clash"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Launch the clash TUI alongside the GUI: a split pane when the GUI was
+/// started from a pane-capable terminal, otherwise a new terminal window
+/// (Terminal.app on macOS). Prefers the sibling `clash` binary next to
+/// this executable (dev builds), falling back to `clash` on PATH.
+#[tauri::command]
+fn launch_tui() -> Result<(), String> {
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("clash")))
+        .filter(|p| p.exists())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "clash".to_string());
+    let term_program = std::env::var("TERM_PROGRAM").ok();
+    let in_tmux = std::env::var("TMUX").is_ok();
+    clash::infrastructure::windowing::terminal_spawn::open_command(
+        &exe,
+        &[],
+        term_program.as_deref(),
+        in_tmux,
+        200,
+        50,
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
 /// Enable/disable native desktop notifications. Pushed by the frontend at
 /// boot (from persisted settings) and whenever the user flips the toggle.
 #[tauri::command]
@@ -993,30 +1030,20 @@ async fn takeover_wild(
         .map_err(|e| format!("Failed to adopt session: {}", e))
 }
 
-/// Create a team via the claude CLI (same args as the TUI's team create).
+/// Create a team directly on the filesystem (config.json under the teams
+/// dir — same write the TUI's team create performs). `claude team create`
+/// is NOT a real CLI subcommand; shelling out silently fed it as a prompt.
 #[tauri::command]
-async fn create_team(
+fn create_team(
     state: State<'_, GuiState>,
     name: String,
     description: String,
 ) -> Result<(), String> {
-    let out = tokio::process::Command::new(&state.claude_bin)
-        .args([
-            "team",
-            "create",
-            "--name",
-            &name,
-            "--description",
-            &description,
-        ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run {}: {}", state.claude_bin, e))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).to_string())
-    }
+    use clash::domain::ports::DataRepository;
+    state
+        .backend
+        .create_team(name.trim(), description.trim())
+        .map_err(|e| e.to_string())
 }
 
 /// Delete a team and its tasks (same backend call as the TUI).
@@ -1586,6 +1613,8 @@ fn main() {
             kill_session,
             rename_session,
             set_notifications_enabled,
+            tui_running,
+            launch_tui,
             create_new_session,
             create_worktree_session,
             get_diff,

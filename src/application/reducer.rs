@@ -7,7 +7,7 @@
 use crate::adapters::input::parse_command;
 use crate::adapters::views::ViewKind;
 use crate::application::actions::*;
-use crate::application::effects::{CliCommand, Effect};
+use crate::application::effects::Effect;
 use crate::application::state::{AppState, ConfirmDialog, InputMode};
 
 /// Pure reducer: takes state + action, returns effects.
@@ -21,17 +21,6 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
         Action::Agent(agent) => reduce_agent(state, agent),
         Action::Ui(ui) => reduce_ui(state, ui),
         Action::Noop => vec![],
-        Action::CliResult {
-            success,
-            output,
-            follow_up,
-        } => {
-            state.spinner = None;
-            if !success {
-                state.toast = Some(format!("CLI error: {}", output));
-            }
-            reduce(state, *follow_up)
-        }
     }
 }
 
@@ -125,13 +114,8 @@ fn reduce_table(state: &mut AppState, action: TableAction) -> Vec<Effect> {
 fn reduce_team(state: &mut AppState, action: TeamAction) -> Vec<Effect> {
     match action {
         TeamAction::Create { name, description } => {
-            vec![
-                Effect::ShowSpinner(format!("Creating team '{}'...", name)),
-                Effect::RunCli {
-                    command: CliCommand::CreateTeam { name, description },
-                    on_complete: Action::Team(TeamAction::Refresh),
-                },
-            ]
+            state.toast = Some(format!("Created team '{}'", name));
+            vec![Effect::CreateTeam { name, description }]
         }
         TeamAction::Delete { name } => {
             state.toast = Some(format!("Deleted team '{}'", name));
@@ -1751,8 +1735,9 @@ mod tests {
                 description: "A test".to_string(),
             }),
         );
-        assert!(effects.iter().any(|e| matches!(e, Effect::ShowSpinner(_))));
-        assert!(effects.iter().any(|e| matches!(e, Effect::RunCli { .. })));
+        assert!(effects
+            .iter()
+            .any(|e| matches!(e, Effect::CreateTeam { .. })));
     }
 
     #[test]

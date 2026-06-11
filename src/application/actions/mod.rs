@@ -23,10 +23,4 @@ pub enum Action {
     Ui(UiAction),
     /// No-op, used when an event doesn't map to an action.
     Noop,
-    /// Result from a completed CLI call.
-    CliResult {
-        success: bool,
-        output: String,
-        follow_up: Box<Action>,
-    },
 }

@@ -17,9 +17,7 @@ use crate::application::effects::Effect;
 use crate::application::reducer;
 use crate::application::state::{AppState, InputMode};
 use crate::domain::entities::{Session, SessionSection};
-use crate::domain::ports::{CliGateway, DataRepository};
-use crate::infrastructure::cli::commands;
-use crate::infrastructure::cli::runner::RealCliRunner;
+use crate::domain::ports::DataRepository;
 use crate::infrastructure::daemon::client::DaemonClient;
 use crate::infrastructure::event::{Event, EventLoop};
 use crate::infrastructure::fs::backend::FsBackend;
@@ -30,7 +28,7 @@ use tokio::sync::mpsc;
 pub struct App {
     state: AppState,
     backend: FsBackend,
-    cli_runner: RealCliRunner,
+    claude_bin: String,
     config: crate::infrastructure::config::Config,
     _watcher: Option<FsWatcher>,
     fs_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Vec<PathBuf>>>,
@@ -67,7 +65,6 @@ impl App {
         config: crate::infrastructure::config::Config,
     ) -> Self {
         let backend = FsBackend::new(data_dir.clone());
-        let cli_runner = RealCliRunner::with_bin(claude_bin);
 
         // Install Claude Code hooks for instant status detection
         if let Err(e) = crate::infrastructure::hooks::install_hooks(&data_dir) {
@@ -148,7 +145,7 @@ impl App {
         Self {
             state,
             backend,
-            cli_runner,
+            claude_bin,
             config,
             _watcher: watcher,
             fs_event_rx: Some(fs_rx),
@@ -956,7 +953,7 @@ impl App {
             .daemon
             .create_session(
                 session_id,
-                &self.cli_runner.claude_bin,
+                &self.claude_bin,
                 &cmd_args,
                 resolved_cwd.as_deref(),
                 None,
@@ -1161,30 +1158,20 @@ impl App {
                         self.state.toast = Some(format!("Delete failed: {}", e));
                     }
                 }
-                // ── CLI commands → subprocess ───────────────────
-                Effect::RunCli {
-                    command,
-                    on_complete,
-                } => {
-                    let args = commands::to_args(&command);
-                    let result = self.cli_runner.run(&args).await;
-                    let (success, output) = match result {
-                        Ok(out) => (
-                            out.success,
-                            if out.success { out.stdout } else { out.stderr },
-                        ),
-                        Err(e) => (false, e.to_string()),
-                    };
-                    let follow_up_effects = reducer::reduce(
-                        &mut self.state,
-                        Action::CliResult {
-                            success,
-                            output,
-                            follow_up: Box::new(on_complete),
-                        },
-                    );
-                    for (i, e) in follow_up_effects.into_iter().enumerate() {
-                        queue.insert(i, e);
+                Effect::CreateTeam { name, description } => {
+                    match self.backend.create_team(&name, &description) {
+                        Ok(()) => {
+                            let follow_up = reducer::reduce(
+                                &mut self.state,
+                                Action::Team(crate::application::actions::TeamAction::Refresh),
+                            );
+                            for (i, e) in follow_up.into_iter().enumerate() {
+                                queue.insert(i, e);
+                            }
+                        }
+                        Err(e) => {
+                            self.state.toast = Some(format!("Create team failed: {}", e));
+                        }
                     }
                 }
                 // ── Data refresh ────────────────────────────────
@@ -1445,7 +1432,7 @@ impl App {
                         .daemon
                         .create_session(
                             &session_id,
-                            &self.cli_runner.claude_bin,
+                            &self.claude_bin,
                             &cmd_args,
                             resolved_cwd.as_deref(),
                             name,
@@ -1538,7 +1525,7 @@ impl App {
                         .daemon
                         .create_session(
                             &session_id,
-                            &self.cli_runner.claude_bin,
+                            &self.claude_bin,
                             &cmd_args,
                             resolved_cwd.as_deref(),
                             name,
@@ -1765,7 +1752,7 @@ impl App {
                                 .daemon
                                 .create_session(
                                     &new_session_id,
-                                    &self.cli_runner.claude_bin,
+                                    &self.claude_bin,
                                     &cmd_args,
                                     Some(&wt_str),
                                     Some(name.clone()),
@@ -1949,10 +1936,6 @@ impl App {
                     }
                 }
 
-                // ── UI state ────────────────────────────────────
-                Effect::ShowSpinner(msg) => {
-                    self.state.spinner = Some(msg);
-                }
                 Effect::KillWildProcess { pid } => {
                     // Free the wild claude's PTY before the chained
                     // DaemonAttach resumes the session under the daemon.

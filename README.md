@@ -345,8 +345,12 @@ picker and git-worktree option — the directory prefills from the configured
 default directory, falling back to the focused session's project, then home —
 rename/details/stash/kill/take-over from a per-session `⋯` menu (also on
 right-click of the row), split panes up to 2×2 (`⌘D`, zoom
-`⌘⇧↩`), teams browser (members, tasks, agent inboxes, create/delete),
-and quit-stash on close. The sidebar footer holds a SETTINGS section:
+`⌘⇧↩`), teams browser (members with live-activity dots and model chips,
+tasks, agent inboxes, create/delete via the + button or right-click menu),
+and quit-stash on close. A terminal button in the sidebar header launches
+the clash TUI alongside the GUI (split pane when started from a
+pane-capable terminal, else a new terminal window) — gold when a TUI is
+running somewhere, grey when not. The sidebar footer holds a SETTINGS section:
 default directory for new sessions, terminal font size (live-applied),
 "⌥ sends Esc (Meta)" (off = Option always composes characters —
 international layouts), whether terminal links open in the embedded

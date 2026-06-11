@@ -16,6 +16,10 @@ pub trait DataRepository: Send + Sync {
     /// Load all teams.
     fn load_teams(&self) -> Result<Vec<Team>>;
 
+    /// Create a team (writes its config under the teams dir). Errors if a
+    /// team with that name already exists.
+    fn create_team(&self, name: &str, description: &str) -> Result<()>;
+
     /// Load tasks for a specific team.
     fn load_tasks(&self, team: &str) -> Result<Vec<Task>>;
 
@@ -51,20 +55,4 @@ pub trait DataRepository: Send + Sync {
         session_id: &str,
         agent_id: &str,
     ) -> Result<Vec<ConversationMessage>>;
-}
-
-/// CLI gateway output.
-#[derive(Debug, Clone)]
-pub struct CliOutput {
-    pub success: bool,
-    pub stdout: String,
-    pub stderr: String,
-}
-
-/// CLI gateway port for running Claude CLI commands.
-///
-/// Implemented by `RealCliRunner` in production and `MockCliRunner` in tests.
-pub trait CliGateway: Send + Sync {
-    /// Run a CLI command and return the output.
-    fn run(&self, args: &[String]) -> impl std::future::Future<Output = Result<CliOutput>> + Send;
 }

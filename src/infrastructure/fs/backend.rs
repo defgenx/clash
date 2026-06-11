@@ -435,6 +435,33 @@ impl DataRepository for FsBackend {
         Ok(())
     }
 
+    fn create_team(&self, name: &str, description: &str) -> Result<()> {
+        if name.is_empty() || name.contains('/') || name.contains("..") {
+            return Err(crate::domain::error::DomainError::Parse(format!(
+                "Invalid team name: '{}'",
+                name
+            )));
+        }
+        let team_dir = self.teams_dir().join(name);
+        let config_path = team_dir.join("config.json");
+        if config_path.exists() {
+            return Err(crate::domain::error::DomainError::Parse(format!(
+                "Team '{}' already exists",
+                name
+            )));
+        }
+        // inboxes/ matches the on-disk layout Claude Code's team feature uses.
+        std::fs::create_dir_all(team_dir.join("inboxes"))?;
+        let team = Team {
+            name: name.to_string(),
+            description: description.to_string(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string_pretty(&team)?;
+        write_atomic(&config_path, json.as_bytes())?;
+        Ok(())
+    }
+
     fn delete_team(&self, name: &str) -> Result<()> {
         let team_dir = self.teams_dir().join(name);
         if team_dir.exists() {

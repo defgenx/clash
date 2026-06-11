@@ -48,6 +48,9 @@ const ICONS = {
   "external-link": '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>',
   columns: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/>',
   square: '<rect x="3" y="3" width="18" height="18" rx="2"/>',
+  terminal: '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>',
+  users:
+    '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
 };
 
 function svgIcon(name, size = 15) {
@@ -61,6 +64,7 @@ function applyStaticIcons() {
   const map = {
     "new-ws-btn": "plus",
     "new-team-btn": "plus",
+    "tui-btn": "terminal",
     "split-btn": "columns",
     "unsplit-btn": "square",
     "details-btn": "info",
@@ -755,6 +759,19 @@ async function refreshSessions() {
     if (!state.renaming) renderSidebar();
     renderTabs();
     if (state.detailsFor) renderDetails();
+
+    // Teams change on disk when Claude spawns/retires agents — keep the
+    // open section live without an explicit collapse/expand cycle.
+    if (state.teamsOpen) {
+      invoke("list_teams")
+        .then((teams) => {
+          if (JSON.stringify(teams) !== JSON.stringify(state.teams)) {
+            state.teams = teams;
+            renderTeams();
+          }
+        })
+        .catch(() => {});
+    }
   } catch (e) {
     console.error("list_sessions failed:", e);
   }
@@ -1310,17 +1327,17 @@ async function buildSubagentsList(el, s) {
       project: s.project,
       sessionId: s.id,
     });
-    el.innerHTML = "<h4>SUBAGENTS</h4>";
+    el.innerHTML = `<h4>SUBAGENTS (${subs.length})</h4>`;
     if (!subs.length) {
-      el.innerHTML += "<p class='hint'>no subagents</p>";
+      el.innerHTML += "<p class='hint'>no subagents — they appear when this session spawns Task agents</p>";
       return;
     }
     for (const sub of subs) {
       const row = document.createElement("div");
       row.className = "row-item";
-      row.innerHTML = `<span>${escapeHtml(sub.agent_type || sub.id)}</span><span class="dim">${escapeHtml(
-        sub.summary || ""
-      )}</span>`;
+      row.innerHTML = `<span class="team-icon">${svgIcon("zap", 12)}</span><span>${escapeHtml(
+        sub.agent_type || sub.id
+      )}</span><span class="dim">${escapeHtml(sub.summary || "")}</span>`;
       row.onclick = async () => {
         el.innerHTML = `<div class="row-item back">← all subagents</div><h4>SUBAGENT · ${escapeHtml(
           sub.agent_type || sub.id
@@ -1617,19 +1634,46 @@ function renderTeams() {
   list.innerHTML = "";
   if (state.teams.length === 0) {
     const empty = document.createElement("div");
-    empty.className = "team-item";
-    empty.textContent = "no teams";
+    empty.className = "list-empty";
+    empty.textContent = "no teams — + to create one";
     list.appendChild(empty);
     return;
   }
   for (const t of state.teams) {
     const item = document.createElement("div");
     item.className = "team-item";
-    item.innerHTML = `<span>${escapeHtml(t.name)}</span><span class="count">${
-      (t.members || []).length
-    } agents</span>`;
+    const agents = (t.members || []).length;
+    item.innerHTML = `<span class="team-icon">${svgIcon("users", 13)}</span><span class="team-name">${escapeHtml(
+      t.name
+    )}</span><span class="count">${agents} agent${agents === 1 ? "" : "s"}</span>`;
     item.onclick = () => showTeamDetails(t);
+    item.oncontextmenu = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      showContextMenu(ev.clientX, ev.clientY, [
+        { label: "Details", icon: "info", action: () => showTeamDetails(t) },
+        null,
+        {
+          label: "Delete team…",
+          icon: "alert",
+          danger: true,
+          action: () => deleteTeamConfirm(t.name),
+        },
+      ]);
+    };
     list.appendChild(item);
+  }
+}
+
+async function deleteTeamConfirm(name) {
+  if (!(await uiConfirm(`Delete team "${name}" and all its tasks?`, "Delete"))) return;
+  try {
+    await invoke("delete_team", { name });
+    hideDetails();
+    state.teams = await invoke("list_teams");
+    renderTeams();
+  } catch (e) {
+    uiAlert(`Delete failed: ${e}`);
   }
 }
 
@@ -1655,12 +1699,13 @@ async function showTeamDetails(team) {
         })
         .join("")
     : "<p class='hint'>no tasks</p>";
+  const members = team.members || [];
   body.innerHTML = `
-    <h3>${escapeHtml(team.name)}</h3>
-    <div class="kv"><span class="v">${escapeHtml(team.description || "")}</span></div>
-    <h4>MEMBERS <span class="dim" style="font-weight:400">(click for inbox)</span></h4>
+    <h3>${svgIcon("users", 13)} ${escapeHtml(team.name)}</h3>
+    ${team.description ? `<p class="hint">${escapeHtml(team.description)}</p>` : ""}
+    <h4>MEMBERS (${members.length}) <span class="dim" style="font-weight:400">— click for inbox</span></h4>
     <div id="d-members"></div>
-    <h4>TASKS</h4>
+    <h4>TASKS (${tasks.length})</h4>
     ${taskRows}
     <div class="actions">
       <button id="d-team-delete" class="danger">Delete team</button>
@@ -1669,30 +1714,24 @@ async function showTeamDetails(team) {
     <div id="d-out"></div>
   `;
   const membersEl = $("d-members");
-  if ((team.members || []).length === 0) {
-    membersEl.innerHTML = "<p class='hint'>none</p>";
+  if (members.length === 0) {
+    membersEl.innerHTML = "<p class='hint'>none yet — agents join when Claude spawns them into this team</p>";
   }
-  for (const m of team.members || []) {
+  for (const m of members) {
     const row = document.createElement("div");
     row.className = "row-item";
-    row.innerHTML = `<span>${escapeHtml(m.name)}</span><span class="dim">${escapeHtml(
-      m.agent_type + (m.model ? ` · ${m.model}` : "")
-    )}</span>`;
+    // Member serializes camelCase (serde rename_all) — agentType/isActive.
+    const activity = m.isActive ? "active" : "idle";
+    row.innerHTML = `<span class="member-dot ${activity}"></span><span>${escapeHtml(
+      m.name
+    )}</span><span class="dim">${escapeHtml(m.agentType || "")}</span>${
+      m.model ? `<span class="mini-chip">${escapeHtml(m.model)}</span>` : ""
+    }`;
     row.onclick = () => showInbox(team.name, m.name);
     membersEl.appendChild(row);
   }
   $("d-close").onclick = hideDetails;
-  $("d-team-delete").onclick = async () => {
-    if (!(await uiConfirm(`Delete team "${team.name}" and all its tasks?`, "Delete"))) return;
-    try {
-      await invoke("delete_team", { name: team.name });
-      hideDetails();
-      state.teams = await invoke("list_teams");
-      renderTeams();
-    } catch (e) {
-      uiAlert(`Delete failed: ${e}`);
-    }
-  };
+  $("d-team-delete").onclick = () => deleteTeamConfirm(team.name);
   fitAll();
 }
 
@@ -2409,6 +2448,33 @@ $("set-notify").addEventListener("change", () => {
   saveWorkspaces();
 });
 
+// ── TUI launcher (sidebar header) ───────────────────────────────
+// Gold when a clash TUI process is running somewhere, grey when not.
+// Click spawns the TUI alongside the GUI (pane or terminal window).
+
+async function refreshTuiIndicator() {
+  try {
+    const on = await invoke("tui_running");
+    $("tui-btn").classList.toggle("on", !!on);
+    const tip = on
+      ? "clash TUI is running — click to open another"
+      : "Launch the clash TUI in a terminal";
+    $("tui-btn").title = tip;
+    $("tui-btn").dataset.tip = tip;
+  } catch (e) {
+    void e;
+  }
+}
+
+$("tui-btn").onclick = async () => {
+  try {
+    await invoke("launch_tui");
+  } catch (e) {
+    uiAlert(`Launch TUI failed: ${e}`);
+  }
+  setTimeout(refreshTuiIndicator, 1500);
+};
+
 // ── Icon button hover labels ────────────────────────────────────
 // Instant tooltip for .icon-btn, replacing the native title tooltip
 // (slow and unreliable in WKWebView). Delegated so dynamically created
@@ -2465,6 +2531,8 @@ document.addEventListener("click", () => iconTip.remove(), true);
   if (state.homeDir) $("default-cwd").placeholder = state.homeDir;
   renderAll();
   setVersionLabel();
+  refreshTuiIndicator();
+  setInterval(refreshTuiIndicator, 5000);
   await refreshSessions();
   await restoreWorkspaceSessions();
   setInterval(refreshSessions, 2000);

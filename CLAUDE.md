@@ -47,19 +47,19 @@ Infrastructure → Adapters → Application → Domain
 
 | Layer | Path | Purpose | May depend on |
 |-------|------|---------|---------------|
-| **Domain** | `src/domain/` | Entities (`Team`, `Task`, `Member`, `InboxMessage`, `TaskStatus`) and port traits (`DataRepository`, `CliGateway`) | Nothing |
+| **Domain** | `src/domain/` | Entities (`Team`, `Task`, `Member`, `InboxMessage`, `TaskStatus`) and the `DataRepository` port trait | Nothing |
 | **Application** | `src/application/` | `AppState`, `Action` enums, `Effect` enum, pure `reducer`, `NavigationStack` | Domain |
 | **Adapters** | `src/adapters/` | `input.rs` (KeyEvent→Action), `renderer.rs` (State→Frame), `views/` (TableView/DetailView impls) | Application, Domain |
-| **Infrastructure** | `src/infrastructure/` | `app.rs` (event loop), `fs/` (FsBackend, atomic writes, watcher), `cli/` (subprocess), `tui/` (widgets, theme, layout), `windowing/` (pane/tab/window spawning, standalone attach client), `config.rs`, `error.rs`, `event.rs` | All layers |
+| **Infrastructure** | `src/infrastructure/` | `app.rs` (event loop), `fs/` (FsBackend, atomic writes, watcher), `tui/` (widgets, theme, layout), `windowing/` (pane/tab/window spawning, standalone attach client), `config.rs`, `error.rs`, `event.rs` | All layers |
 
 ### Key Files
 
 - `src/domain/entities.rs` — All domain types with lenient serde (`#[serde(default)]` + `#[serde(flatten)]`)
-- `src/domain/ports.rs` — `DataRepository` and `CliGateway` trait definitions
+- `src/domain/ports.rs` — `DataRepository` trait definition
 - `src/application/reducer.rs` — **Pure function** `fn(state, action) → (state, effects)`. No IO. All business logic lives here.
-- `src/application/effects.rs` — Abstract effects (`PersistTask`, `RemoveTeam`, `RunCli`). No file paths — infrastructure translates these to real IO.
+- `src/application/effects.rs` — Abstract effects (`PersistTask`, `CreateTeam`, `RemoveTeam`). No file paths — infrastructure translates these to real IO.
 - `src/application/actions/mod.rs` — Nested action enums: `Nav`, `Table`, `Team`, `Task`, `Agent`, `Ui`
-- `src/infrastructure/app.rs` — Event loop coordinator. Executes effects by calling `DataRepository` / `CliGateway` impls. Session refresh is a thin call to `session_refresh`.
+- `src/infrastructure/app.rs` — Event loop coordinator. Executes effects by calling the `DataRepository` impl. Session refresh is a thin call to `session_refresh`.
 - `src/infrastructure/session_refresh.rs` — Pure session refresh pipeline: gathers input (disk, hooks, daemon), builds a complete sorted session list via `build_session_list()` (no IO), then swaps atomically into `DataStore`.
 - `src/infrastructure/fs/backend.rs` — `FsBackend` implements `DataRepository`
 - `src/infrastructure/fs/atomic.rs` — `write_atomic()`: write to temp file, then rename (prevents partial reads)
@@ -108,10 +108,11 @@ All types use `#[serde(default)]` so missing fields get zero values, and `#[serd
 
 These rules must be followed on every change:
 
+- **One core, two frontends.** Any feature must be implementable by both the TUI and the GUI (modulo genuine platform limits): business logic and persistence go through the shared core (`DataRepository`, effects, `session_refresh`), never duplicated in `gui/src-tauri/main.rs` or the TUI adapters. If a frontend needs a capability, add it to the port/effect layer first.
 - **Infrastructure does not own business logic.** `backend.rs` loads and returns data — it does not sort, filter, or transform for presentation. Sorting, filtering, and display formatting belong in the Application or Adapter layers.
 - **Computed display fields use `#[serde(skip)]`.** Fields derived at runtime (e.g., `worktree_project`) that are never in the on-disk JSON must use `#[serde(skip)]`, not `#[serde(default)]`. Follow the `repo_config` precedent.
 - **Pure functions for testability.** When logic parses strings, formats output, or makes decisions, extract it into a pure function (no IO) and test it directly. Filesystem-touching wrappers should be thin. Example: `parse_gitdir_content()` (pure) wraps into `detect_worktree()` (reads file).
-- **Domain port traits stay minimal.** Never leak infrastructure concerns (filesystem paths, watcher events, cache hints) into `DataRepository` or `CliGateway`. If the infrastructure layer needs an optimization API (e.g., cache invalidation), put it on the concrete struct (`FsBackend`), not the trait.
+- **Domain port traits stay minimal.** Never leak infrastructure concerns (filesystem paths, watcher events, cache hints) into `DataRepository`. If the infrastructure layer needs an optimization API (e.g., cache invalidation), put it on the concrete struct (`FsBackend`), not the trait.
 - **No dead code.** Do not leave unused functions, imports, or fields. If trait obligations force methods that are never called through the generic path (e.g., `SessionsTable::row()` — needed by `TableView` but bypassed by `render_sessions_table()`), document why with a comment.
 - **DRY display helpers.** When the same formatting logic is needed in multiple views, create a single helper function (e.g., `worktree_display_from_cwd()`) rather than repeating the pattern at each call site.
 - **Stable session ordering.** Sessions are sorted by section (Active/Pending/Done/Fail) then alphabetically by name inside `session_refresh::build_session_list()`. The backend returns unsorted data; sorting happens in the pure pipeline before atomic swap. Selection is stabilized by ID across refreshes.
