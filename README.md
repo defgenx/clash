@@ -115,9 +115,9 @@ Each row in the sessions list may carry a single-character prefix indicating whe
 |--------|--------|---------|
 | (none) | Daemon | clash spawned and manages the PTY — attach with `o` or Enter |
 | `⊞ `  | External | clash spawned the process in another pane/tab/window via `o`/`O` |
-| `🌿 ` | Wild | A `claude` process started outside clash. Press `a` to choose: view-only (read the conversation without touching the PTY), takeover (SIGTERM the wild process and re-spawn under the daemon as `--resume <id>`), or convert (register in clash without killing — the row stays 🌿 while the wild process lives, but is now persistent across restarts) |
+| `🌿 ` | Wild | A `claude` process started outside clash. Press `a` to take over: one confirm, then clash kills the outside process (SIGTERM, SIGKILL after 2s) and attaches to its conversation under the daemon (`--resume <id>`) |
 
-The Wild detection runs in the background every ~2s. clash surfaces every wild claude PID **that started after this clash launched** under the EXTERNAL section — pre-existing claudes from before clash booted are intentionally hidden, the section is for things spawned during this session. When the process carries `--resume <id>` / `--session-id <id>` in argv (or — rarely — holds the `.jsonl` open as an fd), clash correlates it to the on-disk session and full adoption is offered (`a` → view / takeover / convert). Bare `claude` invocations (no flags) are surfaced as PID-keyed rows so you can see what's running where, but `a` is disabled on those — there's no session id to view, resume, or register. Press `d` to drop a wild row: clash signals the PID directly (SIGTERM, SIGKILL after 5s if still alive and still claude). The row also disappears on the next scan tick once the process exits, so closed/stopped claudes never linger. List the section in isolation with `:external`.
+The Wild detection runs in the background every ~2s. clash surfaces every wild claude PID **that started after this clash launched** under the EXTERNAL section — pre-existing claudes from before clash booted are intentionally hidden, the section is for things spawned during this session. Each wild process is **dynamically associated with a conversation**: exact evidence first (`--resume <id>` / `--session-id <id>` in argv, or — rarely — the `.jsonl` held open as an fd), otherwise the **most recently modified conversation in the process's working directory**. The association is re-evaluated on every scan, so it always tracks the latest conversation. Only a bare `claude` in a directory with no conversation on disk at all (typically the few seconds before a brand-new conversation's JSONL appears) shows as a PID-keyed row with takeover disabled. Press `d` to drop a wild row: clash signals the PID directly (SIGTERM, SIGKILL after 5s if still alive and still claude). The row also disappears on the next scan tick once the process exits, so closed/stopped claudes never linger. List the section in isolation with `:external`. The GUI behaves the same way: clicking a wild row (or its ⚡ button) confirms, takes over, and opens the terminal.
 
 ## Keybindings
 
@@ -143,7 +143,7 @@ The Wild detection runs in the background every ~2s. clash surfaces every wild c
 
 | Key | Action |
 |-----|--------|
-| `a` | Attach (inline terminal) |
+| `a` | Attach (inline terminal); on a 🌿 wild row: take over and attach (one confirm) |
 | `p` | View git diff |
 | `e` | Open project in IDE (auto-detect + picker) |
 | `o` | Open in new pane / tab / window |
@@ -343,7 +343,7 @@ GUI features: fuzzy search (`/` or `⌘F`), inline rename (double-click),
 new session via the sidebar's `＋ New session` button (`⌘T`) with preset
 picker and git-worktree option — the directory prefills from the focused
 session, falling back to the configured default directory, then home —
-stash/kill/adopt from hover actions, split panes up to 2×2 (`⌘D`, zoom
+stash/kill/take-over from hover actions, split panes up to 2×2 (`⌘D`, zoom
 `⌘⇧↩`), teams browser (members, tasks, agent inboxes, create/delete),
 and quit-stash on close. The sidebar footer holds a SETTINGS section:
 the default directory for new sessions and an `⟳ Update clash`
@@ -355,8 +355,10 @@ PROMPTING / THINKING / RUNNING / WAITING / STARTING / STASHED / ERRORED
 labels in the sidebar and a colored status dot per tab. External claude
 processes (started outside clash) are segregated in their own
 `⚡ EXTERNAL` section at the bottom of the sidebar with distinct styling;
-clicking one shows its details (adopt with ⚡ — never a blind resume of a
-session another process owns). Right-click a tab for the context menu:
+clicking one (or its ⚡ button) takes it over after a confirm — the
+outside process is killed and its conversation (dynamically associated,
+always the latest in that directory) opens attached under clash.
+Right-click a tab for the context menu:
 rename, close (detach), stash, kill, details.
 
 The details panel (ⓘ) is a compact overview — live status, branch,

@@ -188,32 +188,15 @@ pub enum Effect {
     PerformUpdate,
     Quit,
 
-    // ── Wild-session-adoption infrastructure ────────────────────
-    /// Wake the background wild-process scan task immediately. Used
-    /// when the user opens the adopt confirm dialog so the dialog
-    /// shows the freshest possible PID list.
-    WakeWildScan,
-    /// Atomically take over a wild Claude session: re-verify the PID
+    // ── Wild-session-takeover infrastructure ────────────────────
+    /// Free a wild Claude session's PTY before the chained
+    /// `DaemonAttach` resumes it under the daemon: re-verify the PID
     /// is still our claude process, SIGTERM it, wait up to 2s for
-    /// exit (escalating to SIGKILL if still alive), then re-spawn it
-    /// under the daemon as `--resume <session_id>`. Single effect so
-    /// the reducer doesn't have to model the kill→resume sequencing.
-    TakeoverWildSession {
-        session_id: String,
+    /// exit (escalating to SIGKILL if still alive). Best-effort — if
+    /// the process already exited or the PID was reused, the kill is
+    /// skipped and the resume proceeds anyway.
+    KillWildProcess {
         pid: u32,
-        cwd: String,
-    },
-    /// Non-destructive convert: write a clash registry entry for a
-    /// wild/external session without signalling the running process.
-    /// After this, the row is registered (Phase 1 stops dropping it)
-    /// while still rendering 🌿 as long as the wild process is alive.
-    /// When the wild process eventually exits, the registered row
-    /// stays around and is resumable via the normal clash path.
-    ConvertWildSession {
-        session_id: String,
-        name: String,
-        cwd: String,
-        source_branch: Option<String>,
     },
 }
 

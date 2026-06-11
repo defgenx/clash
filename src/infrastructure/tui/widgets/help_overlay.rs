@@ -99,7 +99,7 @@ pub fn render_help_overlay(
         ("\u{229e}", "Session open in external pane/tab"),
         (
             "\u{1f33f}",
-            "Wild Claude session running outside clash — grouped under EXTERNAL section; `a` for view/takeover/convert when correlated, disabled for bare `claude` PID-only rows; `:external` to list",
+            "Wild Claude session running outside clash — grouped under EXTERNAL section; associated with the latest conversation in its directory; `a` takes over and attaches (one confirm); `:external` to list",
         ),
         ("\u{229f}", "Session in a git worktree (shows project/name)"),
         ("\u{25b6} / \u{25bc}", "Collapsed / expanded subagents"),

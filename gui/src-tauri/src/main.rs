@@ -931,7 +931,9 @@ async fn stash_all(state: State<'_, GuiState>) -> Result<usize, String> {
 }
 
 /// Adopt a wild claude process into the daemon (the TUI's takeover):
-/// SIGTERM → wait → SIGKILL, then respawn with --resume under our daemon.
+/// best-effort kill of the outside process, then respawn with --resume
+/// under our daemon. The frontend opens the terminal right after, so
+/// takeover-and-attach is a single click.
 #[tauri::command]
 async fn takeover_wild(
     state: State<'_, GuiState>,
@@ -941,26 +943,7 @@ async fn takeover_wild(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    use clash::infrastructure::process_scan::{should_signal, LiveProcessProbe, SignalDecision};
-    let probe = LiveProcessProbe;
-    match should_signal(pid, &probe) {
-        SignalDecision::Allow => {}
-        _ => return Err("Process exited or changed — refresh and retry".to_string()),
-    }
-    let pid_i = pid as i32;
-    unsafe { libc::kill(pid_i, libc::SIGTERM) };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    let mut exited = false;
-    while std::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if unsafe { libc::kill(pid_i, 0) } != 0 {
-            exited = true;
-            break;
-        }
-    }
-    if !exited {
-        unsafe { libc::kill(pid_i, libc::SIGKILL) };
-    }
+    clash::infrastructure::process_scan::kill_wild_process(pid).await;
 
     let mut control = state.control.lock().await;
     ensure_connected(&mut control).await;
@@ -977,22 +960,6 @@ async fn takeover_wild(
         )
         .await
         .map_err(|e| format!("Failed to adopt session: {}", e))
-}
-
-/// Track a wild session in clash without touching its process (the TUI's convert).
-#[tauri::command]
-fn convert_wild(session_id: String, name: String, cwd: String) -> Result<(), String> {
-    clash::infrastructure::hooks::registry::register(
-        &session_id,
-        if name.trim().is_empty() {
-            "session"
-        } else {
-            name.trim()
-        },
-        &cwd,
-        None,
-    );
-    Ok(())
 }
 
 /// Create a team via the claude CLI (same args as the TUI's team create).
@@ -1536,7 +1503,6 @@ fn main() {
             open_in_ide,
             stash_all,
             takeover_wild,
-            convert_wild,
             create_team,
             delete_team,
             start_update,

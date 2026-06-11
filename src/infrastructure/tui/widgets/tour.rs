@@ -118,7 +118,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
             ("\u{229e}", "Session open in external pane/tab"),
             (
                 "\u{1f33f}",
-                "Wild Claude — outside clash. Grouped under EXTERNAL section. `a` → view / takeover / convert. `:external` lists them all",
+                "Wild Claude — outside clash. Grouped under EXTERNAL section. `a` takes over and attaches (latest conversation, one confirm). `:external` lists them all",
             ),
             ("\u{229f}", "Session in a git worktree"),
         ],
@@ -205,7 +205,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
             "  o  to open in pane/tab",
             "  O  to open all running sessions at once",
             "  Tab expands subagents inline",
-            "  \u{229e} = open externally,  \u{1f33f} = wild claude (`a` adopts; `:external` lists),  \u{229f} = git worktree",
+            "  \u{229e} = open externally,  \u{1f33f} = wild claude (`a` takes over; `:external` lists),  \u{229f} = git worktree",
             "  Status updates in real-time via hooks",
             "  :update keeps clash up to date",
             "",

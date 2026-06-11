@@ -460,7 +460,7 @@ impl TableView for SessionsTable {
             Keybinding::new("i", "Inspect session details"),
             Keybinding::new(
                 "a",
-                "Attach (Daemon) / Adopt (Wild/External — opens dialog)",
+                "Attach (Daemon) / Take over (Wild/External — one confirm)",
             ),
             Keybinding::new("e", "Open in IDE"),
             Keybinding::new("o", "Open in new tab"),

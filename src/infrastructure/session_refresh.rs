@@ -212,9 +212,8 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
 
 /// Prefix used for synthetic wild-row session ids. Distinguishable from
 /// real Claude session UUIDs (which are hex+hyphen only, never start
-/// with the literal `wild-pid-`). Used by `Session::adoption_options`
-/// to refuse view/takeover/convert on synthetic rows — there's no
-/// `.jsonl` to read or session id to resume.
+/// with the literal `wild-pid-`). Used by `Session::takeover_pid` to
+/// refuse takeover on synthetic rows — there's no session id to resume.
 pub const SYNTHETIC_WILD_ID_PREFIX: &str = "wild-pid-";
 
 /// For every live wild claude PID that no existing session row claimed,
@@ -222,11 +221,11 @@ pub const SYNTHETIC_WILD_ID_PREFIX: &str = "wild-pid-";
 ///
 /// "Claimed" means: any of the wild process's known session ids
 /// (fd-derived or argv-derived) appears in `sessions`, OR the process's
-/// cwd matches exactly one session in `sessions`. This mirrors the rule
-/// `correlate_wild_to_sessions` uses internally — Phase 7 will already
-/// have set wild_pid on those rows, so we only emit synthetics for the
-/// truly orphaned: bare `claude` invocations with no on-disk session
-/// in their cwd, or with too many (ambiguous) sessions in their cwd.
+/// cwd matches at least one session in `sessions` (Phase 7's dynamic
+/// latest-conversation correlation will have associated it). We only
+/// emit synthetics for the truly orphaned: bare `claude` invocations
+/// in a directory with no on-disk conversation at all — typically the
+/// few seconds before a brand-new conversation's JSONL appears.
 fn synthesize_orphan_wild_rows(
     sessions: &mut Vec<Session>,
     wild_processes: &[crate::infrastructure::process_scan::WildProcess],
@@ -239,13 +238,18 @@ fn synthesize_orphan_wild_rows(
     // Snapshot the read-only state up front so the synthesized rows can
     // be pushed into `sessions` inside the same loop.
     let session_ids: HashSet<String> = sessions.iter().map(|s| s.id.clone()).collect();
-    let cwd_match_counts: HashMap<String, usize> = sessions
+    // Directories with at least one real conversation — mirrors the
+    // cwd/project_path matching in `latest_session_for_cwd`.
+    let matchable_dirs: HashSet<String> = sessions
         .iter()
-        .filter_map(|s| s.cwd.clone())
-        .fold(HashMap::new(), |mut acc, cwd| {
-            *acc.entry(cwd).or_insert(0) += 1;
-            acc
-        });
+        .filter(|s| !s.is_synthetic_wild())
+        .flat_map(|s| {
+            s.cwd
+                .clone()
+                .into_iter()
+                .chain(Some(s.project_path.clone()).filter(|p| !p.is_empty()))
+        })
+        .collect();
 
     for w in wild_processes {
         // Already claimed by fd/argv: a session with that id is in the list.
@@ -253,9 +257,10 @@ fn synthesize_orphan_wild_rows(
         if claimed_by_id {
             continue;
         }
-        // Already claimed by unique-cwd correlation (Phase 7 set wild_pid).
+        // Already claimed by latest-conversation correlation (Phase 7
+        // set wild_pid on the most recent conversation in this cwd).
         if let Some(cwd) = w.cwd.as_deref() {
-            if cwd_match_counts.get(cwd).copied().unwrap_or(0) == 1 {
+            if matchable_dirs.contains(cwd) {
                 continue;
             }
         }
@@ -289,14 +294,20 @@ fn synthesize_orphan_wild_rows(
 // ── Phase 5.5: Admit wild-only disk sessions ──────────────────────
 
 /// Re-introduce disk sessions that the registry filter dropped, but only
-/// when the wild scan can vouch for them. Two evidence sources, both
-/// authoritative because the session id is exact:
+/// when the wild scan can vouch for them. Three evidence sources, in
+/// decreasing strength:
 ///
 /// 1. The process holds the session's `.jsonl` open as a file
 ///    descriptor — basename IS the session id (rare in practice;
 ///    Claude appends and closes).
 /// 2. The session id appears as the value of a `--resume` /
 ///    `--session-id` argv flag (the common path).
+/// 3. Dynamic latest-conversation fallback: a process with no exact id
+///    evidence is vouched by its cwd — the most recently modified
+///    conversation in that directory is admitted, so the Phase 7
+///    overlay can associate the bare `claude` with it. Re-evaluated
+///    every refresh, so the association always tracks the latest
+///    conversation.
 ///
 /// This is what makes "I started `claude` in another terminal and want
 /// to see it in clash" work without the user having to register the
@@ -309,14 +320,42 @@ fn admit_wild_disk_sessions(
     if wild_processes.is_empty() {
         return;
     }
-    let already: HashSet<String> = sessions.iter().map(|s| s.id.clone()).collect();
+    let mut already: HashSet<String> = sessions.iter().map(|s| s.id.clone()).collect();
     let wild_ids: HashSet<&str> = wild_processes
         .iter()
         .flat_map(|w| w.session_ids())
         .collect();
     for s in disk_sessions {
         if !already.contains(&s.id) && wild_ids.contains(s.id.as_str()) {
+            already.insert(s.id.clone());
             sessions.push(s.clone());
+        }
+    }
+
+    // 3. Latest-conversation fallback for processes with no id evidence.
+    for w in wild_processes {
+        if w.session_ids().any(|id| already.contains(id)) {
+            continue;
+        }
+        let Some(cwd) = w.cwd.as_deref() else {
+            continue;
+        };
+        // Already associable: some admitted/registered session matches
+        // this cwd, so Phase 7 will correlate without our help.
+        if crate::infrastructure::process_scan::latest_session_for_cwd(sessions, cwd).is_some() {
+            continue;
+        }
+        if let Some(id) =
+            crate::infrastructure::process_scan::latest_session_for_cwd(disk_sessions, cwd)
+        {
+            if let Some(disk) = disk_sessions.iter().find(|s| s.id == id) {
+                let mut admitted = disk.clone();
+                // Stamp the process cwd so the Phase 7 cwd correlation
+                // (and DaemonAttach cwd resolution) see it directly.
+                admitted.cwd = Some(cwd.to_string());
+                already.insert(admitted.id.clone());
+                sessions.push(admitted);
+            }
         }
     }
 }
@@ -352,7 +391,7 @@ fn overlay_session_source(
         // the user has opened it in an external pane/tab. The "opened in a
         // tab" state is tracked separately (`externally_opened`) and drives
         // only the ⊞ row prefix in the view — it must NOT pull the row into
-        // the EXTERNAL section or offer adopt/takeover, which is what a
+        // the EXTERNAL section or offer takeover, which is what a
         // `SessionSource::External` badge would do. `External` here is
         // reserved for non-daemon wild claudes the user opened externally.
         session.source = if daemon_ids.contains(session.id.as_str()) {
@@ -364,8 +403,8 @@ fn overlay_session_source(
         } else {
             SessionSource::Unknown
         };
-        // Carry the matching pid alongside source so the adopt dialog
-        // and takeover effect don't have to re-correlate.
+        // Carry the matching pid alongside source so the takeover
+        // confirm and kill effect don't have to re-correlate.
         session.wild_pid = match session.source {
             SessionSource::Wild | SessionSource::External => wild_pid,
             _ => None,
@@ -1710,7 +1749,7 @@ mod tests {
         // The `o` path: opening a session externally runs
         // ensure_daemon_session, so the row is BOTH daemon-managed and in
         // externally_opened. It must stay Daemon (not External) so it keeps
-        // its normal lifecycle section and no adopt menu — the ⊞ tab
+        // its normal lifecycle section and no takeover confirm — the ⊞ tab
         // indicator is applied separately in the view from externally_opened.
         let (s, entry) = registered_session("sid", "/repo");
         let registry = HashMap::from([(s.id.clone(), entry)]);
@@ -1852,10 +1891,10 @@ mod tests {
             row.display_section(),
             crate::domain::entities::SessionSection::External
         );
-        // No real session id → adoption refused so the dialog won't
-        // promise actions we cannot perform.
+        // No real session id → takeover refused so the confirm won't
+        // promise an action we cannot perform.
         assert!(row.is_synthetic_wild());
-        assert!(row.adoption_options().reason_disabled.is_some());
+        assert!(row.takeover_pid().is_err());
     }
 
     #[test]
@@ -1906,12 +1945,14 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_emits_distinct_rows_when_cwd_is_ambiguous() {
-        // Two disk sessions in same cwd → cwd-fallback can't pick one
-        // unambiguously. The bare claude becomes a synthetic row keyed
-        // by PID, while the disk sessions stay as their own rows.
-        let (a, ea) = registered_session("disk-a", "/shared");
-        let (b, eb) = registered_session("disk-b", "/shared");
+    fn bare_claude_in_shared_cwd_associates_with_latest_conversation() {
+        // Two disk sessions in same cwd → the bare claude is dynamically
+        // associated with the most recently modified conversation; no
+        // synthetic PID row is emitted.
+        let (mut a, ea) = registered_session("disk-a", "/shared");
+        a.last_modified = "2026-06-10 09:00".to_string();
+        let (mut b, eb) = registered_session("disk-b", "/shared");
+        b.last_modified = "2026-06-11 14:30".to_string();
         let registry = HashMap::from([(a.id.clone(), ea), (b.id.clone(), eb)]);
         let prev = vec![];
         let mut input = empty_input(&prev);
@@ -1920,7 +1961,50 @@ mod tests {
         input.wild_processes = vec![wild_bare(9999, "/shared")];
 
         let out = build_session_list(&input);
-        assert!(out.iter().any(|r| r.id == "wild-pid-9999"));
+        assert!(
+            !out.iter().any(|r| r.id == "wild-pid-9999"),
+            "latest-conv association must prevent the synthetic row"
+        );
+        let latest = out.iter().find(|r| r.id == "disk-b").unwrap();
+        assert_eq!(latest.source, crate::domain::entities::SessionSource::Wild);
+        assert_eq!(latest.wild_pid, Some(9999));
+        let older = out.iter().find(|r| r.id == "disk-a").unwrap();
+        assert_eq!(older.wild_pid, None);
+    }
+
+    #[test]
+    fn bare_claude_admits_latest_unregistered_disk_conversation() {
+        // No registry entry at all (clash never saw this project) — the
+        // latest disk conversation in the process cwd is admitted and
+        // associated, so the wild row is attachable instead of a dead
+        // PID-only synthetic.
+        let mut a = make_disk_session("disk-old", "proj", "x");
+        a.project_path = "/shared".to_string();
+        a.last_modified = "2026-06-10 09:00".to_string();
+        let mut b = make_disk_session("disk-new", "proj", "x");
+        b.project_path = "/shared".to_string();
+        b.last_modified = "2026-06-11 14:30".to_string();
+        let prev = vec![];
+        let mut input = empty_input(&prev);
+        input.disk_sessions = vec![a, b];
+        input.wild_processes = vec![wild_bare(7777, "/shared")];
+
+        let out = build_session_list(&input);
+        assert!(
+            !out.iter().any(|r| r.id == "wild-pid-7777"),
+            "admission must prevent the synthetic row"
+        );
+        let admitted = out.iter().find(|r| r.id == "disk-new").unwrap();
+        assert_eq!(
+            admitted.source,
+            crate::domain::entities::SessionSource::Wild
+        );
+        assert_eq!(admitted.wild_pid, Some(7777));
+        assert_eq!(admitted.cwd.as_deref(), Some("/shared"));
+        assert!(
+            !out.iter().any(|r| r.id == "disk-old"),
+            "only the latest conversation is admitted"
+        );
     }
 
     #[test]

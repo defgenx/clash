@@ -389,7 +389,7 @@ function renderExternalSection(list, items) {
   const header = document.createElement("div");
   header.className = "section-label external";
   header.innerHTML = `⚡ EXTERNAL<span class="count">${items.length}</span>`;
-  header.title = "Claude processes running outside clash — use ⚡ to adopt";
+  header.title = "Claude processes running outside clash — click to take over and attach";
   list.appendChild(header);
   for (const s of items) list.appendChild(sessionItem(s));
 }
@@ -460,9 +460,16 @@ function sessionItem(s) {
     "session-item" +
     (s.id === state.activeTab ? " selected" : "") +
     (wild ? " wild" : "");
-  // Wild claudes are owned by another process — clicking shows details
-  // (adopt with ⚡) instead of resuming a session something else holds.
-  item.onclick = () => (wild ? showDetails(s.id) : openSession(s.id));
+  // Wild claudes are owned by another process — clicking takes over
+  // (one confirm: kill the outside process, resume its conversation
+  // here, terminal opens). Synthetic PID-only rows (no conversation on
+  // disk yet) fall back to details.
+  item.onclick = () =>
+    wild
+      ? s.id.startsWith("wild-pid-")
+        ? showDetails(s.id)
+        : adoptWild(s)
+      : openSession(s.id);
 
   const ring = document.createElement("div");
   ring.className = "status-ring " + statusClass(s);
@@ -571,29 +578,11 @@ function sessionItem(s) {
       showDetails(s.id);
     })
   );
-  if (s.source === "Wild") {
+  if (s.source === "Wild" && !s.id.startsWith("wild-pid-")) {
     actions.appendChild(
-      actionBtn("⚡", "Adopt: take over this wild claude process", async (ev) => {
+      actionBtn("⚡", "Take over this wild claude process and attach", (ev) => {
         ev.stopPropagation();
-        if (
-          !(await uiConfirm(
-            `Take over wild session "${displayName(s)}"? Its current process is killed and resumed under clash.`,
-            "Take over"
-          ))
-        )
-          return;
-        try {
-          await invoke("takeover_wild", {
-            sessionId: s.id,
-            pid: s.wild_pid,
-            cwd: s.cwd || s.project_path || "",
-            cols: 120,
-            rows: 40,
-          });
-        } catch (e) {
-          uiAlert(`Adopt failed: ${e}`);
-        }
-        refreshSessions();
+        adoptWild(s);
       })
     );
   }
@@ -981,6 +970,35 @@ const TERM_THEME = {
   cursor: "#e8a33d",
   selectionBackground: "#3a3a40",
 };
+
+/// Take over a wild claude in one step: confirm, kill the outside
+/// process, resume its (dynamically associated, latest) conversation
+/// under our daemon, then open the terminal — same flow as the TUI's
+/// `a` on a wild row.
+async function adoptWild(s) {
+  if (
+    !(await uiConfirm(
+      `Take over "${displayName(s)}"? The outside claude (PID ${s.wild_pid}) is killed and its conversation resumes here.`,
+      "Take over"
+    ))
+  )
+    return;
+  try {
+    await invoke("takeover_wild", {
+      sessionId: s.id,
+      pid: s.wild_pid,
+      cwd: s.cwd || s.project_path || "",
+      cols: 120,
+      rows: 40,
+    });
+  } catch (e) {
+    uiAlert(`Take over failed: ${e}`);
+    refreshSessions();
+    return;
+  }
+  refreshSessions();
+  openSession(s.id);
+}
 
 async function openSession(sid) {
   // Sessions are workspace-scoped: owned elsewhere → switch there first;

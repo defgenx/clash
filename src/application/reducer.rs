@@ -536,172 +536,29 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 name: session_name,
             }]
         }
-        AgentAction::AdoptViewOnly { session_id } => {
-            // Re-validate via the central rule — the session may have
-            // changed source/status between the keypress dispatch and
-            // this reduce call (e.g. the wild process exited).
-            let opts = state
-                .store
-                .find_session(&session_id)
-                .map(|s| s.adoption_options());
-            // Close any open adopt dialog when this fires from a button.
-            state.adopt_dialog = None;
-            if state.input_mode == InputMode::AdoptDialog {
-                state.input_mode = InputMode::Normal;
-            }
-            match opts {
-                Some(o) if o.view_only => {
-                    // Navigate to SessionDetail; the existing 1s-polled
-                    // `auto_refresh_conversation` in app.rs tails the
-                    // session's `.jsonl` directly from disk (no daemon
-                    // attach, no PTY contention with the foreground
-                    // process driving the wild session elsewhere).
-                    reduce(
-                        state,
-                        Action::Nav(NavAction::DrillIn {
-                            view: ViewKind::SessionDetail,
-                            context: session_id,
-                        }),
-                    )
-                }
-                Some(o) => {
-                    if let Some(reason) = o.reason_disabled {
+        AgentAction::TakeoverWild { session_id } => {
+            // Re-validate with a fresh PID — the wild scan keeps
+            // `wild_pid` current, so the PID read here may be newer
+            // (and is never staler) than the one shown in the confirm
+            // dialog. If the row's source changed since the confirm
+            // opened (e.g. the daemon picked it up), refuse: takeover
+            // would be a no-op or worse.
+            let session = state.store.find_session(&session_id).cloned();
+            match session {
+                Some(s) => match s.takeover_pid() {
+                    Ok(pid) => {
+                        // Kill the outside process, then chain the
+                        // regular attach flow — `DaemonAttach` resumes
+                        // the session under the daemon (`--resume`).
+                        let mut effects = vec![Effect::KillWildProcess { pid }];
+                        effects.extend(reduce_agent(state, AgentAction::Attach { session_id }));
+                        effects
+                    }
+                    Err(reason) => {
                         state.toast = Some(reason.to_string());
+                        vec![]
                     }
-                    vec![]
-                }
-                None => {
-                    state.toast = Some("Session not found".to_string());
-                    vec![]
-                }
-            }
-        }
-        AgentAction::OpenAdoptDialog { session_id } => {
-            // Validate via the central rule and look up the live PID
-            // (if any) for the takeover path.
-            let session = state.store.find_session(&session_id).cloned();
-            match session {
-                Some(s) => {
-                    let opts = s.adoption_options();
-                    if !(opts.view_only || opts.takeover) {
-                        if let Some(reason) = opts.reason_disabled {
-                            state.toast = Some(reason.to_string());
-                        }
-                        return vec![];
-                    }
-                    // Lift the matching wild-PID off the session itself
-                    // — the precedence overlay populates `wild_pid`
-                    // alongside `source`, so no second correlation pass.
-                    let pid = s.wild_pid;
-                    let display_name = s
-                        .name
-                        .clone()
-                        .filter(|n| !n.trim().is_empty())
-                        .unwrap_or_else(|| s.id.clone());
-                    state.adopt_dialog = Some(crate::application::state::AdoptDialog {
-                        session_id: s.id.clone(),
-                        pid,
-                        display_name,
-                        options: opts,
-                    });
-                    state.input_mode = InputMode::AdoptDialog;
-                    // Wake the background scan so the next refresh
-                    // applies the freshest PID before the user picks
-                    // Takeover. Cheap nudge via the App-side Notify.
-                    vec![Effect::WakeWildScan]
-                }
-                None => {
-                    state.toast = Some("Session not found".to_string());
-                    vec![]
-                }
-            }
-        }
-        AgentAction::CloseAdoptDialog => {
-            state.adopt_dialog = None;
-            state.input_mode = InputMode::Normal;
-            vec![]
-        }
-        AgentAction::TakeoverWild { session_id, pid } => {
-            // Re-validate via the central rule. If the row's source
-            // changed since the dialog opened (e.g. the daemon picked
-            // it up), refuse: takeover would be a no-op or worse.
-            let session = state.store.find_session(&session_id).cloned();
-            state.adopt_dialog = None;
-            if state.input_mode == InputMode::AdoptDialog {
-                state.input_mode = InputMode::Normal;
-            }
-            match session {
-                Some(s) if s.adoption_options().takeover => {
-                    let cwd = s
-                        .cwd
-                        .clone()
-                        .filter(|c| !c.is_empty())
-                        .or(Some(s.project_path.clone()).filter(|p| !p.is_empty()))
-                        .unwrap_or_default();
-                    vec![Effect::TakeoverWildSession {
-                        session_id,
-                        pid,
-                        cwd,
-                    }]
-                }
-                Some(s) => {
-                    let reason = s
-                        .adoption_options()
-                        .reason_disabled
-                        .map(str::to_string)
-                        .unwrap_or_else(|| "takeover unavailable".to_string());
-                    state.toast = Some(reason);
-                    vec![]
-                }
-                None => {
-                    state.toast = Some("Session not found".to_string());
-                    vec![]
-                }
-            }
-        }
-        AgentAction::ConvertWild { session_id } => {
-            // Re-validate via the central rule. The row may have been
-            // adopted/dropped between dialog open and this reduce call.
-            let session = state.store.find_session(&session_id).cloned();
-            state.adopt_dialog = None;
-            if state.input_mode == InputMode::AdoptDialog {
-                state.input_mode = InputMode::Normal;
-            }
-            match session {
-                Some(s) if s.adoption_options().convert => {
-                    let cwd = s
-                        .cwd
-                        .clone()
-                        .filter(|c| !c.is_empty())
-                        .or(Some(s.project_path.clone()).filter(|p| !p.is_empty()))
-                        .unwrap_or_default();
-                    let name = s
-                        .name
-                        .clone()
-                        .filter(|n| !n.trim().is_empty())
-                        .unwrap_or_else(|| {
-                            // Fallback name: same shape used elsewhere
-                            // when daemon hasn't supplied one yet.
-                            let prefix: String = s.id.chars().take(8).collect();
-                            format!("wild-{}", prefix)
-                        });
-                    state.toast = Some(format!("Converted '{}' to clash session", name));
-                    vec![Effect::ConvertWildSession {
-                        session_id,
-                        name,
-                        cwd,
-                        source_branch: s.source_branch.clone(),
-                    }]
-                }
-                Some(s) => {
-                    let reason = s
-                        .adoption_options()
-                        .reason_disabled
-                        .map(str::to_string)
-                        .unwrap_or_else(|| "convert unavailable".to_string());
-                    state.toast = Some(reason);
-                    vec![]
-                }
+                },
                 None => {
                     state.toast = Some("Session not found".to_string());
                     vec![]
@@ -2522,7 +2379,7 @@ mod tests {
         assert!(effects.is_empty());
     }
 
-    // ── Wild-session-adoption dialog flow ────────────────────────
+    // ── Wild-session takeover flow ───────────────────────────────
 
     fn wild_session_in_state(
         state: &mut AppState,
@@ -2546,67 +2403,9 @@ mod tests {
     }
 
     #[test]
-    fn open_adopt_dialog_on_daemon_row_no_dialog_emits_hint() {
-        // Daemon-sourced rows are never adoptable (the user attaches
-        // with `o`/Enter instead). Dispatching OpenAdoptDialog on one
-        // must not open the dialog and must surface the reason as a toast.
-        let mut state = test_state();
-        wild_session_in_state(
-            &mut state,
-            "sid",
-            "/repo",
-            None,
-            SessionStatus::Running,
-            crate::domain::entities::SessionSource::Daemon,
-        );
-        let effects = reduce(
-            &mut state,
-            Action::Agent(AgentAction::OpenAdoptDialog {
-                session_id: "sid".into(),
-            }),
-        );
-        assert!(effects.is_empty(), "no effects on Daemon row");
-        assert!(state.adopt_dialog.is_none(), "dialog stays closed");
-        assert!(
-            state.toast.as_deref().is_some(),
-            "must show a status-bar hint with the reason"
-        );
-    }
-
-    #[test]
-    fn open_adopt_dialog_on_wild_row_emits_wake_and_opens_dialog() {
-        let mut state = test_state();
-        wild_session_in_state(
-            &mut state,
-            "sid",
-            "/repo",
-            Some(999),
-            SessionStatus::Running,
-            crate::domain::entities::SessionSource::Wild,
-        );
-        let effects = reduce(
-            &mut state,
-            Action::Agent(AgentAction::OpenAdoptDialog {
-                session_id: "sid".into(),
-            }),
-        );
-        assert_eq!(
-            effects.len(),
-            1,
-            "exactly one effect (WakeWildScan) on Wild row"
-        );
-        assert!(matches!(effects[0], Effect::WakeWildScan));
-        assert!(state.adopt_dialog.is_some(), "dialog opens");
-        let d = state.adopt_dialog.as_ref().unwrap();
-        assert_eq!(d.session_id, "sid");
-        assert_eq!(d.pid, Some(999));
-        assert_eq!(state.input_mode, InputMode::AdoptDialog);
-    }
-
-    #[test]
-    fn takeover_wild_emits_single_takeover_effect() {
-        // Issue 1A — single atomic Effect::TakeoverWildSession (no
-        // separate SignalProcess + CreateDaemonSession).
+    fn takeover_wild_kills_then_attaches() {
+        // One confirmed keypress = kill the outside process, then the
+        // regular attach flow (DaemonAttach resumes under the daemon).
         let mut state = test_state();
         wild_session_in_state(
             &mut state,
@@ -2620,27 +2419,48 @@ mod tests {
             &mut state,
             Action::Agent(AgentAction::TakeoverWild {
                 session_id: "sid".into(),
-                pid: 1234,
             }),
         );
-        assert_eq!(effects.len(), 1, "exactly one effect");
-        match &effects[0] {
-            Effect::TakeoverWildSession {
-                session_id,
-                pid,
-                cwd,
-            } => {
-                assert_eq!(session_id, "sid");
-                assert_eq!(*pid, 1234);
-                assert_eq!(cwd, "/repo");
-            }
-            other => panic!("expected TakeoverWildSession, got {:?}", other),
-        }
+        assert!(
+            matches!(effects[0], Effect::KillWildProcess { pid: 1234 }),
+            "first effect kills the wild PID, got {:?}",
+            effects[0]
+        );
+        assert!(
+            effects.iter().any(
+                |e| matches!(e, Effect::DaemonAttach { session_id, .. } if session_id == "sid")
+            ),
+            "attach is chained after the kill"
+        );
+        assert_eq!(state.input_mode, InputMode::Attached);
+        assert_eq!(state.attached_session.as_deref(), Some("sid"));
+    }
+
+    #[test]
+    fn takeover_wild_uses_fresh_pid_from_store() {
+        // The PID is read from the store at confirm time — the wild
+        // scan may have refreshed it while the confirm dialog was open.
+        let mut state = test_state();
+        wild_session_in_state(
+            &mut state,
+            "sid",
+            "/repo",
+            Some(4321),
+            SessionStatus::Running,
+            crate::domain::entities::SessionSource::Wild,
+        );
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::TakeoverWild {
+                session_id: "sid".into(),
+            }),
+        );
+        assert!(matches!(effects[0], Effect::KillWildProcess { pid: 4321 }));
     }
 
     #[test]
     fn takeover_wild_on_stale_row_refuses_with_toast() {
-        // Source flipped to Daemon between dialog open and Takeover
+        // Source flipped to Daemon between confirm open and Takeover
         // (e.g. clash adopted it via another path) — refuse takeover.
         let mut state = test_state();
         wild_session_in_state(
@@ -2655,7 +2475,6 @@ mod tests {
             &mut state,
             Action::Agent(AgentAction::TakeoverWild {
                 session_id: "sid".into(),
-                pid: 1234,
             }),
         );
         assert!(effects.is_empty(), "no effect on stale Daemon row");
@@ -2663,88 +2482,22 @@ mod tests {
     }
 
     #[test]
-    fn convert_wild_emits_single_convert_effect() {
-        // Wild + Running session with a name set: Convert should emit
-        // exactly one Effect::ConvertWildSession carrying the existing
-        // name, the resolved cwd, and clear the dialog state.
+    fn takeover_wild_on_synthetic_row_refuses_with_toast() {
+        // Synthetic `wild-pid-<pid>` rows have no conversation to
+        // resume — takeover must refuse with a reason.
         let mut state = test_state();
         wild_session_in_state(
             &mut state,
-            "sid",
+            "wild-pid-777",
             "/repo",
-            Some(1234),
-            SessionStatus::Running,
-            crate::domain::entities::SessionSource::Wild,
-        );
-        if let Some(s) = state.store.sessions.iter_mut().find(|s| s.id == "sid") {
-            s.name = Some("my-wild".into());
-            s.source_branch = Some("feature/x".into());
-        }
-        let effects = reduce(
-            &mut state,
-            Action::Agent(AgentAction::ConvertWild {
-                session_id: "sid".into(),
-            }),
-        );
-        assert_eq!(effects.len(), 1, "exactly one effect");
-        match &effects[0] {
-            Effect::ConvertWildSession {
-                session_id,
-                name,
-                cwd,
-                source_branch,
-            } => {
-                assert_eq!(session_id, "sid");
-                assert_eq!(name, "my-wild");
-                assert_eq!(cwd, "/repo");
-                assert_eq!(source_branch.as_deref(), Some("feature/x"));
-            }
-            other => panic!("expected ConvertWildSession, got {:?}", other),
-        }
-        assert!(state.adopt_dialog.is_none());
-    }
-
-    #[test]
-    fn convert_wild_falls_back_to_id_prefix_name_when_unnamed() {
-        // No `name` set — handler must synthesize "wild-<id-prefix>"
-        // so the registry entry isn't blank.
-        let mut state = test_state();
-        wild_session_in_state(
-            &mut state,
-            "abcdef0123456789",
-            "/repo",
-            Some(1234),
+            Some(777),
             SessionStatus::Running,
             crate::domain::entities::SessionSource::Wild,
         );
         let effects = reduce(
             &mut state,
-            Action::Agent(AgentAction::ConvertWild {
-                session_id: "abcdef0123456789".into(),
-            }),
-        );
-        match &effects[0] {
-            Effect::ConvertWildSession { name, .. } => assert_eq!(name, "wild-abcdef01"),
-            other => panic!("expected ConvertWildSession, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn convert_wild_on_stale_daemon_row_refuses_with_toast() {
-        // Source flipped to Daemon between dialog and Convert — refuse.
-        let mut state = test_state();
-        wild_session_in_state(
-            &mut state,
-            "sid",
-            "/repo",
-            None,
-            SessionStatus::Running,
-            crate::domain::entities::SessionSource::Daemon,
-        );
-        let effects = reduce(
-            &mut state,
-            Action::Agent(AgentAction::ConvertWild {
-                session_id: "sid".into(),
+            Action::Agent(AgentAction::TakeoverWild {
+                session_id: "wild-pid-777".into(),
             }),
         );
         assert!(effects.is_empty());
@@ -2819,25 +2572,5 @@ mod tests {
             Effect::TerminateProcess { wild_pid, .. } => assert_eq!(*wild_pid, None),
             _ => unreachable!(),
         }
-    }
-
-    #[test]
-    fn close_adopt_dialog_resets_state() {
-        let mut state = test_state();
-        state.adopt_dialog = Some(crate::application::state::AdoptDialog {
-            session_id: "sid".into(),
-            pid: Some(42),
-            display_name: "x".into(),
-            options: crate::domain::entities::AdoptionOptions {
-                view_only: true,
-                takeover: true,
-                convert: true,
-                reason_disabled: None,
-            },
-        });
-        state.input_mode = InputMode::AdoptDialog;
-        let _ = reduce(&mut state, Action::Agent(AgentAction::CloseAdoptDialog));
-        assert!(state.adopt_dialog.is_none());
-        assert_eq!(state.input_mode, InputMode::Normal);
     }
 }

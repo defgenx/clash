@@ -146,8 +146,6 @@ pub enum InputMode {
     Attached,
     /// Picker dialog is open — j/k navigate, Enter selects, Esc cancels.
     Picker,
-    /// Adopt dialog is open — `v`/`t`/Esc.
-    AdoptDialog,
 }
 
 /// A generic picker dialog — list of items with a callback action.
@@ -255,23 +253,6 @@ pub struct ConfirmDialog {
     pub on_confirm: Action,
 }
 
-/// Wild/external adopt confirm dialog. Shows whichever options
-/// `Session::adoption_options()` returned at dialog-open time, plus a
-/// re-validated PID for the takeover path so SIGTERM goes to the right
-/// process even if the wild scan refreshes mid-dialog.
-#[derive(Debug, Clone)]
-pub struct AdoptDialog {
-    pub session_id: String,
-    /// PID captured at dialog-open time. If this differs from the live
-    /// scan when the user picks Takeover, the reducer rejects the
-    /// action with a toast.
-    pub pid: Option<u32>,
-    /// Display label for the row (used in the dialog body).
-    pub display_name: String,
-    /// Adoption options as of dialog open — gates which buttons render.
-    pub options: crate::domain::entities::AdoptionOptions,
-}
-
 /// Main application state — everything the reducer and renderer need.
 pub struct AppState {
     pub nav: NavigationStack,
@@ -290,8 +271,6 @@ pub struct AppState {
     pub toast: Option<String>,
     pub confirm_dialog: Option<ConfirmDialog>,
     pub picker_dialog: Option<PickerDialog>,
-    /// Wild/external adopt confirm dialog. Open iff Some.
-    pub adopt_dialog: Option<AdoptDialog>,
     pub tick: usize,
     pub inbox_messages: Vec<InboxMessage>,
     pub session_filter: SessionFilter,
@@ -348,7 +327,6 @@ impl AppState {
             toast: None,
             confirm_dialog: None,
             picker_dialog: None,
-            adopt_dialog: None,
             tick: 0,
             inbox_messages: Vec::new(),
             session_filter: SessionFilter::Active,

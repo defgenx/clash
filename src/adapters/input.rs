@@ -25,36 +25,7 @@ pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
         | InputMode::NewSessionWorktree => handle_input_mode(key),
         InputMode::Confirm => handle_confirm_mode(key, state),
         InputMode::Picker => handle_picker_mode(key),
-        InputMode::AdoptDialog => handle_adopt_dialog_mode(key, state),
         InputMode::Attached => Action::Noop,
-    }
-}
-
-fn handle_adopt_dialog_mode(key: KeyEvent, state: &AppState) -> Action {
-    let dialog = match &state.adopt_dialog {
-        Some(d) => d,
-        None => return Action::Agent(AgentAction::CloseAdoptDialog),
-    };
-    match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => Action::Agent(AgentAction::CloseAdoptDialog),
-        KeyCode::Char('v') if dialog.options.view_only => {
-            Action::Agent(AgentAction::AdoptViewOnly {
-                session_id: dialog.session_id.clone(),
-            })
-        }
-        KeyCode::Char('t') if dialog.options.takeover => match dialog.pid {
-            Some(pid) => Action::Agent(AgentAction::TakeoverWild {
-                session_id: dialog.session_id.clone(),
-                pid,
-            }),
-            None => Action::Ui(UiAction::Toast(
-                "No live PID for this session — cannot takeover".to_string(),
-            )),
-        },
-        KeyCode::Char('c') if dialog.options.convert => Action::Agent(AgentAction::ConvertWild {
-            session_id: dialog.session_id.clone(),
-        }),
-        _ => Action::Noop,
     }
 }
 
@@ -418,15 +389,36 @@ fn resolve_session_id(state: &AppState) -> Option<String> {
 
 fn handle_attach_or_assign(state: &AppState) -> Action {
     if let Some(session_id) = resolve_session_id(state) {
-        // Route based on Session.source: wild/external rows open the
-        // adopt dialog so the user picks View-only vs. Takeover.
-        // Daemon (and Unknown / Stashed-wild rows where neither option
-        // is available) fall through to the existing inline-attach via
-        // the daemon.
+        // Route based on Session.source: wild/external rows take over
+        // the outside claude after a single confirm — kill its process
+        // and resume the (dynamically associated, always latest)
+        // conversation under the daemon, attached. Daemon/Unknown rows
+        // fall through to the existing inline-attach via the daemon.
         if let Some(session) = state.store.find_session(&session_id) {
-            let opts = session.adoption_options();
-            if opts.view_only || opts.takeover {
-                return Action::Agent(AgentAction::OpenAdoptDialog { session_id });
+            use crate::domain::entities::SessionSource;
+            if matches!(
+                session.source,
+                SessionSource::Wild | SessionSource::External
+            ) {
+                return match session.takeover_pid() {
+                    Ok(pid) => {
+                        let name = session
+                            .name
+                            .clone()
+                            .filter(|n| !n.trim().is_empty())
+                            .unwrap_or_else(|| format::short_id(&session.id, 8).to_string());
+                        Action::Ui(UiAction::ShowConfirm {
+                            message: format!(
+                                "Take over '{}' (PID {})? The outside claude is killed and its conversation resumes here.",
+                                name, pid
+                            ),
+                            on_confirm: Box::new(Action::Agent(AgentAction::TakeoverWild {
+                                session_id,
+                            })),
+                        })
+                    }
+                    Err(reason) => Action::Ui(UiAction::Toast(reason.to_string())),
+                };
             }
         }
         return Action::Agent(AgentAction::Attach { session_id });
@@ -856,6 +848,57 @@ mod tests {
         match handle_key(key, &state) {
             Action::Noop => {}
             other => panic!("Expected Noop on Teams view, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_a_key_on_wild_row_shows_takeover_confirm() {
+        let mut state = AppState::new();
+        let mut s = crate::domain::entities::Session {
+            id: "wild-sid".to_string(),
+            is_running: true,
+            status: crate::domain::entities::SessionStatus::Running,
+            ..Default::default()
+        };
+        s.source = crate::domain::entities::SessionSource::Wild;
+        s.wild_pid = Some(4242);
+        state.store.sessions = vec![s];
+        state.table_state.selected = 0;
+        let key = KeyEvent::new(KeyCode::Char('a'), crossterm::event::KeyModifiers::NONE);
+        match handle_key(key, &state) {
+            Action::Ui(UiAction::ShowConfirm {
+                message,
+                on_confirm,
+            }) => {
+                assert!(message.contains("4242"), "confirm names the PID");
+                match *on_confirm {
+                    Action::Agent(AgentAction::TakeoverWild { ref session_id }) => {
+                        assert_eq!(session_id, "wild-sid");
+                    }
+                    other => panic!("Expected TakeoverWild on confirm, got {:?}", other),
+                }
+            }
+            other => panic!("Expected ShowConfirm, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_a_key_on_synthetic_wild_row_toasts_reason() {
+        let mut state = AppState::new();
+        let mut s = crate::domain::entities::Session {
+            id: "wild-pid-777".to_string(),
+            is_running: true,
+            status: crate::domain::entities::SessionStatus::Running,
+            ..Default::default()
+        };
+        s.source = crate::domain::entities::SessionSource::Wild;
+        s.wild_pid = Some(777);
+        state.store.sessions = vec![s];
+        state.table_state.selected = 0;
+        let key = KeyEvent::new(KeyCode::Char('a'), crossterm::event::KeyModifiers::NONE);
+        match handle_key(key, &state) {
+            Action::Ui(UiAction::Toast(_)) => {}
+            other => panic!("Expected Toast on synthetic wild row, got {:?}", other),
         }
     }
 

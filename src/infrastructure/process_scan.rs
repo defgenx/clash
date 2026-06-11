@@ -10,10 +10,10 @@
 //!
 //! Correlation is authoritative when the running process holds the
 //! session's `.jsonl` open as a file descriptor — the basename of that
-//! `.jsonl` IS the session id. cwd matching is a fallback that yields a
-//! correlation only when exactly one session in the list shares the
-//! process's cwd; ambiguous cwd matches are treated as Unknown and the
-//! key is left absent from the result map, never picked arbitrarily.
+//! `.jsonl` IS the session id. cwd matching is a dynamic fallback: the
+//! session with the latest `last_modified` among those sharing the
+//! process's cwd wins, re-evaluated on every scan so the association
+//! always tracks the most recent conversation in that directory.
 //!
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -399,10 +399,12 @@ pub fn extract_jsonl_session_ids(open_files: &[PathBuf]) -> Vec<String> {
 /// 1. If the process has any `open_jsonl_session_ids` and at least one
 ///    of them matches a session in `sessions`, that's an authoritative
 ///    correlation; first match wins.
-/// 2. If no `.jsonl` match, fall back to cwd: when **exactly one**
-///    session shares the process's cwd, correlate. Multiple matches are
-///    ambiguous and produce no entry (caller treats absence as Unknown
-///    rather than guessing).
+/// 2. If no `.jsonl` match, fall back to cwd: among the sessions whose
+///    cwd (or project_path) matches the process's cwd, pick the one
+///    with the **latest** `last_modified` — the most recent
+///    conversation in that directory. The association is dynamic:
+///    re-evaluated on every scan, so it follows the newest conversation
+///    as the wild claude writes new JSONLs.
 /// 3. Process with no `.jsonl` match and no cwd: no entry.
 pub fn correlate_wild_to_sessions(
     wild: &[WildProcess],
@@ -427,21 +429,32 @@ pub fn correlate_wild_to_sessions(
             continue;
         }
 
-        // 2. cwd fallback — only when exactly one session matches.
+        // 2. cwd fallback — latest conversation in that directory wins.
         if let Some(cwd) = &w.cwd {
-            let matching_ids: Vec<&str> = sessions
-                .iter()
-                .filter(|s| s.cwd.as_deref() == Some(cwd.as_str()))
-                .map(|s| s.id.as_str())
-                .collect();
-            if matching_ids.len() == 1 {
-                result.insert(matching_ids[0].to_string(), w.pid);
+            if let Some(id) = latest_session_for_cwd(sessions, cwd) {
+                result.insert(id.to_string(), w.pid);
             }
-            // Zero or multiple: leave the row Unknown.
+            // Zero matches: leave the row Unknown.
         }
     }
 
     result
+}
+
+/// Pure: id of the session with the latest `last_modified` among those
+/// whose cwd or project_path equals `cwd`. `last_modified` strings are
+/// timestamp-prefixed (`YYYY-MM-DD HH:MM` or ISO 8601) so a plain
+/// lexicographic max picks the most recent conversation.
+pub fn latest_session_for_cwd<'a>(sessions: &'a [Session], cwd: &str) -> Option<&'a str> {
+    if cwd.is_empty() {
+        return None;
+    }
+    sessions
+        .iter()
+        .filter(|s| !s.is_synthetic_wild())
+        .filter(|s| s.cwd.as_deref() == Some(cwd) || s.project_path == cwd)
+        .max_by(|a, b| a.last_modified.cmp(&b.last_modified))
+        .map(|s| s.id.as_str())
 }
 
 // ── ProcessProbe + should_signal ─────────────────────────────────
@@ -473,6 +486,36 @@ pub fn should_signal(pid: u32, probe: &impl ProcessProbe) -> SignalDecision {
         return SignalDecision::CmdlineChanged;
     }
     SignalDecision::Allow
+}
+
+/// Best-effort kill of a wild claude process before its session is
+/// resumed under the daemon: verify the PID still belongs to a `claude`
+/// (PID-reuse defense), SIGTERM, poll up to 2s for exit (100ms cadence,
+/// keeps perceived latency low for cooperative quitters while bounding
+/// the worst case), escalate to SIGKILL. A process that already exited
+/// — or a reused PID — is simply skipped: the `--resume` that follows
+/// is correct either way.
+pub async fn kill_wild_process(pid: u32) {
+    use nix::sys::signal::{kill, Signal};
+    use nix::unistd::Pid;
+
+    let probe = LiveProcessProbe;
+    match should_signal(pid, &probe) {
+        SignalDecision::Allow => {}
+        SignalDecision::ProcessExited | SignalDecision::CmdlineChanged => return,
+    }
+    let nix_pid = Pid::from_raw(pid as i32);
+    let _ = kill(nix_pid, Signal::SIGTERM);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if !probe.is_alive(pid) {
+            return;
+        }
+    }
+    let _ = kill(nix_pid, Signal::SIGKILL);
+    // Give the kernel one tick to reap so --resume doesn't race the lock.
+    tokio::time::sleep(Duration::from_millis(100)).await;
 }
 
 /// Real [`ProcessProbe`] — `kill(pid, 0)` for liveness, `ps -p` for cmdline.
@@ -888,15 +931,38 @@ mod tests {
     }
 
     #[test]
-    fn correlate_cwd_ambiguous_yields_no_entry() {
-        // Two sessions in same repo, no .jsonl info → ambiguous → Unknown.
+    fn correlate_cwd_multiple_matches_picks_latest_conversation() {
+        // Two sessions in same repo, no .jsonl info → the most recently
+        // modified conversation wins (dynamic latest-conv association).
         let wild = vec![wild(300, Some("/repo"), &[])];
-        let sessions = vec![
-            session_with("a", Some("/repo")),
-            session_with("b", Some("/repo")),
-        ];
-        let map = correlate_wild_to_sessions(&wild, &sessions);
-        assert!(map.is_empty(), "ambiguous cwd must NOT pick a session");
+        let mut older = session_with("a", Some("/repo"));
+        older.last_modified = "2026-06-10 09:00".to_string();
+        let mut newer = session_with("b", Some("/repo"));
+        newer.last_modified = "2026-06-11 14:30".to_string();
+        let map = correlate_wild_to_sessions(&wild, &[older, newer]);
+        assert_eq!(
+            map.get("b"),
+            Some(&300),
+            "latest conversation must claim the wild PID"
+        );
+        assert!(!map.contains_key("a"));
+    }
+
+    #[test]
+    fn latest_session_for_cwd_matches_project_path_too() {
+        // Disk sessions have cwd=None but carry the decoded project
+        // path — the fallback must still associate them.
+        let mut s = session_with("disk", None);
+        s.project_path = "/repo".to_string();
+        s.last_modified = "2026-06-11 10:00".to_string();
+        assert_eq!(latest_session_for_cwd(&[s], "/repo"), Some("disk"));
+    }
+
+    #[test]
+    fn latest_session_for_cwd_skips_synthetic_rows() {
+        let mut synth = session_with("wild-pid-300", Some("/repo"));
+        synth.last_modified = "2026-06-11 23:59".to_string();
+        assert_eq!(latest_session_for_cwd(&[synth], "/repo"), None);
     }
 
     #[test]

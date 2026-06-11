@@ -183,41 +183,6 @@ pub enum SessionSource {
     Unknown,
 }
 
-/// What adoption actions the user can perform on a session row.
-///
-/// Single source of truth, derived purely from `(Session.source, Session.status)`
-/// via [`Session::adoption_options`]. Consumed by the input handler, the
-/// reducer, and the confirm dialog so the rule never drifts between sites.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AdoptionOptions {
-    /// Whether read-only conversation tail is offered (always at least
-    /// available when *any* adoption action is allowed, since it's strictly
-    /// safer than takeover).
-    pub view_only: bool,
-    /// Whether SIGTERM-and-resume takeover is offered.
-    pub takeover: bool,
-    /// Whether the non-destructive Convert action is offered. Convert
-    /// adds the wild session to clash's registry without touching the
-    /// running process — the row keeps its 🌿 source until the user
-    /// later attaches via the daemon, but it is now persistent (the
-    /// registry survives clash restarts and the wild process exiting).
-    pub convert: bool,
-    /// Reason why no option is available, if all three are false.
-    /// Stable strings — rendered verbatim in the status-bar hint.
-    pub reason_disabled: Option<&'static str>,
-}
-
-impl AdoptionOptions {
-    pub const fn none(reason: &'static str) -> Self {
-        Self {
-            view_only: false,
-            takeover: false,
-            convert: false,
-            reason_disabled: Some(reason),
-        }
-    }
-}
-
 /// Granular session status — detected by parsing the terminal screen content.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub enum SessionStatus {
@@ -387,45 +352,36 @@ impl Session {
 
     /// True when this row was synthesized by Phase 7.5 from a live wild
     /// PID with no correlating disk session. Such rows have no real
-    /// Claude session id (the id is `wild-pid-<pid>`), so adoption
-    /// actions that need a session id (view, takeover, convert) cannot
-    /// run.
+    /// Claude session id (the id is `wild-pid-<pid>`), so takeover —
+    /// which needs a session id to `--resume` — cannot run.
     pub fn is_synthetic_wild(&self) -> bool {
         self.id.starts_with("wild-pid-")
     }
 
-    /// What the user can do via `a` (adopt) on this session.
+    /// PID to signal when taking over this row's outside claude process.
     ///
-    /// Single source of truth for adoption eligibility — consumed by the input
-    /// handler (status-bar hint vs. dialog), the reducer (validates the action
-    /// before emitting effects), and the confirm dialog (which buttons render).
-    pub fn adoption_options(&self) -> AdoptionOptions {
+    /// Single source of truth for takeover eligibility — consumed by the
+    /// input handler (confirm message vs. toast) and the reducer
+    /// (re-validates with a fresh PID right before emitting effects).
+    /// `Err` carries a human-readable reason rendered verbatim in a toast.
+    pub fn takeover_pid(&self) -> Result<u32, &'static str> {
         if self.is_synthetic_wild() {
-            return AdoptionOptions::none(
-                "bare claude — no session id to view, takeover, or convert",
-            );
+            return Err("bare claude — no conversation on disk yet to resume");
         }
         match self.source {
-            SessionSource::Daemon => {
-                AdoptionOptions::none("daemon-managed — already attachable with o/Enter")
-            }
-            SessionSource::Unknown => AdoptionOptions::none("no live process detected"),
+            SessionSource::Daemon => Err("daemon-managed — already attachable with a/Enter"),
+            SessionSource::Unknown => Err("no live process detected"),
             SessionSource::Wild | SessionSource::External => match self.status {
-                // Active statuses: both options offered. Takeover warns about
-                // in-flight tool calls in the confirm dialog itself.
                 SessionStatus::Running
                 | SessionStatus::Thinking
                 | SessionStatus::Starting
                 | SessionStatus::Prompting
-                | SessionStatus::Waiting => AdoptionOptions {
-                    view_only: true,
-                    takeover: true,
-                    convert: true,
-                    reason_disabled: None,
-                },
-                // Process is gone — nothing to adopt or take over.
+                | SessionStatus::Waiting => self
+                    .wild_pid
+                    .ok_or("no live PID for this session — retry after next scan"),
+                // Process is gone — nothing to take over.
                 SessionStatus::Stashed | SessionStatus::Done | SessionStatus::Errored => {
-                    AdoptionOptions::none("process is no longer running")
+                    Err("process is no longer running")
                 }
             },
         }
@@ -748,31 +704,25 @@ mod tests {
         assert_eq!(s.display_section(), SessionSection::Fail);
     }
 
-    /// Truth-table coverage for `Session::adoption_options` — the central
-    /// business rule of the wild-session-adoption feature. Representative cases
-    /// across (status × source); the rule itself collapses many combinations.
+    /// Truth-table coverage for `Session::takeover_pid` — the central
+    /// business rule of the wild-session-takeover feature. Representative
+    /// cases across (status × source); the rule collapses many combinations.
     #[test]
-    fn test_adoption_options_truth_table() {
-        // (label, source, status, want_view_only, want_takeover, want_convert, want_has_reason)
-        let cases: &[(&str, SessionSource, SessionStatus, bool, bool, bool, bool)] = &[
-            // Daemon: never adoptable, regardless of status.
+    fn test_takeover_pid_truth_table() {
+        // (label, source, status, want_takeover)
+        let cases: &[(&str, SessionSource, SessionStatus, bool)] = &[
+            // Daemon: never takeover-able, regardless of status.
             (
                 "daemon+running",
                 SessionSource::Daemon,
                 SessionStatus::Running,
                 false,
-                false,
-                false,
-                true,
             ),
             (
                 "daemon+stashed",
                 SessionSource::Daemon,
                 SessionStatus::Stashed,
                 false,
-                false,
-                false,
-                true,
             ),
             // Unknown: nothing to do.
             (
@@ -780,133 +730,106 @@ mod tests {
                 SessionSource::Unknown,
                 SessionStatus::Running,
                 false,
-                false,
-                false,
-                true,
             ),
-            // Wild + active statuses → all three options.
+            // Wild + active statuses → takeover offered.
             (
                 "wild+running",
                 SessionSource::Wild,
                 SessionStatus::Running,
                 true,
-                true,
-                true,
-                false,
             ),
             (
                 "wild+thinking",
                 SessionSource::Wild,
                 SessionStatus::Thinking,
                 true,
-                true,
-                true,
-                false,
             ),
             (
                 "wild+starting",
                 SessionSource::Wild,
                 SessionStatus::Starting,
                 true,
-                true,
-                true,
-                false,
             ),
             (
                 "wild+waiting",
                 SessionSource::Wild,
                 SessionStatus::Waiting,
                 true,
-                true,
-                true,
-                false,
             ),
             (
                 "wild+prompting",
                 SessionSource::Wild,
                 SessionStatus::Prompting,
                 true,
-                true,
-                true,
-                false,
             ),
-            // Wild + dead statuses → no options.
+            // Wild + dead statuses → refuse.
             (
                 "wild+stashed",
                 SessionSource::Wild,
                 SessionStatus::Stashed,
                 false,
-                false,
-                false,
-                true,
             ),
             (
                 "wild+errored",
                 SessionSource::Wild,
                 SessionStatus::Errored,
                 false,
-                false,
-                false,
-                true,
             ),
-            (
-                "wild+done",
-                SessionSource::Wild,
-                SessionStatus::Done,
-                false,
-                false,
-                false,
-                true,
-            ),
-            // External behaves like Wild for adoption purposes.
+            ("wild+done", SessionSource::Wild, SessionStatus::Done, false),
+            // External behaves like Wild for takeover purposes.
             (
                 "external+running",
                 SessionSource::External,
                 SessionStatus::Running,
                 true,
-                true,
-                true,
-                false,
             ),
             (
                 "external+stashed",
                 SessionSource::External,
                 SessionStatus::Stashed,
                 false,
-                false,
-                false,
-                true,
             ),
         ];
 
-        for (label, source, status, want_view, want_takeover, want_convert, want_reason) in cases {
+        for (label, source, status, want_takeover) in cases {
             let s = Session {
                 source: *source,
                 status: *status,
+                wild_pid: Some(42),
                 ..Default::default()
             };
-            let opts = s.adoption_options();
-            assert_eq!(opts.view_only, *want_view, "{label}: view_only mismatch");
-            assert_eq!(opts.takeover, *want_takeover, "{label}: takeover mismatch");
-            assert_eq!(opts.convert, *want_convert, "{label}: convert mismatch");
+            let got = s.takeover_pid();
             assert_eq!(
-                opts.reason_disabled.is_some(),
-                *want_reason,
-                "{label}: reason_disabled presence mismatch"
+                got.is_ok(),
+                *want_takeover,
+                "{label}: takeover eligibility mismatch"
             );
+            if *want_takeover {
+                assert_eq!(got, Ok(42), "{label}: must return the wild PID");
+            }
         }
     }
 
     #[test]
-    fn test_adoption_options_default_session_unknown_source() {
+    fn test_takeover_pid_requires_live_pid() {
+        // Wild + active but no PID resolved yet → refuse with a reason
+        // instead of panicking or silently doing nothing.
+        let s = Session {
+            source: SessionSource::Wild,
+            status: SessionStatus::Running,
+            wild_pid: None,
+            ..Default::default()
+        };
+        assert!(s.takeover_pid().is_err());
+    }
+
+    #[test]
+    fn test_takeover_pid_default_session_unknown_source() {
         // Default Session has source = Unknown; ensures the default doesn't
-        // silently look adoptable.
+        // silently look takeover-able.
         let s = Session::default();
         assert_eq!(s.source, SessionSource::Unknown);
-        let opts = s.adoption_options();
-        assert!(!opts.view_only);
-        assert!(!opts.takeover);
-        assert!(!opts.convert);
+        assert!(s.takeover_pid().is_err());
     }
 
     #[test]

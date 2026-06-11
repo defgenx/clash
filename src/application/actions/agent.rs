@@ -56,36 +56,12 @@ pub enum AgentAction {
     DropSessionAfterTeardown {
         session_id: String,
     },
-    /// Adopt a wild/external session in view-only mode — navigate to its
-    /// detail view so the existing 1s-polled JSONL re-read shows the
-    /// live conversation. Does NOT touch the PTY or contend with the
-    /// foreground process driving the session elsewhere.
-    AdoptViewOnly {
-        session_id: String,
-    },
-    /// Open the adopt confirm dialog for a wild/external session. Wakes
-    /// the background scan immediately so the dialog renders against
-    /// the freshest PID snapshot, then sets `state.adopt_dialog`.
-    OpenAdoptDialog {
-        session_id: String,
-    },
-    /// Confirm takeover of a wild/external session — re-validate via
-    /// `adoption_options`, then emit a single `Effect::TakeoverWildSession`
-    /// that the infra layer translates into the SIGTERM → wait → resume
-    /// sequence.
+    /// Take over a wild/external session and attach in one step —
+    /// re-validate via `Session::takeover_pid` (fresh PID from the
+    /// latest scan), emit `Effect::KillWildProcess` for the SIGTERM →
+    /// wait → SIGKILL sequence, then chain the regular Attach flow
+    /// (which `--resume`s the session under the daemon).
     TakeoverWild {
         session_id: String,
-        pid: u32,
     },
-    /// Confirm Convert on a wild/external session — re-validate via
-    /// `adoption_options`, then emit a single `Effect::ConvertWildSession`
-    /// that writes a registry entry for the session without touching the
-    /// running process. The 🌿 marker stays until the user later attaches
-    /// via the daemon, but the row is now persistent across clash and
-    /// process restarts.
-    ConvertWild {
-        session_id: String,
-    },
-    /// Dismiss the adopt confirm dialog without taking any action.
-    CloseAdoptDialog,
 }
