@@ -804,10 +804,21 @@ function tabContextMenu(ev, sid) {
 
 // ── Tabs ────────────────────────────────────────────────────────
 
+/// Session id behind a tab entry — view tabs (`view:conv:<sid>` …) belong
+/// to the session in their key's last segment.
+function tabSession(id) {
+  return id.startsWith("view:") ? id.slice(id.lastIndexOf(":") + 1) : id;
+}
+
 function renderTabs() {
   const tabs = $("tabs");
   tabs.innerHTML = "";
   for (const [id, entry] of state.open) {
+    // The tab strip is scoped to the active workspace (like the sidebar):
+    // tabs owned by another workspace stay hidden until you switch back.
+    // Unassigned sessions remain visible so they're always reachable.
+    const owner = sessionWorkspace(tabSession(id));
+    if (owner !== -1 && owner !== state.activeWs) continue;
     const tab = document.createElement("div");
     tab.className = "tab" + (id === state.activeTab ? " active" : "");
     tab.onclick = () => assignToFocusedPane(id);
@@ -1030,6 +1041,25 @@ async function openSession(sid) {
       },
     },
   });
+  // International layouts (e.g. AZERTY) type brackets/braces with Option
+  // (⌥( = {, ⌥⇧( = [ …). macOptionIsMeta would turn those into ESC
+  // sequences, making the characters impossible to type. When Option
+  // composes a printable symbol (not a letter — Alt+letter stays Meta for
+  // readline word jumps), bypass xterm so the browser inserts the glyph.
+  term.attachCustomKeyEventHandler((e) => {
+    if (
+      e.type === "keydown" &&
+      e.altKey &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      e.key.length === 1 &&
+      !/[a-zA-Z]/.test(e.key)
+    ) {
+      return false;
+    }
+    return true;
+  });
+
   const fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
 
@@ -1597,17 +1627,16 @@ let nsPresets = [];
 function showNewSessionModal() {
   $("ns-error").classList.add("hidden");
   $("modal-backdrop").classList.remove("hidden");
-  // Prefill cwd: focused session's project (fast iteration) → configured
-  // default directory (settings) → home. Never leaves the field empty.
-  if (!$("ns-cwd").value) {
-    const cur = state.sessions.find((x) => x.id === state.activeTab);
-    $("ns-cwd").value =
-      (cur && (cur.cwd || cur.project_path)) ||
-      state.settings.defaultCwd ||
-      state.homeDir ||
-      "";
-    if ($("ns-cwd").value) loadPresetsForCwd();
-  }
+  // Prefill cwd fresh on every open — a stale value from a previous open
+  // is never kept. The configured default directory (settings) wins, then
+  // the focused session's project, then home. Never leaves the field empty.
+  const cur = state.sessions.find((x) => x.id === state.activeTab);
+  $("ns-cwd").value =
+    state.settings.defaultCwd ||
+    (cur && (cur.cwd || cur.project_path)) ||
+    state.homeDir ||
+    "";
+  if ($("ns-cwd").value) loadPresetsForCwd();
   setTimeout(() => $("ns-cwd").focus(), 0);
 }
 

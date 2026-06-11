@@ -341,8 +341,8 @@ the same sessions the TUI manages.
 
 GUI features: fuzzy search (`/` or `⌘F`), inline rename (double-click),
 new session via the sidebar's `＋ New session` button (`⌘T`) with preset
-picker and git-worktree option — the directory prefills from the focused
-session, falling back to the configured default directory, then home —
+picker and git-worktree option — the directory prefills from the configured
+default directory, falling back to the focused session's project, then home —
 stash/kill/take-over from hover actions, split panes up to 2×2 (`⌘D`, zoom
 `⌘⇧↩`), teams browser (members, tasks, agent inboxes, create/delete),
 and quit-stash on close. The sidebar footer holds a SETTINGS section:
@@ -382,9 +382,11 @@ browser is a native overlay — in-app dialogs can't draw over it.
 
 Workspaces (cmux-style): each workspace owns its pane layout AND its
 sessions — `⌘N` new, `⌘1-9` switch, `⌘⇧R` rename, `⌘⇧W` or the chip's
-`×` to close, `⌘B` toggles the sidebar. The sidebar is scoped to the
-active workspace: its sessions in status sections, plus an UNASSIGNED
-group for sessions no workspace has claimed (opening one claims it).
+`×` to close, `⌘B` toggles the sidebar. The sidebar and the tab strip
+are scoped to the active workspace: its sessions in status sections,
+plus an UNASSIGNED group for sessions no workspace has claimed (opening
+one claims it). Tabs owned by another workspace stay hidden until you
+switch back; unassigned tabs are always visible.
 Searching (`/`) is global across workspaces — results from other
 workspaces carry a `⌘n` badge and open in their owning workspace.
 Closing a workspace returns its sessions to the unassigned pool.
