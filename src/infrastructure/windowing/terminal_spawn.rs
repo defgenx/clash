@@ -234,7 +234,7 @@ fn spawn_pane(
 }
 
 /// Spawn a command with stdout/stderr suppressed to prevent TUI corruption.
-fn spawn_detached(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+pub(crate) fn spawn_detached(cmd: &mut Command) -> std::io::Result<std::process::Child> {
     cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn()
 }
 
@@ -244,7 +244,7 @@ fn spawn_detached(cmd: &mut Command) -> std::io::Result<std::process::Child> {
 /// to target, Automation permission denied, app not running) only show
 /// up in its exit status and stderr. Fire-and-forget spawning made every
 /// one of those invisible: the caller got `Ok` and nothing happened.
-fn run_osascript(script: &str) -> eyre::Result<()> {
+pub(crate) fn run_osascript(script: &str) -> eyre::Result<()> {
     let output = Command::new("osascript")
         .args(["-e", script])
         .stdout(Stdio::null())
@@ -264,7 +264,7 @@ fn run_osascript(script: &str) -> eyre::Result<()> {
 /// command line — used by Apple Terminal `do script` and iTerm2
 /// `write text`. Each arg is wrapped in `quoted form of` so shells see
 /// it as a single token even when it contains spaces or special chars.
-fn applescript_command_expr(command: &str, args: &[&str]) -> String {
+pub(crate) fn applescript_command_expr(command: &str, args: &[&str]) -> String {
     std::iter::once(format!("(quoted form of \"{}\")", command))
         .chain(
             args.iter()

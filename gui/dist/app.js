@@ -33,6 +33,7 @@ const state = {
     optionMeta: true,
     embedLinks: true,
     notifications: true,
+    tuiTerminal: "", // last terminal picked for the TUI launcher ("" = auto)
   },
   homeDir: "", // resolved at startup — last-resort new-session prefill
 };
@@ -218,6 +219,7 @@ function applyWorkspacesData(data) {
     if (typeof s.optionMeta === "boolean") state.settings.optionMeta = s.optionMeta;
     if (typeof s.embedLinks === "boolean") state.settings.embedLinks = s.embedLinks;
     if (typeof s.notifications === "boolean") state.settings.notifications = s.notifications;
+    if (typeof s.tuiTerminal === "string") state.settings.tuiTerminal = s.tuiTerminal;
   }
   if (!Array.isArray(data.workspaces) || !data.workspaces.length) return false;
   state.workspaces = data.workspaces.map((w) => ({
@@ -2634,7 +2636,10 @@ $("set-notify").addEventListener("change", () => {
 
 // ── TUI launcher (sidebar header) ───────────────────────────────
 // Gold when a clash TUI process is running somewhere, grey when not.
-// Click spawns the TUI alongside the GUI (pane or terminal window).
+// Click opens a picker of terminals detected on the OS (plus Auto);
+// the choice is remembered as the menu's "last used" marker.
+
+let detectedTerminals = []; // populated at boot from list_terminals
 
 async function refreshTuiIndicator() {
   try {
@@ -2650,13 +2655,36 @@ async function refreshTuiIndicator() {
   }
 }
 
-$("tui-btn").onclick = async () => {
+async function launchTui(terminalId) {
+  state.settings.tuiTerminal = terminalId;
+  saveWorkspaces();
   try {
-    await invoke("launch_tui");
+    await invoke("launch_tui", { terminal: terminalId || null });
   } catch (e) {
     uiAlert(`Launch TUI failed: ${e}`);
   }
   setTimeout(refreshTuiIndicator, 1500);
+}
+
+$("tui-btn").onclick = (ev) => {
+  ev.stopPropagation(); // the same click would bubble to hideContextMenu
+  const r = $("tui-btn").getBoundingClientRect();
+  const last = state.settings.tuiTerminal || "";
+  showContextMenu(r.left, r.bottom + 4, [
+    {
+      label: "Auto — split pane or default terminal",
+      icon: "columns",
+      hint: last === "" ? "last used" : "",
+      action: () => launchTui(""),
+    },
+    ...(detectedTerminals.length ? [null] : []),
+    ...detectedTerminals.map((t) => ({
+      label: t.name,
+      icon: "terminal",
+      hint: last === t.id ? "last used" : "",
+      action: () => launchTui(t.id),
+    })),
+  ]);
 };
 
 // ── Icon button hover labels ────────────────────────────────────
@@ -2717,6 +2745,9 @@ document.addEventListener("click", () => iconTip.remove(), true);
   setVersionLabel();
   refreshTuiIndicator();
   setInterval(refreshTuiIndicator, 5000);
+  invoke("list_terminals")
+    .then((t) => (detectedTerminals = t))
+    .catch(() => {});
   await refreshSessions();
   await restoreWorkspaceSessions();
   setInterval(refreshSessions, 2000);

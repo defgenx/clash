@@ -478,13 +478,25 @@ fn tui_running() -> bool {
         .unwrap_or(false)
 }
 
-/// Launch the clash TUI alongside the GUI: a split pane when the GUI was
-/// started from a pane-capable terminal, otherwise a new terminal window
-/// (Terminal.app on macOS). Prefers the sibling `clash` binary next to
-/// this executable (dev builds), falling back to `clash` on PATH.
+/// Terminal emulators detected on this machine — the choices offered by
+/// the TUI launcher's picker.
 #[tauri::command]
-fn launch_tui() -> Result<(), String> {
+fn list_terminals() -> Vec<clash::infrastructure::windowing::terminal_choice::DetectedTerminal> {
+    clash::infrastructure::windowing::terminal_choice::detect_terminals()
+}
+
+/// Launch the clash TUI alongside the GUI. With a `terminal` id (from
+/// `list_terminals`), a new window of that emulator; without one, auto —
+/// a split pane when the GUI was started from a pane-capable terminal,
+/// otherwise the platform's default terminal. Prefers the sibling `clash`
+/// binary next to this executable, falling back to PATH.
+#[tauri::command]
+fn launch_tui(terminal: Option<String>) -> Result<(), String> {
     let exe = resolve_tui_binary()?;
+    if let Some(id) = terminal.as_deref().filter(|id| !id.is_empty()) {
+        return clash::infrastructure::windowing::terminal_choice::open_window_in(id, &exe, &[])
+            .map_err(|e| e.to_string());
+    }
     let term_program = std::env::var("TERM_PROGRAM").ok();
     let in_tmux = std::env::var("TMUX").is_ok();
     clash::infrastructure::windowing::terminal_spawn::open_command(
@@ -1704,6 +1716,7 @@ fn main() {
             set_notifications_enabled,
             tui_running,
             launch_tui,
+            list_terminals,
             create_new_session,
             create_worktree_session,
             get_diff,

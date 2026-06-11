@@ -364,9 +364,12 @@ follow one rule: the active tab is always the content of the focused
 pane — clicking a tab fills the focused pane, focusing a pane activates
 its tab, and closing a pane keeps its session reachable as a tab. A
 labeled `TUI` badge-button in the sidebar header launches the clash TUI
-alongside the GUI (split pane when started from a pane-capable terminal,
-else a new terminal window) — gold when a TUI is running somewhere, grey
-when not. The sidebar footer holds a SETTINGS section: default directory
+alongside the GUI — gold when a TUI is running somewhere, grey when not.
+Clicking it opens a picker of terminals detected on the OS (Terminal,
+iTerm2, WezTerm, kitty, Alacritty, Ghostty, Warp; GNOME Terminal/Konsole/xterm
+on Linux; tmux when inside one) plus an Auto entry (split pane when the
+GUI was started from a pane-capable terminal, else the default
+terminal); the last choice is marked in the menu. The sidebar footer holds a SETTINGS section: default directory
 for new sessions, terminal font size and font family (live-applied),
 scrollback lines, cursor style (block/bar/underline) and blink,
 copy-on-select, "⌥ sends Esc (Meta)" (off = Option always composes
