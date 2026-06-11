@@ -74,11 +74,11 @@ pub const COMMAND_COLOR: Color = Color::Rgb(200, 185, 125); // muted gold for : 
 pub const FILTER_COLOR: Color = Color::Rgb(135, 195, 165); // soft mint for / filter mode
 pub const PROMPT_COLOR: Color = Color::Rgb(135, 190, 190); // soft teal for input prompts
 
-// ── Logo flame colors (matches the lava wordmark in assets/logo.svg) ──
-pub const LOGO_PRIMARY: Color = Color::Rgb(240, 131, 19); // lava orange
-pub const LOGO_GLOW: Color = Color::Rgb(184, 63, 13); // deep ember
-pub const LOGO_ACCENT: Color = Color::Rgb(255, 223, 89); // bright flame yellow
-pub const LOGO_CORE: Color = Color::Rgb(255, 248, 235); // white-hot center
+// ── Logo colors (matches the big-bang prompt emblem in assets/icon.svg) ──
+pub const LOGO_PRIMARY: Color = Color::Rgb(255, 138, 92); // coral chevron
+pub const LOGO_GLOW: Color = Color::Rgb(194, 80, 46); // deep coral glow
+pub const LOGO_ACCENT: Color = Color::Rgb(255, 210, 125); // gold rays/cursor
+pub const LOGO_CORE: Color = Color::Rgb(255, 247, 237); // white-hot singularity
 
 // ── Composed styles ────────────────────────────────────────────
 
