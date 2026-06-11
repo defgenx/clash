@@ -1359,18 +1359,6 @@ function renderChat(out, msgs) {
   chat.scrollTop = chat.scrollHeight;
 }
 
-/// Encode a full HTML document as a base64 data: URL the embedded
-/// browser webview can navigate to (no temp file, no fs permissions).
-function htmlToDataUrl(html) {
-  const bytes = new TextEncoder().encode(html);
-  let bin = "";
-  const CHUNK = 0x8000; // String.fromCharCode arg-spread stack limit
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
-  }
-  return `data:text/html;charset=utf-8;base64,${btoa(bin)}`;
-}
-
 /// Standalone dark-themed diff page (same line classes as renderDiff).
 function diffHtmlDoc(title, diffText) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
@@ -1397,25 +1385,49 @@ async function showBrowserOpenPicker(s) {
     row.onclick = onclick;
     out.appendChild(row);
   };
-  addRow("± Diff", "git diff HEAD as a page", async () => {
+  const pr = state.prUrls.get(s.id);
+  let repo = null;
+  try {
+    repo = await invoke("get_repo_url", { sessionId: s.id });
+  } catch {
+    /* no origin remote — skip the forge rows */
+  }
+  // GitHub diff first: the PR's files view, else a compare view of the
+  // session branch against the default branch (pushed commits only).
+  if (pr) {
+    addRow("± Diff on GitHub", `PR #${pr.split("/").pop()} files`, () =>
+      openBrowserPanel(`${pr}/files`),
+    );
+  } else if (repo && repo.includes("github.com") && s.git_branch) {
+    const branch = s.git_branch;
+    addRow("± Diff on GitHub", `compare …${branch}`, async () => {
+      const base = await invoke("get_default_branch", { sessionId: s.id }).catch(() => "main");
+      if (base === branch) {
+        uiAlert(`Branch ${branch} is the default branch — nothing to compare on GitHub.`);
+        return;
+      }
+      openBrowserPanel(
+        `${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(branch)}`,
+      );
+    });
+  }
+  addRow("± Local diff", "uncommitted git diff HEAD as a page", async () => {
     try {
       const diff = await invoke("get_diff", { sessionId: s.id });
-      openBrowserPanel(htmlToDataUrl(diffHtmlDoc(`diff — ${displayName(s)}`, diff)));
+      const html = diffHtmlDoc(`diff — ${displayName(s)}`, diff);
+      const url = await invoke("stage_browser_page", { html });
+      openBrowserPanel(url, { title: `± ${displayName(s)}` });
     } catch (e) {
       uiAlert(`Diff failed: ${e}`);
     }
   });
-  const pr = state.prUrls.get(s.id);
   if (pr) addRow(`⇄ Pull request #${pr.split("/").pop()}`, pr, () => openBrowserPanel(pr));
-  try {
-    const repo = await invoke("get_repo_url", { sessionId: s.id });
+  if (repo) {
     const url =
       s.git_branch && repo.includes("github.com")
         ? `${repo}/tree/${encodeURIComponent(s.git_branch)}`
         : repo;
     addRow("⌂ Repository", url, () => openBrowserPanel(url));
-  } catch {
-    /* no origin remote — skip the row */
   }
 }
 
@@ -1960,13 +1972,23 @@ window.addEventListener("resize", fitAll);
 let browserShown = false;
 let browserLastUrl = null;
 let browserUrlPoll = null;
+let browserTabs = []; // [{ id, url, title }] — title only for staged pages
+let browserActiveTab = null;
+let browserNextTabId = 1; // monotonic: webview labels are never reused
 
 function browserSlotRect() {
   const r = $("browser-slot").getBoundingClientRect();
   return { x: r.x, y: r.y, w: r.width, h: r.height };
 }
 
-async function openBrowserPanel(url) {
+function activeBrowserTab() {
+  return browserTabs.find((t) => t.id === browserActiveTab);
+}
+
+/// Show `url` in the active tab (creating the first tab if needed).
+/// `opts.newTab` opens a fresh tab instead; `opts.title` labels staged
+/// pages (diff) whose URL carries no readable name.
+async function openBrowserPanel(url, opts = {}) {
   browserLastUrl = url;
   $("browser").classList.remove("hidden");
   $("browser-resizer").classList.remove("hidden");
@@ -1974,9 +1996,19 @@ async function openBrowserPanel(url) {
   // Layout must settle before measuring the slot
   await new Promise((r) => requestAnimationFrame(r));
   const { x, y, w, h } = browserSlotRect();
+  let tab = opts.newTab ? null : activeBrowserTab();
+  if (!tab) {
+    tab = { id: String(browserNextTabId++), url, title: opts.title };
+    browserTabs.push(tab);
+    browserActiveTab = tab.id;
+  } else {
+    tab.url = url;
+    tab.title = opts.title;
+  }
   try {
-    await invoke("browser_open", { url, x, y, w, h });
+    await invoke("browser_open", { tab: tab.id, url, x, y, w, h });
     browserShown = true;
+    renderBrowserTabs();
     if (document.activeElement !== $("b-url")) $("b-url").value = url;
     if (!browserUrlPoll) browserUrlPoll = setInterval(syncBrowserUrl, 1500);
   } catch (e) {
@@ -1985,8 +2017,82 @@ async function openBrowserPanel(url) {
   }
 }
 
+async function selectBrowserTab(id) {
+  if (id === browserActiveTab) return;
+  browserActiveTab = id;
+  const { x, y, w, h } = browserSlotRect();
+  try {
+    await invoke("browser_select", { tab: id, x, y, w, h });
+  } catch (e) {
+    void e;
+  }
+  const tab = activeBrowserTab();
+  browserLastUrl = tab?.url || browserLastUrl;
+  if (document.activeElement !== $("b-url")) $("b-url").value = tab?.url || "";
+  renderBrowserTabs();
+}
+
+function closeBrowserTab(id) {
+  invoke("browser_close_tab", { tab: id }).catch(() => {});
+  const i = browserTabs.findIndex((t) => t.id === id);
+  if (i >= 0) browserTabs.splice(i, 1);
+  if (!browserTabs.length) {
+    closeBrowserPanel();
+    return;
+  }
+  if (browserActiveTab === id) {
+    browserActiveTab = null;
+    selectBrowserTab(browserTabs[Math.max(0, i - 1)].id);
+  } else {
+    renderBrowserTabs();
+  }
+}
+
+function browserTabLabel(t) {
+  if (t.title) return t.title;
+  try {
+    const u = new URL(t.url);
+    return u.protocol === "clashpage:" ? "diff" : u.hostname.replace(/^www\./, "");
+  } catch {
+    return t.url || "tab";
+  }
+}
+
+function renderBrowserTabs() {
+  const strip = $("b-tabs");
+  strip.innerHTML = "";
+  for (const t of browserTabs) {
+    const el = document.createElement("div");
+    el.className = "b-tab" + (t.id === browserActiveTab ? " active" : "");
+    el.title = t.url;
+    const label = document.createElement("span");
+    label.className = "b-tab-label";
+    label.textContent = browserTabLabel(t);
+    el.appendChild(label);
+    const x = document.createElement("span");
+    x.className = "b-tab-x";
+    x.title = "Close tab";
+    x.textContent = "×";
+    x.onclick = (e) => {
+      e.stopPropagation();
+      closeBrowserTab(t.id);
+    };
+    el.appendChild(x);
+    el.onclick = () => selectBrowserTab(t.id);
+    strip.appendChild(el);
+  }
+  const plus = document.createElement("button");
+  plus.className = "icon-btn b-newtab";
+  plus.title = "New tab";
+  plus.textContent = "+";
+  plus.onclick = () => openBrowserPanel("https://github.com", { newTab: true });
+  strip.appendChild(plus);
+}
+
 function closeBrowserPanel() {
   browserShown = false;
+  browserTabs = [];
+  browserActiveTab = null;
   if (browserUrlPoll) {
     clearInterval(browserUrlPoll);
     browserUrlPoll = null;
@@ -2003,10 +2109,15 @@ function toggleBrowserPanel() {
 }
 
 async function syncBrowserUrl() {
-  if (!browserShown) return;
+  if (!browserShown || !browserActiveTab) return;
   try {
-    const url = await invoke("browser_get_url");
+    const url = await invoke("browser_get_url", { tab: browserActiveTab });
     browserLastUrl = url;
+    const tab = activeBrowserTab();
+    if (tab && tab.url !== url) {
+      tab.url = url;
+      if (!tab.title) renderBrowserTabs(); // hostname label may have changed
+    }
     if (document.activeElement !== $("b-url")) $("b-url").value = url;
   } catch (e) {
     void e;
@@ -2022,9 +2133,12 @@ function syncBrowserBounds() {
 new ResizeObserver(syncBrowserBounds).observe($("browser-slot"));
 window.addEventListener("resize", syncBrowserBounds);
 
-$("b-back").onclick = () => invoke("browser_history", { delta: -1 }).catch(() => {});
-$("b-fwd").onclick = () => invoke("browser_history", { delta: 1 }).catch(() => {});
-$("b-reload").onclick = () => invoke("browser_reload").catch(() => {});
+$("b-back").onclick = () =>
+  browserActiveTab && invoke("browser_history", { tab: browserActiveTab, delta: -1 }).catch(() => {});
+$("b-fwd").onclick = () =>
+  browserActiveTab && invoke("browser_history", { tab: browserActiveTab, delta: 1 }).catch(() => {});
+$("b-reload").onclick = () =>
+  browserActiveTab && invoke("browser_reload", { tab: browserActiveTab }).catch(() => {});
 $("b-close").onclick = closeBrowserPanel;
 $("b-ext").onclick = () => {
   if (browserLastUrl) invoke("open_external", { url: browserLastUrl }).catch(console.error);
@@ -2032,10 +2146,18 @@ $("b-ext").onclick = () => {
 $("b-url").addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   let url = $("b-url").value.trim();
-  if (!url) return;
+  if (!url || !browserActiveTab) return;
   if (!/^https?:\/\//.test(url)) url = "https://" + url;
   browserLastUrl = url;
-  invoke("browser_navigate", { url }).catch((err) => uiAlert(`Navigate failed: ${err}`));
+  const tab = activeBrowserTab();
+  if (tab) {
+    tab.url = url;
+    tab.title = undefined;
+    renderBrowserTabs();
+  }
+  invoke("browser_navigate", { tab: browserActiveTab, url }).catch((err) =>
+    uiAlert(`Navigate failed: ${err}`),
+  );
 });
 
 // ── Panel resizing (sidebar / details) ──────────────────────────

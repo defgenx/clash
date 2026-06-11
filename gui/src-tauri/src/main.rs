@@ -49,7 +49,16 @@ struct GuiState {
     /// out of `list_sessions` results and expire after
     /// `RECENTLY_REMOVED_TTL` refresh cycles.
     recently_removed: Mutex<HashMap<String, u8>>,
+    /// HTML documents staged for the embedded browser, served by the
+    /// `clashpage://` protocol. data: URLs are rejected at webview
+    /// creation without a cargo feature and WKWebView drops multi-MB
+    /// ones silently (large diffs) — a custom protocol has neither
+    /// limit. FIFO-bounded; an evicted page 404s on reload.
+    browser_pages: Mutex<Vec<(String, String)>>,
 }
+
+/// Staged browser pages kept before the oldest is evicted.
+const BROWSER_PAGES_CAP: usize = 16;
 
 /// Refresh cycles a killed session stays filtered from `list_sessions`.
 /// Must outlive the worst-case dying window: 3s /exit grace + 3s SIGTERM
@@ -523,21 +532,24 @@ async fn create_new_session(
     Ok(session_id)
 }
 
+/// Working directory of a session — cwd, falling back to project path.
+fn session_dir(state: &GuiState, session_id: &str) -> Result<String, String> {
+    let prev = state.previous.lock().unwrap();
+    prev.iter()
+        .find(|s| s.id == session_id)
+        .and_then(|s| {
+            s.cwd
+                .clone()
+                .filter(|c| !c.is_empty())
+                .or_else(|| Some(s.project_path.clone()).filter(|p| !p.is_empty()))
+        })
+        .ok_or_else(|| "No working directory for session".to_string())
+}
+
 /// `git diff HEAD` for a session's working directory (same as the TUI's diff view).
 #[tauri::command]
 async fn get_diff(state: State<'_, GuiState>, session_id: String) -> Result<String, String> {
-    let dir = {
-        let prev = state.previous.lock().unwrap();
-        prev.iter()
-            .find(|s| s.id == session_id)
-            .and_then(|s| {
-                s.cwd
-                    .clone()
-                    .filter(|c| !c.is_empty())
-                    .or_else(|| Some(s.project_path.clone()).filter(|p| !p.is_empty()))
-            })
-            .ok_or_else(|| "No working directory for session".to_string())?
-    };
+    let dir = session_dir(&state, &session_id)?;
     let output = tokio::process::Command::new("git")
         .args(["diff", "HEAD"])
         .current_dir(&dir)
@@ -562,18 +574,7 @@ fn get_home_dir() -> String {
 /// browser open the code on the forge.
 #[tauri::command]
 async fn get_repo_url(state: State<'_, GuiState>, session_id: String) -> Result<String, String> {
-    let dir = {
-        let prev = state.previous.lock().unwrap();
-        prev.iter()
-            .find(|s| s.id == session_id)
-            .and_then(|s| {
-                s.cwd
-                    .clone()
-                    .filter(|c| !c.is_empty())
-                    .or_else(|| Some(s.project_path.clone()).filter(|p| !p.is_empty()))
-            })
-            .ok_or_else(|| "No working directory for session".to_string())?
-    };
+    let dir = session_dir(&state, &session_id)?;
     let output = tokio::process::Command::new("git")
         .args(["remote", "get-url", "origin"])
         .current_dir(&dir)
@@ -585,6 +586,29 @@ async fn get_repo_url(state: State<'_, GuiState>, session_id: String) -> Result<
     }
     let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
     remote_to_web_url(&raw).ok_or_else(|| format!("Unsupported remote url: {}", raw))
+}
+
+/// Default branch of the session repo (from `origin/HEAD`) — the base of
+/// GitHub compare links. Falls back to `main` when origin/HEAD isn't set
+/// locally (clones made before git started recording it).
+#[tauri::command]
+async fn get_default_branch(
+    state: State<'_, GuiState>,
+    session_id: String,
+) -> Result<String, String> {
+    let dir = session_dir(&state, &session_id)?;
+    let output = tokio::process::Command::new("git")
+        .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        .current_dir(&dir)
+        .output()
+        .await
+        .map_err(|e| format!("git symbolic-ref failed: {}", e))?;
+    if output.status.success() {
+        let full = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(full.strip_prefix("origin/").unwrap_or(&full).to_string())
+    } else {
+        Ok("main".to_string())
+    }
 }
 
 /// `git@host:owner/repo.git` / `ssh://git@host/owner/repo.git` /
@@ -1196,19 +1220,64 @@ fn load_gui_state() -> Result<String, String> {
     }
 }
 
-// ── Embedded browser panel (cmux-style child webview) ──────────────
+// ── Embedded browser panel (cmux-style child webviews, one per tab) ─
 
-const BROWSER_LABEL: &str = "embedded-browser";
+const BROWSER_LABEL_PREFIX: &str = "embedded-browser";
 
-fn embedded_browser(app: &tauri::AppHandle) -> Option<tauri::Webview> {
-    app.webviews().get(BROWSER_LABEL).cloned()
+fn browser_tab_label(tab: &str) -> String {
+    format!("{}-{}", BROWSER_LABEL_PREFIX, tab)
 }
 
-/// Open (or navigate) the embedded browser child webview, positioned over
+fn browser_tab(app: &tauri::AppHandle, tab: &str) -> Option<tauri::Webview> {
+    app.webviews().get(&browser_tab_label(tab)).cloned()
+}
+
+/// All live browser-tab webviews (the main app webview is excluded).
+fn browser_tabs(app: &tauri::AppHandle) -> Vec<tauri::Webview> {
+    app.webviews()
+        .into_iter()
+        .filter(|(label, _)| label.starts_with(BROWSER_LABEL_PREFIX))
+        .map(|(_, wv)| wv)
+        .collect()
+}
+
+fn set_browser_bounds(wv: &tauri::Webview, x: f64, y: f64, w: f64, h: f64) {
+    let _ = wv.set_position(tauri::LogicalPosition::new(x, y));
+    let _ = wv.set_size(tauri::LogicalSize::new(w, h));
+}
+
+/// Show `tab` and hide every other browser tab (tabs are stacked child
+/// webviews over the same `#browser-slot` rect).
+fn raise_browser_tab(app: &tauri::AppHandle, tab: &str) {
+    let label = browser_tab_label(tab);
+    for wv in browser_tabs(app) {
+        if wv.label() == label {
+            let _ = wv.show();
+        } else {
+            let _ = wv.hide();
+        }
+    }
+}
+
+/// Stage an HTML document and return a `clashpage://` URL the embedded
+/// browser can navigate to (used for rendered diff pages).
+#[tauri::command]
+fn stage_browser_page(state: State<'_, GuiState>, html: String) -> String {
+    let id = uuid::Uuid::now_v7().to_string();
+    let mut pages = state.browser_pages.lock().unwrap();
+    pages.push((id.clone(), html));
+    if pages.len() > BROWSER_PAGES_CAP {
+        pages.remove(0);
+    }
+    format!("clashpage://localhost/{}", id)
+}
+
+/// Open (or navigate) the browser tab's child webview, positioned over
 /// the `#browser-slot` placeholder rect reported by the frontend.
 #[tauri::command]
 async fn browser_open(
     app: tauri::AppHandle,
+    tab: String,
     url: String,
     x: f64,
     y: f64,
@@ -1216,23 +1285,21 @@ async fn browser_open(
     h: f64,
 ) -> Result<(), String> {
     let parsed: tauri::Url = url.parse().map_err(|e| format!("bad url: {}", e))?;
-    if let Some(wv) = embedded_browser(&app) {
+    if let Some(wv) = browser_tab(&app, &tab) {
         wv.navigate(parsed).map_err(|e| e.to_string())?;
-        let _ = wv.set_position(tauri::LogicalPosition::new(x, y));
-        let _ = wv.set_size(tauri::LogicalSize::new(w, h));
+        set_browser_bounds(&wv, x, y, w, h);
+        raise_browser_tab(&app, &tab);
         return Ok(());
     }
     let win = app.get_window("main").ok_or("no main window")?;
     // add_child must run on the main thread on macOS.
     let win2 = win.clone();
+    let label = browser_tab_label(&tab);
     let (tx, rx) = tokio::sync::oneshot::channel();
     win.run_on_main_thread(move || {
         let res = win2
             .add_child(
-                tauri::webview::WebviewBuilder::new(
-                    BROWSER_LABEL,
-                    tauri::WebviewUrl::External(parsed),
-                ),
+                tauri::webview::WebviewBuilder::new(label, tauri::WebviewUrl::External(parsed)),
                 tauri::LogicalPosition::new(x, y),
                 tauri::LogicalSize::new(w, h),
             )
@@ -1241,53 +1308,81 @@ async fn browser_open(
         let _ = tx.send(res);
     })
     .map_err(|e| e.to_string())?;
-    rx.await.map_err(|e| e.to_string())?
+    rx.await.map_err(|e| e.to_string())??;
+    raise_browser_tab(&app, &tab);
+    Ok(())
 }
 
-/// Reposition the embedded browser over the placeholder (layout changed).
+/// Bring an existing tab to the front (tab strip click).
+#[tauri::command]
+fn browser_select(
+    app: tauri::AppHandle,
+    tab: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+) -> Result<(), String> {
+    let wv = browser_tab(&app, &tab).ok_or("no such tab")?;
+    set_browser_bounds(&wv, x, y, w, h);
+    raise_browser_tab(&app, &tab);
+    Ok(())
+}
+
+/// Reposition all browser tabs over the placeholder (layout changed) —
+/// hidden tabs too, so they come back correctly sized.
 #[tauri::command]
 fn browser_bounds(app: tauri::AppHandle, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
-    if let Some(wv) = embedded_browser(&app) {
-        let _ = wv.set_position(tauri::LogicalPosition::new(x, y));
-        let _ = wv.set_size(tauri::LogicalSize::new(w, h));
+    for wv in browser_tabs(&app) {
+        set_browser_bounds(&wv, x, y, w, h);
     }
     Ok(())
 }
 
 #[tauri::command]
-fn browser_navigate(app: tauri::AppHandle, url: String) -> Result<(), String> {
+fn browser_navigate(app: tauri::AppHandle, tab: String, url: String) -> Result<(), String> {
     let parsed: tauri::Url = url.parse().map_err(|e| format!("bad url: {}", e))?;
-    embedded_browser(&app)
-        .ok_or("browser not open")?
+    browser_tab(&app, &tab)
+        .ok_or("no such tab")?
         .navigate(parsed)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn browser_history(app: tauri::AppHandle, delta: i32) -> Result<(), String> {
-    embedded_browser(&app)
-        .ok_or("browser not open")?
+fn browser_history(app: tauri::AppHandle, tab: String, delta: i32) -> Result<(), String> {
+    browser_tab(&app, &tab)
+        .ok_or("no such tab")?
         .eval(format!("history.go({})", delta))
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn browser_reload(app: tauri::AppHandle) -> Result<(), String> {
-    embedded_browser(&app)
-        .ok_or("browser not open")?
+fn browser_reload(app: tauri::AppHandle, tab: String) -> Result<(), String> {
+    browser_tab(&app, &tab)
+        .ok_or("no such tab")?
         .eval("location.reload()")
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn browser_get_url(app: tauri::AppHandle) -> Result<String, String> {
-    let wv = embedded_browser(&app).ok_or("browser not open")?;
+fn browser_get_url(app: tauri::AppHandle, tab: String) -> Result<String, String> {
+    let wv = browser_tab(&app, &tab).ok_or("no such tab")?;
     wv.url().map(|u| u.to_string()).map_err(|e| e.to_string())
 }
 
+/// Close one tab's webview.
+#[tauri::command]
+fn browser_close_tab(app: tauri::AppHandle, tab: String) -> Result<(), String> {
+    if let Some(wv) = browser_tab(&app, &tab) {
+        let _ = wv.close();
+    }
+    Ok(())
+}
+
+/// Close the whole panel: every tab's webview.
 #[tauri::command]
 fn browser_close(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(wv) = embedded_browser(&app) {
+    for wv in browser_tabs(&app) {
         let _ = wv.close();
     }
     Ok(())
@@ -1368,6 +1463,7 @@ fn main() {
         attached: tokio::sync::Mutex::new(HashMap::new()),
         wild_processes_rx,
         recently_removed: Mutex::new(HashMap::new()),
+        browser_pages: Mutex::new(Vec::new()),
     };
 
     // FS watcher on ~/.claude/projects — same role as the TUI's watcher
@@ -1386,6 +1482,23 @@ fn main() {
 
     tauri::Builder::default()
         .manage(state)
+        // Serves HTML staged by `stage_browser_page` to the embedded
+        // browser (clashpage://localhost/<id>).
+        .register_uri_scheme_protocol("clashpage", |ctx, request| {
+            let id = request.uri().path().trim_start_matches('/');
+            let state = ctx.app_handle().state::<GuiState>();
+            let pages = state.browser_pages.lock().unwrap();
+            match pages.iter().find(|(page_id, _)| page_id == id) {
+                Some((_, html)) => tauri::http::Response::builder()
+                    .header("Content-Type", "text/html; charset=utf-8")
+                    .body(html.clone().into_bytes())
+                    .unwrap(),
+                None => tauri::http::Response::builder()
+                    .status(404)
+                    .body(Vec::new())
+                    .unwrap(),
+            }
+        })
         .setup(move |app| {
             if let Some(watcher) = fs_watcher {
                 // Keep the watcher alive for the app's lifetime.
@@ -1491,6 +1604,7 @@ fn main() {
             create_worktree_session,
             get_diff,
             get_repo_url,
+            get_default_branch,
             get_home_dir,
             get_conversation,
             get_subagents,
@@ -1508,12 +1622,15 @@ fn main() {
             start_update,
             get_version,
             get_session_ports,
+            stage_browser_page,
             browser_open,
+            browser_select,
             browser_bounds,
             browser_navigate,
             browser_history,
             browser_reload,
             browser_get_url,
+            browser_close_tab,
             browser_close,
             open_external,
             save_gui_state,

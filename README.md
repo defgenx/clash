@@ -365,11 +365,14 @@ The details panel (ⓘ) is a compact overview — live status, branch,
 project, CWD, summary. Conversation, Subagents, and Diff open as full
 tabs in the main area (closable like terminal tabs); the panel's TOOLS
 row has Ports, Open-in-IDE, and Open-in-browser pickers — the latter
-renders the working diff as a page in the embedded browser, or opens
-the session's PR / repository there.
+opens the diff on GitHub (the PR's files view, or a compare view of the
+session branch against the default branch), renders the local
+uncommitted diff as a page, or opens the session's PR / repository.
 
 Embedded browser (cmux-style, `⌘⇧B`): a native webview panel docked on
-the right with URL bar, back/forward/reload, and open-in-system-browser.
+the right with browser tabs (`+` to open, `×` per tab, `×` in the
+toolbar closes the whole panel), URL bar, back/forward/reload, and
+open-in-system-browser.
 URLs printed in any terminal are clickable and open there; listening
 ports open `localhost:<port>`; and when a session's output mentions a
 GitHub pull request, a green `⇄ PR #n` chip appears on the session (and
