@@ -47,21 +47,30 @@ html, body, #app {
 ::-webkit-scrollbar-corner { background: transparent; }
 #tabs::-webkit-scrollbar { height: 3px; }
 
+/* Ghost icon buttons (Superset-style): borderless, transparent until
+   hover, soft rounded highlight. `.on` marks a toggled/active state. */
 .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   background: none;
-  border: 1px solid var(--border);
-  border-radius: 4px;
+  border: none;
+  border-radius: 6px;
   color: var(--fg-dim);
   font-size: 19px;
   width: 30px;
   height: 30px;
   cursor: pointer;
   line-height: 1;
+  transition: background-color 0.12s, color 0.12s;
 }
+.icon-btn svg { display: block; }
 .icon-btn:hover { color: var(--fg); background: var(--bg-hover); }
+.icon-btn.on { color: var(--accent); background: var(--bg-active); }
 .icon-btn.mini { width: 24px; height: 24px; font-size: 15px; }
 .icon-btn.wide { width: auto; padding: 0 8px; font-size: 13px; }
-.icon-btn.danger:hover { color: var(--red); }
+.icon-btn.danger:hover { color: var(--red); background: rgba(229, 83, 75, 0.12); }
 
 /* Instant hover label for icon buttons (replaces the slow native title
    tooltip, which WKWebView renders unreliably). Positioned by app.js. */
@@ -131,7 +140,7 @@ html, body, #app {
 .ws-chip.active { border-color: var(--accent); color: var(--fg); }
 .ws-chip .n { color: var(--accent); font-weight: 700; }
 .ws-chip .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ws-chip .ws-close { opacity: 0; font-size: 13px; margin-left: 2px; }
+.ws-chip .ws-close { display: inline-flex; align-items: center; opacity: 0; margin-left: 2px; }
 .ws-chip:hover .ws-close { opacity: 0.6; }
 .ws-chip .ws-close:hover { opacity: 1; color: var(--red); }
 
@@ -327,14 +336,16 @@ html, body, #app {
 }
 .session-item:hover .session-actions { display: flex; }
 .session-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
   color: var(--fg-dim);
   cursor: pointer;
-  font-size: 12px;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
 }
 .session-actions button:hover { color: var(--fg); background: var(--bg-active); }
 .session-actions button.danger:hover { color: var(--red); }
@@ -441,7 +452,7 @@ html, body, #app {
   height: 34px;
 }
 .tab.active { color: var(--fg); background: var(--bg); }
-.tab .close { opacity: 0.5; font-size: 14px; }
+.tab .close { display: inline-flex; align-items: center; opacity: 0.5; }
 .tab .close:hover { opacity: 1; color: var(--red); }
 
 .tab-dot {
@@ -459,27 +470,54 @@ html, body, #app {
 .tab-dot.errored { background: var(--st-error); }
 .tab-dot.stashed { background: var(--st-idle); }
 
-/* Right-click context menu */
+/* Right-click context menu — elevated card (Superset/AntD-style):
+   icon gutter, right-aligned shortcut hints, tinted danger hover. */
 #context-menu {
   position: fixed;
   z-index: 300;
-  min-width: 200px;
-  background: var(--bg-sidebar);
+  min-width: 220px;
+  background: #1f1f23;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  border-radius: 10px;
+  padding: 5px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
+  transform-origin: top left;
+  animation: menu-in 0.12s ease-out;
+}
+@keyframes menu-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
 }
 .ctx-item {
-  padding: 6px 10px;
-  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
   font-size: 12px;
   cursor: pointer;
   white-space: nowrap;
+  transition: background-color 0.1s;
+}
+.ctx-item .ctx-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  color: var(--fg-dim);
+  flex-shrink: 0;
+}
+.ctx-item .ctx-hint {
+  margin-left: auto;
+  padding-left: 18px;
+  color: var(--fg-dim);
+  font-size: 11px;
 }
 .ctx-item:hover { background: var(--bg-hover); }
 .ctx-item.danger { color: var(--red); }
-.ctx-sep { height: 1px; background: var(--border); margin: 4px 6px; }
+.ctx-item.danger .ctx-icon { color: var(--red); }
+.ctx-item.danger:hover { background: rgba(229, 83, 75, 0.12); }
+.ctx-sep { height: 1px; background: var(--border); margin: 5px 10px; }
 
 #content { flex: 1; display: flex; min-height: 0; }
 
@@ -588,9 +626,10 @@ html, body, #app {
   text-overflow: ellipsis;
 }
 .b-tab-x {
+  display: inline-flex;
+  align-items: center;
   flex-shrink: 0;
   opacity: 0.5;
-  font-size: 14px;
 }
 .b-tab-x:hover {
   opacity: 1;
@@ -658,25 +697,39 @@ html, body, #app {
 .row-item.back { color: var(--accent); margin-bottom: 6px; }
 
 #details .dim-id { margin-top: 14px; opacity: 0.45; font-size: 10px; }
-#details-body { padding: 12px; }
-#details h3 { font-size: 13px; margin-bottom: 8px; }
-#details h4 { font-size: 11px; color: var(--fg-dim); margin: 12px 0 4px; letter-spacing: 0.5px; }
-.kv { display: flex; gap: 8px; font-size: 12px; padding: 2px 0; }
+#details-body { padding: 14px; }
+#details h3 { font-size: 13px; margin-bottom: 10px; }
+#details h4 {
+  font-size: 10px;
+  color: var(--fg-dim);
+  margin: 16px 0 6px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+#details h4:first-of-type { border-top: none; padding-top: 0; margin-top: 12px; }
+.kv { display: flex; gap: 8px; font-size: 12px; padding: 3px 0; }
 .kv .k { color: var(--fg-dim); min-width: 80px; }
 .kv .v { word-break: break-all; user-select: text; }
 
 #details .actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
 #details .actions button {
-  background: var(--bg);
+  background: none;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 6px;
   color: var(--fg);
-  padding: 4px 10px;
+  padding: 5px 12px;
   font-size: 12px;
   cursor: pointer;
+  transition: background-color 0.12s, border-color 0.12s, color 0.12s;
 }
-#details .actions button:hover { border-color: var(--accent); }
-#details .actions button.danger:hover { border-color: var(--red); color: var(--red); }
+#details .actions button:hover { background: var(--bg-hover); border-color: var(--accent); }
+#details .actions button.danger:hover {
+  background: rgba(229, 83, 75, 0.12);
+  border-color: var(--red);
+  color: var(--red);
+}
 
 .diff {
   font-family: "SF Mono", Menlo, monospace;

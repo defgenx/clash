@@ -26,6 +26,55 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+// ── SVG icon set ────────────────────────────────────────────────
+// Feather-style stroke icons. Unicode glyphs render inconsistently
+// across fonts; these inherit color via currentColor and scale crisply.
+
+const ICONS = {
+  pencil: '<path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
+  x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  pause: '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>',
+  info: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
+  alert: '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  pr: '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/>',
+  zap: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+  kebab: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
+  plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+  "arrow-left": '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
+  "arrow-right": '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
+  reload: '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>',
+  "external-link": '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>',
+  columns: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/>',
+  square: '<rect x="3" y="3" width="18" height="18" rx="2"/>',
+};
+
+function svgIcon(name, size = 15) {
+  const body = ICONS[name];
+  if (!body) return "";
+  return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+}
+
+/// Swap the static buttons' unicode glyphs for SVG icons at boot.
+function applyStaticIcons() {
+  const map = {
+    "new-ws-btn": "plus",
+    "new-team-btn": "plus",
+    "split-btn": "columns",
+    "unsplit-btn": "square",
+    "details-btn": "info",
+    "b-back": "arrow-left",
+    "b-fwd": "arrow-right",
+    "b-reload": "reload",
+    "b-ext": "external-link",
+    "b-close": "x",
+  };
+  for (const [id, name] of Object.entries(map)) {
+    const el = $(id);
+    if (el) el.innerHTML = svgIcon(name);
+  }
+  $("stash-all-btn").innerHTML = `${svgIcon("pause", 13)}<span>all</span>`;
+}
+
 // ── In-app dialogs ──────────────────────────────────────────────
 // wry's WKWebView does not implement native alert/confirm/prompt —
 // they silently return undefined — so modal equivalents are built in-page.
@@ -206,7 +255,7 @@ function renderWorkspaceBar() {
     if (state.workspaces.length > 1) {
       const close = document.createElement("span");
       close.className = "ws-close";
-      close.textContent = "×";
+      close.innerHTML = svgIcon("x", 11);
       close.title = "Close workspace (⌘⇧W)";
       close.onclick = (ev) => {
         ev.stopPropagation();
@@ -226,11 +275,13 @@ function renderWorkspaceBar() {
       );
       const ids = w.sessions.filter((sid) => known.has(sid));
       showContextMenu(ev.clientX, ev.clientY, [
-        { label: "Rename workspace…", action: () => renameWorkspace(i) },
+        { label: "Rename workspace…", icon: "pencil", hint: "⌘⇧R", action: () => renameWorkspace(i) },
         ...(state.workspaces.length > 1
           ? [
               {
                 label: "Close workspace",
+                icon: "x",
+                hint: "⌘⇧W",
                 action: () => {
                   state.activeWs = i;
                   closeWorkspace();
@@ -243,6 +294,7 @@ function renderWorkspaceBar() {
               null,
               {
                 label: `Kill all ${ids.length} session${ids.length === 1 ? "" : "s"}…`,
+                icon: "alert",
                 danger: true,
                 action: () =>
                   massKill(
@@ -423,7 +475,7 @@ function renderSidebar() {
       header.title = "Not in any workspace — opening one claims it for this workspace";
       const killAll = document.createElement("button");
       killAll.className = "icon-btn mini danger";
-      killAll.textContent = "✕";
+      killAll.innerHTML = svgIcon("x", 13);
       killAll.title = "Kill all unassigned sessions";
       killAll.onclick = (ev) => {
         ev.stopPropagation();
@@ -564,52 +616,25 @@ function sessionItem(s) {
     meta.querySelector(".session-name").appendChild(dot);
   }
 
+  // A single kebab replaces the row of hover buttons — every action
+  // lives in the same menu UI as the tab/workspace context menus.
+  // Right-clicking the row opens it too.
   const actions = document.createElement("div");
   actions.className = "session-actions";
-  actions.appendChild(
-    actionBtn("✎", "Rename", (ev) => {
-      ev.stopPropagation();
-      startRename(s.id);
-    })
-  );
-  actions.appendChild(
-    actionBtn("ⓘ", "Details", (ev) => {
-      ev.stopPropagation();
-      showDetails(s.id);
-    })
-  );
-  if (s.source === "Wild" && !s.id.startsWith("wild-pid-")) {
-    actions.appendChild(
-      actionBtn("⚡", "Take over this wild claude process and attach", (ev) => {
-        ev.stopPropagation();
-        adoptWild(s);
-      })
-    );
-  }
-  if (s.is_running) {
-    actions.appendChild(
-      actionBtn("⏸", "Stash (stop, keep resumable)", async (ev) => {
-        ev.stopPropagation();
-        await invoke("stash_session", { sessionId: s.id }).catch(console.error);
-        dropTerminal(s.id);
-        refreshSessions();
-      })
-    );
-  }
-  actions.appendChild(
-    actionBtn(
-      "✕",
-      "Kill (remove from clash)",
-      async (ev) => {
-        ev.stopPropagation();
-        if (!(await uiConfirm(`Kill session "${displayName(s)}"?`, "Kill"))) return;
-        await invoke("kill_session", { sessionId: s.id }).catch(console.error);
-        dropTerminal(s.id);
-        refreshSessions();
-      },
-      true
-    )
-  );
+  const kebab = document.createElement("button");
+  kebab.innerHTML = svgIcon("kebab", 16);
+  kebab.title = "Actions";
+  kebab.onclick = (ev) => {
+    ev.stopPropagation();
+    const r = kebab.getBoundingClientRect();
+    sessionMenu(s, r.left, r.bottom + 4);
+  };
+  actions.appendChild(kebab);
+  item.oncontextmenu = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    sessionMenu(s, ev.clientX, ev.clientY);
+  };
 
   item.appendChild(ring);
   item.appendChild(meta);
@@ -617,13 +642,44 @@ function sessionItem(s) {
   return item;
 }
 
-function actionBtn(label, title, onclick, danger = false) {
-  const b = document.createElement("button");
-  b.textContent = label;
-  b.title = title;
-  b.onclick = onclick;
-  if (danger) b.className = "danger";
-  return b;
+/// Sidebar session action menu (kebab button / right-click on the row).
+function sessionMenu(s, x, y) {
+  const pr = state.prUrls.get(s.id);
+  showContextMenu(x, y, [
+    { label: "Rename session…", icon: "pencil", action: () => startRename(s.id) },
+    { label: "Details", icon: "info", action: () => showDetails(s.id) },
+    ...(pr
+      ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openBrowserPanel(pr) }]
+      : []),
+    ...(s.source === "Wild" && !s.id.startsWith("wild-pid-")
+      ? [{ label: "Take over wild claude", icon: "zap", action: () => adoptWild(s) }]
+      : []),
+    null,
+    ...(s.is_running
+      ? [
+          {
+            label: "Stash (stop, keep resumable)",
+            icon: "pause",
+            action: async () => {
+              await invoke("stash_session", { sessionId: s.id }).catch(console.error);
+              dropTerminal(s.id);
+              refreshSessions();
+            },
+          },
+        ]
+      : []),
+    {
+      label: "Kill session…",
+      icon: "alert",
+      danger: true,
+      action: async () => {
+        if (!(await uiConfirm(`Kill session "${displayName(s)}"?`, "Kill"))) return;
+        await invoke("kill_session", { sessionId: s.id }).catch(console.error);
+        dropTerminal(s.id);
+        refreshSessions();
+      },
+    },
+  ]);
 }
 
 function startRename(id) {
@@ -713,6 +769,9 @@ function showContextMenu(x, y, items) {
   hideContextMenu();
   const menu = document.createElement("div");
   menu.id = "context-menu";
+  // The icon column only exists when at least one item carries an icon,
+  // so icon-less menus don't render an empty gutter.
+  const hasIcons = items.some((it) => it && it.icon);
   for (const it of items) {
     if (!it) {
       const sep = document.createElement("div");
@@ -722,7 +781,22 @@ function showContextMenu(x, y, items) {
     }
     const row = document.createElement("div");
     row.className = "ctx-item" + (it.danger ? " danger" : "");
-    row.textContent = it.label;
+    if (hasIcons) {
+      const icon = document.createElement("span");
+      icon.className = "ctx-icon";
+      if (it.icon) icon.innerHTML = svgIcon(it.icon, 14);
+      row.appendChild(icon);
+    }
+    const label = document.createElement("span");
+    label.className = "ctx-label";
+    label.textContent = it.label;
+    row.appendChild(label);
+    if (it.hint) {
+      const hint = document.createElement("span");
+      hint.className = "ctx-hint";
+      hint.textContent = it.hint;
+      row.appendChild(hint);
+    }
     row.onclick = (ev) => {
       ev.stopPropagation();
       hideContextMenu();
@@ -765,20 +839,21 @@ function tabContextMenu(ev, sid) {
   if (entry && !entry.term) {
     // Content tab (conversation/subagents/diff) — only closable
     showContextMenu(ev.clientX, ev.clientY, [
-      { label: "Close tab", action: () => dropTerminal(sid) },
+      { label: "Close tab", icon: "x", action: () => dropTerminal(sid) },
     ]);
     return;
   }
   const pr = state.prUrls.get(sid);
   showContextMenu(ev.clientX, ev.clientY, [
-    { label: "Rename session…", action: () => renameSessionDialog(sid) },
-    { label: "Close tab (detach)", action: () => detachSession(sid) },
+    { label: "Rename session…", icon: "pencil", action: () => renameSessionDialog(sid) },
+    { label: "Close tab (detach)", icon: "x", hint: "⌘W", action: () => detachSession(sid) },
     ...(pr
-      ? [{ label: `Open PR #${pr.split("/").pop()} ⇄`, action: () => openBrowserPanel(pr) }]
+      ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openBrowserPanel(pr) }]
       : []),
     null,
     {
       label: "Stash (stop, keep resumable)",
+      icon: "pause",
       action: async () => {
         await invoke("stash_session", { sessionId: sid }).catch(console.error);
         dropTerminal(sid);
@@ -787,6 +862,7 @@ function tabContextMenu(ev, sid) {
     },
     {
       label: "Kill session…",
+      icon: "alert",
       danger: true,
       action: async () => {
         const s = state.sessions.find((x) => x.id === sid);
@@ -798,7 +874,7 @@ function tabContextMenu(ev, sid) {
       },
     },
     null,
-    { label: "Details", action: () => showDetails(sid) },
+    { label: "Details", icon: "info", action: () => showDetails(sid) },
   ]);
 }
 
@@ -837,7 +913,7 @@ function renderTabs() {
 
     const close = document.createElement("span");
     close.className = "close";
-    close.textContent = "×";
+    close.innerHTML = svgIcon("x", 13);
     close.title = "Detach (session keeps running)";
     close.onclick = (ev) => {
       ev.stopPropagation();
@@ -1256,6 +1332,7 @@ function showDetails(sid) {
   state.detailsFor = sid;
   $("details").classList.remove("hidden");
   $("details-resizer").classList.remove("hidden");
+  $("details-btn").classList.add("on");
   renderDetails();
   fitAll();
 }
@@ -1265,6 +1342,7 @@ function hideDetails() {
   detailsShellFor = null;
   $("details").classList.add("hidden");
   $("details-resizer").classList.add("hidden");
+  $("details-btn").classList.remove("on");
   fitAll();
 }
 
@@ -2080,7 +2158,7 @@ function renderBrowserTabs() {
     const x = document.createElement("span");
     x.className = "b-tab-x";
     x.title = "Close tab";
-    x.textContent = "×";
+    x.innerHTML = svgIcon("x", 12);
     x.onclick = (e) => {
       e.stopPropagation();
       closeBrowserTab(t.id);
@@ -2092,7 +2170,7 @@ function renderBrowserTabs() {
   const plus = document.createElement("button");
   plus.className = "icon-btn b-newtab";
   plus.title = "New tab";
-  plus.textContent = "+";
+  plus.innerHTML = svgIcon("plus");
   plus.onclick = () => openBrowserPanel("https://github.com", { newTab: true });
   strip.appendChild(plus);
 }
@@ -2299,6 +2377,7 @@ document.addEventListener("click", () => iconTip.remove(), true);
 // ── Boot ────────────────────────────────────────────────────────
 
 (async () => {
+  applyStaticIcons(); // before first paint — never show the unicode fallbacks
   await loadWorkspaces(); // disk-backed — must complete before first render
   $("default-cwd").value = state.settings.defaultCwd;
   state.homeDir = await invoke("get_home_dir").catch(() => "");

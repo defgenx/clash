@@ -343,7 +343,8 @@ GUI features: fuzzy search (`/` or `⌘F`), inline rename (double-click),
 new session via the sidebar's `＋ New session` button (`⌘T`) with preset
 picker and git-worktree option — the directory prefills from the configured
 default directory, falling back to the focused session's project, then home —
-stash/kill/take-over from hover actions, split panes up to 2×2 (`⌘D`, zoom
+rename/details/stash/kill/take-over from a per-session `⋯` menu (also on
+right-click of the row), split panes up to 2×2 (`⌘D`, zoom
 `⌘⇧↩`), teams browser (members, tasks, agent inboxes, create/delete),
 and quit-stash on close. The sidebar footer holds a SETTINGS section:
 the default directory for new sessions and an `⟳ Update clash`
