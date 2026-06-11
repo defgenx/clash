@@ -484,12 +484,7 @@ fn tui_running() -> bool {
 /// this executable (dev builds), falling back to `clash` on PATH.
 #[tauri::command]
 fn launch_tui() -> Result<(), String> {
-    let exe = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("clash")))
-        .filter(|p| p.exists())
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "clash".to_string());
+    let exe = resolve_tui_binary()?;
     let term_program = std::env::var("TERM_PROGRAM").ok();
     let in_tmux = std::env::var("TMUX").is_ok();
     clash::infrastructure::windowing::terminal_spawn::open_command(
@@ -502,6 +497,34 @@ fn launch_tui() -> Result<(), String> {
     )
     .map(|_| ())
     .map_err(|e| e.to_string())
+}
+
+/// Find the `clash` TUI binary: sibling of this executable first (dev
+/// builds, plain installs), then PATH (`which` — the GUI adopted the
+/// login-shell PATH at startup, so this works from Finder launches too).
+/// The app-bundle GUI has no sibling, and handing a bare `"clash"` to the
+/// spawn layer used to fail silently when the caller's cwd was `/`.
+fn resolve_tui_binary() -> Result<String, String> {
+    if let Ok(exe) = std::env::current_exe() {
+        let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+        if let Some(sibling) = exe.parent().map(|d| d.join("clash")) {
+            if sibling.exists() {
+                return Ok(sibling.to_string_lossy().into_owned());
+            }
+        }
+    }
+    if let Ok(out) = std::process::Command::new("which").arg("clash").output() {
+        if out.status.success() {
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Ok(path);
+            }
+        }
+    }
+    Err(
+        "clash TUI binary not found — run `clash update` from a terminal or put clash on PATH"
+            .to_string(),
+    )
 }
 
 /// Enable/disable native desktop notifications. Pushed by the frontend at
@@ -1051,6 +1074,72 @@ fn create_team(
 fn delete_team(state: State<'_, GuiState>, name: String) -> Result<(), String> {
     use clash::domain::ports::DataRepository;
     state.backend.delete_team(&name).map_err(|e| e.to_string())
+}
+
+/// Load a team fresh from disk, apply a pure mutation (the shared
+/// `Team` helpers — same logic the TUI reducer uses), persist atomically.
+fn mutate_team(
+    state: &State<'_, GuiState>,
+    name: &str,
+    change: impl FnOnce(&mut clash::domain::entities::Team) -> Result<(), String>,
+) -> Result<(), String> {
+    use clash::domain::ports::DataRepository;
+    let mut team = state
+        .backend
+        .load_teams()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|t| t.name == name)
+        .ok_or_else(|| format!("Team '{}' not found", name))?;
+    change(&mut team)?;
+    state.backend.update_team(&team).map_err(|e| e.to_string())
+}
+
+/// Replace a team's description.
+#[tauri::command]
+fn update_team_description(
+    state: State<'_, GuiState>,
+    name: String,
+    description: String,
+) -> Result<(), String> {
+    mutate_team(&state, &name, |t| {
+        t.set_description(&description);
+        Ok(())
+    })
+}
+
+/// Add a member to a team (empty agent_type = general-purpose, empty
+/// model = inherit).
+#[tauri::command]
+fn add_team_member(
+    state: State<'_, GuiState>,
+    team: String,
+    name: String,
+    agent_type: String,
+    model: String,
+) -> Result<(), String> {
+    mutate_team(&state, &team, |t| t.add_member(&name, &agent_type, &model))
+}
+
+/// Remove a member from a team by name.
+#[tauri::command]
+fn remove_team_member(
+    state: State<'_, GuiState>,
+    team: String,
+    member: String,
+) -> Result<(), String> {
+    mutate_team(&state, &team, |t| t.remove_member(&member))
+}
+
+/// Change a member's model (empty = inherit).
+#[tauri::command]
+fn set_team_member_model(
+    state: State<'_, GuiState>,
+    team: String,
+    member: String,
+    model: String,
+) -> Result<(), String> {
+    mutate_team(&state, &team, |t| t.set_member_model(&member, &model))
 }
 
 /// Update phase DTO (UpdatePhase has no Serialize derive).
@@ -1634,6 +1723,10 @@ fn main() {
             takeover_wild,
             create_team,
             delete_team,
+            update_team_description,
+            add_team_member,
+            remove_team_member,
+            set_team_member_model,
             start_update,
             get_version,
             restart_app,

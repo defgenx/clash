@@ -22,7 +22,11 @@ pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
         | InputMode::Filter
         | InputMode::NewSession
         | InputMode::NewSessionName
-        | InputMode::NewSessionWorktree => handle_input_mode(key),
+        | InputMode::NewSessionWorktree
+        | InputMode::TeamDescription
+        | InputMode::NewMemberName
+        | InputMode::NewMemberType
+        | InputMode::NewMemberModel => handle_input_mode(key),
         InputMode::Confirm => handle_confirm_mode(key, state),
         InputMode::Picker => handle_picker_mode(key),
         InputMode::Attached => Action::Noop,
@@ -135,6 +139,14 @@ fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
             }
         }
         KeyCode::Char('r') => handle_refresh(state),
+        KeyCode::Char('x') => {
+            // Remove a member from the current team (picker).
+            if matches!(state.current_view(), ViewKind::Teams | ViewKind::TeamDetail) {
+                Action::Ui(UiAction::RemoveTeamMember)
+            } else {
+                Action::Noop
+            }
+        }
         KeyCode::Tab => Action::Ui(UiAction::ToggleExpand),
 
         // Quit
@@ -434,6 +446,10 @@ fn handle_attach_or_assign(state: &AppState) -> Action {
 }
 
 fn handle_open_in_ide(state: &AppState) -> Action {
+    // On team views, `e` edits the team description instead.
+    if matches!(state.current_view(), ViewKind::Teams | ViewKind::TeamDetail) {
+        return Action::Ui(UiAction::EditTeamDescription);
+    }
     if let Some(session_id) = resolve_session_id(state) {
         return Action::Agent(AgentAction::OpenInIde { session_id });
     }
@@ -550,6 +566,8 @@ fn handle_message(state: &AppState) -> Action {
         ViewKind::Agents | ViewKind::AgentDetail | ViewKind::Inbox => {
             Action::Ui(UiAction::EnterCommandMode)
         }
+        // On team views, `m` adds a member to the current team.
+        ViewKind::Teams | ViewKind::TeamDetail => Action::Ui(UiAction::AddTeamMember),
         ViewKind::SessionDetail => {
             if let Some(session_id) = state.current_session() {
                 if let Some(team) = state
@@ -685,6 +703,22 @@ pub fn parse_command(cmd: &str) -> Action {
             });
         }
         return Action::Ui(UiAction::Toast("Usage: create team <name>".to_string()));
+    }
+    // "member model <member> <model>" — change a member's model on the
+    // current team (Teams/TeamDetail view). Empty model = inherit.
+    if let Some(rest) = cmd.strip_prefix("member model ") {
+        let mut parts = rest.trim().splitn(2, ' ');
+        let member = parts.next().unwrap_or("").trim().to_string();
+        let model = parts.next().unwrap_or("").trim().to_string();
+        if member.is_empty() {
+            return Action::Ui(UiAction::Toast(
+                "Usage: member model <member> [model]".to_string(),
+            ));
+        }
+        return Action::Team(crate::application::actions::TeamAction::SetMemberModel {
+            member,
+            model,
+        });
     }
     if let Some(rest) = cmd.strip_prefix("create task ") {
         let parts: Vec<&str> = rest.splitn(2, ' ').collect();
@@ -1041,11 +1075,40 @@ mod tests {
     }
 
     #[test]
-    fn test_e_key_non_session_view_toasts() {
+    fn test_team_view_keys_edit_team_config() {
         let mut state = AppState::new();
         state
             .nav
             .push(crate::adapters::views::ViewKind::Teams, None);
+
+        // `e` edits the team description (not open-in-IDE).
+        let key = KeyEvent::new(KeyCode::Char('e'), crossterm::event::KeyModifiers::NONE);
+        assert!(matches!(
+            handle_key(key, &state),
+            Action::Ui(UiAction::EditTeamDescription)
+        ));
+
+        // `m` adds a member (not command mode).
+        let key = KeyEvent::new(KeyCode::Char('m'), crossterm::event::KeyModifiers::NONE);
+        assert!(matches!(
+            handle_key(key, &state),
+            Action::Ui(UiAction::AddTeamMember)
+        ));
+
+        // `x` opens the remove-member picker (Noop on other views).
+        let key = KeyEvent::new(KeyCode::Char('x'), crossterm::event::KeyModifiers::NONE);
+        assert!(matches!(
+            handle_key(key, &state),
+            Action::Ui(UiAction::RemoveTeamMember)
+        ));
+    }
+
+    #[test]
+    fn test_e_key_non_team_view_without_session_toasts() {
+        let mut state = AppState::new();
+        state
+            .nav
+            .push(crate::adapters::views::ViewKind::Inbox, None);
         let key = KeyEvent::new(KeyCode::Char('e'), crossterm::event::KeyModifiers::NONE);
         match handle_key(key, &state) {
             Action::Ui(UiAction::Toast(msg)) => {

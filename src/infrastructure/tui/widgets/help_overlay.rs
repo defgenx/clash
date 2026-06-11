@@ -72,6 +72,7 @@ pub fn render_help_overlay(
         (":rename <name>", "Rename session (detail view)"),
         (":create team X", "Create team"),
         (":delete team X", "Delete team"),
+        (":member model X Y", "Set member model (team views)"),
         (":create task", "Create task (team + subject)"),
         (":active", "Show active sessions"),
         (":all", "Show all sessions"),

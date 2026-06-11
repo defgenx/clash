@@ -238,6 +238,28 @@ fn spawn_detached(cmd: &mut Command) -> std::io::Result<std::process::Child> {
     cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn()
 }
 
+/// Run an AppleScript synchronously and surface script errors.
+///
+/// `osascript` itself always spawns fine — failures (no terminal window
+/// to target, Automation permission denied, app not running) only show
+/// up in its exit status and stderr. Fire-and-forget spawning made every
+/// one of those invisible: the caller got `Ok` and nothing happened.
+fn run_osascript(script: &str) -> eyre::Result<()> {
+    let output = Command::new("osascript")
+        .args(["-e", script])
+        .stdout(Stdio::null())
+        .output()
+        .wrap_err("Failed to run osascript")?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(eyre::eyre!(
+            "AppleScript failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
 /// Build an AppleScript expression that evaluates to a shell-safe
 /// command line — used by Apple Terminal `do script` and iTerm2
 /// `write text`. Each arg is wrapped in `quoted form of` so shells see
@@ -292,8 +314,7 @@ fn spawn_pane_cmd(
                 direction,
                 applescript_command_expr(command, args),
             );
-            spawn_detached(Command::new("osascript").args(["-e", &script]))
-                .wrap_err("Failed to open iTerm2 pane")?;
+            run_osascript(&script).wrap_err("Failed to open iTerm2 pane")?;
         }
         SpawnStrategy::WezTerm => {
             let side = match axis {
@@ -332,36 +353,48 @@ fn spawn_tab(binary: &str, session_id: &str, strategy: &SpawnStrategy) -> eyre::
 fn spawn_tab_cmd(command: &str, args: &[&str], strategy: &SpawnStrategy) -> eyre::Result<OpenMode> {
     match strategy {
         SpawnStrategy::AppleTerminal => {
+            // `in front window` errors out when Terminal has no window
+            // (e.g. all closed since the app launched) — fall back to a
+            // bare `do script`, which opens a fresh window.
             let script = format!(
                 concat!(
                     r#"tell application "Terminal""#,
                     "\n  activate",
-                    "\n  do script {} in front window",
+                    "\n  if (count of windows) > 0 then",
+                    "\n    do script {expr} in front window",
+                    "\n  else",
+                    "\n    do script {expr}",
+                    "\n  end if",
                     "\nend tell",
                 ),
-                applescript_command_expr(command, args),
+                expr = applescript_command_expr(command, args),
             );
-            spawn_detached(Command::new("osascript").args(["-e", &script]))
-                .wrap_err("Failed to open Apple Terminal tab")?;
+            run_osascript(&script).wrap_err("Failed to open Apple Terminal tab")?;
             Ok(OpenMode::Tab)
         }
         SpawnStrategy::ITerm => {
             // iTerm2 3.6+ ignores the `command` parameter on
             // `create tab with default profile command X`; create the
-            // tab first, then `write text` into its session.
+            // tab first, then `write text` into its session. With no
+            // window open, `current window` errors — create one.
             let script = format!(
                 concat!(
                     r#"tell application "iTerm2""#,
-                    "\n  tell current window",
-                    "\n    set newTab to (create tab with default profile)",
-                    "\n    tell current session of newTab to write text {}",
-                    "\n  end tell",
+                    "\n  activate",
+                    "\n  if (count of windows) is 0 then",
+                    "\n    set newWindow to (create window with default profile)",
+                    "\n    tell current session of newWindow to write text {expr}",
+                    "\n  else",
+                    "\n    tell current window",
+                    "\n      set newTab to (create tab with default profile)",
+                    "\n      tell current session of newTab to write text {expr}",
+                    "\n    end tell",
+                    "\n  end if",
                     "\nend tell",
                 ),
-                applescript_command_expr(command, args),
+                expr = applescript_command_expr(command, args),
             );
-            spawn_detached(Command::new("osascript").args(["-e", &script]))
-                .wrap_err("Failed to open iTerm2 tab")?;
+            run_osascript(&script).wrap_err("Failed to open iTerm2 tab")?;
             Ok(OpenMode::Tab)
         }
         SpawnStrategy::Ghostty => {
@@ -402,10 +435,21 @@ fn spawn_tab_cmd(command: &str, args: &[&str], strategy: &SpawnStrategy) -> eyre
         SpawnStrategy::Fallback => {
             #[cfg(target_os = "macos")]
             {
-                let mut cmd_args = vec!["-a", "Terminal", command, "--args"];
-                cmd_args.extend(args);
-                spawn_detached(Command::new("open").args(&cmd_args))
-                    .wrap_err("Failed to open terminal window")?;
+                // `do script` through AppleScript, not `open -a Terminal
+                // <file>`: `open` resolves a bare command name against the
+                // *caller's* cwd (`/` when launched from Finder) and fails
+                // silently, while `do script` runs the line in a fresh
+                // login shell — PATH lookup included — and reports errors.
+                let script = format!(
+                    concat!(
+                        r#"tell application "Terminal""#,
+                        "\n  activate",
+                        "\n  do script {}",
+                        "\nend tell",
+                    ),
+                    applescript_command_expr(command, args),
+                );
+                run_osascript(&script).wrap_err("Failed to open terminal window")?;
             }
             #[cfg(target_os = "linux")]
             {
@@ -442,11 +486,16 @@ pub fn open_command(
     if strategy_supports_panes(&strategy) {
         let max_h = max_panes(cols);
         let max_v = max_vertical_panes(rows);
-        if max_h >= 1 {
-            spawn_pane_cmd(command, args, &strategy, SplitAxis::Horizontal)?;
+        // A pane spawn can fail even on a pane-capable terminal (the
+        // window it would split was closed, Automation denied) — fall
+        // through to a tab/window instead of giving up.
+        if max_h >= 1 && spawn_pane_cmd(command, args, &strategy, SplitAxis::Horizontal).is_ok() {
             return Ok(OpenMode::Pane);
-        } else if max_v >= 1 {
-            spawn_pane_cmd(command, args, &strategy, SplitAxis::Vertical)?;
+        }
+        if max_h < 1
+            && max_v >= 1
+            && spawn_pane_cmd(command, args, &strategy, SplitAxis::Vertical).is_ok()
+        {
             return Ok(OpenMode::Pane);
         }
     }

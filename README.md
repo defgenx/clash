@@ -25,7 +25,7 @@
 - **In-process daemon** — embedded PTY daemon manages sessions without a separate process
 - **Git worktree support** — spawn sessions in isolated worktrees for parallel feature branches (`w` key); worktree column shows `⊟ project/worktree` for project context
 - **Repo config discovery** — auto-detects MCP servers, custom commands, agent definitions, and setup scripts from the project directory
-- **Teams & tasks** — create, view, and delete teams; organize agents, manage tasks, send messages
+- **Teams & tasks** — create, configure, and delete teams (description, members with agent type and model); organize agents, manage tasks, send messages
 - **Subagent tracking** — view subagent trees per session, expand/collapse in the sessions table
 - **Open in IDE** — press `e` to open a session's project in your editor (auto-detects Cursor, VS Code, Zed, JetBrains, nvim, vim; configurable)
 - **Keyboard-driven** — vim-style navigation, command mode (`:`), fuzzy filter (`/`), context help (`?`)
@@ -164,6 +164,9 @@ The Wild detection runs in the background every ~2s. clash surfaces every wild c
 |-----|--------|
 | `c` | Create team |
 | `d` | Delete team |
+| `e` | Edit team description |
+| `m` | Add member (name → agent type → model) |
+| `x` | Remove member (picker) |
 | `Enter` | View team detail |
 
 ### Attached Mode
@@ -203,6 +206,9 @@ A status bar at the bottom shows session name, project, and git branch. The PTY 
 | `Enter` / `a` | View agents |
 | `t` | View tasks |
 | `s` | View lead session |
+| `e` | Edit team description |
+| `m` | Add member (name → agent type → model) |
+| `x` | Remove member (picker) |
 | `d` | Delete team |
 
 ### Commands
@@ -218,6 +224,7 @@ A status bar at the bottom shows session name, project, and git branch. The PTY 
 | `:prompts` | Navigate to Prompts view |
 | `:create team <name>` | Create a new team |
 | `:delete team <name>` | Delete a team |
+| `:member model <member> [model]` | Set a member's model on the current team (empty = inherit) |
 | `:create task <team> <subject>` | Create a task |
 | `:new [path]` | Spawn a new session |
 | `:new --preset <name>` | Spawn session from a preset |
@@ -348,7 +355,10 @@ right-click of the row), unlimited split panes in a balanced grid (`⌘D`
 splits, `⌘⇧D` closes the focused pane, zoom `⌘⇧↩` or double-click the
 pane title, `⌘⌥←/→` cycles focus), teams browser (members with
 live-activity dots and model chips, tasks, agent inboxes, create/delete
-via the + button or right-click menu), `⌘K` clears the active terminal,
+via the + button or right-click menu; in the details panel click the
+description to edit it, `＋ Add member` to add an agent, and right-click
+a member to change its model or remove it), `⌘K` clears the active
+terminal,
 middle-click detaches a tab, and quit-stash on close. Tabs and panes
 follow one rule: the active tab is always the content of the focused
 pane — clicking a tab fills the focused pane, focusing a pane activates

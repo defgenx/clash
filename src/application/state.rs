@@ -142,6 +142,14 @@ pub enum InputMode {
     NewSessionName,
     /// Prompting user whether to start the new session in a worktree (y/n).
     NewSessionWorktree,
+    /// Editing a team's description (team name in `pending_team_edit`).
+    TeamDescription,
+    /// Prompting for a new team member's name.
+    NewMemberName,
+    /// Prompting for a new team member's agent type.
+    NewMemberType,
+    /// Prompting for a new team member's model.
+    NewMemberModel,
     /// Attached to a daemon PTY session — keystrokes go to the session.
     Attached,
     /// Picker dialog is open — j/k navigate, Enter selects, Esc cancels.
@@ -169,8 +177,16 @@ pub struct PickerItem {
 /// What happens when a picker item is selected.
 #[derive(Debug, Clone)]
 pub enum PickerAction {
-    OpenInIde { project_dir: String },
-    SelectPreset { project_dir: String },
+    OpenInIde {
+        project_dir: String,
+    },
+    SelectPreset {
+        project_dir: String,
+    },
+    /// Remove the picked member (item value = member name) from a team.
+    RemoveTeamMember {
+        team: String,
+    },
 }
 
 /// Pending session creation state — replaces scattered fields.
@@ -303,6 +319,19 @@ pub struct AppState {
     /// Pending session selection by ID — set on restore, consumed by the first
     /// daemon refresh to find the correct row index.
     pub pending_selection_id: Option<String>,
+    /// Team whose description is being edited (InputMode::TeamDescription).
+    pub pending_team_edit: Option<String>,
+    /// Pending add-member flow state (InputMode::NewMember*).
+    pub pending_member: Option<PendingMember>,
+}
+
+/// Pending team-member creation state — filled step by step through the
+/// NewMemberName → NewMemberType → NewMemberModel input chain.
+#[derive(Debug, Clone)]
+pub struct PendingMember {
+    pub team: String,
+    pub name: String,
+    pub agent_type: String,
 }
 
 impl Default for AppState {
@@ -346,6 +375,8 @@ impl AppState {
             pending_toast: None,
             shutting_down: None,
             pending_selection_id: None,
+            pending_team_edit: None,
+            pending_member: None,
         }
     }
 

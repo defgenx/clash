@@ -26,6 +26,45 @@ fn test_create_team_roundtrip() {
 }
 
 #[test]
+fn test_update_team_roundtrip() {
+    let test_dir = TestDataDir::empty();
+    let backend = FsBackend::new(test_dir.path.clone());
+
+    backend.create_team("squad", "v1").unwrap();
+    let mut team = backend.load_teams().unwrap().pop().unwrap();
+
+    team.set_description("v2");
+    team.add_member("alice", "researcher", "sonnet").unwrap();
+    team.add_member("bob", "", "").unwrap(); // defaults: general-purpose, inherit
+    backend.update_team(&team).unwrap();
+
+    let reloaded = backend.load_teams().unwrap().pop().unwrap();
+    assert_eq!(reloaded.description, "v2");
+    assert_eq!(reloaded.members.len(), 2);
+    assert_eq!(reloaded.members[0].name, "alice");
+    assert_eq!(reloaded.members[0].agent_type, "researcher");
+    assert_eq!(reloaded.members[0].model, "sonnet");
+    assert_eq!(reloaded.members[1].agent_type, "general-purpose");
+    assert_eq!(reloaded.members[1].model, "");
+
+    // Remove + model change persist too.
+    let mut team = reloaded;
+    team.remove_member("alice").unwrap();
+    team.set_member_model("bob", "opus").unwrap();
+    backend.update_team(&team).unwrap();
+    let reloaded = backend.load_teams().unwrap().pop().unwrap();
+    assert_eq!(reloaded.members.len(), 1);
+    assert_eq!(reloaded.members[0].model, "opus");
+
+    // Updating a team that was never created must fail.
+    let ghost = clash::domain::entities::Team {
+        name: "ghost".to_string(),
+        ..Default::default()
+    };
+    assert!(backend.update_team(&ghost).is_err());
+}
+
+#[test]
 fn test_create_team_rejects_bad_names() {
     let test_dir = TestDataDir::empty();
     let backend = FsBackend::new(test_dir.path.clone());

@@ -462,6 +462,25 @@ impl DataRepository for FsBackend {
         Ok(())
     }
 
+    fn update_team(&self, team: &Team) -> Result<()> {
+        if team.name.is_empty() || team.name.contains('/') || team.name.contains("..") {
+            return Err(crate::domain::error::DomainError::Parse(format!(
+                "Invalid team name: '{}'",
+                team.name
+            )));
+        }
+        let config_path = self.teams_dir().join(&team.name).join("config.json");
+        if !config_path.exists() {
+            return Err(crate::domain::error::DomainError::Parse(format!(
+                "Team '{}' does not exist",
+                team.name
+            )));
+        }
+        let json = serde_json::to_string_pretty(team)?;
+        write_atomic(&config_path, json.as_bytes())?;
+        Ok(())
+    }
+
     fn delete_team(&self, name: &str) -> Result<()> {
         let team_dir = self.teams_dir().join(name);
         if team_dir.exists() {

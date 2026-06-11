@@ -23,6 +23,19 @@ pub fn render_input_bar(
             "Start in worktree? (y/n): ",
             Style::default().fg(theme::PROMPT_COLOR),
         ),
+        InputMode::TeamDescription => (
+            "Team description: ",
+            Style::default().fg(theme::PROMPT_COLOR),
+        ),
+        InputMode::NewMemberName => ("Member name: ", Style::default().fg(theme::PROMPT_COLOR)),
+        InputMode::NewMemberType => (
+            "Agent type (empty = general-purpose): ",
+            Style::default().fg(theme::PROMPT_COLOR),
+        ),
+        InputMode::NewMemberModel => (
+            "Model (empty = inherit): ",
+            Style::default().fg(theme::PROMPT_COLOR),
+        ),
         _ => return,
     };
 

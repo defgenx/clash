@@ -23,6 +23,11 @@ pub enum Effect {
         name: String,
         description: String,
     },
+    /// Persist a fully-formed team config (the reducer applies the change
+    /// to a clone of the in-store team; infrastructure just writes it).
+    UpdateTeam {
+        team: crate::domain::entities::Team,
+    },
     RemoveTeam {
         name: String,
     },

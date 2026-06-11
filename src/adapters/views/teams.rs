@@ -60,6 +60,9 @@ impl TableView for TeamsTable {
         vec![
             Keybinding::new("c", "Create team"),
             Keybinding::new("d", "Delete team"),
+            Keybinding::new("e", "Edit description"),
+            Keybinding::new("m", "Add member"),
+            Keybinding::new("x", "Remove member"),
             Keybinding::new("Enter", "View team"),
         ]
     }

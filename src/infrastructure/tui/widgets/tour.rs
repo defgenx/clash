@@ -171,6 +171,9 @@ pub const TOUR_STEPS: &[TourStep] = &[
             (":tasks", "Navigate to Tasks view"),
             (":create team X", "Create a new team"),
             (":delete team X", "Delete a team"),
+            ("e", "Edit team description (Teams view)"),
+            ("m", "Add a team member (Teams view)"),
+            ("x", "Remove a team member (Teams view)"),
         ],
     },
     TourStep {

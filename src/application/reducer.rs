@@ -135,6 +135,63 @@ fn reduce_team(state: &mut AppState, action: TeamAction) -> Vec<Effect> {
         TeamAction::Refresh => {
             vec![Effect::RefreshAll]
         }
+        TeamAction::SetDescription { name, description } => mutate_team(state, &name, |team| {
+            team.set_description(&description);
+            Ok("Description updated".to_string())
+        }),
+        TeamAction::AddMember {
+            team,
+            name,
+            agent_type,
+            model,
+        } => mutate_team(state, &team, |t| {
+            t.add_member(&name, &agent_type, &model)?;
+            Ok(format!("Added member '{}'", name.trim()))
+        }),
+        TeamAction::RemoveMember { team, member } => mutate_team(state, &team, |t| {
+            t.remove_member(&member)?;
+            Ok(format!("Removed member '{}'", member))
+        }),
+        TeamAction::SetMemberModel { member, model } => {
+            let Some(team) = resolve_team_name(state) else {
+                state.toast = Some("No team selected".to_string());
+                return vec![];
+            };
+            mutate_team(state, &team, |t| {
+                t.set_member_model(&member, &model)?;
+                Ok(format!(
+                    "Model for '{}' → {}",
+                    member,
+                    if model.is_empty() { "inherit" } else { &model }
+                ))
+            })
+        }
+    }
+}
+
+/// Clone a team out of the store, apply a pure mutation, and emit the
+/// persistence effect. The store copy is updated optimistically so the UI
+/// reflects the change before the next refresh lands.
+fn mutate_team(
+    state: &mut AppState,
+    name: &str,
+    change: impl FnOnce(&mut crate::domain::entities::Team) -> std::result::Result<String, String>,
+) -> Vec<Effect> {
+    let Some(team) = state.store.teams.iter_mut().find(|t| t.name == name) else {
+        state.toast = Some(format!("Team '{}' not found", name));
+        return vec![];
+    };
+    let mut updated = team.clone();
+    match change(&mut updated) {
+        Ok(message) => {
+            *team = updated.clone();
+            state.toast = Some(message);
+            vec![Effect::UpdateTeam { team: updated }, Effect::RefreshAll]
+        }
+        Err(e) => {
+            state.toast = Some(e);
+            vec![]
+        }
     }
 }
 
@@ -806,10 +863,87 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             state.input = tui_input::Input::new(state.default_cwd.clone());
             vec![]
         }
+        UiAction::EditTeamDescription => {
+            let Some(name) = resolve_team_name(state) else {
+                state.toast = Some("No team selected".to_string());
+                return vec![];
+            };
+            let description = state
+                .store
+                .teams
+                .iter()
+                .find(|t| t.name == name)
+                .map(|t| t.description.clone())
+                .unwrap_or_default();
+            state.pending_team_edit = Some(name);
+            state.input_mode = InputMode::TeamDescription;
+            state.input = tui_input::Input::new(description);
+            vec![]
+        }
+        UiAction::AddTeamMember => {
+            let Some(team) = resolve_team_name(state) else {
+                state.toast = Some("No team selected".to_string());
+                return vec![];
+            };
+            state.pending_member = Some(crate::application::state::PendingMember {
+                team,
+                name: String::new(),
+                agent_type: String::new(),
+            });
+            state.input_mode = InputMode::NewMemberName;
+            state.input = tui_input::Input::default();
+            vec![]
+        }
+        UiAction::RemoveTeamMember => {
+            let Some(name) = resolve_team_name(state) else {
+                state.toast = Some("No team selected".to_string());
+                return vec![];
+            };
+            let items: Vec<crate::application::state::PickerItem> = state
+                .store
+                .teams
+                .iter()
+                .find(|t| t.name == name)
+                .map(|t| {
+                    t.members
+                        .iter()
+                        .map(|m| crate::application::state::PickerItem {
+                            label: m.name.clone(),
+                            description: format!(
+                                "{} · {}",
+                                m.agent_type,
+                                if m.model.is_empty() {
+                                    "inherit"
+                                } else {
+                                    m.model.as_str()
+                                }
+                            ),
+                            value: m.name.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if items.is_empty() {
+                state.toast = Some(format!("Team '{}' has no members", name));
+                return vec![];
+            }
+            state.picker_dialog = Some(crate::application::state::PickerDialog {
+                title: format!("Remove member from '{}'", name),
+                items,
+                selected: 0,
+                on_select_action: crate::application::state::PickerAction::RemoveTeamMember {
+                    team: name,
+                },
+            });
+            state.input_mode = InputMode::Picker;
+            vec![]
+        }
         UiAction::ExitInputMode => {
             state.input_mode = InputMode::Normal;
             state.input = tui_input::Input::default();
             state.pending_session = None;
+            state.pending_team_edit = None;
+            state.pending_member = None;
             vec![]
         }
         UiAction::SubmitInput(text) => {
@@ -866,6 +1000,54 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                     state.input_mode = InputMode::NewSessionWorktree;
                     state.input = tui_input::Input::new("n".to_string());
                     vec![]
+                }
+                InputMode::TeamDescription => {
+                    let Some(name) = state.pending_team_edit.take() else {
+                        return vec![];
+                    };
+                    reduce(
+                        state,
+                        Action::Team(TeamAction::SetDescription {
+                            name,
+                            description: input,
+                        }),
+                    )
+                }
+                InputMode::NewMemberName => {
+                    let name = input.trim().to_string();
+                    if name.is_empty() {
+                        state.toast = Some("Member name cannot be empty".to_string());
+                        state.pending_member = None;
+                        return vec![];
+                    }
+                    if let Some(ref mut pending) = state.pending_member {
+                        pending.name = name;
+                    }
+                    state.input_mode = InputMode::NewMemberType;
+                    state.input = tui_input::Input::new("general-purpose".to_string());
+                    vec![]
+                }
+                InputMode::NewMemberType => {
+                    if let Some(ref mut pending) = state.pending_member {
+                        pending.agent_type = input.trim().to_string();
+                    }
+                    state.input_mode = InputMode::NewMemberModel;
+                    state.input = tui_input::Input::default();
+                    vec![]
+                }
+                InputMode::NewMemberModel => {
+                    let Some(pending) = state.pending_member.take() else {
+                        return vec![];
+                    };
+                    reduce(
+                        state,
+                        Action::Team(TeamAction::AddMember {
+                            team: pending.team,
+                            name: pending.name,
+                            agent_type: pending.agent_type,
+                            model: input.trim().to_string(),
+                        }),
+                    )
                 }
                 InputMode::NewSessionWorktree => {
                     let wants_worktree = input.trim().eq_ignore_ascii_case("y");
@@ -1009,6 +1191,17 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                     } = picker.on_select_action
                     {
                         return handle_preset_selection(state, &item.value, project_dir);
+                    }
+                    // Member removal re-enters the reducer (needs state access)
+                    if let crate::application::state::PickerAction::RemoveTeamMember { ref team } =
+                        picker.on_select_action
+                    {
+                        let team = team.clone();
+                        let member = item.value.clone();
+                        return reduce(
+                            state,
+                            Action::Team(TeamAction::RemoveMember { team, member }),
+                        );
                     }
                     state.toast = Some(format!("Opening in {}...", item.label));
                     return emit_picker_effect(&picker.on_select_action, &item.value);
@@ -1218,9 +1411,27 @@ fn emit_picker_effect(
                 terminal,
             }]
         }
-        // SelectPreset is handled directly in PickerSelect before calling this function
+        // SelectPreset and RemoveTeamMember are handled directly in
+        // PickerSelect before calling this function
         crate::application::state::PickerAction::SelectPreset { .. } => vec![],
+        crate::application::state::PickerAction::RemoveTeamMember { .. } => vec![],
     }
+}
+
+/// Resolve the team the user is acting on: the drilled-in team
+/// (TeamDetail and deeper) or the selected row in the Teams table.
+fn resolve_team_name(state: &AppState) -> Option<String> {
+    state.current_team().map(|s| s.to_string()).or_else(|| {
+        if state.current_view() == ViewKind::Teams {
+            state
+                .store
+                .teams
+                .get(state.table_state.selected)
+                .map(|t| t.name.clone())
+        } else {
+            None
+        }
+    })
 }
 
 /// Clamp the table selection after the filtered session list may have shrunk
@@ -1459,6 +1670,79 @@ mod tests {
         state.table_state.selected = 3;
         clamp_session_selection(&mut state);
         assert_eq!(state.table_state.selected, 3);
+    }
+
+    #[test]
+    fn test_team_config_actions() {
+        let mut state = test_state();
+        state.store.teams = vec![crate::domain::entities::Team {
+            name: "squad".to_string(),
+            description: "old".to_string(),
+            ..Default::default()
+        }];
+
+        // SetDescription mutates the store copy and emits UpdateTeam.
+        let effects = reduce(
+            &mut state,
+            Action::Team(TeamAction::SetDescription {
+                name: "squad".to_string(),
+                description: "new".to_string(),
+            }),
+        );
+        assert_eq!(state.store.teams[0].description, "new");
+        assert!(matches!(effects[0], Effect::UpdateTeam { ref team } if team.description == "new"));
+
+        // AddMember appends with defaults applied.
+        let effects = reduce(
+            &mut state,
+            Action::Team(TeamAction::AddMember {
+                team: "squad".to_string(),
+                name: "alice".to_string(),
+                agent_type: String::new(),
+                model: "sonnet".to_string(),
+            }),
+        );
+        assert_eq!(state.store.teams[0].members.len(), 1);
+        assert_eq!(
+            state.store.teams[0].members[0].agent_type,
+            "general-purpose"
+        );
+        assert!(matches!(effects[0], Effect::UpdateTeam { .. }));
+
+        // Duplicate member: toast, no effect.
+        let effects = reduce(
+            &mut state,
+            Action::Team(TeamAction::AddMember {
+                team: "squad".to_string(),
+                name: "alice".to_string(),
+                agent_type: String::new(),
+                model: String::new(),
+            }),
+        );
+        assert!(effects.is_empty());
+        assert!(state.toast.as_deref().unwrap().contains("already exists"));
+
+        // RemoveMember drops it.
+        let effects = reduce(
+            &mut state,
+            Action::Team(TeamAction::RemoveMember {
+                team: "squad".to_string(),
+                member: "alice".to_string(),
+            }),
+        );
+        assert!(state.store.teams[0].members.is_empty());
+        assert!(matches!(effects[0], Effect::UpdateTeam { .. }));
+
+        // Unknown team: toast, no effect.
+        let effects = reduce(
+            &mut state,
+            Action::Team(TeamAction::SetDescription {
+                name: "ghost".to_string(),
+                description: String::new(),
+            }),
+        );
+        assert!(effects.is_empty());
+        assert!(state.toast.as_deref().unwrap().contains("not found"));
     }
 
     #[test]

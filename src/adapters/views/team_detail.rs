@@ -91,6 +91,9 @@ impl DetailView for TeamDetailView {
             Keybinding::new("a", "View agents"),
             Keybinding::new("s", "View lead session"),
             Keybinding::new("t", "View tasks"),
+            Keybinding::new("e", "Edit description"),
+            Keybinding::new("m", "Add member"),
+            Keybinding::new("x", "Remove member"),
             Keybinding::new("d", "Delete team"),
             Keybinding::new("j/k", "Scroll"),
         ]

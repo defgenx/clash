@@ -64,6 +64,72 @@ pub struct Team {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
+/// Member color palette — cycled by join order so each agent gets a
+/// distinct, stable color (same vocabulary Claude Code uses for agents).
+const MEMBER_COLORS: [&str; 6] = ["blue", "green", "yellow", "magenta", "cyan", "red"];
+
+impl Team {
+    /// Replace the team description (trimmed).
+    pub fn set_description(&mut self, description: &str) {
+        self.description = description.trim().to_string();
+    }
+
+    /// Add a member. `agent_type` defaults to `general-purpose` when empty;
+    /// an empty `model` means "inherit the session default". Rejects empty
+    /// and duplicate names.
+    pub fn add_member(
+        &mut self,
+        name: &str,
+        agent_type: &str,
+        model: &str,
+    ) -> std::result::Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Member name cannot be empty".to_string());
+        }
+        if self.members.iter().any(|m| m.name == name) {
+            return Err(format!("Member '{}' already exists", name));
+        }
+        let agent_type = agent_type.trim();
+        let member = Member {
+            agent_id: format!("{}@{}", name, self.name),
+            name: name.to_string(),
+            agent_type: if agent_type.is_empty() {
+                "general-purpose".to_string()
+            } else {
+                agent_type.to_string()
+            },
+            model: model.trim().to_string(),
+            color: MEMBER_COLORS[self.members.len() % MEMBER_COLORS.len()].to_string(),
+            ..Default::default()
+        };
+        self.members.push(member);
+        Ok(())
+    }
+
+    /// Remove a member by name.
+    pub fn remove_member(&mut self, name: &str) -> std::result::Result<(), String> {
+        let before = self.members.len();
+        self.members.retain(|m| m.name != name);
+        if self.members.len() == before {
+            Err(format!("No member named '{}'", name))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Change a member's model (empty = inherit the session default).
+    pub fn set_member_model(&mut self, name: &str, model: &str) -> std::result::Result<(), String> {
+        match self.members.iter_mut().find(|m| m.name == name) {
+            Some(m) => {
+                m.model = model.trim().to_string();
+                Ok(())
+            }
+            None => Err(format!("No member named '{}'", name)),
+        }
+    }
+}
+
 /// Task status.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -518,6 +584,41 @@ mod tests {
         let team: Team = serde_json::from_str(json).unwrap();
         assert_eq!(team.name, "test-team");
         assert!(team.members.is_empty());
+    }
+
+    #[test]
+    fn test_team_member_mutations() {
+        let mut team = Team {
+            name: "squad".to_string(),
+            ..Default::default()
+        };
+
+        // Empty agent_type/model fall back to general-purpose/inherit.
+        team.add_member("alice", "", "").unwrap();
+        assert_eq!(team.members[0].agent_type, "general-purpose");
+        assert_eq!(team.members[0].model, "");
+        assert_eq!(team.members[0].agent_id, "alice@squad");
+        assert_eq!(team.members[0].color, "blue");
+
+        // Colors cycle by join order.
+        team.add_member("bob", "reviewer", "opus").unwrap();
+        assert_eq!(team.members[1].color, "green");
+        assert_eq!(team.members[1].agent_type, "reviewer");
+
+        // Duplicates and empty names are rejected.
+        assert!(team.add_member("alice", "", "").is_err());
+        assert!(team.add_member("  ", "", "").is_err());
+
+        team.set_member_model("bob", "sonnet").unwrap();
+        assert_eq!(team.members[1].model, "sonnet");
+        assert!(team.set_member_model("ghost", "x").is_err());
+
+        team.remove_member("alice").unwrap();
+        assert_eq!(team.members.len(), 1);
+        assert!(team.remove_member("alice").is_err());
+
+        team.set_description("  new desc  ");
+        assert_eq!(team.description, "new desc");
     }
 
     #[test]

@@ -688,6 +688,10 @@ impl App {
                 | InputMode::NewSession
                 | InputMode::NewSessionName
                 | InputMode::NewSessionWorktree
+                | InputMode::TeamDescription
+                | InputMode::NewMemberName
+                | InputMode::NewMemberType
+                | InputMode::NewMemberModel
         ) {
             use crate::adapters::input::key_to_input_request;
             use crate::application::actions::UiAction;
@@ -1161,6 +1165,11 @@ impl App {
                 Effect::RemoveTeam { name } => {
                     if let Err(e) = self.backend.delete_team(&name) {
                         self.state.toast = Some(format!("Delete failed: {}", e));
+                    }
+                }
+                Effect::UpdateTeam { team } => {
+                    if let Err(e) = self.backend.update_team(&team) {
+                        self.state.toast = Some(format!("Team update failed: {}", e));
                     }
                 }
                 Effect::CreateTeam { name, description } => {

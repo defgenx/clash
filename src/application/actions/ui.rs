@@ -13,6 +13,12 @@ pub enum UiAction {
     EnterFilterMode,
     /// Prompt for directory and spawn a new session.
     EnterNewSessionMode,
+    /// Edit the current team's description (Teams/TeamDetail views).
+    EditTeamDescription,
+    /// Start the add-member input chain for the current team.
+    AddTeamMember,
+    /// Open a picker to remove a member from the current team.
+    RemoveTeamMember,
     ExitInputMode,
     SubmitInput(String),
     CycleSectionFilter,

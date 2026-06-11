@@ -1758,9 +1758,12 @@ async function showTeamDetails(team) {
   const members = team.members || [];
   body.innerHTML = `
     <h3>${svgIcon("users", 13)} ${escapeHtml(team.name)}</h3>
-    ${team.description ? `<p class="hint">${escapeHtml(team.description)}</p>` : ""}
-    <h4>MEMBERS (${members.length}) <span class="dim" style="font-weight:400">— click for inbox</span></h4>
+    <p class="hint" id="d-team-desc" title="Click to edit description">${
+      team.description ? escapeHtml(team.description) : "<span class='dim'>no description — click to add</span>"
+    } ✎</p>
+    <h4>MEMBERS (${members.length}) <span class="dim" style="font-weight:400">— click for inbox, right-click to edit</span></h4>
     <div id="d-members"></div>
+    <button id="d-member-add" class="ghost-action">＋ Add member</button>
     <h4>TASKS (${tasks.length})</h4>
     ${taskRows}
     <div class="actions">
@@ -1771,7 +1774,7 @@ async function showTeamDetails(team) {
   `;
   const membersEl = $("d-members");
   if (members.length === 0) {
-    membersEl.innerHTML = "<p class='hint'>none yet — agents join when Claude spawns them into this team</p>";
+    membersEl.innerHTML = "<p class='hint'>none yet — add one, or agents join when Claude spawns them into this team</p>";
   }
   for (const m of members) {
     const row = document.createElement("div");
@@ -1784,11 +1787,83 @@ async function showTeamDetails(team) {
       m.model ? `<span class="mini-chip">${escapeHtml(m.model)}</span>` : ""
     }`;
     row.onclick = () => showInbox(team.name, m.name);
+    row.oncontextmenu = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      showContextMenu(ev.clientX, ev.clientY, [
+        { label: "Inbox", icon: "info", action: () => showInbox(team.name, m.name) },
+        {
+          label: "Change model…",
+          icon: "terminal",
+          action: async () => {
+            const model = await uiPrompt(`Model for "${m.name}" (empty = inherit):`, m.model || "");
+            if (model === null) return;
+            await teamMutation(team.name, () =>
+              invoke("set_team_member_model", { team: team.name, member: m.name, model: model.trim() })
+            );
+          },
+        },
+        null,
+        {
+          label: "Remove member…",
+          icon: "alert",
+          danger: true,
+          action: async () => {
+            if (!(await uiConfirm(`Remove "${m.name}" from "${team.name}"?`, "Remove"))) return;
+            await teamMutation(team.name, () =>
+              invoke("remove_team_member", { team: team.name, member: m.name })
+            );
+          },
+        },
+      ]);
+    };
     membersEl.appendChild(row);
   }
+  $("d-team-desc").onclick = async () => {
+    const description = await uiPrompt("Team description:", team.description || "");
+    if (description === null) return;
+    await teamMutation(team.name, () =>
+      invoke("update_team_description", { name: team.name, description: description.trim() })
+    );
+  };
+  $("d-member-add").onclick = async () => {
+    const name = await uiPrompt("Member name:");
+    if (!name || !name.trim()) return;
+    const agentType = await uiPrompt("Agent type:", "general-purpose");
+    if (agentType === null) return;
+    const model = await uiPrompt("Model (empty = inherit):");
+    if (model === null) return;
+    await teamMutation(team.name, () =>
+      invoke("add_team_member", {
+        team: team.name,
+        name: name.trim(),
+        agentType: agentType.trim(),
+        model: model.trim(),
+      })
+    );
+  };
   $("d-close").onclick = hideDetails;
   $("d-team-delete").onclick = () => deleteTeamConfirm(team.name);
   fitAll();
+}
+
+/// Run a team mutation, then reload teams and re-open the details panel
+/// so the change is visible immediately.
+async function teamMutation(teamName, run) {
+  try {
+    await run();
+  } catch (e) {
+    uiAlert(`Team update failed: ${e}`);
+    return;
+  }
+  try {
+    state.teams = await invoke("list_teams");
+    renderTeams();
+    const fresh = state.teams.find((t) => t.name === teamName);
+    if (fresh) showTeamDetails(fresh);
+  } catch (e) {
+    console.error("team refresh failed:", e);
+  }
 }
 
 async function showInbox(team, agent) {

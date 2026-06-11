@@ -288,6 +288,9 @@ mod tests {
         fn create_team(&self, _name: &str, _description: &str) -> crate::domain::error::Result<()> {
             Ok(())
         }
+        fn update_team(&self, _team: &Team) -> crate::domain::error::Result<()> {
+            Ok(())
+        }
         fn load_tasks(&self, _team: &str) -> crate::domain::error::Result<Vec<Task>> {
             Ok(vec![])
         }

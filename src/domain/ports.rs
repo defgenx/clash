@@ -20,6 +20,10 @@ pub trait DataRepository: Send + Sync {
     /// team with that name already exists.
     fn create_team(&self, name: &str, description: &str) -> Result<()>;
 
+    /// Persist a full team config (description, members, …). Errors if the
+    /// team does not exist — creation goes through `create_team`.
+    fn update_team(&self, team: &Team) -> Result<()>;
+
     /// Load tasks for a specific team.
     fn load_tasks(&self, team: &str) -> Result<Vec<Task>>;
 
