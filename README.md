@@ -332,9 +332,11 @@ are drag-resizable (widths persist).
 Sessions carry the same status vocabulary as the TUI — animated
 PROMPTING / THINKING / RUNNING / WAITING / STARTING / STASHED / ERRORED
 labels in the sidebar and a colored status dot per tab. External claude
-processes (started outside clash) appear with a `⚡ wild` badge and can be
-adopted. Right-click a tab for the context menu: rename, close (detach),
-stash, kill, details.
+processes (started outside clash) are segregated in their own
+`⚡ EXTERNAL` section at the bottom of the sidebar with distinct styling;
+clicking one shows its details (adopt with ⚡ — never a blind resume of a
+session another process owns). Right-click a tab for the context menu:
+rename, close (detach), stash, kill, details.
 
 The details panel (ⓘ) is a compact overview — live status, branch,
 project, CWD, summary. Conversation, Subagents, and Diff open as full

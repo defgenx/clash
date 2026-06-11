@@ -338,22 +338,37 @@ function renderStatusSections(list, items) {
   }
 }
 
+function renderExternalSection(list, items) {
+  if (!items.length) return;
+  const header = document.createElement("div");
+  header.className = "section-label external";
+  header.innerHTML = `⚡ EXTERNAL<span class="count">${items.length}</span>`;
+  header.title = "Claude processes running outside clash — use ⚡ to adopt";
+  list.appendChild(header);
+  for (const s of items) list.appendChild(sessionItem(s));
+}
+
 function renderSidebar() {
   const list = $("session-list");
   list.innerHTML = "";
 
   const visible = visibleSessions();
+  // External (wild) claudes are segregated at the bottom, like the TUI's
+  // EXTERNAL section — never interleaved with clash-managed rows.
+  const wild = visible.filter((s) => s.source === "Wild");
+  const managed = visible.filter((s) => s.source !== "Wild");
 
   if (state.query) {
     // Searching: global, across all workspaces. Items owned by another
     // workspace carry a ⌘n badge; clicking switches there and opens.
-    renderStatusSections(list, visible);
+    renderStatusSections(list, managed);
+    renderExternalSection(list, wild);
   } else {
     // Scoped: the active workspace's sessions, then sessions no
     // workspace has claimed yet. Other workspaces' sessions live in
     // their own workspace (switch via chips / ⌘1-9 / search).
-    const mine = visible.filter((s) => ws().sessions.includes(s.id));
-    const unassigned = visible.filter((s) => sessionWorkspace(s.id) === -1);
+    const mine = managed.filter((s) => ws().sessions.includes(s.id));
+    const unassigned = managed.filter((s) => sessionWorkspace(s.id) === -1);
     renderStatusSections(list, mine);
     if (unassigned.length) {
       const header = document.createElement("div");
@@ -363,7 +378,8 @@ function renderSidebar() {
       list.appendChild(header);
       for (const s of unassigned) list.appendChild(sessionItem(s));
     }
-    if (mine.length === 0 && unassigned.length === 0) {
+    renderExternalSection(list, wild);
+    if (mine.length === 0 && unassigned.length === 0 && wild.length === 0) {
       const empty = document.createElement("div");
       empty.className = "list-empty";
       empty.textContent = "no sessions in this workspace — / to search all";
@@ -380,10 +396,15 @@ function renderSidebar() {
 }
 
 function sessionItem(s) {
+  const wild = s.source === "Wild";
   const item = document.createElement("div");
   item.className =
-    "session-item" + (s.id === state.activeTab ? " selected" : "");
-  item.onclick = () => openSession(s.id);
+    "session-item" +
+    (s.id === state.activeTab ? " selected" : "") +
+    (wild ? " wild" : "");
+  // Wild claudes are owned by another process — clicking shows details
+  // (adopt with ⚡) instead of resuming a session something else holds.
+  item.onclick = () => (wild ? showDetails(s.id) : openSession(s.id));
 
   const ring = document.createElement("div");
   ring.className = "status-ring " + statusClass(s);
@@ -456,13 +477,6 @@ function sessionItem(s) {
       openBrowserPanel(pr);
     };
     sub.appendChild(chip);
-  }
-  if (s.source === "Wild") {
-    const wild = document.createElement("span");
-    wild.className = "wild-badge";
-    wild.textContent = "⚡ wild";
-    wild.title = "External claude process (not managed by clash)";
-    sub.appendChild(wild);
   }
   if (s.git_branch) {
     const branch = document.createElement("span");
@@ -905,6 +919,14 @@ async function openSession(sid) {
     theme: TERM_THEME,
     scrollback: 10000,
     macOptionIsMeta: true,
+    // OSC 8 hyperlinks (Claude Code emits these) — open in the embedded
+    // browser panel, not the system browser.
+    linkHandler: {
+      activate: (_e, uri) => {
+        if (/^https?:\/\//.test(uri)) openBrowserPanel(uri);
+        else invoke("open_external", { url: uri }).catch(() => {});
+      },
+    },
   });
   const fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);

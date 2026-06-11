@@ -339,9 +339,20 @@ async fn stash_session(state: State<'_, GuiState>, session_id: String) -> Result
     Ok(())
 }
 
-/// Kill a session and remove it from the registry (same as the TUI's `x`).
+/// Kill a session and remove it from the registry (same as the TUI's `x`):
+/// unregister, idle status, daemon kill, then process-tree teardown — the
+/// wild scan would otherwise re-admit a surviving claude process and the
+/// session would pop back into the list.
 #[tauri::command]
 async fn kill_session(state: State<'_, GuiState>, session_id: String) -> Result<(), String> {
+    let (worktree, wild_pid) = {
+        let prev = state.previous.lock().unwrap();
+        let s = prev.iter().find(|s| s.id == session_id);
+        (
+            s.and_then(|s| s.worktree.clone()),
+            s.and_then(|s| s.wild_pid),
+        )
+    };
     {
         let mut attached = state.attached.lock().await;
         attached.remove(&session_id);
@@ -352,6 +363,24 @@ async fn kill_session(state: State<'_, GuiState>, session_id: String) -> Result<
         let _ = control.kill_session(&session_id).await;
     }
     clash::infrastructure::hooks::registry::unregister(&session_id);
+
+    let base_dir = state.backend.base_dir().to_path_buf();
+    tauri::async_runtime::spawn(async move {
+        use clash::infrastructure::app::{
+            kill_tmux_session, remove_git_worktree, terminate_claude_process, terminate_pid_if_safe,
+        };
+        if let Some(pid) = wild_pid {
+            terminate_pid_if_safe(pid).await;
+        }
+        terminate_claude_process(&session_id).await;
+        if let Some(wt) = worktree {
+            kill_tmux_session(&wt).await;
+            remove_git_worktree(&wt).await;
+        }
+        // After the process is dead, force idle so a dying Claude's Stop
+        // hook can't strand the row in Waiting.
+        clash::infrastructure::hooks::write_session_status(&base_dir, &session_id, "idle");
+    });
     Ok(())
 }
 

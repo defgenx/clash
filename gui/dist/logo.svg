@@ -1,101 +1,39 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 200" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 200" fill="none">
+  <!-- clash header lockup — debossed into the sidebar surface. -->
   <defs>
-    <linearGradient id="word" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#ff8a5c"/>
-      <stop offset="55%" stop-color="#ffb547"/>
-      <stop offset="100%" stop-color="#ffd27d"/>
-    </linearGradient>
-
-    <linearGradient id="chev" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#ff8a5c"/>
-      <stop offset="100%" stop-color="#ffb547"/>
-    </linearGradient>
-    <linearGradient id="cursor" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#ffb547"/>
-      <stop offset="100%" stop-color="#ffd27d"/>
-    </linearGradient>
-    <filter id="glow-sm" x="-150%" y="-150%" width="400%" height="400%">
-      <feGaussianBlur stdDeviation="2.5" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    <filter id="deboss" x="-30%" y="-30%" width="160%" height="160%">
+      <feOffset in="SourceAlpha" dx="0" dy="5" result="off"/>
+      <feGaussianBlur in="off" stdDeviation="5" result="blur"/>
+      <feComposite in="blur" in2="SourceAlpha" operator="arithmetic" k2="-1" k3="1" result="mask"/>
+      <feFlood flood-color="#000000" flood-opacity="0.6"/>
+      <feComposite in2="mask" operator="in" result="shadow"/>
+      <feMerge>
+        <feMergeNode in="SourceGraphic"/>
+        <feMergeNode in="shadow"/>
+      </feMerge>
     </filter>
-    <filter id="glow-md" x="-150%" y="-150%" width="400%" height="400%">
-      <feGaussianBlur stdDeviation="7" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    <filter id="glint" x="-150%" y="-150%" width="400%" height="400%">
+      <feGaussianBlur stdDeviation="4"/>
     </filter>
-    <filter id="glow-lg" x="-200%" y="-200%" width="500%" height="500%">
-      <feGaussianBlur stdDeviation="18" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
-  
   </defs>
-  <g transform="translate(-8, -10) scale(0.43)">
-
-
-  <!-- Orbit rings around the singularity -->
-  <circle cx="256" cy="236" r="148" stroke="#ff8a5c" stroke-width="1" opacity="0.10"/>
-  <circle cx="256" cy="236" r="92" stroke="#ffb547" stroke-width="1.2" opacity="0.16"/>
-
-  <!-- Light rays (8 main + 8 short offset) -->
-  <g stroke="#ffd27d" stroke-width="2.5" stroke-linecap="round" opacity="0.45">
-    <line x1="256" y1="236" x2="386" y2="236"/>
-    <line x1="256" y1="236" x2="316" y2="296"/>
-    <line x1="256" y1="236" x2="256" y2="366"/>
-    <line x1="256" y1="236" x2="196" y2="296"/>
-    <line x1="256" y1="236" x2="126" y2="236"/>
-    <line x1="256" y1="236" x2="196" y2="176"/>
-    <line x1="256" y1="236" x2="256" y2="106"/>
-    <line x1="256" y1="236" x2="316" y2="176"/>
+  <g transform="translate(10, 14) scale(0.34)">
+    <g transform="translate(0, 2.5)">
+      <circle cx="250" cy="246" r="118" fill="none" stroke="rgba(255,255,255,0.09)" stroke-width="5"/>
+      <path d="M 170 166 L 250 246 L 170 326" fill="none" stroke="rgba(255,255,255,0.09)" stroke-width="40"
+            stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="290" y="306" width="78" height="22" rx="8" fill="rgba(255,255,255,0.09)"/>
+    </g>
+    <g filter="url(#deboss)">
+      <circle cx="250" cy="246" r="118" fill="none" stroke="#101013" stroke-width="5"/>
+      <path d="M 170 166 L 250 246 L 170 326" fill="none" stroke="#101013" stroke-width="40"
+            stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="290" y="306" width="78" height="22" rx="8" fill="#101013"/>
+    </g>
+    <circle cx="250" cy="246" r="9" fill="#ffffff" opacity="0.12" filter="url(#glint)"/>
+    <circle cx="250" cy="246" r="3.5" fill="#ffffff" opacity="0.25"/>
   </g>
-  <g stroke="#ffb547" stroke-width="1.8" stroke-linecap="round" opacity="0.25">
-    <line x1="256" y1="236" x2="300" y2="254"/>
-    <line x1="256" y1="236" x2="274" y2="280"/>
-    <line x1="256" y1="236" x2="238" y2="280"/>
-    <line x1="256" y1="236" x2="212" y2="254"/>
-    <line x1="256" y1="236" x2="212" y2="218"/>
-    <line x1="256" y1="236" x2="238" y2="192"/>
-    <line x1="256" y1="236" x2="274" y2="192"/>
-    <line x1="256" y1="236" x2="300" y2="218"/>
+  <g font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="108" font-weight="700">
+    <text x="190" y="139" fill="rgba(255,255,255,0.09)" transform="translate(0, 2.5)">clash</text>
+    <text x="190" y="139" fill="#101013" filter="url(#deboss)">clash</text>
   </g>
-
-  <!-- Ejected particles -->
-  <g filter="url(#glow-sm)">
-    <circle cx="340" cy="180" r="3.5" fill="#ff8a5c"/>
-    <circle cx="380" cy="270" r="2.5" fill="#ffd27d"/>
-    <circle cx="310" cy="330" r="3"   fill="#8fb8ff"/>
-    <circle cx="180" cy="300" r="2.5" fill="#ff8a5c"/>
-    <circle cx="150" cy="200" r="3"   fill="#ffd27d"/>
-    <circle cx="210" cy="130" r="2.5" fill="#8fb8ff"/>
-    <circle cx="300" cy="120" r="3.5" fill="#ffd27d"/>
-    <circle cx="400" cy="210" r="2"   fill="#ff8a5c"/>
-    <circle cx="160" cy="260" r="2"   fill="#8fb8ff"/>
-    <circle cx="350" cy="320" r="2"   fill="#ff8a5c"/>
-    <circle cx="230" cy="360" r="2.5" fill="#ffd27d"/>
-    <circle cx="120" cy="170" r="2"   fill="#ff8a5c"/>
-    <circle cx="390" cy="140" r="2.5" fill="#8fb8ff"/>
-    <circle cx="220" cy="90"  r="2"   fill="#ffd27d"/>
-  </g>
-
-  <!-- Sparkles -->
-  <g fill="#fff7ed" opacity="0.9" filter="url(#glow-sm)">
-    <path d="M366 147 L368.2 153.8 L375 156 L368.2 158.2 L366 165 L363.8 158.2 L357 156 L363.8 153.8 Z"/>
-    <path d="M146 309 L147.8 314.2 L153 316 L147.8 317.8 L146 323 L144.2 317.8 L139 316 L144.2 314.2 Z"/>
-    <path d="M296 80 L297.5 84.5 L302 86 L297.5 87.5 L296 92 L294.5 87.5 L290 86 L294.5 84.5 Z"/>
-  </g>
-
-  <!-- Prompt chevron — the shell -->
-  <path d="M 176 156 L 256 236 L 176 316" stroke="url(#chev)" stroke-width="34"
-        stroke-linecap="round" stroke-linejoin="round" filter="url(#glow-md)"/>
-
-  <!-- Cursor -->
-  <rect x="292" y="298" width="64" height="20" rx="6" fill="url(#cursor)"
-        opacity="0.95" filter="url(#glow-sm)"/>
-
-  <!-- Singularity core at the prompt tip -->
-  <circle cx="256" cy="236" r="30" fill="#fff7ed" opacity="0.35" filter="url(#glow-lg)"/>
-  <circle cx="256" cy="236" r="14" fill="#fff7ed" opacity="0.85" filter="url(#glow-md)"/>
-  <circle cx="256" cy="236" r="7"  fill="#ffffff" filter="url(#glow-sm)"/>
-
-  </g>
-  <text x="218" y="138" font-family="ui-monospace, 'SF Mono', Menlo, monospace"
-        font-size="104" font-weight="700" fill="url(#word)" filter="url(#glow-sm)">clash</text>
 </svg>

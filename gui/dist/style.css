@@ -158,6 +158,19 @@ html, body, #app {
 
 /* Workspace scoping */
 .section-label.unassigned { color: var(--accent); opacity: 0.75; }
+
+/* External (wild) claude processes — segregated, visually distinct */
+.section-label.external { color: var(--purple); opacity: 0.85; }
+.session-item.wild {
+  border-left: 2px dashed var(--purple);
+  background: rgba(176, 131, 240, 0.05);
+}
+.session-item.wild:hover { background: rgba(176, 131, 240, 0.12); }
+.session-item.wild .session-name::after {
+  content: " ⚡";
+  color: var(--purple);
+  font-size: 10px;
+}
 .ws-badge {
   flex-shrink: 0;
   font-size: 10px;
@@ -233,7 +246,6 @@ html, body, #app {
 .status-label.stashed { color: var(--st-idle); }
 .status-label.done { color: var(--fg-dim); }
 
-.wild-badge { color: var(--accent); font-size: 10px; font-weight: 600; }
 
 .session-meta { flex: 1; min-width: 0; }
 

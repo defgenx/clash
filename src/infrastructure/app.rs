@@ -2206,7 +2206,7 @@ impl App {
 /// find the process — a synthetic `wild-pid-<pid>` row carries only the
 /// PID, and bare `claude` invocations have no session id in argv to
 /// match against.
-async fn terminate_pid_if_safe(pid: u32) {
+pub async fn terminate_pid_if_safe(pid: u32) {
     use crate::infrastructure::process_scan::{should_signal, LiveProcessProbe, SignalDecision};
     let probe = LiveProcessProbe;
     if !matches!(should_signal(pid, &probe), SignalDecision::Allow) {
@@ -2232,7 +2232,7 @@ async fn terminate_pid_if_safe(pid: u32) {
 }
 
 /// Gracefully stop external Claude Code processes for a session.
-async fn terminate_claude_process(session_id: &str) {
+pub async fn terminate_claude_process(session_id: &str) {
     let output = tokio::process::Command::new("pgrep")
         .args(["-f", &format!("claude.*{}", session_id)])
         .output()
@@ -2283,7 +2283,7 @@ async fn terminate_claude_process(session_id: &str) {
 }
 
 /// Remove a git worktree if the path is one (`.git` is a file, not a directory).
-async fn remove_git_worktree(worktree_path: &str) {
+pub async fn remove_git_worktree(worktree_path: &str) {
     let git_file = std::path::Path::new(worktree_path).join(".git");
     if !git_file.is_file() {
         return; // not a worktree
@@ -2309,7 +2309,7 @@ async fn remove_git_worktree(worktree_path: &str) {
 }
 
 /// Kill a tmux session by worktree name.
-async fn kill_tmux_session(worktree: &str) {
+pub async fn kill_tmux_session(worktree: &str) {
     // Claude creates tmux sessions named after the worktree
     let result = tokio::process::Command::new("tmux")
         .args(["kill-session", "-t", worktree])
