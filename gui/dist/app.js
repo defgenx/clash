@@ -2225,6 +2225,48 @@ $("default-cwd").addEventListener("change", () => {
   saveWorkspaces();
 });
 
+// ── Icon button hover labels ────────────────────────────────────
+// Instant tooltip for .icon-btn, replacing the native title tooltip
+// (slow and unreliable in WKWebView). Delegated so dynamically created
+// buttons (kill-all, browser new-tab) are covered. The label is moved
+// from title to data-tip on first hover to suppress the native one.
+
+const iconTip = document.createElement("div");
+iconTip.id = "icon-tip";
+
+document.addEventListener("mouseover", (e) => {
+  const btn = e.target.closest?.(".icon-btn");
+  if (!btn) return;
+  if (btn.title) {
+    btn.dataset.tip = btn.title;
+    btn.removeAttribute("title");
+  }
+  const tip = btn.dataset.tip;
+  if (!tip) return;
+  iconTip.textContent = tip;
+  document.body.appendChild(iconTip);
+  const b = btn.getBoundingClientRect();
+  const t = iconTip.getBoundingClientRect();
+  let left = Math.min(Math.max(4, b.left + b.width / 2 - t.width / 2), window.innerWidth - t.width - 4);
+  let top = b.bottom + 6;
+  // Flip above when the label would fall off-screen or over the embedded
+  // browser webview (native child webviews cover in-app DOM).
+  const slot = $("browser-slot");
+  const slotRect = slot && !$("browser").classList.contains("hidden") ? slot.getBoundingClientRect() : null;
+  const overlapsSlot =
+    slotRect && top + t.height > slotRect.top && top < slotRect.bottom && left + t.width > slotRect.left && left < slotRect.right;
+  if (top + t.height > window.innerHeight - 4 || overlapsSlot) top = b.top - t.height - 6;
+  iconTip.style.left = `${left}px`;
+  iconTip.style.top = `${top}px`;
+});
+
+document.addEventListener("mouseout", (e) => {
+  if (e.target.closest?.(".icon-btn")) iconTip.remove();
+});
+// Buttons often re-render the DOM under the cursor, which can swallow
+// the mouseout — drop the label on any click.
+document.addEventListener("click", () => iconTip.remove(), true);
+
 // ── Boot ────────────────────────────────────────────────────────
 
 (async () => {
