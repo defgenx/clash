@@ -1447,35 +1447,14 @@ fn browser_tab(app: &tauri::AppHandle, tab: &str) -> Option<tauri::Webview> {
     app.webviews().get(&browser_tab_label(tab)).cloned()
 }
 
-/// All live browser-tab webviews (the main app webview is excluded).
-fn browser_tabs(app: &tauri::AppHandle) -> Vec<tauri::Webview> {
-    app.webviews()
-        .into_iter()
-        .filter(|(label, _)| label.starts_with(BROWSER_LABEL_PREFIX))
-        .map(|(_, wv)| wv)
-        .collect()
-}
-
 fn set_browser_bounds(wv: &tauri::Webview, x: f64, y: f64, w: f64, h: f64) {
     let _ = wv.set_position(tauri::LogicalPosition::new(x, y));
     let _ = wv.set_size(tauri::LogicalSize::new(w, h));
 }
 
-/// Show `tab` and hide every other browser tab (tabs are stacked child
-/// webviews over the same `#browser-slot` rect).
-fn raise_browser_tab(app: &tauri::AppHandle, tab: &str) {
-    let label = browser_tab_label(tab);
-    for wv in browser_tabs(app) {
-        if wv.label() == label {
-            let _ = wv.show();
-        } else {
-            let _ = wv.hide();
-        }
-    }
-}
-
 /// Open (or navigate) the browser tab's child webview, positioned over
-/// the `#browser-slot` placeholder rect reported by the frontend.
+/// the tab's pane slot rect reported by the frontend. Visibility of other
+/// tabs is the frontend's responsibility (tabs can live in different panes).
 #[tauri::command]
 async fn browser_open(
     app: tauri::AppHandle,
@@ -1490,7 +1469,7 @@ async fn browser_open(
     if let Some(wv) = browser_tab(&app, &tab) {
         wv.navigate(parsed).map_err(|e| e.to_string())?;
         set_browser_bounds(&wv, x, y, w, h);
-        raise_browser_tab(&app, &tab);
+        let _ = wv.show();
         return Ok(());
     }
     let win = app.get_window("main").ok_or("no main window")?;
@@ -1511,13 +1490,15 @@ async fn browser_open(
     })
     .map_err(|e| e.to_string())?;
     rx.await.map_err(|e| e.to_string())??;
-    raise_browser_tab(&app, &tab);
+    if let Some(wv) = browser_tab(&app, &tab) {
+        let _ = wv.show();
+    }
     Ok(())
 }
 
-/// Bring an existing tab to the front (tab strip click).
+/// Per-tab bounds — each browser tab can live in a different pane.
 #[tauri::command]
-fn browser_select(
+fn browser_set_bounds(
     app: tauri::AppHandle,
     tab: String,
     x: f64,
@@ -1527,18 +1508,18 @@ fn browser_select(
 ) -> Result<(), String> {
     let wv = browser_tab(&app, &tab).ok_or("no such tab")?;
     set_browser_bounds(&wv, x, y, w, h);
-    raise_browser_tab(&app, &tab);
     Ok(())
 }
 
-/// Reposition all browser tabs over the placeholder (layout changed) —
-/// hidden tabs too, so they come back correctly sized.
+/// Show/hide one tab's webview (pane/workspace visibility, zoom, dialogs).
 #[tauri::command]
-fn browser_bounds(app: tauri::AppHandle, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
-    for wv in browser_tabs(&app) {
-        set_browser_bounds(&wv, x, y, w, h);
+fn browser_set_visible(app: tauri::AppHandle, tab: String, visible: bool) -> Result<(), String> {
+    let wv = browser_tab(&app, &tab).ok_or("no such tab")?;
+    if visible {
+        wv.show().map_err(|e| e.to_string())
+    } else {
+        wv.hide().map_err(|e| e.to_string())
     }
-    Ok(())
 }
 
 #[tauri::command]
@@ -1576,15 +1557,6 @@ fn browser_get_url(app: tauri::AppHandle, tab: String) -> Result<String, String>
 #[tauri::command]
 fn browser_close_tab(app: tauri::AppHandle, tab: String) -> Result<(), String> {
     if let Some(wv) = browser_tab(&app, &tab) {
-        let _ = wv.close();
-    }
-    Ok(())
-}
-
-/// Close the whole panel: every tab's webview.
-#[tauri::command]
-fn browser_close(app: tauri::AppHandle) -> Result<(), String> {
-    for wv in browser_tabs(&app) {
         let _ = wv.close();
     }
     Ok(())
@@ -1820,14 +1792,13 @@ fn main() {
             restart_app,
             get_session_ports,
             browser_open,
-            browser_select,
-            browser_bounds,
+            browser_set_bounds,
+            browser_set_visible,
             browser_navigate,
             browser_history,
             browser_reload,
             browser_get_url,
             browser_close_tab,
-            browser_close,
             open_external,
             save_gui_state,
             load_gui_state

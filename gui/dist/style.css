@@ -669,57 +669,15 @@ html, body, #app {
   overflow-y: auto;
 }
 
-/* Embedded browser panel (native child webview over #browser-slot) */
-#browser {
-  width: 480px;
-  min-width: 480px;
+/* Browser tabs (first-class panes; native child webview over .b-slot) */
+.browser-pane {
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--border);
+  flex: 1;
+  min-height: 0;
   background: var(--bg);
 }
-/* Browser tab strip — same UI as the session tab strip (#tabs/.tab):
-   flat full-height tabs with right-border separators. */
-#b-tabs {
-  display: flex;
-  align-items: center;
-  background: var(--bg-sidebar);
-  border-bottom: 1px solid var(--border);
-  overflow-x: auto;
-  min-height: 34px;
-}
-#b-tabs::-webkit-scrollbar { height: 3px; }
-.b-tab {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  max-width: 200px;
-  padding: 0 14px;
-  height: 34px;
-  font-size: 12px;
-  color: var(--fg-dim);
-  cursor: pointer;
-  border-right: 1px solid var(--border);
-  user-select: none;
-  white-space: nowrap;
-}
-.b-tab.active { color: var(--fg); background: var(--bg); }
-.b-tab-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.b-tab-x {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  opacity: 0.5;
-}
-.b-tab-x:hover {
-  opacity: 1;
-  color: var(--red);
-}
-.b-newtab { flex-shrink: 0; margin: 0 6px; }
-#browser-bar {
+.b-chrome {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -727,7 +685,7 @@ html, body, #app {
   border-bottom: 1px solid var(--border);
   background: var(--bg-sidebar);
 }
-#browser-bar input {
+.b-chrome input.b-url {
   flex: 1;
   min-width: 0;
   background: var(--bg);
@@ -738,8 +696,14 @@ html, body, #app {
   font-size: 11px;
   outline: none;
 }
-#browser-bar input:focus { border-color: var(--accent); }
-#browser-slot { flex: 1; min-height: 0; }
+.b-chrome input.b-url:focus { border-color: var(--accent); }
+.b-slot { flex: 1; min-height: 0; }
+.tab.new-tab {
+  flex-shrink: 0;
+  padding: 0 10px;
+  color: var(--fg-dim);
+}
+.tab.new-tab:hover { color: var(--fg); }
 
 .pr-chip {
   flex-shrink: 0;

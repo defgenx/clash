@@ -80,11 +80,6 @@ function applyStaticIcons() {
     "split-btn": "columns",
     "unsplit-btn": "square",
     "details-btn": "info",
-    "b-back": "arrow-left",
-    "b-fwd": "arrow-right",
-    "b-reload": "reload",
-    "b-ext": "external-link",
-    "b-close": "x",
     "new-term-btn": "terminal",
   };
   for (const [id, name] of Object.entries(map)) {
@@ -133,10 +128,14 @@ function uiDialog({ message, input = null, okLabel = "OK", cancelable = true, da
     actions.appendChild(ok);
     box.appendChild(actions);
     backdrop.appendChild(box);
+    // Native browser webviews paint over the DOM and would hide the
+    // dialog — drop them while it's up; fitAll() brings them back.
+    if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
     document.body.appendChild(backdrop);
     const done = (val) => {
       backdrop.remove();
       resolve(val);
+      if (typeof fitAll === "function") fitAll();
     };
     ok.onclick = () => done(input !== null ? field.value : true);
     backdrop.onclick = (e) => {
@@ -169,12 +168,19 @@ function ws() {
 let saveTimer = null;
 
 function workspacesJson() {
+  const browserTabs = [];
+  for (const [id, e] of state.open) {
+    if (e.kind === "browser") {
+      browserTabs.push({ id, url: e.url, name: e.name, renamed: !!e.renamed });
+    }
+  }
   return JSON.stringify({
     workspaces: state.workspaces.map((w) => ({
       name: w.name,
       panes: w.panes,
       sessions: w.sessions,
     })),
+    browserTabs,
     active: state.activeWs,
     settings: state.settings,
   });
@@ -226,7 +232,8 @@ function applyWorkspacesData(data) {
   }
   if (!Array.isArray(data.workspaces) || !data.workspaces.length) return false;
   // Shell terminals die with the app (in-process daemon) — drop any
-  // persisted from the previous run.
+  // persisted from the previous run. Browser tabs survive: their URLs
+  // are persisted and the webviews are recreated lazily.
   const livePane = (p) => (p && isShellTerm(p) ? null : p);
   state.workspaces = data.workspaces.map((w) => ({
     name: w.name || "ws",
@@ -236,6 +243,7 @@ function applyWorkspacesData(data) {
     zoomed: false,
     sessions: Array.isArray(w.sessions) ? w.sessions.filter((id) => !isShellTerm(id)) : [],
   }));
+  pendingBrowserTabs = Array.isArray(data.browserTabs) ? data.browserTabs : [];
   state.activeWs = Math.min(data.active || 0, state.workspaces.length - 1);
   return true;
 }
@@ -267,6 +275,7 @@ async function restoreWorkspaceSessions() {
     for (let pi = 0; pi < w.panes.length; pi++) {
       const sid = w.panes[pi];
       if (!sid) continue;
+      if (isBrowserTab(sid)) continue; // restored separately, never "running"
       if (!running.has(sid)) {
         w.panes[pi] = null;
         continue;
@@ -638,7 +647,7 @@ function sessionItem(s) {
     chip.title = `${pr} — click to open in the browser panel`;
     chip.onclick = (ev) => {
       ev.stopPropagation();
-      openBrowserPanel(pr);
+      openBrowserTab(pr);
     };
     sub.appendChild(chip);
   }
@@ -696,7 +705,7 @@ function sessionMenu(s, x, y) {
     { label: "Rename session…", icon: "pencil", action: () => startRename(s.id) },
     { label: "Details", icon: "info", action: () => showDetails(s.id) },
     ...(pr
-      ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openBrowserPanel(pr) }]
+      ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openBrowserTab(pr) }]
       : []),
     ...(s.source === "Wild" && !s.id.startsWith("wild-pid-")
       ? [{ label: "Take over wild claude", icon: "zap", action: () => adoptWild(s) }]
@@ -755,7 +764,8 @@ async function refreshSessions() {
     let pruned = false;
     for (const w of state.workspaces) {
       for (const id of [...w.sessions]) {
-        if (isShellTerm(id)) continue; // not in the session list by design
+        // Shell terminals and browser tabs are never in the session list
+        if (isShellTerm(id) || isBrowserTab(id)) continue;
         if (known.has(id)) {
           state.missingStreak.delete(id);
           continue;
@@ -912,19 +922,51 @@ async function renameSessionDialog(sid) {
   refreshSessions();
 }
 
+/// Rename any tab. Claude sessions go through the registry (rename_session,
+/// kept in sync with the TUI); shell/view/browser tabs are display-only —
+/// shellterms die with the app, browser names persist via gui-state.
+async function renameTabDialog(id) {
+  const entry = state.open.get(id);
+  if (!entry) return;
+  if (entry.kind === "claude") return renameSessionDialog(id);
+  const name = await uiPrompt("Tab name:", entry.name || "");
+  if (!name || !name.trim()) return;
+  entry.name = name.trim();
+  if (entry.kind === "browser") {
+    entry.renamed = true;
+    saveWorkspaces();
+  }
+  renderTabs();
+  renderPanes();
+}
+
 function tabContextMenu(ev, sid) {
   ev.preventDefault();
   ev.stopPropagation();
   const entry = state.open.get(sid);
   if (isShellTerm(sid)) {
     showContextMenu(ev.clientX, ev.clientY, [
+      { label: "Rename terminal…", icon: "pencil", action: () => renameTabDialog(sid) },
       { label: "Close terminal", icon: "x", action: () => detachSession(sid) },
     ]);
     return;
   }
-  if (entry && !entry.term) {
-    // Content tab (conversation/subagents/diff) — only closable
+  if (entry && entry.kind === "browser") {
     showContextMenu(ev.clientX, ev.clientY, [
+      { label: "Rename tab…", icon: "pencil", action: () => renameTabDialog(sid) },
+      {
+        label: "Open in system browser",
+        icon: "external-link",
+        action: () => invoke("open_external", { url: entry.url }).catch(console.error),
+      },
+      { label: "Close tab", icon: "x", hint: "⌘W", action: () => detachSession(sid) },
+    ]);
+    return;
+  }
+  if (entry && !entry.term) {
+    // Content tab (conversation/subagents/diff) — renamable + closable
+    showContextMenu(ev.clientX, ev.clientY, [
+      { label: "Rename tab…", icon: "pencil", action: () => renameTabDialog(sid) },
       { label: "Close tab", icon: "x", action: () => dropTerminal(sid) },
     ]);
     return;
@@ -934,7 +976,7 @@ function tabContextMenu(ev, sid) {
     { label: "Rename session…", icon: "pencil", action: () => renameSessionDialog(sid) },
     { label: "Close tab (detach)", icon: "x", hint: "⌘W", action: () => detachSession(sid) },
     ...(pr
-      ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openBrowserPanel(pr) }]
+      ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openBrowserTab(pr) }]
       : []),
     null,
     {
@@ -1009,11 +1051,19 @@ function renderTabs() {
 
     const label = document.createElement("span");
     label.textContent = entry.name;
+    label.title = "Double-click to rename";
+    label.ondblclick = (ev) => {
+      ev.stopPropagation();
+      renameTabDialog(id);
+    };
 
     const close = document.createElement("span");
     close.className = "close";
     close.innerHTML = svgIcon("x", 13);
-    close.title = "Detach (session keeps running)";
+    close.title =
+      entry.kind === "claude"
+        ? "Detach (session keeps running)"
+        : "Close tab";
     close.onclick = (ev) => {
       ev.stopPropagation();
       detachSession(id);
@@ -1023,6 +1073,19 @@ function renderTabs() {
     tab.appendChild(close);
     tabs.appendChild(tab);
   }
+
+  // "+" ghost tab — the same unified menu as the topbar button, where
+  // the eye already is when looking at tabs.
+  const plus = document.createElement("div");
+  plus.className = "tab new-tab";
+  plus.title = "New tab — terminal, browser, or Claude session";
+  plus.innerHTML = svgIcon("plus", 13);
+  plus.onclick = (ev) => {
+    ev.stopPropagation();
+    const r = plus.getBoundingClientRect();
+    showNewTabMenu(r.left, r.bottom + 4);
+  };
+  tabs.appendChild(plus);
 }
 
 // ── Panes (split layout) ────────────────────────────────────────
@@ -1087,7 +1150,7 @@ function fitAll() {
       const entry = sid && state.open.get(sid);
       if (entry && entry.fitAddon) entry.fitAddon.fit();
     }
-    if (typeof syncBrowserBounds === "function") syncBrowserBounds();
+    if (typeof syncBrowserWebviews === "function") syncBrowserWebviews();
   });
 }
 
@@ -1231,7 +1294,7 @@ async function openSession(sid, label) {
     // browser panel, or the system browser per the embedLinks setting.
     linkHandler: {
       activate: (_e, uri) => {
-        if (/^https?:\/\//.test(uri) && state.settings.embedLinks) openBrowserPanel(uri);
+        if (/^https?:\/\//.test(uri) && state.settings.embedLinks) openBrowserTab(uri);
         else invoke("open_external", { url: uri }).catch(() => {});
       },
     },
@@ -1246,6 +1309,24 @@ async function openSession(sid, label) {
   // With optionMeta on, Alt+letter stays Meta for readline word jumps
   // (⌥B/⌥F); with it off, ⌥ always composes — letters included.
   term.attachCustomKeyEventHandler((e) => {
+    // Shift+Enter inserts a newline in Claude sessions instead of
+    // submitting. xterm encodes Enter and Shift+Enter identically (\r);
+    // Claude Code treats ESC+CR as "insert newline" (the same sequence
+    // its /terminal-setup binds in iTerm/VS Code). Claude sessions only:
+    // in shells ESC+CR is readline M-RET and would surprise.
+    if (
+      e.type === "keydown" &&
+      e.key === "Enter" &&
+      e.shiftKey &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !isShellTerm(sid)
+    ) {
+      invoke("send_input", { sessionId: sid, text: "\x1b\r" }).catch(console.error);
+      e.preventDefault();
+      return false;
+    }
     if (
       e.type === "keydown" &&
       e.altKey &&
@@ -1266,6 +1347,7 @@ async function openSession(sid, label) {
 
   const s = state.sessions.find((x) => x.id === sid);
   state.open.set(sid, {
+    kind: isShellTerm(sid) ? "shell" : "claude",
     term,
     fitAddon,
     el,
@@ -1319,7 +1401,10 @@ async function openSession(sid, label) {
             end: { x: m.index + m[0].length, y },
           },
           text: m[0],
-          activate: (_e, uri) => openBrowserPanel(uri),
+          activate: (_e, uri) =>
+            state.settings.embedLinks
+              ? openBrowserTab(uri)
+              : invoke("open_external", { url: uri }).catch(() => {}),
         });
       }
       cb(links.length ? links : undefined);
@@ -1334,7 +1419,10 @@ async function openSession(sid, label) {
 /// just close.
 async function detachSession(sid) {
   const entry = state.open.get(sid);
-  if (entry && entry.term) {
+  if (entry && entry.kind === "browser") {
+    // Closing a browser tab destroys its webview — nothing to keep alive.
+    if (entry.created) await invoke("browser_close_tab", { tab: entry.tabId }).catch(() => {});
+  } else if (entry && entry.term) {
     try {
       if (isShellTerm(sid)) await invoke("close_terminal", { sessionId: sid });
       else await invoke("close_session", { sessionId: sid });
@@ -1354,9 +1442,11 @@ function dropTerminal(sid) {
   state.open.delete(sid);
   for (const w of state.workspaces) {
     w.panes = w.panes.map((p) => (p === sid ? null : p));
-    // Shell terminals leave ownership on close — the session prune
-    // intentionally skips them, so nothing else would.
-    if (isShellTerm(sid)) w.sessions = w.sessions.filter((x) => x !== sid);
+    // Shell terminals and browser tabs leave ownership on close — the
+    // session prune intentionally skips them, so nothing else would.
+    if (isShellTerm(sid) || isBrowserTab(sid)) {
+      w.sessions = w.sessions.filter((x) => x !== sid);
+    }
   }
   saveWorkspaces();
   if (state.activeTab === sid) syncActiveToFocused();
@@ -1379,7 +1469,7 @@ function openViewTab(key, name, build) {
   }
   const el = document.createElement("div");
   el.className = "view-wrap";
-  state.open.set(key, { el, name });
+  state.open.set(key, { kind: "view", el, name });
   assignToFocusedPane(key);
   build(el);
 }
@@ -1574,7 +1664,7 @@ function renderDetails() {
               .join("")
           : "<p class='hint'>no listening ports</p>");
       out.querySelectorAll(".row-item.port").forEach((row) => {
-        row.onclick = () => openBrowserPanel(`http://localhost:${row.dataset.port}`);
+        row.onclick = () => openBrowserTab(`http://localhost:${row.dataset.port}`);
       });
     } catch (e) {
       out.innerHTML = `<h4>LISTENING PORTS</h4><p class='hint'>failed: ${escapeHtml(e)}</p>`;
@@ -1627,7 +1717,7 @@ async function showBrowserOpenPicker(s) {
   // session branch against the default branch (pushed commits only).
   if (pr) {
     addRow("± Diff on GitHub", `PR #${pr.split("/").pop()} files`, () =>
-      openBrowserPanel(`${pr}/files`),
+      openBrowserTab(`${pr}/files`),
     );
   } else if (repo && repo.includes("github.com") && s.git_branch) {
     const branch = s.git_branch;
@@ -1637,18 +1727,18 @@ async function showBrowserOpenPicker(s) {
         uiAlert(`Branch ${branch} is the default branch — nothing to compare on GitHub.`);
         return;
       }
-      openBrowserPanel(
+      openBrowserTab(
         `${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(branch)}`,
       );
     });
   }
-  if (pr) addRow(`⇄ Pull request #${pr.split("/").pop()}`, pr, () => openBrowserPanel(pr));
+  if (pr) addRow(`⇄ Pull request #${pr.split("/").pop()}`, pr, () => openBrowserTab(pr));
   if (repo) {
     const url =
       s.git_branch && repo.includes("github.com")
         ? `${repo}/tree/${encodeURIComponent(s.git_branch)}`
         : repo;
-    addRow("⌂ Repository", url, () => openBrowserPanel(url));
+    addRow("⌂ Repository", url, () => openBrowserTab(url));
   }
 }
 
@@ -2273,7 +2363,7 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.metaKey && e.shiftKey && e.key.toLowerCase() === "b") {
     e.preventDefault();
-    toggleBrowserPanel();
+    openBrowserTab("https://github.com");
     return;
   }
   if (e.metaKey && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
@@ -2305,207 +2395,233 @@ document.addEventListener("keydown", (e) => {
 
 window.addEventListener("resize", fitAll);
 
-// ── Embedded browser panel (cmux-style) ─────────────────────────
-// A native child webview is positioned over #browser-slot by the
-// backend; the frontend reports the slot's rect whenever layout moves.
+// ── Browser tabs (first-class tabs, one child webview each) ──────
+// A browser tab is a regular `state.open` entry living in panes and
+// workspaces like terminals do. Its page is a native child webview the
+// backend positions over the tab's .b-slot rect; the frontend owns
+// visibility (created lazily the first time the tab becomes visible).
 
-let browserShown = false;
-let browserLastUrl = null;
-let browserUrlPoll = null;
-let browserTabs = []; // [{ id, url }]
-let browserActiveTab = null;
 let browserNextTabId = 1; // monotonic: webview labels are never reused
+let browserUrlPoll = null;
+let pendingBrowserTabs = []; // persisted tabs awaiting restore at boot
 
-function browserSlotRect() {
-  const r = $("browser-slot").getBoundingClientRect();
-  return { x: r.x, y: r.y, w: r.width, h: r.height };
+function isBrowserTab(id) {
+  return id.startsWith("browser-");
 }
 
-function activeBrowserTab() {
-  return browserTabs.find((t) => t.id === browserActiveTab);
-}
-
-/// Show `url` in the active tab (creating the first tab if needed).
-/// `opts.newTab` opens a fresh tab instead.
-async function openBrowserPanel(url, opts = {}) {
-  browserLastUrl = url;
-  $("browser").classList.remove("hidden");
-  $("browser-resizer").classList.remove("hidden");
-  fitAll();
-  // Layout must settle before measuring the slot
-  await new Promise((r) => requestAnimationFrame(r));
-  const { x, y, w, h } = browserSlotRect();
-  let tab = opts.newTab ? null : activeBrowserTab();
-  if (!tab) {
-    tab = { id: String(browserNextTabId++), url };
-    browserTabs.push(tab);
-    browserActiveTab = tab.id;
-  } else {
-    tab.url = url;
-  }
+function hostnameOf(url) {
   try {
-    await invoke("browser_open", { tab: tab.id, url, x, y, w, h });
-    browserShown = true;
-    renderBrowserTabs();
-    if (document.activeElement !== $("b-url")) $("b-url").value = url;
-    if (!browserUrlPoll) browserUrlPoll = setInterval(syncBrowserUrl, 1500);
-  } catch (e) {
-    closeBrowserPanel();
-    uiAlert(`Browser failed: ${e}`);
-  }
-}
-
-async function selectBrowserTab(id) {
-  if (id === browserActiveTab) return;
-  browserActiveTab = id;
-  const { x, y, w, h } = browserSlotRect();
-  try {
-    await invoke("browser_select", { tab: id, x, y, w, h });
-  } catch (e) {
-    void e;
-  }
-  const tab = activeBrowserTab();
-  browserLastUrl = tab?.url || browserLastUrl;
-  if (document.activeElement !== $("b-url")) $("b-url").value = tab?.url || "";
-  renderBrowserTabs();
-}
-
-function closeBrowserTab(id) {
-  invoke("browser_close_tab", { tab: id }).catch(() => {});
-  const i = browserTabs.findIndex((t) => t.id === id);
-  if (i >= 0) browserTabs.splice(i, 1);
-  if (!browserTabs.length) {
-    closeBrowserPanel();
-    return;
-  }
-  if (browserActiveTab === id) {
-    browserActiveTab = null;
-    selectBrowserTab(browserTabs[Math.max(0, i - 1)].id);
-  } else {
-    renderBrowserTabs();
-  }
-}
-
-function browserTabLabel(t) {
-  try {
-    return new URL(t.url).hostname.replace(/^www\./, "");
+    return new URL(url).hostname.replace(/^www\./, "") || url;
   } catch {
-    return t.url || "tab";
+    return url || "tab";
   }
 }
 
-function renderBrowserTabs() {
-  const strip = $("b-tabs");
-  strip.innerHTML = "";
-  for (const t of browserTabs) {
-    const el = document.createElement("div");
-    el.className = "b-tab" + (t.id === browserActiveTab ? " active" : "");
-    el.title = t.url;
-    const label = document.createElement("span");
-    label.className = "b-tab-label";
-    label.textContent = browserTabLabel(t);
-    el.appendChild(label);
-    const x = document.createElement("span");
-    x.className = "b-tab-x";
-    x.title = "Close tab";
-    x.innerHTML = svgIcon("x", 12);
-    x.onclick = (e) => {
-      e.stopPropagation();
-      closeBrowserTab(t.id);
-    };
-    el.appendChild(x);
-    el.onclick = () => selectBrowserTab(t.id);
-    strip.appendChild(el);
-  }
-  const plus = document.createElement("button");
-  plus.className = "icon-btn b-newtab";
-  plus.title = "New tab";
-  plus.innerHTML = svgIcon("plus");
-  plus.onclick = () => openBrowserPanel("https://github.com", { newTab: true });
-  strip.appendChild(plus);
-}
+/// Per-pane chrome strip (back/forward/reload/URL/open-external) above
+/// the .b-slot div the native webview covers.
+function buildBrowserPaneEl(entry) {
+  const el = document.createElement("div");
+  el.className = "browser-pane";
 
-function closeBrowserPanel() {
-  browserShown = false;
-  browserTabs = [];
-  browserActiveTab = null;
-  if (browserUrlPoll) {
-    clearInterval(browserUrlPoll);
-    browserUrlPoll = null;
-  }
-  $("browser").classList.add("hidden");
-  $("browser-resizer").classList.add("hidden");
-  invoke("browser_close").catch(() => {});
-  fitAll();
-}
-
-function toggleBrowserPanel() {
-  if (browserShown) closeBrowserPanel();
-  else openBrowserPanel(browserLastUrl || "https://github.com");
-}
-
-async function syncBrowserUrl() {
-  if (!browserShown || !browserActiveTab) return;
-  try {
-    const url = await invoke("browser_get_url", { tab: browserActiveTab });
-    browserLastUrl = url;
-    const tab = activeBrowserTab();
-    if (tab && tab.url !== url) {
-      tab.url = url;
-      renderBrowserTabs(); // hostname label may have changed
+  const chrome = document.createElement("div");
+  chrome.className = "b-chrome";
+  // Clicks inside the native webview never reach the DOM — clicking the
+  // chrome strip is how a browser pane takes focus.
+  chrome.addEventListener("mousedown", () => {
+    const w = ws();
+    const i = w.panes.indexOf(entry.id);
+    if (i >= 0 && w.focused !== i) {
+      w.focused = i;
+      syncActiveToFocused();
+      renderPanes();
+      renderTabs();
     }
-    if (document.activeElement !== $("b-url")) $("b-url").value = url;
-  } catch (e) {
-    void e;
-  }
-}
+  });
 
-function syncBrowserBounds() {
-  if (!browserShown) return;
-  const { x, y, w, h } = browserSlotRect();
-  invoke("browser_bounds", { x, y, w, h }).catch(() => {});
-}
-
-new ResizeObserver(syncBrowserBounds).observe($("browser-slot"));
-window.addEventListener("resize", syncBrowserBounds);
-
-// Vertical wheel scrolls the tab strip horizontally (the 6px scrollbar
-// is a poor drag target).
-$("b-tabs").addEventListener(
-  "wheel",
-  (e) => {
-    if (!e.deltaY || e.deltaX) return;
-    e.preventDefault();
-    $("b-tabs").scrollLeft += e.deltaY;
-  },
-  { passive: false },
-);
-
-$("b-back").onclick = () =>
-  browserActiveTab && invoke("browser_history", { tab: browserActiveTab, delta: -1 }).catch(() => {});
-$("b-fwd").onclick = () =>
-  browserActiveTab && invoke("browser_history", { tab: browserActiveTab, delta: 1 }).catch(() => {});
-$("b-reload").onclick = () =>
-  browserActiveTab && invoke("browser_reload", { tab: browserActiveTab }).catch(() => {});
-$("b-close").onclick = closeBrowserPanel;
-$("b-ext").onclick = () => {
-  if (browserLastUrl) invoke("open_external", { url: browserLastUrl }).catch(console.error);
-};
-$("b-url").addEventListener("keydown", (e) => {
-  if (e.key !== "Enter") return;
-  let url = $("b-url").value.trim();
-  if (!url || !browserActiveTab) return;
-  if (!/^https?:\/\//.test(url)) url = "https://" + url;
-  browserLastUrl = url;
-  const tab = activeBrowserTab();
-  if (tab) {
-    tab.url = url;
-    renderBrowserTabs();
-  }
-  invoke("browser_navigate", { tab: browserActiveTab, url }).catch((err) =>
-    uiAlert(`Navigate failed: ${err}`),
+  const btn = (icon, title, fn) => {
+    const b = document.createElement("button");
+    b.className = "icon-btn";
+    b.title = title;
+    b.innerHTML = svgIcon(icon);
+    b.onclick = fn;
+    chrome.appendChild(b);
+  };
+  btn("arrow-left", "Back", () =>
+    invoke("browser_history", { tab: entry.tabId, delta: -1 }).catch(() => {}),
   );
-});
+  btn("arrow-right", "Forward", () =>
+    invoke("browser_history", { tab: entry.tabId, delta: 1 }).catch(() => {}),
+  );
+  btn("reload", "Reload", () =>
+    invoke("browser_reload", { tab: entry.tabId }).catch(() => {}),
+  );
+
+  const urlInput = document.createElement("input");
+  urlInput.type = "text";
+  urlInput.className = "b-url";
+  urlInput.spellcheck = false;
+  urlInput.value = entry.url;
+  urlInput.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    let url = urlInput.value.trim();
+    if (!url) return;
+    if (!/^https?:\/\//.test(url)) url = "https://" + url;
+    entry.url = url;
+    if (!entry.renamed) entry.name = hostnameOf(url);
+    renderTabs();
+    saveWorkspaces();
+    invoke("browser_navigate", { tab: entry.tabId, url }).catch((err) =>
+      uiAlert(`Navigate failed: ${err}`),
+    );
+    urlInput.blur();
+  });
+  chrome.appendChild(urlInput);
+  entry.urlInput = urlInput;
+
+  btn("external-link", "Open in system browser", () =>
+    invoke("open_external", { url: entry.url }).catch(console.error),
+  );
+
+  const slot = document.createElement("div");
+  slot.className = "b-slot";
+
+  el.appendChild(chrome);
+  el.appendChild(slot);
+  entry.slot = slot;
+  return el;
+}
+
+/// Build the `state.open` entry for a browser tab (no webview yet —
+/// `syncBrowserWebviews` materializes it on first visibility).
+function makeBrowserEntry(id, url, name, renamed) {
+  const entry = {
+    kind: "browser",
+    id,
+    tabId: id.slice("browser-".length),
+    url,
+    name: name || hostnameOf(url),
+    renamed: !!renamed,
+    created: false,
+    creating: false,
+    el: null,
+    slot: null,
+    urlInput: null,
+  };
+  entry.el = buildBrowserPaneEl(entry);
+  return entry;
+}
+
+/// Open `url` as a first-class tab in the active workspace. Reuses an
+/// existing tab showing the same URL instead of duplicating it.
+function openBrowserTab(url) {
+  const w = ws();
+  for (const [id, entry] of state.open) {
+    if (entry.kind === "browser" && entry.url === url && w.sessions.includes(id)) {
+      assignToFocusedPane(id);
+      return;
+    }
+  }
+  const id = "browser-" + browserNextTabId++;
+  const entry = makeBrowserEntry(id, url);
+  state.open.set(id, entry);
+  claimSession(id);
+  assignToFocusedPane(id);
+  saveWorkspaces();
+  if (!browserUrlPoll) browserUrlPoll = setInterval(syncBrowserUrls, 1500);
+}
+
+/// Recreate persisted browser tabs (entries only — webviews are lazy).
+function restoreBrowserTabs() {
+  const owned = new Set(state.workspaces.flatMap((w) => w.sessions));
+  let maxId = 0;
+  for (const t of pendingBrowserTabs) {
+    if (!t || typeof t.id !== "string" || !isBrowserTab(t.id)) continue;
+    const n = parseInt(t.id.slice("browser-".length), 10);
+    if (Number.isFinite(n)) maxId = Math.max(maxId, n);
+    if (!owned.has(t.id) || typeof t.url !== "string" || !t.url) continue;
+    state.open.set(t.id, makeBrowserEntry(t.id, t.url, t.name, t.renamed));
+  }
+  browserNextTabId = maxId + 1;
+  pendingBrowserTabs = [];
+  if (state.open.size && !browserUrlPoll) {
+    browserUrlPoll = setInterval(syncBrowserUrls, 1500);
+  }
+}
+
+/// Single source of truth for webview geometry/visibility — runs after
+/// every layout change (fitAll). A browser tab's webview is shown iff
+/// the tab sits in a visible pane of the active workspace.
+function syncBrowserWebviews() {
+  const w = ws();
+  const visible = new Set(
+    (w.zoomed ? [w.panes[w.focused]] : w.panes).filter(
+      (id) => id && isBrowserTab(id),
+    ),
+  );
+  for (const [id, entry] of state.open) {
+    if (entry.kind !== "browser") continue;
+    if (visible.has(id) && entry.slot && entry.slot.isConnected) {
+      const r = entry.slot.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue; // layout not settled yet
+      const rect = { x: r.x, y: r.y, w: r.width, h: r.height };
+      if (!entry.created) {
+        if (entry.creating) continue;
+        entry.creating = true;
+        invoke("browser_open", { tab: entry.tabId, url: entry.url, ...rect })
+          .then(() => {
+            entry.created = true;
+          })
+          .catch((e) => console.error("browser_open failed:", e))
+          .finally(() => {
+            entry.creating = false;
+          });
+      } else {
+        invoke("browser_set_bounds", { tab: entry.tabId, ...rect }).catch(() => {});
+        invoke("browser_set_visible", { tab: entry.tabId, visible: true }).catch(() => {});
+      }
+    } else if (entry.created) {
+      invoke("browser_set_visible", { tab: entry.tabId, visible: false }).catch(() => {});
+    }
+  }
+}
+
+/// Native webviews paint over the DOM — hide them while a modal dialog
+/// is up so it stays visible and clickable. fitAll() restores them.
+function hideBrowserWebviews() {
+  for (const entry of state.open.values()) {
+    if (entry.kind === "browser" && entry.created) {
+      invoke("browser_set_visible", { tab: entry.tabId, visible: false }).catch(() => {});
+    }
+  }
+}
+
+/// Keep tab labels and URL bars in sync with in-page navigation.
+async function syncBrowserUrls() {
+  const w = ws();
+  const visible = w.zoomed ? [w.panes[w.focused]] : w.panes;
+  for (const id of visible) {
+    const entry = id && state.open.get(id);
+    if (!entry || entry.kind !== "browser" || !entry.created) continue;
+    try {
+      const url = await invoke("browser_get_url", { tab: entry.tabId });
+      if (url && url !== entry.url) {
+        entry.url = url;
+        if (!entry.renamed) entry.name = hostnameOf(url);
+        renderTabs();
+        saveWorkspaces();
+      }
+      if (entry.urlInput && document.activeElement !== entry.urlInput) {
+        entry.urlInput.value = entry.url;
+      }
+    } catch (e) {
+      void e;
+    }
+  }
+}
+
+// Pane-area geometry changes that bypass renderPanes (details panel
+// open/close, sidebar drag) still move the slots — observe the host.
+new ResizeObserver(() => syncBrowserWebviews()).observe($("terminal-host"));
 
 // ── Panel resizing (sidebar / details) ──────────────────────────
 
@@ -2518,7 +2634,6 @@ function loadPanelSizes() {
     };
     if (sizes.sidebar) apply($("sidebar"), sizes.sidebar);
     if (sizes.details) apply($("details"), sizes.details);
-    if (sizes.browser) apply($("browser"), sizes.browser);
   } catch (e) {
     console.error("loadPanelSizes failed:", e);
   }
@@ -2563,14 +2678,6 @@ function initResizer(handleId, panelId, storageKey, min, max, compute) {
 
 initResizer("sidebar-resizer", "sidebar", "sidebar", 180, 480, (x) => x);
 initResizer("details-resizer", "details", "details", 240, 640, (x) => window.innerWidth - x);
-initResizer(
-  "browser-resizer",
-  "browser",
-  "browser",
-  300,
-  1200,
-  (x) => $("browser").getBoundingClientRect().right - x
-);
 loadPanelSizes();
 
 $("new-ws-btn").onclick = newWorkspace;
@@ -2752,11 +2859,11 @@ async function openShellTerminal(shell) {
   }
 }
 
-$("new-term-btn").onclick = (ev) => {
-  ev.stopPropagation(); // the same click would bubble to hideContextMenu
-  const r = $("new-term-btn").getBoundingClientRect();
+/// Unified new-tab menu: a terminal (per detected shell), a browser tab,
+/// or a Claude session — everything a pane can hold, in one place.
+function showNewTabMenu(x, y) {
   const last = state.settings.termShell || "";
-  showContextMenu(r.left, r.bottom + 4, [
+  showContextMenu(x, y, [
     ...detectedShells.map((sh) => ({
       label: sh,
       icon: "terminal",
@@ -2766,7 +2873,27 @@ $("new-term-btn").onclick = (ev) => {
     ...(detectedShells.length
       ? []
       : [{ label: "Default shell", icon: "terminal", action: () => openShellTerminal("") }]),
+    null,
+    {
+      label: "New browser tab",
+      icon: "external-link",
+      hint: "⌘⇧B",
+      action: () => openBrowserTab("https://github.com"),
+    },
+    null,
+    {
+      label: "New Claude session…",
+      icon: "plus",
+      hint: "⌘T",
+      action: showNewSessionModal,
+    },
   ]);
+}
+
+$("new-term-btn").onclick = (ev) => {
+  ev.stopPropagation(); // the same click would bubble to hideContextMenu
+  const r = $("new-term-btn").getBoundingClientRect();
+  showNewTabMenu(r.left, r.bottom + 4);
 };
 
 // ── Icon button hover labels ────────────────────────────────────
@@ -2793,12 +2920,17 @@ document.addEventListener("mouseover", (e) => {
   const t = iconTip.getBoundingClientRect();
   let left = Math.min(Math.max(4, b.left + b.width / 2 - t.width / 2), window.innerWidth - t.width - 4);
   let top = b.bottom + 6;
-  // Flip above when the label would fall off-screen or over the embedded
+  // Flip above when the label would fall off-screen or over an embedded
   // browser webview (native child webviews cover in-app DOM).
-  const slot = $("browser-slot");
-  const slotRect = slot && !$("browser").classList.contains("hidden") ? slot.getBoundingClientRect() : null;
-  const overlapsSlot =
-    slotRect && top + t.height > slotRect.top && top < slotRect.bottom && left + t.width > slotRect.left && left < slotRect.right;
+  let overlapsSlot = false;
+  for (const s of document.querySelectorAll(".browser-pane .b-slot")) {
+    const sr = s.getBoundingClientRect();
+    if (sr.width <= 0 || sr.height <= 0) continue;
+    if (top + t.height > sr.top && top < sr.bottom && left + t.width > sr.left && left < sr.right) {
+      overlapsSlot = true;
+      break;
+    }
+  }
   if (top + t.height > window.innerHeight - 4 || overlapsSlot) top = b.top - t.height - 6;
   iconTip.style.left = `${left}px`;
   iconTip.style.top = `${top}px`;
@@ -2816,6 +2948,7 @@ document.addEventListener("click", () => iconTip.remove(), true);
 (async () => {
   applyStaticIcons(); // before first paint — never show the unicode fallbacks
   await loadWorkspaces(); // disk-backed — must complete before first render
+  restoreBrowserTabs(); // entries only — webviews materialize on first visibility
   $("default-cwd").value = state.settings.defaultCwd;
   syncSettingsUi();
   if (!state.settings.notifications) {

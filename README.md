@@ -394,7 +394,14 @@ clicking one (or its ⚡ button) takes it over after a confirm — the
 outside process is killed and its conversation (dynamically associated,
 always the latest in that directory) opens attached under clash.
 Right-click a tab for the context menu:
-rename, close (detach), stash, kill, details.
+rename, close (detach), stash, kill, details. Every tab — Claude
+session, shell terminal, browser, or view — renames via double-click on
+its label or the context menu; Claude renames go through the registry
+(propagating to the TUI and sidebar), the others are display-only.
+`Shift+Enter` inserts a newline in Claude session terminals instead of
+submitting (plain `Enter` still submits; shells are untouched).
+The tab strip ends in a `+` ghost tab (same menu as the topbar button):
+a terminal per detected shell, a browser tab, or a new Claude session.
 
 The details panel (ⓘ) is a compact overview — live status, branch,
 project, CWD, summary. Conversation, Subagents, and Diff open as full
@@ -404,15 +411,20 @@ opens the diff on GitHub (the PR's files view, or a compare view of the
 session branch against the default branch), the session's PR, or the
 repository. (The local diff opens as an in-app tab, not in the browser.)
 
-Embedded browser (cmux-style, `⌘⇧B`): a native webview panel docked on
-the right with browser tabs (`+` to open, `×` per tab, `×` in the
-toolbar closes the whole panel), URL bar, back/forward/reload, and
-open-in-system-browser.
-URLs printed in any terminal are clickable and open there; listening
-ports open `localhost:<port>`; and when a session's output mentions a
-GitHub pull request, a green `⇄ PR #n` chip appears on the session (and
-in the tab's right-click menu) that opens the PR in-app. Note: the
-browser is a native overlay — in-app dialogs can't draw over it.
+Browser tabs are first-class tabs (`⌘⇧B` opens one, also via the `+`
+new-tab menu): each lives in the tab strip and panes exactly like a
+terminal or Claude session — split it next to a terminal, move it
+between panes, zoom it, own it per workspace. Each browser pane has a
+chrome strip with back/forward/reload, a URL bar, and
+open-in-system-browser; close with `⌘W`, middle-click, or the tab `×`.
+Anything "opened in the browser" opens as a new tab: URLs printed in
+any terminal are clickable; listening ports open `localhost:<port>`;
+and when a session's output mentions a GitHub pull request, a green
+`⇄ PR #n` chip appears on the session (and in the tab's right-click
+menu) that opens the PR in-app. Browser tabs persist across restarts
+(URL and custom name; the page reloads). Notes: the page itself is a
+native overlay — click the chrome strip or the tab to focus a browser
+pane, and context menus opened over the page area may be hidden.
 
 Workspaces (cmux-style): each workspace owns its pane layout AND its
 sessions — `⌘N` new, `⌘1-9` switch, `⌘⇧R` rename, `⌘⇧W` or the chip's
