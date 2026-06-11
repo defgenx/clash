@@ -14,12 +14,12 @@
         <img class="logo" src="logo.svg" alt="clash" />
         <span class="badge">GUI</span>
         <span class="spacer"></span>
-        <button id="new-session-btn" class="icon-btn" title="New session (⌘T)">+</button>
       </div>
       <div id="workspace-bar">
         <div id="workspace-chips"></div>
         <button id="new-ws-btn" class="icon-btn mini" title="New workspace (⌘N)">+</button>
       </div>
+      <button id="new-session-btn" class="primary-action" title="Start a new Claude Code session (⌘T)">＋ New session</button>
       <div id="search-wrap">
         <input id="search" type="text" placeholder="Search sessions…  ( / )" autocomplete="off" spellcheck="false" />
       </div>
@@ -31,10 +31,16 @@
         <div id="teams-list" class="hidden"></div>
       </div>
       <div id="sidebar-footer">
-        <span id="session-count"></span>
-        <span class="spacer"></span>
-        <span id="version"></span>
-        <button id="update-btn" class="icon-btn mini" title="Update clash">⟳</button>
+        <div class="section-label">SETTINGS</div>
+        <label class="setting-row">Default directory
+          <input id="default-cwd" type="text" placeholder="/Users/you" autocomplete="off" spellcheck="false" />
+        </label>
+        <button id="update-btn" class="update-big" title="Download and install the latest clash version">⟳ Update clash</button>
+        <div class="footer-row">
+          <span id="session-count"></span>
+          <span class="spacer"></span>
+          <span id="version"></span>
+        </div>
       </div>
     </aside>
 

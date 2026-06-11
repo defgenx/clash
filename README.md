@@ -340,11 +340,15 @@ with session sections and status rings; embedded xterm.js terminals attach to
 the same sessions the TUI manages.
 
 GUI features: fuzzy search (`/` or `⌘F`), inline rename (double-click),
-new session (`⌘T`) with preset picker and git-worktree option, stash/kill/
-adopt from hover actions, split panes up to 2×2 (`⌘D`, zoom `⌘⇧↩`),
-teams browser (members, tasks, agent inboxes, create/delete), self-update
-from the footer, and quit-stash on close. The sidebar and details panel
-are drag-resizable (widths persist).
+new session via the sidebar's `＋ New session` button (`⌘T`) with preset
+picker and git-worktree option — the directory prefills from the focused
+session, falling back to the configured default directory, then home —
+stash/kill/adopt from hover actions, split panes up to 2×2 (`⌘D`, zoom
+`⌘⇧↩`), teams browser (members, tasks, agent inboxes, create/delete),
+and quit-stash on close. The sidebar footer holds a SETTINGS section:
+the default directory for new sessions and an `⟳ Update clash`
+self-update button. The sidebar and details panel are drag-resizable
+(widths persist).
 
 Sessions carry the same status vocabulary as the TUI — animated
 PROMPTING / THINKING / RUNNING / WAITING / STARTING / STASHED / ERRORED
@@ -357,8 +361,10 @@ rename, close (detach), stash, kill, details.
 
 The details panel (ⓘ) is a compact overview — live status, branch,
 project, CWD, summary. Conversation, Subagents, and Diff open as full
-tabs in the main area (closable like terminal tabs); Ports and
-Open-in-IDE pickers live in the panel.
+tabs in the main area (closable like terminal tabs); the panel's TOOLS
+row has Ports, Open-in-IDE, and Open-in-browser pickers — the latter
+renders the working diff as a page in the embedded browser, or opens
+the session's PR / repository there.
 
 Embedded browser (cmux-style, `⌘⇧B`): a native webview panel docked on
 the right with URL bar, back/forward/reload, and open-in-system-browser.

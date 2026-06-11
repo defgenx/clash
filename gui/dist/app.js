@@ -20,6 +20,8 @@ const state = {
   prevStatuses: new Map(), // session id -> status (attention transitions)
   unread: new Set(), // session ids with unseen attention events
   missingStreak: new Map(), // session id -> consecutive refreshes absent (ownership prune)
+  settings: { defaultCwd: "" }, // persisted with workspaces in gui-state.json
+  homeDir: "", // resolved at startup — last-resort new-session prefill
 };
 
 const $ = (id) => document.getElementById(id);
@@ -103,6 +105,7 @@ function workspacesJson() {
       sessions: w.sessions,
     })),
     active: state.activeWs,
+    settings: state.settings,
   });
 }
 
@@ -123,7 +126,13 @@ function saveWorkspaces() {
 }
 
 function applyWorkspacesData(data) {
-  if (!data || !Array.isArray(data.workspaces) || !data.workspaces.length) return false;
+  if (!data) return false;
+  // Settings ride along with the workspaces blob but load independently —
+  // a fresh install with no workspaces yet still gets its saved settings.
+  if (data.settings && typeof data.settings.defaultCwd === "string") {
+    state.settings.defaultCwd = data.settings.defaultCwd;
+  }
+  if (!Array.isArray(data.workspaces) || !data.workspaces.length) return false;
   state.workspaces = data.workspaces.map((w) => ({
     name: w.name || "ws",
     panes: Array.isArray(w.panes) && w.panes.length ? w.panes : [null],
@@ -1277,12 +1286,12 @@ function renderDetails() {
     <div class="actions">
       <button id="d-ports">Ports</button>
       <button id="d-ide">Open in IDE</button>
-      <button id="d-close">Close panel</button>
+      <button id="d-browser">Open in browser</button>
     </div>
     <div id="d-out"></div>
     <div class="kv dim-id" title="${escapeHtml(s.id)}"><span class="k">ID</span><span class="v">${escapeHtml(s.id)}</span></div>
   `;
-  $("d-close").onclick = hideDetails;
+  $("d-browser").onclick = () => showBrowserOpenPicker(s);
   $("d-diff").onclick = () => openDiffTab(s);
   $("d-conv").onclick = () => openConversationTab(s);
   $("d-subs").onclick = () => openSubagentsTab(s);
@@ -1330,6 +1339,66 @@ function renderChat(out, msgs) {
   }
   out.appendChild(chat);
   chat.scrollTop = chat.scrollHeight;
+}
+
+/// Encode a full HTML document as a base64 data: URL the embedded
+/// browser webview can navigate to (no temp file, no fs permissions).
+function htmlToDataUrl(html) {
+  const bytes = new TextEncoder().encode(html);
+  let bin = "";
+  const CHUNK = 0x8000; // String.fromCharCode arg-spread stack limit
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return `data:text/html;charset=utf-8;base64,${btoa(bin)}`;
+}
+
+/// Standalone dark-themed diff page (same line classes as renderDiff).
+function diffHtmlDoc(title, diffText) {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
+    body{background:#0d1117;color:#c9d1d9;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;padding:16px}
+    h1{font-size:13px;color:#8b949e;font-weight:600;margin:0 0 12px}
+    pre{margin:0;white-space:pre-wrap;word-break:break-all}
+    .file{color:#79c0ff;font-weight:700}
+    .hunk{color:#d2a8ff}
+    .add{color:#3fb950;background:rgba(46,160,67,.15);display:inline-block;width:100%}
+    .del{color:#f85149;background:rgba(248,81,73,.15);display:inline-block;width:100%}
+  </style></head><body><h1>${escapeHtml(title)}</h1><pre>${renderDiff(diffText)}</pre></body></html>`;
+}
+
+/// "Open in browser" tool — pick what to show in the embedded browser
+/// panel: the working diff as a rendered page, the session's PR, or the
+/// repository on its forge.
+async function showBrowserOpenPicker(s) {
+  const out = $("d-out");
+  out.innerHTML = "<h4>OPEN IN BROWSER</h4>";
+  const addRow = (label, desc, onclick) => {
+    const row = document.createElement("div");
+    row.className = "row-item";
+    row.innerHTML = `<span>${escapeHtml(label)}</span><span class="dim">${escapeHtml(desc)}</span>`;
+    row.onclick = onclick;
+    out.appendChild(row);
+  };
+  addRow("± Diff", "git diff HEAD as a page", async () => {
+    try {
+      const diff = await invoke("get_diff", { sessionId: s.id });
+      openBrowserPanel(htmlToDataUrl(diffHtmlDoc(`diff — ${displayName(s)}`, diff)));
+    } catch (e) {
+      uiAlert(`Diff failed: ${e}`);
+    }
+  });
+  const pr = state.prUrls.get(s.id);
+  if (pr) addRow(`⇄ Pull request #${pr.split("/").pop()}`, pr, () => openBrowserPanel(pr));
+  try {
+    const repo = await invoke("get_repo_url", { sessionId: s.id });
+    const url =
+      s.git_branch && repo.includes("github.com")
+        ? `${repo}/tree/${encodeURIComponent(s.git_branch)}`
+        : repo;
+    addRow("⌂ Repository", url, () => openBrowserPanel(url));
+  } catch {
+    /* no origin remote — skip the row */
+  }
 }
 
 async function showIdePicker(s) {
@@ -1521,11 +1590,16 @@ let nsPresets = [];
 function showNewSessionModal() {
   $("ns-error").classList.add("hidden");
   $("modal-backdrop").classList.remove("hidden");
-  // Prefill cwd from the focused session's project for fast iteration
-  const cur = state.sessions.find((x) => x.id === state.activeTab);
-  if (cur && !$("ns-cwd").value) {
-    $("ns-cwd").value = cur.cwd || cur.project_path || "";
-    loadPresetsForCwd();
+  // Prefill cwd: focused session's project (fast iteration) → configured
+  // default directory (settings) → home. Never leaves the field empty.
+  if (!$("ns-cwd").value) {
+    const cur = state.sessions.find((x) => x.id === state.activeTab);
+    $("ns-cwd").value =
+      (cur && (cur.cwd || cur.project_path)) ||
+      state.settings.defaultCwd ||
+      state.homeDir ||
+      "";
+    if ($("ns-cwd").value) loadPresetsForCwd();
   }
   setTimeout(() => $("ns-cwd").focus(), 0);
 }
@@ -2014,10 +2088,20 @@ loadPanelSizes();
 
 $("new-ws-btn").onclick = newWorkspace;
 
+// ── Settings (sidebar footer) ───────────────────────────────────
+
+$("default-cwd").addEventListener("change", () => {
+  state.settings.defaultCwd = $("default-cwd").value.trim();
+  saveWorkspaces();
+});
+
 // ── Boot ────────────────────────────────────────────────────────
 
 (async () => {
   await loadWorkspaces(); // disk-backed — must complete before first render
+  $("default-cwd").value = state.settings.defaultCwd;
+  state.homeDir = await invoke("get_home_dir").catch(() => "");
+  if (state.homeDir) $("default-cwd").placeholder = state.homeDir;
   renderAll();
   setVersionLabel();
   await refreshSessions();

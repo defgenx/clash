@@ -339,14 +339,64 @@ html, body, #app {
 .team-item .count { color: var(--fg-dim); font-size: 10px; }
 
 #sidebar-footer {
-  padding: 8px 14px;
+  padding: 8px 14px 10px;
   border-top: 1px solid var(--border);
   font-size: 11px;
   color: var(--fg-dim);
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 6px;
 }
+#sidebar-footer .section-label { padding: 0 0 2px; }
+.setting-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.setting-row input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.setting-row input:focus { border-color: var(--accent); }
+.update-big {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 10px;
+  text-align: center;
+}
+.update-big:hover { border-color: var(--accent); color: var(--accent); }
+.footer-row { display: flex; align-items: center; gap: 6px; }
+
+/* Primary sidebar action — the "new session" entry point. */
+.primary-action {
+  margin: 8px 10px 2px;
+  padding: 7px 10px;
+  background: var(--bg-active);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+.primary-action:hover { border-color: var(--accent); color: var(--accent); }
 
 .section-label .icon-btn { float: right; margin-top: -2px; }
 
