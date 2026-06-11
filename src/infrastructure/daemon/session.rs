@@ -103,6 +103,19 @@ impl PtySession {
             cmd.env(key, val);
         }
 
+        // Keep Claude Code's native colors. Launched from Finder/Dock the
+        // app inherits launchd's environment, which has no TERM/COLORTERM —
+        // claude then degrades to a reduced palette and its prompt colors
+        // look wrong in the GUI terminal (xterm.js supports truecolor).
+        // Only fill in the blanks: a real terminal's values are never
+        // overridden, so TUI-spawned sessions match the host terminal.
+        if std::env::var_os("TERM").is_none_or(|t| t.is_empty() || t == "dumb") {
+            cmd.env("TERM", "xterm-256color");
+            if std::env::var_os("COLORTERM").is_none() {
+                cmd.env("COLORTERM", "truecolor");
+            }
+        }
+
         if let Some(dir) = cwd {
             let p = PathBuf::from(dir);
             if p.is_dir() {
