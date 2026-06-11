@@ -208,6 +208,43 @@ function renderWorkspaceBar() {
     }
     chip.onclick = () => switchWorkspace(i);
     chip.ondblclick = () => renameWorkspace(i);
+    chip.oncontextmenu = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      // Only sessions that still exist (and aren't wild) are killable.
+      const known = new Set(
+        state.sessions.filter((s) => s.source !== "Wild").map((s) => s.id)
+      );
+      const ids = w.sessions.filter((sid) => known.has(sid));
+      showContextMenu(ev.clientX, ev.clientY, [
+        { label: "Rename workspace…", action: () => renameWorkspace(i) },
+        ...(state.workspaces.length > 1
+          ? [
+              {
+                label: "Close workspace",
+                action: () => {
+                  state.activeWs = i;
+                  closeWorkspace();
+                },
+              },
+            ]
+          : []),
+        ...(ids.length
+          ? [
+              null,
+              {
+                label: `Kill all ${ids.length} session${ids.length === 1 ? "" : "s"}…`,
+                danger: true,
+                action: () =>
+                  massKill(
+                    ids,
+                    `session${ids.length === 1 ? "" : "s"} in workspace "${w.name}"`
+                  ),
+              },
+            ]
+          : []),
+      ]);
+    };
     chips.appendChild(chip);
   });
 }
@@ -375,6 +412,18 @@ function renderSidebar() {
       header.className = "section-label unassigned";
       header.innerHTML = `UNASSIGNED<span class="count">${unassigned.length}</span>`;
       header.title = "Not in any workspace — opening one claims it for this workspace";
+      const killAll = document.createElement("button");
+      killAll.className = "icon-btn mini danger";
+      killAll.textContent = "✕";
+      killAll.title = "Kill all unassigned sessions";
+      killAll.onclick = (ev) => {
+        ev.stopPropagation();
+        massKill(
+          unassigned.map((s) => s.id),
+          `unassigned session${unassigned.length === 1 ? "" : "s"}`
+        );
+      };
+      header.appendChild(killAll);
       list.appendChild(header);
       for (const s of unassigned) list.appendChild(sessionItem(s));
     }
@@ -626,6 +675,32 @@ async function refreshSessions() {
   } catch (e) {
     console.error("list_sessions failed:", e);
   }
+}
+
+/// Kill a batch of sessions after a single confirmation — used by the
+/// workspace-chip context menu and the UNASSIGNED header. `what` is the
+/// already-pluralized noun phrase shown in the confirm dialog.
+async function massKill(ids, what) {
+  if (!ids.length) return;
+  if (
+    !(await uiConfirm(
+      `Kill ${ids.length} ${what}? This removes them from clash.`,
+      "Kill all"
+    ))
+  )
+    return;
+  const results = await Promise.allSettled(
+    ids.map((sid) => invoke("kill_session", { sessionId: sid }))
+  );
+  for (const sid of ids) dropTerminal(sid);
+  // Drop workspace ownership now instead of waiting for the 3-refresh prune.
+  for (const w of state.workspaces) {
+    w.sessions = w.sessions.filter((sid) => !ids.includes(sid));
+  }
+  saveWorkspaces();
+  const failed = results.filter((r) => r.status === "rejected").length;
+  if (failed) uiAlert(`${failed} of ${ids.length} kills failed.`);
+  refreshSessions();
 }
 
 // ── Context menu ────────────────────────────────────────────────

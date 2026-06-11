@@ -38,6 +38,15 @@ html, body, #app {
 .hidden { display: none !important; }
 .spacer { flex: 1; }
 
+/* Thin themed scrollbars (WebKit) — one design everywhere, matching the
+   sidebar's unobtrusive look. The tab strip gets an extra-thin bar. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--fg-dim); }
+::-webkit-scrollbar-corner { background: transparent; }
+#tabs::-webkit-scrollbar { height: 3px; }
+
 .icon-btn {
   background: none;
   border: 1px solid var(--border);
@@ -52,6 +61,7 @@ html, body, #app {
 .icon-btn:hover { color: var(--fg); background: var(--bg-hover); }
 .icon-btn.mini { width: 18px; height: 18px; font-size: 11px; }
 .icon-btn.wide { width: auto; padding: 0 8px; font-size: 11px; }
+.icon-btn.danger:hover { color: var(--red); }
 
 /* ── Sidebar ─────────────────────────────────────── */
 #sidebar {

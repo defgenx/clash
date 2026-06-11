@@ -55,12 +55,22 @@ CLASH_INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/defg
 cargo install --git https://github.com/defgenx/clash.git
 ```
 
-Or from a clone — installs **both** binaries (TUI `clash` + GUI `clash-gui`)
-to `/usr/local/bin` (override with `INSTALL_DIR=~/.local/bin`):
+Or from a clone — installs **both** the TUI and the GUI
+(override paths with `INSTALL_DIR=~/.local/bin` / `APP_DIR=~/Applications`):
 
 ```bash
 make install            # or: make install-tui / make install-gui
 ```
+
+The TUI installs as the `clash` binary in `INSTALL_DIR`. The GUI installs
+as a regular desktop application, discoverable like any other app:
+
+- **macOS** — `Clash.app` in `/Applications` (falls back to
+  `~/Applications` when not writable): Spotlight, Launchpad, Dock. A
+  `clash-gui` symlink lands in `INSTALL_DIR` for terminal launching.
+- **Linux** — `clash-gui` binary plus an XDG `clash.desktop` launcher
+  entry and icon (system-wide under `/usr/local/share` as root,
+  per-user under `~/.local/share` otherwise).
 
 ### Requirements
 
@@ -366,6 +376,10 @@ group for sessions no workspace has claimed (opening one claims it).
 Searching (`/`) is global across workspaces — results from other
 workspaces carry a `⌘n` badge and open in their owning workspace.
 Closing a workspace returns its sessions to the unassigned pool.
+Right-click a workspace chip for its context menu: rename, close, and
+mass-kill all of that workspace's sessions (one confirmation); the
+UNASSIGNED header carries a `✕` button that mass-kills all unassigned
+sessions the same way.
 Layouts and session ownership are saved to disk (`gui-state.json` in the
 clash app-support dir) and survive restarts (running sessions re-attach
 automatically).
