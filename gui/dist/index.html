@@ -35,6 +35,12 @@
         <label class="setting-row">Default directory
           <input id="default-cwd" type="text" placeholder="/Users/you" autocomplete="off" spellcheck="false" />
         </label>
+        <label class="setting-row inline">Terminal font size
+          <input id="set-fontsize" type="number" min="9" max="24" step="1" />
+        </label>
+        <label class="setting-check"><input id="set-option-meta" type="checkbox" /> ⌥ sends Esc (Meta)</label>
+        <label class="setting-check"><input id="set-embed-links" type="checkbox" /> Links open in embedded browser</label>
+        <label class="setting-check"><input id="set-notify" type="checkbox" /> Desktop notifications</label>
         <button id="update-btn" class="update-big" title="Download and install the latest clash version">⟳ Update clash</button>
         <div class="footer-row">
           <span id="session-count"></span>

@@ -347,9 +347,13 @@ rename/details/stash/kill/take-over from a per-session `⋯` menu (also on
 right-click of the row), split panes up to 2×2 (`⌘D`, zoom
 `⌘⇧↩`), teams browser (members, tasks, agent inboxes, create/delete),
 and quit-stash on close. The sidebar footer holds a SETTINGS section:
-the default directory for new sessions and an `⟳ Update clash`
-self-update button — when the update lands, a modal offers
-Restart / Cancel (restarting closes running sessions). The sidebar and
+default directory for new sessions, terminal font size (live-applied),
+"⌥ sends Esc (Meta)" (off = Option always composes characters —
+international layouts), whether terminal links open in the embedded
+browser or the system browser, a desktop-notifications toggle, and an
+`⟳ Update clash` self-update button — when the update lands, a modal
+offers Restart / Cancel (restarting closes running sessions). Settings
+persist in `gui-state.json`. The sidebar and
 details panel are drag-resizable (widths persist).
 
 Sessions carry the same status vocabulary as the TUI — animated

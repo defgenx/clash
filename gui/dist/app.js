@@ -20,7 +20,9 @@ const state = {
   prevStatuses: new Map(), // session id -> status (attention transitions)
   unread: new Set(), // session ids with unseen attention events
   missingStreak: new Map(), // session id -> consecutive refreshes absent (ownership prune)
-  settings: { defaultCwd: "" }, // persisted with workspaces in gui-state.json
+  // Persisted with workspaces in gui-state.json. optionMeta: ⌥ sends
+  // Esc (Meta) in terminals; off = ⌥ always composes characters.
+  settings: { defaultCwd: "", fontSize: 13, optionMeta: true, embedLinks: true, notifications: true },
   homeDir: "", // resolved at startup — last-resort new-session prefill
 };
 
@@ -178,8 +180,16 @@ function applyWorkspacesData(data) {
   if (!data) return false;
   // Settings ride along with the workspaces blob but load independently —
   // a fresh install with no workspaces yet still gets its saved settings.
-  if (data.settings && typeof data.settings.defaultCwd === "string") {
-    state.settings.defaultCwd = data.settings.defaultCwd;
+  // Per-key type checks so a stale/corrupt blob never poisons defaults.
+  if (data.settings) {
+    const s = data.settings;
+    if (typeof s.defaultCwd === "string") state.settings.defaultCwd = s.defaultCwd;
+    if (typeof s.fontSize === "number" && s.fontSize >= 9 && s.fontSize <= 24) {
+      state.settings.fontSize = Math.round(s.fontSize);
+    }
+    if (typeof s.optionMeta === "boolean") state.settings.optionMeta = s.optionMeta;
+    if (typeof s.embedLinks === "boolean") state.settings.embedLinks = s.embedLinks;
+    if (typeof s.notifications === "boolean") state.settings.notifications = s.notifications;
   }
   if (!Array.isArray(data.workspaces) || !data.workspaces.length) return false;
   state.workspaces = data.workspaces.map((w) => ({
@@ -723,7 +733,26 @@ async function refreshSessions() {
     }
     if (pruned) saveWorkspaces();
 
-    renderSidebar();
+    // Keep open-terminal labels (tabs, pane titles) in sync with the
+    // authoritative names from the backend, so a rename made anywhere
+    // (sidebar, tab menu, TUI) propagates to every view.
+    let labelsChanged = false;
+    for (const [id, entry] of state.open) {
+      const s = sessions.find((x) => x.id === id);
+      if (s && entry.term) {
+        const label = displayName(s);
+        if (entry.name !== label) {
+          entry.name = label;
+          labelsChanged = true;
+        }
+      }
+    }
+    if (labelsChanged) renderPanes();
+
+    // While an inline rename is in progress, rebuilding the sidebar would
+    // destroy the input mid-typing (value reset, focus stolen) — skip it;
+    // the next tick after Enter/Escape repaints with fresh data.
+    if (!state.renaming) renderSidebar();
     renderTabs();
     if (state.detailsFor) renderDetails();
   } catch (e) {
@@ -1104,15 +1133,15 @@ async function openSession(sid) {
 
   const term = new Terminal({
     fontFamily: "SF Mono, Menlo, monospace",
-    fontSize: 13,
+    fontSize: state.settings.fontSize,
     theme: TERM_THEME,
     scrollback: 10000,
-    macOptionIsMeta: true,
+    macOptionIsMeta: state.settings.optionMeta,
     // OSC 8 hyperlinks (Claude Code emits these) — open in the embedded
-    // browser panel, not the system browser.
+    // browser panel, or the system browser per the embedLinks setting.
     linkHandler: {
       activate: (_e, uri) => {
-        if (/^https?:\/\//.test(uri)) openBrowserPanel(uri);
+        if (/^https?:\/\//.test(uri) && state.settings.embedLinks) openBrowserPanel(uri);
         else invoke("open_external", { url: uri }).catch(() => {});
       },
     },
@@ -1124,7 +1153,8 @@ async function openSession(sid) {
   // and xterm's input-event fallback drops any insertText preceded by a
   // keydown (`!e.composed || !this._keyDownSeen`), so the glyph would be
   // silently swallowed. Send the composed character to the PTY directly.
-  // Alt+letter stays Meta for readline word jumps (⌥B/⌥F).
+  // With optionMeta on, Alt+letter stays Meta for readline word jumps
+  // (⌥B/⌥F); with it off, ⌥ always composes — letters included.
   term.attachCustomKeyEventHandler((e) => {
     if (
       e.type === "keydown" &&
@@ -1132,7 +1162,7 @@ async function openSession(sid) {
       !e.metaKey &&
       !e.ctrlKey &&
       e.key.length === 1 &&
-      !/[a-zA-Z]/.test(e.key)
+      (!/[a-zA-Z]/.test(e.key) || !state.settings.optionMeta)
     ) {
       invoke("send_input", { sessionId: sid, text: e.key }).catch(console.error);
       e.preventDefault();
@@ -2337,6 +2367,48 @@ $("default-cwd").addEventListener("change", () => {
   saveWorkspaces();
 });
 
+/// Reflect persisted settings into the footer controls.
+function syncSettingsUi() {
+  $("set-fontsize").value = state.settings.fontSize;
+  $("set-option-meta").checked = state.settings.optionMeta;
+  $("set-embed-links").checked = state.settings.embedLinks;
+  $("set-notify").checked = state.settings.notifications;
+}
+
+$("set-fontsize").addEventListener("change", () => {
+  const v = Math.round(Number($("set-fontsize").value));
+  if (!Number.isFinite(v) || v < 9 || v > 24) {
+    $("set-fontsize").value = state.settings.fontSize;
+    return;
+  }
+  state.settings.fontSize = v;
+  // Live-apply to every open terminal; refit so cols/rows track the metrics.
+  for (const entry of state.open.values()) {
+    if (entry.term) entry.term.options.fontSize = v;
+  }
+  fitAll();
+  saveWorkspaces();
+});
+
+$("set-option-meta").addEventListener("change", () => {
+  state.settings.optionMeta = $("set-option-meta").checked;
+  for (const entry of state.open.values()) {
+    if (entry.term) entry.term.options.macOptionIsMeta = state.settings.optionMeta;
+  }
+  saveWorkspaces();
+});
+
+$("set-embed-links").addEventListener("change", () => {
+  state.settings.embedLinks = $("set-embed-links").checked;
+  saveWorkspaces();
+});
+
+$("set-notify").addEventListener("change", () => {
+  state.settings.notifications = $("set-notify").checked;
+  invoke("set_notifications_enabled", { enabled: state.settings.notifications }).catch(console.error);
+  saveWorkspaces();
+});
+
 // ── Icon button hover labels ────────────────────────────────────
 // Instant tooltip for .icon-btn, replacing the native title tooltip
 // (slow and unreliable in WKWebView). Delegated so dynamically created
@@ -2385,6 +2457,10 @@ document.addEventListener("click", () => iconTip.remove(), true);
   applyStaticIcons(); // before first paint — never show the unicode fallbacks
   await loadWorkspaces(); // disk-backed — must complete before first render
   $("default-cwd").value = state.settings.defaultCwd;
+  syncSettingsUi();
+  if (!state.settings.notifications) {
+    invoke("set_notifications_enabled", { enabled: false }).catch(console.error);
+  }
   state.homeDir = await invoke("get_home_dir").catch(() => "");
   if (state.homeDir) $("default-cwd").placeholder = state.homeDir;
   renderAll();

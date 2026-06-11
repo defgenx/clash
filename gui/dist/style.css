@@ -395,6 +395,22 @@ html, body, #app {
   letter-spacing: normal;
 }
 .setting-row input:focus { border-color: var(--accent); }
+.setting-row.inline {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+.setting-row.inline input { width: 56px; padding: 3px 6px; text-align: center; }
+.setting-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.setting-check:hover { color: var(--fg); }
+.setting-check input { accent-color: var(--accent); }
 .update-big {
   background: var(--bg-hover);
   border: 1px solid var(--border);

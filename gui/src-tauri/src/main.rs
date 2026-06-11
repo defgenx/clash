@@ -49,6 +49,9 @@ struct GuiState {
     /// out of `list_sessions` results and expire after
     /// `RECENTLY_REMOVED_TTL` refresh cycles.
     recently_removed: Mutex<HashMap<String, u8>>,
+    /// Native desktop notifications on session attention (GUI setting,
+    /// pushed by the frontend at boot and on toggle).
+    notify_enabled: std::sync::atomic::AtomicBool,
 }
 
 /// Refresh cycles a killed session stays filtered from `list_sessions`.
@@ -165,7 +168,11 @@ async fn list_sessions(
                         name: name.clone(),
                     },
                 );
-                if !focused {
+                if !focused
+                    && state
+                        .notify_enabled
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                {
                     let what = match s.status {
                         SessionStatus::Errored => "errored",
                         _ => "needs your input",
@@ -458,6 +465,15 @@ fn rename_session(
         cwd.as_deref(),
     );
     Ok(())
+}
+
+/// Enable/disable native desktop notifications. Pushed by the frontend at
+/// boot (from persisted settings) and whenever the user flips the toggle.
+#[tauri::command]
+fn set_notifications_enabled(state: State<'_, GuiState>, enabled: bool) {
+    state
+        .notify_enabled
+        .store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Create a brand-new Claude session in `cwd` (same pipeline as the TUI's `n`:
@@ -1449,6 +1465,7 @@ fn main() {
         attached: tokio::sync::Mutex::new(HashMap::new()),
         wild_processes_rx,
         recently_removed: Mutex::new(HashMap::new()),
+        notify_enabled: std::sync::atomic::AtomicBool::new(true),
     };
 
     // FS watcher on ~/.claude/projects — same role as the TUI's watcher
@@ -1568,6 +1585,7 @@ fn main() {
             stash_session,
             kill_session,
             rename_session,
+            set_notifications_enabled,
             create_new_session,
             create_worktree_session,
             get_diff,
