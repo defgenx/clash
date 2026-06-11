@@ -1119,9 +1119,12 @@ async function openSession(sid) {
   });
   // International layouts (e.g. AZERTY) type brackets/braces with Option
   // (⌥( = {, ⌥⇧( = [ …). macOptionIsMeta would turn those into ESC
-  // sequences, making the characters impossible to type. When Option
-  // composes a printable symbol (not a letter — Alt+letter stays Meta for
-  // readline word jumps), bypass xterm so the browser inserts the glyph.
+  // sequences, making the characters impossible to type. Bypassing xterm
+  // isn't enough either: WKWebView fires no keypress for Option combos,
+  // and xterm's input-event fallback drops any insertText preceded by a
+  // keydown (`!e.composed || !this._keyDownSeen`), so the glyph would be
+  // silently swallowed. Send the composed character to the PTY directly.
+  // Alt+letter stays Meta for readline word jumps (⌥B/⌥F).
   term.attachCustomKeyEventHandler((e) => {
     if (
       e.type === "keydown" &&
@@ -1131,6 +1134,8 @@ async function openSession(sid) {
       e.key.length === 1 &&
       !/[a-zA-Z]/.test(e.key)
     ) {
+      invoke("send_input", { sessionId: sid, text: e.key }).catch(console.error);
+      e.preventDefault();
       return false;
     }
     return true;
