@@ -254,7 +254,7 @@ async fn handle_client(
                         send_event(
                             &writer,
                             &Event::Error {
-                                message: format!("Spawn failed: {}", e),
+                                message: format!("Spawn failed for '{}': {}", bin, e),
                             },
                         )
                         .await;

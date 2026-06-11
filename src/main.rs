@@ -53,6 +53,10 @@ enum Cmd {
 async fn main() -> Result<()> {
     color_eyre::install()?;
 
+    // No-op when launched from a shell; repairs launchd's minimal PATH
+    // (no ~/.local/bin → `claude` spawns fail) in app-bundle launches.
+    infrastructure::env_path::adopt_login_shell_path();
+
     let log_dir = dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("clash");

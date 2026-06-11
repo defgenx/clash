@@ -1381,6 +1381,10 @@ fn main() {
         .with_max_level(tracing::Level::INFO)
         .init();
 
+    // Launched from Finder/Dock the app gets launchd's minimal PATH —
+    // without this, `claude` can't be found and session spawns fail.
+    clash::infrastructure::env_path::adopt_login_shell_path();
+
     let config = Config::load();
     let data_dir: PathBuf = config.claude_dir();
     let claude_bin = config.claude_bin.clone();
