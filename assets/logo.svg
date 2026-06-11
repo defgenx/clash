@@ -4,42 +4,16 @@
       <stop offset="0%" stop-color="#1d2029"/>
       <stop offset="100%" stop-color="#12141b"/>
     </radialGradient>
-    <filter id="deboss" x="-30%" y="-30%" width="160%" height="160%">
-      <feOffset in="SourceAlpha" dx="0" dy="5" result="off"/>
-      <feGaussianBlur in="off" stdDeviation="5" result="blur"/>
-      <feComposite in="blur" in2="SourceAlpha" operator="arithmetic" k2="-1" k3="1" result="mask"/>
-      <feFlood flood-color="#000000" flood-opacity="0.6"/>
-      <feComposite in2="mask" operator="in" result="shadow"/>
-      <feMerge>
-        <feMergeNode in="SourceGraphic"/>
-        <feMergeNode in="shadow"/>
-      </feMerge>
-    </filter>
-    <filter id="glint" x="-150%" y="-150%" width="400%" height="400%">
-      <feGaussianBlur stdDeviation="4"/>
-    </filter>
   </defs>
   <rect width="900" height="460" rx="20" fill="url(#surface)"/>
-  <g transform="translate(322, 0) scale(0.5)">
-    <g transform="translate(0, 2.5)">
-      <circle cx="250" cy="246" r="118" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="5"/>
-      <path d="M 170 166 L 250 246 L 170 326" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="40"
-            stroke-linecap="round" stroke-linejoin="round"/>
-      <rect x="290" y="306" width="78" height="22" rx="8" fill="rgba(255,255,255,0.08)"/>
-    </g>
-    <g filter="url(#deboss)">
-      <circle cx="250" cy="246" r="118" fill="none" stroke="#0c0e14" stroke-width="5"/>
-      <path d="M 170 166 L 250 246 L 170 326" fill="none" stroke="#0c0e14" stroke-width="40"
-            stroke-linecap="round" stroke-linejoin="round"/>
-      <rect x="290" y="306" width="78" height="22" rx="8" fill="#0c0e14"/>
-    </g>
-    <circle cx="250" cy="246" r="9" fill="#ffffff" opacity="0.10" filter="url(#glint)"/>
-    <circle cx="250" cy="246" r="3.5" fill="#ffffff" opacity="0.22"/>
+  <g transform="translate(450,150) scale(0.62)">
+      <g transform="rotate(0) translate(88,0) rotate(60)"><path d="M 58 -58 L 0 0 L 58 58" fill="none" stroke="#b9c0cf" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/></g>
+      <g transform="rotate(120) translate(88,0) rotate(60)"><path d="M 58 -58 L 0 0 L 58 58" fill="none" stroke="#b9c0cf" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/></g>
+      <g transform="rotate(240) translate(88,0) rotate(60)"><path d="M 58 -58 L 0 0 L 58 58" fill="none" stroke="#b9c0cf" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/></g>
+      <circle r="20" fill="#ffffff"/>
   </g>
-  <g font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="88" font-weight="700" text-anchor="middle">
-    <text x="450" y="352" fill="rgba(255,255,255,0.08)" transform="translate(0, 2.5)">clash</text>
-    <text x="450" y="352" fill="#0c0e14" filter="url(#deboss)">clash</text>
-  </g>
+  <text x="450" y="352" text-anchor="middle" font-family="ui-monospace, 'SF Mono', Menlo, monospace"
+        font-size="88" font-weight="700" fill="#b9c0cf">clash</text>
   <text x="450" y="408" text-anchor="middle" font-family="ui-monospace, 'SF Mono', Menlo, monospace"
-        font-size="16" fill="#565d70">your agents aren't gonna manage themselves</text>
+        font-size="16" fill="#6b7284">your agents aren't gonna manage themselves</text>
 </svg>
