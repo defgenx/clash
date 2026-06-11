@@ -384,13 +384,34 @@ async fn kill_session(state: State<'_, GuiState>, session_id: String) -> Result<
     Ok(())
 }
 
-/// Rename a session — same registry write the TUI's rename uses.
+/// Rename a session — same writes the TUI's rename effect does. The registry
+/// rename alone is a no-op for sessions clash didn't spawn (not in the
+/// registry), so the saved-names write is what makes rename stick for them.
 #[tauri::command]
-fn rename_session(session_id: String, name: String) -> Result<(), String> {
-    if name.trim().is_empty() {
+fn rename_session(
+    state: State<'_, GuiState>,
+    session_id: String,
+    name: String,
+) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
         return Err("Name cannot be empty".to_string());
     }
-    clash::infrastructure::hooks::registry::rename(&session_id, name.trim());
+    clash::infrastructure::hooks::registry::rename(&session_id, name);
+    let cwd = {
+        let prev = state.previous.lock().unwrap();
+        prev.iter().find(|s| s.id == session_id).and_then(|s| {
+            s.cwd
+                .clone()
+                .or_else(|| (!s.project_path.is_empty()).then(|| s.project_path.clone()))
+        })
+    };
+    clash::infrastructure::hooks::save_session_name(
+        state.backend.base_dir(),
+        &session_id,
+        name,
+        cwd.as_deref(),
+    );
     Ok(())
 }
 
@@ -518,6 +539,39 @@ fn to_message_dtos(msgs: Vec<clash::domain::entities::ConversationMessage>) -> V
         .collect()
 }
 
+/// Claude Code's project-dir encoding: every non-alphanumeric byte becomes
+/// `-` (e.g. `/Users/x/alumni_connect` → `-Users-x-alumni-connect`).
+fn encoded_project_dir(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// Project-dir candidates for a session's transcripts. Daemon-only sessions
+/// (spawned this launch, not yet merged with a disk scan) carry the cwd's
+/// last component in `project` instead of the real encoded directory — fall
+/// back to encoding the session's cwd / project path.
+fn project_dir_candidates(state: &GuiState, project: &str, session_id: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if !project.is_empty() {
+        candidates.push(project.to_string());
+    }
+    let prev = state.previous.lock().unwrap();
+    if let Some(s) = prev.iter().find(|s| s.id == session_id) {
+        for path in [s.cwd.as_deref(), Some(s.project_path.as_str())]
+            .into_iter()
+            .flatten()
+            .filter(|p| !p.is_empty())
+        {
+            let encoded = encoded_project_dir(path);
+            if !candidates.contains(&encoded) {
+                candidates.push(encoded);
+            }
+        }
+    }
+    candidates
+}
+
 /// Conversation transcript of a session (same parser as the TUI detail view).
 #[tauri::command]
 fn get_conversation(
@@ -526,11 +580,17 @@ fn get_conversation(
     session_id: String,
 ) -> Result<Vec<MessageDto>, String> {
     use clash::domain::ports::DataRepository;
-    state
-        .backend
-        .load_conversation(&project, &session_id)
-        .map(to_message_dtos)
-        .map_err(|e| e.to_string())
+    let mut messages = Vec::new();
+    for proj in project_dir_candidates(&state, &project, &session_id) {
+        messages = state
+            .backend
+            .load_conversation(&proj, &session_id)
+            .map_err(|e| e.to_string())?;
+        if !messages.is_empty() {
+            break;
+        }
+    }
+    Ok(to_message_dtos(messages))
 }
 
 /// Subagents of a session.
@@ -541,10 +601,17 @@ fn get_subagents(
     session_id: String,
 ) -> Result<Vec<clash::domain::entities::Subagent>, String> {
     use clash::domain::ports::DataRepository;
-    state
-        .backend
-        .load_subagents(&project, &session_id)
-        .map_err(|e| e.to_string())
+    let mut subagents = Vec::new();
+    for proj in project_dir_candidates(&state, &project, &session_id) {
+        subagents = state
+            .backend
+            .load_subagents(&proj, &session_id)
+            .map_err(|e| e.to_string())?;
+        if !subagents.is_empty() {
+            break;
+        }
+    }
+    Ok(subagents)
 }
 
 /// Conversation transcript of a subagent.
@@ -556,11 +623,17 @@ fn get_subagent_conversation(
     agent_id: String,
 ) -> Result<Vec<MessageDto>, String> {
     use clash::domain::ports::DataRepository;
-    state
-        .backend
-        .load_subagent_conversation(&project, &session_id, &agent_id)
-        .map(to_message_dtos)
-        .map_err(|e| e.to_string())
+    let mut messages = Vec::new();
+    for proj in project_dir_candidates(&state, &project, &session_id) {
+        messages = state
+            .backend
+            .load_subagent_conversation(&proj, &session_id, &agent_id)
+            .map_err(|e| e.to_string())?;
+        if !messages.is_empty() {
+            break;
+        }
+    }
+    Ok(to_message_dtos(messages))
 }
 
 /// Inbox messages for a team agent (`teams/{team}/inboxes/{agent}.json`).
@@ -1227,9 +1300,45 @@ fn main() {
         wild_processes_rx,
     };
 
+    // FS watcher on ~/.claude/projects — same role as the TUI's watcher
+    // wiring in app.rs. Without it the FsBackend session cache goes stale
+    // after the first scan: sessions created during this launch never gain
+    // their disk metadata (encoded project dir, summary), so conversation
+    // and subagent lookups resolve to a non-existent path.
+    let (fs_tx, mut fs_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<PathBuf>>();
+    let fs_watcher = clash::infrastructure::fs::watcher::FsWatcher::new(
+        &[state.backend.projects_dir()],
+        fs_tx,
+        std::time::Duration::from_millis(config.debounce_ms),
+    )
+    .map_err(|e| tracing::warn!("FS watcher unavailable: {}", e))
+    .ok();
+
     tauri::Builder::default()
         .manage(state)
-        .setup(|app| {
+        .setup(move |app| {
+            if let Some(watcher) = fs_watcher {
+                // Keep the watcher alive for the app's lifetime.
+                app.manage(Mutex::new(watcher));
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    while let Some(paths) = fs_rx.recv().await {
+                        let state = handle.state::<GuiState>();
+                        let jsonl: Vec<PathBuf> = paths
+                            .iter()
+                            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+                            .cloned()
+                            .collect();
+                        if !jsonl.is_empty() && jsonl.len() == paths.len() {
+                            state.backend.invalidate_session_cache(&jsonl);
+                        } else {
+                            // Non-jsonl change (sessions-index.json, new
+                            // project dir…) — full rescan on next load.
+                            state.backend.invalidate_session_cache_all();
+                        }
+                    }
+                });
+            }
             // In-process PTY session manager — the GUI's backbone, identical
             // to the TUI's in-process daemon. Dies with the app. Per-instance
             // socket (daemon-<pid>.sock): TUI and GUI can run side by side,
