@@ -91,7 +91,7 @@ pub async fn perform_update_cli() -> Result<String, String> {
             version,
             download_url,
         } => {
-            install_update(&download_url, None).await?;
+            install_update(&download_url, &version, None).await?;
             Ok(version)
         }
     }
@@ -130,7 +130,7 @@ pub async fn perform_update(
                 version: version.clone(),
             });
 
-            if let Err(msg) = install_update(&download_url, Some(&tx)).await {
+            if let Err(msg) = install_update(&download_url, &version, Some(&tx)).await {
                 let _ = tx.send(UpdatePhase::Failed { message: msg });
                 return;
             }
@@ -140,18 +140,32 @@ pub async fn perform_update(
     }
 }
 
-/// Download the release tarball and replace the current binary.
+/// Download the release tarball and replace both binaries.
+///
+/// Works the same whether invoked from `clash` (TUI/CLI) or `clash-gui`:
+/// the binary we are running as is the "own" binary, the other one is the
+/// "sibling". Each is installed at its *canonical* existing location —
+/// symlinks (e.g. `/usr/local/bin/clash-gui` → `Clash.app/Contents/MacOS/`)
+/// are resolved so the real file behind them is replaced and the link
+/// survives. Previously the symlink itself was clobbered with a plain
+/// binary, leaving the macOS app bundle permanently stale.
 ///
 /// When `tx` is provided (TUI path), progress phases are reported through it;
-/// the CLI path passes `None`. Paths are handed to `curl`/`tar` as `OsStr`
-/// arguments directly — no lossy/panicking UTF-8 conversion.
+/// the CLI and GUI paths pass `None`/`Some` as appropriate. Paths are handed
+/// to `curl`/`tar` as `OsStr` arguments directly — no lossy UTF-8 conversion.
 async fn install_update(
     download_url: &str,
+    version: &str,
     tx: Option<&tokio::sync::mpsc::UnboundedSender<crate::application::state::UpdatePhase>>,
 ) -> Result<(), String> {
     let current_exe = std::env::current_exe()
         .map_err(|e| format!("Cannot determine current binary path: {}", e))?;
-    let install_target = resolve_install_target(&current_exe)?;
+    // Resolve symlinks so a launch through a PATH symlink updates the real
+    // file (inside the .app bundle) instead of replacing the link.
+    let current_exe = std::fs::canonicalize(&current_exe).unwrap_or(current_exe);
+
+    let (own_name, sibling_name) = binary_names(&current_exe);
+    let own_target = resolve_install_target(&current_exe, own_name)?;
 
     let tmpdir = std::env::temp_dir().join("clash-update");
     let _ = std::fs::remove_dir_all(&tmpdir);
@@ -190,26 +204,33 @@ async fn install_update(
         return Err("Extraction failed (tar returned non-zero)".to_string());
     }
 
-    let new_binary = tmpdir.join("clash");
-    if !new_binary.exists() {
-        return Err("Binary not found in archive".to_string());
+    let new_own = tmpdir.join(own_name);
+    if !new_own.exists() {
+        return Err(format!("{} not found in archive", own_name));
     }
 
     if let Some(tx) = tx {
         let _ = tx.send(crate::application::state::UpdatePhase::Installing);
     }
 
-    replace_binary(&new_binary, &install_target)?;
+    replace_binary(&new_own, &own_target)?;
+    refresh_bundle_metadata(&own_target, version);
 
-    // Install the GUI binary alongside the TUI when the release ships one.
-    // Older releases (< v1.37) have no clash-gui in the tarball — skip quietly.
-    // A GUI install failure must not fail the TUI update that already landed.
-    let new_gui = tmpdir.join("clash-gui");
-    if new_gui.exists() {
-        if let Some(dir) = install_target.parent() {
-            let gui_target = dir.join("clash-gui");
-            if let Err(e) = replace_binary(&new_gui, &gui_target) {
-                tracing::warn!("clash updated, but clash-gui install failed: {}", e);
+    // Install the sibling binary wherever it already lives (canonicalized);
+    // older releases (< v1.37) ship no clash-gui — skip quietly. A sibling
+    // install failure must not fail the update that already landed.
+    let new_sibling = tmpdir.join(sibling_name);
+    if new_sibling.exists() {
+        let sibling_target = resolve_sibling_target(&own_target, sibling_name);
+        match replace_binary(&new_sibling, &sibling_target) {
+            Ok(()) => refresh_bundle_metadata(&sibling_target, version),
+            Err(e) => {
+                tracing::warn!(
+                    "{} updated, but {} install failed: {}",
+                    own_name,
+                    sibling_name,
+                    e
+                )
             }
         }
     }
@@ -220,11 +241,26 @@ async fn install_update(
     Ok(())
 }
 
+/// Which release binary the running process is, and which one rides along.
+/// Anything not named `clash-gui` is treated as the TUI binary.
+fn binary_names(current_exe: &Path) -> (&'static str, &'static str) {
+    let is_gui = current_exe
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("clash-gui"));
+    if is_gui {
+        ("clash-gui", "clash")
+    } else {
+        ("clash", "clash-gui")
+    }
+}
+
 /// Determine where to install the updated binary.
 ///
-/// If the directory containing the current executable is writable, install there.
-/// Otherwise fall back to `~/.local/bin` (created if needed).
-fn resolve_install_target(current_exe: &Path) -> Result<PathBuf, String> {
+/// If the directory containing the current executable is writable, install
+/// over the current executable. Otherwise fall back to `~/.local/bin/<name>`
+/// (created if needed).
+fn resolve_install_target(current_exe: &Path, name: &str) -> Result<PathBuf, String> {
     if let Some(dir) = current_exe.parent() {
         if is_dir_writable(dir) {
             return Ok(current_exe.to_path_buf());
@@ -236,8 +272,98 @@ fn resolve_install_target(current_exe: &Path) -> Result<PathBuf, String> {
     let fallback_dir = PathBuf::from(home).join(".local").join("bin");
     std::fs::create_dir_all(&fallback_dir)
         .map_err(|e| format!("Failed to create {}: {}", fallback_dir.display(), e))?;
-    let target = fallback_dir.join("clash");
-    Ok(target)
+    Ok(fallback_dir.join(name))
+}
+
+/// Where the sibling binary should be installed.
+///
+/// Prefer the sibling's *existing* install, resolved through symlinks:
+/// next to the own binary first, then anywhere on PATH. When the sibling
+/// was never installed, place it next to the own binary — unless the own
+/// binary lives inside a macOS .app bundle (dropping a CLI binary into
+/// `Contents/MacOS` would be invisible to the shell), in which case it
+/// goes to `~/.local/bin`.
+fn resolve_sibling_target(own_target: &Path, sibling_name: &str) -> PathBuf {
+    if let Some(dir) = own_target.parent() {
+        let candidate = dir.join(sibling_name);
+        if candidate.exists() {
+            return std::fs::canonicalize(&candidate).unwrap_or(candidate);
+        }
+    }
+
+    if let Ok(output) = std::process::Command::new("which")
+        .arg(sibling_name)
+        .output()
+    {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                let candidate = PathBuf::from(path);
+                return std::fs::canonicalize(&candidate).unwrap_or(candidate);
+            }
+        }
+    }
+
+    let fresh_dir = match (bundle_root(own_target), own_target.parent()) {
+        (Some(_), _) | (None, None) => {
+            let home = std::env::var("HOME").unwrap_or_default();
+            PathBuf::from(home).join(".local").join("bin")
+        }
+        (None, Some(dir)) => dir.to_path_buf(),
+    };
+    let _ = std::fs::create_dir_all(&fresh_dir);
+    fresh_dir.join(sibling_name)
+}
+
+/// The `.app` bundle root a binary lives in, if any
+/// (`…/Clash.app/Contents/MacOS/clash-gui` → `…/Clash.app`).
+fn bundle_root(binary: &Path) -> Option<PathBuf> {
+    let macos_dir = binary.parent()?;
+    let contents = macos_dir.parent()?;
+    let root = contents.parent()?;
+    if macos_dir.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && root.extension()? == "app"
+    {
+        Some(root.to_path_buf())
+    } else {
+        None
+    }
+}
+
+/// After replacing a binary that lives inside a macOS .app bundle, bring the
+/// bundle metadata along: bump `CFBundleVersion`/`CFBundleShortVersionString`
+/// in Info.plist (so Finder and the GUI's own version display agree with the
+/// binary) and re-sign the whole bundle, since the plist edit invalidates
+/// the old seal. Best-effort: a failure here never fails the update.
+fn refresh_bundle_metadata(binary: &Path, version: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(root) = bundle_root(binary) else {
+            return;
+        };
+        let plist = root.join("Contents").join("Info.plist");
+        if plist.exists() {
+            for key in ["CFBundleVersion", "CFBundleShortVersionString"] {
+                let _ = std::process::Command::new("plutil")
+                    .args(["-replace", key, "-string", version])
+                    .arg(&plist)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+        }
+        let _ = std::process::Command::new("codesign")
+            .args(["--force", "--deep", "--sign", "-"])
+            .arg(&root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (binary, version);
+    }
 }
 
 /// Check whether a directory is writable by the current user.
@@ -365,6 +491,40 @@ mod tests {
         assert!(!is_newer("1.1.0", "1.1.0"));
         assert!(!is_newer("1.0.0", "1.1.0"));
         assert!(!is_newer("0.9.0", "1.0.0"));
+    }
+
+    #[test]
+    fn test_binary_names() {
+        assert_eq!(
+            binary_names(Path::new("/usr/local/bin/clash")),
+            ("clash", "clash-gui")
+        );
+        assert_eq!(
+            binary_names(Path::new(
+                "/Applications/Clash.app/Contents/MacOS/clash-gui"
+            )),
+            ("clash-gui", "clash")
+        );
+        // Anything unexpected is treated as the TUI binary.
+        assert_eq!(
+            binary_names(Path::new("/tmp/clash-debug")),
+            ("clash", "clash-gui")
+        );
+    }
+
+    #[test]
+    fn test_bundle_root() {
+        assert_eq!(
+            bundle_root(Path::new(
+                "/Applications/Clash.app/Contents/MacOS/clash-gui"
+            )),
+            Some(PathBuf::from("/Applications/Clash.app"))
+        );
+        assert_eq!(bundle_root(Path::new("/usr/local/bin/clash")), None);
+        assert_eq!(
+            bundle_root(Path::new("/Applications/Clash.app/Contents/clash-gui")),
+            None
+        );
     }
 
     #[test]

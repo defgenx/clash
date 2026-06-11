@@ -829,6 +829,10 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                 }
                 InputMode::Filter => {
                     state.filter = input;
+                    // The filter may have shrunk the list past the cursor —
+                    // land on the first match instead of an out-of-range
+                    // index (which renders as a stuck/header-row highlight).
+                    state.table_state.selected = 0;
                     vec![]
                 }
                 InputMode::NewSession => {
@@ -1455,6 +1459,36 @@ mod tests {
         state.table_state.selected = 3;
         clamp_session_selection(&mut state);
         assert_eq!(state.table_state.selected, 3);
+    }
+
+    #[test]
+    fn test_filter_apply_resets_selection() {
+        let mut state = test_state();
+        state.store.sessions = vec![
+            Session {
+                id: "s1".to_string(),
+                name: Some("alpha".to_string()),
+                is_running: true,
+                ..Default::default()
+            },
+            Session {
+                id: "s2".to_string(),
+                name: Some("beta".to_string()),
+                is_running: true,
+                ..Default::default()
+            },
+        ];
+        state.table_state.selected = 1;
+        state.input_mode = InputMode::Filter;
+        state.input = tui_input::Input::new("alpha".to_string());
+
+        reduce(&mut state, Action::Ui(UiAction::SubmitInput(String::new())));
+
+        // The filter shrank the list to one row — the cursor must land on
+        // it, not stay out of range pointing at nothing.
+        assert_eq!(state.filter, "alpha");
+        assert_eq!(state.filtered_sessions().len(), 1);
+        assert_eq!(state.table_state.selected, 0);
     }
 
     #[test]

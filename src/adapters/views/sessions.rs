@@ -344,18 +344,26 @@ pub fn render_sessions_table(
         }
     }
 
-    // Find the visual row index that corresponds to the selected session
+    // Find the visual row index that corresponds to the selected session.
+    // Fall back to the first session row (never a section-header placeholder)
+    // when the selection is out of range — e.g. mid-refresh, before the
+    // reducer's clamp has run.
     let visual_selected = {
-        let mut vis = 0;
+        let mut vis = None;
+        let mut first_session_row = 0;
         for (idx, &parent) in logical_to_parent.iter().enumerate() {
-            if parent == state.table_state.selected
-                && (idx == 0 || logical_to_parent[idx - 1] != parent)
-            {
-                vis = idx;
+            if parent == usize::MAX {
+                continue; // section header — not selectable
+            }
+            if first_session_row == 0 {
+                first_session_row = idx;
+            }
+            if parent == state.table_state.selected && logical_to_parent[idx - 1] != parent {
+                vis = Some(idx);
                 break;
             }
         }
-        vis
+        vis.unwrap_or(first_session_row)
     };
 
     let table = Table::new(rows, &constraints)

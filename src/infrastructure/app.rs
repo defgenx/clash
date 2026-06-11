@@ -1052,22 +1052,27 @@ impl App {
         // snapshot, not yet resolved) over the pre-refresh selected_id.
         let pending = self.state.pending_selection_id.take();
         let target_id = pending.as_ref().or(selected_id.as_ref());
-        if let Some(id) = target_id {
+        let (pos, count) = {
             let sessions = self.state.filtered_sessions();
-            if let Some(pos) = sessions.iter().position(|s| s.id == *id) {
-                self.state.table_state.selected = pos;
-            } else if pending.is_some() {
-                // Pending selection not found yet — daemon sessions may still
-                // be loading. Put it back for the next refresh cycle.
-                self.state.pending_selection_id = pending;
-            } else {
-                // Session was removed — clamp to valid range
-                let count = sessions.len();
-                if count > 0 && self.state.table_state.selected >= count {
-                    self.state.table_state.selected = count - 1;
-                }
-            }
+            let pos = target_id.and_then(|id| sessions.iter().position(|s| s.id == *id));
+            (pos, sessions.len())
+        };
+        let mut selected = self.state.table_state.selected;
+        if let Some(p) = pos {
+            selected = p;
+        } else if pending.is_some() {
+            // Pending selection not found yet — daemon sessions may still
+            // be loading. Put it back for the next refresh cycle.
+            self.state.pending_selection_id = pending;
         }
+        // Always clamp: the selected session may have been removed, or the
+        // selection may already have been out of range before the refresh
+        // (in which case `selected_id` was None and no restore ran at all,
+        // leaving the cursor stuck on a phantom row).
+        if count > 0 && selected >= count {
+            selected = count - 1;
+        }
+        self.state.table_state.selected = selected;
     }
 
     /// Auto-refresh conversation and subagents if viewing SessionDetail or SubagentDetail.

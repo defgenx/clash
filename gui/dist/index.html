@@ -39,6 +39,21 @@
         <label class="setting-row inline">Terminal font size
           <input id="set-fontsize" type="number" min="9" max="24" step="1" />
         </label>
+        <label class="setting-row">Terminal font family
+          <input id="set-fontfamily" type="text" placeholder="SF Mono, Menlo, monospace" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="setting-row inline">Scrollback lines
+          <input id="set-scrollback" type="number" min="0" max="200000" step="1000" />
+        </label>
+        <label class="setting-row inline">Cursor style
+          <select id="set-cursor-style">
+            <option value="block">Block</option>
+            <option value="bar">Bar</option>
+            <option value="underline">Underline</option>
+          </select>
+        </label>
+        <label class="setting-check"><input id="set-cursor-blink" type="checkbox" /> Cursor blink</label>
+        <label class="setting-check"><input id="set-copy-select" type="checkbox" /> Copy on select</label>
         <label class="setting-check"><input id="set-option-meta" type="checkbox" /> ⌥ sends Esc (Meta)</label>
         <label class="setting-check"><input id="set-embed-links" type="checkbox" /> Links open in embedded browser</label>
         <label class="setting-check"><input id="set-notify" type="checkbox" /> Desktop notifications</label>
@@ -59,12 +74,12 @@
         <div id="topbar-actions">
           <button id="stash-all-btn" class="icon-btn wide" title="Stash all running sessions">⏸ all</button>
           <button id="split-btn" class="icon-btn" title="Add split pane (⌘D)">◫</button>
-          <button id="unsplit-btn" class="icon-btn" title="Remove split pane">◻</button>
+          <button id="unsplit-btn" class="icon-btn" title="Close focused pane (⌘⇧D)">◻</button>
           <button id="details-btn" class="icon-btn" title="Toggle details panel">ⓘ</button>
         </div>
       </div>
       <div id="content">
-        <div id="terminal-host" class="layout-1">
+        <div id="terminal-host">
           <div id="empty-state">
             <div class="empty-logo">⌘</div>
             <p>Select a session to attach</p>

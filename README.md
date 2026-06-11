@@ -344,21 +344,28 @@ new session via the sidebar's `＋ New session` button (`⌘T`) with preset
 picker and git-worktree option — the directory prefills from the configured
 default directory, falling back to the focused session's project, then home —
 rename/details/stash/kill/take-over from a per-session `⋯` menu (also on
-right-click of the row), split panes up to 2×2 (`⌘D`, zoom
-`⌘⇧↩`), teams browser (members with live-activity dots and model chips,
-tasks, agent inboxes, create/delete via the + button or right-click menu),
-and quit-stash on close. A terminal button in the sidebar header launches
-the clash TUI alongside the GUI (split pane when started from a
-pane-capable terminal, else a new terminal window) — gold when a TUI is
-running somewhere, grey when not. The sidebar footer holds a SETTINGS section:
-default directory for new sessions, terminal font size (live-applied),
-"⌥ sends Esc (Meta)" (off = Option always composes characters —
-international layouts), whether terminal links open in the embedded
-browser or the system browser, a desktop-notifications toggle, and an
-`⟳ Update clash` self-update button — when the update lands, a modal
-offers Restart / Cancel (restarting closes running sessions). Settings
-persist in `gui-state.json`. The sidebar and
-details panel are drag-resizable (widths persist).
+right-click of the row), unlimited split panes in a balanced grid (`⌘D`
+splits, `⌘⇧D` closes the focused pane, zoom `⌘⇧↩` or double-click the
+pane title, `⌘⌥←/→` cycles focus), teams browser (members with
+live-activity dots and model chips, tasks, agent inboxes, create/delete
+via the + button or right-click menu), `⌘K` clears the active terminal,
+middle-click detaches a tab, and quit-stash on close. Tabs and panes
+follow one rule: the active tab is always the content of the focused
+pane — clicking a tab fills the focused pane, focusing a pane activates
+its tab, and closing a pane keeps its session reachable as a tab. A
+labeled `TUI` badge-button in the sidebar header launches the clash TUI
+alongside the GUI (split pane when started from a pane-capable terminal,
+else a new terminal window) — gold when a TUI is running somewhere, grey
+when not. The sidebar footer holds a SETTINGS section: default directory
+for new sessions, terminal font size and font family (live-applied),
+scrollback lines, cursor style (block/bar/underline) and blink,
+copy-on-select, "⌥ sends Esc (Meta)" (off = Option always composes
+characters — international layouts), whether terminal links open in the
+embedded browser or the system browser, a desktop-notifications toggle,
+and an `⟳ Update clash` self-update button — when the update lands, a
+modal offers Restart / Cancel (restarting closes running sessions).
+Settings persist in `gui-state.json`. The sidebar and details panel are
+drag-resizable (widths persist).
 
 Sessions carry the same status vocabulary as the TUI — animated
 PROMPTING / THINKING / RUNNING / WAITING / STARTING / STASHED / ERRORED
@@ -419,7 +426,12 @@ cargo build --release           # builds BOTH binaries: clash and clash-gui
                                 # (each instance owns its own sessions)
 ```
 
-Release tarballs ship both binaries, and `clash update` installs/updates both.
+Release tarballs ship both binaries, and updating from either side
+(`clash update`, `:update`, or the GUI's `⟳ Update clash` button)
+installs/updates both. Existing installs are replaced through their
+symlinks — on macOS the binary inside `Clash.app` is the one updated, the
+bundle's `Info.plist` version is bumped, and the bundle is re-signed, so
+Finder/Dock launches pick up the new version too.
 On Linux, building requires the Tauri system deps (webkit2gtk):
 `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev`.
 

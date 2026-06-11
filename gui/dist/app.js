@@ -22,7 +22,18 @@ const state = {
   missingStreak: new Map(), // session id -> consecutive refreshes absent (ownership prune)
   // Persisted with workspaces in gui-state.json. optionMeta: ⌥ sends
   // Esc (Meta) in terminals; off = ⌥ always composes characters.
-  settings: { defaultCwd: "", fontSize: 13, optionMeta: true, embedLinks: true, notifications: true },
+  settings: {
+    defaultCwd: "",
+    fontSize: 13,
+    fontFamily: "SF Mono, Menlo, monospace",
+    scrollback: 10000,
+    cursorStyle: "block", // block | bar | underline
+    cursorBlink: false,
+    copyOnSelect: false,
+    optionMeta: true,
+    embedLinks: true,
+    notifications: true,
+  },
   homeDir: "", // resolved at startup — last-resort new-session prefill
 };
 
@@ -64,7 +75,6 @@ function applyStaticIcons() {
   const map = {
     "new-ws-btn": "plus",
     "new-team-btn": "plus",
-    "tui-btn": "terminal",
     "split-btn": "columns",
     "unsplit-btn": "square",
     "details-btn": "info",
@@ -79,6 +89,9 @@ function applyStaticIcons() {
     if (el) el.innerHTML = svgIcon(name);
   }
   $("stash-all-btn").innerHTML = `${svgIcon("pause", 13)}<span>all</span>`;
+  // Labeled launcher, not a bare glyph — it must read as "click to get
+  // the TUI" next to the GUI badge, not as a mystery toolbar icon.
+  $("tui-btn").innerHTML = `${svgIcon("terminal", 12)}<span>TUI</span>`;
 }
 
 // ── In-app dialogs ──────────────────────────────────────────────
@@ -191,6 +204,17 @@ function applyWorkspacesData(data) {
     if (typeof s.fontSize === "number" && s.fontSize >= 9 && s.fontSize <= 24) {
       state.settings.fontSize = Math.round(s.fontSize);
     }
+    if (typeof s.fontFamily === "string" && s.fontFamily.trim()) {
+      state.settings.fontFamily = s.fontFamily.trim();
+    }
+    if (typeof s.scrollback === "number" && s.scrollback >= 0 && s.scrollback <= 200000) {
+      state.settings.scrollback = Math.round(s.scrollback);
+    }
+    if (["block", "bar", "underline"].includes(s.cursorStyle)) {
+      state.settings.cursorStyle = s.cursorStyle;
+    }
+    if (typeof s.cursorBlink === "boolean") state.settings.cursorBlink = s.cursorBlink;
+    if (typeof s.copyOnSelect === "boolean") state.settings.copyOnSelect = s.copyOnSelect;
     if (typeof s.optionMeta === "boolean") state.settings.optionMeta = s.optionMeta;
     if (typeof s.embedLinks === "boolean") state.settings.embedLinks = s.embedLinks;
     if (typeof s.notifications === "boolean") state.settings.notifications = s.notifications;
@@ -327,8 +351,8 @@ function renderWorkspaceBar() {
 function switchWorkspace(i) {
   if (i < 0 || i >= state.workspaces.length) return;
   state.activeWs = i;
+  syncActiveToFocused();
   const sid = ws().panes[ws().focused];
-  state.activeTab = sid || state.activeTab;
   saveWorkspaces();
   renderAll();
   if (sid) focusTerm(sid);
@@ -945,6 +969,13 @@ function renderTabs() {
     tab.className = "tab" + (id === state.activeTab ? " active" : "");
     tab.onclick = () => assignToFocusedPane(id);
     tab.oncontextmenu = (ev) => tabContextMenu(ev, id);
+    tab.onauxclick = (ev) => {
+      // Middle-click detaches, like browser tabs (session keeps running).
+      if (ev.button === 1) {
+        ev.preventDefault();
+        detachSession(id);
+      }
+    };
 
     const s = state.sessions.find((x) => x.id === id);
     if (s) {
@@ -978,7 +1009,12 @@ function renderPanes() {
   const host = $("terminal-host");
   const w = ws();
   const visible = w.zoomed ? [w.panes[w.focused] ?? null] : w.panes;
-  host.className = `layout-${visible.length}`;
+  // Balanced grid for any pane count (no fixed cap): columns grow first,
+  // rows follow — 2 → 2x1, 3-4 → 2x2, 5-6 → 3x2, 7-9 → 3x3, …
+  const cols = Math.ceil(Math.sqrt(visible.length));
+  const rows = Math.ceil(visible.length / cols);
+  host.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  host.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
 
   // Detach term elements first so re-appending doesn't destroy them
   for (const entry of state.open.values()) entry.el.remove();
@@ -993,10 +1029,8 @@ function renderPanes() {
     pane.className = "pane" + (i === w.focused ? " focused" : "");
     pane.onclick = () => {
       w.focused = i;
-      if (w.panes[i]) {
-        state.activeTab = w.panes[i];
-        focusTerm(w.panes[i]);
-      }
+      syncActiveToFocused();
+      if (w.panes[i]) focusTerm(w.panes[i]);
       renderPanes();
       renderTabs();
       renderSidebar();
@@ -1008,6 +1042,8 @@ function renderPanes() {
         const title = document.createElement("div");
         title.className = "pane-title";
         title.textContent = entry.name + (w.zoomed ? "  (zoomed)" : "");
+        title.title = "Double-click to zoom (⌘⇧↩)";
+        title.ondblclick = toggleZoom;
         pane.appendChild(title);
       }
       pane.appendChild(entry.el);
@@ -1038,23 +1074,38 @@ function focusTerm(sid) {
   if (entry && entry.term) setTimeout(() => entry.term.focus(), 0);
 }
 
+/// Invariant enforced across every pane mutation: the active tab IS the
+/// content of the focused pane (null when the focused pane is empty).
+/// Tabs and panes stop drifting apart — clicking a tab fills the focused
+/// pane, focusing a pane activates its tab.
+function syncActiveToFocused() {
+  const w = ws();
+  state.activeTab = w.panes[w.focused] || null;
+}
+
 function addPane() {
   const w = ws();
-  if (w.panes.length >= 4) return;
   w.panes.push(null);
   w.focused = w.panes.length - 1;
   w.zoomed = false;
+  syncActiveToFocused();
   saveWorkspaces();
   renderPanes();
+  renderTabs();
 }
 
+/// Close the FOCUSED pane (not the last one). Its content survives as a
+/// tab — closing a split never loses a session.
 function removePane() {
   const w = ws();
   if (w.panes.length <= 1) return;
-  w.panes.pop();
+  w.panes.splice(w.focused, 1);
   w.focused = Math.min(w.focused, w.panes.length - 1);
+  if (w.panes.length === 1) w.zoomed = false;
+  syncActiveToFocused();
   saveWorkspaces();
   renderPanes();
+  renderTabs();
 }
 
 function toggleZoom() {
@@ -1068,11 +1119,9 @@ function focusPaneDelta(delta) {
   const w = ws();
   if (w.panes.length <= 1) return;
   w.focused = (w.focused + delta + w.panes.length) % w.panes.length;
+  syncActiveToFocused();
   const sid = w.panes[w.focused];
-  if (sid) {
-    state.activeTab = sid;
-    focusTerm(sid);
-  }
+  if (sid) focusTerm(sid);
   renderPanes();
   renderTabs();
 }
@@ -1149,10 +1198,12 @@ async function openSession(sid) {
   el.className = "term-wrap";
 
   const term = new Terminal({
-    fontFamily: "SF Mono, Menlo, monospace",
+    fontFamily: state.settings.fontFamily,
     fontSize: state.settings.fontSize,
     theme: TERM_THEME,
-    scrollback: 10000,
+    scrollback: state.settings.scrollback,
+    cursorStyle: state.settings.cursorStyle,
+    cursorBlink: state.settings.cursorBlink,
     macOptionIsMeta: state.settings.optionMeta,
     // OSC 8 hyperlinks (Claude Code emits these) — open in the embedded
     // browser panel, or the system browser per the embedLinks setting.
@@ -1219,6 +1270,14 @@ async function openSession(sid) {
   term.onResize(({ cols, rows }) => {
     invoke("resize_session", { sessionId: sid, cols, rows }).catch(() => {});
   });
+  // Copy-on-select (off by default). Selecting is itself the user gesture,
+  // so the async clipboard API is permitted; failures are silently ignored
+  // (⌘C still works either way).
+  term.onSelectionChange(() => {
+    if (!state.settings.copyOnSelect || !term.hasSelection()) return;
+    const text = term.getSelection();
+    if (text) navigator.clipboard?.writeText(text).catch(() => {});
+  });
 
   // URLs in terminal output are clickable — they open in the embedded
   // browser panel (cmux-style).
@@ -1272,10 +1331,7 @@ function dropTerminal(sid) {
     w.panes = w.panes.map((p) => (p === sid ? null : p));
   }
   saveWorkspaces();
-  if (state.activeTab === sid) {
-    const next = state.open.keys().next();
-    state.activeTab = next.done ? null : next.value;
-  }
+  if (state.activeTab === sid) syncActiveToFocused();
   renderPanes();
   renderTabs();
   renderSidebar();
@@ -2064,9 +2120,10 @@ document.addEventListener("keydown", (e) => {
     showNewSessionModal();
     return;
   }
-  if (e.metaKey && e.key === "d") {
+  if (e.metaKey && e.key.toLowerCase() === "d") {
     e.preventDefault();
-    addPane();
+    if (e.shiftKey) removePane();
+    else addPane();
     return;
   }
   // Workspace shortcuts (cmux layout: ⌘N new, ⌘1-9 switch, ⌘⇧R rename, ⌘⇧W close)
@@ -2119,6 +2176,12 @@ document.addEventListener("keydown", (e) => {
   if (e.metaKey && e.key === "f") {
     e.preventDefault();
     $("search").focus();
+    return;
+  }
+  if (e.metaKey && !e.shiftKey && e.key === "k") {
+    e.preventDefault();
+    const entry = state.activeTab && state.open.get(state.activeTab);
+    if (entry && entry.term) entry.term.clear();
     return;
   }
   if (e.key === "/" && !inInput) {
@@ -2409,9 +2472,22 @@ $("default-cwd").addEventListener("change", () => {
 /// Reflect persisted settings into the footer controls.
 function syncSettingsUi() {
   $("set-fontsize").value = state.settings.fontSize;
+  $("set-fontfamily").value = state.settings.fontFamily;
+  $("set-scrollback").value = state.settings.scrollback;
+  $("set-cursor-style").value = state.settings.cursorStyle;
+  $("set-cursor-blink").checked = state.settings.cursorBlink;
+  $("set-copy-select").checked = state.settings.copyOnSelect;
   $("set-option-meta").checked = state.settings.optionMeta;
   $("set-embed-links").checked = state.settings.embedLinks;
   $("set-notify").checked = state.settings.notifications;
+}
+
+/// Live-apply an xterm option to every open terminal, then persist.
+function applyTermOption(key, value) {
+  for (const entry of state.open.values()) {
+    if (entry.term) entry.term.options[key] = value;
+  }
+  saveWorkspaces();
 }
 
 $("set-fontsize").addEventListener("change", () => {
@@ -2429,12 +2505,45 @@ $("set-fontsize").addEventListener("change", () => {
   saveWorkspaces();
 });
 
+$("set-fontfamily").addEventListener("change", () => {
+  const v = $("set-fontfamily").value.trim();
+  if (!v) {
+    $("set-fontfamily").value = state.settings.fontFamily;
+    return;
+  }
+  state.settings.fontFamily = v;
+  applyTermOption("fontFamily", v);
+  fitAll();
+});
+
+$("set-scrollback").addEventListener("change", () => {
+  const v = Math.round(Number($("set-scrollback").value));
+  if (!Number.isFinite(v) || v < 0 || v > 200000) {
+    $("set-scrollback").value = state.settings.scrollback;
+    return;
+  }
+  state.settings.scrollback = v;
+  applyTermOption("scrollback", v);
+});
+
+$("set-cursor-style").addEventListener("change", () => {
+  state.settings.cursorStyle = $("set-cursor-style").value;
+  applyTermOption("cursorStyle", state.settings.cursorStyle);
+});
+
+$("set-cursor-blink").addEventListener("change", () => {
+  state.settings.cursorBlink = $("set-cursor-blink").checked;
+  applyTermOption("cursorBlink", state.settings.cursorBlink);
+});
+
+$("set-copy-select").addEventListener("change", () => {
+  state.settings.copyOnSelect = $("set-copy-select").checked;
+  saveWorkspaces();
+});
+
 $("set-option-meta").addEventListener("change", () => {
   state.settings.optionMeta = $("set-option-meta").checked;
-  for (const entry of state.open.values()) {
-    if (entry.term) entry.term.options.macOptionIsMeta = state.settings.optionMeta;
-  }
-  saveWorkspaces();
+  applyTermOption("macOptionIsMeta", state.settings.optionMeta);
 });
 
 $("set-embed-links").addEventListener("change", () => {
