@@ -347,8 +347,9 @@ stash/kill/take-over from hover actions, split panes up to 2×2 (`⌘D`, zoom
 `⌘⇧↩`), teams browser (members, tasks, agent inboxes, create/delete),
 and quit-stash on close. The sidebar footer holds a SETTINGS section:
 the default directory for new sessions and an `⟳ Update clash`
-self-update button. The sidebar and details panel are drag-resizable
-(widths persist).
+self-update button — when the update lands, a modal offers
+Restart / Cancel (restarting closes running sessions). The sidebar and
+details panel are drag-resizable (widths persist).
 
 Sessions carry the same status vocabulary as the TUI — animated
 PROMPTING / THINKING / RUNNING / WAITING / STARTING / STASHED / ERRORED
@@ -366,8 +367,8 @@ project, CWD, summary. Conversation, Subagents, and Diff open as full
 tabs in the main area (closable like terminal tabs); the panel's TOOLS
 row has Ports, Open-in-IDE, and Open-in-browser pickers — the latter
 opens the diff on GitHub (the PR's files view, or a compare view of the
-session branch against the default branch), renders the local
-uncommitted diff as a page, or opens the session's PR / repository.
+session branch against the default branch), the session's PR, or the
+repository. (The local diff opens as an in-app tab, not in the browser.)
 
 Embedded browser (cmux-style, `⌘⇧B`): a native webview panel docked on
 the right with browser tabs (`+` to open, `×` per tab, `×` in the

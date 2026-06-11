@@ -1359,22 +1359,9 @@ function renderChat(out, msgs) {
   chat.scrollTop = chat.scrollHeight;
 }
 
-/// Standalone dark-themed diff page (same line classes as renderDiff).
-function diffHtmlDoc(title, diffText) {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
-    body{background:#0d1117;color:#c9d1d9;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;padding:16px}
-    h1{font-size:13px;color:#8b949e;font-weight:600;margin:0 0 12px}
-    pre{margin:0;white-space:pre-wrap;word-break:break-all}
-    .file{color:#79c0ff;font-weight:700}
-    .hunk{color:#d2a8ff}
-    .add{color:#3fb950;background:rgba(46,160,67,.15);display:inline-block;width:100%}
-    .del{color:#f85149;background:rgba(248,81,73,.15);display:inline-block;width:100%}
-  </style></head><body><h1>${escapeHtml(title)}</h1><pre>${renderDiff(diffText)}</pre></body></html>`;
-}
-
 /// "Open in browser" tool — pick what to show in the embedded browser
-/// panel: the working diff as a rendered page, the session's PR, or the
-/// repository on its forge.
+/// panel: the diff on GitHub, the session's PR, or the repository on
+/// its forge. (The local diff lives in an in-app tab, not here.)
 async function showBrowserOpenPicker(s) {
   const out = $("d-out");
   out.innerHTML = "<h4>OPEN IN BROWSER</h4>";
@@ -1411,16 +1398,6 @@ async function showBrowserOpenPicker(s) {
       );
     });
   }
-  addRow("± Local diff", "uncommitted git diff HEAD as a page", async () => {
-    try {
-      const diff = await invoke("get_diff", { sessionId: s.id });
-      const html = diffHtmlDoc(`diff — ${displayName(s)}`, diff);
-      const url = await invoke("stage_browser_page", { html });
-      openBrowserPanel(url, { title: `± ${displayName(s)}` });
-    } catch (e) {
-      uiAlert(`Diff failed: ${e}`);
-    }
-  });
   if (pr) addRow(`⇄ Pull request #${pr.split("/").pop()}`, pr, () => openBrowserPanel(pr));
   if (repo) {
     const url =
@@ -1851,6 +1828,12 @@ listen("update-phase", (event) => {
       break;
     case "done":
       v.textContent = `v${version} installed — restart`;
+      uiDialog({
+        message: `clash v${version} installed. Restart now? Running sessions will be closed.`,
+        okLabel: "Restart",
+      }).then((restart) => {
+        if (restart) invoke("restart_app").catch((e) => uiAlert(`Restart failed: ${e}`));
+      });
       break;
     case "failed":
       v.textContent = message || "update failed";
@@ -1972,7 +1955,7 @@ window.addEventListener("resize", fitAll);
 let browserShown = false;
 let browserLastUrl = null;
 let browserUrlPoll = null;
-let browserTabs = []; // [{ id, url, title }] — title only for staged pages
+let browserTabs = []; // [{ id, url }]
 let browserActiveTab = null;
 let browserNextTabId = 1; // monotonic: webview labels are never reused
 
@@ -1986,8 +1969,7 @@ function activeBrowserTab() {
 }
 
 /// Show `url` in the active tab (creating the first tab if needed).
-/// `opts.newTab` opens a fresh tab instead; `opts.title` labels staged
-/// pages (diff) whose URL carries no readable name.
+/// `opts.newTab` opens a fresh tab instead.
 async function openBrowserPanel(url, opts = {}) {
   browserLastUrl = url;
   $("browser").classList.remove("hidden");
@@ -1998,12 +1980,11 @@ async function openBrowserPanel(url, opts = {}) {
   const { x, y, w, h } = browserSlotRect();
   let tab = opts.newTab ? null : activeBrowserTab();
   if (!tab) {
-    tab = { id: String(browserNextTabId++), url, title: opts.title };
+    tab = { id: String(browserNextTabId++), url };
     browserTabs.push(tab);
     browserActiveTab = tab.id;
   } else {
     tab.url = url;
-    tab.title = opts.title;
   }
   try {
     await invoke("browser_open", { tab: tab.id, url, x, y, w, h });
@@ -2049,10 +2030,8 @@ function closeBrowserTab(id) {
 }
 
 function browserTabLabel(t) {
-  if (t.title) return t.title;
   try {
-    const u = new URL(t.url);
-    return u.protocol === "clashpage:" ? "diff" : u.hostname.replace(/^www\./, "");
+    return new URL(t.url).hostname.replace(/^www\./, "");
   } catch {
     return t.url || "tab";
   }
@@ -2116,7 +2095,7 @@ async function syncBrowserUrl() {
     const tab = activeBrowserTab();
     if (tab && tab.url !== url) {
       tab.url = url;
-      if (!tab.title) renderBrowserTabs(); // hostname label may have changed
+      renderBrowserTabs(); // hostname label may have changed
     }
     if (document.activeElement !== $("b-url")) $("b-url").value = url;
   } catch (e) {
@@ -2132,6 +2111,18 @@ function syncBrowserBounds() {
 
 new ResizeObserver(syncBrowserBounds).observe($("browser-slot"));
 window.addEventListener("resize", syncBrowserBounds);
+
+// Vertical wheel scrolls the tab strip horizontally (the 6px scrollbar
+// is a poor drag target).
+$("b-tabs").addEventListener(
+  "wheel",
+  (e) => {
+    if (!e.deltaY || e.deltaX) return;
+    e.preventDefault();
+    $("b-tabs").scrollLeft += e.deltaY;
+  },
+  { passive: false },
+);
 
 $("b-back").onclick = () =>
   browserActiveTab && invoke("browser_history", { tab: browserActiveTab, delta: -1 }).catch(() => {});
@@ -2152,7 +2143,6 @@ $("b-url").addEventListener("keydown", (e) => {
   const tab = activeBrowserTab();
   if (tab) {
     tab.url = url;
-    tab.title = undefined;
     renderBrowserTabs();
   }
   invoke("browser_navigate", { tab: browserActiveTab, url }).catch((err) =>

@@ -49,16 +49,7 @@ struct GuiState {
     /// out of `list_sessions` results and expire after
     /// `RECENTLY_REMOVED_TTL` refresh cycles.
     recently_removed: Mutex<HashMap<String, u8>>,
-    /// HTML documents staged for the embedded browser, served by the
-    /// `clashpage://` protocol. data: URLs are rejected at webview
-    /// creation without a cargo feature and WKWebView drops multi-MB
-    /// ones silently (large diffs) — a custom protocol has neither
-    /// limit. FIFO-bounded; an evicted page 404s on reload.
-    browser_pages: Mutex<Vec<(String, String)>>,
 }
-
-/// Staged browser pages kept before the oldest is evicted.
-const BROWSER_PAGES_CAP: usize = 16;
 
 /// Refresh cycles a killed session stays filtered from `list_sessions`.
 /// Must outlive the worst-case dying window: 3s /exit grace + 3s SIGTERM
@@ -1084,6 +1075,14 @@ fn get_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// Relaunch the app binary — offered after a self-update so the new
+/// version takes over. The in-process daemon (and every PTY session it
+/// owns) dies with the old process; the frontend confirms first.
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    app.restart();
+}
+
 /// Parse a terminal notification escape sequence from raw PTY output.
 ///
 /// Supports the two formats cmux popularized for agent workflows:
@@ -1257,19 +1256,6 @@ fn raise_browser_tab(app: &tauri::AppHandle, tab: &str) {
             let _ = wv.hide();
         }
     }
-}
-
-/// Stage an HTML document and return a `clashpage://` URL the embedded
-/// browser can navigate to (used for rendered diff pages).
-#[tauri::command]
-fn stage_browser_page(state: State<'_, GuiState>, html: String) -> String {
-    let id = uuid::Uuid::now_v7().to_string();
-    let mut pages = state.browser_pages.lock().unwrap();
-    pages.push((id.clone(), html));
-    if pages.len() > BROWSER_PAGES_CAP {
-        pages.remove(0);
-    }
-    format!("clashpage://localhost/{}", id)
 }
 
 /// Open (or navigate) the browser tab's child webview, positioned over
@@ -1463,7 +1449,6 @@ fn main() {
         attached: tokio::sync::Mutex::new(HashMap::new()),
         wild_processes_rx,
         recently_removed: Mutex::new(HashMap::new()),
-        browser_pages: Mutex::new(Vec::new()),
     };
 
     // FS watcher on ~/.claude/projects — same role as the TUI's watcher
@@ -1482,23 +1467,6 @@ fn main() {
 
     tauri::Builder::default()
         .manage(state)
-        // Serves HTML staged by `stage_browser_page` to the embedded
-        // browser (clashpage://localhost/<id>).
-        .register_uri_scheme_protocol("clashpage", |ctx, request| {
-            let id = request.uri().path().trim_start_matches('/');
-            let state = ctx.app_handle().state::<GuiState>();
-            let pages = state.browser_pages.lock().unwrap();
-            match pages.iter().find(|(page_id, _)| page_id == id) {
-                Some((_, html)) => tauri::http::Response::builder()
-                    .header("Content-Type", "text/html; charset=utf-8")
-                    .body(html.clone().into_bytes())
-                    .unwrap(),
-                None => tauri::http::Response::builder()
-                    .status(404)
-                    .body(Vec::new())
-                    .unwrap(),
-            }
-        })
         .setup(move |app| {
             if let Some(watcher) = fs_watcher {
                 // Keep the watcher alive for the app's lifetime.
@@ -1621,8 +1589,8 @@ fn main() {
             delete_team,
             start_update,
             get_version,
+            restart_app,
             get_session_ports,
-            stage_browser_page,
             browser_open,
             browser_select,
             browser_bounds,

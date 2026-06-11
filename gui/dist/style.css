@@ -549,8 +549,8 @@ html, body, #app {
   padding: 5px 8px 0;
   background: var(--bg-sidebar);
   overflow-x: auto;
-  scrollbar-width: none;
 }
+#b-tabs::-webkit-scrollbar { height: 6px; }
 .b-tab {
   display: flex;
   align-items: center;
