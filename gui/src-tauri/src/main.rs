@@ -39,7 +39,23 @@ struct GuiState {
     /// TUI runs). Read into `RefreshInput.wild_processes` on each refresh.
     wild_processes_rx:
         tokio::sync::watch::Receiver<Vec<clash::infrastructure::process_scan::WildProcess>>,
+    /// Sessions killed via the GUI, with a per-refresh age counter — the
+    /// GUI equivalent of the TUI's `recently_removed`. A dying claude
+    /// keeps being reported by the daemon (until /exit→SIGTERM→SIGKILL
+    /// lands and the 5s reaper sweeps) and by the wild scan (until its
+    /// next tick), so `build_session_list` would re-admit the row; worse,
+    /// once re-admitted into `previous` as running, the empty-daemon
+    /// "hiccup" preservation keeps it alive forever. Entries are filtered
+    /// out of `list_sessions` results and expire after
+    /// `RECENTLY_REMOVED_TTL` refresh cycles.
+    recently_removed: Mutex<HashMap<String, u8>>,
 }
+
+/// Refresh cycles a killed session stays filtered from `list_sessions`.
+/// Must outlive the worst-case dying window: 3s /exit grace + 3s SIGTERM
+/// grace + 5s daemon reaper + a wild-scan tick ≈ 12s. At the frontend's
+/// 2s poll cadence, 10 cycles ≈ 20s.
+const RECENTLY_REMOVED_TTL: u8 = 10;
 
 /// Payload for `pty-output` events pushed to the webview.
 #[derive(Clone, serde::Serialize)]
@@ -109,7 +125,18 @@ async fn list_sessions(
         input.daemon_infos = session_refresh::gather_daemon_input(&mut control).await;
     }
     input.wild_processes = state.wild_processes_rx.borrow().clone();
-    let sessions = session_refresh::build_session_list(&input);
+    let mut sessions = session_refresh::build_session_list(&input);
+
+    // Drop freshly killed sessions the pipeline re-admitted (dying daemon
+    // process, stale wild-scan snapshot), and age out the guard entries.
+    {
+        let mut removed = state.recently_removed.lock().unwrap();
+        if !removed.is_empty() {
+            sessions.retain(|s| !removed.contains_key(&s.id));
+            removed.values_mut().for_each(|v| *v = v.saturating_add(1));
+            removed.retain(|_, age| *age <= RECENTLY_REMOVED_TTL);
+        }
+    }
 
     let focused = app
         .get_webview_window("main")
@@ -346,13 +373,23 @@ async fn stash_session(state: State<'_, GuiState>, session_id: String) -> Result
 #[tauri::command]
 async fn kill_session(state: State<'_, GuiState>, session_id: String) -> Result<(), String> {
     let (worktree, wild_pid) = {
-        let prev = state.previous.lock().unwrap();
+        let mut prev = state.previous.lock().unwrap();
         let s = prev.iter().find(|s| s.id == session_id);
-        (
+        let extracted = (
             s.and_then(|s| s.worktree.clone()),
             s.and_then(|s| s.wild_pid),
-        )
+        );
+        // Purge from the merge input immediately — a killed session left in
+        // `previous` as running gets resurrected by the empty-daemon
+        // preservation branch of the refresh pipeline.
+        prev.retain(|s| s.id != session_id);
+        extracted
     };
+    state
+        .recently_removed
+        .lock()
+        .unwrap()
+        .insert(session_id.clone(), 0);
     {
         let mut attached = state.attached.lock().await;
         attached.remove(&session_id);
@@ -363,6 +400,14 @@ async fn kill_session(state: State<'_, GuiState>, session_id: String) -> Result<
         let _ = control.kill_session(&session_id).await;
     }
     clash::infrastructure::hooks::registry::unregister(&session_id);
+    // Idle now, so the daemon overlay won't re-admit the dying process
+    // (`hook_says_idle` guard); re-written after death below in case the
+    // dying Claude's Stop hook overwrites it meanwhile.
+    clash::infrastructure::hooks::write_session_status(
+        state.backend.base_dir(),
+        &session_id,
+        "idle",
+    );
 
     let base_dir = state.backend.base_dir().to_path_buf();
     tauri::async_runtime::spawn(async move {
@@ -504,6 +549,59 @@ async fn get_diff(state: State<'_, GuiState>, session_id: String) -> Result<Stri
     } else {
         Err(String::from_utf8_lossy(&output.stderr).to_string())
     }
+}
+
+/// User's home directory — last-resort prefill for the new-session cwd.
+#[tauri::command]
+fn get_home_dir() -> String {
+    std::env::var("HOME").unwrap_or_default()
+}
+
+/// Web URL of the session repo's `origin` remote, normalized to https
+/// (ssh `git@host:owner/repo.git` forms included) — lets the embedded
+/// browser open the code on the forge.
+#[tauri::command]
+async fn get_repo_url(state: State<'_, GuiState>, session_id: String) -> Result<String, String> {
+    let dir = {
+        let prev = state.previous.lock().unwrap();
+        prev.iter()
+            .find(|s| s.id == session_id)
+            .and_then(|s| {
+                s.cwd
+                    .clone()
+                    .filter(|c| !c.is_empty())
+                    .or_else(|| Some(s.project_path.clone()).filter(|p| !p.is_empty()))
+            })
+            .ok_or_else(|| "No working directory for session".to_string())?
+    };
+    let output = tokio::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(&dir)
+        .output()
+        .await
+        .map_err(|e| format!("git remote failed: {}", e))?;
+    if !output.status.success() {
+        return Err("No origin remote".to_string());
+    }
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    remote_to_web_url(&raw).ok_or_else(|| format!("Unsupported remote url: {}", raw))
+}
+
+/// `git@host:owner/repo.git` / `ssh://git@host/owner/repo.git` /
+/// `https://host/owner/repo.git` → `https://host/owner/repo`.
+fn remote_to_web_url(raw: &str) -> Option<String> {
+    let raw = raw.strip_suffix(".git").unwrap_or(raw);
+    if let Some(rest) = raw.strip_prefix("https://").or(raw.strip_prefix("http://")) {
+        return Some(format!("https://{}", rest));
+    }
+    if let Some(rest) = raw.strip_prefix("ssh://") {
+        let rest = rest.split_once('@').map(|(_, r)| r).unwrap_or(rest);
+        return Some(format!("https://{}", rest));
+    }
+    if let Some((host, path)) = raw.split_once('@').and_then(|(_, r)| r.split_once(':')) {
+        return Some(format!("https://{}/{}", host, path));
+    }
+    None
 }
 
 /// All teams (with members), via the same DataRepository the TUI uses.
@@ -1298,6 +1396,7 @@ fn main() {
         control: tokio::sync::Mutex::new(DaemonClient::new(DaemonClient::instance_socket_path())),
         attached: tokio::sync::Mutex::new(HashMap::new()),
         wild_processes_rx,
+        recently_removed: Mutex::new(HashMap::new()),
     };
 
     // FS watcher on ~/.claude/projects — same role as the TUI's watcher
@@ -1420,6 +1519,8 @@ fn main() {
             create_new_session,
             create_worktree_session,
             get_diff,
+            get_repo_url,
+            get_home_dir,
             get_conversation,
             get_subagents,
             get_subagent_conversation,
@@ -1450,4 +1551,26 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running clash GUI");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remote_to_web_url;
+
+    #[test]
+    fn remote_to_web_url_forms() {
+        assert_eq!(
+            remote_to_web_url("git@github.com:owner/repo.git").as_deref(),
+            Some("https://github.com/owner/repo")
+        );
+        assert_eq!(
+            remote_to_web_url("https://github.com/owner/repo.git").as_deref(),
+            Some("https://github.com/owner/repo")
+        );
+        assert_eq!(
+            remote_to_web_url("ssh://git@gitlab.com/owner/repo.git").as_deref(),
+            Some("https://gitlab.com/owner/repo")
+        );
+        assert_eq!(remote_to_web_url("/local/bare/repo.git"), None);
+    }
 }
