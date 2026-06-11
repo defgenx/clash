@@ -539,6 +539,78 @@ fn resolve_tui_binary() -> Result<String, String> {
     )
 }
 
+/// Login shells available on this machine — choices for `create_terminal`.
+#[tauri::command]
+fn list_shells() -> Vec<String> {
+    clash::infrastructure::windowing::terminal_choice::detect_shells()
+}
+
+/// Spawn a plain shell terminal in the in-process daemon. Shell PTYs use
+/// the `shellterm-` id namespace, which the refresh pipeline excludes —
+/// they live as GUI tabs/panes, never as Claude sessions. Dies with the
+/// app (the daemon is in-process), so nothing is registered or persisted.
+#[tauri::command]
+async fn create_terminal(
+    state: State<'_, GuiState>,
+    shell: Option<String>,
+    cwd: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<String, String> {
+    let shell = shell
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("SHELL").ok().filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| "/bin/sh".to_string());
+    let cwd = cwd
+        .filter(|c| !c.is_empty() && std::path::Path::new(c).is_dir())
+        .or_else(|| std::env::var("HOME").ok());
+    let session_id = format!(
+        "{}{}",
+        session_refresh::SHELL_TERMINAL_ID_PREFIX,
+        uuid::Uuid::now_v7()
+    );
+    let name = std::path::Path::new(&shell)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| shell.clone());
+
+    let mut control = state.control.lock().await;
+    ensure_connected(&mut control).await;
+    control
+        .create_session(
+            &session_id,
+            &shell,
+            // Login shell: loads the user's profile/rc, like a fresh
+            // terminal window would.
+            &["-l".to_string()],
+            cwd.as_deref(),
+            Some(name),
+            cols,
+            rows,
+            HashMap::new(),
+        )
+        .await
+        .map_err(|e| format!("Failed to spawn terminal: {}", e))?;
+    Ok(session_id)
+}
+
+/// Kill a shell terminal's PTY. Unlike `kill_session`, shell terminals
+/// have no registry entry, hook status, worktree, or wild process — the
+/// daemon kill is the whole job.
+#[tauri::command]
+async fn close_terminal(state: State<'_, GuiState>, session_id: String) -> Result<(), String> {
+    if !session_id.starts_with(session_refresh::SHELL_TERMINAL_ID_PREFIX) {
+        return Err("Not a shell terminal".to_string());
+    }
+    state.attached.lock().await.remove(&session_id);
+    let mut control = state.control.lock().await;
+    ensure_connected(&mut control).await;
+    control
+        .kill_session(&session_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Enable/disable native desktop notifications. Pushed by the frontend at
 /// boot (from persisted settings) and whenever the user flips the toggle.
 #[tauri::command]
@@ -1717,6 +1789,9 @@ fn main() {
             tui_running,
             launch_tui,
             list_terminals,
+            list_shells,
+            create_terminal,
+            close_terminal,
             create_new_session,
             create_worktree_session,
             get_diff,

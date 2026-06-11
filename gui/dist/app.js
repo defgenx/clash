@@ -34,6 +34,7 @@ const state = {
     embedLinks: true,
     notifications: true,
     tuiTerminal: "", // last terminal picked for the TUI launcher ("" = auto)
+    termShell: "", // last shell picked for in-app terminals ("" = $SHELL)
   },
   homeDir: "", // resolved at startup — last-resort new-session prefill
 };
@@ -84,6 +85,7 @@ function applyStaticIcons() {
     "b-reload": "reload",
     "b-ext": "external-link",
     "b-close": "x",
+    "new-term-btn": "terminal",
   };
   for (const [id, name] of Object.entries(map)) {
     const el = $(id);
@@ -220,14 +222,19 @@ function applyWorkspacesData(data) {
     if (typeof s.embedLinks === "boolean") state.settings.embedLinks = s.embedLinks;
     if (typeof s.notifications === "boolean") state.settings.notifications = s.notifications;
     if (typeof s.tuiTerminal === "string") state.settings.tuiTerminal = s.tuiTerminal;
+    if (typeof s.termShell === "string") state.settings.termShell = s.termShell;
   }
   if (!Array.isArray(data.workspaces) || !data.workspaces.length) return false;
+  // Shell terminals die with the app (in-process daemon) — drop any
+  // persisted from the previous run.
+  const livePane = (p) => (p && isShellTerm(p) ? null : p);
   state.workspaces = data.workspaces.map((w) => ({
     name: w.name || "ws",
-    panes: Array.isArray(w.panes) && w.panes.length ? w.panes : [null],
+    panes:
+      Array.isArray(w.panes) && w.panes.length ? w.panes.map(livePane) : [null],
     focused: 0,
     zoomed: false,
-    sessions: Array.isArray(w.sessions) ? w.sessions : [],
+    sessions: Array.isArray(w.sessions) ? w.sessions.filter((id) => !isShellTerm(id)) : [],
   }));
   state.activeWs = Math.min(data.active || 0, state.workspaces.length - 1);
   return true;
@@ -748,6 +755,7 @@ async function refreshSessions() {
     let pruned = false;
     for (const w of state.workspaces) {
       for (const id of [...w.sessions]) {
+        if (isShellTerm(id)) continue; // not in the session list by design
         if (known.has(id)) {
           state.missingStreak.delete(id);
           continue;
@@ -908,6 +916,12 @@ function tabContextMenu(ev, sid) {
   ev.preventDefault();
   ev.stopPropagation();
   const entry = state.open.get(sid);
+  if (isShellTerm(sid)) {
+    showContextMenu(ev.clientX, ev.clientY, [
+      { label: "Close terminal", icon: "x", action: () => detachSession(sid) },
+    ]);
+    return;
+  }
   if (entry && !entry.term) {
     // Content tab (conversation/subagents/diff) — only closable
     showContextMenu(ev.clientX, ev.clientY, [
@@ -951,6 +965,12 @@ function tabContextMenu(ev, sid) {
 }
 
 // ── Tabs ────────────────────────────────────────────────────────
+
+/// Utility shell terminals (GUI "new terminal") — daemon PTYs in the
+/// shellterm- namespace; tabs/panes only, never Claude sessions.
+function isShellTerm(id) {
+  return id.startsWith("shellterm-");
+}
 
 /// Session id behind a tab entry — view tabs (`view:conv:<sid>` …) belong
 /// to the session in their key's last segment.
@@ -1184,7 +1204,7 @@ async function adoptWild(s) {
   openSession(s.id);
 }
 
-async function openSession(sid) {
+async function openSession(sid, label) {
   // Sessions are workspace-scoped: owned elsewhere → switch there first;
   // unowned → the active workspace claims it.
   const owner = sessionWorkspace(sid);
@@ -1249,7 +1269,7 @@ async function openSession(sid) {
     term,
     fitAddon,
     el,
-    name: s ? displayName(s) : sid.slice(0, 8),
+    name: label || (s ? displayName(s) : sid.slice(0, 8)),
   });
 
   assignToFocusedPane(sid);
@@ -1309,12 +1329,15 @@ async function openSession(sid) {
   focusTerm(sid);
 }
 
-/// Detach (keep session running in the backend). View tabs just close.
+/// Detach (keep session running in the backend). Shell terminals are
+/// killed instead — a detached shell has nothing to resume. View tabs
+/// just close.
 async function detachSession(sid) {
   const entry = state.open.get(sid);
   if (entry && entry.term) {
     try {
-      await invoke("close_session", { sessionId: sid });
+      if (isShellTerm(sid)) await invoke("close_terminal", { sessionId: sid });
+      else await invoke("close_session", { sessionId: sid });
     } catch (e) {
       console.error("close_session failed:", e);
     }
@@ -1331,6 +1354,9 @@ function dropTerminal(sid) {
   state.open.delete(sid);
   for (const w of state.workspaces) {
     w.panes = w.panes.map((p) => (p === sid ? null : p));
+    // Shell terminals leave ownership on close — the session prune
+    // intentionally skips them, so nothing else would.
+    if (isShellTerm(sid)) w.sessions = w.sessions.filter((x) => x !== sid);
   }
   saveWorkspaces();
   if (state.activeTab === sid) syncActiveToFocused();
@@ -2070,6 +2096,11 @@ listen("session-attention", (event) => {
 
 listen("pty-exited", (event) => {
   const { session_id, exit_code } = event.payload;
+  if (isShellTerm(session_id)) {
+    // `exit` in a shell terminal closes its tab, like a real terminal.
+    dropTerminal(session_id);
+    return;
+  }
   const entry = state.open.get(session_id);
   if (entry) {
     entry.term.writeln(
@@ -2190,6 +2221,11 @@ document.addEventListener("keydown", (e) => {
       $("search").value = "";
       renderSidebar();
     }
+    return;
+  }
+  if (e.metaKey && e.shiftKey && e.key.toLowerCase() === "t") {
+    e.preventDefault();
+    openShellTerminal(state.settings.termShell || "");
     return;
   }
   if (e.metaKey && e.key === "t") {
@@ -2687,6 +2723,52 @@ $("tui-btn").onclick = (ev) => {
   ]);
 };
 
+// ── In-app shell terminals (topbar) ─────────────────────────────
+// Full terminals inside the GUI: a daemon PTY running a login shell,
+// rendered like any session pane. The picker lists the machine's shells
+// (/etc/shells + $SHELL); the last choice is remembered.
+
+let detectedShells = []; // populated at boot from list_shells
+
+async function openShellTerminal(shell) {
+  state.settings.termShell = shell;
+  saveWorkspaces();
+  // Open where you're working: focused session's project, then the
+  // configured default directory, then home (backend fallback).
+  const cur = state.sessions.find((x) => x.id === state.activeTab);
+  const cwd =
+    (cur && (cur.cwd || cur.project_path)) || state.settings.defaultCwd || null;
+  try {
+    const sid = await invoke("create_terminal", {
+      shell: shell || null,
+      cwd,
+      cols: 120,
+      rows: 40,
+    });
+    const base = (shell || detectedShells[0] || "shell").split("/").pop();
+    await openSession(sid, `$ ${base}`);
+  } catch (e) {
+    uiAlert(`New terminal failed: ${e}`);
+  }
+}
+
+$("new-term-btn").onclick = (ev) => {
+  ev.stopPropagation(); // the same click would bubble to hideContextMenu
+  const r = $("new-term-btn").getBoundingClientRect();
+  const last = state.settings.termShell || "";
+  showContextMenu(r.left, r.bottom + 4, [
+    ...detectedShells.map((sh) => ({
+      label: sh,
+      icon: "terminal",
+      hint: last === sh ? "last used" : "",
+      action: () => openShellTerminal(sh),
+    })),
+    ...(detectedShells.length
+      ? []
+      : [{ label: "Default shell", icon: "terminal", action: () => openShellTerminal("") }]),
+  ]);
+};
+
 // ── Icon button hover labels ────────────────────────────────────
 // Instant tooltip for .icon-btn, replacing the native title tooltip
 // (slow and unreliable in WKWebView). Delegated so dynamically created
@@ -2747,6 +2829,9 @@ document.addEventListener("click", () => iconTip.remove(), true);
   setInterval(refreshTuiIndicator, 5000);
   invoke("list_terminals")
     .then((t) => (detectedTerminals = t))
+    .catch(() => {});
+  invoke("list_shells")
+    .then((s) => (detectedShells = s))
     .catch(() => {});
   await refreshSessions();
   await restoreWorkspaceSessions();

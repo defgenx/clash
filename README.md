@@ -351,7 +351,12 @@ new session via the sidebar's `＋ New session` button (`⌘T`) with preset
 picker and git-worktree option — the directory prefills from the configured
 default directory, falling back to the focused session's project, then home —
 rename/details/stash/kill/take-over from a per-session `⋯` menu (also on
-right-click of the row), unlimited split panes in a balanced grid (`⌘D`
+right-click of the row), full shell terminals inside the GUI — the
+topbar's terminal button picks among the machine's shells (`/etc/shells`
++ `$SHELL`), `⌘⇧T` reopens with the last-used shell, the terminal starts
+in the focused session's project (then default directory, then home),
+and closing the tab (or `exit`) kills the shell — unlimited split panes
+in a balanced grid (`⌘D`
 splits, `⌘⇧D` closes the focused pane, zoom `⌘⇧↩` or double-click the
 pane title, `⌘⌥←/→` cycles focus), teams browser (members with
 live-activity dots and model chips, tasks, agent inboxes, create/delete

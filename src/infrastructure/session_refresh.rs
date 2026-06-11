@@ -216,6 +216,11 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
 /// refuse takeover on synthetic rows — there's no session id to resume.
 pub const SYNTHETIC_WILD_ID_PREFIX: &str = "wild-pid-";
 
+/// Prefix for utility shell-terminal PTYs (the GUI's "new terminal").
+/// They share the in-process daemon with Claude sessions but are NOT
+/// Claude sessions — the refresh pipeline never admits them to the list.
+pub const SHELL_TERMINAL_ID_PREFIX: &str = "shellterm-";
+
 /// For every live wild claude PID that no existing session row claimed,
 /// push a synthetic Session keyed by `wild-pid-<pid>`.
 ///
@@ -557,6 +562,11 @@ fn overlay_daemon_sessions(
         .as_secs();
 
     for info in infos {
+        // Utility shell terminals ride the same daemon but are not
+        // Claude sessions — never admit them to the session list.
+        if info.session_id.starts_with(SHELL_TERMINAL_ID_PREFIX) {
+            continue;
+        }
         let hook_says_idle = hook_statuses
             .get(&info.session_id)
             .is_some_and(|(s, _)| matches!(s, SessionStatus::Stashed));
@@ -748,6 +758,9 @@ fn resolve_names(
     // Apply daemon-reported names (matched by project path)
     if let Some(infos) = daemon_infos {
         for info in infos {
+            if info.session_id.starts_with(SHELL_TERMINAL_ID_PREFIX) {
+                continue; // a shell's name must never label a Claude session
+            }
             if let Some(ref daemon_name) = info.name {
                 if info.cwd.is_empty() {
                     continue;
@@ -1017,6 +1030,32 @@ mod tests {
             wild_processes: Vec::new(),
             externally_opened: HashSet::new(),
         }
+    }
+
+    // ── Shell-terminal exclusion ─────────────────────────────────
+
+    #[test]
+    fn test_shell_terminals_never_admitted_to_session_list() {
+        // A live shell PTY in the daemon (the GUI's "new terminal") must
+        // not surface as a Claude session — and its name must not label
+        // unnamed sessions sharing the same directory.
+        let previous = Vec::new();
+        let mut input = empty_input(&previous);
+        input.daemon_infos = Some(vec![make_daemon_info(
+            "shellterm-0199-aaaa",
+            "/tmp/proj",
+            "running",
+            true,
+        )]);
+
+        let sessions = build_session_list(&input);
+        assert!(
+            sessions
+                .iter()
+                .all(|s| !s.id.starts_with(SHELL_TERMINAL_ID_PREFIX)),
+            "shell terminal leaked into the session list: {:?}",
+            sessions.iter().map(|s| &s.id).collect::<Vec<_>>()
+        );
     }
 
     // ── is_status_dominated truth table ──────────────────────────

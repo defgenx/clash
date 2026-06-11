@@ -83,6 +83,30 @@ pub fn detect_terminals() -> Vec<DetectedTerminal> {
     found
 }
 
+/// Login shells available on this machine: `$SHELL` first, then every
+/// existing `/etc/shells` entry. Drives the GUI's "new terminal" picker.
+pub fn detect_shells() -> Vec<String> {
+    let mut shells = Vec::new();
+    if let Some(user_shell) = std::env::var("SHELL").ok().filter(|s| !s.is_empty()) {
+        shells.push(user_shell);
+    }
+    if let Ok(listing) = std::fs::read_to_string("/etc/shells") {
+        for line in listing.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if !shells.iter().any(|s| s == line) && std::path::Path::new(line).is_file() {
+                shells.push(line.to_string());
+            }
+        }
+    }
+    if shells.is_empty() {
+        shells.push("/bin/sh".to_string());
+    }
+    shells
+}
+
 /// Open `command` in a new window of the chosen terminal (by
 /// [`DetectedTerminal::id`]), starting the emulator if needed.
 pub fn open_window_in(terminal_id: &str, command: &str, args: &[&str]) -> eyre::Result<()> {
@@ -272,5 +296,19 @@ mod tests {
     fn open_window_in_rejects_unknown_id() {
         let err = open_window_in("not-a-terminal", "true", &[]).unwrap_err();
         assert!(err.to_string().contains("Unknown terminal id"));
+    }
+
+    #[test]
+    fn detected_shells_are_unique_absolute_paths() {
+        let shells = detect_shells();
+        assert!(!shells.is_empty());
+        let mut sorted = shells.clone();
+        sorted.sort();
+        let before = sorted.len();
+        sorted.dedup();
+        assert_eq!(sorted.len(), before, "duplicate shells");
+        for s in &shells {
+            assert!(s.starts_with('/'), "not an absolute path: {s}");
+        }
     }
 }
