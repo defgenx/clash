@@ -461,6 +461,46 @@ html, body, #app {
   overflow-y: auto;
 }
 
+/* Embedded browser panel (native child webview over #browser-slot) */
+#browser {
+  width: 480px;
+  min-width: 480px;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+}
+#browser-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sidebar);
+}
+#browser-bar input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  padding: 4px 8px;
+  font-size: 11px;
+  outline: none;
+}
+#browser-bar input:focus { border-color: var(--accent); }
+#browser-slot { flex: 1; min-height: 0; }
+
+.pr-chip {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--green);
+  cursor: pointer;
+}
+.pr-chip:hover { text-decoration: underline; }
+
 /* Drag handles between panels */
 .panel-resizer {
   width: 4px;

@@ -58,6 +58,18 @@
             <p class="hint">/ search · ⌘T new session · ⌘D split · ⌘N workspace · ⌘1-9 switch</p>
           </div>
         </div>
+        <div class="panel-resizer hidden" id="browser-resizer" title="Drag to resize"></div>
+        <div id="browser" class="hidden">
+          <div id="browser-bar">
+            <button id="b-back" class="icon-btn" title="Back">←</button>
+            <button id="b-fwd" class="icon-btn" title="Forward">→</button>
+            <button id="b-reload" class="icon-btn" title="Reload">⟳</button>
+            <input id="b-url" type="text" spellcheck="false" autocomplete="off" placeholder="https://…" />
+            <button id="b-ext" class="icon-btn" title="Open in system browser">⧉</button>
+            <button id="b-close" class="icon-btn" title="Close browser panel">×</button>
+          </div>
+          <div id="browser-slot"></div>
+        </div>
         <div class="panel-resizer hidden" id="details-resizer" title="Drag to resize"></div>
         <div id="details" class="hidden">
           <div id="details-body"></div>

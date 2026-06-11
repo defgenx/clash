@@ -341,6 +341,14 @@ project, CWD, summary. Conversation, Subagents, and Diff open as full
 tabs in the main area (closable like terminal tabs); Ports and
 Open-in-IDE pickers live in the panel.
 
+Embedded browser (cmux-style, `⌘⇧B`): a native webview panel docked on
+the right with URL bar, back/forward/reload, and open-in-system-browser.
+URLs printed in any terminal are clickable and open there; listening
+ports open `localhost:<port>`; and when a session's output mentions a
+GitHub pull request, a green `⇄ PR #n` chip appears on the session (and
+in the tab's right-click menu) that opens the PR in-app. Note: the
+browser is a native overlay — in-app dialogs can't draw over it.
+
 Workspaces (cmux-style): each workspace owns its pane layout AND its
 sessions — `⌘N` new, `⌘1-9` switch, `⌘⇧R` rename, `⌘⇧W` or the chip's
 `×` to close, `⌘B` toggles the sidebar. The sidebar is scoped to the
@@ -349,8 +357,9 @@ group for sessions no workspace has claimed (opening one claims it).
 Searching (`/`) is global across workspaces — results from other
 workspaces carry a `⌘n` badge and open in their owning workspace.
 Closing a workspace returns its sessions to the unassigned pool.
-Layouts and session ownership persist across restarts (running sessions
-re-attach automatically).
+Layouts and session ownership are saved to disk (`gui-state.json` in the
+clash app-support dir) and survive restarts (running sessions re-attach
+automatically).
 
 Notifications: desktop alerts when a session starts waiting for input or
 errors (suppressed while the window is focused), unread badges in the

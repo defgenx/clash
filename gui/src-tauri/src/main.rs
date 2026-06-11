@@ -1001,6 +1001,148 @@ async fn get_session_ports(
     Ok(ports)
 }
 
+// ── GUI state persistence (workspaces: layout + session ownership) ──
+// Disk-backed because the bare-binary WKWebView's localStorage is not
+// reliably persisted across restarts.
+
+fn gui_state_path() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("clash").join("gui-state.json"))
+}
+
+#[tauri::command]
+fn save_gui_state(state_json: String) -> Result<(), String> {
+    let path = gui_state_path().ok_or("no data dir")?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    clash::infrastructure::fs::atomic::write_atomic(&path, state_json.as_bytes())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_gui_state() -> Result<String, String> {
+    let path = gui_state_path().ok_or("no data dir")?;
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+// ── Embedded browser panel (cmux-style child webview) ──────────────
+
+const BROWSER_LABEL: &str = "embedded-browser";
+
+fn embedded_browser(app: &tauri::AppHandle) -> Option<tauri::Webview> {
+    app.webviews().get(BROWSER_LABEL).cloned()
+}
+
+/// Open (or navigate) the embedded browser child webview, positioned over
+/// the `#browser-slot` placeholder rect reported by the frontend.
+#[tauri::command]
+async fn browser_open(
+    app: tauri::AppHandle,
+    url: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+) -> Result<(), String> {
+    let parsed: tauri::Url = url.parse().map_err(|e| format!("bad url: {}", e))?;
+    if let Some(wv) = embedded_browser(&app) {
+        wv.navigate(parsed).map_err(|e| e.to_string())?;
+        let _ = wv.set_position(tauri::LogicalPosition::new(x, y));
+        let _ = wv.set_size(tauri::LogicalSize::new(w, h));
+        return Ok(());
+    }
+    let win = app.get_window("main").ok_or("no main window")?;
+    // add_child must run on the main thread on macOS.
+    let win2 = win.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    win.run_on_main_thread(move || {
+        let res = win2
+            .add_child(
+                tauri::webview::WebviewBuilder::new(
+                    BROWSER_LABEL,
+                    tauri::WebviewUrl::External(parsed),
+                ),
+                tauri::LogicalPosition::new(x, y),
+                tauri::LogicalSize::new(w, h),
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+        let _ = tx.send(res);
+    })
+    .map_err(|e| e.to_string())?;
+    rx.await.map_err(|e| e.to_string())?
+}
+
+/// Reposition the embedded browser over the placeholder (layout changed).
+#[tauri::command]
+fn browser_bounds(app: tauri::AppHandle, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
+    if let Some(wv) = embedded_browser(&app) {
+        let _ = wv.set_position(tauri::LogicalPosition::new(x, y));
+        let _ = wv.set_size(tauri::LogicalSize::new(w, h));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn browser_navigate(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let parsed: tauri::Url = url.parse().map_err(|e| format!("bad url: {}", e))?;
+    embedded_browser(&app)
+        .ok_or("browser not open")?
+        .navigate(parsed)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn browser_history(app: tauri::AppHandle, delta: i32) -> Result<(), String> {
+    embedded_browser(&app)
+        .ok_or("browser not open")?
+        .eval(format!("history.go({})", delta))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn browser_reload(app: tauri::AppHandle) -> Result<(), String> {
+    embedded_browser(&app)
+        .ok_or("browser not open")?
+        .eval("location.reload()")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn browser_get_url(app: tauri::AppHandle) -> Result<String, String> {
+    let wv = embedded_browser(&app).ok_or("browser not open")?;
+    wv.url().map(|u| u.to_string()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn browser_close(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(wv) = embedded_browser(&app) {
+        let _ = wv.close();
+    }
+    Ok(())
+}
+
+/// Open a URL in the system default browser.
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("only http(s) urls".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    let cmd = "open";
+    #[cfg(not(target_os = "macos"))]
+    let cmd = "xdg-open";
+    std::process::Command::new(cmd)
+        .arg(&url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// (Re)connect the control client if the connection was lost.
 async fn ensure_connected(client: &mut DaemonClient) {
     if !client.is_connected() {
@@ -1156,7 +1298,17 @@ fn main() {
             delete_team,
             start_update,
             get_version,
-            get_session_ports
+            get_session_ports,
+            browser_open,
+            browser_bounds,
+            browser_navigate,
+            browser_history,
+            browser_reload,
+            browser_get_url,
+            browser_close,
+            open_external,
+            save_gui_state,
+            load_gui_state
         ])
         .run(tauri::generate_context!())
         .expect("error while running clash GUI");

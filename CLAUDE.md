@@ -170,4 +170,7 @@ Key crates: `ratatui` (TUI), `crossterm` (terminal events, TUI raw mode), `nix` 
 - Ctrl+B detach supports three terminal encodings: raw `0x02`, Kitty CSI u (`ESC[98;5u`), and xterm modifyOtherKeys (`ESC[27;5;98~`). iTerm2 uses the xterm format.
 - `--debug` flag enables debug-level logging; the header shows a `DEBUG` indicator when active.
 - Tauri 2 frontend APIs are permission-gated: `gui/src-tauri/capabilities/default.json` must grant `core:default` (includes `core:event:allow-listen`) or every `listen()` in the GUI frontend fails as a silent unhandled rejection — no `pty-output` ever reaches xterm and terminals render blank.
+- wry's WKWebView does not implement native `alert`/`confirm`/`prompt` (silent no-ops) — use the in-app `uiConfirm`/`uiPrompt`/`uiAlert` dialogs in `gui/dist/app.js`.
+- The bare-binary WKWebView's localStorage is not reliably persisted — durable GUI state (workspaces) goes through `save_gui_state`/`load_gui_state` to `gui-state.json` (atomic write) in the clash app-support dir.
+- The embedded browser panel is a native child webview (`Window::add_child`, tauri `unstable` feature) positioned over `#browser-slot`; the frontend reports the slot rect on every layout change (`syncBrowserBounds` in `fitAll`). In-app DOM (dialogs, menus) cannot render above it.
 - Log file (`~/Library/Application Support/clash/clash.log`) appends across restarts and auto-rotates after 24h (configurable via `CLASH_LOG_RETENTION_HOURS`).

@@ -88,43 +88,65 @@ function ws() {
   return state.workspaces[state.activeWs];
 }
 
-// ── Workspace persistence (layout survives restarts) ───────────
+// ── Workspace persistence (layout + session ownership) ─────────
+// Primary store is a disk file via the backend (gui-state.json) — the
+// bare-binary WKWebView's localStorage is not reliably persisted across
+// restarts. localStorage is kept as a same-session fallback only.
 
-function saveWorkspaces() {
-  try {
-    localStorage.setItem(
-      "clash-workspaces",
-      JSON.stringify({
-        workspaces: state.workspaces.map((w) => ({
-          name: w.name,
-          panes: w.panes,
-          sessions: w.sessions,
-        })),
-        active: state.activeWs,
-      })
-    );
-  } catch (e) {
-    console.error("saveWorkspaces failed:", e);
-  }
+let saveTimer = null;
+
+function workspacesJson() {
+  return JSON.stringify({
+    workspaces: state.workspaces.map((w) => ({
+      name: w.name,
+      panes: w.panes,
+      sessions: w.sessions,
+    })),
+    active: state.activeWs,
+  });
 }
 
-function loadWorkspaces() {
+function saveWorkspaces() {
+  const json = workspacesJson();
+  try {
+    localStorage.setItem("clash-workspaces", json);
+  } catch (e) {
+    console.error("saveWorkspaces (localStorage) failed:", e);
+  }
+  // Debounced disk write — frequent calls during drag/assign collapse to one
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    invoke("save_gui_state", { stateJson: workspacesJson() }).catch((e) =>
+      console.error("save_gui_state failed:", e)
+    );
+  }, 250);
+}
+
+function applyWorkspacesData(data) {
+  if (!data || !Array.isArray(data.workspaces) || !data.workspaces.length) return false;
+  state.workspaces = data.workspaces.map((w) => ({
+    name: w.name || "ws",
+    panes: Array.isArray(w.panes) && w.panes.length ? w.panes : [null],
+    focused: 0,
+    zoomed: false,
+    sessions: Array.isArray(w.sessions) ? w.sessions : [],
+  }));
+  state.activeWs = Math.min(data.active || 0, state.workspaces.length - 1);
+  return true;
+}
+
+async function loadWorkspaces() {
+  try {
+    const raw = await invoke("load_gui_state");
+    if (raw && applyWorkspacesData(JSON.parse(raw))) return;
+  } catch (e) {
+    console.error("load_gui_state failed:", e);
+  }
   try {
     const raw = localStorage.getItem("clash-workspaces");
-    if (!raw) return;
-    const data = JSON.parse(raw);
-    if (Array.isArray(data.workspaces) && data.workspaces.length) {
-      state.workspaces = data.workspaces.map((w) => ({
-        name: w.name || "ws",
-        panes: Array.isArray(w.panes) && w.panes.length ? w.panes : [null],
-        focused: 0,
-        zoomed: false,
-        sessions: Array.isArray(w.sessions) ? w.sessions : [],
-      }));
-      state.activeWs = Math.min(data.active || 0, state.workspaces.length - 1);
-    }
+    if (raw) applyWorkspacesData(JSON.parse(raw));
   } catch (e) {
-    console.error("loadWorkspaces failed:", e);
+    console.error("loadWorkspaces (localStorage) failed:", e);
   }
 }
 
@@ -423,6 +445,18 @@ function sessionItem(s) {
     wsBadge.title = "Owned by another workspace — click opens it there";
     sub.appendChild(wsBadge);
   }
+  const pr = state.prUrls.get(s.id);
+  if (pr) {
+    const chip = document.createElement("span");
+    chip.className = "pr-chip";
+    chip.textContent = `⇄ PR #${pr.split("/").pop()}`;
+    chip.title = `${pr} — click to open in the browser panel`;
+    chip.onclick = (ev) => {
+      ev.stopPropagation();
+      openBrowserPanel(pr);
+    };
+    sub.appendChild(chip);
+  }
   if (s.source === "Wild") {
     const wild = document.createElement("span");
     wild.className = "wild-badge";
@@ -648,9 +682,13 @@ function tabContextMenu(ev, sid) {
     ]);
     return;
   }
+  const pr = state.prUrls.get(sid);
   showContextMenu(ev.clientX, ev.clientY, [
     { label: "Rename session…", action: () => renameSessionDialog(sid) },
     { label: "Close tab (detach)", action: () => detachSession(sid) },
+    ...(pr
+      ? [{ label: `Open PR #${pr.split("/").pop()} ⇄`, action: () => openBrowserPanel(pr) }]
+      : []),
     null,
     {
       label: "Stash (stop, keep resumable)",
@@ -771,6 +809,7 @@ function fitAll() {
       const entry = sid && state.open.get(sid);
       if (entry && entry.fitAddon) entry.fitAddon.fit();
     }
+    if (typeof syncBrowserBounds === "function") syncBrowserBounds();
   });
 }
 
@@ -897,6 +936,31 @@ async function openSession(sid) {
   });
   term.onResize(({ cols, rows }) => {
     invoke("resize_session", { sessionId: sid, cols, rows }).catch(() => {});
+  });
+
+  // URLs in terminal output are clickable — they open in the embedded
+  // browser panel (cmux-style).
+  const URL_RE = /https?:\/\/[^\s"'`<>)\]]+/g;
+  term.registerLinkProvider({
+    provideLinks(y, cb) {
+      const line = term.buffer.active.getLine(y - 1);
+      if (!line) return cb(undefined);
+      const text = line.translateToString(true);
+      const links = [];
+      URL_RE.lastIndex = 0;
+      let m;
+      while ((m = URL_RE.exec(text))) {
+        links.push({
+          range: {
+            start: { x: m.index + 1, y },
+            end: { x: m.index + m[0].length, y },
+          },
+          text: m[0],
+          activate: (_e, uri) => openBrowserPanel(uri),
+        });
+      }
+      cb(links.length ? links : undefined);
+    },
   });
 
   focusTerm(sid);
@@ -1137,10 +1201,13 @@ function renderDetails() {
           ? ports
               .map(
                 (p) =>
-                  `<div class="row-item"><span>:${escapeHtml(p)}</span><span class="dim">http://localhost:${escapeHtml(p)}</span></div>`
+                  `<div class="row-item port" data-port="${escapeHtml(p)}"><span>:${escapeHtml(p)}</span><span class="dim">http://localhost:${escapeHtml(p)}</span></div>`
               )
               .join("")
           : "<p class='hint'>no listening ports</p>");
+      out.querySelectorAll(".row-item.port").forEach((row) => {
+        row.onclick = () => openBrowserPanel(`http://localhost:${row.dataset.port}`);
+      });
     } catch (e) {
       out.innerHTML = `<h4>LISTENING PORTS</h4><p class='hint'>failed: ${escapeHtml(e)}</p>`;
     }
@@ -1464,10 +1531,38 @@ function base64ToBytes(b64) {
   return bytes;
 }
 
+// PR sniffing: the newest GitHub PR URL seen in each session's output
+// (sidebar chip + tab context menu, cmux-style). A rolling tail buffers
+// URLs split across output chunks.
+const PR_RE = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g;
+const prTails = new Map(); // session id -> recent output text
+state.prUrls = new Map(); // session id -> last PR url
+
+function sniffPrUrl(sid, bytes) {
+  let text;
+  try {
+    text = new TextDecoder().decode(bytes);
+  } catch {
+    return;
+  }
+  const tail = ((prTails.get(sid) || "") + text).slice(-4096);
+  prTails.set(sid, tail);
+  PR_RE.lastIndex = 0;
+  let m;
+  let last = null;
+  while ((m = PR_RE.exec(tail))) last = m[0];
+  if (last && state.prUrls.get(sid) !== last) {
+    state.prUrls.set(sid, last);
+    renderSidebar();
+  }
+}
+
 listen("pty-output", (event) => {
   const { session_id, data } = event.payload;
+  const bytes = base64ToBytes(data);
   const entry = state.open.get(session_id);
-  if (entry) entry.term.write(base64ToBytes(data));
+  if (entry && entry.term) entry.term.write(bytes);
+  sniffPrUrl(session_id, bytes);
 });
 
 listen("session-attention", (event) => {
@@ -1641,6 +1736,11 @@ document.addEventListener("keydown", (e) => {
     toggleZoom();
     return;
   }
+  if (e.metaKey && e.shiftKey && e.key.toLowerCase() === "b") {
+    e.preventDefault();
+    toggleBrowserPanel();
+    return;
+  }
   if (e.metaKey && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
     e.preventDefault();
     focusPaneDelta(e.key === "ArrowRight" ? 1 : -1);
@@ -1664,6 +1764,91 @@ document.addEventListener("keydown", (e) => {
 
 window.addEventListener("resize", fitAll);
 
+// ── Embedded browser panel (cmux-style) ─────────────────────────
+// A native child webview is positioned over #browser-slot by the
+// backend; the frontend reports the slot's rect whenever layout moves.
+
+let browserShown = false;
+let browserLastUrl = null;
+let browserUrlPoll = null;
+
+function browserSlotRect() {
+  const r = $("browser-slot").getBoundingClientRect();
+  return { x: r.x, y: r.y, w: r.width, h: r.height };
+}
+
+async function openBrowserPanel(url) {
+  browserLastUrl = url;
+  $("browser").classList.remove("hidden");
+  $("browser-resizer").classList.remove("hidden");
+  fitAll();
+  // Layout must settle before measuring the slot
+  await new Promise((r) => requestAnimationFrame(r));
+  const { x, y, w, h } = browserSlotRect();
+  try {
+    await invoke("browser_open", { url, x, y, w, h });
+    browserShown = true;
+    if (document.activeElement !== $("b-url")) $("b-url").value = url;
+    if (!browserUrlPoll) browserUrlPoll = setInterval(syncBrowserUrl, 1500);
+  } catch (e) {
+    closeBrowserPanel();
+    uiAlert(`Browser failed: ${e}`);
+  }
+}
+
+function closeBrowserPanel() {
+  browserShown = false;
+  if (browserUrlPoll) {
+    clearInterval(browserUrlPoll);
+    browserUrlPoll = null;
+  }
+  $("browser").classList.add("hidden");
+  $("browser-resizer").classList.add("hidden");
+  invoke("browser_close").catch(() => {});
+  fitAll();
+}
+
+function toggleBrowserPanel() {
+  if (browserShown) closeBrowserPanel();
+  else openBrowserPanel(browserLastUrl || "https://github.com");
+}
+
+async function syncBrowserUrl() {
+  if (!browserShown) return;
+  try {
+    const url = await invoke("browser_get_url");
+    browserLastUrl = url;
+    if (document.activeElement !== $("b-url")) $("b-url").value = url;
+  } catch (e) {
+    void e;
+  }
+}
+
+function syncBrowserBounds() {
+  if (!browserShown) return;
+  const { x, y, w, h } = browserSlotRect();
+  invoke("browser_bounds", { x, y, w, h }).catch(() => {});
+}
+
+new ResizeObserver(syncBrowserBounds).observe($("browser-slot"));
+window.addEventListener("resize", syncBrowserBounds);
+
+$("b-back").onclick = () => invoke("browser_history", { delta: -1 }).catch(() => {});
+$("b-fwd").onclick = () => invoke("browser_history", { delta: 1 }).catch(() => {});
+$("b-reload").onclick = () => invoke("browser_reload").catch(() => {});
+$("b-close").onclick = closeBrowserPanel;
+$("b-ext").onclick = () => {
+  if (browserLastUrl) invoke("open_external", { url: browserLastUrl }).catch(console.error);
+};
+$("b-url").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  let url = $("b-url").value.trim();
+  if (!url) return;
+  if (!/^https?:\/\//.test(url)) url = "https://" + url;
+  browserLastUrl = url;
+  invoke("browser_navigate", { url }).catch((err) => uiAlert(`Navigate failed: ${err}`));
+});
+
 // ── Panel resizing (sidebar / details) ──────────────────────────
 
 function loadPanelSizes() {
@@ -1675,6 +1860,7 @@ function loadPanelSizes() {
     };
     if (sizes.sidebar) apply($("sidebar"), sizes.sidebar);
     if (sizes.details) apply($("details"), sizes.details);
+    if (sizes.browser) apply($("browser"), sizes.browser);
   } catch (e) {
     console.error("loadPanelSizes failed:", e);
   }
@@ -1719,14 +1905,25 @@ function initResizer(handleId, panelId, storageKey, min, max, compute) {
 
 initResizer("sidebar-resizer", "sidebar", "sidebar", 180, 480, (x) => x);
 initResizer("details-resizer", "details", "details", 240, 640, (x) => window.innerWidth - x);
+initResizer(
+  "browser-resizer",
+  "browser",
+  "browser",
+  300,
+  1200,
+  (x) => $("browser").getBoundingClientRect().right - x
+);
 loadPanelSizes();
 
 $("new-ws-btn").onclick = newWorkspace;
 
 // ── Boot ────────────────────────────────────────────────────────
 
-loadWorkspaces();
-renderAll();
-setVersionLabel();
-refreshSessions().then(restoreWorkspaceSessions);
-setInterval(refreshSessions, 2000);
+(async () => {
+  await loadWorkspaces(); // disk-backed — must complete before first render
+  renderAll();
+  setVersionLabel();
+  await refreshSessions();
+  await restoreWorkspaceSessions();
+  setInterval(refreshSessions, 2000);
+})();
