@@ -1592,10 +1592,37 @@ fn browser_reload(app: tauri::AppHandle, tab: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Current page URL. Do NOT go through `Webview::url()` here: wry's macOS
+/// impl unwraps WKWebView's `URL` property, which is nil until the first
+/// navigation commits, and that panic happens on the tao event loop thread
+/// and aborts the whole app (with the tab persisted in gui-state.json, the
+/// abort then replays on every launch). Read the property directly with a
+/// nil check instead; empty string = no committed navigation yet.
 #[tauri::command]
-fn browser_get_url(app: tauri::AppHandle, tab: String) -> Result<String, String> {
+async fn browser_get_url(app: tauri::AppHandle, tab: String) -> Result<String, String> {
     let wv = browser_tab(&app, &tab).ok_or("no such tab")?;
-    wv.url().map(|u| u.to_string()).map_err(|e| e.to_string())
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::rc::Retained;
+        use objc2::runtime::AnyObject;
+        use objc2_foundation::NSURL;
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        wv.with_webview(move |pw| {
+            let wk: *mut AnyObject = pw.inner().cast();
+            let url = unsafe {
+                let url: Option<Retained<NSURL>> = objc2::msg_send![wk, URL];
+                url.and_then(|u| u.absoluteString()).map(|s| s.to_string())
+            };
+            let _ = tx.send(url.unwrap_or_default());
+        })
+        .map_err(|e| e.to_string())?;
+        rx.await.map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        wv.url().map(|u| u.to_string()).map_err(|e| e.to_string())
+    }
 }
 
 /// Close one tab's webview.
