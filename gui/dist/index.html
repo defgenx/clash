@@ -32,7 +32,8 @@
         <div id="teams-list" class="hidden"></div>
       </div>
       <div id="sidebar-footer">
-        <div class="section-label">SETTINGS</div>
+        <div class="section-label collapsible" id="settings-toggle">SETTINGS <span id="settings-caret">▸</span></div>
+        <div id="settings-body" class="hidden">
         <label class="setting-row">Default directory
           <input id="default-cwd" type="text" placeholder="/Users/you" autocomplete="off" spellcheck="false" />
         </label>
@@ -40,7 +41,8 @@
           <input id="set-fontsize" type="number" min="9" max="24" step="1" />
         </label>
         <label class="setting-row">Terminal font family
-          <input id="set-fontfamily" type="text" placeholder="SF Mono, Menlo, monospace" autocomplete="off" spellcheck="false" />
+          <input id="set-fontfamily" type="text" list="font-options" placeholder="SF Mono, Menlo, monospace" autocomplete="off" spellcheck="false" />
+          <datalist id="font-options"></datalist>
         </label>
         <label class="setting-row inline">Scrollback lines
           <input id="set-scrollback" type="number" min="0" max="200000" step="1000" />
@@ -58,6 +60,7 @@
         <label class="setting-check"><input id="set-embed-links" type="checkbox" /> Links open in embedded browser</label>
         <label class="setting-check"><input id="set-notify" type="checkbox" /> Desktop notifications</label>
         <button id="update-btn" class="update-big" title="Download and install the latest clash version">⟳ Update clash</button>
+        </div>
         <div class="footer-row">
           <span id="session-count"></span>
           <span class="spacer"></span>

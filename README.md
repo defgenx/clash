@@ -374,8 +374,10 @@ Clicking it opens a picker of terminals detected on the OS (Terminal,
 iTerm2, WezTerm, kitty, Alacritty, Ghostty, Warp; GNOME Terminal/Konsole/xterm
 on Linux; tmux when inside one) plus an Auto entry (split pane when the
 GUI was started from a pane-capable terminal, else the default
-terminal); the last choice is marked in the menu. The sidebar footer holds a SETTINGS section: default directory
-for new sessions, terminal font size and font family (live-applied),
+terminal); the last choice is marked in the menu. The sidebar footer holds a collapsible SETTINGS section
+(click the header to expand; the choice persists): default directory
+for new sessions, terminal font size and font family (live-applied,
+with autocomplete of the monospace fonts installed on the machine),
 scrollback lines, cursor style (block/bar/underline) and blink,
 copy-on-select, "⌥ sends Esc (Meta)" (off = Option always composes
 characters — international layouts), whether terminal links open in the
@@ -411,12 +413,16 @@ opens the diff on GitHub (the PR's files view, or a compare view of the
 session branch against the default branch), the session's PR, or the
 repository. (The local diff opens as an in-app tab, not in the browser.)
 
-Browser tabs are first-class tabs (`⌘⇧B` opens one, also via the `+`
-new-tab menu): each lives in the tab strip and panes exactly like a
-terminal or Claude session — split it next to a terminal, move it
-between panes, zoom it, own it per workspace. Each browser pane has a
-chrome strip with back/forward/reload, a URL bar, and
-open-in-system-browser; close with `⌘W`, middle-click, or the tab `×`.
+Browser tabs are first-class tabs (`⌘⇧B` opens a blank one with the
+address bar focused, also via the `+` new-tab menu): each lives in the
+tab strip and panes exactly like a terminal or Claude session — split it
+next to a terminal, move it between panes, zoom it, own it per
+workspace. Each browser pane has full chrome: back/forward,
+reload-or-stop (live loading state), an address bar that takes URLs or
+search terms (DuckDuckGo), copy-URL, and open-in-system-browser. While a
+browser pane is focused: `⌘L` focuses the address bar, `⌘R` reloads,
+`⌘+`/`⌘-`/`⌘0` zoom (also in the tab's right-click menu, next to Open
+DevTools). Close with `⌘W`, middle-click, or the tab `×`.
 Anything "opened in the browser" opens as a new tab: URLs printed in
 any terminal are clickable; listening ports open `localhost:<port>`;
 and when a session's output mentions a GitHub pull request, a green

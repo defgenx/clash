@@ -9,9 +9,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 clash = { path = "../.." }
-# `unstable` enables multiwebview (Window::add_child) for the embedded browser panel
-# `webview-data-url` lets the embedded browser open data: URLs (rendered diff pages)
-tauri = { version = "2", features = ["unstable"] }
+# `unstable` enables multiwebview (Window::add_child) for the embedded browser tabs
+# `devtools` exposes open_devtools() for browser tabs in release builds
+tauri = { version = "2", features = ["unstable", "devtools"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

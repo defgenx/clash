@@ -55,10 +55,12 @@ const ICONS = {
   zap: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
   kebab: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
   plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+  minus: '<line x1="5" y1="12" x2="19" y2="12"/>',
   "arrow-left": '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
   "arrow-right": '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
   reload: '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>',
   "external-link": '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>',
+  copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   columns: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/>',
   square: '<rect x="3" y="3" width="18" height="18" rx="2"/>',
   terminal: '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>',
@@ -954,11 +956,19 @@ function tabContextMenu(ev, sid) {
   if (entry && entry.kind === "browser") {
     showContextMenu(ev.clientX, ev.clientY, [
       { label: "Rename tab…", icon: "pencil", action: () => renameTabDialog(sid) },
+      { label: "Copy URL", icon: "copy", action: () => navigator.clipboard?.writeText(entry.url).catch(() => {}) },
       {
         label: "Open in system browser",
         icon: "external-link",
         action: () => invoke("open_external", { url: entry.url }).catch(console.error),
       },
+      null,
+      { label: "Zoom in", icon: "plus", hint: "⌘+", action: () => browserZoom(entry, 0.1) },
+      { label: "Zoom out", icon: "minus", hint: "⌘-", action: () => browserZoom(entry, -0.1) },
+      { label: "Reset zoom", icon: "square", hint: "⌘0", action: () => browserZoom(entry, 0) },
+      null,
+      { label: "Open DevTools", icon: "terminal", action: () => invoke("browser_devtools", { tab: entry.tabId }).catch(() => {}) },
+      null,
       { label: "Close tab", icon: "x", hint: "⌘W", action: () => detachSession(sid) },
     ]);
     return;
@@ -2297,6 +2307,54 @@ $("details-btn").onclick = () => {
 };
 $("teams-toggle").onclick = toggleTeams;
 
+// SETTINGS section collapses like TEAMS; the choice persists. Collapsed
+// by default — the footer rows (session count, version) stay visible.
+function toggleSettings(open) {
+  const want = open ?? $("settings-body").classList.contains("hidden");
+  $("settings-body").classList.toggle("hidden", !want);
+  $("settings-caret").textContent = want ? "▾" : "▸";
+  try {
+    localStorage.setItem("clash-settings-open", want ? "1" : "0");
+  } catch (e) {
+    void e;
+  }
+}
+$("settings-toggle").onclick = () => toggleSettings();
+try {
+  if (localStorage.getItem("clash-settings-open") === "1") toggleSettings(true);
+} catch (e) {
+  void e;
+}
+
+// Font-family autocomplete: offer the monospace fonts actually installed
+// (document.fonts.check resolves real families without loading anything).
+// Free typing still works — the datalist only suggests.
+function populateFontOptions() {
+  const candidates = [
+    "SF Mono", "Menlo", "Monaco", "JetBrains Mono", "Fira Code", "Fira Mono",
+    "Hack", "Source Code Pro", "IBM Plex Mono", "Cascadia Code", "Consolas",
+    "Inconsolata", "Ubuntu Mono", "DejaVu Sans Mono", "Roboto Mono",
+    "Iosevka", "Victor Mono", "Geist Mono", "Berkeley Mono", "MesloLGS NF",
+    "Liberation Mono", "PT Mono", "Space Mono", "Noto Sans Mono",
+    "Andale Mono", "Courier New",
+  ];
+  const list = $("font-options");
+  list.innerHTML = "";
+  for (const f of candidates) {
+    let available = false;
+    try {
+      available = document.fonts.check(`12px "${f}"`);
+    } catch (e) {
+      void e;
+    }
+    if (!available) continue;
+    const opt = document.createElement("option");
+    opt.value = f;
+    list.appendChild(opt);
+  }
+}
+populateFontOptions();
+
 document.addEventListener("keydown", (e) => {
   const inInput =
     document.activeElement &&
@@ -2363,8 +2421,40 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.metaKey && e.shiftKey && e.key.toLowerCase() === "b") {
     e.preventDefault();
-    openBrowserTab("https://github.com");
+    openBrowserTab(); // blank tab, address bar focused
     return;
+  }
+  // Browser-pane shortcuts (apply when the focused pane holds a browser
+  // tab; keystrokes inside the native page never reach this handler).
+  {
+    const focusedEntry = state.open.get(ws().panes[ws().focused]);
+    if (focusedEntry?.kind === "browser" && e.metaKey && !e.shiftKey && !e.altKey) {
+      if (e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        focusedEntry.urlInput?.focus();
+        return;
+      }
+      if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        browserZoom(focusedEntry, 0.1);
+        return;
+      }
+      if (e.key === "-") {
+        e.preventDefault();
+        browserZoom(focusedEntry, -0.1);
+        return;
+      }
+      if (e.key === "0") {
+        e.preventDefault();
+        browserZoom(focusedEntry, 0);
+        return;
+      }
+      if (e.key.toLowerCase() === "r") {
+        e.preventDefault();
+        invoke("browser_reload", { tab: focusedEntry.tabId }).catch(() => {});
+        return;
+      }
+    }
   }
   if (e.metaKey && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
     e.preventDefault();
@@ -2417,8 +2507,39 @@ function hostnameOf(url) {
   }
 }
 
-/// Per-pane chrome strip (back/forward/reload/URL/open-external) above
-/// the .b-slot div the native webview covers.
+/// Address-bar input → navigable URL. Explicit schemes pass through,
+/// host-looking strings get https:// (http:// for localhost), anything
+/// else becomes a web search.
+function normalizeBrowserInput(raw) {
+  const s = raw.trim();
+  if (!s) return null;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(s)) return s; // explicit scheme
+  if (s === "localhost" || /^localhost[:/]/.test(s)) return "http://" + s;
+  if (/^(\d{1,3}\.){3}\d{1,3}(:\d+)?(\/|$)/.test(s)) return "http://" + s;
+  if (!/\s/.test(s) && /^[\w-]+(\.[\w-]+)+/.test(s)) return "https://" + s;
+  return "https://duckduckgo.com/?q=" + encodeURIComponent(s);
+}
+
+function browserNavigate(entry, url) {
+  entry.url = url;
+  if (!entry.renamed) entry.name = hostnameOf(url);
+  renderTabs();
+  saveWorkspaces();
+  if (entry.created) {
+    invoke("browser_navigate", { tab: entry.tabId, url }).catch((err) =>
+      uiAlert(`Navigate failed: ${err}`),
+    );
+  }
+}
+
+function browserZoom(entry, delta) {
+  entry.zoom = delta === 0 ? 1 : Math.min(5, Math.max(0.25, (entry.zoom || 1) + delta));
+  invoke("browser_set_zoom", { tab: entry.tabId, factor: entry.zoom }).catch(() => {});
+}
+
+/// Per-pane chrome strip — back/forward, reload⇄stop, address bar
+/// (URL or search), copy-URL, open-external — above the .b-slot div
+/// the native webview covers.
 function buildBrowserPaneEl(entry) {
   const el = document.createElement("div");
   el.className = "browser-pane";
@@ -2445,6 +2566,7 @@ function buildBrowserPaneEl(entry) {
     b.innerHTML = svgIcon(icon);
     b.onclick = fn;
     chrome.appendChild(b);
+    return b;
   };
   btn("arrow-left", "Back", () =>
     invoke("browser_history", { tab: entry.tabId, delta: -1 }).catch(() => {}),
@@ -2452,32 +2574,42 @@ function buildBrowserPaneEl(entry) {
   btn("arrow-right", "Forward", () =>
     invoke("browser_history", { tab: entry.tabId, delta: 1 }).catch(() => {}),
   );
-  btn("reload", "Reload", () =>
-    invoke("browser_reload", { tab: entry.tabId }).catch(() => {}),
-  );
+  const navBtn = btn("reload", "Reload", () => {
+    if (entry.loading) invoke("browser_stop", { tab: entry.tabId }).catch(() => {});
+    else invoke("browser_reload", { tab: entry.tabId }).catch(() => {});
+  });
+  // Reload ⇄ Stop, driven by browser-nav page-load events.
+  entry.setNavState = () => {
+    navBtn.innerHTML = svgIcon(entry.loading ? "x" : "reload");
+    navBtn.title = entry.loading ? "Stop" : "Reload";
+    navBtn.classList.toggle("loading", !!entry.loading);
+  };
 
   const urlInput = document.createElement("input");
   urlInput.type = "text";
   urlInput.className = "b-url";
   urlInput.spellcheck = false;
-  urlInput.value = entry.url;
+  urlInput.placeholder = "Search or enter address";
+  urlInput.value = entry.url === "about:blank" ? "" : entry.url;
+  urlInput.addEventListener("focus", () => urlInput.select());
   urlInput.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      urlInput.value = entry.url === "about:blank" ? "" : entry.url;
+      urlInput.blur();
+      return;
+    }
     if (e.key !== "Enter") return;
-    let url = urlInput.value.trim();
+    const url = normalizeBrowserInput(urlInput.value);
     if (!url) return;
-    if (!/^https?:\/\//.test(url)) url = "https://" + url;
-    entry.url = url;
-    if (!entry.renamed) entry.name = hostnameOf(url);
-    renderTabs();
-    saveWorkspaces();
-    invoke("browser_navigate", { tab: entry.tabId, url }).catch((err) =>
-      uiAlert(`Navigate failed: ${err}`),
-    );
+    browserNavigate(entry, url);
     urlInput.blur();
   });
   chrome.appendChild(urlInput);
   entry.urlInput = urlInput;
 
+  btn("copy", "Copy URL", () => {
+    navigator.clipboard?.writeText(entry.url).catch(() => {});
+  });
   btn("external-link", "Open in system browser", () =>
     invoke("open_external", { url: entry.url }).catch(console.error),
   );
@@ -2499,26 +2631,34 @@ function makeBrowserEntry(id, url, name, renamed) {
     id,
     tabId: id.slice("browser-".length),
     url,
-    name: name || hostnameOf(url),
+    name: name || (url === "about:blank" ? "New tab" : hostnameOf(url)),
     renamed: !!renamed,
     created: false,
     creating: false,
+    loading: false,
+    zoom: 1,
     el: null,
     slot: null,
     urlInput: null,
+    setNavState: null,
   };
   entry.el = buildBrowserPaneEl(entry);
   return entry;
 }
 
 /// Open `url` as a first-class tab in the active workspace. Reuses an
-/// existing tab showing the same URL instead of duplicating it.
+/// existing tab showing the same URL instead of duplicating it. Without
+/// a URL, opens a blank tab with the address bar focused (browser-like).
 function openBrowserTab(url) {
+  const blank = !url;
+  if (blank) url = "about:blank";
   const w = ws();
-  for (const [id, entry] of state.open) {
-    if (entry.kind === "browser" && entry.url === url && w.sessions.includes(id)) {
-      assignToFocusedPane(id);
-      return;
+  if (!blank) {
+    for (const [id, entry] of state.open) {
+      if (entry.kind === "browser" && entry.url === url && w.sessions.includes(id)) {
+        assignToFocusedPane(id);
+        return;
+      }
     }
   }
   const id = "browser-" + browserNextTabId++;
@@ -2528,6 +2668,7 @@ function openBrowserTab(url) {
   assignToFocusedPane(id);
   saveWorkspaces();
   if (!browserUrlPoll) browserUrlPoll = setInterval(syncBrowserUrls, 1500);
+  if (blank) setTimeout(() => entry.urlInput?.focus(), 50);
 }
 
 /// Recreate persisted browser tabs (entries only — webviews are lazy).
@@ -2570,6 +2711,9 @@ function syncBrowserWebviews() {
         invoke("browser_open", { tab: entry.tabId, url: entry.url, ...rect })
           .then(() => {
             entry.created = true;
+            if (entry.zoom && entry.zoom !== 1) {
+              invoke("browser_set_zoom", { tab: entry.tabId, factor: entry.zoom }).catch(() => {});
+            }
           })
           .catch((e) => console.error("browser_open failed:", e))
           .finally(() => {
@@ -2611,13 +2755,36 @@ async function syncBrowserUrls() {
         saveWorkspaces();
       }
       if (entry.urlInput && document.activeElement !== entry.urlInput) {
-        entry.urlInput.value = entry.url;
+        entry.urlInput.value = entry.url === "about:blank" ? "" : entry.url;
       }
     } catch (e) {
       void e;
     }
   }
 }
+
+// Page-load lifecycle from the backend — spinner/stop state, plus
+// instant URL-bar and tab-label updates (the poll only covers SPAs).
+listen("browser-nav", (event) => {
+  const { tab, event: phase, url } = event.payload;
+  for (const entry of state.open.values()) {
+    if (entry.kind !== "browser" || entry.tabId !== tab) continue;
+    entry.loading = phase === "started";
+    if (url && url !== entry.url) {
+      entry.url = url;
+      if (!entry.renamed) {
+        entry.name = url === "about:blank" ? "New tab" : hostnameOf(url);
+      }
+      renderTabs();
+      saveWorkspaces();
+    }
+    if (entry.urlInput && document.activeElement !== entry.urlInput) {
+      entry.urlInput.value = entry.url === "about:blank" ? "" : entry.url;
+    }
+    entry.setNavState?.();
+    break;
+  }
+});
 
 // Pane-area geometry changes that bypass renderPanes (details panel
 // open/close, sidebar drag) still move the slots — observe the host.
@@ -2878,7 +3045,7 @@ function showNewTabMenu(x, y) {
       label: "New browser tab",
       icon: "external-link",
       hint: "⌘⇧B",
-      action: () => openBrowserTab("https://github.com"),
+      action: () => openBrowserTab(),
     },
     null,
     {

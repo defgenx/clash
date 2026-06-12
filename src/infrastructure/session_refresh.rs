@@ -34,6 +34,12 @@ use crate::infrastructure::hooks::registry::ClashSession;
 /// incoming list before it is removed from the displayed list.
 pub const MISSING_STREAK_THRESHOLD: u8 = 3;
 
+/// How long a hook "idle" status file outranks a LIVE daemon PTY. Long
+/// enough to suppress the status flicker while a stash kill is in flight;
+/// short enough that a stale idle file (resume without a hook firing)
+/// cannot pin a running session to STASHED.
+pub const HOOK_IDLE_GRACE_SECS: u64 = 10;
+
 // ── Input ────────────────────────────────────────────────────────
 
 /// All data needed to build the session list, gathered via IO.
@@ -567,9 +573,25 @@ fn overlay_daemon_sessions(
         if info.session_id.starts_with(SHELL_TERMINAL_ID_PREFIX) {
             continue;
         }
+        // Hook-idle is trusted while the PTY is dead, and for a short
+        // grace window while it is alive (stash kill in flight — the
+        // daemon may still list the dying session for a tick). A STALE
+        // idle file must not outrank a live PTY: after a stash → resume
+        // where no lifecycle hook has fired yet (hooks missing for the
+        // project, /clear, write race), the session would otherwise show
+        // STASHED forever despite running.
         let hook_says_idle = hook_statuses
             .get(&info.session_id)
-            .is_some_and(|(s, _)| matches!(s, SessionStatus::Stashed));
+            .is_some_and(|(s, mtime)| {
+                matches!(s, SessionStatus::Stashed)
+                    && (!info.is_alive
+                        || mtime.is_some_and(|m| {
+                            SystemTime::now()
+                                .duration_since(m)
+                                .map(|d| d.as_secs() < HOOK_IDLE_GRACE_SECS)
+                                .unwrap_or(true)
+                        }))
+            });
 
         let mut status = info
             .status
@@ -1056,6 +1078,74 @@ mod tests {
             "shell terminal leaked into the session list: {:?}",
             sessions.iter().map(|s| &s.id).collect::<Vec<_>>()
         );
+    }
+
+    // ── Stale hook-idle vs live PTY ──────────────────────────────
+
+    #[test]
+    fn test_stale_idle_hook_file_does_not_pin_running_session_to_stashed() {
+        // Stash → resume where no lifecycle hook fired afterwards: the
+        // status file still says idle, but the daemon has a live PTY.
+        // The live PTY must win — the session is running, not stashed.
+        let previous = Vec::new();
+        let mut input = empty_input(&previous);
+        input.disk_sessions = vec![make_disk_session("s1", "proj", "work")];
+        input.registry.insert(
+            "s1".to_string(),
+            make_registry_entry("s1", "my-session", "/home/user/proj"),
+        );
+        let stale = SystemTime::now() - std::time::Duration::from_secs(HOOK_IDLE_GRACE_SECS + 50);
+        input
+            .hook_statuses
+            .insert("s1".to_string(), (SessionStatus::Stashed, Some(stale)));
+        input.daemon_infos = Some(vec![make_daemon_info(
+            "s1",
+            "/home/user/proj",
+            "running",
+            true,
+        )]);
+
+        let sessions = build_session_list(&input);
+        let s = sessions.iter().find(|s| s.id == "s1").expect("s1 present");
+        assert_eq!(
+            s.status,
+            SessionStatus::Running,
+            "live PTY must override stale idle file"
+        );
+        assert!(s.is_running);
+    }
+
+    #[test]
+    fn test_fresh_idle_hook_file_suppresses_dying_pty_flicker() {
+        // Stash in flight: idle file just written, daemon still lists the
+        // dying session as alive for a tick — idle must dominate so the
+        // UI doesn't flicker back to RUNNING.
+        let previous = Vec::new();
+        let mut input = empty_input(&previous);
+        input.disk_sessions = vec![make_disk_session("s1", "proj", "work")];
+        input.registry.insert(
+            "s1".to_string(),
+            make_registry_entry("s1", "my-session", "/home/user/proj"),
+        );
+        input.hook_statuses.insert(
+            "s1".to_string(),
+            (SessionStatus::Stashed, Some(SystemTime::now())),
+        );
+        input.daemon_infos = Some(vec![make_daemon_info(
+            "s1",
+            "/home/user/proj",
+            "running",
+            true,
+        )]);
+
+        let sessions = build_session_list(&input);
+        let s = sessions.iter().find(|s| s.id == "s1").expect("s1 present");
+        assert_eq!(
+            s.status,
+            SessionStatus::Stashed,
+            "fresh idle file must suppress the dying PTY"
+        );
+        assert!(!s.is_running);
     }
 
     // ── is_status_dominated truth table ──────────────────────────

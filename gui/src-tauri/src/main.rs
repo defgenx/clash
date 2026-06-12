@@ -1476,11 +1476,31 @@ async fn browser_open(
     // add_child must run on the main thread on macOS.
     let win2 = win.clone();
     let label = browser_tab_label(&tab);
+    let app2 = app.clone();
+    let tab2 = tab.clone();
     let (tx, rx) = tokio::sync::oneshot::channel();
     win.run_on_main_thread(move || {
+        // Navigation lifecycle → frontend (spinner, stop button, URL bar,
+        // tab label) without polling lag.
+        let builder =
+            tauri::webview::WebviewBuilder::new(label, tauri::WebviewUrl::External(parsed))
+                .on_page_load(move |_wv, payload| {
+                    let event = match payload.event() {
+                        tauri::webview::PageLoadEvent::Started => "started",
+                        tauri::webview::PageLoadEvent::Finished => "finished",
+                    };
+                    let _ = app2.emit(
+                        "browser-nav",
+                        serde_json::json!({
+                            "tab": tab2,
+                            "event": event,
+                            "url": payload.url().to_string(),
+                        }),
+                    );
+                });
         let res = win2
             .add_child(
-                tauri::webview::WebviewBuilder::new(label, tauri::WebviewUrl::External(parsed)),
+                builder,
                 tauri::LogicalPosition::new(x, y),
                 tauri::LogicalSize::new(w, h),
             )
@@ -1520,6 +1540,31 @@ fn browser_set_visible(app: tauri::AppHandle, tab: String, visible: bool) -> Res
     } else {
         wv.hide().map_err(|e| e.to_string())
     }
+}
+
+/// Page zoom (1.0 = 100%).
+#[tauri::command]
+fn browser_set_zoom(app: tauri::AppHandle, tab: String, factor: f64) -> Result<(), String> {
+    let wv = browser_tab(&app, &tab).ok_or("no such tab")?;
+    wv.set_zoom(factor.clamp(0.25, 5.0))
+        .map_err(|e| e.to_string())
+}
+
+/// Stop loading the current page.
+#[tauri::command]
+fn browser_stop(app: tauri::AppHandle, tab: String) -> Result<(), String> {
+    browser_tab(&app, &tab)
+        .ok_or("no such tab")?
+        .eval("window.stop()")
+        .map_err(|e| e.to_string())
+}
+
+/// Open the native DevTools window for the tab's page.
+#[tauri::command]
+fn browser_devtools(app: tauri::AppHandle, tab: String) -> Result<(), String> {
+    let wv = browser_tab(&app, &tab).ok_or("no such tab")?;
+    wv.open_devtools();
+    Ok(())
 }
 
 #[tauri::command]
@@ -1794,6 +1839,9 @@ fn main() {
             browser_open,
             browser_set_bounds,
             browser_set_visible,
+            browser_set_zoom,
+            browser_stop,
+            browser_devtools,
             browser_navigate,
             browser_history,
             browser_reload,
