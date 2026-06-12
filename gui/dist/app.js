@@ -853,7 +853,12 @@ async function massKill(ids, what) {
 
 function hideContextMenu() {
   const menu = $("context-menu");
-  if (menu) menu.remove();
+  if (menu) {
+    menu.remove();
+    // Restore browser webviews hidden while the menu was up (they are
+    // native views that would otherwise paint over the menu).
+    fitAll();
+  }
 }
 
 /// items: [{ label, action, danger? }] — null entries become separators.
@@ -901,6 +906,9 @@ function showContextMenu(x, y, items) {
   const r = menu.getBoundingClientRect();
   menu.style.left = `${Math.min(x, window.innerWidth - r.width - 4)}px`;
   menu.style.top = `${Math.min(y, window.innerHeight - r.height - 4)}px`;
+  // Native browser webviews paint over all DOM — drop them while the
+  // menu is open so it stays visible; hideContextMenu restores them.
+  hideBrowserWebviews();
 }
 
 document.addEventListener("click", hideContextMenu);

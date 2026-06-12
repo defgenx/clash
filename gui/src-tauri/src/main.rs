@@ -1452,6 +1452,62 @@ fn set_browser_bounds(wv: &tauri::Webview, x: f64, y: f64, w: f64, h: f64) {
     let _ = wv.set_size(tauri::LogicalSize::new(w, h));
 }
 
+/// Offset between the frontend's coordinate space (the main webview's
+/// DOM viewport, where pane slot rects are measured) and the space wry
+/// positions child webviews in (the window's content view). Two parts:
+/// the main webview's frame inset inside the content view, plus its
+/// safe-area inset — the window uses a full-size content view, so in
+/// windowed mode WKWebView pushes the page content down by the title-bar
+/// height (~32px) while the view itself still spans the full window.
+/// A child webview placed with raw DOM coordinates therefore lands a
+/// title-bar height too high, covering the browser pane's chrome strip
+/// (address bar + nav buttons). Fullscreen has no title bar and no
+/// inset. Measured live so windowed⇄fullscreen transitions re-sync
+/// correctly (the frontend re-reports bounds on every resize).
+async fn browser_coord_offset(app: &tauri::AppHandle) -> (f64, f64) {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(main) = app.get_webview("main") else {
+            tracing::warn!("browser_coord_offset: no main webview");
+            return (0.0, 0.0);
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let sent = main.with_webview(move |pw| {
+            use objc2::runtime::AnyObject;
+            let offset = unsafe {
+                let wk: *mut AnyObject = pw.inner().cast();
+                let superview: *mut AnyObject = objc2::msg_send![wk, superview];
+                if superview.is_null() {
+                    tracing::warn!("browser_coord_offset: main webview has no superview");
+                    (0.0, 0.0)
+                } else {
+                    let mf: objc2_foundation::NSRect = objc2::msg_send![wk, frame];
+                    let flipped: bool = objc2::msg_send![superview, isFlipped];
+                    let top = if flipped {
+                        mf.origin.y
+                    } else {
+                        let sf: objc2_foundation::NSRect = objc2::msg_send![superview, frame];
+                        sf.size.height - (mf.origin.y + mf.size.height)
+                    };
+                    let insets: objc2_foundation::NSEdgeInsets =
+                        objc2::msg_send![wk, safeAreaInsets];
+                    (mf.origin.x + insets.left, top + insets.top)
+                }
+            };
+            let _ = tx.send(offset);
+        });
+        if sent.is_err() {
+            return (0.0, 0.0);
+        }
+        rx.await.unwrap_or((0.0, 0.0))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        (0.0, 0.0)
+    }
+}
+
 /// Open (or navigate) the browser tab's child webview, positioned over
 /// the tab's pane slot rect reported by the frontend. Visibility of other
 /// tabs is the frontend's responsibility (tabs can live in different panes).
@@ -1466,6 +1522,8 @@ async fn browser_open(
     h: f64,
 ) -> Result<(), String> {
     let parsed: tauri::Url = url.parse().map_err(|e| format!("bad url: {}", e))?;
+    let (dx, dy) = browser_coord_offset(&app).await;
+    let (x, y) = (x + dx, y + dy);
     if let Some(wv) = browser_tab(&app, &tab) {
         tracing::info!(%tab, %url, "browser_open: navigating existing webview");
         wv.navigate(parsed).map_err(|e| e.to_string())?;
@@ -1524,7 +1582,7 @@ async fn browser_open(
 
 /// Per-tab bounds — each browser tab can live in a different pane.
 #[tauri::command]
-fn browser_set_bounds(
+async fn browser_set_bounds(
     app: tauri::AppHandle,
     tab: String,
     x: f64,
@@ -1532,8 +1590,9 @@ fn browser_set_bounds(
     w: f64,
     h: f64,
 ) -> Result<(), String> {
+    let (dx, dy) = browser_coord_offset(&app).await;
     let wv = browser_tab(&app, &tab).ok_or("no such tab")?;
-    set_browser_bounds(&wv, x, y, w, h);
+    set_browser_bounds(&wv, x + dx, y + dy, w, h);
     Ok(())
 }
 
