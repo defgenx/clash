@@ -57,33 +57,10 @@ async fn main() -> Result<()> {
     // (no ~/.local/bin → `claude` spawns fail) in app-bundle launches.
     infrastructure::env_path::adopt_login_shell_path();
 
-    let log_dir = dirs::data_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("clash");
-    std::fs::create_dir_all(&log_dir)?;
-
-    // Rotate stale log file. Default: 24h. Override with CLASH_LOG_RETENTION_HOURS.
-    let log_path = log_dir.join("clash.log");
-    let retention_hours: u64 = std::env::var("CLASH_LOG_RETENTION_HOURS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(24);
-    if let Ok(meta) = std::fs::metadata(&log_path) {
-        if let Ok(modified) = meta.modified() {
-            if modified.elapsed().unwrap_or_default()
-                > std::time::Duration::from_secs(retention_hours * 3600)
-            {
-                let _ = std::fs::remove_file(&log_path);
-            }
-        }
-    }
-
     let args = Args::parse();
 
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
+    let log_file = infrastructure::logging::open_log_file()
+        .ok_or_else(|| color_eyre::eyre::eyre!("cannot open clash.log"))?;
     let max_level = if args.debug {
         tracing::Level::DEBUG
     } else {

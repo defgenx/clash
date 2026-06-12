@@ -7,6 +7,7 @@ pub mod event;
 pub mod fs;
 pub mod hooks;
 pub mod ide;
+pub mod logging;
 pub mod process_scan;
 pub mod session_refresh;
 pub mod tui;

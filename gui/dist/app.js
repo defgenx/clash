@@ -2493,6 +2493,15 @@ window.addEventListener("resize", fitAll);
 
 let browserNextTabId = 1; // monotonic: webview labels are never reused
 let browserUrlPoll = null;
+
+/// Forward frontend diagnostics to clash.log (the webview console is
+/// invisible in release builds). Uncaught errors and unhandled promise
+/// rejections always go through here.
+function dlog(...a) {
+  invoke("gui_log", { msg: a.map((x) => (typeof x === "object" ? JSON.stringify(x) : String(x))).join(" ") }).catch(() => {});
+}
+window.addEventListener("error", (e) => dlog("uncaught error:", e.message, e.filename + ":" + e.lineno));
+window.addEventListener("unhandledrejection", (e) => dlog("unhandled rejection:", e.reason && e.reason.stack ? e.reason.stack : e.reason));
 let pendingBrowserTabs = []; // persisted tabs awaiting restore at boot
 
 function isBrowserTab(id) {
@@ -2701,8 +2710,14 @@ function syncBrowserWebviews() {
   );
   for (const [id, entry] of state.open) {
     if (entry.kind !== "browser") continue;
+    // Pre-creation states are the diagnostic gold: why a webview did or
+    // didn't materialize. Quiet once created (set_bounds churn is noise).
+    if (!entry.created)
+      dlog("browser sync:", id, "visible=" + visible.has(id), "connected=" + !!(entry.slot && entry.slot.isConnected), "creating=" + entry.creating);
     if (visible.has(id) && entry.slot && entry.slot.isConnected) {
       const r = entry.slot.getBoundingClientRect();
+      if (!entry.created)
+        dlog("browser sync rect:", id, JSON.stringify({ x: r.x, y: r.y, w: r.width, h: r.height }));
       if (r.width <= 0 || r.height <= 0) continue; // layout not settled yet
       const rect = { x: r.x, y: r.y, w: r.width, h: r.height };
       if (!entry.created) {
@@ -2715,7 +2730,7 @@ function syncBrowserWebviews() {
               invoke("browser_set_zoom", { tab: entry.tabId, factor: entry.zoom }).catch(() => {});
             }
           })
-          .catch((e) => console.error("browser_open failed:", e))
+          .catch((e) => dlog("browser_open failed:", entry.tabId, e))
           .finally(() => {
             entry.creating = false;
           });

@@ -1467,11 +1467,13 @@ async fn browser_open(
 ) -> Result<(), String> {
     let parsed: tauri::Url = url.parse().map_err(|e| format!("bad url: {}", e))?;
     if let Some(wv) = browser_tab(&app, &tab) {
+        tracing::info!(%tab, %url, "browser_open: navigating existing webview");
         wv.navigate(parsed).map_err(|e| e.to_string())?;
         set_browser_bounds(&wv, x, y, w, h);
         let _ = wv.show();
         return Ok(());
     }
+    tracing::info!(%tab, %url, x, y, w, h, "browser_open: creating child webview");
     let win = app.get_window("main").ok_or("no main window")?;
     // add_child must run on the main thread on macOS.
     let win2 = win.clone();
@@ -1489,6 +1491,7 @@ async fn browser_open(
                         tauri::webview::PageLoadEvent::Started => "started",
                         tauri::webview::PageLoadEvent::Finished => "finished",
                     };
+                    tracing::info!(tab = %tab2, event, url = %payload.url(), "browser page load");
                     let _ = app2.emit(
                         "browser-nav",
                         serde_json::json!({
@@ -1506,6 +1509,9 @@ async fn browser_open(
             )
             .map(|_| ())
             .map_err(|e| e.to_string());
+        if let Err(e) = &res {
+            tracing::warn!(error = %e, "browser_open: add_child failed");
+        }
         let _ = tx.send(res);
     })
     .map_err(|e| e.to_string())?;
@@ -1634,6 +1640,14 @@ fn browser_close_tab(app: tauri::AppHandle, tab: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Frontend log bridge — the main webview's console is invisible in
+/// release builds; frontend errors and browser-tab lifecycle events are
+/// forwarded here so they land in clash.log.
+#[tauri::command]
+fn gui_log(msg: String) {
+    tracing::info!(%msg, "frontend");
+}
+
 /// Open a URL in the system default browser.
 #[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
@@ -1685,9 +1699,19 @@ fn quit_stash(state: &GuiState) {
 }
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
+    // Same clash.log as the TUI — Finder/Dock launches have no usable
+    // stderr, so file logging is the only trail for GUI sessions.
+    match clash::infrastructure::logging::open_log_file() {
+        Some(log_file) => tracing_subscriber::fmt()
+            .with_writer(log_file)
+            .with_ansi(false)
+            .with_target(false)
+            .with_max_level(tracing::Level::INFO)
+            .init(),
+        None => tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .init(),
+    }
 
     // Launched from Finder/Dock the app gets launchd's minimal PATH —
     // without this, `claude` can't be found and session spawns fail.
@@ -1874,6 +1898,7 @@ fn main() {
             browser_reload,
             browser_get_url,
             browser_close_tab,
+            gui_log,
             open_external,
             save_gui_state,
             load_gui_state
