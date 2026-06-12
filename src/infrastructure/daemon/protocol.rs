@@ -7,6 +7,12 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Serde default for `CreateSession::raw_startup` — preserves the original
+/// raw-mode-at-startup behavior when a field-less request is deserialized.
+fn default_true() -> bool {
+    true
+}
+
 // ── Client → Daemon requests ─────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +43,12 @@ pub enum Request {
         /// Additional environment variables to set in the spawned process.
         #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         env_vars: HashMap<String, String>,
+        /// Put the PTY into raw mode at startup. True for TUI apps (Claude)
+        /// that set their own termios; false for interactive shells, which
+        /// need the default cooked termios so Ctrl+C/ISIG and OPOST work.
+        /// Defaults to true for backward compatibility with older clients.
+        #[serde(default = "default_true")]
+        raw_startup: bool,
     },
 
     /// Attach to an existing session (start receiving output).

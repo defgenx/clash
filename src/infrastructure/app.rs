@@ -964,6 +964,7 @@ impl App {
                 size.width,
                 size.height,
                 HashMap::new(),
+                true, // TUI: Claude sets its own termios
             )
             .await;
     }
@@ -1453,6 +1454,7 @@ impl App {
                             cols,
                             rows,
                             HashMap::new(),
+                            true, // TUI: Claude sets its own termios
                         )
                         .await
                     {
@@ -1546,6 +1548,7 @@ impl App {
                             cols,
                             rows,
                             HashMap::new(),
+                            true, // TUI: Claude sets its own termios
                         )
                         .await
                     {
@@ -1773,6 +1776,7 @@ impl App {
                                     size.width,
                                     size.height,
                                     HashMap::new(),
+                                    true, // TUI: Claude sets its own termios
                                 )
                                 .await
                             {

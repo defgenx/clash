@@ -57,6 +57,15 @@ pub struct PtySession {
 
 impl PtySession {
     /// Spawn a new PTY session.
+    ///
+    /// `raw_startup` selects the slave PTY's line discipline at exec time:
+    /// - `true` for TUI apps (Claude) that immediately set their own termios
+    ///   — see the raw-mode comment below.
+    /// - `false` for interactive shells, which adopt the startup termios as
+    ///   the baseline they restore when running foreground commands. A shell
+    ///   started on a raw PTY runs every command with ISIG/OPOST off, so
+    ///   Ctrl+C/Ctrl+Z send no signal and output staircases. Leaving the
+    ///   default cooked termios is what a real terminal window provides.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         session_id: String,
@@ -67,6 +76,7 @@ impl PtySession {
         cols: u16,
         rows: u16,
         env_vars: &HashMap<String, String>,
+        raw_startup: bool,
     ) -> std::io::Result<Self> {
         let pty = openpty(None, None).map_err(std::io::Error::other)?;
 
@@ -80,9 +90,15 @@ impl PtySession {
         // Enter (breaking arrow-key/word-nav in Claude's input widget).
         // Claude resets termios to its own liking later; this only closes
         // the racy cooked-mode window at startup.
-        let mut tio = tcgetattr(&pty.slave).map_err(std::io::Error::other)?;
-        cfmakeraw(&mut tio);
-        tcsetattr(&pty.slave, SetArg::TCSANOW, &tio).map_err(std::io::Error::other)?;
+        //
+        // Shells (raw_startup = false) must NOT get this: they keep the
+        // default cooked termios as their baseline, so foreground commands
+        // run with ISIG (Ctrl+C/Ctrl+Z) and OPOST (\n → \r\n) intact.
+        if raw_startup {
+            let mut tio = tcgetattr(&pty.slave).map_err(std::io::Error::other)?;
+            cfmakeraw(&mut tio);
+            tcsetattr(&pty.slave, SetArg::TCSANOW, &tio).map_err(std::io::Error::other)?;
+        }
 
         // Set terminal size
         if cols > 0 && rows > 0 {

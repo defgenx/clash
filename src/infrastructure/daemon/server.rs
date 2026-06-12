@@ -210,6 +210,7 @@ async fn handle_client(
                 cols,
                 rows,
                 env_vars,
+                raw_startup,
             } => {
                 let mut map = sessions.lock().await;
                 if map.contains_key(&session_id) {
@@ -239,6 +240,7 @@ async fn handle_client(
                     pty_cols,
                     pty_rows,
                     &env_vars,
+                    raw_startup,
                 ) {
                     Ok(session) => {
                         map.insert(session_id.clone(), session);

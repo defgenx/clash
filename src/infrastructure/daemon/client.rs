@@ -218,6 +218,12 @@ impl DaemonClient {
     }
 
     /// Create a new PTY session on the daemon.
+    ///
+    /// `raw_startup` selects the PTY's startup line discipline (see
+    /// [`crate::infrastructure::daemon::session::PtySession::spawn`]): pass
+    /// `true` for TUI apps like Claude that set their own termios, `false`
+    /// for interactive shells, which need the default cooked termios so
+    /// Ctrl+C/ISIG and OPOST newline translation work in foreground commands.
     #[allow(clippy::too_many_arguments)]
     pub async fn create_session(
         &mut self,
@@ -229,6 +235,7 @@ impl DaemonClient {
         cols: u16,
         rows: u16,
         env_vars: HashMap<String, String>,
+        raw_startup: bool,
     ) -> std::io::Result<()> {
         self.send(&Request::CreateSession {
             session_id: session_id.to_string(),
@@ -239,6 +246,7 @@ impl DaemonClient {
             cols,
             rows,
             env_vars,
+            raw_startup,
         })
         .await?;
         match self.recv_response().await? {

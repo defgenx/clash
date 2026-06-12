@@ -247,6 +247,7 @@ async fn open_session(
                 cols,
                 rows,
                 HashMap::new(),
+                true, // TUI: Claude sets its own termios
             )
             .await
             .map_err(|e| format!("Failed to spawn session: {}", e))?;
@@ -588,6 +589,9 @@ async fn create_terminal(
             cols,
             rows,
             HashMap::new(),
+            // Interactive shell: keep the default cooked termios so Ctrl+C
+            // and friends work — unlike Claude, a shell does not reset it.
+            false,
         )
         .await
         .map_err(|e| format!("Failed to spawn terminal: {}", e))?;
@@ -676,6 +680,7 @@ async fn create_new_session(
             cols,
             rows,
             HashMap::new(),
+            true, // TUI: Claude sets its own termios
         )
         .await
         .map_err(|e| format!("Failed to spawn session: {}", e))?;
@@ -1033,6 +1038,7 @@ async fn create_worktree_session(
             cols,
             rows,
             HashMap::new(),
+            true, // TUI: Claude sets its own termios
         )
         .await
         .map_err(|e| format!("Failed to spawn session: {}", e))?;
@@ -1132,6 +1138,7 @@ async fn takeover_wild(
             cols,
             rows,
             HashMap::new(),
+            true, // TUI: Claude sets its own termios
         )
         .await
         .map_err(|e| format!("Failed to adopt session: {}", e))
