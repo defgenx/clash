@@ -402,6 +402,9 @@ its label or the context menu; Claude renames go through the registry
 (propagating to the TUI and sidebar), the others are display-only.
 `Shift+Enter` inserts a newline in Claude session terminals instead of
 submitting (plain `Enter` still submits; shells are untouched).
+`⌘C` copies the terminal selection and `⌘V` pastes (use `Ctrl+Shift+C`/
+`Ctrl+Shift+V` on Linux); plain `Ctrl+C` still sends an interrupt to the
+running program.
 The tab strip ends in a `+` ghost tab (same menu as the topbar button):
 a terminal per detected shell, a browser tab, or a new Claude session.
 

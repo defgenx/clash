@@ -12,6 +12,10 @@ clash = { path = "../.." }
 # `unstable` enables multiwebview (Window::add_child) for the embedded browser tabs
 # `devtools` exposes open_devtools() for browser tabs in release builds
 tauri = { version = "2", features = ["unstable", "devtools"] }
+# System clipboard for the embedded terminals: WKWebView has no native edit
+# menu and xterm's canvas selection isn't a DOM selection, so navigator.clipboard
+# is unreliable — copy/paste go through this plugin's Rust API instead.
+tauri-plugin-clipboard-manager = "2"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1327,6 +1327,33 @@ async function openSession(sid, label) {
   // With optionMeta on, Alt+letter stays Meta for readline word jumps
   // (⌥B/⌥F); with it off, ⌥ always composes — letters included.
   term.attachCustomKeyEventHandler((e) => {
+    // Copy / paste. WKWebView has no native edit menu and xterm's canvas
+    // selection isn't a DOM selection, so ⌘C/⌘V (macOS) and Ctrl+Shift+C/V
+    // (Linux) never reach the clipboard on their own — handle them here via
+    // the backend clipboard. Plain Ctrl+C (no Shift/Meta) is deliberately
+    // left for xterm to forward to the PTY as SIGINT.
+    const clipMod = e.metaKey || (e.ctrlKey && e.shiftKey);
+    if (e.type === "keydown" && clipMod && (e.key === "c" || e.key === "C")) {
+      // Only intercept when there's a selection to copy; otherwise let the
+      // keystroke through (e.g. bare ⌘C with no selection is a no-op).
+      if (term.hasSelection()) {
+        const sel = term.getSelection();
+        if (sel) invoke("clipboard_write_text", { text: sel }).catch(console.error);
+        e.preventDefault();
+        return false;
+      }
+    }
+    if (e.type === "keydown" && clipMod && (e.key === "v" || e.key === "V")) {
+      // term.paste() respects bracketed-paste mode, so multi-line pastes
+      // don't auto-execute in the shell / Claude's input.
+      invoke("clipboard_read_text")
+        .then((text) => {
+          if (text) term.paste(text);
+        })
+        .catch(console.error);
+      e.preventDefault();
+      return false;
+    }
     // Shift+Enter inserts a newline in Claude sessions instead of
     // submitting. xterm encodes Enter and Shift+Enter identically (\r);
     // Claude Code treats ESC+CR as "insert newline" (the same sequence

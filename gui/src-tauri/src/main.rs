@@ -1731,6 +1731,27 @@ fn open_external(url: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Write text to the system clipboard. Used by the embedded terminals'
+/// ⌘C/Ctrl+Shift+C copy: xterm's canvas selection isn't a DOM selection, so
+/// the webview's native copy can't reach it. Goes through the clipboard
+/// plugin's Rust API, which is reliable where `navigator.clipboard` is not.
+#[tauri::command]
+fn clipboard_write_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    app.clipboard().write_text(text).map_err(|e| e.to_string())
+}
+
+/// Read text from the system clipboard. Used by the embedded terminals'
+/// ⌘V/Ctrl+Shift+V paste; the frontend feeds the result through
+/// `term.paste()` so bracketed-paste mode is honored.
+#[tauri::command]
+fn clipboard_read_text(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    // An empty/non-text clipboard surfaces as an error in the plugin; treat
+    // that as "nothing to paste" rather than propagating a failure.
+    Ok(app.clipboard().read_text().unwrap_or_default())
+}
+
 /// (Re)connect the control client if the connection was lost.
 async fn ensure_connected(client: &mut DaemonClient) {
     if !client.is_connected() {
@@ -1817,6 +1838,7 @@ fn main() {
     .ok();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(state)
         .setup(move |app| {
             if let Some(watcher) = fs_watcher {
@@ -1966,6 +1988,8 @@ fn main() {
             browser_close_tab,
             gui_log,
             open_external,
+            clipboard_write_text,
+            clipboard_read_text,
             save_gui_state,
             load_gui_state
         ])
