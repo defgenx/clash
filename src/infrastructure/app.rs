@@ -948,7 +948,15 @@ impl App {
                 .filter(|c| !c.is_empty())
                 .or_else(|| Some(s.project_path.clone()).filter(|p| !p.is_empty()))
         });
-        let cmd_args = vec!["--resume".to_string(), session_id.to_string()];
+        // Resolve a possibly-stale id forward to the current conversation (the
+        // `/clear` re-key lineage) so we resume the latest, not a pre-`/clear`
+        // snapshot. Identity for a normal, already-current id.
+        let resume_id = crate::infrastructure::hooks::registry::resolve_resume_id(
+            &self.registry_cache.get(),
+            session_id,
+        )
+        .unwrap_or_else(|| session_id.to_string());
+        let cmd_args = vec!["--resume".to_string(), resume_id];
         let size = terminal
             .size()
             .unwrap_or(ratatui::layout::Size::new(120, 40));

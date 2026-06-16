@@ -247,6 +247,21 @@ fn has_resumable_conversation(state: &GuiState, session_id: &str, cwd: &str) -> 
     })
 }
 
+/// Resolve persisted session ids forward to their current conversation id.
+/// Used by the frontend at restore time so a workspace pane saved before a
+/// `/clear` points at the latest conversation (and matches `list_sessions`)
+/// instead of being dropped or resuming a stale snapshot. Unknown ids pass
+/// through unchanged.
+#[tauri::command]
+fn resolve_session_ids(_state: State<'_, GuiState>, ids: Vec<String>) -> Vec<String> {
+    let registry = clash::infrastructure::hooks::registry::load();
+    ids.into_iter()
+        .map(|id| {
+            clash::infrastructure::hooks::registry::resolve_resume_id(&registry, &id).unwrap_or(id)
+        })
+        .collect()
+}
+
 /// Attach to a session, spawning it first if it isn't alive in the daemon.
 /// Output is streamed to the webview as `pty-output` events.
 #[tauri::command]
@@ -280,15 +295,24 @@ async fn open_session(
     if !alive {
         // Resume the recorded Claude session in its working directory.
         let (cwd, name) = resume_context(&state, &session_id);
+        // A persisted id may be stale: after a `/clear` the hook re-keys the
+        // registry to the new conversation id and records the old one in the
+        // lineage. Resolve forward so we resume the LATEST conversation, not a
+        // stale pre-`/clear` snapshot.
+        let resume_id = {
+            let registry = clash::infrastructure::hooks::registry::load();
+            clash::infrastructure::hooks::registry::resolve_resume_id(&registry, &session_id)
+                .unwrap_or_else(|| session_id.clone())
+        };
         // `claude --resume <id>` only works when the conversation transcript
         // exists on disk. A session created with `--session-id` but never
         // messaged (e.g. a fresh tab stashed on quit, then restored) — or a
-        // stale/re-keyed id — has no transcript, so `--resume` makes Claude
-        // exit 1 ("No conversation found") and leaves a dead terminal where
-        // Enter does nothing. In that case start the session FRESH under the
-        // same id so it behaves like a brand-new session.
-        let args = if has_resumable_conversation(&state, &session_id, &cwd) {
-            vec!["--resume".to_string(), session_id.clone()]
+        // stale id with no surviving transcript — has none, so `--resume`
+        // makes Claude exit 1 ("No conversation found") and leaves a dead
+        // terminal where Enter does nothing. In that case start the session
+        // FRESH under the GUI's id so it behaves like a brand-new session.
+        let args = if has_resumable_conversation(&state, &resume_id, &cwd) {
+            vec!["--resume".to_string(), resume_id]
         } else {
             vec!["--session-id".to_string(), session_id.clone()]
         };
@@ -2033,6 +2057,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             list_sessions,
+            resolve_session_ids,
             open_session,
             send_input,
             resize_session,

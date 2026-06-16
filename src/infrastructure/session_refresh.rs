@@ -1024,6 +1024,7 @@ mod tests {
             claude_session_id: session_id.to_string(),
             created_at: String::new(),
             source_branch: None,
+            previous_ids: Vec::new(),
         }
     }
 

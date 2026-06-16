@@ -88,6 +88,12 @@ for k, v in list(reg.items()):
     if v.get('cwd','').rstrip('/') == '$cwd'.rstrip('/'):
         v['claude_session_id'] = '$sid'
         new_entry = dict(v)
+        # Record the old key in the lineage so a stale id persisted elsewhere
+        # (e.g. a GUI workspace pane) resolves forward to this new session.
+        prev = list(new_entry.get('previous_ids') or [])
+        if k not in prev and k != '$sid':
+            prev.append(k)
+        new_entry['previous_ids'] = prev
         del reg[k]
         reg['$sid'] = new_entry
         new_entry['session_id'] = '$sid'

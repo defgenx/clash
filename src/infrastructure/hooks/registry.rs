@@ -60,6 +60,14 @@ pub struct ClashSession {
     /// The original branch a worktree session was created from.
     #[serde(default)]
     pub source_branch: Option<String>,
+    /// Prior Claude session IDs this entry was keyed by before a `/clear`
+    /// re-keyed it (oldest first). The hook appends the old key here so a
+    /// stale id persisted elsewhere (e.g. a GUI workspace pane) can be
+    /// resolved forward to the current `claude_session_id` — see
+    /// [`resolve_resume_id`]. Kept out of display lookups (`find_entry`) so
+    /// the pre-`/clear` transcript stays hidden.
+    #[serde(default)]
+    pub previous_ids: Vec<String>,
 }
 
 /// Path to the session registry file.
@@ -97,6 +105,7 @@ pub fn register(session_id: &str, name: &str, cwd: &str, source_branch: Option<&
             claude_session_id: session_id.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
             source_branch: source_branch.map(|s| s.to_string()),
+            previous_ids: Vec::new(),
         },
     );
     save(&registry);
@@ -112,6 +121,29 @@ pub fn find_entry<'a>(
             .iter()
             .find(|(_, v)| v.claude_session_id == session_id)
     })
+}
+
+/// Resolve a possibly-stale session ID to the Claude session ID that should
+/// actually be resumed. After a `/clear`, the hook re-keys the entry to the
+/// new conversation id and records the old id in `previous_ids`; a caller
+/// holding the old id (e.g. a persisted GUI workspace pane) would otherwise
+/// resume a stale pre-`/clear` transcript. Resolution order: a direct
+/// `find_entry` match (current key / claude_session_id), then a `previous_ids`
+/// lineage match. Returns `None` when the id is unknown to the registry.
+pub fn resolve_resume_id(
+    registry: &HashMap<String, ClashSession>,
+    session_id: &str,
+) -> Option<String> {
+    if let Some((_, entry)) = find_entry(registry, session_id) {
+        if !entry.claude_session_id.is_empty() {
+            return Some(entry.claude_session_id.clone());
+        }
+    }
+    registry
+        .values()
+        .find(|v| v.previous_ids.iter().any(|p| p == session_id))
+        .map(|v| v.claude_session_id.clone())
+        .filter(|s| !s.is_empty())
 }
 
 /// Remove a session from the registry.
@@ -156,6 +188,7 @@ mod tests {
                 claude_session_id: "test-1".to_string(),
                 created_at: String::new(),
                 source_branch: None,
+                previous_ids: Vec::new(),
             },
         );
 
@@ -186,6 +219,7 @@ mod tests {
                 claude_session_id: "test-3".to_string(),
                 created_at: String::new(),
                 source_branch: Some("main".to_string()),
+                previous_ids: Vec::new(),
             },
         );
 
@@ -202,6 +236,7 @@ mod tests {
             claude_session_id: claude_session_id.to_string(),
             created_at: String::new(),
             source_branch: None,
+            previous_ids: Vec::new(),
         }
     }
 
@@ -229,5 +264,35 @@ mod tests {
         let mut reg = HashMap::new();
         reg.insert("sess-1".to_string(), make_session("sess-1", "sess-1"));
         assert!(find_entry(&reg, "unknown").is_none());
+    }
+
+    #[test]
+    fn test_resolve_resume_id_identity_for_known() {
+        let mut reg = HashMap::new();
+        reg.insert("sess-1".to_string(), make_session("sess-1", "sess-1"));
+        assert_eq!(resolve_resume_id(&reg, "sess-1").as_deref(), Some("sess-1"));
+    }
+
+    #[test]
+    fn test_resolve_resume_id_follows_lineage_after_clear() {
+        // After /clear the hook re-keyed orig-id → new-id and recorded the
+        // old id in previous_ids. A stale persisted "orig-id" must resolve
+        // forward to the current conversation "new-id".
+        let mut reg = HashMap::new();
+        let mut entry = make_session("new-id", "new-id");
+        entry.previous_ids = vec!["orig-id".to_string()];
+        reg.insert("new-id".to_string(), entry);
+        assert_eq!(
+            resolve_resume_id(&reg, "orig-id").as_deref(),
+            Some("new-id")
+        );
+        // And the current id still resolves to itself.
+        assert_eq!(resolve_resume_id(&reg, "new-id").as_deref(), Some("new-id"));
+    }
+
+    #[test]
+    fn test_resolve_resume_id_unknown_is_none() {
+        let reg = HashMap::new();
+        assert!(resolve_resume_id(&reg, "nope").is_none());
     }
 }

@@ -270,6 +270,32 @@ async function loadWorkspaces() {
 /// resume (claude --resume) only when first focused/clicked. Sessions that
 /// no longer exist on disk are cleared from their slots.
 async function restoreWorkspaceSessions() {
+  // A pane id saved before a `/clear` is stale — Claude re-keyed the
+  // conversation to a new id. Resolve every saved id forward to its current
+  // conversation id so we match list_sessions (and resume the latest), then
+  // persist the rewrite. Unknown ids pass through unchanged.
+  const saved = [];
+  for (const w of state.workspaces)
+    for (const p of w.panes) if (p && !isBrowserTab(p)) saved.push(p);
+  if (saved.length) {
+    try {
+      const resolved = await invoke("resolve_session_ids", { ids: saved });
+      const remap = new Map();
+      saved.forEach((id, i) => {
+        if (resolved[i] && resolved[i] !== id) remap.set(id, resolved[i]);
+      });
+      if (remap.size) {
+        for (const w of state.workspaces) {
+          w.panes = w.panes.map((p) => (p && remap.get(p)) || p);
+          w.sessions = w.sessions.map((s) => remap.get(s) || s);
+        }
+        saveWorkspaces();
+      }
+    } catch (e) {
+      console.error("resolve_session_ids failed:", e);
+    }
+  }
+
   const byId = new Map(state.sessions.map((s) => [s.id, s]));
   const savedActive = state.activeWs;
   for (let wi = 0; wi < state.workspaces.length; wi++) {
