@@ -227,6 +227,26 @@ fn resume_context(state: &GuiState, session_id: &str) -> (String, Option<String>
     (String::new(), None)
 }
 
+/// True if a resumable Claude conversation transcript exists on disk for this
+/// session. `claude --resume <id>` succeeds only when the `<id>.jsonl` is
+/// present and non-empty; without it Claude exits 1. Checks every plausible
+/// encoded project dir (resolved cwd plus the last-known session's cwd /
+/// project path) to tolerate worktrees and daemon-only sessions.
+fn has_resumable_conversation(state: &GuiState, session_id: &str, cwd: &str) -> bool {
+    let projects = state.backend.projects_dir();
+    let mut dirs = project_dir_candidates(state, "", session_id);
+    if !cwd.is_empty() {
+        let encoded = encoded_project_dir(cwd);
+        if !dirs.contains(&encoded) {
+            dirs.push(encoded);
+        }
+    }
+    dirs.iter().any(|d| {
+        let f = projects.join(d).join(format!("{session_id}.jsonl"));
+        std::fs::metadata(&f).map(|m| m.len() > 0).unwrap_or(false)
+    })
+}
+
 /// Attach to a session, spawning it first if it isn't alive in the daemon.
 /// Output is streamed to the webview as `pty-output` events.
 #[tauri::command]
@@ -260,6 +280,18 @@ async fn open_session(
     if !alive {
         // Resume the recorded Claude session in its working directory.
         let (cwd, name) = resume_context(&state, &session_id);
+        // `claude --resume <id>` only works when the conversation transcript
+        // exists on disk. A session created with `--session-id` but never
+        // messaged (e.g. a fresh tab stashed on quit, then restored) — or a
+        // stale/re-keyed id — has no transcript, so `--resume` makes Claude
+        // exit 1 ("No conversation found") and leaves a dead terminal where
+        // Enter does nothing. In that case start the session FRESH under the
+        // same id so it behaves like a brand-new session.
+        let args = if has_resumable_conversation(&state, &session_id, &cwd) {
+            vec!["--resume".to_string(), session_id.clone()]
+        } else {
+            vec!["--session-id".to_string(), session_id.clone()]
+        };
         // Clear the stale "idle" hook status so the daemon's Starting/Running
         // status can take effect in reconciliation (same as the TUI's resume).
         clash::infrastructure::hooks::write_session_status(
@@ -271,7 +303,7 @@ async fn open_session(
             .create_session(
                 &session_id,
                 &state.claude_bin,
-                &["--resume".to_string(), session_id.clone()],
+                &args,
                 if cwd.is_empty() { None } else { Some(&cwd) },
                 name,
                 cols,
