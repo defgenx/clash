@@ -364,7 +364,13 @@ via the + button or right-click menu; in the details panel click the
 description to edit it, `＋ Add member` to add an agent, and right-click
 a member to change its model or remove it), `⌘K` clears the active
 terminal,
-middle-click detaches a tab, and quit-stash on close. Tabs and panes
+and quit-stash on close. Closing a Claude tab (the `×`, `⌘W`, or
+middle-click) stashes its session — process stopped, conversation kept
+resumable — so closing a tab and stashing from the sidebar are the same
+linked action whichever way you trigger it; use Detach in the tab's
+right-click menu to leave it running in the background instead. On the
+next launch the tabs you had open reappear as stashed and resume
+(`claude --resume`) the moment you click one. Tabs and panes
 follow one rule: the active tab is always the content of the focused
 pane — clicking a tab fills the focused pane, focusing a pane activates
 its tab, and closing a pane keeps its session reachable as a tab. A
@@ -396,7 +402,7 @@ clicking one (or its ⚡ button) takes it over after a confirm — the
 outside process is killed and its conversation (dynamically associated,
 always the latest in that directory) opens attached under clash.
 Right-click a tab for the context menu:
-rename, close (detach), stash, kill, details. Every tab — Claude
+rename, close (stash), detach (keep running), stash, kill, details. Every tab — Claude
 session, shell terminal, browser, or view — renames via double-click on
 its label or the context menu; Claude renames go through the registry
 (propagating to the TUI and sidebar), the others are display-only.
@@ -426,8 +432,11 @@ search terms (DuckDuckGo), copy-URL, and open-in-system-browser. While a
 browser pane is focused: `⌘L` focuses the address bar, `⌘R` reloads,
 `⌘+`/`⌘-`/`⌘0` zoom (also in the tab's right-click menu, next to Open
 DevTools). Close with `⌘W`, middle-click, or the tab `×`.
-Anything "opened in the browser" opens as a new tab: URLs printed in
-any terminal are clickable; listening ports open `localhost:<port>`;
+Links inside a browser page that target a new window (`target="_blank"`,
+`window.open`) open in a new clash browser tab rather than replacing the
+current one. Anything "opened in the browser" opens as a new tab: URLs
+printed in any terminal are clickable; listening ports open
+`localhost:<port>`;
 and when a session's output mentions a GitHub pull request, a green
 `⇄ PR #n` chip appears on the session (and in the tab's right-click
 menu) that opens the PR in-app. Browser tabs persist across restarts

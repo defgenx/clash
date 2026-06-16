@@ -188,6 +188,45 @@ async fn list_sessions(
     Ok(sessions)
 }
 
+/// Working dir + display name for resuming a Claude session with `--resume`.
+/// `claude --resume <id>` only finds the conversation when launched from the
+/// session's original project directory; a wrong or empty cwd surfaces to the
+/// user as "No conversation found with session ID". Resolve defensively, in
+/// order of freshness: the last-known session list, then the hooks registry
+/// (clash-spawned sessions record their cwd there), then a fresh disk scan.
+fn resume_context(state: &GuiState, session_id: &str) -> (String, Option<String>) {
+    let pick = |cwd: Option<String>, project: String| -> Option<String> {
+        cwd.filter(|c| !c.is_empty())
+            .or(Some(project).filter(|p| !p.is_empty()))
+    };
+    {
+        let prev = state.previous.lock().unwrap();
+        if let Some(s) = prev.iter().find(|s| s.id == session_id) {
+            if let Some(cwd) = pick(s.cwd.clone(), s.project_path.clone()) {
+                return (cwd, s.name.clone());
+            }
+        }
+    }
+    let registry = clash::infrastructure::hooks::registry::load();
+    if let Some(entry) = registry.get(session_id) {
+        if !entry.cwd.is_empty() {
+            return (entry.cwd.clone(), Some(entry.name.clone()));
+        }
+    }
+    // Last resort: rebuild the session list straight from disk (no daemon /
+    // wild input — just the on-disk record for this session's project dir).
+    let input = session_refresh::gather_sync_input(&state.backend, &[], registry);
+    if let Some(s) = session_refresh::build_session_list(&input)
+        .iter()
+        .find(|s| s.id == session_id)
+    {
+        if let Some(cwd) = pick(s.cwd.clone(), s.project_path.clone()) {
+            return (cwd, s.name.clone());
+        }
+    }
+    (String::new(), None)
+}
+
 /// Attach to a session, spawning it first if it isn't alive in the daemon.
 /// Output is streamed to the webview as `pty-output` events.
 #[tauri::command]
@@ -220,16 +259,7 @@ async fn open_session(
 
     if !alive {
         // Resume the recorded Claude session in its working directory.
-        let (cwd, name) = {
-            let prev = state.previous.lock().unwrap();
-            let session = prev.iter().find(|s| s.id == session_id);
-            (
-                session
-                    .map(|s| s.cwd.clone().unwrap_or_else(|| s.project_path.clone()))
-                    .unwrap_or_default(),
-                session.and_then(|s| s.name.clone()),
-            )
-        };
+        let (cwd, name) = resume_context(&state, &session_id);
         // Clear the stale "idle" hook status so the daemon's Starting/Running
         // status can take effect in reconciliation (same as the TUI's resume).
         clash::infrastructure::hooks::write_session_status(
@@ -1544,6 +1574,7 @@ async fn browser_open(
     let win2 = win.clone();
     let label = browser_tab_label(&tab);
     let app2 = app.clone();
+    let app3 = app.clone();
     let tab2 = tab.clone();
     let (tx, rx) = tokio::sync::oneshot::channel();
     win.run_on_main_thread(move || {
@@ -1565,6 +1596,14 @@ async fn browser_open(
                             "url": payload.url().to_string(),
                         }),
                     );
+                })
+                // A link that wants a new window/tab (target="_blank",
+                // window.open) opens a new clash browser tab instead of being
+                // swallowed by WKWebView or replacing the current tab.
+                .on_new_window(move |url, _features| {
+                    tracing::info!(%url, "browser: new-window request → new tab");
+                    let _ = app3.emit("browser-open-tab", url.to_string());
+                    tauri::webview::NewWindowResponse::Deny
                 });
         let res = win2
             .add_child(
@@ -1785,6 +1824,31 @@ fn quit_stash(state: &GuiState) {
     });
 }
 
+/// Consume the quit-stash marker written on the previous exit and force the
+/// listed sessions back to "idle". A Claude `Stop` hook firing while the app
+/// tears down can overwrite the quit "idle" status with "waiting"; without
+/// this repair the GUI shows a dead session as active on the next launch and
+/// resuming it fails. Mirrors the TUI's restore_sessions repair
+/// (src/infrastructure/app.rs). The marker is taken (read + deleted) so it
+/// only applies once.
+fn repair_quit_stashed(base_dir: &std::path::Path) {
+    let stashed = clash::infrastructure::hooks::take_quit_stashed();
+    if stashed.is_empty() {
+        return;
+    }
+    let statuses = clash::infrastructure::hooks::read_all_statuses(base_dir);
+    for id in &stashed {
+        let needs_repair = statuses
+            .get(id.as_str())
+            .map(|(s, _)| *s != clash::domain::entities::SessionStatus::Stashed)
+            .unwrap_or(true);
+        if needs_repair {
+            tracing::info!("Repairing quit-stash status for session {}", id);
+            clash::infrastructure::hooks::write_session_status(base_dir, id, "idle");
+        }
+    }
+}
+
 fn main() {
     // Same clash.log as the TUI — Finder/Dock launches have no usable
     // stderr, so file logging is the only trail for GUI sessions.
@@ -1841,6 +1905,9 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(state)
         .setup(move |app| {
+            // Repair any sessions whose quit "idle" status was clobbered by a
+            // dying Claude hook on the previous exit, before the first refresh.
+            repair_quit_stashed(app.state::<GuiState>().backend.base_dir());
             if let Some(watcher) = fs_watcher {
                 // Keep the watcher alive for the app's lifetime.
                 app.manage(Mutex::new(watcher));

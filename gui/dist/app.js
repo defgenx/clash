@@ -265,29 +265,31 @@ async function loadWorkspaces() {
   }
 }
 
-/// Re-attach running sessions referenced by restored workspace panes.
-/// Stashed/dead sessions are cleared from their slots (no surprise resumes).
+/// Restore sessions referenced by saved workspace panes. Running sessions
+/// re-attach immediately; stashed sessions reopen as deferred tabs that
+/// resume (claude --resume) only when first focused/clicked. Sessions that
+/// no longer exist on disk are cleared from their slots.
 async function restoreWorkspaceSessions() {
-  const running = new Set(
-    state.sessions.filter((s) => s.is_running).map((s) => s.id)
-  );
+  const byId = new Map(state.sessions.map((s) => [s.id, s]));
   const savedActive = state.activeWs;
   for (let wi = 0; wi < state.workspaces.length; wi++) {
     const w = state.workspaces[wi];
     for (let pi = 0; pi < w.panes.length; pi++) {
       const sid = w.panes[pi];
       if (!sid) continue;
-      if (isBrowserTab(sid)) continue; // restored separately, never "running"
-      if (!running.has(sid)) {
-        w.panes[pi] = null;
+      if (isBrowserTab(sid)) continue; // restored separately
+      const s = byId.get(sid);
+      if (!s) {
+        w.panes[pi] = null; // gone from disk — drop the empty slot
         continue;
       }
       state.activeWs = wi;
       w.focused = pi;
-      await openSession(sid);
+      await openSession(sid, null, { defer: !s.is_running });
     }
   }
   state.activeWs = savedActive;
+  syncActiveToFocused();
   renderAll();
 }
 
@@ -992,7 +994,12 @@ function tabContextMenu(ev, sid) {
   const pr = state.prUrls.get(sid);
   showContextMenu(ev.clientX, ev.clientY, [
     { label: "Rename session…", icon: "pencil", action: () => renameSessionDialog(sid) },
-    { label: "Close tab (detach)", icon: "x", hint: "⌘W", action: () => detachSession(sid) },
+    { label: "Close tab (stash)", icon: "x", hint: "⌘W", action: () => closeTab(sid) },
+    {
+      label: "Detach (keep running)",
+      icon: "external-link",
+      action: () => detachSession(sid),
+    },
     ...(pr
       ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openBrowserTab(pr) }]
       : []),
@@ -1052,10 +1059,10 @@ function renderTabs() {
     tab.onclick = () => assignToFocusedPane(id);
     tab.oncontextmenu = (ev) => tabContextMenu(ev, id);
     tab.onauxclick = (ev) => {
-      // Middle-click detaches, like browser tabs (session keeps running).
+      // Middle-click closes the tab (Claude → stash), like a browser.
       if (ev.button === 1) {
         ev.preventDefault();
-        detachSession(id);
+        closeTab(id);
       }
     };
 
@@ -1080,11 +1087,11 @@ function renderTabs() {
     close.innerHTML = svgIcon("x", 13);
     close.title =
       entry.kind === "claude"
-        ? "Detach (session keeps running)"
+        ? "Close tab (stash — keeps resumable)"
         : "Close tab";
     close.onclick = (ev) => {
       ev.stopPropagation();
-      detachSession(id);
+      closeTab(id);
     };
 
     tab.appendChild(label);
@@ -1174,7 +1181,12 @@ function fitAll() {
 
 function focusTerm(sid) {
   const entry = state.open.get(sid);
-  if (entry && entry.term) setTimeout(() => entry.term.focus(), 0);
+  if (!entry) return;
+  if (entry.deferred) {
+    resumeDeferred(sid);
+    return;
+  }
+  if (entry.term) setTimeout(() => entry.term.focus(), 0);
 }
 
 /// Invariant enforced across every pane mutation: the active tab IS the
@@ -1285,15 +1297,19 @@ async function adoptWild(s) {
   openSession(s.id);
 }
 
-async function openSession(sid, label) {
+async function openSession(sid, label, opts = {}) {
   // Sessions are workspace-scoped: owned elsewhere → switch there first;
   // unowned → the active workspace claims it.
   const owner = sessionWorkspace(sid);
   if (owner >= 0 && owner !== state.activeWs) switchWorkspace(owner);
   claimSession(sid);
 
+  // `defer`: restore a stashed session as a placeholder tab (no process)
+  // that resumes on first focus — see resumeDeferred / focusTerm.
+  const defer = !!opts.defer;
+
   if (state.open.has(sid)) {
-    assignToFocusedPane(sid);
+    assignToFocusedPane(sid); // focusing a deferred tab resumes it
     return;
   }
 
@@ -1397,23 +1413,36 @@ async function openSession(sid, label) {
     fitAddon,
     el,
     name: label || (s ? displayName(s) : sid.slice(0, 8)),
+    deferred: defer,
   });
 
-  assignToFocusedPane(sid);
+  // Deferred restores keep their saved pane slot and must not steal focus
+  // (focusing would resume them); live opens claim the focused pane.
+  if (!defer) assignToFocusedPane(sid);
   term.open(el);
   fitAddon.fit();
 
-  try {
-    await invoke("open_session", {
-      sessionId: sid,
-      cols: term.cols,
-      rows: term.rows,
-    });
-  } catch (e) {
-    term.writeln(`\x1b[31mFailed to open session: ${e}\x1b[0m`);
+  if (defer) {
+    term.writeln("\x1b[90m○ stashed — click to resume\x1b[0m");
+  } else {
+    try {
+      await invoke("open_session", {
+        sessionId: sid,
+        cols: term.cols,
+        rows: term.rows,
+      });
+    } catch (e) {
+      term.writeln(`\x1b[31mFailed to open session: ${e}\x1b[0m`);
+    }
   }
 
   term.onData((data) => {
+    // First keystroke on a stashed tab resumes it instead of being lost.
+    const en = state.open.get(sid);
+    if (en && en.deferred) {
+      resumeDeferred(sid);
+      return;
+    }
     invoke("send_input", { sessionId: sid, text: data }).catch(console.error);
   });
   term.onResize(({ cols, rows }) => {
@@ -1456,7 +1485,48 @@ async function openSession(sid, label) {
     },
   });
 
-  focusTerm(sid);
+  if (!defer) focusTerm(sid);
+}
+
+/// Resume a deferred (restored-stashed) tab: spawn `claude --resume` and let
+/// the daemon replay history + stream output into the existing terminal.
+async function resumeDeferred(sid) {
+  const entry = state.open.get(sid);
+  if (!entry || !entry.deferred) return;
+  entry.deferred = false;
+  entry.term.clear();
+  entry.fitAddon?.fit();
+  try {
+    await invoke("open_session", {
+      sessionId: sid,
+      cols: entry.term.cols,
+      rows: entry.term.rows,
+    });
+  } catch (e) {
+    entry.term.writeln(`\x1b[31mFailed to resume: ${e}\x1b[0m`);
+  }
+  refreshSessions();
+}
+
+/// Close a tab from the top strip. A Claude session is STASHED (process
+/// stopped, conversation kept resumable) so that closing its tab and
+/// stashing from the sidebar are the same action regardless of origin —
+/// they stay linked. Shells are killed (nothing to resume), browser and
+/// content tabs just close. For the "leave it running in the background"
+/// case, use Detach from the tab context menu.
+async function closeTab(sid) {
+  const entry = state.open.get(sid);
+  if (entry && entry.kind === "claude") {
+    // A deferred (not-yet-resumed) tab has no live process — it's already
+    // stashed on disk, so just drop the placeholder.
+    if (!entry.deferred) {
+      await invoke("stash_session", { sessionId: sid }).catch(console.error);
+    }
+    dropTerminal(sid);
+    refreshSessions();
+    return;
+  }
+  await detachSession(sid);
 }
 
 /// Detach (keep session running in the backend). Shell terminals are
@@ -2498,7 +2568,7 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.metaKey && !e.shiftKey && e.key === "w") {
     e.preventDefault();
-    if (state.activeTab) detachSession(state.activeTab);
+    if (state.activeTab) closeTab(state.activeTab);
     return;
   }
   if (e.metaKey && e.key === "f") {
@@ -2834,6 +2904,14 @@ listen("browser-nav", (event) => {
     entry.setNavState?.();
     break;
   }
+});
+
+// A link inside the embedded browser that wants a new window/tab
+// (target="_blank", window.open) opens a new clash browser tab instead of
+// replacing the current one.
+listen("browser-open-tab", (event) => {
+  const url = event.payload;
+  if (typeof url === "string" && /^https?:\/\//.test(url)) openBrowserTab(url);
 });
 
 // Pane-area geometry changes that bypass renderPanes (details panel
