@@ -10,6 +10,24 @@ use crate::application::actions::*;
 use crate::application::effects::Effect;
 use crate::application::state::{AppState, ConfirmDialog, InputMode};
 
+/// Derive a human-meaningful default session name when the user didn't supply
+/// one. Uses the working directory's last path component (e.g. `alumni_connect`)
+/// — far more useful than a generic placeholder like `"session"` — and falls
+/// back to a short `clash-<id>` tag when the cwd has no usable component (e.g.
+/// the filesystem root).
+///
+/// Pure and frontend-agnostic so the TUI's new-session flow and the GUI's
+/// `create_new_session` derive identical defaults (one core, two frontends).
+pub fn default_session_name(cwd: &str, session_id: &str) -> String {
+    std::path::Path::new(cwd.trim())
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("clash-{}", &session_id[..session_id.len().min(8)]))
+}
+
 /// Pure reducer: takes state + action, returns effects.
 /// All state mutation happens here and only here.
 pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
@@ -286,10 +304,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             state.input_mode = InputMode::Attached;
             state.attached_session = Some(session_id.clone());
 
-            let session_name = name.unwrap_or_else(|| {
-                let short = &session_id[..8];
-                format!("clash-{}", short)
-            });
+            let session_name = name.unwrap_or_else(|| default_session_name(&cwd, &session_id));
 
             // Check for preset with setup scripts
             let pending_preset = state.pending_session.take().and_then(|p| p.preset);
@@ -977,7 +992,7 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                         cwd
                     };
                     let uid = uuid::Uuid::now_v7().to_string();
-                    let default_name = format!("clash-{}", &uid[..8]);
+                    let default_name = default_session_name(&cwd, &uid);
                     state.pending_session = Some(crate::application::state::PendingSession {
                         cwd,
                         name: None,
@@ -1639,6 +1654,27 @@ mod tests {
     }
 
     #[test]
+    fn test_default_session_name() {
+        let id = "019ed532-ade6-73a1-acfb-6a58581065c7";
+        // Normal cwd → last path component.
+        assert_eq!(
+            default_session_name("/Users/x/api-contracts", id),
+            "api-contracts"
+        );
+        // Trailing slash is ignored.
+        assert_eq!(
+            default_session_name("/Users/x/helm-charts/", id),
+            "helm-charts"
+        );
+        // Filesystem root has no component → short clash- tag fallback.
+        assert_eq!(default_session_name("/", id), "clash-019ed532");
+        // Empty cwd → fallback.
+        assert_eq!(default_session_name("", id), "clash-019ed532");
+        // Short id must not panic on the [..8] slice.
+        assert_eq!(default_session_name("", "abc"), "clash-abc");
+    }
+
+    #[test]
     fn test_clamp_session_selection() {
         let mut state = test_state();
         // is_running so the sessions pass the default Active session filter
@@ -2119,7 +2155,8 @@ mod tests {
         );
         assert!(effects.is_empty());
         assert_eq!(state.input_mode, InputMode::NewSessionName);
-        assert!(state.input.value().starts_with("clash-")); // default name "clash-{short_uuid}"
+        // Default name is the cwd's last path component (see default_session_name).
+        assert_eq!(state.input.value(), "my-project");
         assert_eq!(
             state.pending_session.as_ref().map(|p| p.cwd.as_str()),
             Some("/tmp/my-project")

@@ -30,6 +30,15 @@ impl SessionCache {
     }
 }
 
+/// Claude Code's project-dir encoding: every non-alphanumeric byte becomes
+/// `-` (e.g. `/Users/x/alumni_connect` → `-Users-x-alumni-connect`). Used to
+/// locate a session's transcript directory under `~/.claude/projects/`.
+pub fn encode_project_dir(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
 /// Production filesystem-based data repository.
 pub struct FsBackend {
     base_dir: PathBuf,
@@ -103,6 +112,34 @@ impl FsBackend {
             .join(project)
             .join(format!("{}.jsonl", session_id));
         path.metadata().ok().and_then(|m| m.modified().ok())
+    }
+
+    /// True if a resumable Claude conversation transcript exists on disk for
+    /// this session. `claude --resume <id>` only succeeds when the `<id>.jsonl`
+    /// is present and non-empty; otherwise Claude exits 1 ("No conversation
+    /// found") and leaves a dead/blank terminal. Callers should fall back to a
+    /// fresh `--session-id` start when this returns false.
+    ///
+    /// Claude encodes the project dir from the conversation's *canonical* cwd
+    /// (symlinks resolved, e.g. `/tmp` → `/private/tmp`), so we check both the
+    /// raw and canonicalized encodings of `cwd` to avoid a false negative that
+    /// would needlessly discard real history.
+    pub fn has_resumable_transcript(&self, cwd: &str, session_id: &str) -> bool {
+        let projects = self.projects_dir();
+        let mut dirs = Vec::new();
+        if !cwd.is_empty() {
+            dirs.push(encode_project_dir(cwd));
+            if let Ok(canon) = std::fs::canonicalize(cwd) {
+                let enc = encode_project_dir(&canon.to_string_lossy());
+                if !dirs.contains(&enc) {
+                    dirs.push(enc);
+                }
+            }
+        }
+        dirs.iter().any(|d| {
+            let f = projects.join(d).join(format!("{session_id}.jsonl"));
+            std::fs::metadata(&f).map(|m| m.len() > 0).unwrap_or(false)
+        })
     }
 
     fn read_json_file<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
@@ -1071,6 +1108,39 @@ mod tests {
         let (_dir, backend) = setup_test_dir();
         let teams = backend.load_teams().unwrap();
         assert!(teams.is_empty());
+    }
+
+    #[test]
+    fn test_encode_project_dir() {
+        assert_eq!(
+            encode_project_dir("/Users/x/alumni_connect"),
+            "-Users-x-alumni-connect"
+        );
+        assert_eq!(encode_project_dir("/tmp/a.b"), "-tmp-a-b");
+    }
+
+    #[test]
+    fn test_has_resumable_transcript() {
+        let (dir, backend) = setup_test_dir();
+        let cwd = "/Users/me/proj";
+        let sid = "019ed532-ade6-73a1-acfb-6a58581065c7";
+        let proj_dir = dir.path().join("projects").join(encode_project_dir(cwd));
+        std::fs::create_dir_all(&proj_dir).unwrap();
+
+        // No transcript → not resumable.
+        assert!(!backend.has_resumable_transcript(cwd, sid));
+
+        // Empty transcript → still not resumable (claude --resume would exit 1).
+        let jsonl = proj_dir.join(format!("{sid}.jsonl"));
+        std::fs::write(&jsonl, b"").unwrap();
+        assert!(!backend.has_resumable_transcript(cwd, sid));
+
+        // Non-empty transcript → resumable.
+        std::fs::write(&jsonl, b"{\"type\":\"user\"}\n").unwrap();
+        assert!(backend.has_resumable_transcript(cwd, sid));
+
+        // Unknown cwd → not resumable.
+        assert!(!backend.has_resumable_transcript("/other/dir", sid));
     }
 
     #[test]

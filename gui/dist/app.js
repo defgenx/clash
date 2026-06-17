@@ -1474,13 +1474,14 @@ async function openSession(sid, label, opts = {}) {
   term.onResize(({ cols, rows }) => {
     invoke("resize_session", { sessionId: sid, cols, rows }).catch(() => {});
   });
-  // Copy-on-select (off by default). Selecting is itself the user gesture,
-  // so the async clipboard API is permitted; failures are silently ignored
-  // (⌘C still works either way).
+  // Copy-on-select (off by default). The bare WKWebView's navigator.clipboard
+  // is unreliable (no secure-context/edit-menu plumbing), so route through the
+  // backend clipboard plugin — same path as ⌘C — instead of navigator.clipboard,
+  // which silently dropped the copy. Failures are ignored (⌘C still works).
   term.onSelectionChange(() => {
     if (!state.settings.copyOnSelect || !term.hasSelection()) return;
     const text = term.getSelection();
-    if (text) navigator.clipboard?.writeText(text).catch(() => {});
+    if (text) invoke("clipboard_write_text", { text }).catch(() => {});
   });
 
   // URLs in terminal output are clickable — they open in the embedded

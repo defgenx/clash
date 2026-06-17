@@ -956,7 +956,19 @@ impl App {
             session_id,
         )
         .unwrap_or_else(|| session_id.to_string());
-        let cmd_args = vec!["--resume".to_string(), resume_id];
+        // `claude --resume <id>` only works when the conversation transcript
+        // exists on disk; otherwise Claude exits 1 ("No conversation found")
+        // and leaves a blank/dead terminal. Fall back to a fresh `--session-id`
+        // start under the same id (matches the GUI's open_session behavior).
+        let has_transcript = resolved_cwd
+            .as_deref()
+            .map(|cwd| self.backend.has_resumable_transcript(cwd, &resume_id))
+            .unwrap_or(false);
+        let cmd_args = if has_transcript {
+            vec!["--resume".to_string(), resume_id]
+        } else {
+            vec!["--session-id".to_string(), session_id.to_string()]
+        };
         let size = terminal
             .size()
             .unwrap_or(ratatui::layout::Size::new(120, 40));
@@ -1533,7 +1545,24 @@ impl App {
                     });
 
                     let cmd_args = if args.is_empty() {
-                        vec!["--resume".to_string(), session_id.clone()]
+                        // Resolve a stale id forward through the `/clear` lineage,
+                        // then resume only if the transcript exists — otherwise
+                        // start fresh so a missing/never-messaged conversation
+                        // doesn't exit `claude --resume` into a blank terminal.
+                        let resume_id = crate::infrastructure::hooks::registry::resolve_resume_id(
+                            &self.registry_cache.get(),
+                            &session_id,
+                        )
+                        .unwrap_or_else(|| session_id.clone());
+                        let has_transcript = resolved_cwd
+                            .as_deref()
+                            .map(|cwd| self.backend.has_resumable_transcript(cwd, &resume_id))
+                            .unwrap_or(false);
+                        if has_transcript {
+                            vec!["--resume".to_string(), resume_id]
+                        } else {
+                            vec!["--session-id".to_string(), session_id.clone()]
+                        }
                     } else {
                         args
                     };

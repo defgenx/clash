@@ -280,12 +280,46 @@ async fn handle_client(
                             old.abort();
                         }
 
+                        // Subscribe to live output BEFORE sending the replay so
+                        // any output produced while the replay is in flight is
+                        // buffered on `rx` (broadcast, in order) rather than
+                        // racing ahead of the history. The forwarder is then
+                        // started only after the replay is fully sent, so the
+                        // client always sees history first, then live output —
+                        // previously the forwarder was spawned first and could
+                        // interleave live frames ahead of (or amid) the replay,
+                        // scrambling the restored screen.
                         let replay = session.output_history();
                         let mut rx = session.subscribe();
                         let w = writer.clone();
                         let sid = session_id.clone();
 
-                        // Spawn task to forward live output to this client
+                        // Send Ok first (client waits for this in recv_response)
+                        send_event(
+                            &writer,
+                            &Event::Ok {
+                                message: Some(format!("Attached to {}", session_id)),
+                            },
+                        )
+                        .await;
+
+                        // Send replay buffer (full session history) in chunks
+                        // to avoid one giant NDJSON line on the socket.
+                        const REPLAY_CHUNK: usize = 64 * 1024;
+                        for chunk in replay.chunks(REPLAY_CHUNK) {
+                            let encoded = protocol::encode_data(chunk);
+                            send_event(
+                                &writer,
+                                &Event::Output {
+                                    session_id: session_id.clone(),
+                                    data: encoded,
+                                },
+                            )
+                            .await;
+                        }
+
+                        // Now forward live output (anything broadcast since the
+                        // subscribe above is delivered in order, after replay).
                         let handle = tokio::spawn(async move {
                             loop {
                                 match rx.recv().await {
@@ -311,30 +345,6 @@ async fn handle_client(
                             }
                         });
                         output_tasks.insert(session_id.clone(), handle);
-
-                        // Send Ok first (client waits for this in recv_response)
-                        send_event(
-                            &writer,
-                            &Event::Ok {
-                                message: Some(format!("Attached to {}", session_id)),
-                            },
-                        )
-                        .await;
-
-                        // Send replay buffer (full session history) in chunks
-                        // to avoid one giant NDJSON line on the socket.
-                        const REPLAY_CHUNK: usize = 64 * 1024;
-                        for chunk in replay.chunks(REPLAY_CHUNK) {
-                            let encoded = protocol::encode_data(chunk);
-                            send_event(
-                                &writer,
-                                &Event::Output {
-                                    session_id: session_id.clone(),
-                                    data: encoded,
-                                },
-                            )
-                            .await;
-                        }
                     }
                     None => {
                         send_event(

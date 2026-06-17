@@ -16,7 +16,7 @@ use clash::infrastructure::config::Config;
 use clash::infrastructure::daemon::client::DaemonClient;
 use clash::infrastructure::daemon::protocol::Event;
 use clash::infrastructure::daemon::server::DaemonServer;
-use clash::infrastructure::fs::backend::FsBackend;
+use clash::infrastructure::fs::backend::{encode_project_dir, FsBackend};
 use clash::infrastructure::session_refresh;
 use tauri::{Emitter, Manager, State};
 
@@ -233,14 +233,16 @@ fn resume_context(state: &GuiState, session_id: &str) -> (String, Option<String>
 /// encoded project dir (resolved cwd plus the last-known session's cwd /
 /// project path) to tolerate worktrees and daemon-only sessions.
 fn has_resumable_conversation(state: &GuiState, session_id: &str, cwd: &str) -> bool {
-    let projects = state.backend.projects_dir();
-    let mut dirs = project_dir_candidates(state, "", session_id);
-    if !cwd.is_empty() {
-        let encoded = encoded_project_dir(cwd);
-        if !dirs.contains(&encoded) {
-            dirs.push(encoded);
-        }
+    // Canonical-path-aware check shared with the TUI (handles symlinked cwds
+    // like /tmp → /private/tmp, which Claude encodes from the resolved path).
+    // Covers both the raw and canonicalized encodings of `cwd`.
+    if !cwd.is_empty() && state.backend.has_resumable_transcript(cwd, session_id) {
+        return true;
     }
+    // Fall back to dirs derived from the last-known session list (a daemon-only
+    // session may record a different cwd / project_path than the one passed in).
+    let projects = state.backend.projects_dir();
+    let dirs = project_dir_candidates(state, "", session_id);
     dirs.iter().any(|d| {
         let f = projects.join(d).join(format!("{session_id}.jsonl"));
         std::fs::metadata(&f).map(|m| m.len() > 0).unwrap_or(false)
@@ -730,20 +732,24 @@ async fn create_new_session(
     let name = name.trim();
     let session_id = uuid::Uuid::now_v7().to_string();
 
-    clash::infrastructure::hooks::registry::register(
+    // A nameless tab used to register the useless literal "session" (and never
+    // persisted it), so every unnamed session looked identical and appeared to
+    // "lose its name" once stashed. Derive a meaningful default through the
+    // shared core helper (same as the TUI's new-session flow) and persist it so
+    // it survives stash/restart.
+    let derived_name = if name.is_empty() {
+        clash::application::reducer::default_session_name(cwd, &session_id)
+    } else {
+        name.to_string()
+    };
+
+    clash::infrastructure::hooks::registry::register(&session_id, &derived_name, cwd, None);
+    clash::infrastructure::hooks::save_session_name(
+        state.backend.base_dir(),
         &session_id,
-        if name.is_empty() { "session" } else { name },
-        cwd,
-        None,
+        &derived_name,
+        Some(cwd),
     );
-    if !name.is_empty() {
-        clash::infrastructure::hooks::save_session_name(
-            state.backend.base_dir(),
-            &session_id,
-            name,
-            Some(cwd),
-        );
-    }
     clash::infrastructure::hooks::write_session_status(
         state.backend.base_dir(),
         &session_id,
@@ -903,14 +909,6 @@ fn to_message_dtos(msgs: Vec<clash::domain::entities::ConversationMessage>) -> V
         .collect()
 }
 
-/// Claude Code's project-dir encoding: every non-alphanumeric byte becomes
-/// `-` (e.g. `/Users/x/alumni_connect` → `-Users-x-alumni-connect`).
-fn encoded_project_dir(cwd: &str) -> String {
-    cwd.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
-}
-
 /// Project-dir candidates for a session's transcripts. Daemon-only sessions
 /// (spawned this launch, not yet merged with a disk scan) carry the cwd's
 /// last component in `project` instead of the real encoded directory — fall
@@ -927,7 +925,7 @@ fn project_dir_candidates(state: &GuiState, project: &str, session_id: &str) -> 
             .flatten()
             .filter(|p| !p.is_empty())
         {
-            let encoded = encoded_project_dir(path);
+            let encoded = encode_project_dir(path);
             if !candidates.contains(&encoded) {
                 candidates.push(encoded);
             }
