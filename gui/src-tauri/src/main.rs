@@ -1998,10 +1998,12 @@ fn main() {
             // Keep the shutdown handle alive for the app's lifetime.
             app.manage(shutdown);
 
-            // Wild-process background scan — same scan the TUI runs.
-            // Unlike the TUI (which hides claudes started before launch),
-            // the GUI shows ALL live external claudes: its session list is
-            // the user's overview of everything running on the machine.
+            // Wild-process background scan — same scan and same start-time
+            // filter the TUI runs. Only claudes that started AFTER this clash
+            // launched are surfaced; pre-existing claudes (IDE agents, other
+            // terminals, background runs) are intentionally hidden so the
+            // list doesn't churn with processes the user never started here.
+            let clash_started_at = std::time::SystemTime::now();
             tauri::async_runtime::spawn(async move {
                 use clash::infrastructure::process_scan::{
                     default_fd_probe, gather_wild_processes,
@@ -2011,7 +2013,15 @@ fn main() {
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     interval.tick().await;
-                    let wild = gather_wild_processes(&probe);
+                    let wild: Vec<_> = gather_wild_processes(&probe)
+                        .into_iter()
+                        .filter(|w| {
+                            // Drop conservatively when start time is unknown
+                            // (process exited mid-scan, ps unavailable) so we
+                            // never accidentally surface a pre-clash row.
+                            w.started_at.map(|t| t >= clash_started_at).unwrap_or(false)
+                        })
+                        .collect();
                     if wild_processes_tx.send(wild).is_err() {
                         break;
                     }

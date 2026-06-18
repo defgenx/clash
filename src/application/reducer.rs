@@ -11,21 +11,15 @@ use crate::application::effects::Effect;
 use crate::application::state::{AppState, ConfirmDialog, InputMode};
 
 /// Derive a human-meaningful default session name when the user didn't supply
-/// one. Uses the working directory's last path component (e.g. `alumni_connect`)
-/// — far more useful than a generic placeholder like `"session"` — and falls
-/// back to a short `clash-<id>` tag when the cwd has no usable component (e.g.
-/// the filesystem root).
+/// one. Returns a short `clash-<id>` tag (first 8 chars of the session id) —
+/// a stable, recognizable default that survives stash/restart. Users rename
+/// from there when they want something meaningful; the prefilled `clash-*`
+/// is just a unique placeholder, never the literal `"session"`.
 ///
 /// Pure and frontend-agnostic so the TUI's new-session flow and the GUI's
 /// `create_new_session` derive identical defaults (one core, two frontends).
-pub fn default_session_name(cwd: &str, session_id: &str) -> String {
-    std::path::Path::new(cwd.trim())
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("clash-{}", &session_id[..session_id.len().min(8)]))
+pub fn default_session_name(_cwd: &str, session_id: &str) -> String {
+    format!("clash-{}", &session_id[..session_id.len().min(8)])
 }
 
 /// Pure reducer: takes state + action, returns effects.
@@ -1656,19 +1650,12 @@ mod tests {
     #[test]
     fn test_default_session_name() {
         let id = "019ed532-ade6-73a1-acfb-6a58581065c7";
-        // Normal cwd → last path component.
+        // Default is always a short clash- tag, regardless of cwd.
         assert_eq!(
             default_session_name("/Users/x/api-contracts", id),
-            "api-contracts"
+            "clash-019ed532"
         );
-        // Trailing slash is ignored.
-        assert_eq!(
-            default_session_name("/Users/x/helm-charts/", id),
-            "helm-charts"
-        );
-        // Filesystem root has no component → short clash- tag fallback.
         assert_eq!(default_session_name("/", id), "clash-019ed532");
-        // Empty cwd → fallback.
         assert_eq!(default_session_name("", id), "clash-019ed532");
         // Short id must not panic on the [..8] slice.
         assert_eq!(default_session_name("", "abc"), "clash-abc");
@@ -2155,8 +2142,12 @@ mod tests {
         );
         assert!(effects.is_empty());
         assert_eq!(state.input_mode, InputMode::NewSessionName);
-        // Default name is the cwd's last path component (see default_session_name).
-        assert_eq!(state.input.value(), "my-project");
+        // Default name is a short clash- tag (see default_session_name).
+        assert!(
+            state.input.value().starts_with("clash-"),
+            "expected clash-* default, got {:?}",
+            state.input.value()
+        );
         assert_eq!(
             state.pending_session.as_ref().map(|p| p.cwd.as_str()),
             Some("/tmp/my-project")

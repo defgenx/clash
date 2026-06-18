@@ -455,11 +455,12 @@ Searching (`/`) is global across workspaces — results from other
 workspaces carry a `⌘n` badge and open in their owning workspace.
 Closing a workspace returns its sessions to the unassigned pool.
 Right-click a workspace chip for its context menu: rename, close, and
-mass-kill all of that workspace's sessions (one confirmation). Section
-headers carry a `✕` button that mass-kills the whole group in one
-confirmation: UNASSIGNED (sessions no workspace has claimed), STASHED
-(stopped-but-resumable sessions), and `⚡ EXTERNAL` (all associated wild
-claude processes — each row's dynamically-associated PID is signalled).
+mass-kill all of that workspace's sessions (one confirmation). Every
+section header carries a `✕` button that mass-kills the whole group in
+one confirmation: the status sections (ACTIVE, FAILED, STASHED, DONE),
+UNASSIGNED (sessions no workspace has claimed), and `⚡ EXTERNAL` (all
+associated wild claude processes — each row's dynamically-associated PID
+is signalled).
 Layouts and session ownership are saved to disk (`gui-state.json` in the
 clash app-support dir) and survive restarts (running sessions re-attach
 automatically).

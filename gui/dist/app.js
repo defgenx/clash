@@ -531,17 +531,16 @@ function renderStatusSections(list, items) {
     const header = document.createElement("div");
     header.className = "section-label";
     header.innerHTML = `${label}<span class="count">${group.length}</span>`;
-    // Stashed sessions accumulate; a kill-all on the header clears them in
-    // one confirmation instead of one kebab menu per row.
-    if (label === "STASHED") {
-      header.appendChild(
-        sectionKillAllButton(
-          group.map((s) => s.id),
-          `stashed session${group.length === 1 ? "" : "s"}`,
-          "Kill all stashed sessions"
-        )
-      );
-    }
+    // Every status section gets a kill-all on its header: one confirmation
+    // clears the whole group instead of one kebab menu per row.
+    const noun = label.toLowerCase();
+    header.appendChild(
+      sectionKillAllButton(
+        group.map((s) => s.id),
+        `${noun} session${group.length === 1 ? "" : "s"}`,
+        `Kill all ${noun} sessions`
+      )
+    );
     list.appendChild(header);
     for (const s of group) list.appendChild(sessionItem(s));
   }
