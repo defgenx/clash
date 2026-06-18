@@ -256,6 +256,58 @@ fn fetch_etimes(pids: &[u32]) -> HashMap<u32, Duration> {
     out
 }
 
+/// IO: batch `ps -p <pids> -o pid=,ppid=` into a `pid → ppid` map.
+/// Used to recognize (and exclude) the claude PTYs clash's own daemon
+/// spawned — they are direct children of the clash process, not wild.
+/// Errors silently produce an empty map.
+fn fetch_ppids(pids: &[u32]) -> HashMap<u32, u32> {
+    if pids.is_empty() {
+        return HashMap::new();
+    }
+    let pid_arg = pids
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let output = Command::new("ps")
+        .args(["-p", &pid_arg, "-o", "pid=,ppid="])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    let mut out = HashMap::new();
+    if let Ok(o) = output {
+        if let Ok(s) = std::str::from_utf8(&o.stdout) {
+            for line in s.lines() {
+                let mut parts = line.split_whitespace();
+                if let (Some(Ok(pid)), Some(Ok(ppid))) = (
+                    parts.next().map(str::parse::<u32>),
+                    parts.next().map(str::parse::<u32>),
+                ) {
+                    out.insert(pid, ppid);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Drop processes that are direct children of `own_pid` — these are the
+/// claude PTYs clash's own daemon spawned, which must never be treated as
+/// wild/external (otherwise clash's own sessions bounce between the
+/// managed sections and EXTERNAL/UNASSIGNED as daemon correlation races).
+///
+/// Pure so the ownership filter can be unit-tested without spawning `ps`.
+pub fn drop_own_children(
+    processes: Vec<WildProcess>,
+    ppids: &HashMap<u32, u32>,
+    own_pid: u32,
+) -> Vec<WildProcess> {
+    processes
+        .into_iter()
+        .filter(|w| ppids.get(&w.pid).copied() != Some(own_pid))
+        .collect()
+}
+
 /// Parse `lsof -F n` output. Each path appears on its own line prefixed
 /// with `n`; lines with other prefixes (`p`, `f`, etc.) are ignored.
 ///
@@ -605,13 +657,22 @@ pub fn gather_wild_processes(probe: &impl FdProbe) -> Vec<WildProcess> {
         Err(_) => return Vec::new(),
     };
 
-    let etimes = fetch_etimes(&pids);
-    let now = SystemTime::now();
-
-    std::str::from_utf8(&ps_out)
+    // Exclude clash's own daemon-spawned claude PTYs (direct children of
+    // this process) BEFORE the expensive fd probe — they are managed
+    // sessions, not wild claudes.
+    let parsed: Vec<WildProcess> = std::str::from_utf8(&ps_out)
         .unwrap_or("")
         .lines()
         .filter_map(parse_ps_line)
+        .collect();
+    let ppids = fetch_ppids(&pids);
+    let parsed = drop_own_children(parsed, &ppids, std::process::id());
+
+    let etimes = fetch_etimes(&pids);
+    let now = SystemTime::now();
+
+    parsed
+        .into_iter()
         .map(|mut w| {
             if let Some(etime) = etimes.get(&w.pid) {
                 w.started_at = now.checked_sub(*etime);
@@ -906,6 +967,23 @@ mod tests {
             argv_session_ids: argv_ids.iter().map(|s| (*s).to_string()).collect(),
             started_at: None,
         }
+    }
+
+    #[test]
+    fn drop_own_children_excludes_only_direct_children() {
+        let own = 11759u32;
+        let procs = vec![
+            wild(11806, None, &[]),
+            wild(67948, None, &[]),
+            wild(500, None, &[]),
+        ];
+        let mut ppids = HashMap::new();
+        ppids.insert(11806, own); // clash's own daemon PTY child
+        ppids.insert(67948, 67774); // IDE agent — different parent
+                                    // pid 500 absent from the ppid map (ps race) — kept conservatively.
+        let kept = drop_own_children(procs, &ppids, own);
+        let kept_pids: Vec<u32> = kept.iter().map(|w| w.pid).collect();
+        assert_eq!(kept_pids, vec![67948, 500]);
     }
 
     #[test]
