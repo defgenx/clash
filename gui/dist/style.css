@@ -517,7 +517,9 @@ html, body, #app {
 }
 .primary-action:hover { border-color: var(--accent); color: var(--accent); }
 
-.section-label .icon-btn { float: right; margin-top: -6px; }
+/* The header is a flex row, so right-align the kill-all button with auto
+   margin (float is inert here). */
+.section-label .icon-btn { margin-left: auto; margin-top: -6px; }
 
 /* ── Main area ───────────────────────────────────── */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }

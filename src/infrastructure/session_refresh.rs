@@ -961,14 +961,25 @@ fn session_from_daemon_info(
     is_running: bool,
     registry: &HashMap<String, ClashSession>,
 ) -> Session {
+    let registry_entry =
+        crate::infrastructure::hooks::registry::find_entry(registry, &info.session_id)
+            .map(|(_, e)| e);
     let cwd = if info.cwd.is_empty() {
-        registry
-            .get(&info.session_id)
+        registry_entry
             .map(|e| e.cwd.clone())
             .filter(|c| !c.is_empty())
     } else {
         Some(info.cwd.clone())
     };
+    // The registry is the source of truth for names — `rename` writes there,
+    // but the daemon only learns a name at spawn time and never hears about a
+    // later rename. Prefer the registry name (falling back to the daemon's
+    // spawn-time name) so a rename sticks even for daemon-only sessions that
+    // have no disk transcript yet.
+    let name = registry_entry
+        .map(|e| e.name.clone())
+        .filter(|n| !n.is_empty())
+        .or_else(|| info.name.clone());
     Session {
         id: info.session_id.clone(),
         project: path_last_component(&info.cwd).to_string(),
@@ -976,7 +987,7 @@ fn session_from_daemon_info(
         summary,
         is_running,
         status,
-        name: info.name.clone(),
+        name,
         cwd,
         ..Default::default()
     }
@@ -1455,6 +1466,42 @@ mod tests {
     }
 
     // ── Name resolution ──────────────────────────────────────────
+
+    #[test]
+    fn test_rename_wins_over_stale_daemon_name_daemon_only() {
+        // Reproduce the GUI rename regression: a renamed session updates the
+        // registry (+ saved names) but the daemon keeps the spawn-time name.
+        // For a daemon-only session (no disk transcript yet) the new name must
+        // still win.
+        let mut input = empty_input(&[]);
+        input.registry.insert(
+            "s1".to_string(),
+            make_registry_entry("s1", "renamed", "/home/user/proj"),
+        );
+        // Daemon reports the stale spawn-time name.
+        input.daemon_infos = Some(vec![SessionInfo {
+            session_id: "s1".to_string(),
+            pid: 100,
+            is_alive: true,
+            attached_clients: 0,
+            created_at: 0,
+            status: "running".to_string(),
+            cwd: "/home/user/proj".to_string(),
+            name: Some("old-spawn-name".to_string()),
+        }]);
+        // save_session_name mirror written by rename.
+        input
+            .saved_names
+            .insert("s1".to_string(), "renamed".to_string());
+
+        let sessions = build_session_list(&input);
+        let s = sessions.iter().find(|s| s.id == "s1").expect("s1 present");
+        assert_eq!(
+            s.name.as_deref(),
+            Some("renamed"),
+            "rename must win over stale daemon name for daemon-only sessions"
+        );
+    }
 
     #[test]
     fn test_name_resolution_single_pass() {

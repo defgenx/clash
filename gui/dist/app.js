@@ -509,6 +509,20 @@ function visibleSessions() {
 
 // ── Sidebar ─────────────────────────────────────────────────────
 
+/// A small ✕ button for a section header that mass-kills `ids` after one
+/// confirmation. `what` is the pluralized noun phrase shown in the dialog.
+function sectionKillAllButton(ids, what, title) {
+  const btn = document.createElement("button");
+  btn.className = "icon-btn mini danger";
+  btn.innerHTML = svgIcon("x", 13);
+  btn.title = title;
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    massKill(ids, what);
+  };
+  return btn;
+}
+
 function renderStatusSections(list, items) {
   const sections = { ACTIVE: [], FAILED: [], STASHED: [], DONE: [] };
   for (const s of items) sections[sectionOf(s)].push(s);
@@ -517,6 +531,17 @@ function renderStatusSections(list, items) {
     const header = document.createElement("div");
     header.className = "section-label";
     header.innerHTML = `${label}<span class="count">${group.length}</span>`;
+    // Stashed sessions accumulate; a kill-all on the header clears them in
+    // one confirmation instead of one kebab menu per row.
+    if (label === "STASHED") {
+      header.appendChild(
+        sectionKillAllButton(
+          group.map((s) => s.id),
+          `stashed session${group.length === 1 ? "" : "s"}`,
+          "Kill all stashed sessions"
+        )
+      );
+    }
     list.appendChild(header);
     for (const s of group) list.appendChild(sessionItem(s));
   }
@@ -528,6 +553,15 @@ function renderExternalSection(list, items) {
   header.className = "section-label external";
   header.innerHTML = `⚡ EXTERNAL<span class="count">${items.length}</span>`;
   header.title = "Claude processes running outside clash — click to take over and attach";
+  // Kill every associated (wild) claude process at once — each row's
+  // dynamically-associated PID is signalled, same as a per-row kill.
+  header.appendChild(
+    sectionKillAllButton(
+      items.map((s) => s.id),
+      `associated claude process${items.length === 1 ? "" : "es"}`,
+      "Kill all associated claude processes"
+    )
+  );
   list.appendChild(header);
   for (const s of items) list.appendChild(sessionItem(s));
 }
@@ -559,18 +593,13 @@ function renderSidebar() {
       header.className = "section-label unassigned";
       header.innerHTML = `UNASSIGNED<span class="count">${unassigned.length}</span>`;
       header.title = "Not in any workspace — opening one claims it for this workspace";
-      const killAll = document.createElement("button");
-      killAll.className = "icon-btn mini danger";
-      killAll.innerHTML = svgIcon("x", 13);
-      killAll.title = "Kill all unassigned sessions";
-      killAll.onclick = (ev) => {
-        ev.stopPropagation();
-        massKill(
+      header.appendChild(
+        sectionKillAllButton(
           unassigned.map((s) => s.id),
-          `unassigned session${unassigned.length === 1 ? "" : "s"}`
-        );
-      };
-      header.appendChild(killAll);
+          `unassigned session${unassigned.length === 1 ? "" : "s"}`,
+          "Kill all unassigned sessions"
+        )
+      );
       list.appendChild(header);
       for (const s of unassigned) list.appendChild(sessionItem(s));
     }
