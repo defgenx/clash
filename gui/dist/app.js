@@ -2818,11 +2818,15 @@ function makeBrowserEntry(id, url, name, renamed) {
 /// Open `url` as a first-class tab in the active workspace. Reuses an
 /// existing tab showing the same URL instead of duplicating it. Without
 /// a URL, opens a blank tab with the address bar focused (browser-like).
-function openBrowserTab(url) {
+/// Open a URL in a clash browser tab. In `background` mode (link clicks
+/// inside the embedded browser) a fresh tab is always created and added to
+/// the tab strip, but the currently focused tab is left untouched — no
+/// dedup-to-existing, no pane takeover, no active-tab switch.
+function openBrowserTab(url, background) {
   const blank = !url;
   if (blank) url = "about:blank";
   const w = ws();
-  if (!blank) {
+  if (!blank && !background) {
     for (const [id, entry] of state.open) {
       if (entry.kind === "browser" && entry.url === url && w.sessions.includes(id)) {
         assignToFocusedPane(id);
@@ -2834,8 +2838,15 @@ function openBrowserTab(url) {
   const entry = makeBrowserEntry(id, url);
   state.open.set(id, entry);
   claimSession(id);
-  assignToFocusedPane(id);
-  saveWorkspaces();
+  if (background) {
+    // Surface the new tab in the strip/sidebar without stealing focus.
+    saveWorkspaces();
+    renderTabs();
+    renderSidebar();
+  } else {
+    assignToFocusedPane(id);
+    saveWorkspaces();
+  }
   if (!browserUrlPoll) browserUrlPoll = setInterval(syncBrowserUrls, 1500);
   if (blank) setTimeout(() => entry.urlInput?.focus(), 50);
 }
@@ -2962,11 +2973,11 @@ listen("browser-nav", (event) => {
 });
 
 // A link inside the embedded browser that wants a new window/tab
-// (target="_blank", window.open) opens a new clash browser tab instead of
-// replacing the current one.
+// (target="_blank", window.open) opens a new clash browser tab in the
+// background — the tab the user is reading stays focused.
 listen("browser-open-tab", (event) => {
   const url = event.payload;
-  if (typeof url === "string" && /^https?:\/\//.test(url)) openBrowserTab(url);
+  if (typeof url === "string" && /^https?:\/\//.test(url)) openBrowserTab(url, true);
 });
 
 // Pane-area geometry changes that bypass renderPanes (details panel
