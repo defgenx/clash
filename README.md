@@ -434,9 +434,11 @@ browser pane is focused: `⌘L` focuses the address bar, `⌘R` reloads,
 DevTools). Close with `⌘W`, middle-click, or the tab `×`.
 Links inside a browser page that target a new window (`target="_blank"`,
 `window.open`) open in a new clash browser tab rather than replacing the
-current one. Anything "opened in the browser" opens as a new tab: URLs
-printed in any terminal are clickable; listening ports open
-`localhost:<port>`;
+current one. Anything "opened in the browser" opens in a new split pane
+beside the current session rather than taking over the focused pane (the
+session stays visible side-by-side; if the focused pane is empty it is
+used as-is): URLs printed in any terminal are clickable; listening ports
+open `localhost:<port>`;
 and when a session's output mentions a GitHub pull request, a green
 `⇄ PR #n` chip appears on the session (and in the tab's right-click
 menu) that opens the PR in-app. Browser tabs persist across restarts

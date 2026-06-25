@@ -705,7 +705,7 @@ function sessionItem(s) {
     chip.title = `${pr} — click to open in the browser panel`;
     chip.onclick = (ev) => {
       ev.stopPropagation();
-      openBrowserTab(pr);
+      openBrowserTab(pr, "split");
     };
     sub.appendChild(chip);
   }
@@ -763,7 +763,7 @@ function sessionMenu(s, x, y) {
     { label: "Rename session…", icon: "pencil", action: () => startRename(s.id) },
     { label: "Details", icon: "info", action: () => showDetails(s.id) },
     ...(pr
-      ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openBrowserTab(pr) }]
+      ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openBrowserTab(pr, "split") }]
       : []),
     ...(s.source === "Wild" && !s.id.startsWith("wild-pid-")
       ? [{ label: "Take over wild claude", icon: "zap", action: () => adoptWild(s) }]
@@ -1055,7 +1055,7 @@ function tabContextMenu(ev, sid) {
       action: () => detachSession(sid),
     },
     ...(pr
-      ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openBrowserTab(pr) }]
+      ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openBrowserTab(pr, "split") }]
       : []),
     null,
     {
@@ -1382,7 +1382,7 @@ async function openSession(sid, label, opts = {}) {
     // browser panel, or the system browser per the embedLinks setting.
     linkHandler: {
       activate: (_e, uri) => {
-        if (/^https?:\/\//.test(uri) && state.settings.embedLinks) openBrowserTab(uri);
+        if (/^https?:\/\//.test(uri) && state.settings.embedLinks) openBrowserTab(uri, "split");
         else invoke("open_external", { url: uri }).catch(() => {});
       },
     },
@@ -1532,7 +1532,7 @@ async function openSession(sid, label, opts = {}) {
           text: m[0],
           activate: (_e, uri) =>
             state.settings.embedLinks
-              ? openBrowserTab(uri)
+              ? openBrowserTab(uri, "split")
               : invoke("open_external", { url: uri }).catch(() => {}),
         });
       }
@@ -1834,7 +1834,7 @@ function renderDetails() {
               .join("")
           : "<p class='hint'>no listening ports</p>");
       out.querySelectorAll(".row-item.port").forEach((row) => {
-        row.onclick = () => openBrowserTab(`http://localhost:${row.dataset.port}`);
+        row.onclick = () => openBrowserTab(`http://localhost:${row.dataset.port}`, "split");
       });
     } catch (e) {
       out.innerHTML = `<h4>LISTENING PORTS</h4><p class='hint'>failed: ${escapeHtml(e)}</p>`;
@@ -1887,7 +1887,7 @@ async function showBrowserOpenPicker(s) {
   // session branch against the default branch (pushed commits only).
   if (pr) {
     addRow("± Diff on GitHub", `PR #${pr.split("/").pop()} files`, () =>
-      openBrowserTab(`${pr}/files`),
+      openBrowserTab(`${pr}/files`, "split"),
     );
   } else if (repo && repo.includes("github.com") && s.git_branch) {
     const branch = s.git_branch;
@@ -1899,16 +1899,17 @@ async function showBrowserOpenPicker(s) {
       }
       openBrowserTab(
         `${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(branch)}`,
+        "split",
       );
     });
   }
-  if (pr) addRow(`⇄ Pull request #${pr.split("/").pop()}`, pr, () => openBrowserTab(pr));
+  if (pr) addRow(`⇄ Pull request #${pr.split("/").pop()}`, pr, () => openBrowserTab(pr, "split"));
   if (repo) {
     const url =
       s.git_branch && repo.includes("github.com")
         ? `${repo}/tree/${encodeURIComponent(s.git_branch)}`
         : repo;
-    addRow("⌂ Repository", url, () => openBrowserTab(url));
+    addRow("⌂ Repository", url, () => openBrowserTab(url, "split"));
   }
 }
 
@@ -2818,17 +2819,38 @@ function makeBrowserEntry(id, url, name, renamed) {
 /// Open `url` as a first-class tab in the active workspace. Reuses an
 /// existing tab showing the same URL instead of duplicating it. Without
 /// a URL, opens a blank tab with the address bar focused (browser-like).
-/// Open a URL in a clash browser tab. In `background` mode (link clicks
-/// inside the embedded browser) a fresh tab is always created and added to
-/// the tab strip, but the currently focused tab is left untouched — no
-/// dedup-to-existing, no pane takeover, no active-tab switch.
-function openBrowserTab(url, background) {
+/// If the focused pane already holds something, push a fresh split pane
+/// and focus it — so a browser open lands beside the current session
+/// instead of replacing it. No-op when the focused pane is empty.
+function ensureFreePane() {
+  const w = ws();
+  if (w.panes[w.focused] != null) {
+    w.panes.push(null);
+    w.focused = w.panes.length - 1;
+    w.zoomed = false;
+  }
+}
+
+/// Open a URL in a clash browser tab. `mode` controls placement:
+///   - undefined: take over the focused pane (the blank "new tab" command).
+///   - "split": open in a NEW split pane beside the current session, which
+///     stays visible — used by PR/link/port/repo opens so a browser never
+///     evicts the session you're working in.
+///   - "background": always create a fresh tab in the strip/sidebar without
+///     stealing focus — used by link clicks (target="_blank", window.open)
+///     inside the embedded browser; no dedup, no pane takeover, no switch.
+function openBrowserTab(url, mode) {
   const blank = !url;
   if (blank) url = "about:blank";
   const w = ws();
+  const background = mode === "background";
+  const split = mode === "split";
   if (!blank && !background) {
     for (const [id, entry] of state.open) {
       if (entry.kind === "browser" && entry.url === url && w.sessions.includes(id)) {
+        // Already open here — surface it (in its own split if split-mode
+        // and it isn't already in a pane) rather than spawning a duplicate.
+        if (split && w.panes.indexOf(id) < 0) ensureFreePane();
         assignToFocusedPane(id);
         return;
       }
@@ -2844,6 +2866,7 @@ function openBrowserTab(url, background) {
     renderTabs();
     renderSidebar();
   } else {
+    if (split) ensureFreePane();
     assignToFocusedPane(id);
     saveWorkspaces();
   }
@@ -2977,7 +3000,7 @@ listen("browser-nav", (event) => {
 // background — the tab the user is reading stays focused.
 listen("browser-open-tab", (event) => {
   const url = event.payload;
-  if (typeof url === "string" && /^https?:\/\//.test(url)) openBrowserTab(url, true);
+  if (typeof url === "string" && /^https?:\/\//.test(url)) openBrowserTab(url, "background");
 });
 
 // Pane-area geometry changes that bypass renderPanes (details panel
