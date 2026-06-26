@@ -61,22 +61,50 @@ pub trait DataRepository: Send + Sync {
     ) -> Result<Vec<ConversationMessage>>;
 
     // ── Scratch notes ───────────────────────────────────────────
-    // Free-form text files kept under `~/.claude/clash/scratch/`. The file
-    // itself is the note; these methods list/create/read/write/remove them.
-    // Default impls let lightweight mock backends ignore scratch entirely.
+    // Free-form text files and folders kept under `~/.claude/clash/scratch/`,
+    // organized as an IntelliJ-style tree. Entry ids are POSIX paths relative
+    // to the scratch root (`""` denotes the root itself). These methods
+    // list/create/rename/move/remove entries; the file *is* the note, so
+    // contents are never read or written here. Default impls let lightweight
+    // mock backends ignore scratch entirely.
 
-    /// List all scratch notes (sorted by the implementation).
+    /// List the whole scratch tree, depth-first pre-order (folders first).
     fn load_scratch_notes(&self) -> Result<Vec<ScratchNote>> {
         Ok(Vec::new())
     }
 
-    /// Create a new, empty scratch note from a user-supplied title.
-    /// Returns the created note. Errors if a note with that name exists.
-    fn create_scratch_note(&self, _title: &str) -> Result<ScratchNote> {
+    /// Create a new, empty scratch note titled `title` inside the folder at
+    /// `parent` (relative path; `""` = root). Returns the created note.
+    /// Errors if an entry with that name already exists.
+    fn create_scratch_note(&self, _parent: &str, _title: &str) -> Result<ScratchNote> {
         Ok(ScratchNote::default())
     }
 
-    /// Delete a scratch note by id (file name).
+    /// Create a new folder named `name` inside the folder at `parent`
+    /// (relative path; `""` = root). Returns the created folder entry.
+    fn create_scratch_dir(&self, _parent: &str, _name: &str) -> Result<ScratchNote> {
+        Ok(ScratchNote::default())
+    }
+
+    /// Rename the entry at `id` (file or folder) to `new_name`, keeping it in
+    /// the same parent folder. Returns the renamed entry.
+    fn rename_scratch(&self, _id: &str, _new_name: &str) -> Result<ScratchNote> {
+        Ok(ScratchNote::default())
+    }
+
+    /// Move the entry at `id` into the folder at `new_parent` (`""` = root),
+    /// keeping its name. Rejects moving a folder into itself or a descendant.
+    /// Returns the moved entry at its new location.
+    ///
+    /// `dead_code` is allowed because the only non-test caller is the sibling
+    /// `clash-gui` crate (drag-and-drop). The TUI reorganizes via create/
+    /// rename/delete, so it never emits a move effect — mirrors `set_scratch_dir`.
+    #[allow(dead_code)]
+    fn move_scratch(&self, _id: &str, _new_parent: &str) -> Result<ScratchNote> {
+        Ok(ScratchNote::default())
+    }
+
+    /// Delete the entry at `id`. Folders are removed recursively.
     fn delete_scratch_note(&self, _id: &str) -> Result<()> {
         Ok(())
     }

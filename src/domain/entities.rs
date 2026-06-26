@@ -196,27 +196,42 @@ pub struct Task {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
-/// A scratch note — a free-form text file the user keeps inside clash.
+/// A scratch entry — a free-form text file *or* a folder the user keeps
+/// inside clash, IntelliJ "Scratches and Consoles" style.
 ///
-/// Unlike teams/tasks, a scratch note is not stored as a structured JSON
+/// Unlike teams/tasks, a scratch file is not stored as a structured JSON
 /// document: the file on disk (under `~/.claude/clash/scratch/`) *is* the
 /// note, so it can be opened in any editor and edited externally too. This
 /// struct is a runtime view DTO built from the filesystem listing — none of
 /// its fields live in an on-disk JSON document, so it carries no serde
 /// defaults/flatten the way persisted entities do.
+///
+/// The scratch directory is a real folder tree: `load_scratch_notes` walks it
+/// recursively and returns a depth-first **pre-order** flattening (each
+/// directory immediately followed by its subtree), so `depth` drives tree
+/// indentation in both frontends and `parent` lets the GUI rebuild the nesting.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScratchNote {
-    /// File name including extension, e.g. `ideas.md`. Stable identifier.
+    /// Path relative to the scratch root, POSIX (`/`) separators, e.g.
+    /// `sql/query.sql`. Stable identifier used to open/rename/move/delete.
+    /// Top-level entries keep their bare name, so this stays backward
+    /// compatible with the old flat layout.
     pub id: String,
-    /// Display title — the file stem (file name without its final extension).
+    /// Display title — the file stem for files, the folder name for folders.
     pub title: String,
-    /// Absolute path to the file on disk (used to open it in an editor).
+    /// Absolute path to the entry on disk (used to open it in an editor).
     pub path: String,
     /// Last-modified time, epoch milliseconds (0 when unavailable).
     pub updated_at: i64,
-    /// File size in bytes.
+    /// File size in bytes (0 for folders).
     pub size: u64,
+    /// True when this entry is a directory rather than a file.
+    pub is_dir: bool,
+    /// Relative path of the containing directory (`""` = scratch root).
+    pub parent: String,
+    /// Nesting depth (0 = top level) — drives tree indentation.
+    pub depth: usize,
 }
 
 /// High-level session lifecycle section — groups statuses for display and filtering.

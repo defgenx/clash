@@ -13,48 +13,106 @@ use crate::infrastructure::fs::atomic::write_atomic;
 /// Allowed text extensions for scratch notes; anything else gets `.md` appended.
 const SCRATCH_TEXT_EXTS: &[&str] = &["md", "markdown", "txt", "text", "org", "rst"];
 
+/// Shorthand for a scratch validation error.
+fn scratch_err(msg: impl Into<String>) -> crate::domain::error::DomainError {
+    crate::domain::error::DomainError::Parse(msg.into())
+}
+
+/// Validate a single path component (a file or folder name).
+///
+/// Rejects empties, path separators, `.`/`..`, and NULs so a component can
+/// never traverse out of the scratch root. Pure — unit-tested directly.
+fn sanitize_component(name: &str) -> Result<String> {
+    let t = name.trim();
+    if t.is_empty() {
+        return Err(scratch_err("Name cannot be empty"));
+    }
+    if t.contains('/') || t.contains('\\') || t.contains('\0') || t == "." || t == ".." {
+        return Err(scratch_err(format!("Invalid name: '{}'", t)));
+    }
+    Ok(t.to_string())
+}
+
+/// Validate a relative parent path (POSIX `/` separators; empty = scratch root).
+///
+/// Every segment is checked with [`sanitize_component`], so `..`/absolute
+/// segments are rejected and the joined result can never escape the scratch
+/// root. Returns the cleaned segments. Pure — unit-tested directly.
+fn sanitize_rel_path(rel: &str) -> Result<Vec<String>> {
+    let rel = rel.trim().trim_matches('/');
+    if rel.is_empty() {
+        return Ok(Vec::new());
+    }
+    rel.split('/')
+        .filter(|s| !s.is_empty())
+        .map(sanitize_component)
+        .collect()
+}
+
 /// Turn a user-supplied note title into a safe file name.
 ///
 /// Rejects path separators and `..` (no escaping the scratch dir), trims
 /// whitespace, and appends `.md` unless the title already ends in a known
 /// text extension. Pure so it can be unit-tested directly.
 fn sanitize_note_filename(title: &str) -> Result<String> {
-    let trimmed = title.trim();
-    if trimmed.is_empty() {
-        return Err(crate::domain::error::DomainError::Parse(
-            "Scratch title cannot be empty".to_string(),
-        ));
-    }
-    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains("..") {
-        return Err(crate::domain::error::DomainError::Parse(format!(
-            "Invalid scratch title: '{}'",
-            trimmed
-        )));
-    }
-    let has_text_ext = std::path::Path::new(trimmed)
+    let trimmed = sanitize_component(title)
+        .map_err(|_| scratch_err(format!("Invalid scratch title: '{}'", title.trim())))?;
+    let has_text_ext = std::path::Path::new(&trimmed)
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| SCRATCH_TEXT_EXTS.contains(&e.to_ascii_lowercase().as_str()))
         .unwrap_or(false);
     if has_text_ext {
-        Ok(trimmed.to_string())
+        Ok(trimmed)
     } else {
         Ok(format!("{}.md", trimmed))
     }
 }
 
-/// Build a `ScratchNote` view DTO from a file path (reads filesystem metadata).
-/// Returns `None` for non-files or unreadable names.
-fn note_from_path(path: &Path) -> Option<ScratchNote> {
-    let id = path.file_name()?.to_string_lossy().to_string();
-    let title = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| id.clone());
-    let meta = std::fs::metadata(path).ok()?;
-    if !meta.is_file() {
+/// Relative POSIX path of `path` under `root` (e.g. `sql/query.sql`).
+/// Returns `None` when `path` is not strictly under `root` or contains a
+/// non-normal component (so it can double as a containment check).
+fn rel_id(root: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(root).ok()?;
+    let mut parts = Vec::new();
+    for comp in rel.components() {
+        match comp {
+            std::path::Component::Normal(s) => parts.push(s.to_string_lossy().to_string()),
+            _ => return None,
+        }
+    }
+    if parts.is_empty() {
         return None;
     }
+    Some(parts.join("/"))
+}
+
+/// Relative path of the containing directory of `rel` (`""` = root).
+fn parent_of(rel: &str) -> String {
+    match rel.rfind('/') {
+        Some(i) => rel[..i].to_string(),
+        None => String::new(),
+    }
+}
+
+/// Build a `ScratchNote` view DTO for a file *or* directory under `root`
+/// (reads filesystem metadata). Returns `None` for entries that are neither
+/// a file nor a directory, or that resolve outside `root`.
+fn node_from_entry(root: &Path, path: &Path) -> Option<ScratchNote> {
+    let meta = std::fs::metadata(path).ok()?;
+    let is_dir = meta.is_dir();
+    if !is_dir && !meta.is_file() {
+        return None;
+    }
+    let id = rel_id(root, path)?;
+    let file_name = path.file_name()?.to_string_lossy().to_string();
+    let title = if is_dir {
+        file_name
+    } else {
+        path.file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or(file_name)
+    };
     let updated_at = meta
         .modified()
         .ok()
@@ -62,12 +120,60 @@ fn note_from_path(path: &Path) -> Option<ScratchNote> {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     Some(ScratchNote {
-        id,
+        depth: id.matches('/').count(),
+        parent: parent_of(&id),
         title,
         path: path.to_string_lossy().to_string(),
         updated_at,
-        size: meta.len(),
+        size: if is_dir { 0 } else { meta.len() },
+        is_dir,
+        id,
     })
+}
+
+/// Recursively flatten the scratch tree under `dir` into `out` in depth-first
+/// **pre-order**: at each level, directories (alphabetical, case-insensitive)
+/// come first — each immediately followed by its own subtree — then files. The
+/// resulting order is exactly what both frontends render as an indented tree.
+fn collect_scratch_tree(root: &Path, dir: &Path, out: &mut Vec<ScratchNote>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut files: Vec<PathBuf> = Vec::new();
+    for entry in entries.filter_map(|e| e.ok()) {
+        match entry.file_type() {
+            Ok(ft) if ft.is_dir() => dirs.push(entry.path()),
+            Ok(ft) if ft.is_file() => files.push(entry.path()),
+            _ => {}
+        }
+    }
+    let by_name = |a: &PathBuf, b: &PathBuf| {
+        let an = a
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
+        let bn = b
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
+        an.cmp(&bn)
+    };
+    dirs.sort_by(by_name);
+    files.sort_by(by_name);
+    for d in dirs {
+        if let Some(node) = node_from_entry(root, &d) {
+            out.push(node);
+        }
+        collect_scratch_tree(root, &d, out);
+    }
+    for f in files {
+        if let Some(node) = node_from_entry(root, &f) {
+            out.push(node);
+        }
+    }
 }
 
 /// Per-project cached session data with cheap shared ownership.
@@ -634,43 +740,133 @@ impl DataRepository for FsBackend {
         if !dir.exists() {
             return Ok(Vec::new());
         }
-        let mut notes: Vec<ScratchNote> = std::fs::read_dir(&dir)?
-            .filter_map(|entry| entry.ok())
-            .filter_map(|entry| note_from_path(&entry.path()))
-            .collect();
-        // Most-recently-modified first, then alphabetically by title for stability.
-        notes.sort_by(|a, b| {
-            b.updated_at
-                .cmp(&a.updated_at)
-                .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
-        });
+        // Depth-first pre-order tree flattening (folders first, alphabetical).
+        // Ordering is presentation-stable here rather than recency-based so the
+        // indented tree both frontends draw stays put as files are edited.
+        let mut notes = Vec::new();
+        collect_scratch_tree(&dir, &dir, &mut notes);
         Ok(notes)
     }
 
-    fn create_scratch_note(&self, title: &str) -> Result<ScratchNote> {
+    fn create_scratch_note(&self, parent: &str, title: &str) -> Result<ScratchNote> {
+        let root = self.scratch_dir();
+        let parent_parts = sanitize_rel_path(parent)?;
         let filename = sanitize_note_filename(title)?;
-        let path = self.scratch_dir().join(&filename);
+        let mut path = root.clone();
+        path.extend(&parent_parts);
+        path.push(&filename);
         if path.exists() {
-            return Err(crate::domain::error::DomainError::Parse(format!(
+            return Err(scratch_err(format!(
                 "Scratch '{}' already exists",
                 filename
             )));
         }
         // write_atomic creates parent dirs; start the note empty.
         write_atomic(&path, b"")?;
-        Ok(note_from_path(&path).unwrap_or(ScratchNote {
-            id: filename,
-            title: title.trim().to_string(),
-            path: path.to_string_lossy().to_string(),
-            updated_at: 0,
-            size: 0,
-        }))
+        node_from_entry(&root, &path)
+            .ok_or_else(|| scratch_err("Created scratch could not be read"))
+    }
+
+    fn create_scratch_dir(&self, parent: &str, name: &str) -> Result<ScratchNote> {
+        let root = self.scratch_dir();
+        let parent_parts = sanitize_rel_path(parent)?;
+        let dirname = sanitize_component(name)?;
+        let mut path = root.clone();
+        path.extend(&parent_parts);
+        path.push(&dirname);
+        if path.exists() {
+            return Err(scratch_err(format!("'{}' already exists", dirname)));
+        }
+        std::fs::create_dir_all(&path)?;
+        node_from_entry(&root, &path).ok_or_else(|| scratch_err("Created folder could not be read"))
+    }
+
+    fn rename_scratch(&self, id: &str, new_name: &str) -> Result<ScratchNote> {
+        let root = self.scratch_dir();
+        let parts = sanitize_rel_path(id)?;
+        if parts.is_empty() {
+            return Err(scratch_err("Cannot rename the scratch root"));
+        }
+        let mut src = root.clone();
+        src.extend(&parts);
+        if !src.exists() {
+            return Err(scratch_err(format!("'{}' not found", id)));
+        }
+        // A folder keeps its bare name; a file goes through the title rules
+        // (which append `.md` when no known text extension is given).
+        let new_file = if src.is_dir() {
+            sanitize_component(new_name)?
+        } else {
+            sanitize_note_filename(new_name)?
+        };
+        let dst = src
+            .parent()
+            .map(|p| p.join(&new_file))
+            .ok_or_else(|| scratch_err("Invalid path"))?;
+        if dst == src {
+            return node_from_entry(&root, &src)
+                .ok_or_else(|| scratch_err("Renamed entry could not be read"));
+        }
+        if dst.exists() {
+            return Err(scratch_err(format!("'{}' already exists", new_file)));
+        }
+        std::fs::rename(&src, &dst)?;
+        node_from_entry(&root, &dst).ok_or_else(|| scratch_err("Renamed entry could not be read"))
+    }
+
+    fn move_scratch(&self, id: &str, new_parent: &str) -> Result<ScratchNote> {
+        let root = self.scratch_dir();
+        let src_parts = sanitize_rel_path(id)?;
+        if src_parts.is_empty() {
+            return Err(scratch_err("Cannot move the scratch root"));
+        }
+        let dst_parent_parts = sanitize_rel_path(new_parent)?;
+        // Cycle guard: a folder may not move into itself or its own descendant.
+        let src_id = src_parts.join("/");
+        let dst_parent_id = dst_parent_parts.join("/");
+        if dst_parent_id == src_id || dst_parent_id.starts_with(&format!("{}/", src_id)) {
+            return Err(scratch_err("Cannot move a folder into itself"));
+        }
+        let mut src = root.clone();
+        src.extend(&src_parts);
+        if !src.exists() {
+            return Err(scratch_err(format!("'{}' not found", id)));
+        }
+        let name = src
+            .file_name()
+            .ok_or_else(|| scratch_err("Invalid path"))?
+            .to_owned();
+        let mut dst = root.clone();
+        dst.extend(&dst_parent_parts);
+        if !dst.exists() || !dst.is_dir() {
+            return Err(scratch_err("Target folder not found"));
+        }
+        dst.push(&name);
+        if dst == src {
+            return node_from_entry(&root, &src)
+                .ok_or_else(|| scratch_err("Moved entry could not be read"));
+        }
+        if dst.exists() {
+            return Err(scratch_err(format!(
+                "'{}' already exists in the target folder",
+                name.to_string_lossy()
+            )));
+        }
+        std::fs::rename(&src, &dst)?;
+        node_from_entry(&root, &dst).ok_or_else(|| scratch_err("Moved entry could not be read"))
     }
 
     fn delete_scratch_note(&self, id: &str) -> Result<()> {
-        let filename = sanitize_note_filename(id)?;
-        let path = self.scratch_dir().join(&filename);
-        if path.exists() {
+        let root = self.scratch_dir();
+        let parts = sanitize_rel_path(id)?;
+        if parts.is_empty() {
+            return Err(scratch_err("Cannot delete the scratch root"));
+        }
+        let mut path = root.clone();
+        path.extend(&parts);
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path)?;
+        } else if path.exists() {
             std::fs::remove_file(&path)?;
         }
         Ok(())
@@ -1266,16 +1462,33 @@ mod tests {
     }
 
     #[test]
+    fn test_sanitize_rel_path() {
+        assert!(sanitize_rel_path("").unwrap().is_empty());
+        assert!(sanitize_rel_path("  /  ").unwrap().is_empty());
+        assert_eq!(sanitize_rel_path("sql").unwrap(), vec!["sql"]);
+        assert_eq!(sanitize_rel_path("a/b/c").unwrap(), vec!["a", "b", "c"]);
+        // Collapses empty segments from extra slashes.
+        assert_eq!(sanitize_rel_path("a//b/").unwrap(), vec!["a", "b"]);
+        // Traversal rejected at any segment.
+        assert!(sanitize_rel_path("a/../b").is_err());
+        assert!(sanitize_rel_path("..").is_err());
+        assert!(sanitize_rel_path("a/b\\c").is_err());
+    }
+
+    #[test]
     fn test_scratch_note_crud_roundtrip() {
         let (_dir, backend) = setup_test_dir();
 
         // Empty when the scratch dir doesn't exist yet.
         assert!(backend.load_scratch_notes().unwrap().is_empty());
 
-        // Create.
-        let note = backend.create_scratch_note("My Ideas").unwrap();
+        // Create at the root (empty parent).
+        let note = backend.create_scratch_note("", "My Ideas").unwrap();
         assert_eq!(note.id, "My Ideas.md");
         assert_eq!(note.title, "My Ideas");
+        assert!(!note.is_dir);
+        assert_eq!(note.parent, "");
+        assert_eq!(note.depth, 0);
         assert!(note.path.ends_with("clash/scratch/My Ideas.md"));
 
         // Listing finds it.
@@ -1284,13 +1497,103 @@ mod tests {
         assert_eq!(notes[0].id, "My Ideas.md");
 
         // Duplicate create errors.
-        assert!(backend.create_scratch_note("My Ideas").is_err());
+        assert!(backend.create_scratch_note("", "My Ideas").is_err());
 
         // Delete.
         backend.delete_scratch_note("My Ideas.md").unwrap();
         assert!(backend.load_scratch_notes().unwrap().is_empty());
         // Deleting a missing note is a no-op (not an error).
         assert!(backend.delete_scratch_note("My Ideas.md").is_ok());
+    }
+
+    #[test]
+    fn test_scratch_tree_listing_order_and_metadata() {
+        let (_dir, backend) = setup_test_dir();
+        // Build:  notes/idea.md, sql/q.md, todo.md
+        backend.create_scratch_dir("", "sql").unwrap();
+        backend.create_scratch_dir("", "notes").unwrap();
+        backend.create_scratch_note("sql", "q").unwrap();
+        backend.create_scratch_note("notes", "idea").unwrap();
+        backend.create_scratch_note("", "todo").unwrap();
+
+        let notes = backend.load_scratch_notes().unwrap();
+        let ids: Vec<&str> = notes.iter().map(|n| n.id.as_str()).collect();
+        // Folders first (alphabetical), each immediately followed by its
+        // subtree; root-level files last.
+        assert_eq!(
+            ids,
+            vec!["notes", "notes/idea.md", "sql", "sql/q.md", "todo.md"]
+        );
+        let nested = notes.iter().find(|n| n.id == "sql/q.md").unwrap();
+        assert_eq!(nested.parent, "sql");
+        assert_eq!(nested.depth, 1);
+        assert!(!nested.is_dir);
+        let dir = notes.iter().find(|n| n.id == "sql").unwrap();
+        assert!(dir.is_dir);
+        assert_eq!(dir.title, "sql");
+    }
+
+    #[test]
+    fn test_scratch_rename_file_and_dir() {
+        let (_dir, backend) = setup_test_dir();
+        backend.create_scratch_dir("", "old").unwrap();
+        backend.create_scratch_note("old", "note").unwrap();
+
+        // Rename the file (no extension given → .md appended).
+        let renamed = backend.rename_scratch("old/note.md", "fresh").unwrap();
+        assert_eq!(renamed.id, "old/fresh.md");
+        assert!(backend.scratch_dir().join("old/fresh.md").exists());
+
+        // Rename the folder; children move with it.
+        let dir = backend.rename_scratch("old", "new").unwrap();
+        assert_eq!(dir.id, "new");
+        assert!(dir.is_dir);
+        assert!(backend.scratch_dir().join("new/fresh.md").exists());
+        assert!(!backend.scratch_dir().join("old").exists());
+    }
+
+    #[test]
+    fn test_scratch_move_into_folder() {
+        let (_dir, backend) = setup_test_dir();
+        backend.create_scratch_dir("", "box").unwrap();
+        backend.create_scratch_note("", "loose").unwrap();
+
+        let moved = backend.move_scratch("loose.md", "box").unwrap();
+        assert_eq!(moved.id, "box/loose.md");
+        assert_eq!(moved.parent, "box");
+        assert!(backend.scratch_dir().join("box/loose.md").exists());
+        assert!(!backend.scratch_dir().join("loose.md").exists());
+
+        // Move back to root (empty parent).
+        let back = backend.move_scratch("box/loose.md", "").unwrap();
+        assert_eq!(back.id, "loose.md");
+    }
+
+    #[test]
+    fn test_scratch_move_rejects_cycles_and_collisions() {
+        let (_dir, backend) = setup_test_dir();
+        backend.create_scratch_dir("", "a").unwrap();
+        backend.create_scratch_dir("a", "b").unwrap();
+        // Folder into itself / descendant.
+        assert!(backend.move_scratch("a", "a").is_err());
+        assert!(backend.move_scratch("a", "a/b").is_err());
+        // Name collision in the target.
+        backend.create_scratch_note("", "dup").unwrap();
+        backend.create_scratch_note("a", "dup").unwrap();
+        assert!(backend.move_scratch("dup.md", "a").is_err());
+    }
+
+    #[test]
+    fn test_scratch_delete_directory_recursive() {
+        let (_dir, backend) = setup_test_dir();
+        backend.create_scratch_dir("", "trash").unwrap();
+        backend.create_scratch_note("trash", "a").unwrap();
+        backend.create_scratch_note("trash", "b").unwrap();
+        assert_eq!(backend.load_scratch_notes().unwrap().len(), 3);
+
+        backend.delete_scratch_note("trash").unwrap();
+        assert!(backend.load_scratch_notes().unwrap().is_empty());
+        assert!(!backend.scratch_dir().join("trash").exists());
     }
 
     #[test]
@@ -1301,7 +1604,7 @@ mod tests {
         assert_eq!(backend.scratch_dir(), custom);
 
         // Notes now land in the overridden directory.
-        let note = backend.create_scratch_note("Elsewhere").unwrap();
+        let note = backend.create_scratch_note("", "Elsewhere").unwrap();
         assert!(note.path.starts_with(custom.to_string_lossy().as_ref()));
         assert_eq!(backend.load_scratch_notes().unwrap().len(), 1);
     }

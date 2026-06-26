@@ -693,6 +693,8 @@ impl App {
                 | InputMode::NewMemberType
                 | InputMode::NewMemberModel
                 | InputMode::NewScratchTitle
+                | InputMode::NewScratchDir
+                | InputMode::RenameScratch
         ) {
             use crate::adapters::input::key_to_input_request;
             use crate::application::actions::UiAction;
@@ -1211,9 +1213,19 @@ impl App {
                     }
                 }
                 // ── Scratch notes ───────────────────────────────
-                Effect::CreateScratchNote { title } => {
-                    if let Err(e) = self.backend.create_scratch_note(&title) {
+                Effect::CreateScratchNote { parent, title } => {
+                    if let Err(e) = self.backend.create_scratch_note(&parent, &title) {
                         self.state.toast = Some(format!("Create scratch failed: {}", e));
+                    }
+                }
+                Effect::CreateScratchDir { parent, name } => {
+                    if let Err(e) = self.backend.create_scratch_dir(&parent, &name) {
+                        self.state.toast = Some(format!("Create folder failed: {}", e));
+                    }
+                }
+                Effect::RenameScratch { id, new_name } => {
+                    if let Err(e) = self.backend.rename_scratch(&id, &new_name) {
+                        self.state.toast = Some(format!("Rename failed: {}", e));
                     }
                 }
                 Effect::DeleteScratchNote { id } => {

@@ -33,11 +33,23 @@ pub enum Effect {
     },
 
     // ── Scratch-note effects ────────────────────────────────────
-    /// Create a new empty scratch note from a title.
+    /// Create a new empty scratch note titled `title` inside the folder at
+    /// `parent` (relative path; `""` = root).
     CreateScratchNote {
+        parent: String,
         title: String,
     },
-    /// Delete a scratch note by id (file name).
+    /// Create a new folder named `name` inside the folder at `parent`.
+    CreateScratchDir {
+        parent: String,
+        name: String,
+    },
+    /// Rename the entry at `id` (file or folder) to `new_name`.
+    RenameScratch {
+        id: String,
+        new_name: String,
+    },
+    /// Delete a scratch entry by id (folders are removed recursively).
     DeleteScratchNote {
         id: String,
     },

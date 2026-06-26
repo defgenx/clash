@@ -7,7 +7,8 @@ use crate::adapters::views::ViewKind;
 use crate::application::actions::{
     Action, AgentAction, NavAction, ScratchAction, TableAction, TaskAction, UiAction,
 };
-use crate::application::state::{AppState, InputMode};
+use crate::application::state::{visible_scratch_indices, AppState, InputMode};
+use crate::domain::entities::ScratchNote;
 
 /// Map a key event to an action based on current state.
 pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
@@ -27,7 +28,9 @@ pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
         | InputMode::NewMemberName
         | InputMode::NewMemberType
         | InputMode::NewMemberModel
-        | InputMode::NewScratchTitle => handle_input_mode(key),
+        | InputMode::NewScratchTitle
+        | InputMode::NewScratchDir
+        | InputMode::RenameScratch => handle_input_mode(key),
         InputMode::Confirm => handle_confirm_mode(key, state),
         InputMode::Picker => handle_picker_mode(key),
         InputMode::Attached => Action::Noop,
@@ -101,6 +104,8 @@ fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
         KeyCode::Char('A') => {
             if state.current_view() == ViewKind::Sessions {
                 Action::Ui(UiAction::CycleSectionFilter)
+            } else if state.current_view() == ViewKind::Scratch {
+                Action::Ui(UiAction::EnterNewScratchDirMode)
             } else {
                 Action::Noop
             }
@@ -139,7 +144,14 @@ fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
                 handle_diff_view(state)
             }
         }
-        KeyCode::Char('r') => handle_refresh(state),
+        KeyCode::Char('r') => {
+            // On the Scratch view, `r` renames the selected entry.
+            if state.current_view() == ViewKind::Scratch {
+                Action::Ui(UiAction::EnterRenameScratchMode)
+            } else {
+                handle_refresh(state)
+            }
+        }
         KeyCode::Char('x') => {
             // Remove a member from the current team (picker).
             if matches!(state.current_view(), ViewKind::Teams | ViewKind::TeamDetail) {
@@ -308,9 +320,19 @@ fn handle_enter(state: &AppState) -> Action {
     }
 }
 
-/// Open the currently selected scratch note in an editor (via the picker).
+/// The scratch entry under the current selection, mapped through the visible
+/// (collapsed-folder-aware) tree rows — selection indexes that visible list.
+fn selected_scratch_note(state: &AppState) -> Option<&ScratchNote> {
+    let visible = visible_scratch_indices(&state.store.scratch_notes, &state.expanded_scratch_dirs);
+    visible
+        .get(state.table_state.selected)
+        .and_then(|&i| state.store.scratch_notes.get(i))
+}
+
+/// Open the selected scratch entry: a file goes to the editor picker, a folder
+/// toggles expand/collapse (both via `ScratchAction::OpenInEditor`).
 fn open_selected_scratch(state: &AppState) -> Action {
-    if let Some(note) = state.store.scratch_notes.get(state.table_state.selected) {
+    if let Some(note) = selected_scratch_note(state) {
         Action::Scratch(ScratchAction::OpenInEditor {
             id: note.id.clone(),
         })
@@ -320,8 +342,8 @@ fn open_selected_scratch(state: &AppState) -> Action {
 }
 
 fn handle_create(state: &AppState) -> Action {
-    // On the Scratch view, `c` creates a note; everywhere else it prompts
-    // for the directory before spawning a new Claude session.
+    // On the Scratch view, `a`/`c`/`n` create a note; everywhere else they
+    // prompt for the directory before spawning a new Claude session.
     if state.current_view() == ViewKind::Scratch {
         return Action::Ui(UiAction::EnterNewScratchMode);
     }
@@ -376,9 +398,14 @@ fn handle_delete(state: &AppState) -> Action {
             }
         }
         ViewKind::Scratch => {
-            if let Some(note) = state.store.scratch_notes.get(state.table_state.selected) {
+            if let Some(note) = selected_scratch_note(state) {
+                let message = if note.is_dir {
+                    format!("Delete folder '{}' and its contents?", note.title)
+                } else {
+                    format!("Delete note '{}'?", note.title)
+                };
                 Action::Ui(UiAction::ShowConfirm {
-                    message: format!("Delete note '{}'?", note.title),
+                    message,
                     on_confirm: Box::new(Action::Scratch(ScratchAction::Delete {
                         id: note.id.clone(),
                     })),
@@ -430,6 +457,10 @@ fn resolve_session_id(state: &AppState) -> Option<String> {
 }
 
 fn handle_attach_or_assign(state: &AppState) -> Action {
+    // On the Scratch view, `a` creates a new note (there are no sessions here).
+    if state.current_view() == ViewKind::Scratch {
+        return Action::Ui(UiAction::EnterNewScratchMode);
+    }
     if let Some(session_id) = resolve_session_id(state) {
         // Route based on Session.source: wild/external rows take over
         // the outside claude after a single confirm — kill its process

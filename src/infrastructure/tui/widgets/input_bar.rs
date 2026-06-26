@@ -37,6 +37,11 @@ pub fn render_input_bar(
             Style::default().fg(theme::PROMPT_COLOR),
         ),
         InputMode::NewScratchTitle => ("Scratch title: ", Style::default().fg(theme::PROMPT_COLOR)),
+        InputMode::NewScratchDir => (
+            "New folder name: ",
+            Style::default().fg(theme::PROMPT_COLOR),
+        ),
+        InputMode::RenameScratch => ("Rename to: ", Style::default().fg(theme::PROMPT_COLOR)),
         _ => return,
     };
 

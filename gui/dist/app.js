@@ -18,6 +18,8 @@ const state = {
   teamsOpen: false,
   notes: [],
   notesOpen: false,
+  notesExpanded: new Set(), // scratch folder ids (rel paths) expanded in the tree
+  notesDragId: null, // id of the scratch entry currently being dragged
   renaming: null, // session id with an open inline-rename input
   prevStatuses: new Map(), // session id -> status (attention transitions)
   unread: new Set(), // session ids with unseen attention events
@@ -68,6 +70,10 @@ const ICONS = {
   terminal: '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>',
   users:
     '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  folder:
+    '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+  file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>',
+  chevron: '<polyline points="9 18 15 12 9 6"/>',
 };
 
 function svgIcon(name, size = 15) {
@@ -2044,6 +2050,25 @@ async function refreshNotes() {
   renderNotes();
 }
 
+/// Which scratch entries are visible right now: everything except entries
+/// nested under a collapsed folder. `state.notes` is a depth-first pre-order
+/// flattening (folders first), so a collapsed folder hides the contiguous run
+/// of deeper-depth entries that follow it. Mirrors the core's
+/// `visible_scratch_indices`, keeping the GUI tree in step with the TUI.
+function visibleNotes() {
+  const out = [];
+  let collapsedDepth = null;
+  for (const n of state.notes) {
+    if (collapsedDepth !== null) {
+      if (n.depth > collapsedDepth) continue;
+      collapsedDepth = null;
+    }
+    out.push(n);
+    if (n.isDir && !state.notesExpanded.has(n.id)) collapsedDepth = n.depth;
+  }
+  return out;
+}
+
 function renderNotes() {
   const list = $("notes-list");
   list.innerHTML = "";
@@ -2054,43 +2079,156 @@ function renderNotes() {
     list.appendChild(empty);
     return;
   }
-  for (const n of state.notes) {
-    const item = document.createElement("div");
-    item.className = "team-item";
-    item.innerHTML = `<span class="team-icon">${svgIcon(
-      "pencil",
-      13
-    )}</span><span class="team-name">${escapeHtml(n.title)}</span>`;
-    item.onclick = (ev) => openScratchInEditor(n, ev.clientX, ev.clientY);
-    item.oncontextmenu = (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      showContextMenu(ev.clientX, ev.clientY, [
-        {
-          label: "Open in editor…",
-          icon: "pencil",
-          action: () => openScratchInEditor(n, ev.clientX, ev.clientY),
-        },
-        null,
-        {
-          label: "Delete scratch…",
-          icon: "alert",
-          danger: true,
-          action: () => deleteNoteConfirm(n),
-        },
-      ]);
-    };
-    list.appendChild(item);
+  for (const n of visibleNotes()) {
+    list.appendChild(buildNoteRow(n));
   }
 }
 
-async function newNotePrompt(x, y) {
-  const title = await uiPrompt("New scratch title", "");
+/// One tree row — a file or a folder — with indentation, caret, drag source,
+/// drop target (folders), click-to-open / click-to-toggle, and a context menu.
+function buildNoteRow(n) {
+  const item = document.createElement("div");
+  item.className = "team-item note-item" + (n.isDir ? " note-dir" : "");
+  item.style.paddingLeft = `${8 + n.depth * 14}px`;
+
+  const caret = n.isDir
+    ? `<span class="note-caret ${
+        state.notesExpanded.has(n.id) ? "open" : ""
+      }">${svgIcon("chevron", 12)}</span>`
+    : `<span class="note-caret note-caret-spacer"></span>`;
+  const icon = svgIcon(n.isDir ? "folder" : "file", 13);
+  item.innerHTML = `${caret}<span class="team-icon">${icon}</span><span class="team-name">${escapeHtml(
+    n.title
+  )}</span>`;
+
+  item.onclick = (ev) => {
+    if (n.isDir) toggleNoteDir(n.id);
+    else openScratchInEditor(n, ev.clientX, ev.clientY);
+  };
+  item.oncontextmenu = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    noteContextMenu(n, ev.clientX, ev.clientY);
+  };
+
+  // Drag source: every entry can be moved.
+  item.draggable = true;
+  item.addEventListener("dragstart", (ev) => {
+    state.notesDragId = n.id;
+    ev.dataTransfer.effectAllowed = "move";
+    try {
+      ev.dataTransfer.setData("text/plain", n.id);
+    } catch (_) {}
+    item.classList.add("note-dragging");
+  });
+  item.addEventListener("dragend", () => {
+    state.notesDragId = null;
+    item.classList.remove("note-dragging");
+    document
+      .querySelectorAll(".note-drop-hover")
+      .forEach((el) => el.classList.remove("note-drop-hover"));
+  });
+  // Drop target: folders accept a move into themselves.
+  if (n.isDir) wireNoteDropTarget(item, n.id);
+  return item;
+}
+
+/// Make `el` accept drops that move the dragged scratch entry into the folder
+/// `targetId` (`""` = root). Rejects no-op and cycle moves up front.
+function wireNoteDropTarget(el, targetId) {
+  el.addEventListener("dragover", (ev) => {
+    if (!canDropNote(targetId)) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = "move";
+    if (el.classList.contains("team-item")) el.classList.add("note-drop-hover");
+  });
+  el.addEventListener("dragleave", () => el.classList.remove("note-drop-hover"));
+  el.addEventListener("drop", async (ev) => {
+    el.classList.remove("note-drop-hover");
+    const dragId = state.notesDragId;
+    if (!canDropNote(targetId)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    await moveNote(dragId, targetId);
+  });
+}
+
+/// Whether the in-flight drag may drop into folder `targetId`: not onto its own
+/// current parent (no-op), and not into itself or a descendant (cycle).
+function canDropNote(targetId) {
+  const dragId = state.notesDragId;
+  if (!dragId) return false;
+  const dragged = state.notes.find((n) => n.id === dragId);
+  if (!dragged) return false;
+  if (dragged.parent === targetId) return false; // already there
+  if (targetId === dragId || targetId.startsWith(dragId + "/")) return false; // cycle
+  return true;
+}
+
+async function moveNote(id, newParent) {
+  try {
+    const moved = await invoke("move_scratch", { id, newParent });
+    if (moved && moved.parent) state.notesExpanded.add(moved.parent);
+    await refreshNotes();
+  } catch (e) {
+    uiAlert(`Move failed: ${e}`);
+  }
+}
+
+function toggleNoteDir(id) {
+  if (state.notesExpanded.has(id)) state.notesExpanded.delete(id);
+  else state.notesExpanded.add(id);
+  renderNotes();
+}
+
+/// Context menu for a scratch entry. Folders also offer new file/folder
+/// inside them; everything offers rename and delete.
+function noteContextMenu(n, x, y) {
+  const items = [];
+  if (n.isDir) {
+    items.push({
+      label: "New scratch…",
+      icon: "plus",
+      action: () => newNotePrompt(x, y, n.id),
+    });
+    items.push({
+      label: "New folder…",
+      icon: "folder",
+      action: () => newFolderPrompt(n.id),
+    });
+  } else {
+    items.push({
+      label: "Open in editor…",
+      icon: "pencil",
+      action: () => openScratchInEditor(n, x, y),
+    });
+  }
+  items.push(null);
+  items.push({
+    label: "Rename…",
+    icon: "pencil",
+    action: () => renameNotePrompt(n),
+  });
+  items.push({
+    label: n.isDir ? "Delete folder…" : "Delete scratch…",
+    icon: "alert",
+    danger: true,
+    action: () => deleteNoteConfirm(n),
+  });
+  showContextMenu(x, y, items);
+}
+
+/// Create a note inside `parent` (`""` = root). Opens the editor picker on the
+/// new note when created from the root `+` button (x/y position the picker).
+async function newNotePrompt(x, y, parent = "") {
+  const where = parent ? ` in ${parent}` : "";
+  const title = await uiPrompt(`New scratch title${where}`, "");
   if (title === null) return;
   const trimmed = (title || "").trim();
   if (!trimmed) return;
   try {
-    const note = await invoke("create_scratch_note", { title: trimmed });
+    const note = await invoke("create_scratch_note", { parent, title: trimmed });
+    if (parent) state.notesExpanded.add(parent);
     await refreshNotes();
     openScratchInEditor(note, x, y);
   } catch (e) {
@@ -2098,10 +2236,45 @@ async function newNotePrompt(x, y) {
   }
 }
 
+async function newFolderPrompt(parent = "") {
+  const where = parent ? ` in ${parent}` : "";
+  const name = await uiPrompt(`New folder name${where}`, "");
+  if (name === null) return;
+  const trimmed = (name || "").trim();
+  if (!trimmed) return;
+  try {
+    const dir = await invoke("create_scratch_dir", { parent, name: trimmed });
+    if (parent) state.notesExpanded.add(parent);
+    if (dir && dir.id) state.notesExpanded.add(dir.id);
+    await refreshNotes();
+  } catch (e) {
+    uiAlert(`Create folder failed: ${e}`);
+  }
+}
+
+async function renameNotePrompt(n) {
+  // Pre-fill with the on-disk name (file name with extension, or folder name).
+  const current = n.id.includes("/") ? n.id.slice(n.id.lastIndexOf("/") + 1) : n.id;
+  const name = await uiPrompt(`Rename "${current}" to`, current);
+  if (name === null) return;
+  const trimmed = (name || "").trim();
+  if (!trimmed || trimmed === current) return;
+  try {
+    await invoke("rename_scratch", { id: n.id, newName: trimmed });
+    await refreshNotes();
+  } catch (e) {
+    uiAlert(`Rename failed: ${e}`);
+  }
+}
+
 async function deleteNoteConfirm(note) {
-  if (!(await uiConfirm(`Delete scratch "${note.title}"?`, "Delete"))) return;
+  const msg = note.isDir
+    ? `Delete folder "${note.title}" and everything inside it?`
+    : `Delete scratch "${note.title}"?`;
+  if (!(await uiConfirm(msg, "Delete"))) return;
   try {
     await invoke("delete_scratch_note", { id: note.id });
+    state.notesExpanded.delete(note.id);
     await refreshNotes();
   } catch (e) {
     uiAlert(`Delete failed: ${e}`);
@@ -2551,11 +2724,26 @@ $("new-team-btn").onclick = (e) => {
 };
 
 $("notes-toggle").onclick = toggleNotes;
+// The list itself is a drop target → moving an entry to the scratch root.
+// Wired once (the element persists across re-renders; rows are rebuilt each time).
+wireNoteDropTarget($("notes-list"), "");
 $("new-note-btn").onclick = (e) => {
   e.stopPropagation();
-  // Make sure the section is expanded so the new scratch is visible after refresh.
+  // Make sure the section is expanded so the new entry is visible after refresh.
   if (!state.notesOpen) toggleNotes();
-  newNotePrompt(e.clientX, e.clientY);
+  // Offer a new note or a new folder at the scratch root.
+  showContextMenu(e.clientX, e.clientY, [
+    {
+      label: "New scratch…",
+      icon: "plus",
+      action: () => newNotePrompt(e.clientX, e.clientY, ""),
+    },
+    {
+      label: "New folder…",
+      icon: "folder",
+      action: () => newFolderPrompt(""),
+    },
+  ]);
 };
 
 $("update-btn").onclick = () => {

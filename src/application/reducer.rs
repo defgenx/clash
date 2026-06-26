@@ -8,7 +8,8 @@ use crate::adapters::input::parse_command;
 use crate::adapters::views::ViewKind;
 use crate::application::actions::*;
 use crate::application::effects::Effect;
-use crate::application::state::{AppState, ConfirmDialog, InputMode};
+use crate::application::state::{visible_scratch_indices, AppState, ConfirmDialog, InputMode};
+use crate::domain::entities::ScratchNote;
 
 /// Derive a human-meaningful default session name when the user didn't supply
 /// one. Returns a short `clash-<id>` tag (first 8 chars of the session id) —
@@ -265,43 +266,133 @@ fn reduce_task(state: &mut AppState, action: TaskAction) -> Vec<Effect> {
     }
 }
 
+/// The scratch entry currently under the table selection, accounting for the
+/// collapsed-folder filtering (selection indexes the *visible* tree rows).
+fn selected_scratch_note(state: &AppState) -> Option<&ScratchNote> {
+    let visible = visible_scratch_indices(&state.store.scratch_notes, &state.expanded_scratch_dirs);
+    visible
+        .get(state.table_state.selected)
+        .and_then(|&i| state.store.scratch_notes.get(i))
+}
+
+/// Folder a newly created entry should land in, from the current selection:
+/// inside the selected folder, alongside the selected file, else the root.
+fn scratch_target_parent(state: &AppState) -> String {
+    match selected_scratch_note(state) {
+        Some(n) if n.is_dir => n.id.clone(),
+        Some(n) => n.parent.clone(),
+        None => String::new(),
+    }
+}
+
+/// Expand `dir` and every ancestor folder so a freshly created descendant is
+/// visible in the tree. No-op for the root (`""`).
+fn expand_scratch_ancestors(state: &mut AppState, dir: &str) {
+    let mut acc = String::new();
+    for seg in dir.split('/').filter(|s| !s.is_empty()) {
+        if acc.is_empty() {
+            acc = seg.to_string();
+        } else {
+            acc = format!("{}/{}", acc, seg);
+        }
+        state.expanded_scratch_dirs.insert(acc.clone());
+    }
+}
+
+/// Clamp the table selection to the number of currently-visible scratch rows.
+fn clamp_scratch_selection(state: &mut AppState) {
+    let count =
+        visible_scratch_indices(&state.store.scratch_notes, &state.expanded_scratch_dirs).len();
+    if count == 0 {
+        state.table_state.selected = 0;
+    } else if state.table_state.selected >= count {
+        state.table_state.selected = count - 1;
+    }
+}
+
 fn reduce_scratch(state: &mut AppState, action: ScratchAction) -> Vec<Effect> {
     match action {
-        ScratchAction::Create { title } => {
+        ScratchAction::Create { parent, title } => {
             let title = title.trim().to_string();
             if title.is_empty() {
                 state.toast = Some("Scratch title cannot be empty".to_string());
                 return vec![];
             }
+            // Make the destination visible so the new note shows after refresh.
+            expand_scratch_ancestors(state, &parent);
             state.toast = Some(format!("Created scratch '{}'", title));
             vec![
-                Effect::CreateScratchNote { title },
+                Effect::CreateScratchNote { parent, title },
+                Effect::RefreshScratchNotes,
+            ]
+        }
+        ScratchAction::CreateDir { parent, name } => {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                state.toast = Some("Folder name cannot be empty".to_string());
+                return vec![];
+            }
+            expand_scratch_ancestors(state, &parent);
+            // Expand the new folder itself so it's ready to receive items.
+            let new_id = if parent.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{}", parent, name)
+            };
+            state.expanded_scratch_dirs.insert(new_id);
+            state.toast = Some(format!("Created folder '{}'", name));
+            vec![
+                Effect::CreateScratchDir { parent, name },
+                Effect::RefreshScratchNotes,
+            ]
+        }
+        ScratchAction::Rename { id, new_name } => {
+            let new_name = new_name.trim().to_string();
+            if new_name.is_empty() {
+                state.toast = Some("Name cannot be empty".to_string());
+                return vec![];
+            }
+            state.toast = Some("Renamed".to_string());
+            vec![
+                Effect::RenameScratch { id, new_name },
                 Effect::RefreshScratchNotes,
             ]
         }
         ScratchAction::Delete { id } => {
-            // Drop it from the in-memory list immediately so the row disappears
-            // before the next refresh lands; clamp the selection afterwards.
-            state.store.scratch_notes.retain(|n| n.id != id);
-            let count = state.store.scratch_notes.len();
-            if count > 0 && state.table_state.selected >= count {
-                state.table_state.selected = count - 1;
-            }
-            state.toast = Some("Note deleted".to_string());
+            // Drop the entry (and, for a folder, its whole subtree) from the
+            // in-memory list immediately so rows disappear before the next
+            // refresh lands; drop any expansion state and clamp the selection.
+            let prefix = format!("{}/", id);
+            state
+                .store
+                .scratch_notes
+                .retain(|n| n.id != id && !n.id.starts_with(&prefix));
+            state
+                .expanded_scratch_dirs
+                .retain(|d| *d != id && !d.starts_with(&prefix));
+            clamp_scratch_selection(state);
+            state.toast = Some("Deleted".to_string());
             vec![
                 Effect::DeleteScratchNote { id },
                 Effect::RefreshScratchNotes,
             ]
         }
         ScratchAction::OpenInEditor { id } => {
-            // Resolve the file path, then reuse the IDE/editor picker —
-            // terminal editors (vim/emacs/nano/…) open in a pane, GUI IDEs
-            // launch detached. Same mechanism as "open project in IDE".
-            match state.store.scratch_notes.iter().find(|n| n.id == id) {
-                Some(note) if !note.path.is_empty() => vec![Effect::DetectEditors {
-                    path: note.path.clone(),
-                }],
-                Some(_) => {
+            // A folder toggles; a file resolves its path, then reuses the
+            // IDE/editor picker — terminal editors (vim/emacs/nano/…) open in a
+            // pane, GUI IDEs launch detached (same as "open project in IDE").
+            let found = state
+                .store
+                .scratch_notes
+                .iter()
+                .find(|n| n.id == id)
+                .map(|n| (n.is_dir, n.path.clone()));
+            match found {
+                Some((true, _)) => reduce_scratch(state, ScratchAction::ToggleDir { id }),
+                Some((false, path)) if !path.is_empty() => {
+                    vec![Effect::DetectEditors { path }]
+                }
+                Some((false, _)) => {
                     state.toast = Some("Note has no file path".to_string());
                     vec![]
                 }
@@ -310,6 +401,13 @@ fn reduce_scratch(state: &mut AppState, action: ScratchAction) -> Vec<Effect> {
                     vec![]
                 }
             }
+        }
+        ScratchAction::ToggleDir { id } => {
+            if !state.expanded_scratch_dirs.remove(&id) {
+                state.expanded_scratch_dirs.insert(id);
+            }
+            clamp_scratch_selection(state);
+            vec![]
         }
     }
 }
@@ -923,8 +1021,34 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             vec![]
         }
         UiAction::EnterNewScratchMode => {
+            state.scratch_op_target = Some(scratch_target_parent(state));
             state.input_mode = InputMode::NewScratchTitle;
             state.input = tui_input::Input::default();
+            vec![]
+        }
+        UiAction::EnterNewScratchDirMode => {
+            state.scratch_op_target = Some(scratch_target_parent(state));
+            state.input_mode = InputMode::NewScratchDir;
+            state.input = tui_input::Input::default();
+            vec![]
+        }
+        UiAction::EnterRenameScratchMode => {
+            // Pre-fill with the entry's current name (folder name or file name).
+            let info = selected_scratch_note(state).map(|n| {
+                let current = std::path::Path::new(&n.id)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| n.title.clone());
+                (n.id.clone(), current)
+            });
+            match info {
+                Some((id, current)) => {
+                    state.scratch_op_target = Some(id);
+                    state.input_mode = InputMode::RenameScratch;
+                    state.input = tui_input::Input::new(current);
+                }
+                None => state.toast = Some("Nothing selected".to_string()),
+            }
             vec![]
         }
         UiAction::EditTeamDescription => {
@@ -1008,6 +1132,7 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             state.pending_session = None;
             state.pending_team_edit = None;
             state.pending_member = None;
+            state.scratch_op_target = None;
             vec![]
         }
         UiAction::SubmitInput(text) => {
@@ -1077,10 +1202,38 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                         }),
                     )
                 }
-                InputMode::NewScratchTitle => reduce(
-                    state,
-                    Action::Scratch(ScratchAction::Create { title: input }),
-                ),
+                InputMode::NewScratchTitle => {
+                    let parent = state.scratch_op_target.take().unwrap_or_default();
+                    reduce(
+                        state,
+                        Action::Scratch(ScratchAction::Create {
+                            parent,
+                            title: input,
+                        }),
+                    )
+                }
+                InputMode::NewScratchDir => {
+                    let parent = state.scratch_op_target.take().unwrap_or_default();
+                    reduce(
+                        state,
+                        Action::Scratch(ScratchAction::CreateDir {
+                            parent,
+                            name: input,
+                        }),
+                    )
+                }
+                InputMode::RenameScratch => {
+                    let Some(id) = state.scratch_op_target.take() else {
+                        return vec![];
+                    };
+                    reduce(
+                        state,
+                        Action::Scratch(ScratchAction::Rename {
+                            id,
+                            new_name: input,
+                        }),
+                    )
+                }
                 InputMode::NewMemberName => {
                     let name = input.trim().to_string();
                     if name.is_empty() {
@@ -1546,7 +1699,9 @@ fn current_item_count(state: &AppState) -> usize {
         }
         ViewKind::Agents => state.store.all_members.len(),
         ViewKind::Inbox => state.inbox_messages.len(),
-        ViewKind::Scratch => state.store.scratch_notes.len(),
+        ViewKind::Scratch => {
+            visible_scratch_indices(&state.store.scratch_notes, &state.expanded_scratch_dirs).len()
+        }
         ViewKind::Sessions => state.filtered_sessions().len(),
         ViewKind::Subagents => state.store.all_subagents.len(),
         _ => 0,
@@ -2974,14 +3129,18 @@ mod tests {
         let effects = reduce(
             &mut state,
             Action::Scratch(ScratchAction::Create {
+                parent: "sql".to_string(),
                 title: "  ideas  ".to_string(),
             }),
         );
         assert!(matches!(
             effects[0],
-            Effect::CreateScratchNote { ref title } if title == "ideas"
+            Effect::CreateScratchNote { ref parent, ref title }
+                if parent == "sql" && title == "ideas"
         ));
         assert!(matches!(effects[1], Effect::RefreshScratchNotes));
+        // The destination folder is expanded so the new note shows on refresh.
+        assert!(state.expanded_scratch_dirs.contains("sql"));
     }
 
     #[test]
@@ -2990,11 +3149,68 @@ mod tests {
         let effects = reduce(
             &mut state,
             Action::Scratch(ScratchAction::Create {
+                parent: String::new(),
                 title: "   ".to_string(),
             }),
         );
         assert!(effects.is_empty());
         assert!(state.toast.is_some());
+    }
+
+    #[test]
+    fn test_scratch_create_dir_emits_effects_and_expands() {
+        let mut state = test_state();
+        let effects = reduce(
+            &mut state,
+            Action::Scratch(ScratchAction::CreateDir {
+                parent: String::new(),
+                name: "sql".to_string(),
+            }),
+        );
+        assert!(matches!(
+            effects[0],
+            Effect::CreateScratchDir { ref parent, ref name }
+                if parent.is_empty() && name == "sql"
+        ));
+        assert!(matches!(effects[1], Effect::RefreshScratchNotes));
+        assert!(state.expanded_scratch_dirs.contains("sql"));
+    }
+
+    #[test]
+    fn test_scratch_rename_emits_effects() {
+        let mut state = test_state();
+        let effects = reduce(
+            &mut state,
+            Action::Scratch(ScratchAction::Rename {
+                id: "sql/q.md".to_string(),
+                new_name: "query".to_string(),
+            }),
+        );
+        assert!(matches!(
+            effects[0],
+            Effect::RenameScratch { ref id, ref new_name }
+                if id == "sql/q.md" && new_name == "query"
+        ));
+        assert!(matches!(effects[1], Effect::RefreshScratchNotes));
+    }
+
+    #[test]
+    fn test_scratch_toggle_dir_flips_expansion() {
+        let mut state = test_state();
+        reduce(
+            &mut state,
+            Action::Scratch(ScratchAction::ToggleDir {
+                id: "sql".to_string(),
+            }),
+        );
+        assert!(state.expanded_scratch_dirs.contains("sql"));
+        reduce(
+            &mut state,
+            Action::Scratch(ScratchAction::ToggleDir {
+                id: "sql".to_string(),
+            }),
+        );
+        assert!(!state.expanded_scratch_dirs.contains("sql"));
     }
 
     #[test]
@@ -3026,6 +3242,47 @@ mod tests {
     }
 
     #[test]
+    fn test_scratch_delete_folder_drops_subtree_and_expansion() {
+        let mut state = test_state();
+        state.store.scratch_notes = vec![
+            crate::domain::entities::ScratchNote {
+                id: "sql".to_string(),
+                title: "sql".to_string(),
+                is_dir: true,
+                ..Default::default()
+            },
+            crate::domain::entities::ScratchNote {
+                id: "sql/q.md".to_string(),
+                title: "q".to_string(),
+                parent: "sql".to_string(),
+                depth: 1,
+                ..Default::default()
+            },
+            crate::domain::entities::ScratchNote {
+                id: "keep.md".to_string(),
+                title: "keep".to_string(),
+                ..Default::default()
+            },
+        ];
+        state.expanded_scratch_dirs.insert("sql".to_string());
+        reduce(
+            &mut state,
+            Action::Scratch(ScratchAction::Delete {
+                id: "sql".to_string(),
+            }),
+        );
+        // Folder and its child are gone; the unrelated note stays.
+        let ids: Vec<&str> = state
+            .store
+            .scratch_notes
+            .iter()
+            .map(|n| n.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["keep.md"]);
+        assert!(!state.expanded_scratch_dirs.contains("sql"));
+    }
+
+    #[test]
     fn test_scratch_open_in_editor_resolves_path() {
         let mut state = test_state();
         state.store.scratch_notes = vec![crate::domain::entities::ScratchNote {
@@ -3052,12 +3309,46 @@ mod tests {
     fn test_scratch_title_submit_creates_note() {
         let mut state = test_state();
         state.input_mode = InputMode::NewScratchTitle;
+        state.scratch_op_target = Some("sql".to_string());
         state.input = tui_input::Input::new("todo".to_string());
         let effects = reduce(&mut state, Action::Ui(UiAction::SubmitInput(String::new())));
         assert_eq!(state.input_mode, InputMode::Normal);
         assert!(matches!(
             effects[0],
-            Effect::CreateScratchNote { ref title } if title == "todo"
+            Effect::CreateScratchNote { ref parent, ref title }
+                if parent == "sql" && title == "todo"
+        ));
+        // Target context is consumed on submit.
+        assert!(state.scratch_op_target.is_none());
+    }
+
+    #[test]
+    fn test_scratch_dir_submit_creates_folder() {
+        let mut state = test_state();
+        state.input_mode = InputMode::NewScratchDir;
+        state.scratch_op_target = Some(String::new());
+        state.input = tui_input::Input::new("archive".to_string());
+        let effects = reduce(&mut state, Action::Ui(UiAction::SubmitInput(String::new())));
+        assert_eq!(state.input_mode, InputMode::Normal);
+        assert!(matches!(
+            effects[0],
+            Effect::CreateScratchDir { ref parent, ref name }
+                if parent.is_empty() && name == "archive"
+        ));
+    }
+
+    #[test]
+    fn test_scratch_rename_submit_renames_selected() {
+        let mut state = test_state();
+        state.input_mode = InputMode::RenameScratch;
+        state.scratch_op_target = Some("notes/old.md".to_string());
+        state.input = tui_input::Input::new("new".to_string());
+        let effects = reduce(&mut state, Action::Ui(UiAction::SubmitInput(String::new())));
+        assert_eq!(state.input_mode, InputMode::Normal);
+        assert!(matches!(
+            effects[0],
+            Effect::RenameScratch { ref id, ref new_name }
+                if id == "notes/old.md" && new_name == "new"
         ));
     }
 }

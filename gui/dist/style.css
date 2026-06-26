@@ -386,6 +386,29 @@ html, body, #app {
 .team-item .count { color: var(--fg-dim); font-size: 10px; }
 .team-icon { display: inline-flex; align-items: center; color: var(--fg-dim); flex-shrink: 0; }
 
+/* Scratch tree (IntelliJ-style "Scratches and Consoles") */
+.note-item { gap: 4px; }
+.note-item.note-dir .team-name { color: var(--fg); }
+.note-item.note-dir .team-icon { color: var(--accent); }
+.note-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  flex-shrink: 0;
+  color: var(--fg-dim);
+  transition: transform 0.12s ease;
+}
+.note-caret.open { transform: rotate(90deg); }
+.note-caret-spacer { width: 13px; }
+.note-item.note-dragging { opacity: 0.45; }
+.note-item.note-drop-hover,
+#notes-list.note-drop-hover {
+  background: var(--bg-active);
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+
 /* Team member / subagent rows in the details panel */
 .member-dot {
   width: 7px;

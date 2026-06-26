@@ -179,17 +179,20 @@ pub const TOUR_STEPS: &[TourStep] = &[
     TourStep {
         title: "Scratches",
         body: &[
-            "Press  :scratch  (or  :notes ) to open Scratches — a place to keep free-form text notes inside clash.",
+            "Press  :scratch  (or  :notes ) to open Scratches — an IntelliJ-style tree of free-form notes and folders kept inside clash.",
             "",
-            "Each note is a plain text file under ~/.claude/clash/scratch/ by default (configurable), so you can reopen it anytime or edit it outside clash too.",
+            "Each note is a plain text file under ~/.claude/clash/scratch/ by default (configurable), so you can reopen it anytime or edit it outside clash too. Organize them into folders: 'A' makes a folder, new notes land in the selected folder, and Enter expands/collapses folders.",
             "",
-            "Opening a note shows an editor picker — terminal editors (vim, nvim, emacs, nano…) open in a new pane, GUI editors (VS Code, Cursor, Zed…) launch alongside.",
+            "Opening a note shows an editor picker — terminal editors (vim, nvim, emacs, nano…) open in a new pane, GUI editors (VS Code, Cursor, Zed…) launch alongside. (Drag-and-drop reorganizing lives in the GUI.)",
         ],
         keys: &[
-            (":scratch", "Open the Scratches list"),
-            ("c / n", "Create a new scratch (prompts for a title)"),
-            ("Enter / e", "Open the selected scratch in an editor"),
-            ("d", "Delete the selected scratch"),
+            (":scratch", "Open the Scratches tree"),
+            ("a / c / n", "New note (in the selected folder)"),
+            ("A", "New folder"),
+            ("Enter", "Open a file / expand-collapse a folder"),
+            ("e", "Open the selected note in an editor"),
+            ("r", "Rename the selected entry"),
+            ("d", "Delete the selected entry (folders: recursive)"),
         ],
     },
     TourStep {

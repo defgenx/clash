@@ -26,7 +26,7 @@
 - **Git worktree support** — spawn sessions in isolated worktrees for parallel feature branches (`w` key); worktree column shows `⊟ project/worktree` for project context
 - **Repo config discovery** — auto-detects MCP servers, custom commands, agent definitions, and setup scripts from the project directory
 - **Teams & tasks** — create, configure, and delete teams (description, members with agent type and model); organize agents, manage tasks, send messages
-- **Scratches** — keep free-form text notes inside clash (`:scratch`); create, list, and reopen them anytime. Each note is a plain file under `~/.claude/clash/scratch/` by default — set `scratch_dir` in `config.toml` (or the GUI **Scratch directory** setting) to store them anywhere. Opening a scratch shows an editor picker: terminal editors (vim/emacs/nano…) open in a tab/pane, GUI editors (VS Code/Cursor/Zed…) launch alongside, like opening a project
+- **Scratches** — keep free-form text notes inside clash (`:scratch`), organized in an IntelliJ-style **"Scratches and Consoles"** tree: create notes and nested folders, rename, delete, and (in the GUI) drag-and-drop to reorganize. Each note is a plain file under `~/.claude/clash/scratch/` by default — set `scratch_dir` in `config.toml` (or the GUI **Scratch directory** setting) to store them anywhere. Opening a scratch shows an editor picker: terminal editors (vim/emacs/nano…) open in a tab/pane, GUI editors (VS Code/Cursor/Zed…) launch alongside, like opening a project
 - **Subagent tracking** — view subagent trees per session, expand/collapse in the sessions table
 - **Open in IDE** — press `e` to open a session's project in your editor (auto-detects Cursor, VS Code, Zed, JetBrains, nvim, vim; configurable)
 - **Keyboard-driven** — vim-style navigation, command mode (`:`), fuzzy filter (`/`), context help (`?`)
@@ -214,23 +214,33 @@ A status bar at the bottom shows session name, project, and git branch. The PTY 
 
 ### Scratches
 
-Reach the Scratches view with `:scratch` (also `:notes`).
+Reach the Scratches view with `:scratch` (also `:notes`). Scratches are an
+IntelliJ-style **"Scratches and Consoles"** tree: notes and folders you can
+nest, rename, and reorganize. Folders sort first; the tree is shown indented
+with an expand/collapse caret.
 
 | Key | Action |
 |-----|--------|
-| `c` / `n` | New scratch (prompts for a title) |
-| `Enter` / `e` | Open the selected scratch in an editor (picker) |
-| `d` | Delete the selected scratch |
+| `a` / `c` / `n` | New scratch — created inside the selected folder (or alongside the selected note, else at the root) |
+| `A` | New folder (same placement rule) |
+| `Enter` | Open a file in an editor (picker), or expand/collapse a folder |
+| `e` | Open the selected note in an editor (picker) |
+| `r` | Rename the selected file or folder |
+| `d` | Delete the selected entry (folders are removed recursively, with confirmation) |
 
-Scratches are plain files under `~/.claude/clash/scratch/` by default; override
-the location with `scratch_dir` in `config.toml` or the GUI **Scratch
-directory** setting (which writes the same key, so the TUI honors it too). The
-editor picker lists installed IDEs (Cursor, VS Code, Zed, JetBrains, …) and
-terminal editors (vim, nvim, emacs, nano, helix, micro); terminal editors open
-in a tab/pane, GUI editors launch alongside. In the GUI, scratches live in a
-collapsible **Scratches** sidebar section; opening one shows the editor picker —
-a terminal editor opens in an in-app terminal tab, a GUI editor launches
-alongside.
+Scratches are plain files and folders under `~/.claude/clash/scratch/` by
+default; override the location with `scratch_dir` in `config.toml` or the GUI
+**Scratch directory** setting (which writes the same key, so the TUI honors it
+too). The editor picker lists installed IDEs (Cursor, VS Code, Zed, JetBrains,
+…) and terminal editors (vim, nvim, emacs, nano, helix, micro); terminal
+editors open in a tab/pane, GUI editors launch alongside.
+
+In the GUI, scratches live in a collapsible **Scratches** sidebar section that
+renders the same tree: click a folder to expand/collapse it, click a note to
+open it, and use the section's **+** button (or a folder's right-click menu) to
+create notes and folders. **Drag and drop** any note or folder onto another
+folder — or onto empty space to move it back to the root — to reorganize.
+Right-click any entry to rename or delete it.
 
 ### Commands
 
@@ -282,7 +292,9 @@ clash also maintains its own state in `~/.claude/clash/`:
 ├── project-names/{encoded-cwd}        # Project-to-name mapping
 ├── sessions.json                      # Session registry
 ├── ui_state.json                      # Persisted UI state (nav, selection, filters)
-├── scratch/{name}.md                  # Scratch notes (free-form text files)
+├── scratch/                           # Scratch notes — a nested tree of
+│   ├── {name}.md                       #   free-form text files and
+│   └── {folder}/{name}.md              #   user-created folders
 └── trusted_repos.json                 # SHA256 trust store for repo setup scripts
 ```
 

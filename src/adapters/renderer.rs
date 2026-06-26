@@ -267,7 +267,7 @@ fn draw_body(
         }
         ViewKind::Inbox => table::render_table::<inbox::InboxTable>(state, frame, area),
         ViewKind::Prompts => detail::render_detail::<prompts::PromptsView>(state, frame, area),
-        ViewKind::Scratch => table::render_table::<scratch::ScratchTable>(state, frame, area),
+        ViewKind::Scratch => scratch::render_scratch_table(state, frame, area),
         ViewKind::Sessions => {
             if sessions::SessionsTable::has_items(state) {
                 sessions::render_sessions_table(state, sessions_visual_state, frame, area);
@@ -297,7 +297,9 @@ fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
         | crate::application::state::InputMode::NewMemberName
         | crate::application::state::InputMode::NewMemberType
         | crate::application::state::InputMode::NewMemberModel
-        | crate::application::state::InputMode::NewScratchTitle => {
+        | crate::application::state::InputMode::NewScratchTitle
+        | crate::application::state::InputMode::NewScratchDir
+        | crate::application::state::InputMode::RenameScratch => {
             input_bar::render_input_bar(
                 &state.input_mode,
                 state.input.value(),

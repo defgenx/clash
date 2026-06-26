@@ -8,7 +8,7 @@ use crate::adapters::views::ViewKind;
 use crate::application::actions::Action;
 use crate::application::nav::NavigationStack;
 use crate::application::store::DataStore;
-use crate::domain::entities::{InboxMessage, Preset, Session, SessionSection};
+use crate::domain::entities::{InboxMessage, Preset, ScratchNote, Session, SessionSection};
 
 /// Phases of the self-update process (displayed in the update overlay).
 #[derive(Debug, Clone)]
@@ -150,8 +150,15 @@ pub enum InputMode {
     NewMemberType,
     /// Prompting for a new team member's model.
     NewMemberModel,
-    /// Prompting for the title of a new scratch note.
+    /// Prompting for the title of a new scratch note (parent in
+    /// `scratch_op_target`).
     NewScratchTitle,
+    /// Prompting for the name of a new scratch folder (parent in
+    /// `scratch_op_target`).
+    NewScratchDir,
+    /// Prompting for a new name for the scratch entry whose id is in
+    /// `scratch_op_target`.
+    RenameScratch,
     /// Attached to a daemon PTY session — keystrokes go to the session.
     Attached,
     /// Picker dialog is open — j/k navigate, Enter selects, Esc cancels.
@@ -325,6 +332,13 @@ pub struct AppState {
     pub pending_team_edit: Option<String>,
     /// Pending add-member flow state (InputMode::NewMember*).
     pub pending_member: Option<PendingMember>,
+    /// Scratch folder ids (relative paths) currently expanded in the tree.
+    /// Folders default to collapsed; absence here means collapsed.
+    pub expanded_scratch_dirs: HashSet<String>,
+    /// Context for the active scratch input prompt: the parent folder id for
+    /// `NewScratchTitle`/`NewScratchDir`, or the target entry id for
+    /// `RenameScratch`. Consumed when the prompt is submitted or cancelled.
+    pub scratch_op_target: Option<String>,
 }
 
 /// Pending team-member creation state — filled step by step through the
@@ -379,6 +393,8 @@ impl AppState {
             pending_selection_id: None,
             pending_team_edit: None,
             pending_member: None,
+            expanded_scratch_dirs: HashSet::new(),
+            scratch_op_target: None,
         }
     }
 
@@ -528,6 +544,34 @@ impl AppState {
             .filter(|s| s.matches_filter(&self.filter))
             .collect()
     }
+}
+
+/// Indices into `notes` that are visible given the set of `expanded` folder
+/// ids — i.e. every entry except those nested under a collapsed folder.
+///
+/// Relies on `notes` being a depth-first pre-order flattening (the order
+/// `DataRepository::load_scratch_notes` returns): a folder is immediately
+/// followed by its whole subtree, so when a folder is collapsed we skip the
+/// contiguous run of deeper-depth entries that follow it. Pure and shared by
+/// the reducer (selection clamping) and the renderer (which rows to draw).
+pub fn visible_scratch_indices(notes: &[ScratchNote], expanded: &HashSet<String>) -> Vec<usize> {
+    let mut out = Vec::with_capacity(notes.len());
+    // When `Some(d)`, we are skipping the subtree of a collapsed folder at
+    // depth `d`; entries deeper than `d` are hidden until depth returns to `d`.
+    let mut collapsed_at: Option<usize> = None;
+    for (i, n) in notes.iter().enumerate() {
+        if let Some(d) = collapsed_at {
+            if n.depth > d {
+                continue;
+            }
+            collapsed_at = None;
+        }
+        out.push(i);
+        if n.is_dir && !expanded.contains(&n.id) {
+            collapsed_at = Some(n.depth);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -922,5 +966,50 @@ mod tests {
         // Session not found — should set pending_selection_id
         assert_eq!(state.pending_selection_id, Some("s3".to_string()));
         assert_eq!(state.table_state.selected, 2); // falls back to index
+    }
+
+    fn scratch_dir(id: &str, depth: usize) -> ScratchNote {
+        ScratchNote {
+            id: id.to_string(),
+            is_dir: true,
+            depth,
+            ..Default::default()
+        }
+    }
+    fn scratch_file(id: &str, depth: usize) -> ScratchNote {
+        ScratchNote {
+            id: id.to_string(),
+            is_dir: false,
+            depth,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_visible_scratch_indices_hides_collapsed_subtrees() {
+        // notes/  notes/idea.md  sql/  sql/q.sql  todo.md
+        let notes = vec![
+            scratch_dir("notes", 0),
+            scratch_file("notes/idea.md", 1),
+            scratch_dir("sql", 0),
+            scratch_file("sql/q.sql", 1),
+            scratch_file("todo.md", 0),
+        ];
+
+        // Nothing expanded → only top-level entries (both folders + root file).
+        let none = HashSet::new();
+        assert_eq!(visible_scratch_indices(&notes, &none), vec![0, 2, 4]);
+
+        // Expand "sql" only → its child shows, "notes" stays collapsed.
+        let mut expanded = HashSet::new();
+        expanded.insert("sql".to_string());
+        assert_eq!(visible_scratch_indices(&notes, &expanded), vec![0, 2, 3, 4]);
+
+        // Expand both → everything visible.
+        expanded.insert("notes".to_string());
+        assert_eq!(
+            visible_scratch_indices(&notes, &expanded),
+            vec![0, 1, 2, 3, 4]
+        );
     }
 }

@@ -905,16 +905,61 @@ fn list_scratch_notes(
         .map_err(|e| e.to_string())
 }
 
-/// Create a new empty scratch note from a title; returns the created note.
+/// Create a new empty scratch note titled `title` inside the folder at
+/// `parent` (relative path; `""` = root); returns the created note.
 #[tauri::command]
 fn create_scratch_note(
     state: State<'_, GuiState>,
+    parent: String,
     title: String,
 ) -> Result<clash::domain::entities::ScratchNote, String> {
     use clash::domain::ports::DataRepository;
     state
         .backend
-        .create_scratch_note(&title)
+        .create_scratch_note(&parent, &title)
+        .map_err(|e| e.to_string())
+}
+
+/// Create a new folder named `name` inside the folder at `parent`
+/// (relative path; `""` = root); returns the created folder entry.
+#[tauri::command]
+fn create_scratch_dir(
+    state: State<'_, GuiState>,
+    parent: String,
+    name: String,
+) -> Result<clash::domain::entities::ScratchNote, String> {
+    use clash::domain::ports::DataRepository;
+    state
+        .backend
+        .create_scratch_dir(&parent, &name)
+        .map_err(|e| e.to_string())
+}
+
+/// Rename the scratch entry at `id` (file or folder) to `new_name`.
+#[tauri::command]
+fn rename_scratch(
+    state: State<'_, GuiState>,
+    id: String,
+    new_name: String,
+) -> Result<clash::domain::entities::ScratchNote, String> {
+    use clash::domain::ports::DataRepository;
+    state
+        .backend
+        .rename_scratch(&id, &new_name)
+        .map_err(|e| e.to_string())
+}
+
+/// Move the scratch entry at `id` into the folder at `new_parent` (`""` = root).
+#[tauri::command]
+fn move_scratch(
+    state: State<'_, GuiState>,
+    id: String,
+    new_parent: String,
+) -> Result<clash::domain::entities::ScratchNote, String> {
+    use clash::domain::ports::DataRepository;
+    state
+        .backend
+        .move_scratch(&id, &new_parent)
         .map_err(|e| e.to_string())
 }
 
@@ -2233,6 +2278,9 @@ fn main() {
             list_tasks,
             list_scratch_notes,
             create_scratch_note,
+            create_scratch_dir,
+            rename_scratch,
+            move_scratch,
             delete_scratch_note,
             detect_editors,
             open_scratch_terminal_editor,

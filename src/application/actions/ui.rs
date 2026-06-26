@@ -14,7 +14,14 @@ pub enum UiAction {
     /// Prompt for directory and spawn a new session.
     EnterNewSessionMode,
     /// Prompt for a title and create a new scratch note (Scratch view).
+    /// The new note lands in the selected folder, the selected file's folder,
+    /// or the root — resolved by the reducer from the current selection.
     EnterNewScratchMode,
+    /// Prompt for a name and create a new scratch folder (Scratch view),
+    /// using the same parent-resolution rule as `EnterNewScratchMode`.
+    EnterNewScratchDirMode,
+    /// Prompt for a new name to rename the selected scratch entry (Scratch view).
+    EnterRenameScratchMode,
     /// Edit the current team's description (Teams/TeamDetail views).
     EditTeamDescription,
     /// Start the add-member input chain for the current team.
