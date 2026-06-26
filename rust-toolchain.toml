@@ -1,8 +1,0 @@
-# Pin the toolchain for clash. Newer stable releases (e.g. 1.95) fail to
-# compile the locked `futures-util 0.3.32` ("ambiguous associated type"
-# `Self::Error` errors), and 0.3.32 is already the latest, so a plain
-# `cargo build`/CI run on default stable breaks regardless of project changes.
-# 1.89.0 builds the whole workspace (clash + clash-gui), tests, fmt, and clippy.
-[toolchain]
-channel = "1.89.0"
-components = ["rustfmt", "clippy"]
