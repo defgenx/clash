@@ -30,6 +30,7 @@ pub fn reduce(state: &mut AppState, action: Action) -> Vec<Effect> {
         Action::Table(table) => reduce_table(state, table),
         Action::Team(team) => reduce_team(state, team),
         Action::Task(task) => reduce_task(state, task),
+        Action::Scratch(scratch) => reduce_scratch(state, scratch),
         Action::Agent(agent) => reduce_agent(state, agent),
         Action::Ui(ui) => reduce_ui(state, ui),
         Action::Noop => vec![],
@@ -260,6 +261,55 @@ fn reduce_task(state: &mut AppState, action: TaskAction) -> Vec<Effect> {
                 }
             }
             vec![]
+        }
+    }
+}
+
+fn reduce_scratch(state: &mut AppState, action: ScratchAction) -> Vec<Effect> {
+    match action {
+        ScratchAction::Create { title } => {
+            let title = title.trim().to_string();
+            if title.is_empty() {
+                state.toast = Some("Scratch title cannot be empty".to_string());
+                return vec![];
+            }
+            state.toast = Some(format!("Created scratch '{}'", title));
+            vec![
+                Effect::CreateScratchNote { title },
+                Effect::RefreshScratchNotes,
+            ]
+        }
+        ScratchAction::Delete { id } => {
+            // Drop it from the in-memory list immediately so the row disappears
+            // before the next refresh lands; clamp the selection afterwards.
+            state.store.scratch_notes.retain(|n| n.id != id);
+            let count = state.store.scratch_notes.len();
+            if count > 0 && state.table_state.selected >= count {
+                state.table_state.selected = count - 1;
+            }
+            state.toast = Some("Note deleted".to_string());
+            vec![
+                Effect::DeleteScratchNote { id },
+                Effect::RefreshScratchNotes,
+            ]
+        }
+        ScratchAction::OpenInEditor { id } => {
+            // Resolve the file path, then reuse the IDE/editor picker —
+            // terminal editors (vim/emacs/nano/…) open in a pane, GUI IDEs
+            // launch detached. Same mechanism as "open project in IDE".
+            match state.store.scratch_notes.iter().find(|n| n.id == id) {
+                Some(note) if !note.path.is_empty() => vec![Effect::DetectEditors {
+                    path: note.path.clone(),
+                }],
+                Some(_) => {
+                    state.toast = Some("Note has no file path".to_string());
+                    vec![]
+                }
+                None => {
+                    state.toast = Some("Note not found".to_string());
+                    vec![]
+                }
+            }
         }
     }
 }
@@ -872,6 +922,11 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             state.input = tui_input::Input::new(state.default_cwd.clone());
             vec![]
         }
+        UiAction::EnterNewScratchMode => {
+            state.input_mode = InputMode::NewScratchTitle;
+            state.input = tui_input::Input::default();
+            vec![]
+        }
         UiAction::EditTeamDescription => {
             let Some(name) = resolve_team_name(state) else {
                 state.toast = Some("No team selected".to_string());
@@ -1022,6 +1077,10 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                         }),
                     )
                 }
+                InputMode::NewScratchTitle => reduce(
+                    state,
+                    Action::Scratch(ScratchAction::Create { title: input }),
+                ),
                 InputMode::NewMemberName => {
                     let name = input.trim().to_string();
                     if name.is_empty() {
@@ -1487,6 +1546,7 @@ fn current_item_count(state: &AppState) -> usize {
         }
         ViewKind::Agents => state.store.all_members.len(),
         ViewKind::Inbox => state.inbox_messages.len(),
+        ViewKind::Scratch => state.store.scratch_notes.len(),
         ViewKind::Sessions => state.filtered_sessions().len(),
         ViewKind::Subagents => state.store.all_subagents.len(),
         _ => 0,
@@ -1497,6 +1557,7 @@ fn current_item_count(state: &AppState) -> usize {
 fn load_effects_for_view(state: &mut AppState, view: ViewKind) -> Vec<Effect> {
     match view {
         ViewKind::Teams => vec![Effect::RefreshAll],
+        ViewKind::Scratch => vec![Effect::RefreshScratchNotes],
         ViewKind::Sessions => vec![
             Effect::RefreshSessions,
             Effect::LoadPresets {
@@ -2903,5 +2964,100 @@ mod tests {
             Effect::TerminateProcess { wild_pid, .. } => assert_eq!(*wild_pid, None),
             _ => unreachable!(),
         }
+    }
+
+    // ── Scratch notes ────────────────────────────────────────────
+
+    #[test]
+    fn test_scratch_create_emits_effects() {
+        let mut state = test_state();
+        let effects = reduce(
+            &mut state,
+            Action::Scratch(ScratchAction::Create {
+                title: "  ideas  ".to_string(),
+            }),
+        );
+        assert!(matches!(
+            effects[0],
+            Effect::CreateScratchNote { ref title } if title == "ideas"
+        ));
+        assert!(matches!(effects[1], Effect::RefreshScratchNotes));
+    }
+
+    #[test]
+    fn test_scratch_create_empty_title_is_noop() {
+        let mut state = test_state();
+        let effects = reduce(
+            &mut state,
+            Action::Scratch(ScratchAction::Create {
+                title: "   ".to_string(),
+            }),
+        );
+        assert!(effects.is_empty());
+        assert!(state.toast.is_some());
+    }
+
+    #[test]
+    fn test_scratch_delete_removes_from_store_and_emits_effects() {
+        let mut state = test_state();
+        state.store.scratch_notes = vec![
+            crate::domain::entities::ScratchNote {
+                id: "a.md".to_string(),
+                title: "a".to_string(),
+                ..Default::default()
+            },
+            crate::domain::entities::ScratchNote {
+                id: "b.md".to_string(),
+                title: "b".to_string(),
+                ..Default::default()
+            },
+        ];
+        let effects = reduce(
+            &mut state,
+            Action::Scratch(ScratchAction::Delete {
+                id: "a.md".to_string(),
+            }),
+        );
+        // Optimistically removed from the in-memory list.
+        assert_eq!(state.store.scratch_notes.len(), 1);
+        assert_eq!(state.store.scratch_notes[0].id, "b.md");
+        assert!(matches!(effects[0], Effect::DeleteScratchNote { ref id } if id == "a.md"));
+        assert!(matches!(effects[1], Effect::RefreshScratchNotes));
+    }
+
+    #[test]
+    fn test_scratch_open_in_editor_resolves_path() {
+        let mut state = test_state();
+        state.store.scratch_notes = vec![crate::domain::entities::ScratchNote {
+            id: "a.md".to_string(),
+            title: "a".to_string(),
+            path: "/home/u/.claude/clash/scratch/a.md".to_string(),
+            ..Default::default()
+        }];
+        let effects = reduce(
+            &mut state,
+            Action::Scratch(ScratchAction::OpenInEditor {
+                id: "a.md".to_string(),
+            }),
+        );
+        // Reuses the editor picker with the note's file path.
+        assert!(matches!(
+            effects[0],
+            Effect::DetectEditors { ref path }
+                if path == "/home/u/.claude/clash/scratch/a.md"
+        ));
+    }
+
+    #[test]
+    fn test_scratch_title_submit_creates_note() {
+        let mut state = test_state();
+        state.input_mode = InputMode::NewScratchTitle;
+        state.input = tui_input::Input::new("todo".to_string());
+        let effects = reduce(&mut state, Action::Ui(UiAction::SubmitInput(String::new())));
+        assert_eq!(state.input_mode, InputMode::Normal);
+        assert!(matches!(
+            effects[0],
+            Effect::CreateScratchNote { ref title } if title == "todo"
+        ));
     }
 }

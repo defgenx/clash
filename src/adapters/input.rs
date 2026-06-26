@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::adapters::format;
 use crate::adapters::views::ViewKind;
 use crate::application::actions::{
-    Action, AgentAction, NavAction, TableAction, TaskAction, UiAction,
+    Action, AgentAction, NavAction, ScratchAction, TableAction, TaskAction, UiAction,
 };
 use crate::application::state::{AppState, InputMode};
 
@@ -26,7 +26,8 @@ pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
         | InputMode::TeamDescription
         | InputMode::NewMemberName
         | InputMode::NewMemberType
-        | InputMode::NewMemberModel => handle_input_mode(key),
+        | InputMode::NewMemberModel
+        | InputMode::NewScratchTitle => handle_input_mode(key),
         InputMode::Confirm => handle_confirm_mode(key, state),
         InputMode::Picker => handle_picker_mode(key),
         InputMode::Attached => Action::Noop,
@@ -286,6 +287,8 @@ fn handle_enter(state: &AppState) -> Action {
                 Action::Noop
             }
         }
+        // Enter on Scratch = open the selected note in an editor
+        ViewKind::Scratch => open_selected_scratch(state),
         // TeamDetail → drill into Agents table
         ViewKind::TeamDetail => Action::Nav(NavAction::DrillIn {
             view: ViewKind::Agents,
@@ -305,8 +308,23 @@ fn handle_enter(state: &AppState) -> Action {
     }
 }
 
-fn handle_create(_state: &AppState) -> Action {
-    // `c` prompts for the directory before spawning a new Claude session
+/// Open the currently selected scratch note in an editor (via the picker).
+fn open_selected_scratch(state: &AppState) -> Action {
+    if let Some(note) = state.store.scratch_notes.get(state.table_state.selected) {
+        Action::Scratch(ScratchAction::OpenInEditor {
+            id: note.id.clone(),
+        })
+    } else {
+        Action::Noop
+    }
+}
+
+fn handle_create(state: &AppState) -> Action {
+    // On the Scratch view, `c` creates a note; everywhere else it prompts
+    // for the directory before spawning a new Claude session.
+    if state.current_view() == ViewKind::Scratch {
+        return Action::Ui(UiAction::EnterNewScratchMode);
+    }
     Action::Ui(UiAction::EnterNewSessionMode)
 }
 
@@ -353,6 +371,18 @@ fn handle_delete(state: &AppState) -> Action {
                 } else {
                     Action::Noop
                 }
+            } else {
+                Action::Noop
+            }
+        }
+        ViewKind::Scratch => {
+            if let Some(note) = state.store.scratch_notes.get(state.table_state.selected) {
+                Action::Ui(UiAction::ShowConfirm {
+                    message: format!("Delete note '{}'?", note.title),
+                    on_confirm: Box::new(Action::Scratch(ScratchAction::Delete {
+                        id: note.id.clone(),
+                    })),
+                })
             } else {
                 Action::Noop
             }
@@ -449,6 +479,10 @@ fn handle_open_in_ide(state: &AppState) -> Action {
     // On team views, `e` edits the team description instead.
     if matches!(state.current_view(), ViewKind::Teams | ViewKind::TeamDetail) {
         return Action::Ui(UiAction::EditTeamDescription);
+    }
+    // On the Scratch view, `e` opens the selected note in an editor.
+    if state.current_view() == ViewKind::Scratch {
+        return open_selected_scratch(state);
     }
     if let Some(session_id) = resolve_session_id(state) {
         return Action::Agent(AgentAction::OpenInIde { session_id });
@@ -641,6 +675,7 @@ fn handle_refresh(state: &AppState) -> Action {
 fn handle_new_session(state: &AppState) -> Action {
     match state.current_view() {
         ViewKind::Sessions | ViewKind::SessionDetail => Action::Ui(UiAction::EnterNewSessionMode),
+        ViewKind::Scratch => Action::Ui(UiAction::EnterNewScratchMode),
         _ => Action::Noop,
     }
 }
@@ -788,6 +823,7 @@ pub fn parse_command(cmd: &str) -> Action {
         "tasks" | "task" => Action::Nav(NavAction::NavigateTo(ViewKind::Tasks)),
         "inbox" => Action::Nav(NavAction::NavigateTo(ViewKind::Inbox)),
         "prompts" | "prompt" => Action::Nav(NavAction::NavigateTo(ViewKind::Prompts)),
+        "scratch" | "notes" | "note" => Action::Nav(NavAction::NavigateTo(ViewKind::Scratch)),
         "sessions" | "session" => Action::Nav(NavAction::NavigateTo(ViewKind::Sessions)),
         "active" => Action::Ui(UiAction::SetSessionFilter(
             crate::application::state::SessionFilter::Active,
@@ -1207,6 +1243,44 @@ mod tests {
                 );
             }
             other => panic!("Expected ShowConfirm, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_command_scratch() {
+        for cmd in ["scratch", "notes", "note"] {
+            match parse_command(cmd) {
+                Action::Nav(NavAction::NavigateTo(ViewKind::Scratch)) => {}
+                other => panic!("Expected NavigateTo Scratch for '{}', got {:?}", cmd, other),
+            }
+        }
+    }
+
+    #[test]
+    fn test_c_key_on_scratch_view_creates_note() {
+        let mut state = AppState::new();
+        state.nav.push(ViewKind::Scratch, None);
+        let key = KeyEvent::new(KeyCode::Char('c'), crossterm::event::KeyModifiers::NONE);
+        assert!(matches!(
+            handle_key(key, &state),
+            Action::Ui(UiAction::EnterNewScratchMode)
+        ));
+    }
+
+    #[test]
+    fn test_enter_on_scratch_opens_editor() {
+        let mut state = AppState::new();
+        state.nav.push(ViewKind::Scratch, None);
+        state.store.scratch_notes = vec![crate::domain::entities::ScratchNote {
+            id: "a.md".to_string(),
+            title: "a".to_string(),
+            ..Default::default()
+        }];
+        state.table_state.selected = 0;
+        let key = KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
+        match handle_key(key, &state) {
+            Action::Scratch(ScratchAction::OpenInEditor { id }) => assert_eq!(id, "a.md"),
+            other => panic!("Expected OpenInEditor, got {:?}", other),
         }
     }
 

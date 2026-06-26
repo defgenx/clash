@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod navigation;
+pub mod scratch;
 pub mod table;
 pub mod task;
 pub mod team;
@@ -7,6 +8,7 @@ pub mod ui;
 
 pub use agent::AgentAction;
 pub use navigation::NavAction;
+pub use scratch::ScratchAction;
 pub use table::TableAction;
 pub use task::TaskAction;
 pub use team::TeamAction;
@@ -20,6 +22,7 @@ pub enum Action {
     Team(TeamAction),
     Task(TaskAction),
     Agent(AgentAction),
+    Scratch(ScratchAction),
     Ui(UiAction),
     /// No-op, used when an event doesn't map to an action.
     Noop,

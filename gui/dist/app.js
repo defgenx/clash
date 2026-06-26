@@ -16,6 +16,8 @@ const state = {
   detailsFor: null, // session id shown in the details panel, or null
   teams: [],
   teamsOpen: false,
+  notes: [],
+  notesOpen: false,
   renaming: null, // session id with an open inline-rename input
   prevStatuses: new Map(), // session id -> status (attention transitions)
   unread: new Set(), // session ids with unseen attention events
@@ -79,6 +81,7 @@ function applyStaticIcons() {
   const map = {
     "new-ws-btn": "plus",
     "new-team-btn": "plus",
+    "new-note-btn": "plus",
     "split-btn": "columns",
     "unsplit-btn": "square",
     "details-btn": "info",
@@ -2022,6 +2025,142 @@ async function deleteTeamConfirm(name) {
   }
 }
 
+// ── Notes (scratch) ─────────────────────────────────────────────
+
+async function toggleNotes() {
+  state.notesOpen = !state.notesOpen;
+  $("notes-caret").textContent = state.notesOpen ? "▾" : "▸";
+  $("notes-list").classList.toggle("hidden", !state.notesOpen);
+  if (state.notesOpen) await refreshNotes();
+}
+
+async function refreshNotes() {
+  try {
+    state.notes = await invoke("list_scratch_notes");
+  } catch (e) {
+    console.error("list_scratch_notes failed:", e);
+    state.notes = [];
+  }
+  renderNotes();
+}
+
+function renderNotes() {
+  const list = $("notes-list");
+  list.innerHTML = "";
+  if (state.notes.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "list-empty";
+    empty.textContent = "no scratches — + to create one";
+    list.appendChild(empty);
+    return;
+  }
+  for (const n of state.notes) {
+    const item = document.createElement("div");
+    item.className = "team-item";
+    item.innerHTML = `<span class="team-icon">${svgIcon(
+      "pencil",
+      13
+    )}</span><span class="team-name">${escapeHtml(n.title)}</span>`;
+    item.onclick = (ev) => openScratchInEditor(n, ev.clientX, ev.clientY);
+    item.oncontextmenu = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      showContextMenu(ev.clientX, ev.clientY, [
+        {
+          label: "Open in editor…",
+          icon: "pencil",
+          action: () => openScratchInEditor(n, ev.clientX, ev.clientY),
+        },
+        null,
+        {
+          label: "Delete scratch…",
+          icon: "alert",
+          danger: true,
+          action: () => deleteNoteConfirm(n),
+        },
+      ]);
+    };
+    list.appendChild(item);
+  }
+}
+
+async function newNotePrompt(x, y) {
+  const title = await uiPrompt("New scratch title", "");
+  if (title === null) return;
+  const trimmed = (title || "").trim();
+  if (!trimmed) return;
+  try {
+    const note = await invoke("create_scratch_note", { title: trimmed });
+    await refreshNotes();
+    openScratchInEditor(note, x, y);
+  } catch (e) {
+    uiAlert(`Create scratch failed: ${e}`);
+  }
+}
+
+async function deleteNoteConfirm(note) {
+  if (!(await uiConfirm(`Delete scratch "${note.title}"?`, "Delete"))) return;
+  try {
+    await invoke("delete_scratch_note", { id: note.id });
+    await refreshNotes();
+  } catch (e) {
+    uiAlert(`Delete failed: ${e}`);
+  }
+}
+
+/// Open a scratch via the editor picker — the GUI equivalent of the TUI's
+/// editor-picker flow. Terminal editors (vim/nvim/emacs/nano…) open in an
+/// in-app terminal tab; GUI editors (VS Code/Cursor/Zed…) launch alongside,
+/// like opening a project. (x, y) position the picker menu near the click.
+async function openScratchInEditor(note, x, y) {
+  let editors = [];
+  try {
+    editors = await invoke("detect_editors");
+  } catch (e) {
+    console.error("detect_editors failed:", e);
+  }
+  if (!editors.length) {
+    uiAlert(
+      "No editors detected. Install a terminal editor (vim, nano) or a GUI editor (VS Code, Cursor, Zed)."
+    );
+    return;
+  }
+  const px = typeof x === "number" ? x : 220;
+  const py = typeof y === "number" ? y : 220;
+  showContextMenu(
+    px,
+    py,
+    editors.map((ed) => ({
+      label: ed.label,
+      hint: ed.description,
+      icon: ed.value.startsWith("terminal:") ? "terminal" : "external-link",
+      action: () => launchScratchEditor(note, ed.value),
+    }))
+  );
+}
+
+/// Launch the chosen editor on a scratch file. Terminal editors get an in-app
+/// PTY tab (spawned via the daemon, dies when you quit the editor); GUI
+/// editors are launched externally via open_in_ide on the note's file path.
+async function launchScratchEditor(note, value) {
+  try {
+    if (value.startsWith("terminal:")) {
+      const cmd = value.slice("terminal:".length);
+      const sid = await invoke("open_scratch_terminal_editor", {
+        editor: cmd,
+        path: note.path,
+        cols: 120,
+        rows: 40,
+      });
+      await openSession(sid, `📝 ${note.title}`);
+    } else {
+      await invoke("open_in_ide", { value, projectDir: note.path });
+    }
+  } catch (e) {
+    uiAlert(`Open failed: ${e}`);
+  }
+}
+
 async function showTeamDetails(team) {
   $("details").classList.remove("hidden");
   $("details-resizer").classList.remove("hidden");
@@ -2409,6 +2548,14 @@ $("stash-all-btn").onclick = async () => {
 $("new-team-btn").onclick = (e) => {
   e.stopPropagation();
   createTeamPrompt();
+};
+
+$("notes-toggle").onclick = toggleNotes;
+$("new-note-btn").onclick = (e) => {
+  e.stopPropagation();
+  // Make sure the section is expanded so the new scratch is visible after refresh.
+  if (!state.notesOpen) toggleNotes();
+  newNotePrompt(e.clientX, e.clientY);
 };
 
 $("update-btn").onclick = () => {
@@ -3073,6 +3220,31 @@ $("default-cwd").addEventListener("change", () => {
   saveWorkspaces();
 });
 
+/// Scratch directory lives in the shared config.toml (not gui-state) so the
+/// TUI sees it too — persisted via the backend, which echoes back the
+/// resolved absolute path. An empty value resets to the default.
+$("set-scratch-dir").addEventListener("change", async () => {
+  const el = $("set-scratch-dir");
+  try {
+    el.value = await invoke("set_scratch_dir", { path: el.value.trim() });
+    if (state.notesOpen) await refreshNotes();
+  } catch (e) {
+    uiAlert(`Scratch directory: ${e}`);
+    try {
+      el.value = await invoke("get_scratch_dir");
+    } catch (_) {}
+  }
+});
+
+/// Reflect the current scratch directory (from config) into the field at boot.
+async function loadScratchDir() {
+  try {
+    $("set-scratch-dir").value = await invoke("get_scratch_dir");
+  } catch (e) {
+    console.error("get_scratch_dir failed:", e);
+  }
+}
+
 /// Reflect persisted settings into the footer controls.
 function syncSettingsUi() {
   $("set-fontsize").value = state.settings.fontSize;
@@ -3335,6 +3507,7 @@ document.addEventListener("click", () => iconTip.remove(), true);
   restoreBrowserTabs(); // entries only — webviews materialize on first visibility
   $("default-cwd").value = state.settings.defaultCwd;
   syncSettingsUi();
+  loadScratchDir();
   if (!state.settings.notifications) {
     invoke("set_notifications_enabled", { enabled: false }).catch(console.error);
   }

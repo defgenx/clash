@@ -31,11 +31,20 @@
         </div>
         <div id="teams-list" class="hidden"></div>
       </div>
+      <div id="notes-section">
+        <div class="section-label collapsible" id="notes-toggle">SCRATCHES <span id="notes-caret">▸</span>
+          <button id="new-note-btn" class="icon-btn mini" title="New scratch">+</button>
+        </div>
+        <div id="notes-list" class="hidden"></div>
+      </div>
       <div id="sidebar-footer">
         <div class="section-label collapsible" id="settings-toggle">SETTINGS <span id="settings-caret">▸</span></div>
         <div id="settings-body" class="hidden">
         <label class="setting-row">Default directory
           <input id="default-cwd" type="text" placeholder="/Users/you" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="setting-row">Scratch directory
+          <input id="set-scratch-dir" type="text" placeholder="~/.claude/clash/scratch" autocomplete="off" spellcheck="false" />
         </label>
         <label class="setting-row inline">Terminal font size
           <input id="set-fontsize" type="number" min="9" max="24" step="1" />

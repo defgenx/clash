@@ -66,6 +66,7 @@ pub fn render_help_overlay(
         (":subagents", "Navigate to Subagents"),
         (":inbox", "Navigate to Inbox"),
         (":prompts", "Navigate to Prompts"),
+        (":scratch", "Navigate to Scratches"),
         (":new <path>", "New session in directory"),
         (":new --preset X", "New session from preset"),
         (":diff", "View diff for session"),

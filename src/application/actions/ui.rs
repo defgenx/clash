@@ -13,6 +13,8 @@ pub enum UiAction {
     EnterFilterMode,
     /// Prompt for directory and spawn a new session.
     EnterNewSessionMode,
+    /// Prompt for a title and create a new scratch note (Scratch view).
+    EnterNewScratchMode,
     /// Edit the current team's description (Teams/TeamDetail views).
     EditTeamDescription,
     /// Start the add-member input chain for the current team.

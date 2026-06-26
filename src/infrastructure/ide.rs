@@ -76,23 +76,49 @@ fn default_ides() -> Vec<IdeEntry> {
     ]
 }
 
-/// Detect available IDEs by merging defaults with custom entries,
-/// deduplicating by command, and filtering to only those found on PATH.
-pub fn detect_ides(custom: &[IdeEntry]) -> Vec<PickerItem> {
-    let mut entries = default_ides();
+/// Additional terminal editors offered when editing a single file (scratch
+/// notes), on top of the IDE defaults. These are great for editing one file
+/// but a poor fit for opening a whole project directory (e.g. `nano <dir>`
+/// fails), so they're kept out of [`detect_ides`] and only used by
+/// [`detect_editors`].
+fn extra_terminal_editors() -> Vec<IdeEntry> {
+    vec![
+        IdeEntry {
+            command: "emacs".to_string(),
+            name: "Emacs".to_string(),
+            description: "GNU Emacs".to_string(),
+            terminal: true,
+        },
+        IdeEntry {
+            command: "nano".to_string(),
+            name: "nano".to_string(),
+            description: "GNU nano".to_string(),
+            terminal: true,
+        },
+        IdeEntry {
+            command: "hx".to_string(),
+            name: "Helix".to_string(),
+            description: "Helix editor".to_string(),
+            terminal: true,
+        },
+        IdeEntry {
+            command: "micro".to_string(),
+            name: "micro".to_string(),
+            description: "micro editor".to_string(),
+            terminal: true,
+        },
+    ]
+}
 
-    // Append custom entries, dedup by command
-    for custom_entry in custom {
-        if !entries.iter().any(|e| e.command == custom_entry.command) {
-            entries.push(custom_entry.clone());
-        }
-    }
-
+/// Filter a list of IDE/editor entries to those available on PATH and map
+/// them to picker items, prefixing terminal editors so the reducer can route
+/// them to a pane instead of a detached GUI launch.
+fn entries_to_items(entries: Vec<IdeEntry>) -> Vec<PickerItem> {
     entries
         .into_iter()
         .filter(|e| {
             let avail = is_command_available(&e.command);
-            tracing::debug!("IDE check: {} ({}) = {}", e.name, e.command, avail);
+            tracing::debug!("editor check: {} ({}) = {}", e.name, e.command, avail);
             avail
         })
         .map(|e| {
@@ -108,6 +134,35 @@ pub fn detect_ides(custom: &[IdeEntry]) -> Vec<PickerItem> {
             }
         })
         .collect()
+}
+
+/// Merge default entries with custom ones (dedup by command), appending any
+/// from `extra` not already present.
+fn merge_entries(custom: &[IdeEntry], extra: Vec<IdeEntry>) -> Vec<IdeEntry> {
+    let mut entries = default_ides();
+    for custom_entry in custom {
+        if !entries.iter().any(|e| e.command == custom_entry.command) {
+            entries.push(custom_entry.clone());
+        }
+    }
+    for e in extra {
+        if !entries.iter().any(|x| x.command == e.command) {
+            entries.push(e);
+        }
+    }
+    entries
+}
+
+/// Detect available IDEs by merging defaults with custom entries,
+/// deduplicating by command, and filtering to only those found on PATH.
+pub fn detect_ides(custom: &[IdeEntry]) -> Vec<PickerItem> {
+    entries_to_items(merge_entries(custom, Vec::new()))
+}
+
+/// Detect available editors for opening a single file (scratch notes):
+/// the IDE list plus common terminal editors (emacs, nano, helix, micro).
+pub fn detect_editors(custom: &[IdeEntry]) -> Vec<PickerItem> {
+    entries_to_items(merge_entries(custom, extra_terminal_editors()))
 }
 
 /// Launch a GUI IDE with the given project directory (fire-and-forget).
@@ -154,6 +209,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_extra_terminal_editors_are_terminal() {
+        for e in extra_terminal_editors() {
+            assert!(e.terminal, "{} should be a terminal editor", e.command);
+        }
+    }
+
+    #[test]
+    fn test_merge_entries_appends_extras_and_dedups() {
+        let merged = merge_entries(&[], extra_terminal_editors());
+        // nano is editor-only — added.
+        assert!(merged.iter().any(|e| e.command == "nano"));
+        // vim is in defaults — still present exactly once.
+        assert_eq!(merged.iter().filter(|e| e.command == "vim").count(), 1);
     }
 
     #[test]

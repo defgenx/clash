@@ -5,10 +5,70 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::adapters::format;
-use crate::domain::entities::{Session, Subagent, Task, Team};
+use crate::domain::entities::{ScratchNote, Session, Subagent, Task, Team};
 use crate::domain::error::Result;
 use crate::domain::ports::DataRepository;
 use crate::infrastructure::fs::atomic::write_atomic;
+
+/// Allowed text extensions for scratch notes; anything else gets `.md` appended.
+const SCRATCH_TEXT_EXTS: &[&str] = &["md", "markdown", "txt", "text", "org", "rst"];
+
+/// Turn a user-supplied note title into a safe file name.
+///
+/// Rejects path separators and `..` (no escaping the scratch dir), trims
+/// whitespace, and appends `.md` unless the title already ends in a known
+/// text extension. Pure so it can be unit-tested directly.
+fn sanitize_note_filename(title: &str) -> Result<String> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return Err(crate::domain::error::DomainError::Parse(
+            "Scratch title cannot be empty".to_string(),
+        ));
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains("..") {
+        return Err(crate::domain::error::DomainError::Parse(format!(
+            "Invalid scratch title: '{}'",
+            trimmed
+        )));
+    }
+    let has_text_ext = std::path::Path::new(trimmed)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| SCRATCH_TEXT_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false);
+    if has_text_ext {
+        Ok(trimmed.to_string())
+    } else {
+        Ok(format!("{}.md", trimmed))
+    }
+}
+
+/// Build a `ScratchNote` view DTO from a file path (reads filesystem metadata).
+/// Returns `None` for non-files or unreadable names.
+fn note_from_path(path: &Path) -> Option<ScratchNote> {
+    let id = path.file_name()?.to_string_lossy().to_string();
+    let title = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| id.clone());
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let updated_at = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    Some(ScratchNote {
+        id,
+        title,
+        path: path.to_string_lossy().to_string(),
+        updated_at,
+        size: meta.len(),
+    })
+}
 
 /// Per-project cached session data with cheap shared ownership.
 struct SessionCache {
@@ -42,16 +102,47 @@ pub fn encode_project_dir(cwd: &str) -> String {
 /// Production filesystem-based data repository.
 pub struct FsBackend {
     base_dir: PathBuf,
+    /// Where scratch notes are stored. Defaults to `<base_dir>/clash/scratch`
+    /// but can be overridden from config (`with_scratch_dir`) or changed at
+    /// runtime from the GUI Settings panel (`set_scratch_dir`). Interior
+    /// mutability mirrors `session_cache`, so the `&self` port methods and the
+    /// shared GUI state can both see updates without rebuilding the backend.
+    scratch_dir: Mutex<PathBuf>,
     /// Per-project session cache to avoid re-parsing unchanged projects.
     session_cache: Mutex<SessionCache>,
 }
 
 impl FsBackend {
     pub fn new(base_dir: PathBuf) -> Self {
+        let scratch_dir = base_dir.join("clash").join("scratch");
         Self {
             base_dir,
+            scratch_dir: Mutex::new(scratch_dir),
             session_cache: Mutex::new(SessionCache::new()),
         }
+    }
+
+    /// Builder: override the scratch directory from config. `None` keeps the
+    /// default established in `new`.
+    pub fn with_scratch_dir(self, dir: Option<PathBuf>) -> Self {
+        if let Some(dir) = dir {
+            *self.scratch_dir.lock().unwrap() = dir;
+        }
+        self
+    }
+
+    /// Current scratch-notes directory.
+    pub fn scratch_dir(&self) -> PathBuf {
+        self.scratch_dir.lock().unwrap().clone()
+    }
+
+    /// Change the scratch-notes directory at runtime (GUI Settings).
+    ///
+    /// `dead_code` is allowed because the only non-test caller is the sibling
+    /// `clash-gui` crate; the TUI sets the directory once via `with_scratch_dir`.
+    #[allow(dead_code)]
+    pub fn set_scratch_dir(&self, dir: PathBuf) {
+        *self.scratch_dir.lock().unwrap() = dir;
     }
 
     pub fn base_dir(&self) -> &Path {
@@ -536,6 +627,53 @@ impl DataRepository for FsBackend {
 
     fn tasks_dir(&self) -> PathBuf {
         self.base_dir.join("tasks")
+    }
+
+    fn load_scratch_notes(&self) -> Result<Vec<ScratchNote>> {
+        let dir = self.scratch_dir();
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut notes: Vec<ScratchNote> = std::fs::read_dir(&dir)?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| note_from_path(&entry.path()))
+            .collect();
+        // Most-recently-modified first, then alphabetically by title for stability.
+        notes.sort_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+        });
+        Ok(notes)
+    }
+
+    fn create_scratch_note(&self, title: &str) -> Result<ScratchNote> {
+        let filename = sanitize_note_filename(title)?;
+        let path = self.scratch_dir().join(&filename);
+        if path.exists() {
+            return Err(crate::domain::error::DomainError::Parse(format!(
+                "Scratch '{}' already exists",
+                filename
+            )));
+        }
+        // write_atomic creates parent dirs; start the note empty.
+        write_atomic(&path, b"")?;
+        Ok(note_from_path(&path).unwrap_or(ScratchNote {
+            id: filename,
+            title: title.trim().to_string(),
+            path: path.to_string_lossy().to_string(),
+            updated_at: 0,
+            size: 0,
+        }))
+    }
+
+    fn delete_scratch_note(&self, id: &str) -> Result<()> {
+        let filename = sanitize_note_filename(id)?;
+        let path = self.scratch_dir().join(&filename);
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+        Ok(())
     }
 
     fn load_sessions(&self) -> Result<Vec<Session>> {
@@ -1108,6 +1246,64 @@ mod tests {
         let (_dir, backend) = setup_test_dir();
         let teams = backend.load_teams().unwrap();
         assert!(teams.is_empty());
+    }
+
+    #[test]
+    fn test_sanitize_note_filename() {
+        // Plain title gets .md appended.
+        assert_eq!(sanitize_note_filename("ideas").unwrap(), "ideas.md");
+        // Existing text extension is preserved.
+        assert_eq!(sanitize_note_filename("todo.txt").unwrap(), "todo.txt");
+        assert_eq!(sanitize_note_filename("notes.md").unwrap(), "notes.md");
+        // Unknown extension still gets .md (so "v1.2" → "v1.2.md").
+        assert_eq!(sanitize_note_filename("v1.2").unwrap(), "v1.2.md");
+        // Whitespace trimmed.
+        assert_eq!(sanitize_note_filename("  spaced  ").unwrap(), "spaced.md");
+        // Path traversal / separators rejected.
+        assert!(sanitize_note_filename("../escape").is_err());
+        assert!(sanitize_note_filename("a/b").is_err());
+        assert!(sanitize_note_filename("   ").is_err());
+    }
+
+    #[test]
+    fn test_scratch_note_crud_roundtrip() {
+        let (_dir, backend) = setup_test_dir();
+
+        // Empty when the scratch dir doesn't exist yet.
+        assert!(backend.load_scratch_notes().unwrap().is_empty());
+
+        // Create.
+        let note = backend.create_scratch_note("My Ideas").unwrap();
+        assert_eq!(note.id, "My Ideas.md");
+        assert_eq!(note.title, "My Ideas");
+        assert!(note.path.ends_with("clash/scratch/My Ideas.md"));
+
+        // Listing finds it.
+        let notes = backend.load_scratch_notes().unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].id, "My Ideas.md");
+
+        // Duplicate create errors.
+        assert!(backend.create_scratch_note("My Ideas").is_err());
+
+        // Delete.
+        backend.delete_scratch_note("My Ideas.md").unwrap();
+        assert!(backend.load_scratch_notes().unwrap().is_empty());
+        // Deleting a missing note is a no-op (not an error).
+        assert!(backend.delete_scratch_note("My Ideas.md").is_ok());
+    }
+
+    #[test]
+    fn test_scratch_dir_override() {
+        let (_dir, backend) = setup_test_dir();
+        let custom = _dir.path().join("my-notes");
+        backend.set_scratch_dir(custom.clone());
+        assert_eq!(backend.scratch_dir(), custom);
+
+        // Notes now land in the overridden directory.
+        let note = backend.create_scratch_note("Elsewhere").unwrap();
+        assert!(note.path.starts_with(custom.to_string_lossy().as_ref()));
+        assert_eq!(backend.load_scratch_notes().unwrap().len(), 1);
     }
 
     #[test]

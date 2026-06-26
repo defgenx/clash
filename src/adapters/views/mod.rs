@@ -7,6 +7,7 @@ pub mod agents;
 pub mod diff;
 pub mod inbox;
 pub mod prompts;
+pub mod scratch;
 pub mod session_detail;
 pub mod sessions;
 pub mod subagent_detail;
@@ -48,6 +49,7 @@ pub enum ViewKind {
     TaskDetail,
     Inbox,
     Prompts,
+    Scratch,
     Sessions,
     SessionDetail,
     Diff,
@@ -66,6 +68,7 @@ impl ViewKind {
             Self::TaskDetail => "Task",
             Self::Inbox => "Inbox",
             Self::Prompts => "Prompts",
+            Self::Scratch => "Scratches",
             Self::Sessions => "Sessions",
             Self::SessionDetail => "Session",
             Self::Diff => "Diff",
@@ -85,6 +88,7 @@ impl ViewKind {
             Self::TaskDetail => "task_detail",
             Self::Inbox => "inbox",
             Self::Prompts => "prompts",
+            Self::Scratch => "scratch",
             Self::Sessions => "sessions",
             Self::SessionDetail => "session_detail",
             Self::Diff => "diff",
@@ -104,6 +108,7 @@ impl ViewKind {
             "task_detail" => Some(Self::TaskDetail),
             "inbox" => Some(Self::Inbox),
             "prompts" => Some(Self::Prompts),
+            "scratch" => Some(Self::Scratch),
             "sessions" => Some(Self::Sessions),
             "session_detail" => Some(Self::SessionDetail),
             "diff" => Some(Self::Diff),

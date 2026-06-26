@@ -90,10 +90,13 @@ clash reads from Claude Code's filesystem:
 ~/.claude/
 ├── teams/{name}/config.json          # Team config + members[]
 │   └── inboxes/{agent}.json          # InboxMessage[]
-└── tasks/{team-name}/{id}.json       # Task with status, owner, dependencies
+├── tasks/{team-name}/{id}.json       # Task with status, owner, dependencies
+└── clash/scratch/{name}.md           # Scratches (free-form text files; dir configurable)
 ```
 
 All types use `#[serde(default)]` so missing fields get zero values, and `#[serde(flatten)]` captures unknown fields for forward compatibility.
+
+Scratches are an exception: the file on disk *is* the note (no structured JSON), so `ScratchNote` is a runtime view DTO built from the filesystem listing. `DataRepository` exposes `load_scratch_notes`/`create_scratch_note`/`delete_scratch_note`. Both frontends open a scratch via the IDE/editor picker (`ide::detect_editors`): terminal editors run in a pane/tab, GUI editors launch alongside — so the backend never reads/writes note *contents*, only lists/creates/deletes files. The scratch directory defaults to `<claude_dir>/clash/scratch` but is overridable via `config.toml`'s `scratch_dir` (resolved by `Config::scratch_dir`, held on `FsBackend` with interior mutability so the GUI Settings panel can change it live via `set_scratch_dir` and persist with `Config::save`).
 
 ## Conventions
 

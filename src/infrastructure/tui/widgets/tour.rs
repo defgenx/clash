@@ -177,6 +177,22 @@ pub const TOUR_STEPS: &[TourStep] = &[
         ],
     },
     TourStep {
+        title: "Scratches",
+        body: &[
+            "Press  :scratch  (or  :notes ) to open Scratches — a place to keep free-form text notes inside clash.",
+            "",
+            "Each note is a plain text file under ~/.claude/clash/scratch/ by default (configurable), so you can reopen it anytime or edit it outside clash too.",
+            "",
+            "Opening a note shows an editor picker — terminal editors (vim, nvim, emacs, nano…) open in a new pane, GUI editors (VS Code, Cursor, Zed…) launch alongside.",
+        ],
+        keys: &[
+            (":scratch", "Open the Scratches list"),
+            ("c / n", "Create a new scratch (prompts for a title)"),
+            ("Enter / e", "Open the selected scratch in an editor"),
+            ("d", "Delete the selected scratch"),
+        ],
+    },
+    TourStep {
         title: "Commands & Filtering",
         body: &[
             "Press  :  to enter command mode. Type a command and press Enter.",

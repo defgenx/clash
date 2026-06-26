@@ -150,6 +150,8 @@ pub enum InputMode {
     NewMemberType,
     /// Prompting for a new team member's model.
     NewMemberModel,
+    /// Prompting for the title of a new scratch note.
+    NewScratchTitle,
     /// Attached to a daemon PTY session — keystrokes go to the session.
     Attached,
     /// Picker dialog is open — j/k navigate, Enter selects, Esc cancels.

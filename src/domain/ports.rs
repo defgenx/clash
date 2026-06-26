@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use crate::domain::entities::{ConversationMessage, Session, Subagent, Task, Team};
+use crate::domain::entities::{ConversationMessage, ScratchNote, Session, Subagent, Task, Team};
 use crate::domain::error::Result;
 
 /// Repository port for all data access operations.
@@ -59,4 +59,25 @@ pub trait DataRepository: Send + Sync {
         session_id: &str,
         agent_id: &str,
     ) -> Result<Vec<ConversationMessage>>;
+
+    // ── Scratch notes ───────────────────────────────────────────
+    // Free-form text files kept under `~/.claude/clash/scratch/`. The file
+    // itself is the note; these methods list/create/read/write/remove them.
+    // Default impls let lightweight mock backends ignore scratch entirely.
+
+    /// List all scratch notes (sorted by the implementation).
+    fn load_scratch_notes(&self) -> Result<Vec<ScratchNote>> {
+        Ok(Vec::new())
+    }
+
+    /// Create a new, empty scratch note from a user-supplied title.
+    /// Returns the created note. Errors if a note with that name exists.
+    fn create_scratch_note(&self, _title: &str) -> Result<ScratchNote> {
+        Ok(ScratchNote::default())
+    }
+
+    /// Delete a scratch note by id (file name).
+    fn delete_scratch_note(&self, _id: &str) -> Result<()> {
+        Ok(())
+    }
 }

@@ -32,6 +32,16 @@ pub enum Effect {
         name: String,
     },
 
+    // ── Scratch-note effects ────────────────────────────────────
+    /// Create a new empty scratch note from a title.
+    CreateScratchNote {
+        title: String,
+    },
+    /// Delete a scratch note by id (file name).
+    DeleteScratchNote {
+        id: String,
+    },
+
     // ── Session effects ────────────────────────────────────────
     DaemonAttach {
         session_id: String,
@@ -77,6 +87,8 @@ pub enum Effect {
     RefreshTeamTasks {
         team: String,
     },
+    /// Reload the scratch-note list from disk into the store.
+    RefreshScratchNotes,
     RefreshSessions,
     RefreshSubagents {
         project: String,
@@ -160,6 +172,11 @@ pub enum Effect {
     /// Detect available IDEs for the given project directory.
     DetectIdes {
         project_dir: String,
+    },
+    /// Detect available editors (IDEs + terminal editors) for a single file,
+    /// then show the picker to open it. Used by the scratch-notes view.
+    DetectEditors {
+        path: String,
     },
     /// Open a project directory in an IDE.
     OpenIde {

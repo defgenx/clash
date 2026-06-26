@@ -26,6 +26,7 @@
 - **Git worktree support** — spawn sessions in isolated worktrees for parallel feature branches (`w` key); worktree column shows `⊟ project/worktree` for project context
 - **Repo config discovery** — auto-detects MCP servers, custom commands, agent definitions, and setup scripts from the project directory
 - **Teams & tasks** — create, configure, and delete teams (description, members with agent type and model); organize agents, manage tasks, send messages
+- **Scratches** — keep free-form text notes inside clash (`:scratch`); create, list, and reopen them anytime. Each note is a plain file under `~/.claude/clash/scratch/` by default — set `scratch_dir` in `config.toml` (or the GUI **Scratch directory** setting) to store them anywhere. Opening a scratch shows an editor picker: terminal editors (vim/emacs/nano…) open in a tab/pane, GUI editors (VS Code/Cursor/Zed…) launch alongside, like opening a project
 - **Subagent tracking** — view subagent trees per session, expand/collapse in the sessions table
 - **Open in IDE** — press `e` to open a session's project in your editor (auto-detects Cursor, VS Code, Zed, JetBrains, nvim, vim; configurable)
 - **Keyboard-driven** — vim-style navigation, command mode (`:`), fuzzy filter (`/`), context help (`?`)
@@ -211,6 +212,26 @@ A status bar at the bottom shows session name, project, and git branch. The PTY 
 | `x` | Remove member (picker) |
 | `d` | Delete team |
 
+### Scratches
+
+Reach the Scratches view with `:scratch` (also `:notes`).
+
+| Key | Action |
+|-----|--------|
+| `c` / `n` | New scratch (prompts for a title) |
+| `Enter` / `e` | Open the selected scratch in an editor (picker) |
+| `d` | Delete the selected scratch |
+
+Scratches are plain files under `~/.claude/clash/scratch/` by default; override
+the location with `scratch_dir` in `config.toml` or the GUI **Scratch
+directory** setting (which writes the same key, so the TUI honors it too). The
+editor picker lists installed IDEs (Cursor, VS Code, Zed, JetBrains, …) and
+terminal editors (vim, nvim, emacs, nano, helix, micro); terminal editors open
+in a tab/pane, GUI editors launch alongside. In the GUI, scratches live in a
+collapsible **Scratches** sidebar section; opening one shows the editor picker —
+a terminal editor opens in an in-app terminal tab, a GUI editor launches
+alongside.
+
 ### Commands
 
 | Command | Action |
@@ -222,6 +243,7 @@ A status bar at the bottom shows session name, project, and git branch. The PTY 
 | `:subagents` | Navigate to Subagents view |
 | `:inbox` | Navigate to Inbox view |
 | `:prompts` | Navigate to Prompts view |
+| `:scratch` / `:notes` | Navigate to Scratches view |
 | `:create team <name>` | Create a new team |
 | `:delete team <name>` | Delete a team |
 | `:member model <member> [model]` | Set a member's model on the current team (empty = inherit) |
@@ -260,6 +282,7 @@ clash also maintains its own state in `~/.claude/clash/`:
 ├── project-names/{encoded-cwd}        # Project-to-name mapping
 ├── sessions.json                      # Session registry
 ├── ui_state.json                      # Persisted UI state (nav, selection, filters)
+├── scratch/{name}.md                  # Scratch notes (free-form text files)
 └── trusted_repos.json                 # SHA256 trust store for repo setup scripts
 ```
 

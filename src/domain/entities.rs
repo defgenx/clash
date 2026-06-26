@@ -196,6 +196,29 @@ pub struct Task {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
+/// A scratch note — a free-form text file the user keeps inside clash.
+///
+/// Unlike teams/tasks, a scratch note is not stored as a structured JSON
+/// document: the file on disk (under `~/.claude/clash/scratch/`) *is* the
+/// note, so it can be opened in any editor and edited externally too. This
+/// struct is a runtime view DTO built from the filesystem listing — none of
+/// its fields live in an on-disk JSON document, so it carries no serde
+/// defaults/flatten the way persisted entities do.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScratchNote {
+    /// File name including extension, e.g. `ideas.md`. Stable identifier.
+    pub id: String,
+    /// Display title — the file stem (file name without its final extension).
+    pub title: String,
+    /// Absolute path to the file on disk (used to open it in an editor).
+    pub path: String,
+    /// Last-modified time, epoch milliseconds (0 when unavailable).
+    pub updated_at: i64,
+    /// File size in bytes.
+    pub size: u64,
+}
+
 /// High-level session lifecycle section — groups statuses for display and filtering.
 ///
 /// `External` is distinct from the lifecycle sections: it groups every row

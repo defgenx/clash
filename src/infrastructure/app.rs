@@ -64,7 +64,7 @@ impl App {
         debug: bool,
         config: crate::infrastructure::config::Config,
     ) -> Self {
-        let backend = FsBackend::new(data_dir.clone());
+        let backend = FsBackend::new(data_dir.clone()).with_scratch_dir(config.scratch_dir.clone());
 
         // Install Claude Code hooks for instant status detection
         if let Err(e) = crate::infrastructure::hooks::install_hooks(&data_dir) {
@@ -692,6 +692,7 @@ impl App {
                 | InputMode::NewMemberName
                 | InputMode::NewMemberType
                 | InputMode::NewMemberModel
+                | InputMode::NewScratchTitle
         ) {
             use crate::adapters::input::key_to_input_request;
             use crate::application::actions::UiAction;
@@ -1207,6 +1208,22 @@ impl App {
                         Err(e) => {
                             self.state.toast = Some(format!("Create team failed: {}", e));
                         }
+                    }
+                }
+                // ── Scratch notes ───────────────────────────────
+                Effect::CreateScratchNote { title } => {
+                    if let Err(e) = self.backend.create_scratch_note(&title) {
+                        self.state.toast = Some(format!("Create scratch failed: {}", e));
+                    }
+                }
+                Effect::DeleteScratchNote { id } => {
+                    if let Err(e) = self.backend.delete_scratch_note(&id) {
+                        self.state.toast = Some(format!("Delete scratch failed: {}", e));
+                    }
+                }
+                Effect::RefreshScratchNotes => {
+                    if let Err(e) = self.state.store.refresh_scratch_notes(&self.backend) {
+                        tracing::warn!("Scratch refresh failed: {}", e);
                     }
                 }
                 // ── Data refresh ────────────────────────────────
@@ -1941,6 +1958,26 @@ impl App {
                                 items,
                                 on_select: crate::application::state::PickerAction::OpenInIde {
                                     project_dir,
+                                },
+                            }),
+                        );
+                        for (i, e) in follow_up_effects.into_iter().enumerate() {
+                            queue.insert(i, e);
+                        }
+                    }
+                }
+                Effect::DetectEditors { path } => {
+                    let items = crate::infrastructure::ide::detect_editors(&self.config.ides);
+                    if items.is_empty() {
+                        self.state.toast = Some("No editors detected".to_string());
+                    } else {
+                        let follow_up_effects = reducer::reduce(
+                            &mut self.state,
+                            Action::Ui(crate::application::actions::UiAction::ShowPicker {
+                                title: "Open note in editor".to_string(),
+                                items,
+                                on_select: crate::application::state::PickerAction::OpenInIde {
+                                    project_dir: path,
                                 },
                             }),
                         );

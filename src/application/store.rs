@@ -5,7 +5,9 @@
 
 use std::collections::HashMap;
 
-use crate::domain::entities::{ConversationMessage, Member, Preset, Session, Subagent, Task, Team};
+use crate::domain::entities::{
+    ConversationMessage, Member, Preset, ScratchNote, Session, Subagent, Task, Team,
+};
 use crate::domain::error::Result;
 use crate::domain::ports::DataRepository;
 
@@ -25,6 +27,8 @@ pub struct DataStore {
     pub all_subagents: Vec<Subagent>,
     /// Cached presets (loaded from .clash/presets.json, global config, .superset/config.json).
     pub presets: Vec<Preset>,
+    /// Scratch notes (free-form text files under ~/.claude/clash/scratch/).
+    pub scratch_notes: Vec<ScratchNote>,
 }
 
 impl Default for DataStore {
@@ -46,7 +50,14 @@ impl DataStore {
             all_members: Vec::new(),
             all_subagents: Vec::new(),
             presets: Vec::new(),
+            scratch_notes: Vec::new(),
         }
+    }
+
+    /// Reload the scratch-note list from disk.
+    pub fn refresh_scratch_notes(&mut self, backend: &dyn DataRepository) -> Result<()> {
+        self.scratch_notes = backend.load_scratch_notes()?;
+        Ok(())
     }
 
     pub fn refresh_teams(&mut self, backend: &dyn DataRepository) -> Result<()> {

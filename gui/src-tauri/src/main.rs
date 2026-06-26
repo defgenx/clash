@@ -893,6 +893,145 @@ fn list_tasks(
     state.backend.load_tasks(&team).map_err(|e| e.to_string())
 }
 
+/// All scratch notes (free-form text files), via the shared DataRepository.
+#[tauri::command]
+fn list_scratch_notes(
+    state: State<'_, GuiState>,
+) -> Result<Vec<clash::domain::entities::ScratchNote>, String> {
+    use clash::domain::ports::DataRepository;
+    state
+        .backend
+        .load_scratch_notes()
+        .map_err(|e| e.to_string())
+}
+
+/// Create a new empty scratch note from a title; returns the created note.
+#[tauri::command]
+fn create_scratch_note(
+    state: State<'_, GuiState>,
+    title: String,
+) -> Result<clash::domain::entities::ScratchNote, String> {
+    use clash::domain::ports::DataRepository;
+    state
+        .backend
+        .create_scratch_note(&title)
+        .map_err(|e| e.to_string())
+}
+
+/// Detect available editors for a single file (the IDE list plus terminal
+/// editors like vim/nano/emacs). Used by the scratch editor picker — the GUI
+/// equivalent of the TUI's `Effect::DetectEditors`.
+#[tauri::command]
+fn detect_editors(state: State<'_, GuiState>) -> Vec<IdeDto> {
+    clash::infrastructure::ide::detect_editors(&state.config_ides)
+        .into_iter()
+        .map(|i| IdeDto {
+            label: i.label,
+            description: i.description,
+            value: i.value,
+        })
+        .collect()
+}
+
+/// Open a scratch note in a terminal editor inside an in-app terminal tab.
+/// Spawns `<editor> <path>` as a shell-namespaced PTY (a GUI tab, never a
+/// Claude session) and returns its id for the frontend to attach. `editor` is
+/// the bare command with the `terminal:` picker prefix already stripped.
+/// GUI editors take the external `open_in_ide` path instead.
+#[tauri::command]
+async fn open_scratch_terminal_editor(
+    state: State<'_, GuiState>,
+    editor: String,
+    path: String,
+    cols: u16,
+    rows: u16,
+) -> Result<String, String> {
+    let session_id = format!(
+        "{}{}",
+        session_refresh::SHELL_TERMINAL_ID_PREFIX,
+        uuid::Uuid::now_v7()
+    );
+    // Run from the note's directory so relative writes/swap files land there.
+    let cwd = std::path::Path::new(&path)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned());
+    let mut control = state.control.lock().await;
+    ensure_connected(&mut control).await;
+    control
+        .create_session(
+            &session_id,
+            &editor,
+            &[path],
+            cwd.as_deref(),
+            Some(editor.clone()),
+            cols,
+            rows,
+            HashMap::new(),
+            // Terminal editors set their own raw termios at startup, like Claude.
+            true,
+        )
+        .await
+        .map_err(|e| format!("Failed to open editor: {}", e))?;
+    Ok(session_id)
+}
+
+/// Current scratch-notes directory (absolute path) for the Settings field.
+#[tauri::command]
+fn get_scratch_dir(state: State<'_, GuiState>) -> String {
+    state.backend.scratch_dir().to_string_lossy().into_owned()
+}
+
+/// Set (or reset) the scratch-notes directory. An empty path resets to the
+/// default. Persists to the shared `config.toml` and applies live to the
+/// running backend so both the GUI and a future TUI launch agree. Returns the
+/// effective absolute path.
+#[tauri::command]
+fn set_scratch_dir(state: State<'_, GuiState>, path: String) -> Result<String, String> {
+    let trimmed = path.trim();
+    let mut config = Config::load();
+
+    let effective = if trimmed.is_empty() {
+        config.scratch_dir = None;
+        config.scratch_dir()
+    } else {
+        let expanded = expand_tilde(trimmed);
+        std::fs::create_dir_all(&expanded)
+            .map_err(|e| format!("Cannot use {}: {}", expanded.display(), e))?;
+        config.scratch_dir = Some(expanded.clone());
+        expanded
+    };
+
+    config
+        .save()
+        .map_err(|e| format!("Save config failed: {}", e))?;
+    state.backend.set_scratch_dir(effective.clone());
+    Ok(effective.to_string_lossy().into_owned())
+}
+
+/// Expand a leading `~` to the user's home directory.
+fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    } else if path == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+    }
+    PathBuf::from(path)
+}
+
+/// Delete a scratch note by id (file name).
+#[tauri::command]
+fn delete_scratch_note(state: State<'_, GuiState>, id: String) -> Result<(), String> {
+    use clash::domain::ports::DataRepository;
+    state
+        .backend
+        .delete_scratch_note(&id)
+        .map_err(|e| e.to_string())
+}
+
 /// Conversation message DTO (ConversationMessage has no Serialize derive).
 #[derive(Clone, serde::Serialize)]
 struct MessageDto {
@@ -1929,7 +2068,7 @@ fn main() {
     let (wild_processes_tx, wild_processes_rx) = tokio::sync::watch::channel(Vec::new());
 
     let state = GuiState {
-        backend: FsBackend::new(data_dir),
+        backend: FsBackend::new(data_dir).with_scratch_dir(config.scratch_dir.clone()),
         claude_bin,
         config_ides: config.ides.clone(),
         previous: Mutex::new(Vec::new()),
@@ -2092,6 +2231,13 @@ fn main() {
             get_inbox,
             list_teams,
             list_tasks,
+            list_scratch_notes,
+            create_scratch_note,
+            delete_scratch_note,
+            detect_editors,
+            open_scratch_terminal_editor,
+            get_scratch_dir,
+            set_scratch_dir,
             list_presets,
             detect_ides,
             open_in_ide,

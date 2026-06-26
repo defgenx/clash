@@ -267,6 +267,7 @@ fn draw_body(
         }
         ViewKind::Inbox => table::render_table::<inbox::InboxTable>(state, frame, area),
         ViewKind::Prompts => detail::render_detail::<prompts::PromptsView>(state, frame, area),
+        ViewKind::Scratch => table::render_table::<scratch::ScratchTable>(state, frame, area),
         ViewKind::Sessions => {
             if sessions::SessionsTable::has_items(state) {
                 sessions::render_sessions_table(state, sessions_visual_state, frame, area);
@@ -295,7 +296,8 @@ fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
         | crate::application::state::InputMode::TeamDescription
         | crate::application::state::InputMode::NewMemberName
         | crate::application::state::InputMode::NewMemberType
-        | crate::application::state::InputMode::NewMemberModel => {
+        | crate::application::state::InputMode::NewMemberModel
+        | crate::application::state::InputMode::NewScratchTitle => {
             input_bar::render_input_bar(
                 &state.input_mode,
                 state.input.value(),
@@ -398,6 +400,7 @@ fn draw_help(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect) {
         ViewKind::Tasks => tasks::TasksTable::context_keybindings(),
         ViewKind::Agents => agents::AgentsTable::context_keybindings(),
         ViewKind::Inbox => inbox::InboxTable::context_keybindings(),
+        ViewKind::Scratch => scratch::ScratchTable::context_keybindings(),
         ViewKind::TeamDetail => team_detail::TeamDetailView::context_keybindings(),
         ViewKind::TaskDetail => task_detail::TaskDetailView::context_keybindings(),
         ViewKind::AgentDetail => agent_detail::AgentDetailView::context_keybindings(),

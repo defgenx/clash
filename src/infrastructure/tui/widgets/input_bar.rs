@@ -36,6 +36,7 @@ pub fn render_input_bar(
             "Model (empty = inherit): ",
             Style::default().fg(theme::PROMPT_COLOR),
         ),
+        InputMode::NewScratchTitle => ("Scratch title: ", Style::default().fg(theme::PROMPT_COLOR)),
         _ => return,
     };
 
