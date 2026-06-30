@@ -285,6 +285,40 @@ fn scratch_target_parent(state: &AppState) -> String {
     }
 }
 
+/// Candidate destination folders for moving the scratch entry `note`, as
+/// picker items. Includes the root and every folder, minus the entry itself,
+/// its descendants (can't move a folder into its own subtree), and its current
+/// parent (a no-op move). The item `value` is the destination's relative path
+/// (`""` = root); folders keep tree order, root sorts first.
+fn scratch_move_targets(
+    notes: &[ScratchNote],
+    note: &ScratchNote,
+) -> Vec<crate::application::state::PickerItem> {
+    let self_prefix = format!("{}/", note.id);
+    let mut items = Vec::new();
+    // Root is a valid target unless the entry already lives there.
+    if !note.parent.is_empty() {
+        items.push(crate::application::state::PickerItem {
+            label: "/ (root)".to_string(),
+            description: "Move to the top level".to_string(),
+            value: String::new(),
+        });
+    }
+    for folder in notes.iter().filter(|n| n.is_dir) {
+        // Skip the entry itself and anything inside it (cycle), and its
+        // current parent (moving there would change nothing).
+        if folder.id == note.id || folder.id.starts_with(&self_prefix) || folder.id == note.parent {
+            continue;
+        }
+        items.push(crate::application::state::PickerItem {
+            label: format!("{}/", folder.id),
+            description: String::new(),
+            value: folder.id.clone(),
+        });
+    }
+    items
+}
+
 /// Expand `dir` and every ancestor folder so a freshly created descendant is
 /// visible in the tree. No-op for the root (`""`).
 fn expand_scratch_ancestors(state: &mut AppState, dir: &str) {
@@ -355,6 +389,25 @@ fn reduce_scratch(state: &mut AppState, action: ScratchAction) -> Vec<Effect> {
             state.toast = Some("Renamed".to_string());
             vec![
                 Effect::RenameScratch { id, new_name },
+                Effect::RefreshScratchNotes,
+            ]
+        }
+        ScratchAction::Move { id, new_parent } => {
+            // Expand the destination (and its ancestors) so the moved entry is
+            // visible after the refresh rebuilds the tree. The actual move and
+            // its cycle/collision checks happen in the backend.
+            expand_scratch_ancestors(state, &new_parent);
+            if !new_parent.is_empty() {
+                state.expanded_scratch_dirs.insert(new_parent.clone());
+            }
+            let dest = if new_parent.is_empty() {
+                "root".to_string()
+            } else {
+                new_parent.clone()
+            };
+            state.toast = Some(format!("Moved to {}", dest));
+            vec![
+                Effect::MoveScratch { id, new_parent },
                 Effect::RefreshScratchNotes,
             ]
         }
@@ -1051,6 +1104,27 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             }
             vec![]
         }
+        UiAction::EnterMoveScratchMode => {
+            let Some(note) = selected_scratch_note(state).cloned() else {
+                state.toast = Some("Nothing selected".to_string());
+                return vec![];
+            };
+            let items = scratch_move_targets(&state.store.scratch_notes, &note);
+            if items.is_empty() {
+                state.toast = Some(format!("Nowhere to move '{}'", note.title));
+                return vec![];
+            }
+            state.picker_dialog = Some(crate::application::state::PickerDialog {
+                title: format!("Move '{}' to…", note.title),
+                items,
+                selected: 0,
+                on_select_action: crate::application::state::PickerAction::MoveScratch {
+                    id: note.id.clone(),
+                },
+            });
+            state.input_mode = InputMode::Picker;
+            vec![]
+        }
         UiAction::EditTeamDescription => {
             let Some(name) = resolve_team_name(state) else {
                 state.toast = Some("No team selected".to_string());
@@ -1424,6 +1498,18 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                             Action::Team(TeamAction::RemoveMember { team, member }),
                         );
                     }
+                    // Scratch move re-enters the reducer (needs state access);
+                    // the picked item's value is the destination parent path.
+                    if let crate::application::state::PickerAction::MoveScratch { ref id } =
+                        picker.on_select_action
+                    {
+                        let id = id.clone();
+                        let new_parent = item.value.clone();
+                        return reduce(
+                            state,
+                            Action::Scratch(ScratchAction::Move { id, new_parent }),
+                        );
+                    }
                     state.toast = Some(format!("Opening in {}...", item.label));
                     return emit_picker_effect(&picker.on_select_action, &item.value);
                 }
@@ -1632,10 +1718,11 @@ fn emit_picker_effect(
                 terminal,
             }]
         }
-        // SelectPreset and RemoveTeamMember are handled directly in
-        // PickerSelect before calling this function
+        // SelectPreset, RemoveTeamMember, and MoveScratch are handled directly
+        // in PickerSelect before calling this function
         crate::application::state::PickerAction::SelectPreset { .. } => vec![],
         crate::application::state::PickerAction::RemoveTeamMember { .. } => vec![],
+        crate::application::state::PickerAction::MoveScratch { .. } => vec![],
     }
 }
 
@@ -3190,6 +3277,161 @@ mod tests {
             effects[0],
             Effect::RenameScratch { ref id, ref new_name }
                 if id == "sql/q.md" && new_name == "query"
+        ));
+        assert!(matches!(effects[1], Effect::RefreshScratchNotes));
+    }
+
+    #[test]
+    fn test_scratch_move_emits_effects_and_expands_dest() {
+        let mut state = test_state();
+        let effects = reduce(
+            &mut state,
+            Action::Scratch(ScratchAction::Move {
+                id: "a.md".to_string(),
+                new_parent: "sql/sub".to_string(),
+            }),
+        );
+        assert!(matches!(
+            effects[0],
+            Effect::MoveScratch { ref id, ref new_parent }
+                if id == "a.md" && new_parent == "sql/sub"
+        ));
+        assert!(matches!(effects[1], Effect::RefreshScratchNotes));
+        // Destination folder and its ancestors are expanded so the moved
+        // entry is visible after the refresh rebuilds the tree.
+        assert!(state.expanded_scratch_dirs.contains("sql"));
+        assert!(state.expanded_scratch_dirs.contains("sql/sub"));
+    }
+
+    #[test]
+    fn test_scratch_move_targets_excludes_self_descendants_and_parent() {
+        // Tree: sql/, sql/sub/, notes/ (all folders).
+        let notes = vec![
+            crate::domain::entities::ScratchNote {
+                id: "notes".to_string(),
+                title: "notes".to_string(),
+                is_dir: true,
+                ..Default::default()
+            },
+            crate::domain::entities::ScratchNote {
+                id: "sql".to_string(),
+                title: "sql".to_string(),
+                is_dir: true,
+                ..Default::default()
+            },
+            crate::domain::entities::ScratchNote {
+                id: "sql/sub".to_string(),
+                title: "sub".to_string(),
+                parent: "sql".to_string(),
+                depth: 1,
+                is_dir: true,
+                ..Default::default()
+            },
+        ];
+        // Moving the "sql" folder (currently at root): root is excluded (it's
+        // the current parent), "sql" itself and its descendant "sql/sub" are
+        // excluded (cycle). Only "notes" remains.
+        let sql = notes[1].clone();
+        let targets = scratch_move_targets(&notes, &sql);
+        let values: Vec<&str> = targets.iter().map(|i| i.value.as_str()).collect();
+        assert_eq!(values, vec!["notes"]);
+    }
+
+    #[test]
+    fn test_scratch_move_targets_offers_root_for_nested_entry() {
+        let notes = vec![
+            crate::domain::entities::ScratchNote {
+                id: "sql".to_string(),
+                title: "sql".to_string(),
+                is_dir: true,
+                ..Default::default()
+            },
+            crate::domain::entities::ScratchNote {
+                id: "sql/q.md".to_string(),
+                title: "q".to_string(),
+                parent: "sql".to_string(),
+                depth: 1,
+                ..Default::default()
+            },
+        ];
+        // A note inside "sql": root is offered (first), and "sql" is excluded
+        // as the current parent — leaving only root.
+        let note = notes[1].clone();
+        let targets = scratch_move_targets(&notes, &note);
+        let values: Vec<&str> = targets.iter().map(|i| i.value.as_str()).collect();
+        assert_eq!(values, vec![""]);
+        assert_eq!(targets[0].label, "/ (root)");
+    }
+
+    #[test]
+    fn test_enter_move_scratch_mode_opens_picker() {
+        let mut state = test_state();
+        state.nav.push(ViewKind::Scratch, None);
+        state.store.scratch_notes = vec![
+            crate::domain::entities::ScratchNote {
+                id: "a.md".to_string(),
+                title: "a".to_string(),
+                ..Default::default()
+            },
+            crate::domain::entities::ScratchNote {
+                id: "box".to_string(),
+                title: "box".to_string(),
+                is_dir: true,
+                ..Default::default()
+            },
+        ];
+        // Select the file (visible row 0); the only destination is "box".
+        state.table_state.selected = 0;
+        reduce(&mut state, Action::Ui(UiAction::EnterMoveScratchMode));
+        assert_eq!(state.input_mode, InputMode::Picker);
+        let picker = state.picker_dialog.as_ref().expect("picker opened");
+        assert!(matches!(
+            picker.on_select_action,
+            crate::application::state::PickerAction::MoveScratch { ref id } if id == "a.md"
+        ));
+        let values: Vec<&str> = picker.items.iter().map(|i| i.value.as_str()).collect();
+        assert_eq!(values, vec!["box"]);
+    }
+
+    #[test]
+    fn test_enter_move_scratch_mode_no_targets_toasts() {
+        let mut state = test_state();
+        state.nav.push(ViewKind::Scratch, None);
+        // A single root-level note: nowhere to move it (no folders, already root).
+        state.store.scratch_notes = vec![crate::domain::entities::ScratchNote {
+            id: "lonely.md".to_string(),
+            title: "lonely".to_string(),
+            ..Default::default()
+        }];
+        state.table_state.selected = 0;
+        let effects = reduce(&mut state, Action::Ui(UiAction::EnterMoveScratchMode));
+        assert!(effects.is_empty());
+        assert!(state.picker_dialog.is_none());
+        assert!(state.toast.is_some());
+    }
+
+    #[test]
+    fn test_picker_select_move_scratch_dispatches_move() {
+        let mut state = test_state();
+        state.picker_dialog = Some(crate::application::state::PickerDialog {
+            title: "Move 'a' to…".to_string(),
+            items: vec![crate::application::state::PickerItem {
+                label: "box/".to_string(),
+                description: String::new(),
+                value: "box".to_string(),
+            }],
+            selected: 0,
+            on_select_action: crate::application::state::PickerAction::MoveScratch {
+                id: "a.md".to_string(),
+            },
+        });
+        state.input_mode = InputMode::Picker;
+        let effects = reduce(&mut state, Action::Ui(UiAction::PickerSelect));
+        assert_eq!(state.input_mode, InputMode::Normal);
+        assert!(matches!(
+            effects[0],
+            Effect::MoveScratch { ref id, ref new_parent }
+                if id == "a.md" && new_parent == "box"
         ));
         assert!(matches!(effects[1], Effect::RefreshScratchNotes));
     }

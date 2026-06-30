@@ -633,6 +633,8 @@ fn handle_message(state: &AppState) -> Action {
         }
         // On team views, `m` adds a member to the current team.
         ViewKind::Teams | ViewKind::TeamDetail => Action::Ui(UiAction::AddTeamMember),
+        // On the Scratch view, `m` moves the selected entry into another folder.
+        ViewKind::Scratch => Action::Ui(UiAction::EnterMoveScratchMode),
         ViewKind::SessionDetail => {
             if let Some(session_id) = state.current_session() {
                 if let Some(team) = state
@@ -1295,6 +1297,17 @@ mod tests {
         assert!(matches!(
             handle_key(key, &state),
             Action::Ui(UiAction::EnterNewScratchMode)
+        ));
+    }
+
+    #[test]
+    fn test_m_key_on_scratch_view_moves_entry() {
+        let mut state = AppState::new();
+        state.nav.push(ViewKind::Scratch, None);
+        let key = KeyEvent::new(KeyCode::Char('m'), crossterm::event::KeyModifiers::NONE);
+        assert!(matches!(
+            handle_key(key, &state),
+            Action::Ui(UiAction::EnterMoveScratchMode)
         ));
     }
 

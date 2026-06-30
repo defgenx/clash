@@ -1228,6 +1228,11 @@ impl App {
                         self.state.toast = Some(format!("Rename failed: {}", e));
                     }
                 }
+                Effect::MoveScratch { id, new_parent } => {
+                    if let Err(e) = self.backend.move_scratch(&id, &new_parent) {
+                        self.state.toast = Some(format!("Move failed: {}", e));
+                    }
+                }
                 Effect::DeleteScratchNote { id } => {
                     if let Err(e) = self.backend.delete_scratch_note(&id) {
                         self.state.toast = Some(format!("Delete scratch failed: {}", e));

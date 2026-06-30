@@ -96,10 +96,8 @@ pub trait DataRepository: Send + Sync {
     /// keeping its name. Rejects moving a folder into itself or a descendant.
     /// Returns the moved entry at its new location.
     ///
-    /// `dead_code` is allowed because the only non-test caller is the sibling
-    /// `clash-gui` crate (drag-and-drop). The TUI reorganizes via create/
-    /// rename/delete, so it never emits a move effect — mirrors `set_scratch_dir`.
-    #[allow(dead_code)]
+    /// Reached from the TUI via `Effect::MoveScratch` (the `m` folder picker)
+    /// and from the GUI's drag-and-drop (which calls the Tauri command).
     fn move_scratch(&self, _id: &str, _new_parent: &str) -> Result<ScratchNote> {
         Ok(ScratchNote::default())
     }

@@ -196,6 +196,11 @@ pub enum PickerAction {
     RemoveTeamMember {
         team: String,
     },
+    /// Move the scratch entry `id` into the picked folder (item value = the
+    /// destination parent's relative path; `""` = root).
+    MoveScratch {
+        id: String,
+    },
 }
 
 /// Pending session creation state — replaces scattered fields.

@@ -49,6 +49,12 @@ pub enum Effect {
         id: String,
         new_name: String,
     },
+    /// Move the entry at `id` into the folder at `new_parent` (`""` = root),
+    /// keeping its name. Folders move with their whole subtree.
+    MoveScratch {
+        id: String,
+        new_parent: String,
+    },
     /// Delete a scratch entry by id (folders are removed recursively).
     DeleteScratchNote {
         id: String,

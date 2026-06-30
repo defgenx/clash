@@ -22,6 +22,10 @@ pub enum UiAction {
     EnterNewScratchDirMode,
     /// Prompt for a new name to rename the selected scratch entry (Scratch view).
     EnterRenameScratchMode,
+    /// Open a folder picker to move the selected scratch entry into another
+    /// folder (Scratch view). The selected entry, its descendants, and its
+    /// current parent are excluded from the destination list.
+    EnterMoveScratchMode,
     /// Edit the current team's description (Teams/TeamDetail views).
     EditTeamDescription,
     /// Start the add-member input chain for the current team.
