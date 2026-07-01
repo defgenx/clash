@@ -227,6 +227,7 @@ with an expand/collapse caret.
 | `e` | Open the selected note in an editor (picker) |
 | `r` | Rename the selected file or folder |
 | `m` | Move the selected file or folder into another folder (picker; choose **/ (root)** to move it back to the top level) |
+| `y` | Copy the entry's path to the clipboard (picker: absolute path, path relative to the scratch root, or file name) — IntelliJ-style "Copy Path/Reference…" |
 | `d` | Delete the selected entry (folders are removed recursively, with confirmation) |
 
 Scratches are plain files and folders under `~/.claude/clash/scratch/` by
@@ -235,6 +236,11 @@ default; override the location with `scratch_dir` in `config.toml` or the GUI
 too). The editor picker lists installed IDEs (Cursor, VS Code, Zed, JetBrains,
 …) and terminal editors (vim, nvim, emacs, nano, helix, micro); terminal
 editors open in a tab/pane, GUI editors launch alongside.
+
+`y` copies an entry's path to the system clipboard: it uses the platform
+clipboard tool (`pbcopy`/`wl-copy`/`xclip`/`xsel`/`clip`) for local copies and
+also emits an OSC 52 escape, so it works over SSH and in clipboard-capable
+terminals (iTerm2, kitty, WezTerm, Ghostty, tmux with `set-clipboard on`).
 
 In the GUI, scratches live in a collapsible **Scratches** sidebar section that
 renders the same tree: click a folder to expand/collapse it, click a note to
@@ -386,7 +392,7 @@ GUI features: fuzzy search (`/` or `⌘F`), inline rename (double-click),
 new session via the sidebar's `＋ New session` button (`⌘T`) with preset
 picker and git-worktree option — the directory prefills from the configured
 default directory, falling back to the focused session's project, then home —
-rename/details/stash/kill/take-over from a per-session `⋯` menu (also on
+rename/reload/details/stash/kill/take-over from a per-session `⋯` menu (also on
 right-click of the row), full shell terminals inside the GUI — the
 topbar's terminal button picks among the machine's shells (`/etc/shells`
 + `$SHELL`), `⌘⇧T` reopens with the last-used shell, the terminal starts
@@ -438,7 +444,7 @@ clicking one (or its ⚡ button) takes it over after a confirm — the
 outside process is killed and its conversation (dynamically associated,
 always the latest in that directory) opens attached under clash.
 Right-click a tab for the context menu:
-rename, close (stash), detach (keep running), stash, kill, details. Every tab — Claude
+rename, reload (restart on latest Claude), close (stash), detach (keep running), stash, kill, details. Every tab — Claude
 session, shell terminal, browser, or view — renames via double-click on
 its label or the context menu; Claude renames go through the registry
 (propagating to the TUI and sidebar), the others are display-only.
@@ -446,7 +452,13 @@ its label or the context menu; Claude renames go through the registry
 submitting (plain `Enter` still submits; shells are untouched).
 `⌘C` copies the terminal selection and `⌘V` pastes (use `Ctrl+Shift+C`/
 `Ctrl+Shift+V` on Linux); plain `Ctrl+C` still sends an interrupt to the
-running program.
+running program. Because Claude Code uses the mouse (clicking, scrolling),
+a plain drag goes to it rather than selecting text — hold **⌥ (Option)
+while dragging** to make a text selection you can `⌘C` (the native
+iTerm2/Terminal.app convention; on Linux hold **Shift**). Right-click
+selects the word under the pointer. In the **TUI**, copy/paste is your
+terminal's own — selection and paste work exactly as in any full-screen
+program (e.g. ⌥-drag to select in iTerm2), since attach is raw passthrough.
 The tab strip ends in a `+` ghost tab (same menu as the topbar button):
 a terminal per detected shell, a browser tab, or a new Claude session.
 
@@ -499,6 +511,17 @@ one confirmation: the status sections (ACTIVE, FAILED, STASHED, DONE),
 UNASSIGNED (sessions no workspace has claimed), and `⚡ EXTERNAL` (all
 associated wild claude processes — each row's dynamically-associated PID
 is signalled).
+
+**Reload (hot-restart on the latest Claude).** Next to that `✕`, each
+managed section header also has a `⟳` button that reloads the whole group;
+every session row and Claude tab carries its own `⟳` too (and it's in the
+session/tab context menus). Reloading a session stops it and reopens it
+resuming its **latest** conversation id — so it comes back on the newest
+`claude` binary without losing the conversation (handy right after
+updating Claude Code). Sessions that are **actively working** (Thinking,
+Prompting, Waiting, Starting) are skipped by the section/row reload to
+protect the in-flight turn, whose newest id may not be persisted yet;
+reloading such a session individually asks for confirmation first.
 Layouts and session ownership are saved to disk (`gui-state.json` in the
 clash app-support dir) and survive restarts (running sessions re-attach
 automatically).
