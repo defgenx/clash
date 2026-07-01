@@ -525,6 +525,59 @@ async fn kill_session(state: State<'_, GuiState>, session_id: String) -> Result<
     Ok(())
 }
 
+/// Reload a session: stop its current process (graceful, kept resumable) and
+/// wait until the daemon reports it gone, so the follow-up `open_session`
+/// resumes a FRESH `claude` — picking up a newer binary — instead of
+/// re-attaching the one that's still exiting. The frontend calls
+/// `open_session` next, which resolves the latest conversation id
+/// (`resolve_resume_id`). Callers skip actively-working sessions: a turn in
+/// flight has no persisted id yet, so restarting would lose it.
+///
+/// The wait matters because `PtySession::kill()` is graceful — it sends
+/// `/exit` and only escalates to SIGTERM/SIGKILL after 3s/6s — so `is_alive`
+/// stays true for a beat. Without the wait, `open_session`'s liveness check
+/// would see the dying session and just re-attach it (a silent no-op reload).
+#[tauri::command]
+async fn reload_session(state: State<'_, GuiState>, session_id: String) -> Result<(), String> {
+    // Detach our stream and stop the process (same graceful kill as stash).
+    {
+        let mut attached = state.attached.lock().await;
+        attached.remove(&session_id);
+    }
+    {
+        let mut control = state.control.lock().await;
+        ensure_connected(&mut control).await;
+        let _ = control.kill_session(&session_id).await;
+    }
+    // Poll until the daemon reports the process dead — re-locking each round so
+    // refresh isn't blocked. ~8s hard cap covers the kill's SIGKILL escalation
+    // (6s); Claude normally exits on `/exit` well under 1s.
+    for _ in 0..40 {
+        let alive = {
+            let mut control = state.control.lock().await;
+            ensure_connected(&mut control).await;
+            match control.list_sessions().await {
+                Ok(infos) => infos
+                    .iter()
+                    .any(|i| i.session_id == session_id && i.is_alive),
+                Err(_) => false,
+            }
+        };
+        if !alive {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    // Keep it resumable and clear stale status so the resume's Starting/Running
+    // takes effect in reconciliation (mirrors `stash_session`).
+    clash::infrastructure::hooks::write_session_status(
+        state.backend.base_dir(),
+        &session_id,
+        "idle",
+    );
+    Ok(())
+}
+
 /// Rename a session — same writes the TUI's rename effect does. The registry
 /// rename alone is a no-op for sessions clash didn't spawn (not in the
 /// registry), so the saved-names write is what makes rename stick for them.
@@ -2256,6 +2309,7 @@ fn main() {
             close_session,
             stash_session,
             kill_session,
+            reload_session,
             rename_session,
             set_notifications_enabled,
             tui_running,

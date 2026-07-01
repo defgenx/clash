@@ -542,9 +542,11 @@ html, body, #app {
 }
 .primary-action:hover { border-color: var(--accent); color: var(--accent); }
 
-/* The header is a flex row, so right-align the kill-all button with auto
-   margin (float is inert here). */
-.section-label .icon-btn { margin-left: auto; margin-top: -6px; }
+/* The header is a flex row. Push the button group to the right with an auto
+   margin on the first button; any following buttons just sit beside it. */
+.section-label .icon-btn { margin-top: -6px; }
+.section-label .icon-btn:first-of-type { margin-left: auto; }
+.section-label .icon-btn ~ .icon-btn { margin-left: 2px; }
 
 /* ── Main area ───────────────────────────────────── */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -574,6 +576,8 @@ html, body, #app {
 .tab.active { color: var(--fg); background: var(--bg); }
 .tab .close { display: inline-flex; align-items: center; opacity: 0.5; }
 .tab .close:hover { opacity: 1; color: var(--red); }
+.tab .reload { display: inline-flex; align-items: center; opacity: 0.5; }
+.tab .reload:hover { opacity: 1; color: var(--accent); }
 
 .tab-dot {
   width: 7px;

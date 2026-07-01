@@ -489,6 +489,14 @@ function sectionOf(s) {
   return "DONE";
 }
 
+// A session is "actively working" when a turn is in flight — its newest
+// conversation id may not be persisted to disk yet, so restarting it would
+// lose the exchange. Reload deliberately skips these (see `reloadSession`).
+const WORKING_STATUSES = new Set(["Thinking", "Prompting", "Waiting", "Starting"]);
+function isActivelyWorking(s) {
+  return WORKING_STATUSES.has(s.status);
+}
+
 function displayName(s) {
   return s.name || s.summary || s.first_prompt || s.id.slice(0, 8);
 }
@@ -532,6 +540,20 @@ function sectionKillAllButton(ids, what, title) {
   return btn;
 }
 
+/// A small ⟳ button for a section header that hot-reloads every session in
+/// the group (skipping any that are actively working) after one confirm.
+function sectionReloadAllButton(ids, what, title) {
+  const btn = document.createElement("button");
+  btn.className = "icon-btn mini";
+  btn.innerHTML = svgIcon("reload", 13);
+  btn.title = title;
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    reloadAll(ids, what);
+  };
+  return btn;
+}
+
 function renderStatusSections(list, items) {
   const sections = { ACTIVE: [], FAILED: [], STASHED: [], DONE: [] };
   for (const s of items) sections[sectionOf(s)].push(s);
@@ -543,12 +565,17 @@ function renderStatusSections(list, items) {
     // Every status section gets a kill-all on its header: one confirmation
     // clears the whole group instead of one kebab menu per row.
     const noun = label.toLowerCase();
+    const ids = group.map((s) => s.id);
+    const plural = `${noun} session${group.length === 1 ? "" : "s"}`;
     header.appendChild(
-      sectionKillAllButton(
-        group.map((s) => s.id),
-        `${noun} session${group.length === 1 ? "" : "s"}`,
-        `Kill all ${noun} sessions`
+      sectionReloadAllButton(
+        ids,
+        plural,
+        `Reload all ${noun} sessions on the latest Claude (skips any still working)`
       )
+    );
+    header.appendChild(
+      sectionKillAllButton(ids, plural, `Kill all ${noun} sessions`)
     );
     list.appendChild(header);
     for (const s of group) list.appendChild(sessionItem(s));
@@ -601,12 +628,17 @@ function renderSidebar() {
       header.className = "section-label unassigned";
       header.innerHTML = `UNASSIGNED<span class="count">${unassigned.length}</span>`;
       header.title = "Not in any workspace — opening one claims it for this workspace";
+      const ids = unassigned.map((s) => s.id);
+      const plural = `unassigned session${unassigned.length === 1 ? "" : "s"}`;
       header.appendChild(
-        sectionKillAllButton(
-          unassigned.map((s) => s.id),
-          `unassigned session${unassigned.length === 1 ? "" : "s"}`,
-          "Kill all unassigned sessions"
+        sectionReloadAllButton(
+          ids,
+          plural,
+          "Reload all unassigned sessions on the latest Claude (skips any still working)"
         )
+      );
+      header.appendChild(
+        sectionKillAllButton(ids, plural, "Kill all unassigned sessions")
       );
       list.appendChild(header);
       for (const s of unassigned) list.appendChild(sessionItem(s));
@@ -744,6 +776,27 @@ function sessionItem(s) {
   // Right-clicking the row opens it too.
   const actions = document.createElement("div");
   actions.className = "session-actions";
+  // Reload: restart this session on the latest Claude, resuming its
+  // conversation. Wild (externally-owned) rows have nothing for us to
+  // restart — take-over is their action instead.
+  if (!wild) {
+    const reload = document.createElement("button");
+    reload.innerHTML = svgIcon("reload", 14);
+    reload.title = "Reload — restart on the latest Claude, resuming the conversation";
+    reload.onclick = async (ev) => {
+      ev.stopPropagation();
+      if (
+        isActivelyWorking(s) &&
+        !(await uiConfirm(
+          `"${displayName(s)}" is working right now. Reload anyway? The in-flight turn may be lost.`,
+          "Reload"
+        ))
+      )
+        return;
+      reloadSession(s.id);
+    };
+    actions.appendChild(reload);
+  }
   const kebab = document.createElement("button");
   kebab.innerHTML = svgIcon("kebab", 16);
   kebab.title = "Actions";
@@ -771,6 +824,25 @@ function sessionMenu(s, x, y) {
   showContextMenu(x, y, [
     { label: "Rename session…", icon: "pencil", action: () => startRename(s.id) },
     { label: "Details", icon: "info", action: () => showDetails(s.id) },
+    ...(s.source !== "Wild"
+      ? [
+          {
+            label: "Reload (restart on latest Claude)",
+            icon: "reload",
+            action: async () => {
+              if (
+                isActivelyWorking(s) &&
+                !(await uiConfirm(
+                  `"${displayName(s)}" is working right now. Reload anyway? The in-flight turn may be lost.`,
+                  "Reload"
+                ))
+              )
+                return;
+              reloadSession(s.id);
+            },
+          },
+        ]
+      : []),
     ...(pr
       ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openBrowserTab(pr, "split") }]
       : []),
@@ -911,6 +983,63 @@ async function massKill(ids, what) {
   saveWorkspaces();
   const failed = results.filter((r) => r.status === "rejected").length;
   if (failed) uiAlert(`${failed} of ${ids.length} kills failed.`);
+  refreshSessions();
+}
+
+/// Hot-reload one session: stop its current process (kept resumable, waiting
+/// for it to actually exit) and reopen it resuming its latest conversation id —
+/// so it comes back on the newest `claude` binary without losing the
+/// conversation. The backend `reload_session` does the stop-and-wait; then
+/// `open_session` resolves the lineage forward (`resolve_resume_id`) and starts
+/// fresh when no transcript survives, so "reopen on the latest id" is free.
+/// Reopens in place for an open tab; opens (resumes) a currently-closed one.
+async function reloadSession(sid) {
+  const wasOpen = state.open.has(sid);
+  const entry = wasOpen ? state.open.get(sid) : null;
+  if (entry && entry.term) {
+    entry.term.writeln("\r\n\x1b[90m⟳ reloading on the latest Claude…\x1b[0m");
+  }
+  try {
+    await invoke("reload_session", { sessionId: sid });
+  } catch (e) {
+    console.error("reload failed", e);
+    if (entry && entry.term) entry.term.writeln(`\x1b[31mReload failed: ${e}\x1b[0m`);
+    return;
+  }
+  if (wasOpen) dropTerminal(sid);
+  openSession(sid);
+}
+
+/// Reload every non-actively-working session in `ids` after one confirm.
+/// Actively-working sessions (a turn in flight) are skipped, per design.
+/// `what` is the pluralized noun phrase for the dialog.
+async function reloadAll(ids, what) {
+  const sessions = ids
+    .map((id) => state.sessions.find((s) => s.id === id))
+    .filter(Boolean);
+  const todo = sessions.filter((s) => !isActivelyWorking(s));
+  const skipped = sessions.length - todo.length;
+  if (!todo.length) {
+    uiAlert(
+      skipped
+        ? `All ${skipped} ${what} are working right now — nothing reloaded.`
+        : `No ${what} to reload.`
+    );
+    return;
+  }
+  const skipNote = skipped
+    ? ` ${skipped} working ${skipped === 1 ? "session is" : "sessions are"} left alone.`
+    : "";
+  if (
+    !(await uiConfirm(
+      `Reload ${todo.length} ${what}? Each restarts on the latest Claude, ` +
+        `resuming its conversation.${skipNote}`,
+      "Reload all"
+    ))
+  )
+    return;
+  // Sequential so we don't stampede the daemon with concurrent spawns.
+  for (const s of todo) await reloadSession(s.id);
   refreshSessions();
 }
 
@@ -1057,6 +1186,11 @@ function tabContextMenu(ev, sid) {
   const pr = state.prUrls.get(sid);
   showContextMenu(ev.clientX, ev.clientY, [
     { label: "Rename session…", icon: "pencil", action: () => renameSessionDialog(sid) },
+    {
+      label: "Reload (restart on latest Claude)",
+      icon: "reload",
+      action: () => reloadSession(sid),
+    },
     { label: "Close tab (stash)", icon: "x", hint: "⌘W", action: () => closeTab(sid) },
     {
       label: "Detach (keep running)",
@@ -1145,6 +1279,31 @@ function renderTabs() {
       renameTabDialog(id);
     };
 
+    tab.appendChild(label);
+
+    // Reload (Claude tabs only): restart on the latest Claude, resuming the
+    // conversation. Shells/browsers/views have nothing to resume.
+    if (entry.kind === "claude") {
+      const reload = document.createElement("span");
+      reload.className = "reload";
+      reload.innerHTML = svgIcon("reload", 12);
+      reload.title = "Reload — restart on the latest Claude, resuming the conversation";
+      reload.onclick = async (ev) => {
+        ev.stopPropagation();
+        if (
+          s &&
+          isActivelyWorking(s) &&
+          !(await uiConfirm(
+            `"${entry.name}" is working right now. Reload anyway? The in-flight turn may be lost.`,
+            "Reload"
+          ))
+        )
+          return;
+        reloadSession(id);
+      };
+      tab.appendChild(reload);
+    }
+
     const close = document.createElement("span");
     close.className = "close";
     close.innerHTML = svgIcon("x", 13);
@@ -1157,7 +1316,6 @@ function renderTabs() {
       closeTab(id);
     };
 
-    tab.appendChild(label);
     tab.appendChild(close);
     tabs.appendChild(tab);
   }
@@ -1387,6 +1545,18 @@ async function openSession(sid, label, opts = {}) {
     cursorStyle: state.settings.cursorStyle,
     cursorBlink: state.settings.cursorBlink,
     macOptionIsMeta: state.settings.optionMeta,
+    // Claude Code turns on mouse tracking, so plain mouse drags are reported to
+    // it as mouse events and never produce a text selection — making ⌘C / copy
+    // impossible (and any stray partial selection copies garbled text). Match
+    // the native macOS terminal convention (iTerm2 / Terminal.app): hold ⌥ while
+    // dragging to force a real text selection that ⌘C and copy-on-select grab.
+    // (On non-mac, xterm already lets Shift+drag force selection.) This is
+    // mouse-only and independent of macOptionIsMeta, so it never affects typing
+    // ⌥-composed glyphs (brackets/braces on AZERTY, etc.).
+    macOptionClickForcesSelection: true,
+    // Right-click selects the word under the pointer (parity with double-click),
+    // a quick native affordance for grabbing a token to copy.
+    rightClickSelectsWord: true,
     // OSC 8 hyperlinks (Claude Code emits these) — open in the embedded
     // browser panel, or the system browser per the embedLinks setting.
     linkHandler: {
