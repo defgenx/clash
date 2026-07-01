@@ -400,7 +400,8 @@ in the focused session's project (then default directory, then home),
 and closing the tab (or `exit`) kills the shell — unlimited split panes
 in a balanced grid (`⌘D`
 splits, `⌘⇧D` closes the focused pane, zoom `⌘⇧↩` or double-click the
-pane title, `⌘⌥←/→` cycles focus), teams browser (members with
+pane title, `⌘⌥←/→` cycles focus; **drag the gutter between panes to
+resize** columns/rows — the split ratios persist per workspace), teams browser (members with
 live-activity dots and model chips, tasks, agent inboxes, create/delete
 via the + button or right-click menu; in the details panel click the
 description to edit it, `＋ Add member` to add an agent, and right-click

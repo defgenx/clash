@@ -190,6 +190,8 @@ function workspacesJson() {
       name: w.name,
       panes: w.panes,
       sessions: w.sessions,
+      colFracs: w.colFracs,
+      rowFracs: w.rowFracs,
     })),
     browserTabs,
     active: state.activeWs,
@@ -253,6 +255,10 @@ function applyWorkspacesData(data) {
     focused: 0,
     zoomed: false,
     sessions: Array.isArray(w.sessions) ? w.sessions.filter((id) => !isShellTerm(id)) : [],
+    // Pane track sizes; renderPanes resets them if they no longer match the
+    // grid shape (pane count changed since the layout was saved).
+    colFracs: Array.isArray(w.colFracs) ? w.colFracs : undefined,
+    rowFracs: Array.isArray(w.rowFracs) ? w.rowFracs : undefined,
   }));
   pendingBrowserTabs = Array.isArray(data.browserTabs) ? data.browserTabs : [];
   state.activeWs = Math.min(data.active || 0, state.workspaces.length - 1);
@@ -1344,12 +1350,25 @@ function renderPanes() {
   // rows follow — 2 → 2x1, 3-4 → 2x2, 5-6 → 3x2, 7-9 → 3x3, …
   const cols = Math.ceil(Math.sqrt(visible.length));
   const rows = Math.ceil(visible.length / cols);
-  host.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-  host.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+  // Resizable grid tracks: per-workspace column/row fractions, reset to equal
+  // whenever the grid shape changes (pane added/removed) or a single cell is
+  // shown (zoom / one pane). Draggable gutters between tracks edit these.
+  const resizable = !w.zoomed && visible.length > 1;
+  if (resizable) {
+    const valid = (a, n) =>
+      Array.isArray(a) && a.length === n && a.every((f) => typeof f === "number" && f > 0);
+    if (!valid(w.colFracs, cols)) w.colFracs = Array(cols).fill(1);
+    if (!valid(w.rowFracs, rows)) w.rowFracs = Array(rows).fill(1);
+    host.style.gridTemplateColumns = w.colFracs.map((f) => f + "fr").join(" ");
+    host.style.gridTemplateRows = w.rowFracs.map((f) => f + "fr").join(" ");
+  } else {
+    host.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    host.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+  }
 
   // Detach term elements first so re-appending doesn't destroy them
   for (const entry of state.open.values()) entry.el.remove();
-  host.querySelectorAll(".pane").forEach((p) => p.remove());
+  host.querySelectorAll(".pane, .pane-gutter").forEach((p) => p.remove());
 
   const anyAssigned = w.panes.some((p) => p);
   $("empty-state").style.display = anyAssigned ? "none" : "flex";
@@ -1387,7 +1406,96 @@ function renderPanes() {
     host.appendChild(pane);
   });
 
+  if (resizable) addPaneGutters(host, w, cols, rows);
+
   fitAll();
+}
+
+/// Add draggable gutters between the grid's column and row tracks. Positioned
+/// (and repositioned on resize) by `repositionGutters` from the fractions, so
+/// no pane layout needs to be read.
+function addPaneGutters(host, w, cols, rows) {
+  for (let k = 1; k < cols; k++) {
+    const g = document.createElement("div");
+    g.className = "pane-gutter col";
+    g.title = "Drag to resize columns";
+    makeGutterDraggable(g, host, w, "col", k);
+    host.appendChild(g);
+  }
+  for (let j = 1; j < rows; j++) {
+    const g = document.createElement("div");
+    g.className = "pane-gutter row";
+    g.title = "Drag to resize rows";
+    makeGutterDraggable(g, host, w, "row", j);
+    host.appendChild(g);
+  }
+  // Place immediately (host is already laid out) to avoid a one-frame flash at
+  // the origin; fitAll's rAF repositions again once terms reflow.
+  repositionGutters(host, w);
+}
+
+/// Place each gutter at its track boundary, computed from the fractions (the
+/// column/row gap is 1px — negligible, so we ignore it). Gutters are appended
+/// in track order, matching the cumulative-fraction walk.
+function repositionGutters(host, w) {
+  const colG = host.querySelectorAll(".pane-gutter.col");
+  const rowG = host.querySelectorAll(".pane-gutter.row");
+  if (!colG.length && !rowG.length) return;
+  const cs = w.colFracs || [];
+  const rs = w.rowFracs || [];
+  const ctot = cs.reduce((a, b) => a + b, 0) || 1;
+  const rtot = rs.reduce((a, b) => a + b, 0) || 1;
+  const width = host.clientWidth;
+  const height = host.clientHeight;
+  let acc = 0;
+  colG.forEach((g, i) => {
+    acc += cs[i] || 0;
+    g.style.left = (acc / ctot) * width + "px";
+  });
+  let accr = 0;
+  rowG.forEach((g, i) => {
+    accr += rs[i] || 0;
+    g.style.top = (accr / rtot) * height + "px";
+  });
+}
+
+/// Wire a gutter to redistribute the fraction between the two tracks it sits
+/// between. `k` is the higher track index (boundary between k-1 and k).
+function makeGutterDraggable(g, host, w, axis, k) {
+  g.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    g.classList.add("dragging");
+    document.body.style.cursor = axis === "col" ? "col-resize" : "row-resize";
+    const fracs = axis === "col" ? w.colFracs : w.rowFracs;
+    const start = [...fracs];
+    const total = start.reduce((a, b) => a + b, 0);
+    const size = axis === "col" ? host.clientWidth : host.clientHeight;
+    const startPos = axis === "col" ? e.clientX : e.clientY;
+    const MIN = 0.15; // keep every track at least ~15% of an equal share
+    const onMove = (ev) => {
+      const pos = axis === "col" ? ev.clientX : ev.clientY;
+      let d = ((pos - startPos) / size) * total;
+      // Clamp so neither adjacent track shrinks below MIN.
+      d = Math.max(-(start[k - 1] - MIN), Math.min(start[k] - MIN, d));
+      fracs[k - 1] = start[k - 1] + d;
+      fracs[k] = start[k] - d;
+      const tpl = fracs.map((f) => f + "fr").join(" ");
+      if (axis === "col") host.style.gridTemplateColumns = tpl;
+      else host.style.gridTemplateRows = tpl;
+      fitAll();
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      g.classList.remove("dragging");
+      document.body.style.cursor = "";
+      saveWorkspaces();
+      fitAll();
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
 }
 
 function fitAll() {
@@ -1397,6 +1505,7 @@ function fitAll() {
       if (entry && entry.fitAddon) entry.fitAddon.fit();
     }
     if (typeof syncBrowserWebviews === "function") syncBrowserWebviews();
+    repositionGutters($("terminal-host"), ws());
   });
 }
 
@@ -3510,7 +3619,10 @@ listen("browser-open-tab", (event) => {
 
 // Pane-area geometry changes that bypass renderPanes (details panel
 // open/close, sidebar drag) still move the slots — observe the host.
-new ResizeObserver(() => syncBrowserWebviews()).observe($("terminal-host"));
+new ResizeObserver(() => {
+  syncBrowserWebviews();
+  repositionGutters($("terminal-host"), ws());
+}).observe($("terminal-host"));
 
 // ── Panel resizing (sidebar / details) ──────────────────────────
 
