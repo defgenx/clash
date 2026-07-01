@@ -201,6 +201,7 @@ impl TableView for ScratchTable {
             Keybinding::new("e", "Open in editor"),
             Keybinding::new("r", "Rename"),
             Keybinding::new("m", "Move to another folder"),
+            Keybinding::new("y", "Copy path (absolute / relative / name)"),
             Keybinding::new("d", "Delete"),
         ]
     }

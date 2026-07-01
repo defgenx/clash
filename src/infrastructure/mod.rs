@@ -1,4 +1,5 @@
 pub mod app;
+pub mod clipboard;
 pub mod config;
 pub mod daemon;
 pub mod env_path;

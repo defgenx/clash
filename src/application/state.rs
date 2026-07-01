@@ -201,6 +201,9 @@ pub enum PickerAction {
     MoveScratch {
         id: String,
     },
+    /// Copy the picked path to the clipboard (item value = the text to copy;
+    /// item label = which format, e.g. "Absolute path", for the toast).
+    CopyToClipboard,
 }
 
 /// Pending session creation state — replaces scattered fields.

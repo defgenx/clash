@@ -59,6 +59,11 @@ pub enum Effect {
     DeleteScratchNote {
         id: String,
     },
+    /// Copy arbitrary text to the system clipboard (e.g. a scratch entry's
+    /// absolute/relative path). Best-effort: platform command + OSC 52.
+    CopyToClipboard {
+        text: String,
+    },
 
     // ── Session effects ────────────────────────────────────────
     DaemonAttach {

@@ -1125,6 +1125,45 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             state.input_mode = InputMode::Picker;
             vec![]
         }
+        UiAction::EnterCopyScratchPathMode => {
+            let Some(note) = selected_scratch_note(state).cloned() else {
+                state.toast = Some("Nothing selected".to_string());
+                return vec![];
+            };
+            // File name with extension (folder name for folders), from the
+            // absolute path; fall back to the display title.
+            let file_name = std::path::Path::new(&note.path)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| note.title.clone());
+            let mut items = Vec::new();
+            if !note.path.is_empty() {
+                items.push(crate::application::state::PickerItem {
+                    label: "Absolute path".to_string(),
+                    description: note.path.clone(),
+                    value: note.path.clone(),
+                });
+            }
+            items.push(crate::application::state::PickerItem {
+                label: "Relative path (from scratch root)".to_string(),
+                description: note.id.clone(),
+                value: note.id.clone(),
+            });
+            items.push(crate::application::state::PickerItem {
+                label: "File name".to_string(),
+                description: file_name.clone(),
+                value: file_name,
+            });
+            state.picker_dialog = Some(crate::application::state::PickerDialog {
+                title: format!("Copy path of '{}'", note.title),
+                items,
+                selected: 0,
+                on_select_action: crate::application::state::PickerAction::CopyToClipboard,
+            });
+            state.input_mode = InputMode::Picker;
+            vec![]
+        }
         UiAction::EditTeamDescription => {
             let Some(name) = resolve_team_name(state) else {
                 state.toast = Some("No team selected".to_string());
@@ -1510,6 +1549,17 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                             Action::Scratch(ScratchAction::Move { id, new_parent }),
                         );
                     }
+                    // Copy-path emits a clipboard effect; toast names the format
+                    // (item label) rather than the generic "Opening in …".
+                    if matches!(
+                        picker.on_select_action,
+                        crate::application::state::PickerAction::CopyToClipboard
+                    ) {
+                        state.toast = Some(format!("Copied {}", item.label.to_lowercase()));
+                        return vec![Effect::CopyToClipboard {
+                            text: item.value.clone(),
+                        }];
+                    }
                     state.toast = Some(format!("Opening in {}...", item.label));
                     return emit_picker_effect(&picker.on_select_action, &item.value);
                 }
@@ -1718,11 +1768,12 @@ fn emit_picker_effect(
                 terminal,
             }]
         }
-        // SelectPreset, RemoveTeamMember, and MoveScratch are handled directly
-        // in PickerSelect before calling this function
+        // SelectPreset, RemoveTeamMember, MoveScratch, and CopyToClipboard are
+        // handled directly in PickerSelect before calling this function
         crate::application::state::PickerAction::SelectPreset { .. } => vec![],
         crate::application::state::PickerAction::RemoveTeamMember { .. } => vec![],
         crate::application::state::PickerAction::MoveScratch { .. } => vec![],
+        crate::application::state::PickerAction::CopyToClipboard => vec![],
     }
 }
 
@@ -3408,6 +3459,60 @@ mod tests {
         assert!(effects.is_empty());
         assert!(state.picker_dialog.is_none());
         assert!(state.toast.is_some());
+    }
+
+    #[test]
+    fn test_enter_copy_scratch_path_mode_offers_three_formats() {
+        let mut state = test_state();
+        state.nav.push(ViewKind::Scratch, None);
+        state.store.scratch_notes = vec![crate::domain::entities::ScratchNote {
+            id: "sql/q.md".to_string(),
+            title: "q".to_string(),
+            path: "/home/u/.claude/clash/scratch/sql/q.md".to_string(),
+            parent: "sql".to_string(),
+            depth: 1,
+            ..Default::default()
+        }];
+        state.table_state.selected = 0;
+        reduce(&mut state, Action::Ui(UiAction::EnterCopyScratchPathMode));
+        assert_eq!(state.input_mode, InputMode::Picker);
+        let picker = state.picker_dialog.as_ref().expect("picker opened");
+        assert!(matches!(
+            picker.on_select_action,
+            crate::application::state::PickerAction::CopyToClipboard
+        ));
+        let values: Vec<&str> = picker.items.iter().map(|i| i.value.as_str()).collect();
+        assert_eq!(
+            values,
+            vec!["/home/u/.claude/clash/scratch/sql/q.md", "sql/q.md", "q.md"]
+        );
+    }
+
+    #[test]
+    fn test_picker_select_copy_path_emits_clipboard_effect() {
+        let mut state = test_state();
+        state.picker_dialog = Some(crate::application::state::PickerDialog {
+            title: "Copy path of 'q'".to_string(),
+            items: vec![crate::application::state::PickerItem {
+                label: "Relative path (from scratch root)".to_string(),
+                description: "sql/q.md".to_string(),
+                value: "sql/q.md".to_string(),
+            }],
+            selected: 0,
+            on_select_action: crate::application::state::PickerAction::CopyToClipboard,
+        });
+        state.input_mode = InputMode::Picker;
+        let effects = reduce(&mut state, Action::Ui(UiAction::PickerSelect));
+        assert_eq!(state.input_mode, InputMode::Normal);
+        assert!(matches!(
+            effects[0],
+            Effect::CopyToClipboard { ref text } if text == "sql/q.md"
+        ));
+        // Toast names the chosen format, not the generic "Opening in …".
+        assert!(state
+            .toast
+            .as_deref()
+            .is_some_and(|t| t.starts_with("Copied")));
     }
 
     #[test]

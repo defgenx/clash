@@ -152,6 +152,14 @@ fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
                 handle_refresh(state)
             }
         }
+        KeyCode::Char('y') => {
+            // On the Scratch view, `y` copies the selected entry's path.
+            if state.current_view() == ViewKind::Scratch {
+                Action::Ui(UiAction::EnterCopyScratchPathMode)
+            } else {
+                Action::Noop
+            }
+        }
         KeyCode::Char('x') => {
             // Remove a member from the current team (picker).
             if matches!(state.current_view(), ViewKind::Teams | ViewKind::TeamDetail) {
@@ -1308,6 +1316,17 @@ mod tests {
         assert!(matches!(
             handle_key(key, &state),
             Action::Ui(UiAction::EnterMoveScratchMode)
+        ));
+    }
+
+    #[test]
+    fn test_y_key_on_scratch_view_copies_path() {
+        let mut state = AppState::new();
+        state.nav.push(ViewKind::Scratch, None);
+        let key = KeyEvent::new(KeyCode::Char('y'), crossterm::event::KeyModifiers::NONE);
+        assert!(matches!(
+            handle_key(key, &state),
+            Action::Ui(UiAction::EnterCopyScratchPathMode)
         ));
     }
 

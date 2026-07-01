@@ -26,6 +26,10 @@ pub enum UiAction {
     /// folder (Scratch view). The selected entry, its descendants, and its
     /// current parent are excluded from the destination list.
     EnterMoveScratchMode,
+    /// Open a picker to copy the selected scratch entry's path to the clipboard
+    /// (Scratch view) — absolute path, path relative to the scratch root, or
+    /// file name (IntelliJ-style "Copy Path/Reference…").
+    EnterCopyScratchPathMode,
     /// Edit the current team's description (Teams/TeamDetail views).
     EditTeamDescription,
     /// Start the add-member input chain for the current team.

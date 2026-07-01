@@ -193,6 +193,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
             ("e", "Open the selected note in an editor"),
             ("r", "Rename the selected entry"),
             ("m", "Move the selected entry to another folder"),
+            ("y", "Copy the path (absolute / relative / file name)"),
             ("d", "Delete the selected entry (folders: recursive)"),
         ],
     },

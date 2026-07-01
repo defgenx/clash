@@ -1238,6 +1238,13 @@ impl App {
                         self.state.toast = Some(format!("Delete scratch failed: {}", e));
                     }
                 }
+                Effect::CopyToClipboard { text } => {
+                    // Best-effort: platform command + OSC 52. The reducer
+                    // already set an optimistic "Copied …" toast.
+                    if !crate::infrastructure::clipboard::copy(&text) {
+                        tracing::debug!("clipboard copy relied on OSC 52 (no platform command)");
+                    }
+                }
                 Effect::RefreshScratchNotes => {
                     if let Err(e) = self.state.store.refresh_scratch_notes(&self.backend) {
                         tracing::warn!("Scratch refresh failed: {}", e);
