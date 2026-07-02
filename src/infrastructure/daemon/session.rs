@@ -113,6 +113,23 @@ impl PtySession {
 
         let mut cmd = Command::new(bin);
 
+        // Locale: launched from Finder/Dock the app inherits launchd's minimal
+        // env with no LANG/LC_* set, so the PTY child falls back to the
+        // C/POSIX locale and misdecodes multibyte UTF-8 on input — a pasted or
+        // typed em dash / accent / box-drawing char turns into mojibake
+        // ("—" → "‚Äî"). Output looks fine because the frontends always decode
+        // UTF-8; only the child's own input handling breaks. Fill in a UTF-8
+        // ctype only when the user has set no locale at all (a real shell's
+        // locale is never overridden). Set before the env_vars loop so an
+        // explicit repo-config locale still wins.
+        if let Some(ctype) = default_lc_ctype(
+            std::env::var_os("LC_ALL").as_deref(),
+            std::env::var_os("LC_CTYPE").as_deref(),
+            std::env::var_os("LANG").as_deref(),
+        ) {
+            cmd.env("LC_CTYPE", ctype);
+        }
+
         // Inherit parent environment (includes Vertex, Bedrock, and other cloud provider vars).
         // Additional env vars from repo config override on top.
         for (key, val) in env_vars {
@@ -635,9 +652,40 @@ fn has_thinking_indicator(bottom: &str, _last_lines: &[&str]) -> bool {
     false
 }
 
+/// The UTF-8 ctype to set for a PTY child, or `None` when a locale is already
+/// configured (never override the user's). Kept pure — no `std::env` reads — so
+/// it's unit-tested directly; the caller passes the live env values.
+fn default_lc_ctype(
+    lc_all: Option<&std::ffi::OsStr>,
+    lc_ctype: Option<&std::ffi::OsStr>,
+    lang: Option<&std::ffi::OsStr>,
+) -> Option<&'static str> {
+    if lc_all.is_none() && lc_ctype.is_none() && lang.is_none() {
+        // macOS accepts the short "UTF-8"; Linux needs a named UTF-8 locale.
+        Some(if cfg!(target_os = "macos") {
+            "UTF-8"
+        } else {
+            "C.UTF-8"
+        })
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locale_default_only_when_no_locale_set() {
+        use std::ffi::OsStr;
+        // Nothing set → fill in a UTF-8 ctype.
+        assert!(default_lc_ctype(None, None, None).is_some());
+        // Any locale already set → leave it alone.
+        assert!(default_lc_ctype(None, None, Some(OsStr::new("en_US.UTF-8"))).is_none());
+        assert!(default_lc_ctype(None, Some(OsStr::new("UTF-8")), None).is_none());
+        assert!(default_lc_ctype(Some(OsStr::new("C")), None, None).is_none());
+    }
 
     #[test]
     fn test_detect_idle_prompt() {
