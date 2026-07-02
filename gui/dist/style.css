@@ -663,6 +663,13 @@ html, body, #app {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Clip the terminal to the pane (= grid cell = window edge). FitAddon sizes
+     rows from the CSS cell height, but xterm renders each row rounded to device
+     pixels, so rows × renderedHeight can exceed the container by a sub-row
+     sliver. That excess has nothing else to clip it, so it spilled downward —
+     worst in the tallest terminal, i.e. a single title-less pane, pushing
+     Claude's bottom input line out of the window ("only one tab" case). */
+  overflow: hidden;
 }
 .pane.focused { border-color: var(--accent); }
 
