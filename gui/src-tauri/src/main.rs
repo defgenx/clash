@@ -1620,10 +1620,15 @@ fn get_version() -> String {
 }
 
 /// Relaunch the app binary — offered after a self-update so the new
-/// version takes over. The in-process daemon (and every PTY session it
-/// owns) dies with the old process; the frontend confirms first.
+/// version takes over. `app.restart()` re-execs the process, taking the
+/// in-process daemon (and every PTY session it owns) with it, and — when it
+/// runs on the main thread — it does so WITHOUT emitting `RunEvent::Exit*`,
+/// so the exit-stash handler never fires. We therefore stash-and-wait here
+/// explicitly first, so sessions are left cleanly resumable rather than
+/// SIGHUP'd mid-write by the re-exec.
 #[tauri::command]
-fn restart_app(app: tauri::AppHandle) {
+async fn restart_app(state: State<'_, GuiState>, app: tauri::AppHandle) -> Result<(), String> {
+    stash_and_wait(state.inner()).await;
     app.restart();
 }
 
@@ -2089,11 +2094,21 @@ async fn ensure_connected(client: &mut DaemonClient) {
     }
 }
 
-/// Quit-stash on app exit — same sequence as the TUI's quit: marker first,
-/// then statuses idle, then daemon kill. Runs synchronously in the close
-/// handler so it completes before the process exits.
-fn quit_stash(state: &GuiState) {
-    tauri::async_runtime::block_on(async {
+/// Quit-stash all running sessions and **wait until each is actually dead**.
+///
+/// Same sequence as the TUI's quit — marker first, then statuses idle, then
+/// daemon kill — but with the wait the TUI's `check_shutdown` also performs.
+/// `PtySession::kill()` is graceful: it writes `/exit` to the PTY and only
+/// escalates to SIGTERM/SIGKILL after 3s/6s, so a session stays alive for a
+/// beat after the kill request. If the process exits (window close) or
+/// re-execs (`app.restart()` on update) before Claude has acted on `/exit`,
+/// the daemon and its PTY children die by SIGHUP (master fd close) mid-write
+/// and the conversation isn't left cleanly resumable — the session shows as
+/// errored, not stashed, on the next launch. Polling `is_alive` until it
+/// clears (mirrors `reload_session`) closes that race. ~8s cap covers the
+/// SIGKILL escalation (6s); Claude normally exits on `/exit` well under 1s.
+async fn stash_and_wait(state: &GuiState) {
+    let ids: Vec<String> = {
         let mut control = state.control.lock().await;
         ensure_connected(&mut control).await;
         let infos = control.list_sessions().await.unwrap_or_default();
@@ -2112,7 +2127,32 @@ fn quit_stash(state: &GuiState) {
         for id in &ids {
             let _ = control.kill_session(id).await;
         }
-    });
+        ids
+    };
+    // Poll until every stashed session is gone — re-locking each round so the
+    // control mutex isn't held across the sleeps.
+    for _ in 0..40 {
+        let any_alive = {
+            let mut control = state.control.lock().await;
+            ensure_connected(&mut control).await;
+            match control.list_sessions().await {
+                Ok(infos) => infos
+                    .iter()
+                    .any(|i| i.is_alive && ids.contains(&i.session_id)),
+                Err(_) => false,
+            }
+        };
+        if !any_alive {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+/// Quit-stash on app exit. Runs synchronously in the window-close / exit
+/// handler so it completes (children fully stopped) before the process exits.
+fn quit_stash(state: &GuiState) {
+    tauri::async_runtime::block_on(stash_and_wait(state));
 }
 
 /// Consume the quit-stash marker written on the previous exit and force the
