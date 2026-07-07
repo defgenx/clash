@@ -247,7 +247,10 @@ renders the same tree: click a folder to expand/collapse it, click a note to
 open it, and use the section's **+** button (or a folder's right-click menu) to
 create notes and folders. **Drag and drop** any note or folder onto another
 folder — or onto empty space to move it back to the root — to reorganize.
-Right-click any entry to rename or delete it.
+Right-click any entry to rename or delete it. The tree **auto-refreshes** when
+the scratch directory changes on disk (a note saved from an editor, the TUI, a
+`git pull`…) via a filesystem watcher; the section's **⟳** button forces a
+manual re-list.
 
 ### Commands
 
@@ -516,13 +519,15 @@ is signalled).
 **Reload (hot-restart on the latest Claude).** Next to that `✕`, each
 managed section header also has a `⟳` button that reloads the whole group;
 every session row and Claude tab carries its own `⟳` too (and it's in the
-session/tab context menus). Reloading a session stops it and reopens it
+session/tab context menus). `⌘R` reloads the focused session pane.
+Reloading a session stops it and reopens it
 resuming its **latest** conversation id — so it comes back on the newest
 `claude` binary without losing the conversation (handy right after
 updating Claude Code). Sessions that are **actively working** (Thinking,
 Prompting, Waiting, Starting) are skipped by the section/row reload to
 protect the in-flight turn, whose newest id may not be persisted yet;
-reloading such a session individually asks for confirmation first.
+reloading such a session individually (row `⟳`, `⌘R`) asks for
+confirmation first.
 Layouts and session ownership are saved to disk (`gui-state.json` in the
 clash app-support dir) and survive restarts (running sessions re-attach
 automatically).

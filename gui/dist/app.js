@@ -789,17 +789,9 @@ function sessionItem(s) {
     const reload = document.createElement("button");
     reload.innerHTML = svgIcon("reload", 14);
     reload.title = "Reload — restart on the latest Claude, resuming the conversation";
-    reload.onclick = async (ev) => {
+    reload.onclick = (ev) => {
       ev.stopPropagation();
-      if (
-        isActivelyWorking(s) &&
-        !(await uiConfirm(
-          `"${displayName(s)}" is working right now. Reload anyway? The in-flight turn may be lost.`,
-          "Reload"
-        ))
-      )
-        return;
-      reloadSession(s.id);
+      reloadSessionInteractive(s);
     };
     actions.appendChild(reload);
   }
@@ -835,17 +827,7 @@ function sessionMenu(s, x, y) {
           {
             label: "Reload (restart on latest Claude)",
             icon: "reload",
-            action: async () => {
-              if (
-                isActivelyWorking(s) &&
-                !(await uiConfirm(
-                  `"${displayName(s)}" is working right now. Reload anyway? The in-flight turn may be lost.`,
-                  "Reload"
-                ))
-              )
-                return;
-              reloadSession(s.id);
-            },
+            action: () => reloadSessionInteractive(s),
           },
         ]
       : []),
@@ -1014,6 +996,23 @@ async function reloadSession(sid) {
   }
   if (wasOpen) dropTerminal(sid);
   openSession(sid);
+}
+
+/// Reload one session with the "actively working" confirm guard — shared by
+/// the sidebar row button, the tab button, the context menus, and the ⌘R
+/// shortcut. No-ops on wild rows (take-over is their action) and returns
+/// without reloading if the user cancels the confirm.
+async function reloadSessionInteractive(s) {
+  if (!s || s.source === "Wild") return;
+  if (
+    isActivelyWorking(s) &&
+    !(await uiConfirm(
+      `"${displayName(s)}" is working right now. Reload anyway? The in-flight turn may be lost.`,
+      "Reload"
+    ))
+  )
+    return;
+  reloadSession(s.id);
 }
 
 /// Reload every non-actively-working session in `ids` after one confirm.
@@ -1294,18 +1293,12 @@ function renderTabs() {
       reload.className = "reload";
       reload.innerHTML = svgIcon("reload", 12);
       reload.title = "Reload — restart on the latest Claude, resuming the conversation";
-      reload.onclick = async (ev) => {
+      reload.onclick = (ev) => {
         ev.stopPropagation();
-        if (
-          s &&
-          isActivelyWorking(s) &&
-          !(await uiConfirm(
-            `"${entry.name}" is working right now. Reload anyway? The in-flight turn may be lost.`,
-            "Reload"
-          ))
-        )
-          return;
-        reloadSession(id);
+        // `s` is the session for this claude tab; if it's briefly missing
+        // from the list (just removed) reload by id directly.
+        if (s) reloadSessionInteractive(s);
+        else reloadSession(id);
       };
       tab.appendChild(reload);
     }
@@ -3003,9 +2996,24 @@ $("new-team-btn").onclick = (e) => {
 };
 
 $("notes-toggle").onclick = toggleNotes;
+// Manual refresh (re-list the scratch dir). A backend watcher also pushes
+// `scratch-changed` on external edits, but the button is an always-works
+// fallback (and expands the section if collapsed).
+$("refresh-notes-btn").innerHTML = svgIcon("reload", 13);
+$("refresh-notes-btn").onclick = (e) => {
+  e.stopPropagation();
+  if (!state.notesOpen) toggleNotes(); // opening already refreshes
+  else refreshNotes();
+};
 // The list itself is a drop target → moving an entry to the scratch root.
 // Wired once (the element persists across re-renders; rows are rebuilt each time).
 wireNoteDropTarget($("notes-list"), "");
+// Backend scratch-directory watcher: auto-refresh the tree when files change
+// outside clash (an editor saving, the TUI, git…). Only re-list when the
+// section is open — a collapsed section refreshes on next expand anyway.
+listen("scratch-changed", () => {
+  if (state.notesOpen) refreshNotes();
+});
 $("new-note-btn").onclick = (e) => {
   e.stopPropagation();
   // Make sure the section is expanded so the new entry is visible after refresh.
@@ -3230,6 +3238,19 @@ document.addEventListener("keydown", (e) => {
         return;
       }
     }
+  }
+  // ⌘R — reload (restart) the focused session on the latest Claude, resuming
+  // its conversation: the ⟳ button as a shortcut. Browser panes handled their
+  // own ⌘R above. preventDefault unconditionally so ⌘R never reloads the whole
+  // GUI webview; it's a no-op when the focused pane isn't a Claude session.
+  if (e.metaKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "r") {
+    e.preventDefault();
+    const focusKey = ws().panes[ws().focused];
+    const entry = focusKey && state.open.get(focusKey);
+    if (entry && entry.kind === "claude") {
+      reloadSessionInteractive(state.sessions.find((x) => x.id === focusKey));
+    }
+    return;
   }
   if (e.metaKey && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
     e.preventDefault();

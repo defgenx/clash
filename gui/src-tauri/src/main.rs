@@ -52,6 +52,11 @@ struct GuiState {
     /// Native desktop notifications on session attention (GUI setting,
     /// pushed by the frontend at boot and on toggle).
     notify_enabled: std::sync::atomic::AtomicBool,
+    /// Watches the scratch directory and emits `scratch-changed` so the notes
+    /// tree auto-refreshes on external edits (an editor, the TUI, git…).
+    /// Replaced when the scratch dir changes via `set_scratch_dir`; `None` if
+    /// the watcher couldn't be created.
+    scratch_watcher: Mutex<Option<clash::infrastructure::fs::watcher::FsWatcher>>,
 }
 
 /// Refresh cycles a killed session stays filtered from `list_sessions`.
@@ -1073,6 +1078,35 @@ async fn open_scratch_terminal_editor(
     Ok(session_id)
 }
 
+/// Start (or restart) the scratch-directory watcher. Emits `scratch-changed`
+/// to the webview on any change under `dir` so the notes tree stays in sync
+/// with the filesystem without a manual refresh. The dir is created if missing
+/// (harmless — it's clash's own dir) so a fresh install is watched from the
+/// first launch. Returns the live watcher; dropping it stops the watch and
+/// ends the emit task (its channel closes).
+fn start_scratch_watcher(
+    app: &tauri::AppHandle,
+    dir: PathBuf,
+    debounce: std::time::Duration,
+) -> Option<clash::infrastructure::fs::watcher::FsWatcher> {
+    let _ = std::fs::create_dir_all(&dir);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<PathBuf>>();
+    let watcher = clash::infrastructure::fs::watcher::FsWatcher::new(
+        std::slice::from_ref(&dir),
+        tx,
+        debounce,
+    )
+    .map_err(|e| tracing::warn!("Scratch watcher unavailable: {}", e))
+    .ok()?;
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while rx.recv().await.is_some() {
+            let _ = handle.emit("scratch-changed", ());
+        }
+    });
+    Some(watcher)
+}
+
 /// Current scratch-notes directory (absolute path) for the Settings field.
 #[tauri::command]
 fn get_scratch_dir(state: State<'_, GuiState>) -> String {
@@ -1084,7 +1118,11 @@ fn get_scratch_dir(state: State<'_, GuiState>) -> String {
 /// running backend so both the GUI and a future TUI launch agree. Returns the
 /// effective absolute path.
 #[tauri::command]
-fn set_scratch_dir(state: State<'_, GuiState>, path: String) -> Result<String, String> {
+fn set_scratch_dir(
+    state: State<'_, GuiState>,
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<String, String> {
     let trimmed = path.trim();
     let mut config = Config::load();
 
@@ -1103,6 +1141,12 @@ fn set_scratch_dir(state: State<'_, GuiState>, path: String) -> Result<String, S
         .save()
         .map_err(|e| format!("Save config failed: {}", e))?;
     state.backend.set_scratch_dir(effective.clone());
+    // Re-point the watcher at the new directory (drops the old one).
+    *state.scratch_watcher.lock().unwrap() = start_scratch_watcher(
+        &app,
+        effective.clone(),
+        std::time::Duration::from_millis(config.debounce_ms),
+    );
     Ok(effective.to_string_lossy().into_owned())
 }
 
@@ -2216,6 +2260,7 @@ fn main() {
         wild_processes_rx,
         recently_removed: Mutex::new(HashMap::new()),
         notify_enabled: std::sync::atomic::AtomicBool::new(true),
+        scratch_watcher: Mutex::new(None),
     };
 
     // FS watcher on ~/.claude/projects — same role as the TUI's watcher
@@ -2223,11 +2268,12 @@ fn main() {
     // after the first scan: sessions created during this launch never gain
     // their disk metadata (encoded project dir, summary), so conversation
     // and subagent lookups resolve to a non-existent path.
+    let debounce = std::time::Duration::from_millis(config.debounce_ms);
     let (fs_tx, mut fs_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<PathBuf>>();
     let fs_watcher = clash::infrastructure::fs::watcher::FsWatcher::new(
         &[state.backend.projects_dir()],
         fs_tx,
-        std::time::Duration::from_millis(config.debounce_ms),
+        debounce,
     )
     .map_err(|e| tracing::warn!("FS watcher unavailable: {}", e))
     .ok();
@@ -2260,6 +2306,15 @@ fn main() {
                         }
                     }
                 });
+            }
+            // Watch the scratch directory so the notes tree auto-refreshes on
+            // external edits (an editor saving, the TUI, git…). Re-pointed live
+            // when the dir changes via `set_scratch_dir`.
+            {
+                let st = app.state::<GuiState>();
+                let dir = st.backend.scratch_dir();
+                *st.scratch_watcher.lock().unwrap() =
+                    start_scratch_watcher(app.handle(), dir, debounce);
             }
             // In-process PTY session manager — the GUI's backbone, identical
             // to the TUI's in-process daemon. Dies with the app. Per-instance
