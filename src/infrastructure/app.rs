@@ -73,10 +73,17 @@ impl App {
 
         let (fs_tx, fs_rx) = tokio::sync::mpsc::unbounded_channel();
         let status_dir = crate::infrastructure::hooks::status_dir(&data_dir);
+        // Ensure the scratch dir exists so the watcher attaches from the first
+        // launch (FsWatcher skips non-existent paths) — mirrors the GUI's
+        // start_scratch_watcher. Uses the effective dir (config override
+        // applied above), so a custom `scratch_dir` is watched too.
+        let scratch_dir = backend.scratch_dir();
+        let _ = std::fs::create_dir_all(&scratch_dir);
         let watch_paths = vec![
             backend.teams_dir(),
             backend.tasks_dir(),
             backend.projects_dir(),
+            scratch_dir,
             status_dir,
             crate::infrastructure::hooks::registry::RegistryCache::watched_path(),
         ];
@@ -239,15 +246,28 @@ impl App {
                 // Non-blocking FS event check
                 if let Some(ref mut rx) = fs_rx {
                     let mut needs_refresh_all = false;
+                    let mut needs_scratch_refresh = false;
                     let mut changed_jsonl_paths: Vec<std::path::PathBuf> = Vec::new();
+                    let scratch_dir = self.backend.scratch_dir();
                     while let Ok(paths) = rx.try_recv() {
                         for p in &paths {
-                            if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                            // Changes under the scratch dir re-list the notes tree
+                            // (checked first: a scratch note may end in `.jsonl`
+                            // and must not be mistaken for a session log).
+                            if p.starts_with(&scratch_dir) {
+                                needs_scratch_refresh = true;
+                            } else if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
                                 changed_jsonl_paths.push(p.clone());
                             } else {
                                 needs_refresh_all = true;
                             }
                         }
+                    }
+                    if needs_scratch_refresh {
+                        if let Err(e) = self.state.store.refresh_scratch_notes(&self.backend) {
+                            tracing::warn!("Scratch refresh failed: {}", e);
+                        }
+                        self.needs_redraw = true;
                     }
                     if needs_refresh_all {
                         self.backend.invalidate_session_cache_all();

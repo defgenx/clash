@@ -233,9 +233,12 @@ with an expand/collapse caret.
 Scratches are plain files and folders under `~/.claude/clash/scratch/` by
 default; override the location with `scratch_dir` in `config.toml` or the GUI
 **Scratch directory** setting (which writes the same key, so the TUI honors it
-too). The editor picker lists installed IDEs (Cursor, VS Code, Zed, JetBrains,
-…) and terminal editors (vim, nvim, emacs, nano, helix, micro); terminal
-editors open in a tab/pane, GUI editors launch alongside.
+too). The tree **auto-refreshes** when the scratch directory changes on disk
+(a note saved from an editor, the GUI, a `git pull`…) via a filesystem watcher
+that follows the configured directory. The editor picker lists installed IDEs
+(Cursor, VS Code, Zed, JetBrains, …) and terminal editors (vim, nvim, emacs,
+nano, helix, micro); terminal editors open in a tab/pane, GUI editors launch
+alongside.
 
 `y` copies an entry's path to the system clipboard: it uses the platform
 clipboard tool (`pbcopy`/`wl-copy`/`xclip`/`xsel`/`clip`) for local copies and
@@ -441,7 +444,9 @@ embedded browser or the system browser, a desktop-notifications toggle,
 and an `⟳ Update clash` self-update button — when the update lands, a
 modal offers Restart / Cancel (restarting closes running sessions).
 Settings persist in `gui-state.json`. The sidebar and details panel are
-drag-resizable (widths persist).
+drag-resizable (widths persist), and the collapsible sidebar sections
+(TEAMS / SCRATCHES) have a draggable divider on top — drag it to trade
+vertical space with the session list above; the heights persist.
 
 Sessions carry the same status vocabulary as the TUI — animated
 PROMPTING / THINKING / RUNNING / WAITING / STARTING / STASHED / ERRORED
