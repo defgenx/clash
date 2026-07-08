@@ -1364,7 +1364,12 @@ function renderPanes() {
   host.querySelectorAll(".pane, .pane-gutter").forEach((p) => p.remove());
 
   const anyAssigned = w.panes.some((p) => p);
-  $("empty-state").style.display = anyAssigned ? "none" : "flex";
+  // The centered #empty-state welcome overlay spans the whole host, so it only
+  // makes sense when there's a single, unfilled pane — otherwise it would paint
+  // over (and clutter) the empty-pane placeholders. In every other empty case
+  // the per-pane placeholder is the surface instead.
+  const soleEmpty = !anyAssigned && visible.length === 1;
+  $("empty-state").style.display = soleEmpty ? "flex" : "none";
 
   visible.forEach((sid, vi) => {
     const i = w.zoomed ? w.focused : vi;
@@ -1390,10 +1395,29 @@ function renderPanes() {
         pane.appendChild(title);
       }
       pane.appendChild(entry.el);
+    } else if (soleEmpty) {
+      // Fresh workspace: let the #empty-state welcome overlay (spanning the
+      // whole host, painted beneath the panes) be the visible, interactive
+      // quick-start surface. Make this lone empty pane click-through so its
+      // clicks/right-clicks reach the overlay underneath.
+      pane.style.pointerEvents = "none";
     } else {
       const empty = document.createElement("div");
       empty.className = "pane-empty";
-      empty.textContent = "click a session";
+      empty.textContent = "click to focus · right-click to start";
+      // Quick-start: right-clicking an empty pane opens the unified new-tab
+      // menu (terminal / browser / Claude session) and whatever you pick lands
+      // right here. The menu's actions target the focused pane (via
+      // assignToFocusedPane), so focus this pane first. Left-click keeps its
+      // existing meaning (focus the pane, then assign from the sidebar/tabs).
+      empty.oncontextmenu = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const w2 = ws();
+        w2.focused = i;
+        syncActiveToFocused();
+        showNewTabMenu(ev.clientX, ev.clientY);
+      };
       pane.appendChild(empty);
     }
     host.appendChild(pane);
@@ -2965,11 +2989,32 @@ $("search").addEventListener("input", (e) => {
 $("new-session-btn").onclick = showNewSessionModal;
 $("ns-cancel").onclick = hideNewSessionModal;
 $("ns-create").onclick = createSession;
+
+// Fresh workspace: the "no session" overlay is a quick-start surface — click
+// (or right-click) anywhere on it to open the unified new-tab menu and launch
+// a terminal, browser, or Claude session straight into the focused pane.
+{
+  const quickStart = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    showNewTabMenu(ev.clientX, ev.clientY);
+  };
+  $("empty-state").addEventListener("click", quickStart);
+  $("empty-state").addEventListener("contextmenu", quickStart);
+}
 $("modal-backdrop").addEventListener("click", (e) => {
   if (e.target === $("modal-backdrop")) hideNewSessionModal();
 });
-$("ns-cwd").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") createSession();
+// Enter submits from ANY field in the modal (name, working directory, preset,
+// or the worktree checkbox) — not just the working-directory input, which was
+// the only field that used to react. Escape is handled by the global keydown
+// handler (hideNewSessionModal). Modifier-Enter combos (e.g. ⌘⇧↩ zoom) fall
+// through to the global handler untouched.
+$("new-session-modal").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    e.preventDefault();
+    createSession();
+  }
 });
 $("ns-cwd").addEventListener("blur", loadPresetsForCwd);
 $("ns-preset").addEventListener("change", () => {

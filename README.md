@@ -419,7 +419,11 @@ next launch the tabs you had open reappear as stashed and resume
 (`claude --resume`) the moment you click one. Tabs and panes
 follow one rule: the active tab is always the content of the focused
 pane — clicking a tab fills the focused pane, focusing a pane activates
-its tab, and closing a pane keeps its session reachable as a tab. A
+its tab, and closing a pane keeps its session reachable as a tab.
+An **empty pane** is a quick-start surface: right-click it (or, on a
+fresh workspace with nothing open, click the welcome screen) to pick
+what to launch straight into it — a terminal, a browser tab, or a new
+Claude session — the same unified menu as the `+` ghost tab. A
 labeled `TUI` badge-button in the sidebar header launches the clash TUI
 alongside the GUI — gold when a TUI is running somewhere, grey when not.
 Clicking it opens a picker of terminals detected on the OS (Terminal,
