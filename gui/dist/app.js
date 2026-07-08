@@ -2268,6 +2268,7 @@ async function toggleTeams() {
   state.teamsOpen = !state.teamsOpen;
   $("teams-caret").textContent = state.teamsOpen ? "▾" : "▸";
   $("teams-list").classList.toggle("hidden", !state.teamsOpen);
+  applySectionHeight("teams-section", "teams-resizer", state.teamsOpen, "teamsHeight");
   if (state.teamsOpen) {
     try {
       state.teams = await invoke("list_teams");
@@ -2333,6 +2334,7 @@ async function toggleNotes() {
   state.notesOpen = !state.notesOpen;
   $("notes-caret").textContent = state.notesOpen ? "▾" : "▸";
   $("notes-list").classList.toggle("hidden", !state.notesOpen);
+  applySectionHeight("notes-section", "notes-resizer", state.notesOpen, "notesHeight");
   if (state.notesOpen) await refreshNotes();
 }
 
@@ -3746,6 +3748,96 @@ function initResizer(handleId, panelId, storageKey, min, max, compute) {
 initResizer("sidebar-resizer", "sidebar", "sidebar", 180, 480, (x) => x);
 initResizer("details-resizer", "details", "details", 240, 640, (x) => window.innerWidth - x);
 loadPanelSizes();
+
+// ── Sidebar section heights (TEAMS / SCRATCHES) ─────────────────
+// The collapsible lower sidebar sections get a draggable divider on top so
+// the user can trade vertical space between them and the session list (which
+// flexes to absorb the difference). Heights persist alongside panel widths.
+
+const MIN_SECTION_H = 56; // section label + one row
+const MIN_SESSION_H = 80; // keep the session list usable
+
+function panelSize(key) {
+  try {
+    return JSON.parse(localStorage.getItem("clash-panel-sizes") || "{}")[key];
+  } catch (e) {
+    void e;
+    return undefined;
+  }
+}
+
+/// Apply a section's persisted height when it's expanded (clamped so the
+/// session list keeps a usable minimum), or clear it and hide the divider when
+/// collapsed. With no saved height the section keeps its default content-sized,
+/// CSS-capped look. Re-run on toggle and on window resize (to re-clamp).
+function applySectionHeight(sectionId, resizerId, open, key) {
+  const section = $(sectionId);
+  const resizer = $(resizerId);
+  if (!open) {
+    section.style.height = "";
+    section.style.maxHeight = "";
+    resizer.classList.add("hidden");
+    return;
+  }
+  resizer.classList.remove("hidden");
+  const want = panelSize(key);
+  if (!want) {
+    // No saved height: keep the default content-sized, 35%-capped look.
+    section.style.height = "";
+    section.style.maxHeight = "";
+    return;
+  }
+  // Sidebar hidden (⌘B collapse): keep the current inline height as-is —
+  // re-clamping against a zero-height layout would wrongly shrink it.
+  if ($("sidebar").offsetHeight === 0) return;
+  // Reset before measuring so the clamp reads the true available give.
+  section.style.height = "";
+  section.style.maxHeight = "";
+  const give = Math.max(0, $("session-list").offsetHeight - MIN_SESSION_H);
+  const h = Math.max(MIN_SECTION_H, Math.min(section.offsetHeight + give, want));
+  section.style.height = h + "px";
+  section.style.maxHeight = "none";
+}
+
+function reapplySectionHeights() {
+  applySectionHeight("teams-section", "teams-resizer", state.teamsOpen, "teamsHeight");
+  applySectionHeight("notes-section", "notes-resizer", state.notesOpen, "notesHeight");
+}
+
+/// Drag the divider to set the section height. The session list (the only
+/// flexing item above) gives up its space, so the amount available to grow is
+/// fixed at mousedown — a simple delta model, no live anchor tracking.
+function initSectionResizer(handleId, sectionId, key) {
+  const handle = $(handleId);
+  const section = $(sectionId);
+  handle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    handle.classList.add("dragging");
+    document.body.style.cursor = "row-resize";
+    const startY = e.clientY;
+    const startH = section.offsetHeight;
+    const maxH = startH + Math.max(0, $("session-list").offsetHeight - MIN_SESSION_H);
+    section.style.maxHeight = "none"; // allow growth past the CSS cap
+    const onMove = (ev) => {
+      const h = Math.max(MIN_SECTION_H, Math.min(maxH, startH + (startY - ev.clientY)));
+      section.style.height = h + "px";
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      handle.classList.remove("dragging");
+      document.body.style.cursor = "";
+      savePanelSize(key, section.offsetHeight);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
+initSectionResizer("teams-resizer", "teams-section", "teamsHeight");
+initSectionResizer("notes-resizer", "notes-section", "notesHeight");
+reapplySectionHeights();
+window.addEventListener("resize", reapplySectionHeights);
 
 $("new-ws-btn").onclick = newWorkspace;
 

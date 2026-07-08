@@ -373,6 +373,22 @@ html, body, #app {
 #teams-list { padding-bottom: 6px; }
 #notes-section { border-top: 1px solid var(--border); max-height: 35%; overflow-y: auto; }
 #notes-list { padding-bottom: 6px; }
+
+/* Draggable divider above a collapsible sidebar section (TEAMS / SCRATCHES):
+   dragging sets that section's height and the session list above absorbs the
+   difference. Shown only while the section is expanded (see applySectionHeight).
+   Mirrors the vertical .panel-resizer, rotated to a horizontal grab strip. */
+.section-resizer {
+  height: 5px;
+  min-height: 5px;
+  flex-shrink: 0;
+  cursor: row-resize;
+  background: transparent;
+  transition: background 0.15s;
+  z-index: 50;
+}
+.section-resizer:hover,
+.section-resizer.dragging { background: var(--accent); }
 .team-item {
   padding: 5px 14px;
   cursor: pointer;
