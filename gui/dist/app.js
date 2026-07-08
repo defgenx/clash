@@ -45,6 +45,23 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+/// Spin an icon button's glyph while an async task runs, so a click gives
+/// immediate visible feedback. A minimum spin time keeps near-instant work
+/// (e.g. re-listing scratches) perceptible; the class is always cleared, even
+/// if the task throws. Reusable for any `.icon-btn` that fires async work.
+async function spinButton(btn, work, minMs = 500) {
+  if (!btn) return work();
+  btn.classList.add("spinning");
+  const start = performance.now();
+  try {
+    return await work();
+  } finally {
+    const wait = Math.max(0, minMs - (performance.now() - start));
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    btn.classList.remove("spinning");
+  }
+}
+
 // ── SVG icon set ────────────────────────────────────────────────
 // Feather-style stroke icons. Unicode glyphs render inconsistently
 // across fonts; these inherit color via currentColor and scale crisply.
@@ -3049,8 +3066,10 @@ $("notes-toggle").onclick = toggleNotes;
 $("refresh-notes-btn").innerHTML = svgIcon("reload", 13);
 $("refresh-notes-btn").onclick = (e) => {
   e.stopPropagation();
-  if (!state.notesOpen) toggleNotes(); // opening already refreshes
-  else refreshNotes();
+  spinButton($("refresh-notes-btn"), async () => {
+    if (!state.notesOpen) await toggleNotes(); // opening already refreshes
+    else await refreshNotes();
+  });
 };
 // The list itself is a drop target → moving an entry to the scratch root.
 // Wired once (the element persists across re-renders; rows are rebuilt each time).

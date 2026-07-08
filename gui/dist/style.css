@@ -71,6 +71,12 @@ html, body, #app {
 .icon-btn.mini { width: 24px; height: 24px; font-size: 15px; }
 .icon-btn.wide { width: auto; padding: 0 8px; font-size: 13px; }
 .icon-btn.danger:hover { color: var(--red); background: rgba(229, 83, 75, 0.12); }
+/* Refresh/reload icon buttons spin their glyph while an async action runs
+   (driven by spinButton() in app.js) so a click gives visible feedback even
+   when the work finishes near-instantly. */
+@keyframes icon-spin { to { transform: rotate(360deg); } }
+.icon-btn.spinning { color: var(--accent); }
+.icon-btn.spinning svg { animation: icon-spin 0.7s linear infinite; transform-origin: 50% 50%; }
 
 /* Instant hover label for icon buttons (replaces the slow native title
    tooltip, which WKWebView renders unreliably). Positioned by app.js. */
