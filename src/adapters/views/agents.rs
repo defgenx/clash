@@ -77,21 +77,15 @@ impl TableView for AgentsTable {
     }
 
     fn items(state: &AppState) -> Vec<&Member> {
-        // If we have a team context, show only that team's members;
-        // otherwise show all members across all teams.
-        if let Some(team_name) = state.current_team() {
-            if let Some(team) = state.store.find_team(team_name) {
-                return team.members.iter().collect();
-            }
-        }
-        state.store.all_members.iter().collect()
+        // Team-scoped when drilled into a team, else all members — the single
+        // source of truth lives on AppState so selection/count never drift.
+        state.visible_members()
     }
 
     fn context_keybindings() -> Vec<Keybinding> {
         vec![
-            Keybinding::new("a", "Attach to agent"),
-            Keybinding::new("m", "Send message"),
             Keybinding::new("Enter", "View agent"),
+            Keybinding::new(":inbox", "View agent inbox"),
         ]
     }
 

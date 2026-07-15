@@ -31,6 +31,16 @@ pub enum Effect {
     RemoveTeam {
         name: String,
     },
+    /// Rename a team on disk (moves its config dir and tasks dir).
+    RenameTeam {
+        old: String,
+        new_name: String,
+    },
+    /// Delete a single task from a team.
+    DeleteTask {
+        team: String,
+        task_id: String,
+    },
 
     // ── Scratch-note effects ────────────────────────────────────
     /// Create a new empty scratch note titled `title` inside the folder at
@@ -109,6 +119,11 @@ pub enum Effect {
     RefreshAll,
     RefreshTeamTasks {
         team: String,
+    },
+    /// Load an agent's inbox messages into `state.inbox_messages`.
+    LoadInbox {
+        team: String,
+        agent: String,
     },
     /// Reload the scratch-note list from disk into the store.
     RefreshScratchNotes,

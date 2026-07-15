@@ -55,6 +55,10 @@ pub struct App {
     /// task. Read into `RefreshInput.wild_processes` each refresh cycle.
     wild_processes_rx:
         tokio::sync::watch::Receiver<Vec<crate::infrastructure::process_scan::WildProcess>>,
+    /// Last UI snapshot written to `ui_state.json`, so we only re-write when
+    /// "where we were" actually changed — and can persist it continuously (not
+    /// just on a clean quit) so any exit resumes where we left off.
+    last_ui_json: Option<String>,
 }
 
 impl App {
@@ -165,7 +169,26 @@ impl App {
             registry_cache: crate::infrastructure::hooks::registry::RegistryCache::new(),
             pending_spinner_clear: None,
             wild_processes_rx,
+            last_ui_json: None,
         }
+    }
+
+    /// Persist the UI snapshot ("where we were": nav stack, selection, filters,
+    /// expanded rows) to `ui_state.json` whenever it changed since the last
+    /// write. Called on every key event so any exit — clean quit, closed
+    /// terminal, Ctrl+C — resumes where we left off, not just `:quit`. The
+    /// change check keeps idle frames and no-op keys from churning the disk.
+    fn persist_ui_snapshot(&mut self) {
+        let snapshot = self.state.snapshot();
+        let Ok(json) = serde_json::to_string_pretty(&snapshot) else {
+            return;
+        };
+        if self.last_ui_json.as_deref() == Some(json.as_str()) {
+            return;
+        }
+        let path = self.backend.base_dir().join("clash/ui_state.json");
+        let _ = crate::infrastructure::fs::atomic::write_atomic(&path, json.as_bytes());
+        self.last_ui_json = Some(json);
     }
 
     /// Run the main event loop.
@@ -295,6 +318,9 @@ impl App {
                                 return Ok(()); // Quit requested
                             }
                             self.needs_redraw = true;
+                            // Continuously persist "where we were" so any exit
+                            // (not just a clean :quit) resumes where we left off.
+                            self.persist_ui_snapshot();
                         }
                         Event::Tick => {
                             if self.handle_tick(terminal, &mut events).await {
@@ -1211,6 +1237,16 @@ impl App {
                         self.state.toast = Some(format!("Delete failed: {}", e));
                     }
                 }
+                Effect::RenameTeam { old, new_name } => {
+                    if let Err(e) = self.backend.rename_team(&old, &new_name) {
+                        self.state.toast = Some(format!("Rename failed: {}", e));
+                    }
+                }
+                Effect::DeleteTask { team, task_id } => {
+                    if let Err(e) = self.backend.delete_task(&team, &task_id) {
+                        self.state.toast = Some(format!("Delete task failed: {}", e));
+                    }
+                }
                 Effect::UpdateTeam { team } => {
                     if let Err(e) = self.backend.update_team(&team) {
                         self.state.toast = Some(format!("Team update failed: {}", e));
@@ -1282,6 +1318,13 @@ impl App {
                 Effect::RefreshTeamTasks { team } => {
                     let _ = self.state.store.refresh_tasks(&self.backend, &team);
                 }
+                Effect::LoadInbox { team, agent } => match self.backend.load_inbox(&team, &agent) {
+                    Ok(msgs) => self.state.inbox_messages = msgs,
+                    Err(e) => {
+                        self.state.inbox_messages.clear();
+                        tracing::warn!("Inbox load failed: {}", e);
+                    }
+                },
                 Effect::RefreshSubagents {
                     project,
                     session_id,

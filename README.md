@@ -25,7 +25,7 @@
 - **In-process daemon** — embedded PTY daemon manages sessions without a separate process
 - **Git worktree support** — spawn sessions in isolated worktrees for parallel feature branches (`w` key); worktree column shows `⊟ project/worktree` for project context
 - **Repo config discovery** — auto-detects MCP servers, custom commands, agent definitions, and setup scripts from the project directory
-- **Teams & tasks** — create, configure, and delete teams (description, members with agent type and model); organize agents, manage tasks, send messages
+- **Teams & tasks** — create, rename, configure, and delete teams; manage members (agent type, model, prompt, rename) and see at a glance who's running; full task management (create, cycle status, assign owner, delete); per-agent inboxes. In the GUI, jump straight from a running member to its live session.
 - **Scratches** — keep free-form text notes inside clash (`:scratch`), organized in an IntelliJ-style **"Scratches and Consoles"** tree: create notes and nested folders, rename, delete, and reorganize (move via a folder picker in the TUI, drag-and-drop in the GUI). Each note is a plain file under `~/.claude/clash/scratch/` by default — set `scratch_dir` in `config.toml` (or the GUI **Scratch directory** setting) to store them anywhere. Opening a scratch shows an editor picker: terminal editors (vim/emacs/nano…) open in a tab/pane, GUI editors (VS Code/Cursor/Zed…) launch alongside, like opening a project
 - **Subagent tracking** — view subagent trees per session, expand/collapse in the sessions table
 - **Open in IDE** — press `e` to open a session's project in your editor (auto-detects Cursor, VS Code, Zed, JetBrains, nvim, vim; configurable)
@@ -163,12 +163,13 @@ The Wild detection runs in the background every ~2s. clash surfaces every wild c
 
 | Key | Action |
 |-----|--------|
+| `Enter` | Open team → its members (agents) |
 | `c` | Create team |
+| `R` | Rename team (moves its config + tasks) |
 | `d` | Delete team |
 | `e` | Edit team description |
 | `m` | Add member (name → agent type → model) |
 | `x` | Remove member (picker) |
-| `Enter` | View team detail |
 
 ### Attached Mode
 
@@ -202,15 +203,33 @@ A status bar at the bottom shows session name, project, and git branch. The PTY 
 
 ### Team Detail
 
+Opening a team scopes the Agents and Tasks views to that team (a `●` dot marks
+members whose session is currently running). Per-member edits are commands run
+from a team view — `:member model <name> [model]`, `:member type <name> <type>`,
+`:member prompt <name> <text>`, `:member rename <old> <new>`.
+
 | Key | Action |
 |-----|--------|
-| `Enter` / `a` | View agents |
-| `t` | View tasks |
+| `Enter` | View agents (team-scoped) |
+| `t` | View tasks (team-scoped) |
 | `s` | View lead session |
 | `e` | Edit team description |
 | `m` | Add member (name → agent type → model) |
 | `x` | Remove member (picker) |
+| `R` | Rename team |
 | `d` | Delete team |
+
+### Tasks
+
+The Tasks view is scoped to the current team.
+
+| Key | Action |
+|-----|--------|
+| `Enter` | View task detail |
+| `c` | Create task |
+| `s` | Cycle status (pending → in-progress → completed → …) |
+| `a` | Assign owner (picker of the team's members) |
+| `d` | Delete task |
 
 ### Scratches
 
@@ -264,12 +283,16 @@ manual re-list.
 | `:agents` | Navigate to Agents view |
 | `:tasks` | Navigate to Tasks view |
 | `:subagents` | Navigate to Subagents view |
-| `:inbox` | Navigate to Inbox view |
+| `:inbox` | Show the selected/drilled-in agent's inbox |
 | `:prompts` | Navigate to Prompts view |
 | `:scratch` / `:notes` | Navigate to Scratches view |
 | `:create team <name>` | Create a new team |
+| `:rename team <old> <new>` | Rename a team |
 | `:delete team <name>` | Delete a team |
-| `:member model <member> [model]` | Set a member's model on the current team (empty = inherit) |
+| `:member model <member> [model]` | Set a member's model (current team; empty = inherit) |
+| `:member type <member> [type]` | Set a member's agent type (empty = general-purpose) |
+| `:member prompt <member> <text>` | Set a member's system prompt |
+| `:member rename <old> <new>` | Rename a member |
 | `:create task <team> <subject>` | Create a task |
 | `:new [path]` | Spawn a new session |
 | `:new --preset <name>` | Spawn session from a preset |
@@ -291,6 +314,7 @@ clash reads directly from Claude Code's filesystem:
 │   ├── {session-id}.jsonl             # Conversation log
 │   └── {session-id}/subagents/        # Subagent transcripts
 ├── teams/{name}/config.json           # Team config + members
+│                                       #   (Claude's auto session-* teams are hidden)
 ├── tasks/{team-name}/{id}.json        # Tasks
 └── settings.local.json                # Hook registrations (written by clash)
 ```
@@ -304,7 +328,8 @@ clash also maintains its own state in `~/.claude/clash/`:
 ├── names/{session-id}                 # Session display names
 ├── project-names/{encoded-cwd}        # Project-to-name mapping
 ├── sessions.json                      # Session registry
-├── ui_state.json                      # Persisted UI state (nav, selection, filters)
+├── ui_state.json                      # Persisted UI state (nav, selection, filters) — saved
+│                                       #   continuously so any exit resumes where you were
 ├── scratch/                           # Scratch notes — a nested tree of
 │   ├── {name}.md                       #   free-form text files and
 │   └── {folder}/{name}.md              #   user-created folders
@@ -407,19 +432,29 @@ and closing the tab (or `exit`) kills the shell — unlimited split panes
 in a balanced grid (`⌘D`
 splits, `⌘⇧D` closes the focused pane, zoom `⌘⇧↩` or double-click the
 pane title, `⌘⌥←/→` cycles focus; **drag the gutter between panes to
-resize** columns/rows — the split ratios persist per workspace), teams browser (members with
-live-activity dots and model chips, tasks, agent inboxes, create/delete
-via the + button or right-click menu; in the details panel click the
-description to edit it, `＋ Add member` to add an agent, and right-click
-a member to change its model or remove it), `⌘K` clears the active
-terminal,
+resize** columns/rows — the split ratios persist per workspace), a full
+**team manager** (the sidebar shows each team with a live `n/m` running
+rollup and a pulsing dot; the detail panel lists members with a pulsing
+run indicator and model chip — **left-click a running member to jump
+straight to its session** — plus tasks you can create, cycle status on by
+clicking the badge, assign an owner, or delete, and per-member edit of
+model / agent type / prompt / name via right-click; the team name and
+description are click-to-edit, and the whole panel **live-refreshes** while
+open. Create via the **+**, rename/delete from the row's right-click menu.
+Claude Code's own per-session teams — the `session-<id>` scaffolding it
+writes for every session with a lone `team-lead` — are hidden from this list
+in both frontends; only real, user-managed teams show),
+`⌘K` clears the active terminal,
 and quit-stash on close. Closing a Claude tab (the `×`, `⌘W`, or
 middle-click) stashes its session — process stopped, conversation kept
 resumable — so closing a tab and stashing from the sidebar are the same
 linked action whichever way you trigger it; use Detach in the tab's
 right-click menu to leave it running in the background instead. On the
-next launch the tabs you had open reappear as stashed and resume
-(`claude --resume`) the moment you click one. Tabs and panes
+next launch clash restores **where you were** — the same workspace, open
+tabs, split layout, and the pane you had focused (persisted eagerly on
+focus-loss/close, so nothing is lost to a pending save) — with stashed
+sessions reappearing ready to resume (`claude --resume`) the moment you
+click one. Tabs and panes
 follow one rule: the active tab is always the content of the focused
 pane — clicking a tab fills the focused pane, focusing a pane activates
 its tab, and closing a pane keeps its session reachable as a tab.

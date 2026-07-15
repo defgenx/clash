@@ -88,12 +88,12 @@ impl DetailView for TeamDetailView {
     fn context_keybindings() -> Vec<Keybinding> {
         vec![
             Keybinding::new("Enter", "View agents"),
-            Keybinding::new("a", "View agents"),
-            Keybinding::new("s", "View lead session"),
             Keybinding::new("t", "View tasks"),
+            Keybinding::new("s", "View lead session"),
             Keybinding::new("e", "Edit description"),
             Keybinding::new("m", "Add member"),
             Keybinding::new("x", "Remove member"),
+            Keybinding::new("R", "Rename team"),
             Keybinding::new("d", "Delete team"),
             Keybinding::new("j/k", "Scroll"),
         ]

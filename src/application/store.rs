@@ -61,7 +61,14 @@ impl DataStore {
     }
 
     pub fn refresh_teams(&mut self, backend: &dyn DataRepository) -> Result<()> {
-        self.teams = backend.load_teams()?;
+        // Drop Claude Code's auto per-session teams (session-* / team-lead only)
+        // — internal scaffolding, not user teams. Presentation filtering lives
+        // here in the application layer, not the backend.
+        self.teams = backend
+            .load_teams()?
+            .into_iter()
+            .filter(|t| !t.is_session_team())
+            .collect();
         self.rebuild_all_members();
         Ok(())
     }
@@ -597,5 +604,28 @@ mod tests {
         // s2 was unchanged → kept from before
         assert!(store.subagents_by_session.contains_key("s2"));
         assert_eq!(store.subagents_by_session["s2"][0].id, "sa-existing");
+    }
+
+    #[test]
+    fn test_refresh_teams_hides_session_teams() {
+        use crate::domain::ports::DataRepository;
+        use crate::infrastructure::fs::backend::FsBackend;
+        let dir = tempfile::TempDir::new().unwrap();
+        let backend = FsBackend::new(dir.path().to_path_buf());
+        backend.create_team("real", "").unwrap();
+        // Hand-write one of Claude Code's auto per-session teams.
+        let cfg = dir.path().join("teams/session-abc123/config.json");
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cfg,
+            r#"{"name":"session-abc123","members":[{"name":"team-lead","agentType":"team-lead"}]}"#,
+        )
+        .unwrap();
+
+        let mut store = DataStore::new();
+        store.refresh_teams(&backend).unwrap();
+        // The session team is hidden; only the real team survives.
+        assert_eq!(store.teams.len(), 1);
+        assert_eq!(store.teams[0].name, "real");
     }
 }

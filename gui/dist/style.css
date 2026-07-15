@@ -439,7 +439,35 @@ html, body, #app {
   border-radius: 50%;
   background: var(--fg-dim);
 }
-.member-dot.active { background: var(--st-running); }
+/* A running member pulses (parity with session status), so "who's running"
+   reads at a glance; idle members keep the flat dim dot. */
+.member-dot.active {
+  background: var(--st-running);
+  animation: soft-pulse 1.6s ease-in-out infinite;
+}
+/* Member rows in the team panel: name, an optional model chip, and a ▶ to jump
+   to the running session. Running rows get a subtle accent rail. */
+.member-row { cursor: pointer; }
+.member-row .member-name { color: var(--fg); }
+.member-row.is-running { border-left: 2px solid var(--st-running); padding-left: 6px; }
+.member-open { margin-left: 6px; color: var(--st-running); font-size: 10px; }
+.task-item .task-subject { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-item .task-status { cursor: pointer; }
+/* Tiny inline "+" in a section header (e.g. TASKS ＋). */
+.mini-add {
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 4px;
+  line-height: 1;
+}
+.mini-add:hover { color: var(--accent); }
+.team-item.active { background: var(--bg-active); }
+/* Inline editable team name + description in the team details panel. */
+#d-team-name { cursor: pointer; }
+#d-team-name:hover { color: var(--accent); }
 /* Inline editable description + soft add-member button (team details) */
 #d-team-desc { cursor: pointer; }
 #d-team-desc:hover { color: var(--fg); }

@@ -67,10 +67,11 @@ impl DetailView for AgentDetailView {
 
     fn context_keybindings() -> Vec<Keybinding> {
         vec![
-            Keybinding::new("a", "Attach session"),
-            Keybinding::new("m", "Send message"),
-            Keybinding::new(":inbox", "View inbox"),
-            Keybinding::new(":prompts", "View prompt"),
+            Keybinding::new(":inbox", "View this agent's inbox"),
+            Keybinding::new(":member model <name> <m>", "Set model"),
+            Keybinding::new(":member type <name> <t>", "Set agent type"),
+            Keybinding::new(":member prompt <name> <p>", "Set prompt"),
+            Keybinding::new(":member rename <name> <new>", "Rename agent"),
         ]
     }
 }

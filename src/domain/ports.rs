@@ -6,7 +6,9 @@
 
 use std::path::PathBuf;
 
-use crate::domain::entities::{ConversationMessage, ScratchNote, Session, Subagent, Task, Team};
+use crate::domain::entities::{
+    ConversationMessage, InboxMessage, ScratchNote, Session, Subagent, Task, Team,
+};
 use crate::domain::error::Result;
 
 /// Repository port for all data access operations.
@@ -32,6 +34,25 @@ pub trait DataRepository: Send + Sync {
 
     /// Delete a team and all associated data.
     fn delete_team(&self, name: &str) -> Result<()>;
+
+    /// Rename a team: move its config dir and its tasks dir to `new_name`.
+    /// Errors if `new_name` is invalid or already exists. Default no-op keeps
+    /// lightweight mock backends valid (real impl on `FsBackend`).
+    fn rename_team(&self, _old: &str, _new_name: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// Delete a single task from a team. Default no-op for mock backends.
+    fn delete_task(&self, _team: &str, _task_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// Load an agent's inbox messages (`teams/{team}/inboxes/{agent}.json`).
+    /// Returns an empty list if the file is absent. Default empty impl for
+    /// mock backends.
+    fn load_inbox(&self, _team: &str, _agent: &str) -> Result<Vec<InboxMessage>> {
+        Ok(Vec::new())
+    }
 
     /// Get the base directory for teams.
     fn teams_dir(&self) -> PathBuf;

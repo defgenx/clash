@@ -146,6 +146,34 @@ fn reduce_team(state: &mut AppState, action: TeamAction) -> Vec<Effect> {
             state.table_state.selected = 0;
             vec![Effect::RemoveTeam { name }, Effect::RefreshAll]
         }
+        TeamAction::Rename { old, new } => {
+            let new = new.trim().to_string();
+            if new.is_empty() {
+                state.toast = Some("Team name cannot be empty".to_string());
+                return vec![];
+            }
+            if new == old {
+                return vec![];
+            }
+            if state.store.teams.iter().any(|t| t.name == new) {
+                state.toast = Some(format!("Team '{}' already exists", new));
+                return vec![];
+            }
+            // Optimistically rename in the store (team + its tasks-map key) and
+            // rewrite any nav context so drilled-in views keep pointing at it.
+            if let Some(team) = state.store.teams.iter_mut().find(|t| t.name == old) {
+                team.name = new.clone();
+            }
+            if let Some(tasks) = state.store.tasks.remove(&old) {
+                state.store.tasks.insert(new.clone(), tasks);
+            }
+            state.nav.rename_context(&old, &new);
+            state.toast = Some(format!("Renamed team → '{}'", new));
+            vec![
+                Effect::RenameTeam { old, new_name: new },
+                Effect::RefreshAll,
+            ]
+        }
         TeamAction::Refresh => {
             vec![Effect::RefreshAll]
         }
@@ -166,6 +194,43 @@ fn reduce_team(state: &mut AppState, action: TeamAction) -> Vec<Effect> {
             t.remove_member(&member)?;
             Ok(format!("Removed member '{}'", member))
         }),
+        TeamAction::RenameMember { old, new } => {
+            let Some(team) = resolve_team_name(state) else {
+                state.toast = Some("No team selected".to_string());
+                return vec![];
+            };
+            mutate_team(state, &team, |t| {
+                t.rename_member(&old, &new)?;
+                Ok(format!("Renamed member → '{}'", new.trim()))
+            })
+        }
+        TeamAction::SetMemberType { member, agent_type } => {
+            let Some(team) = resolve_team_name(state) else {
+                state.toast = Some("No team selected".to_string());
+                return vec![];
+            };
+            mutate_team(state, &team, |t| {
+                t.set_member_type(&member, &agent_type)?;
+                Ok(format!("Type for '{}' → {}", member, {
+                    let a = agent_type.trim();
+                    if a.is_empty() {
+                        "general-purpose"
+                    } else {
+                        a
+                    }
+                }))
+            })
+        }
+        TeamAction::SetMemberPrompt { member, prompt } => {
+            let Some(team) = resolve_team_name(state) else {
+                state.toast = Some("No team selected".to_string());
+                return vec![];
+            };
+            mutate_team(state, &team, |t| {
+                t.set_member_prompt(&member, &prompt)?;
+                Ok(format!("Updated prompt for '{}'", member))
+            })
+        }
         TeamAction::SetMemberModel { member, model } => {
             let Some(team) = resolve_team_name(state) else {
                 state.toast = Some("No team selected".to_string());
@@ -262,6 +327,45 @@ fn reduce_task(state: &mut AppState, action: TaskAction) -> Vec<Effect> {
                 }
             }
             vec![]
+        }
+        TaskAction::SetOwner {
+            team,
+            task_id,
+            owner,
+        } => {
+            if let Some(tasks) = state.store.tasks.get(&team) {
+                if let Some(task) = tasks.iter().find(|t| t.id == task_id) {
+                    let mut updated = task.clone();
+                    let owner = owner.trim();
+                    updated.owner = if owner.is_empty() {
+                        None
+                    } else {
+                        Some(owner.to_string())
+                    };
+                    state.toast = Some(if owner.is_empty() {
+                        "Owner cleared".to_string()
+                    } else {
+                        format!("Owner → {}", owner)
+                    });
+                    return vec![
+                        Effect::PersistTask {
+                            team,
+                            task: updated,
+                        },
+                        Effect::RefreshAll,
+                    ];
+                }
+            }
+            vec![]
+        }
+        TaskAction::Delete { team, task_id } => {
+            // If the deleted task is the one drilled into, step back to Tasks.
+            if state.current_view() == ViewKind::TaskDetail {
+                state.nav.pop();
+            }
+            state.table_state.selected = 0;
+            state.toast = Some("Task deleted".to_string());
+            vec![Effect::DeleteTask { team, task_id }, Effect::RefreshAll]
         }
     }
 }
@@ -1022,6 +1126,11 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             state.input = tui_input::Input::default();
             vec![]
         }
+        UiAction::EnterCommandModeWith(seed) => {
+            state.input_mode = InputMode::Command;
+            state.input = tui_input::Input::new(seed);
+            vec![]
+        }
         UiAction::EnterFilterMode => {
             state.input_mode = InputMode::Filter;
             state.input = tui_input::Input::default();
@@ -1234,6 +1343,48 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                 selected: 0,
                 on_select_action: crate::application::state::PickerAction::RemoveTeamMember {
                     team: name,
+                },
+            });
+            state.input_mode = InputMode::Picker;
+            vec![]
+        }
+        UiAction::AssignTaskOwner => {
+            let Some(team) = state.current_team().map(|s| s.to_string()) else {
+                state.toast = Some("No team selected".to_string());
+                return vec![];
+            };
+            let Some(task) = state.store.get_tasks(&team).get(state.table_state.selected) else {
+                state.toast = Some("No task selected".to_string());
+                return vec![];
+            };
+            let task_id = task.id.clone();
+            let subject = if task.subject.is_empty() {
+                task.id.clone()
+            } else {
+                task.subject.clone()
+            };
+            // "(unassigned)" first (clears the owner), then each team member.
+            let mut items = vec![crate::application::state::PickerItem {
+                label: "(unassigned)".to_string(),
+                description: "clear the owner".to_string(),
+                value: String::new(),
+            }];
+            if let Some(t) = state.store.find_team(&team) {
+                for m in &t.members {
+                    items.push(crate::application::state::PickerItem {
+                        label: m.name.clone(),
+                        description: m.agent_type.clone(),
+                        value: m.name.clone(),
+                    });
+                }
+            }
+            state.picker_dialog = Some(crate::application::state::PickerDialog {
+                title: format!("Assign owner for '{}'", subject),
+                items,
+                selected: 0,
+                on_select_action: crate::application::state::PickerAction::AssignTaskOwner {
+                    team,
+                    task_id,
                 },
             });
             state.input_mode = InputMode::Picker;
@@ -1549,6 +1700,24 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                             Action::Scratch(ScratchAction::Move { id, new_parent }),
                         );
                     }
+                    // Task-owner assignment re-enters the reducer (needs state).
+                    if let crate::application::state::PickerAction::AssignTaskOwner {
+                        ref team,
+                        ref task_id,
+                    } = picker.on_select_action
+                    {
+                        let team = team.clone();
+                        let task_id = task_id.clone();
+                        let owner = item.value.clone();
+                        return reduce(
+                            state,
+                            Action::Task(TaskAction::SetOwner {
+                                team,
+                                task_id,
+                                owner,
+                            }),
+                        );
+                    }
                     // Copy-path emits a clipboard effect; toast names the format
                     // (item label) rather than the generic "Opening in …".
                     if matches!(
@@ -1774,6 +1943,7 @@ fn emit_picker_effect(
         crate::application::state::PickerAction::RemoveTeamMember { .. } => vec![],
         crate::application::state::PickerAction::MoveScratch { .. } => vec![],
         crate::application::state::PickerAction::CopyToClipboard => vec![],
+        crate::application::state::PickerAction::AssignTaskOwner { .. } => vec![],
     }
 }
 
@@ -1802,11 +1972,40 @@ fn clamp_session_selection(state: &mut AppState) {
     }
 }
 
+/// Which agent's inbox to show: an explicit Inbox context, then a drilled-in
+/// agent (AgentDetail), then the selected Agents row.
+fn inbox_agent(state: &AppState) -> Option<String> {
+    state
+        .nav
+        .context_for(ViewKind::Inbox)
+        .map(|s| s.to_string())
+        .or_else(|| {
+            state
+                .nav
+                .context_for(ViewKind::AgentDetail)
+                .map(|s| s.to_string())
+        })
+        .or_else(|| {
+            if state.current_view() == ViewKind::Agents {
+                state
+                    .visible_members()
+                    .get(state.table_state.selected)
+                    .map(|m| m.name.clone())
+            } else {
+                None
+            }
+        })
+}
+
 /// Resolve the context string for drill-in based on current selection.
 fn resolve_context(state: &AppState) -> Option<String> {
     let idx = state.table_state.selected;
     match state.current_view() {
         ViewKind::Teams => state.store.teams.get(idx).map(|t| t.name.clone()),
+        // Drilling from a team's detail into its Agents/Tasks: carry the team
+        // name forward so the pushed entry stays scoped (fixes the historical
+        // bug where these drill-ins lost the team and showed all/none).
+        ViewKind::TeamDetail => state.current_team().map(|s| s.to_string()),
         ViewKind::Tasks => {
             if let Some(team) = state.current_team() {
                 state.store.get_tasks(team).get(idx).map(|t| t.id.clone())
@@ -1814,7 +2013,7 @@ fn resolve_context(state: &AppState) -> Option<String> {
                 None
             }
         }
-        ViewKind::Agents => state.store.all_members.get(idx).map(|m| m.name.clone()),
+        ViewKind::Agents => state.visible_members().get(idx).map(|m| m.name.clone()),
         ViewKind::Sessions => {
             let items = state.filtered_sessions();
             items.get(idx).map(|s| s.id.clone())
@@ -1835,7 +2034,7 @@ fn current_item_count(state: &AppState) -> usize {
                 0
             }
         }
-        ViewKind::Agents => state.store.all_members.len(),
+        ViewKind::Agents => state.visible_members().len(),
         ViewKind::Inbox => state.inbox_messages.len(),
         ViewKind::Scratch => {
             visible_scratch_indices(&state.store.scratch_notes, &state.expanded_scratch_dirs).len()
@@ -1906,6 +2105,19 @@ fn load_effects_for_view(state: &mut AppState, view: ViewKind) -> Vec<Effect> {
         }
         ViewKind::Agents => {
             vec![Effect::RefreshAll]
+        }
+        ViewKind::Inbox => {
+            // Load the targeted agent's inbox (team from the nav scope, agent
+            // from the Inbox entry / drilled-in agent / selected row).
+            let team = state.current_team().map(|s| s.to_string());
+            let agent = inbox_agent(state);
+            match (team, agent) {
+                (Some(team), Some(agent)) => vec![Effect::LoadInbox { team, agent }],
+                _ => {
+                    state.inbox_messages.clear();
+                    vec![]
+                }
+            }
         }
         ViewKind::SubagentDetail => {
             // Load the subagent's conversation
@@ -2120,6 +2332,187 @@ mod tests {
         );
         assert!(effects.is_empty());
         assert!(state.toast.as_deref().unwrap().contains("not found"));
+    }
+
+    /// Regression: drilling TeamDetail → Agents/Tasks must keep the team scope
+    /// (historically it was lost, showing all members / no tasks).
+    #[test]
+    fn test_team_scope_survives_drill_into_agents_and_tasks() {
+        use crate::domain::entities::Team;
+        let mut state = test_state();
+        let mut squad = Team {
+            name: "squad".to_string(),
+            ..Default::default()
+        };
+        squad.add_member("alice", "", "").unwrap();
+        squad.add_member("bob", "", "").unwrap();
+        let mut other = Team {
+            name: "other".to_string(),
+            ..Default::default()
+        };
+        other.add_member("carol", "", "").unwrap();
+        state.store.teams = vec![squad, other];
+        state.store.rebuild_all_members(); // all_members == 3
+
+        // Teams → TeamDetail (select "squad").
+        state.nav.push(ViewKind::Teams, None);
+        state.table_state.selected = 0;
+        reduce(
+            &mut state,
+            Action::Nav(NavAction::DrillIn {
+                view: ViewKind::TeamDetail,
+                context: String::new(),
+            }),
+        );
+        assert_eq!(state.current_team(), Some("squad"));
+
+        // TeamDetail → Agents: empty context must resolve to "squad".
+        reduce(
+            &mut state,
+            Action::Nav(NavAction::DrillIn {
+                view: ViewKind::Agents,
+                context: String::new(),
+            }),
+        );
+        assert_eq!(state.current_view(), ViewKind::Agents);
+        assert_eq!(state.current_team(), Some("squad"));
+        let members = state.visible_members();
+        assert_eq!(
+            members.len(),
+            2,
+            "Agents must be scoped to squad, not all 3"
+        );
+        assert!(members.iter().all(|m| m.name == "alice" || m.name == "bob"));
+
+        // Back to TeamDetail, then → Tasks: must refresh squad's tasks.
+        reduce(&mut state, Action::Nav(NavAction::GoBack));
+        let effects = reduce(
+            &mut state,
+            Action::Nav(NavAction::DrillIn {
+                view: ViewKind::Tasks,
+                context: String::new(),
+            }),
+        );
+        assert_eq!(state.current_team(), Some("squad"));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::RefreshTeamTasks { team } if team == "squad")),
+            "drilling into Tasks from a team must refresh that team's tasks"
+        );
+    }
+
+    #[test]
+    fn test_team_rename_and_member_edits() {
+        use crate::domain::entities::Team;
+        let mut state = test_state();
+        let mut squad = Team {
+            name: "squad".to_string(),
+            ..Default::default()
+        };
+        squad.add_member("alice", "reviewer", "").unwrap();
+        state.store.teams = vec![squad];
+        state.store.tasks.insert("squad".to_string(), Vec::new());
+
+        // Rename team: store + tasks-map key move, effect emitted.
+        let effects = reduce(
+            &mut state,
+            Action::Team(TeamAction::Rename {
+                old: "squad".to_string(),
+                new: "alpha".to_string(),
+            }),
+        );
+        assert_eq!(state.store.teams[0].name, "alpha");
+        assert!(state.store.tasks.contains_key("alpha"));
+        assert!(!state.store.tasks.contains_key("squad"));
+        assert!(effects
+            .iter()
+            .any(|e| matches!(e, Effect::RenameTeam { old, new_name } if old == "squad" && new_name == "alpha")));
+
+        // Rename collision is rejected.
+        state.store.teams.push(Team {
+            name: "beta".to_string(),
+            ..Default::default()
+        });
+        let effects = reduce(
+            &mut state,
+            Action::Team(TeamAction::Rename {
+                old: "alpha".to_string(),
+                new: "beta".to_string(),
+            }),
+        );
+        assert!(effects.is_empty());
+        assert_eq!(state.store.teams[0].name, "alpha");
+
+        // Member edits resolve the current team from the nav context.
+        state
+            .nav
+            .push(ViewKind::TeamDetail, Some("alpha".to_string()));
+        reduce(
+            &mut state,
+            Action::Team(TeamAction::SetMemberType {
+                member: "alice".to_string(),
+                agent_type: "planner".to_string(),
+            }),
+        );
+        assert_eq!(state.store.teams[0].members[0].agent_type, "planner");
+        reduce(
+            &mut state,
+            Action::Team(TeamAction::SetMemberPrompt {
+                member: "alice".to_string(),
+                prompt: "be terse".to_string(),
+            }),
+        );
+        assert_eq!(state.store.teams[0].members[0].prompt, "be terse");
+        reduce(
+            &mut state,
+            Action::Team(TeamAction::RenameMember {
+                old: "alice".to_string(),
+                new: "alicia".to_string(),
+            }),
+        );
+        assert_eq!(state.store.teams[0].members[0].name, "alicia");
+        assert_eq!(state.store.teams[0].members[0].agent_id, "alicia@alpha");
+    }
+
+    #[test]
+    fn test_task_set_owner_and_delete() {
+        use crate::domain::entities::Task;
+        let mut state = test_state();
+        state.store.tasks.insert(
+            "squad".to_string(),
+            vec![Task {
+                id: "t1".to_string(),
+                subject: "do".to_string(),
+                ..Default::default()
+            }],
+        );
+
+        // SetOwner builds a PersistTask with the owner set.
+        let effects = reduce(
+            &mut state,
+            Action::Task(TaskAction::SetOwner {
+                team: "squad".to_string(),
+                task_id: "t1".to_string(),
+                owner: "alice".to_string(),
+            }),
+        );
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::PersistTask { task, .. } if task.owner.as_deref() == Some("alice")
+        )));
+
+        // Delete emits DeleteTask + RefreshAll.
+        let effects = reduce(
+            &mut state,
+            Action::Task(TaskAction::Delete {
+                team: "squad".to_string(),
+                task_id: "t1".to_string(),
+            }),
+        );
+        assert!(effects
+            .iter()
+            .any(|e| matches!(e, Effect::DeleteTask { team, task_id } if team == "squad" && task_id == "t1")));
     }
 
     #[test]

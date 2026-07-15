@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::adapters::format;
-use crate::domain::entities::{ScratchNote, Session, Subagent, Task, Team};
+use crate::domain::entities::{InboxMessage, ScratchNote, Session, Subagent, Task, Team};
 use crate::domain::error::Result;
 use crate::domain::ports::DataRepository;
 use crate::infrastructure::fs::atomic::write_atomic;
@@ -31,6 +31,18 @@ fn sanitize_component(name: &str) -> Result<String> {
         return Err(scratch_err(format!("Invalid name: '{}'", t)));
     }
     Ok(t.to_string())
+}
+
+/// Validate a team name used as a directory: non-empty, no path separators or
+/// `..`. Shared by create/update/rename so the rules never drift.
+fn validate_team_name(name: &str) -> Result<()> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err(crate::domain::error::DomainError::Parse(format!(
+            "Invalid team name: '{}'",
+            name
+        )));
+    }
+    Ok(())
 }
 
 /// Validate a relative parent path (POSIX `/` separators; empty = scratch root).
@@ -670,12 +682,7 @@ impl DataRepository for FsBackend {
     }
 
     fn create_team(&self, name: &str, description: &str) -> Result<()> {
-        if name.is_empty() || name.contains('/') || name.contains("..") {
-            return Err(crate::domain::error::DomainError::Parse(format!(
-                "Invalid team name: '{}'",
-                name
-            )));
-        }
+        validate_team_name(name)?;
         let team_dir = self.teams_dir().join(name);
         let config_path = team_dir.join("config.json");
         if config_path.exists() {
@@ -697,12 +704,7 @@ impl DataRepository for FsBackend {
     }
 
     fn update_team(&self, team: &Team) -> Result<()> {
-        if team.name.is_empty() || team.name.contains('/') || team.name.contains("..") {
-            return Err(crate::domain::error::DomainError::Parse(format!(
-                "Invalid team name: '{}'",
-                team.name
-            )));
-        }
+        validate_team_name(&team.name)?;
         let config_path = self.teams_dir().join(&team.name).join("config.json");
         if !config_path.exists() {
             return Err(crate::domain::error::DomainError::Parse(format!(
@@ -725,6 +727,74 @@ impl DataRepository for FsBackend {
             std::fs::remove_dir_all(&tasks_dir)?;
         }
         Ok(())
+    }
+
+    fn rename_team(&self, old: &str, new_name: &str) -> Result<()> {
+        validate_team_name(new_name)?;
+        if old == new_name {
+            return Ok(());
+        }
+        let old_dir = self.teams_dir().join(old);
+        let new_dir = self.teams_dir().join(new_name);
+        if !old_dir.join("config.json").exists() {
+            return Err(crate::domain::error::DomainError::Parse(format!(
+                "Team '{}' does not exist",
+                old
+            )));
+        }
+        if new_dir.exists() {
+            return Err(crate::domain::error::DomainError::Parse(format!(
+                "Team '{}' already exists",
+                new_name
+            )));
+        }
+        std::fs::rename(&old_dir, &new_dir)?;
+        // Keep the config's `name` field in sync with the new directory so a
+        // later load doesn't read the stale name out of the JSON.
+        let config_path = new_dir.join("config.json");
+        if let Ok(mut team) = Self::read_json_file::<Team>(&config_path) {
+            team.name = new_name.to_string();
+            let json = serde_json::to_string_pretty(&team)?;
+            write_atomic(&config_path, json.as_bytes())?;
+        }
+        // Move the team's tasks dir alongside it (task ids are unaffected).
+        let old_tasks = self.tasks_dir().join(old);
+        if old_tasks.exists() {
+            let new_tasks = self.tasks_dir().join(new_name);
+            if !new_tasks.exists() {
+                std::fs::rename(&old_tasks, &new_tasks)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn delete_task(&self, team: &str, task_id: &str) -> Result<()> {
+        let path = self
+            .tasks_dir()
+            .join(team)
+            .join(format!("{}.json", task_id));
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+        Ok(())
+    }
+
+    fn load_inbox(&self, team: &str, agent: &str) -> Result<Vec<InboxMessage>> {
+        // Path-safety guard: agent/team are user-facing names — never let them
+        // traverse out of the inboxes dir.
+        let unsafe_seg = |s: &str| s.contains('/') || s.contains('\\') || s.contains("..");
+        if unsafe_seg(team) || unsafe_seg(agent) {
+            return Ok(Vec::new());
+        }
+        let path = self
+            .teams_dir()
+            .join(team)
+            .join("inboxes")
+            .join(format!("{}.json", agent));
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        Self::read_json_file::<Vec<InboxMessage>>(&path)
     }
 
     fn teams_dir(&self) -> PathBuf {
@@ -1442,6 +1512,76 @@ mod tests {
         let (_dir, backend) = setup_test_dir();
         let teams = backend.load_teams().unwrap();
         assert!(teams.is_empty());
+    }
+
+    #[test]
+    fn test_rename_team_moves_config_and_tasks() {
+        let (_dir, backend) = setup_test_dir();
+        backend.create_team("squad", "the squad").unwrap();
+        // A task under the old name.
+        backend
+            .write_task(
+                "squad",
+                &Task {
+                    id: "t1".to_string(),
+                    subject: "x".to_string(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        backend.rename_team("squad", "alpha").unwrap();
+
+        // Old dirs gone, new dirs present with synced name.
+        assert!(!backend.teams_dir().join("squad").exists());
+        assert!(backend.teams_dir().join("alpha/config.json").exists());
+        assert!(backend.tasks_dir().join("alpha/t1.json").exists());
+        let teams = backend.load_teams().unwrap();
+        assert_eq!(teams.len(), 1);
+        assert_eq!(teams[0].name, "alpha");
+        assert_eq!(teams[0].description, "the squad");
+
+        // Collision + invalid-name rejected.
+        backend.create_team("beta", "").unwrap();
+        assert!(backend.rename_team("alpha", "beta").is_err());
+        assert!(backend.rename_team("alpha", "../evil").is_err());
+    }
+
+    #[test]
+    fn test_delete_task() {
+        let (_dir, backend) = setup_test_dir();
+        backend.create_team("squad", "").unwrap();
+        backend
+            .write_task(
+                "squad",
+                &Task {
+                    id: "t1".to_string(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(backend.load_tasks("squad").unwrap().len(), 1);
+        backend.delete_task("squad", "t1").unwrap();
+        assert_eq!(backend.load_tasks("squad").unwrap().len(), 0);
+        // Deleting a missing task is a no-op, not an error.
+        assert!(backend.delete_task("squad", "nope").is_ok());
+    }
+
+    #[test]
+    fn test_load_inbox() {
+        let (_dir, backend) = setup_test_dir();
+        backend.create_team("squad", "").unwrap();
+        // Absent inbox → empty.
+        assert!(backend.load_inbox("squad", "alice").unwrap().is_empty());
+        // Write a message file and read it back.
+        let inbox_path = backend.teams_dir().join("squad/inboxes/alice.json");
+        std::fs::write(&inbox_path, r#"[{"from":"bob","text":"hi","read":false}]"#).unwrap();
+        let msgs = backend.load_inbox("squad", "alice").unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].from, "bob");
+        assert_eq!(msgs[0].text, "hi");
+        // Path traversal in the agent name is refused (returns empty).
+        assert!(backend.load_inbox("squad", "../secret").unwrap().is_empty());
     }
 
     #[test]

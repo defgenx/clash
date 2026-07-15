@@ -97,6 +97,20 @@ impl NavigationStack {
         &self.stack
     }
 
+    /// Rewrite every team-view context matching `old` to `new` (used when a
+    /// team is renamed so drilled-in Team/Agents/Tasks views stay valid).
+    pub fn rename_context(&mut self, old: &str, new: &str) {
+        for entry in self.stack.iter_mut() {
+            if matches!(
+                entry.view,
+                ViewKind::Teams | ViewKind::TeamDetail | ViewKind::Agents | ViewKind::Tasks
+            ) && entry.context.as_deref() == Some(old)
+            {
+                entry.context = Some(new.to_string());
+            }
+        }
+    }
+
     /// Restore the navigation stack from a list of (view, context) pairs.
     pub fn restore_from(&mut self, entries: Vec<(ViewKind, Option<String>)>) {
         if entries.is_empty() {

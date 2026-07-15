@@ -935,10 +935,19 @@ fn remote_to_web_url(raw: &str) -> Option<String> {
 }
 
 /// All teams (with members), via the same DataRepository the TUI uses.
+/// Claude Code's auto per-session teams (`session-*`, team-lead only) are
+/// filtered out — they're internal scaffolding, not user teams (matches the
+/// TUI's `refresh_teams`).
 #[tauri::command]
 fn list_teams(state: State<'_, GuiState>) -> Result<Vec<clash::domain::entities::Team>, String> {
     use clash::domain::ports::DataRepository;
-    state.backend.load_teams().map_err(|e| e.to_string())
+    Ok(state
+        .backend
+        .load_teams()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|t| !t.is_session_team())
+        .collect())
 }
 
 /// Tasks for a team.
@@ -1287,17 +1296,10 @@ fn get_inbox(
     agent: String,
 ) -> Result<Vec<clash::domain::entities::InboxMessage>, String> {
     use clash::domain::ports::DataRepository;
-    let path = state
+    state
         .backend
-        .teams_dir()
-        .join(&team)
-        .join("inboxes")
-        .join(format!("{}.json", agent));
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&content).map_err(|e| format!("Malformed inbox: {}", e))
+        .load_inbox(&team, &agent)
+        .map_err(|e| e.to_string())
 }
 
 /// Session presets for a project directory (global + project + superset,
@@ -1596,6 +1598,151 @@ fn set_team_member_model(
     model: String,
 ) -> Result<(), String> {
     mutate_team(&state, &team, |t| t.set_member_model(&member, &model))
+}
+
+/// Change a member's agent type (empty = general-purpose).
+#[tauri::command]
+fn set_team_member_type(
+    state: State<'_, GuiState>,
+    team: String,
+    member: String,
+    agent_type: String,
+) -> Result<(), String> {
+    mutate_team(&state, &team, |t| t.set_member_type(&member, &agent_type))
+}
+
+/// Replace a member's system prompt.
+#[tauri::command]
+fn set_team_member_prompt(
+    state: State<'_, GuiState>,
+    team: String,
+    member: String,
+    prompt: String,
+) -> Result<(), String> {
+    mutate_team(&state, &team, |t| t.set_member_prompt(&member, &prompt))
+}
+
+/// Rename a member within a team.
+#[tauri::command]
+fn rename_team_member(
+    state: State<'_, GuiState>,
+    team: String,
+    old: String,
+    new: String,
+) -> Result<(), String> {
+    mutate_team(&state, &team, |t| t.rename_member(&old, &new))
+}
+
+/// Rename a team (moves its config and tasks dirs).
+#[tauri::command]
+fn rename_team(state: State<'_, GuiState>, old: String, new: String) -> Result<(), String> {
+    use clash::domain::ports::DataRepository;
+    state
+        .backend
+        .rename_team(old.trim(), new.trim())
+        .map_err(|e| e.to_string())
+}
+
+/// Load a task fresh, apply a pure mutation, persist it.
+fn mutate_task(
+    state: &State<'_, GuiState>,
+    team: &str,
+    task_id: &str,
+    change: impl FnOnce(&mut clash::domain::entities::Task),
+) -> Result<(), String> {
+    use clash::domain::ports::DataRepository;
+    let mut task = state
+        .backend
+        .load_tasks(team)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|t| t.id == task_id)
+        .ok_or_else(|| format!("Task '{}' not found", task_id))?;
+    change(&mut task);
+    state
+        .backend
+        .write_task(team, &task)
+        .map_err(|e| e.to_string())
+}
+
+/// Create a task in a team (millisecond-timestamp id, like the TUI reducer).
+#[tauri::command]
+fn create_task(
+    state: State<'_, GuiState>,
+    team: String,
+    subject: String,
+    description: String,
+) -> Result<(), String> {
+    use clash::domain::ports::DataRepository;
+    let id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+        .to_string();
+    let task = clash::domain::entities::Task {
+        id,
+        subject: subject.trim().to_string(),
+        description: description.trim().to_string(),
+        ..Default::default()
+    };
+    state
+        .backend
+        .write_task(&team, &task)
+        .map_err(|e| e.to_string())
+}
+
+/// Advance a task's status one step (pending → in_progress → completed → …).
+#[tauri::command]
+fn cycle_task_status(
+    state: State<'_, GuiState>,
+    team: String,
+    task_id: String,
+) -> Result<(), String> {
+    mutate_task(&state, &team, &task_id, |t| t.status = t.status.next())
+}
+
+/// Set a task's status to an explicit value (`pending`, `in_progress`,
+/// `completed`, `blocked`).
+#[tauri::command]
+fn set_task_status(
+    state: State<'_, GuiState>,
+    team: String,
+    task_id: String,
+    status: String,
+) -> Result<(), String> {
+    use clash::domain::entities::TaskStatus;
+    let status = match status.as_str() {
+        "in_progress" => TaskStatus::InProgress,
+        "completed" => TaskStatus::Completed,
+        "blocked" => TaskStatus::Blocked,
+        "pending" => TaskStatus::Pending,
+        other => return Err(format!("Unknown status: {}", other)),
+    };
+    mutate_task(&state, &team, &task_id, |t| t.status = status)
+}
+
+/// Assign (or clear, with an empty string) a task's owner.
+#[tauri::command]
+fn set_task_owner(
+    state: State<'_, GuiState>,
+    team: String,
+    task_id: String,
+    owner: String,
+) -> Result<(), String> {
+    let owner = owner.trim().to_string();
+    mutate_task(&state, &team, &task_id, |t| {
+        t.owner = if owner.is_empty() { None } else { Some(owner) };
+    })
+}
+
+/// Delete a task from a team.
+#[tauri::command]
+fn delete_task(state: State<'_, GuiState>, team: String, task_id: String) -> Result<(), String> {
+    use clash::domain::ports::DataRepository;
+    state
+        .backend
+        .delete_task(&team, &task_id)
+        .map_err(|e| e.to_string())
 }
 
 /// Update phase DTO (UpdatePhase has no Serialize derive).
@@ -2442,10 +2589,19 @@ fn main() {
             takeover_wild,
             create_team,
             delete_team,
+            rename_team,
             update_team_description,
             add_team_member,
             remove_team_member,
             set_team_member_model,
+            set_team_member_type,
+            set_team_member_prompt,
+            rename_team_member,
+            create_task,
+            cycle_task_status,
+            set_task_status,
+            set_task_owner,
+            delete_task,
             start_update,
             get_version,
             restart_app,

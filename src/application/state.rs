@@ -204,6 +204,12 @@ pub enum PickerAction {
     /// Copy the picked path to the clipboard (item value = the text to copy;
     /// item label = which format, e.g. "Absolute path", for the toast).
     CopyToClipboard,
+    /// Assign the picked member (item value = member name; `""` = unassigned)
+    /// as the owner of a task.
+    AssignTaskOwner {
+        team: String,
+        task_id: String,
+    },
 }
 
 /// Pending session creation state — replaces scattered fields.
@@ -434,6 +440,19 @@ impl AppState {
 
     pub fn current_session(&self) -> Option<&str> {
         self.nav.current_session()
+    }
+
+    /// The members currently shown in the Agents view: scoped to the drilled-in
+    /// team when there is one, otherwise every member across all teams. Single
+    /// source of truth shared by the renderer, selection resolution, and
+    /// item-count so a team-scoped Agents view never drifts.
+    pub fn visible_members(&self) -> Vec<&crate::domain::entities::Member> {
+        if let Some(team_name) = self.current_team() {
+            if let Some(team) = self.store.find_team(team_name) {
+                return team.members.iter().collect();
+            }
+        }
+        self.store.all_members.iter().collect()
     }
 
     /// Capture current UI state for persistence.

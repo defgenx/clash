@@ -55,9 +55,7 @@ impl DetailView for TaskDetailView {
     fn context_keybindings() -> Vec<Keybinding> {
         vec![
             Keybinding::new("s", "Cycle status"),
-            Keybinding::new("a", "Assign owner"),
-            Keybinding::new("e", "Edit"),
-            Keybinding::new("d", "Delete"),
+            Keybinding::new("d", "Delete task"),
         ]
     }
 }

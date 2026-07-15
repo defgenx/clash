@@ -65,11 +65,11 @@ impl TableView for TasksTable {
 
     fn context_keybindings() -> Vec<Keybinding> {
         vec![
-            Keybinding::new("c", "Create task"),
-            Keybinding::new("d", "Delete task"),
-            Keybinding::new("s", "Cycle status"),
-            Keybinding::new("a", "Assign task"),
             Keybinding::new("Enter", "View task"),
+            Keybinding::new("c", "Create task"),
+            Keybinding::new("s", "Cycle status"),
+            Keybinding::new("a", "Assign owner"),
+            Keybinding::new("d", "Delete task"),
         ]
     }
 

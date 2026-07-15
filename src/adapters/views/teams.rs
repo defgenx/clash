@@ -58,12 +58,13 @@ impl TableView for TeamsTable {
 
     fn context_keybindings() -> Vec<Keybinding> {
         vec![
+            Keybinding::new("Enter", "View team"),
             Keybinding::new("c", "Create team"),
+            Keybinding::new("R", "Rename team"),
             Keybinding::new("d", "Delete team"),
             Keybinding::new("e", "Edit description"),
             Keybinding::new("m", "Add member"),
             Keybinding::new("x", "Remove member"),
-            Keybinding::new("Enter", "View team"),
         ]
     }
 

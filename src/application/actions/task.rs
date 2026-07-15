@@ -16,4 +16,15 @@ pub enum TaskAction {
         team: String,
         task_id: String,
     },
+    /// Assign (or clear, with an empty string) a task's owner.
+    SetOwner {
+        team: String,
+        task_id: String,
+        owner: String,
+    },
+    /// Delete a task from a team.
+    Delete {
+        team: String,
+        task_id: String,
+    },
 }

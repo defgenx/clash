@@ -168,6 +168,20 @@ fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
                 Action::Noop
             }
         }
+        KeyCode::Char('R') => {
+            // Rename the selected/current team (command pre-seeded with the name).
+            if matches!(state.current_view(), ViewKind::Teams | ViewKind::TeamDetail) {
+                match selected_team_name(state) {
+                    Some(team) => Action::Ui(UiAction::EnterCommandModeWith(format!(
+                        "rename team {} ",
+                        team
+                    ))),
+                    None => Action::Noop,
+                }
+            } else {
+                Action::Noop
+            }
+        }
         KeyCode::Tab => Action::Ui(UiAction::ToggleExpand),
 
         // Quit
@@ -350,29 +364,84 @@ fn open_selected_scratch(state: &AppState) -> Action {
 }
 
 fn handle_create(state: &AppState) -> Action {
-    // On the Scratch view, `a`/`c`/`n` create a note; everywhere else they
-    // prompt for the directory before spawning a new Claude session.
-    if state.current_view() == ViewKind::Scratch {
-        return Action::Ui(UiAction::EnterNewScratchMode);
+    // `c`/`a`/`n` are context-sensitive create keys:
+    //  • Scratch  → new note
+    //  • Teams    → create team (command pre-seeded, user types the name)
+    //  • TeamDetail/Tasks → create task for the current team
+    //  • elsewhere → new Claude session
+    match state.current_view() {
+        ViewKind::Scratch => Action::Ui(UiAction::EnterNewScratchMode),
+        ViewKind::Teams => Action::Ui(UiAction::EnterCommandModeWith("create team ".to_string())),
+        ViewKind::TeamDetail | ViewKind::Tasks => match state.current_team() {
+            Some(team) => Action::Ui(UiAction::EnterCommandModeWith(format!(
+                "create task {} ",
+                team
+            ))),
+            None => Action::Ui(UiAction::EnterCommandModeWith("create team ".to_string())),
+        },
+        _ => Action::Ui(UiAction::EnterNewSessionMode),
     }
-    Action::Ui(UiAction::EnterNewSessionMode)
+}
+
+/// Team name for a delete/rename action: the drilled-in team, or the selected
+/// row on the Teams list (mirrors the reducer's `resolve_team_name`).
+fn selected_team_name(state: &AppState) -> Option<String> {
+    state.current_team().map(|s| s.to_string()).or_else(|| {
+        if state.current_view() == ViewKind::Teams {
+            state
+                .store
+                .teams
+                .get(state.table_state.selected)
+                .map(|t| t.name.clone())
+        } else {
+            None
+        }
+    })
 }
 
 fn handle_delete(state: &AppState) -> Action {
     match state.current_view() {
         ViewKind::Teams | ViewKind::TeamDetail => {
-            if let Some(team) = state.current_team() {
+            // Resolve the selected team even on the list (current_team() is None
+            // there) so `d` works consistently with `e`/`m`/`x`.
+            if let Some(team) = selected_team_name(state) {
                 Action::Ui(UiAction::ShowConfirm {
-                    message: format!("Delete team '{}'?", team),
+                    message: format!("Delete team '{}' and all its tasks?", team),
                     on_confirm: Box::new(Action::Team(
-                        crate::application::actions::TeamAction::Delete {
-                            name: team.to_string(),
-                        },
+                        crate::application::actions::TeamAction::Delete { name: team },
                     )),
                 })
             } else {
                 Action::Noop
             }
+        }
+        ViewKind::Tasks | ViewKind::TaskDetail => {
+            let team = match state.current_team() {
+                Some(t) => t.to_string(),
+                None => return Action::Noop,
+            };
+            let Some(task_id) = current_task_id(state) else {
+                return Action::Noop;
+            };
+            let label = state
+                .store
+                .get_tasks(&team)
+                .iter()
+                .find(|t| t.id == task_id)
+                .map(|t| {
+                    if t.subject.is_empty() {
+                        t.id.clone()
+                    } else {
+                        t.subject.clone()
+                    }
+                })
+                .unwrap_or_else(|| task_id.clone());
+            Action::Ui(UiAction::ShowConfirm {
+                message: format!("Delete task '{}'?", label),
+                on_confirm: Box::new(Action::Task(
+                    crate::application::actions::TaskAction::Delete { team, task_id },
+                )),
+            })
         }
         ViewKind::Sessions => {
             let items = state.filtered_sessions();
@@ -468,6 +537,10 @@ fn handle_attach_or_assign(state: &AppState) -> Action {
     // On the Scratch view, `a` creates a new note (there are no sessions here).
     if state.current_view() == ViewKind::Scratch {
         return Action::Ui(UiAction::EnterNewScratchMode);
+    }
+    // On the Tasks view, `a` assigns the selected task's owner (member picker).
+    if state.current_view() == ViewKind::Tasks {
+        return Action::Ui(UiAction::AssignTaskOwner);
     }
     if let Some(session_id) = resolve_session_id(state) {
         // Route based on Session.source: wild/external rows take over
@@ -601,7 +674,36 @@ fn handle_s_key(state: &AppState) -> Action {
             }
             Action::Noop
         }
+        // On TaskDetail, `s` cycles the drilled-in task's status.
+        ViewKind::TaskDetail => {
+            match (
+                state.current_team().map(String::from),
+                current_task_id(state),
+            ) {
+                (Some(team), Some(task_id)) => {
+                    Action::Task(TaskAction::CycleStatus { team, task_id })
+                }
+                _ => Action::Noop,
+            }
+        }
         _ => Action::Noop,
+    }
+}
+
+/// The task the user is acting on: the drilled-in task on TaskDetail, or the
+/// selected row on the Tasks list.
+fn current_task_id(state: &AppState) -> Option<String> {
+    match state.current_view() {
+        ViewKind::TaskDetail => state.nav.current().context.clone(),
+        ViewKind::Tasks => {
+            let team = state.current_team()?;
+            state
+                .store
+                .get_tasks(team)
+                .get(state.table_state.selected)
+                .map(|t| t.id.clone())
+        }
+        _ => None,
     }
 }
 
@@ -796,6 +898,49 @@ pub fn parse_command(cmd: &str) -> Action {
             model,
         });
     }
+    // "member type <member> <type>" — change a member's agent type on the
+    // current team (empty type = general-purpose).
+    if let Some(rest) = cmd.strip_prefix("member type ") {
+        let mut parts = rest.trim().splitn(2, ' ');
+        let member = parts.next().unwrap_or("").trim().to_string();
+        let agent_type = parts.next().unwrap_or("").trim().to_string();
+        if member.is_empty() {
+            return Action::Ui(UiAction::Toast(
+                "Usage: member type <member> [type]".to_string(),
+            ));
+        }
+        return Action::Team(crate::application::actions::TeamAction::SetMemberType {
+            member,
+            agent_type,
+        });
+    }
+    // "member prompt <member> <text…>" — set a member's system prompt.
+    if let Some(rest) = cmd.strip_prefix("member prompt ") {
+        let mut parts = rest.splitn(2, ' ');
+        let member = parts.next().unwrap_or("").trim().to_string();
+        let prompt = parts.next().unwrap_or("").to_string();
+        if member.is_empty() {
+            return Action::Ui(UiAction::Toast(
+                "Usage: member prompt <member> <text>".to_string(),
+            ));
+        }
+        return Action::Team(crate::application::actions::TeamAction::SetMemberPrompt {
+            member,
+            prompt,
+        });
+    }
+    // "member rename <old> <new>" — rename a member on the current team.
+    if let Some(rest) = cmd.strip_prefix("member rename ") {
+        let mut parts = rest.trim().splitn(2, ' ');
+        let old = parts.next().unwrap_or("").trim().to_string();
+        let new = parts.next().unwrap_or("").trim().to_string();
+        if old.is_empty() || new.is_empty() {
+            return Action::Ui(UiAction::Toast(
+                "Usage: member rename <old> <new>".to_string(),
+            ));
+        }
+        return Action::Team(crate::application::actions::TeamAction::RenameMember { old, new });
+    }
     if let Some(rest) = cmd.strip_prefix("create task ") {
         let parts: Vec<&str> = rest.splitn(2, ' ').collect();
         if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
@@ -808,6 +953,20 @@ pub fn parse_command(cmd: &str) -> Action {
         return Action::Ui(UiAction::Toast(
             "Usage: create task <team> <subject>".to_string(),
         ));
+    }
+
+    // "rename team <old> <new>" — must precede the session-rename handler
+    // below (which would otherwise swallow "rename team …").
+    if let Some(rest) = cmd.strip_prefix("rename team ") {
+        let mut parts = rest.trim().splitn(2, ' ');
+        let old = parts.next().unwrap_or("").trim().to_string();
+        let new = parts.next().unwrap_or("").trim().to_string();
+        if old.is_empty() || new.is_empty() {
+            return Action::Ui(UiAction::Toast(
+                "Usage: rename team <old> <new>".to_string(),
+            ));
+        }
+        return Action::Team(crate::application::actions::TeamAction::Rename { old, new });
     }
 
     // Handle "rename <name>" — rename the current session (resolved by reducer)

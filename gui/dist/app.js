@@ -16,6 +16,7 @@ const state = {
   detailsFor: null, // session id shown in the details panel, or null
   teams: [],
   teamsOpen: false,
+  openTeamPanel: null, // team name shown in the details panel (for live refresh)
   notes: [],
   notesOpen: false,
   notesExpanded: new Set(), // scratch folder ids (rel paths) expanded in the tree
@@ -209,11 +210,29 @@ function workspacesJson() {
       sessions: w.sessions,
       colFracs: w.colFracs,
       rowFracs: w.rowFracs,
+      // "Where we were": which pane was focused and whether it was zoomed, so a
+      // relaunch restores the exact view — not just the set of open tabs.
+      focused: w.focused,
+      zoomed: w.zoomed,
     })),
     browserTabs,
     active: state.activeWs,
     settings: state.settings,
   });
+}
+
+/// Write the workspace/layout state to disk *now*, bypassing the debounce.
+/// Called when clash loses focus / is hidden / is closing so the latest
+/// "where we were" is never lost to a pending debounce timer.
+function flushWorkspaces() {
+  clearTimeout(saveTimer);
+  const json = workspacesJson();
+  try {
+    localStorage.setItem("clash-workspaces", json);
+  } catch (e) {
+    void e;
+  }
+  invoke("save_gui_state", { stateJson: json }).catch(() => {});
 }
 
 function saveWorkspaces() {
@@ -265,18 +284,27 @@ function applyWorkspacesData(data) {
   // persisted from the previous run. Browser tabs survive: their URLs
   // are persisted and the webviews are recreated lazily.
   const livePane = (p) => (p && isShellTerm(p) ? null : p);
-  state.workspaces = data.workspaces.map((w) => ({
-    name: w.name || "ws",
-    panes:
-      Array.isArray(w.panes) && w.panes.length ? w.panes.map(livePane) : [null],
-    focused: 0,
-    zoomed: false,
-    sessions: Array.isArray(w.sessions) ? w.sessions.filter((id) => !isShellTerm(id)) : [],
-    // Pane track sizes; renderPanes resets them if they no longer match the
-    // grid shape (pane count changed since the layout was saved).
-    colFracs: Array.isArray(w.colFracs) ? w.colFracs : undefined,
-    rowFracs: Array.isArray(w.rowFracs) ? w.rowFracs : undefined,
-  }));
+  state.workspaces = data.workspaces.map((w) => {
+    const panes =
+      Array.isArray(w.panes) && w.panes.length ? w.panes.map(livePane) : [null];
+    // Restore the focused pane (clamped to the pane count) and zoom, so the
+    // relaunched app lands on the same view we left.
+    const focused =
+      Number.isInteger(w.focused) && w.focused >= 0 && w.focused < panes.length
+        ? w.focused
+        : 0;
+    return {
+      name: w.name || "ws",
+      panes,
+      focused,
+      zoomed: !!w.zoomed && panes.length > 1,
+      sessions: Array.isArray(w.sessions) ? w.sessions.filter((id) => !isShellTerm(id)) : [],
+      // Pane track sizes; renderPanes resets them if they no longer match the
+      // grid shape (pane count changed since the layout was saved).
+      colFracs: Array.isArray(w.colFracs) ? w.colFracs : undefined,
+      rowFracs: Array.isArray(w.rowFracs) ? w.rowFracs : undefined,
+    };
+  });
   pendingBrowserTabs = Array.isArray(data.browserTabs) ? data.browserTabs : [];
   state.activeWs = Math.min(data.active || 0, state.workspaces.length - 1);
   return true;
@@ -330,6 +358,10 @@ async function restoreWorkspaceSessions() {
 
   const byId = new Map(state.sessions.map((s) => [s.id, s]));
   const savedActive = state.activeWs;
+  // The restore loop drives w.focused pane-by-pane as it assigns sessions, so
+  // remember the saved focus per workspace and restore it afterwards — that's
+  // the pane we were actually on.
+  const savedFocused = state.workspaces.map((w) => w.focused);
   for (let wi = 0; wi < state.workspaces.length; wi++) {
     const w = state.workspaces[wi];
     for (let pi = 0; pi < w.panes.length; pi++) {
@@ -347,6 +379,13 @@ async function restoreWorkspaceSessions() {
     }
   }
   state.activeWs = savedActive;
+  // Restore the focused pane we left off on (clamped), without focusing the
+  // terminal — focusing a deferred/stashed tab would auto-resume it, and resume
+  // should stay a deliberate click.
+  state.workspaces.forEach((w, i) => {
+    const f = savedFocused[i];
+    w.focused = Number.isInteger(f) && f >= 0 && f < w.panes.length ? f : 0;
+  });
   syncActiveToFocused();
   renderAll();
 }
@@ -948,14 +987,29 @@ async function refreshSessions() {
     renderTabs();
     if (state.detailsFor) renderDetails();
 
-    // Teams change on disk when Claude spawns/retires agents — keep the
-    // open section live without an explicit collapse/expand cycle.
-    if (state.teamsOpen) {
+    // Teams change on disk when Claude spawns/retires agents, and members go
+    // live/idle as sessions come and go — keep the open section AND the open
+    // detail panel live without an explicit refresh.
+    if (state.teamsOpen || state.openTeamPanel) {
       invoke("list_teams")
         .then((teams) => {
-          if (JSON.stringify(teams) !== JSON.stringify(state.teams)) {
-            state.teams = teams;
-            renderTeams();
+          const changed = JSON.stringify(teams) !== JSON.stringify(state.teams);
+          state.teams = teams;
+          // Sidebar rollup depends on running sessions (refreshed each tick),
+          // so re-render even when the on-disk config is unchanged.
+          if (state.teamsOpen) renderTeams();
+          // Re-render the open panel when the team config or the running-member
+          // set changed — but never while a context menu is open (it would
+          // vanish under the rebuild).
+          if (state.openTeamPanel && !$("context-menu")) {
+            const t = teams.find((x) => x.name === state.openTeamPanel);
+            if (t) {
+              const sig = teamRunSignature(t);
+              if (changed || sig !== state._teamRunSig) {
+                state._teamRunSig = sig;
+                showTeamDetails(t);
+              }
+            }
           }
         })
         .catch(() => {});
@@ -2057,6 +2111,7 @@ function showDetails(sid) {
 
 function hideDetails() {
   state.detailsFor = null;
+  state.openTeamPanel = null;
   detailsShellFor = null;
   $("details").classList.add("hidden");
   $("details-resizer").classList.add("hidden");
@@ -2297,6 +2352,36 @@ async function toggleTeams() {
   }
 }
 
+/// A member is "running" when a live session shares its working directory
+/// (same cwd match the core uses for `is_active`). Returns that session, or null.
+function runningSessionForMember(m) {
+  const norm = (p) => (p || "").replace(/\/+$/, "");
+  const mcwd = norm(m && m.cwd);
+  if (!mcwd) return null;
+  return (
+    state.sessions.find(
+      (s) =>
+        s.is_running &&
+        (norm(s.cwd) === mcwd || norm(s.project_path) === mcwd)
+    ) || null
+  );
+}
+
+/// Active / total member counts for a team's sidebar rollup. "Active" is
+/// session-derived (a live session shares the member's cwd) OR the flag stored
+/// in config.json — the GUI's list_teams doesn't run the runtime cross-check.
+function teamActivity(t) {
+  const members = t.members || [];
+  const active = members.filter((m) => runningSessionForMember(m) || m.isActive).length;
+  return { active, total: members.length };
+}
+
+/// Compact signature of which members are currently running — used to decide
+/// whether the open team panel needs a live re-render.
+function teamRunSignature(t) {
+  return (t.members || []).map((m) => (runningSessionForMember(m) ? "1" : "0")).join("");
+}
+
 function renderTeams() {
   const list = $("teams-list");
   list.innerHTML = "";
@@ -2310,16 +2395,23 @@ function renderTeams() {
   for (const t of state.teams) {
     const item = document.createElement("div");
     item.className = "team-item";
-    const agents = (t.members || []).length;
+    if (state.openTeamPanel === t.name) item.classList.add("active");
+    const { active, total } = teamActivity(t);
+    // Rollup: a live dot + "n/m" when any agent is running, else a plain count.
+    const rollup =
+      active > 0
+        ? `<span class="member-dot active"></span><span class="count">${active}/${total}</span>`
+        : `<span class="count">${total} agent${total === 1 ? "" : "s"}</span>`;
     item.innerHTML = `<span class="team-icon">${svgIcon("users", 13)}</span><span class="team-name">${escapeHtml(
       t.name
-    )}</span><span class="count">${agents} agent${agents === 1 ? "" : "s"}</span>`;
+    )}</span>${rollup}`;
     item.onclick = () => showTeamDetails(t);
     item.oncontextmenu = (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
       showContextMenu(ev.clientX, ev.clientY, [
         { label: "Details", icon: "info", action: () => showTeamDetails(t) },
+        { label: "Rename team…", icon: "pencil", action: () => renameTeamPrompt(t.name) },
         null,
         {
           label: "Delete team…",
@@ -2331,6 +2423,22 @@ function renderTeams() {
     };
     list.appendChild(item);
   }
+}
+
+async function renameTeamPrompt(name) {
+  const next = await uiPrompt("Rename team to:", name);
+  if (next === null || !next.trim() || next.trim() === name) return;
+  try {
+    await invoke("rename_team", { old: name, new: next.trim() });
+  } catch (e) {
+    uiAlert(`Rename failed: ${e}`);
+    return;
+  }
+  state.teams = await invoke("list_teams");
+  if (state.openTeamPanel === name) state.openTeamPanel = next.trim();
+  renderTeams();
+  const fresh = state.teams.find((t) => t.name === next.trim());
+  if (fresh && $("details") && !$("details").classList.contains("hidden")) showTeamDetails(fresh);
 }
 
 async function deleteTeamConfirm(name) {
@@ -2649,10 +2757,14 @@ async function launchScratchEditor(note, value) {
   }
 }
 
+const TASK_STATES = ["pending", "in_progress", "completed", "blocked"];
+
 async function showTeamDetails(team) {
   $("details").classList.remove("hidden");
   $("details-resizer").classList.remove("hidden");
+  $("details-btn").classList.add("on");
   state.detailsFor = null;
+  state.openTeamPanel = team.name; // enables live refresh while open
   detailsShellFor = null; // team view replaces the session shell
   const body = $("details-body");
   let tasks = [];
@@ -2661,80 +2773,165 @@ async function showTeamDetails(team) {
   } catch (e) {
     console.error("list_tasks failed:", e);
   }
-  const taskRows = tasks.length
-    ? tasks
-        .map((t) => {
-          const st = String(t.status || "").toLowerCase().replace(" ", "_");
-          return `<div class="task-item"><span class="task-status ${st}">${escapeHtml(
-            String(t.status)
-          )}</span><span>${escapeHtml(t.subject || t.id)}</span></div>`;
-        })
-        .join("")
-    : "<p class='hint'>no tasks</p>";
   const members = team.members || [];
+  const { active } = teamActivity(team);
+  const activeNote =
+    active > 0
+      ? `<span class="dim" style="font-weight:400">— ${active} running</span>`
+      : "";
   body.innerHTML = `
-    <h3>${svgIcon("users", 13)} ${escapeHtml(team.name)}</h3>
+    <h3>${svgIcon("users", 13)} <span id="d-team-name" title="Click to rename">${escapeHtml(
+      team.name
+    )}</span></h3>
     <p class="hint" id="d-team-desc" title="Click to edit description">${
       team.description ? escapeHtml(team.description) : "<span class='dim'>no description — click to add</span>"
     } ✎</p>
-    <h4>MEMBERS (${members.length}) <span class="dim" style="font-weight:400">— click for inbox, right-click to edit</span></h4>
+    <h4>MEMBERS (${members.length}) ${activeNote}</h4>
     <div id="d-members"></div>
     <button id="d-member-add" class="ghost-action">＋ Add member</button>
-    <h4>TASKS (${tasks.length})</h4>
-    ${taskRows}
+    <h4>TASKS (${tasks.length}) <button id="d-task-add" class="mini-add" title="New task">＋</button></h4>
+    <div id="d-tasks"></div>
     <div class="actions">
+      <button id="d-team-rename">Rename</button>
       <button id="d-team-delete" class="danger">Delete team</button>
       <button id="d-close">Close panel</button>
     </div>
     <div id="d-out"></div>
   `;
+
+  // ── Members ──────────────────────────────────────────────────
   const membersEl = $("d-members");
   if (members.length === 0) {
-    membersEl.innerHTML = "<p class='hint'>none yet — add one, or agents join when Claude spawns them into this team</p>";
+    membersEl.innerHTML =
+      "<p class='hint'>none yet — add one, or agents join when Claude spawns them into this team</p>";
   }
   for (const m of members) {
+    const sess = runningSessionForMember(m);
+    const running = !!sess;
     const row = document.createElement("div");
-    row.className = "row-item";
+    row.className = "row-item member-row" + (running ? " is-running" : "");
     // Member serializes camelCase (serde rename_all) — agentType/isActive.
-    const activity = m.isActive ? "active" : "idle";
-    row.innerHTML = `<span class="member-dot ${activity}"></span><span>${escapeHtml(
-      m.name
-    )}</span><span class="dim">${escapeHtml(m.agentType || "")}</span>${
-      m.model ? `<span class="mini-chip">${escapeHtml(m.model)}</span>` : ""
-    }`;
-    row.onclick = () => showInbox(team.name, m.name);
+    const dot = running || m.isActive ? "active" : "idle";
+    const openHint = running
+      ? `<span class="member-open" title="Open running session">▶</span>`
+      : "";
+    row.innerHTML =
+      `<span class="member-dot ${dot}"></span>` +
+      `<span class="member-name">${escapeHtml(m.name)}</span>` +
+      `<span class="dim">${escapeHtml(m.agentType || "")}</span>` +
+      (m.model ? `<span class="mini-chip">${escapeHtml(m.model)}</span>` : "") +
+      openHint;
+    // Left-click: jump to the running session if there is one, else the inbox.
+    row.onclick = () => {
+      if (running) openSession(sess.id);
+      else showInbox(team.name, m.name);
+    };
     row.oncontextmenu = (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
+      const items = [];
+      if (running)
+        items.push({
+          label: "Open session",
+          icon: "external-link",
+          action: () => openSession(sess.id),
+        });
+      items.push({ label: "Inbox", icon: "info", action: () => showInbox(team.name, m.name) });
+      items.push(null);
+      items.push({
+        label: "Change model…",
+        icon: "terminal",
+        action: () => editMember(team.name, m, "model"),
+      });
+      items.push({
+        label: "Change type…",
+        icon: "pencil",
+        action: () => editMember(team.name, m, "type"),
+      });
+      items.push({
+        label: "Edit prompt…",
+        icon: "pencil",
+        action: () => editMember(team.name, m, "prompt"),
+      });
+      items.push({
+        label: "Rename member…",
+        icon: "pencil",
+        action: () => editMember(team.name, m, "rename"),
+      });
+      items.push(null);
+      items.push({
+        label: "Remove member…",
+        icon: "alert",
+        danger: true,
+        action: async () => {
+          if (!(await uiConfirm(`Remove "${m.name}" from "${team.name}"?`, "Remove"))) return;
+          await teamMutation(team.name, () =>
+            invoke("remove_team_member", { team: team.name, member: m.name })
+          );
+        },
+      });
+      showContextMenu(ev.clientX, ev.clientY, items);
+    };
+    membersEl.appendChild(row);
+  }
+
+  // ── Tasks ────────────────────────────────────────────────────
+  const tasksEl = $("d-tasks");
+  if (tasks.length === 0) tasksEl.innerHTML = "<p class='hint'>no tasks — ＋ to add one</p>";
+  for (const t of tasks) {
+    const st = String(t.status || "").toLowerCase().replace(/\s+/g, "_");
+    const row = document.createElement("div");
+    row.className = "task-item";
+    row.innerHTML =
+      `<span class="task-status ${st}" title="Click to cycle status">${escapeHtml(
+        String(t.status)
+      )}</span>` +
+      `<span class="task-subject">${escapeHtml(t.subject || t.id)}</span>` +
+      (t.owner ? `<span class="mini-chip">${escapeHtml(t.owner)}</span>` : "");
+    // Click the status badge to cycle it.
+    row.querySelector(".task-status").onclick = (ev) => {
+      ev.stopPropagation();
+      taskMutation(team.name, () =>
+        invoke("cycle_task_status", { team: team.name, taskId: t.id })
+      );
+    };
+    row.oncontextmenu = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const statusItems = TASK_STATES.map((s) => ({
+        label: s === st ? `● ${s.replace("_", " ")}` : `  ${s.replace("_", " ")}`,
+        action: () =>
+          taskMutation(team.name, () =>
+            invoke("set_task_status", { team: team.name, taskId: t.id, status: s })
+          ),
+      }));
       showContextMenu(ev.clientX, ev.clientY, [
-        { label: "Inbox", icon: "info", action: () => showInbox(team.name, m.name) },
+        ...statusItems,
+        null,
         {
-          label: "Change model…",
-          icon: "terminal",
-          action: async () => {
-            const model = await uiPrompt(`Model for "${m.name}" (empty = inherit):`, m.model || "");
-            if (model === null) return;
-            await teamMutation(team.name, () =>
-              invoke("set_team_member_model", { team: team.name, member: m.name, model: model.trim() })
-            );
-          },
+          label: "Assign owner…",
+          icon: "users",
+          action: () => assignTaskOwner(team, t),
         },
         null,
         {
-          label: "Remove member…",
+          label: "Delete task…",
           icon: "alert",
           danger: true,
           action: async () => {
-            if (!(await uiConfirm(`Remove "${m.name}" from "${team.name}"?`, "Remove"))) return;
-            await teamMutation(team.name, () =>
-              invoke("remove_team_member", { team: team.name, member: m.name })
+            if (!(await uiConfirm(`Delete task "${t.subject || t.id}"?`, "Delete"))) return;
+            await taskMutation(team.name, () =>
+              invoke("delete_task", { team: team.name, taskId: t.id })
             );
           },
         },
       ]);
     };
-    membersEl.appendChild(row);
+    tasksEl.appendChild(row);
   }
+
+  // ── Actions / edit affordances ───────────────────────────────
+  $("d-team-name").onclick = () => renameTeamPrompt(team.name);
   $("d-team-desc").onclick = async () => {
     const description = await uiPrompt("Team description:", team.description || "");
     if (description === null) return;
@@ -2758,9 +2955,68 @@ async function showTeamDetails(team) {
       })
     );
   };
+  $("d-task-add").onclick = async (ev) => {
+    ev.stopPropagation();
+    const subject = await uiPrompt("Task subject:");
+    if (!subject || !subject.trim()) return;
+    const description = (await uiPrompt("Description (optional):")) || "";
+    await taskMutation(team.name, () =>
+      invoke("create_task", { team: team.name, subject: subject.trim(), description })
+    );
+  };
+  $("d-team-rename").onclick = () => renameTeamPrompt(team.name);
   $("d-close").onclick = hideDetails;
   $("d-team-delete").onclick = () => deleteTeamConfirm(team.name);
   fitAll();
+}
+
+/// Edit one field of a member via a prompt, then persist + refresh.
+async function editMember(teamName, m, field) {
+  if (field === "model") {
+    const model = await uiPrompt(`Model for "${m.name}" (empty = inherit):`, m.model || "");
+    if (model === null) return;
+    return teamMutation(teamName, () =>
+      invoke("set_team_member_model", { team: teamName, member: m.name, model: model.trim() })
+    );
+  }
+  if (field === "type") {
+    const t = await uiPrompt(`Agent type for "${m.name}":`, m.agentType || "general-purpose");
+    if (t === null) return;
+    return teamMutation(teamName, () =>
+      invoke("set_team_member_type", { team: teamName, member: m.name, agentType: t.trim() })
+    );
+  }
+  if (field === "prompt") {
+    const p = await uiPrompt(`System prompt for "${m.name}":`, m.prompt || "");
+    if (p === null) return;
+    return teamMutation(teamName, () =>
+      invoke("set_team_member_prompt", { team: teamName, member: m.name, prompt: p })
+    );
+  }
+  if (field === "rename") {
+    const next = await uiPrompt(`Rename "${m.name}" to:`, m.name);
+    if (next === null || !next.trim() || next.trim() === m.name) return;
+    return teamMutation(teamName, () =>
+      invoke("rename_team_member", { team: teamName, old: m.name, new: next.trim() })
+    );
+  }
+}
+
+/// Assign a task's owner via a picker of the team's members (blank = clear).
+async function assignTaskOwner(team, task) {
+  const members = team.members || [];
+  const items = [
+    { label: "(unassigned)", action: () => setOwner("") },
+    ...members.map((m) => ({ label: m.name, icon: "users", action: () => setOwner(m.name) })),
+  ];
+  function setOwner(owner) {
+    taskMutation(team.name, () =>
+      invoke("set_task_owner", { team: team.name, taskId: task.id, owner })
+    );
+  }
+  // Anchor near the panel; a simple centered menu is fine here.
+  const r = $("details").getBoundingClientRect();
+  showContextMenu(r.left + 20, r.top + 60, items);
 }
 
 /// Run a team mutation, then reload teams and re-open the details panel
@@ -2772,11 +3028,28 @@ async function teamMutation(teamName, run) {
     uiAlert(`Team update failed: ${e}`);
     return;
   }
+  await refreshTeamPanel(teamName);
+}
+
+/// Task mutations reuse the same reload-and-reopen path (showTeamDetails
+/// re-fetches the task list).
+async function taskMutation(teamName, run) {
+  try {
+    await run();
+  } catch (e) {
+    uiAlert(`Task update failed: ${e}`);
+    return;
+  }
+  await refreshTeamPanel(teamName);
+}
+
+/// Reload teams and, if the panel is still on this team, re-render it.
+async function refreshTeamPanel(teamName) {
   try {
     state.teams = await invoke("list_teams");
     renderTeams();
     const fresh = state.teams.find((t) => t.name === teamName);
-    if (fresh) showTeamDetails(fresh);
+    if (fresh && state.openTeamPanel === teamName) await showTeamDetails(fresh);
   } catch (e) {
     console.error("team refresh failed:", e);
   }
@@ -3346,6 +3619,17 @@ document.addEventListener("keydown", (e) => {
 });
 
 window.addEventListener("resize", fitAll);
+
+// Persist "where we were" the moment clash loses focus / is hidden / closes —
+// the debounced saveWorkspaces might not have flushed the latest layout yet,
+// and Tauri's async IPC can't reliably complete during teardown, so we write
+// eagerly on these signals (blur fires well before a Cmd+Q quit).
+window.addEventListener("blur", flushWorkspaces);
+window.addEventListener("pagehide", flushWorkspaces);
+window.addEventListener("beforeunload", flushWorkspaces);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) flushWorkspaces();
+});
 
 // ── Browser tabs (first-class tabs, one child webview each) ──────
 // A browser tab is a regular `state.open` entry living in panes and

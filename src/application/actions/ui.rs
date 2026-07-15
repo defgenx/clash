@@ -10,7 +10,14 @@ pub enum UiAction {
     ConfirmNo,
     Toast(String),
     EnterCommandMode,
+    /// Enter command mode with the input pre-seeded (cursor at end) — used by
+    /// keybindings that scaffold a command for the user to complete, e.g.
+    /// `create team `, `create task <team> `, `rename team <name> `.
+    EnterCommandModeWith(String),
     EnterFilterMode,
+    /// Open a picker to assign the selected task's owner (Tasks view) — lists
+    /// the team's members plus an "unassigned" option.
+    AssignTaskOwner,
     /// Prompt for directory and spawn a new session.
     EnterNewSessionMode,
     /// Prompt for a title and create a new scratch note (Scratch view).

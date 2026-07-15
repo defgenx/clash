@@ -69,6 +69,18 @@ pub struct Team {
 const MEMBER_COLORS: [&str; 6] = ["blue", "green", "yellow", "magenta", "cyan", "red"];
 
 impl Team {
+    /// True for Claude Code's auto-generated per-session teams: named
+    /// `session-<id>` and containing only `team-lead` member(s) (the internal
+    /// lead/subagent orchestration scaffolding Claude writes for every session,
+    /// never cleaned up). clash hides these from the Teams view — they're
+    /// redundant with the Subagents view and are not user-managed teams. A real
+    /// team that merely starts with "session-" is kept as long as it has any
+    /// non-`team-lead` member. Pure — unit-tested directly.
+    pub fn is_session_team(&self) -> bool {
+        self.name.starts_with("session-")
+            && self.members.iter().all(|m| m.agent_type == "team-lead")
+    }
+
     /// Replace the team description (trimmed).
     pub fn set_description(&mut self, description: &str) {
         self.description = description.trim().to_string();
@@ -126,6 +138,62 @@ impl Team {
                 Ok(())
             }
             None => Err(format!("No member named '{}'", name)),
+        }
+    }
+
+    /// Change a member's agent type (empty = `general-purpose`).
+    pub fn set_member_type(
+        &mut self,
+        name: &str,
+        agent_type: &str,
+    ) -> std::result::Result<(), String> {
+        match self.members.iter_mut().find(|m| m.name == name) {
+            Some(m) => {
+                let t = agent_type.trim();
+                m.agent_type = if t.is_empty() {
+                    "general-purpose".to_string()
+                } else {
+                    t.to_string()
+                };
+                Ok(())
+            }
+            None => Err(format!("No member named '{}'", name)),
+        }
+    }
+
+    /// Replace a member's system prompt.
+    pub fn set_member_prompt(
+        &mut self,
+        name: &str,
+        prompt: &str,
+    ) -> std::result::Result<(), String> {
+        match self.members.iter_mut().find(|m| m.name == name) {
+            Some(m) => {
+                m.prompt = prompt.to_string();
+                Ok(())
+            }
+            None => Err(format!("No member named '{}'", name)),
+        }
+    }
+
+    /// Rename a member. Rejects empty and duplicate names; keeps the derived
+    /// `agent_id` (`name@team`) in sync so it stays stable with the new name.
+    pub fn rename_member(&mut self, old: &str, new: &str) -> std::result::Result<(), String> {
+        let new = new.trim();
+        if new.is_empty() {
+            return Err("Member name cannot be empty".to_string());
+        }
+        if new != old && self.members.iter().any(|m| m.name == new) {
+            return Err(format!("Member '{}' already exists", new));
+        }
+        let team_name = self.name.clone();
+        match self.members.iter_mut().find(|m| m.name == old) {
+            Some(m) => {
+                m.name = new.to_string();
+                m.agent_id = format!("{}@{}", new, team_name);
+                Ok(())
+            }
+            None => Err(format!("No member named '{}'", old)),
         }
     }
 }
@@ -615,6 +683,44 @@ pub struct InboxMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_session_team() {
+        // Claude's auto per-session team: session-* with only a team-lead.
+        let mut auto = Team {
+            name: "session-01935a18".to_string(),
+            ..Default::default()
+        };
+        auto.members.push(Member {
+            name: "team-lead".to_string(),
+            agent_type: "team-lead".to_string(),
+            ..Default::default()
+        });
+        assert!(auto.is_session_team());
+
+        // A bare session-* team (no members) is also treated as auto.
+        let bare = Team {
+            name: "session-deadbeef".to_string(),
+            ..Default::default()
+        };
+        assert!(bare.is_session_team());
+
+        // A real user team is never hidden…
+        let mut real = Team {
+            name: "backend".to_string(),
+            ..Default::default()
+        };
+        real.add_member("alice", "reviewer", "").unwrap();
+        assert!(!real.is_session_team());
+
+        // …and neither is a session-named team that has a real member.
+        let mut named = Team {
+            name: "session-x".to_string(),
+            ..Default::default()
+        };
+        named.add_member("bob", "planner", "").unwrap();
+        assert!(!named.is_session_team());
+    }
 
     #[test]
     fn test_parse_team_minimal() {
