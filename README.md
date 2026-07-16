@@ -269,7 +269,9 @@ renders the same tree: click a folder to expand/collapse it, click a note to
 open it, and use the section's **+** button (or a folder's right-click menu) to
 create notes and folders. **Drag and drop** any note or folder onto another
 folder — or onto empty space to move it back to the root — to reorganize.
-Right-click any entry to rename or delete it. The tree **auto-refreshes** when
+Right-click any entry to copy its path (absolute path, path relative to the
+scratch root, or file name — handy for pasting into a Claude session), rename,
+or delete it. The tree **auto-refreshes** when
 the scratch directory changes on disk (a note saved from an editor, the TUI, a
 `git pull`…) via a filesystem watcher; the section's **⟳** button forces a
 manual re-list.

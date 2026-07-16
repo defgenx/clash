@@ -693,6 +693,28 @@ html, body, #app {
 .ctx-item.danger:hover { background: rgba(229, 83, 75, 0.12); }
 .ctx-sep { height: 1px; background: var(--border); margin: 5px 10px; }
 
+#gui-toast {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  z-index: 400;
+  padding: 8px 16px;
+  background: #1f1f23;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+#gui-toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
 #content { flex: 1; display: flex; min-height: 0; }
 
 /* Terminal pane grid — the column/row template is computed per pane

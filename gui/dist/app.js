@@ -1184,6 +1184,21 @@ function showContextMenu(x, y, items) {
 document.addEventListener("click", hideContextMenu);
 window.addEventListener("blur", hideContextMenu);
 
+/// Brief, non-blocking confirmation toast (bottom-center, auto-dismiss).
+let _toastTimer = null;
+function flashToast(msg) {
+  let el = $("gui-toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "gui-toast";
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.add("show");
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.classList.remove("show"), 1600);
+}
+
 /// Rename a session via dialog — used by the tab context menu.
 async function renameSessionDialog(sid) {
   const s = state.sessions.find((x) => x.id === sid);
@@ -2604,8 +2619,23 @@ function toggleNoteDir(id) {
   renderNotes();
 }
 
+/// Last path segment of an OS path (handles `/` and `\`); `""` if empty.
+function baseName(p) {
+  const parts = String(p || "").split(/[\\/]/);
+  return parts[parts.length - 1] || "";
+}
+
+/// Copy `text` to the clipboard via the backend plugin (the bare WKWebView's
+/// navigator.clipboard is unreliable — same reasoning as ⌘C) and flash a toast.
+function copyScratchPath(text, kind) {
+  if (!text) return;
+  invoke("clipboard_write_text", { text })
+    .then(() => flashToast(`Copied ${kind}`))
+    .catch((e) => uiAlert(`Copy failed: ${e}`));
+}
+
 /// Context menu for a scratch entry. Folders also offer new file/folder
-/// inside them; everything offers rename and delete.
+/// inside them; everything offers copy-path, rename, and delete.
 function noteContextMenu(n, x, y) {
   const items = [];
   if (n.isDir) {
@@ -2626,6 +2656,24 @@ function noteContextMenu(n, x, y) {
       action: () => openScratchInEditor(n, x, y),
     });
   }
+  // Copy path/reference — mirrors the TUI's `y` picker (absolute / relative /
+  // name) so a path can be pasted straight into a Claude session.
+  items.push(null);
+  items.push({
+    label: "Copy absolute path",
+    icon: "copy",
+    action: () => copyScratchPath(n.path, "absolute path"),
+  });
+  items.push({
+    label: "Copy relative path",
+    icon: "copy",
+    action: () => copyScratchPath(n.id, "relative path"),
+  });
+  items.push({
+    label: n.isDir ? "Copy folder name" : "Copy file name",
+    icon: "copy",
+    action: () => copyScratchPath(baseName(n.path) || n.title, "name"),
+  });
   items.push(null);
   items.push({
     label: "Rename…",
