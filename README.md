@@ -418,8 +418,9 @@ Releases are automatic — push with conventional commits (`feat:`, `fix:`) and 
 
 A cmux-style desktop client lives in `gui/` — a Tauri 2 app sharing the same
 core as the TUI (session pipeline, in-process PTY daemon, protocol). Sidebar
-with session sections and status rings; embedded xterm.js terminals attach to
-the same sessions the TUI manages.
+with session sections and status rings; embedded xterm.js terminals
+(GPU-accelerated WebGL rendering, with automatic fallback to the DOM
+renderer on context loss) attach to the same sessions the TUI manages.
 
 GUI features: fuzzy search (`/` or `⌘F`), inline rename (double-click),
 new session via the sidebar's `＋ New session` button (`⌘T`) with preset
@@ -476,8 +477,9 @@ for new sessions, terminal font size and font family (live-applied,
 with autocomplete of the monospace fonts installed on the machine),
 scrollback lines, cursor style (block/bar/underline) and blink,
 copy-on-select, "⌥ sends Esc (Meta)" (off = Option always composes
-characters — international layouts), whether terminal links open in the
-embedded browser or the system browser, a desktop-notifications toggle,
+characters — international layouts), how terminal links open — ask each
+time (default), always in clash's embedded browser, or always the system
+browser — a desktop-notifications toggle,
 and an `⟳ Update clash` self-update button — when the update lands, a
 modal offers Restart / Cancel (restarting closes running sessions).
 Settings persist in `gui-state.json`. The sidebar and details panel are

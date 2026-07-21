@@ -36,7 +36,7 @@ const state = {
     cursorBlink: false,
     copyOnSelect: false,
     optionMeta: true,
-    embedLinks: true,
+    linkOpen: "ask", // ask | embedded | external — how terminal links open
     notifications: true,
     tuiTerminal: "", // last terminal picked for the TUI launcher ("" = auto)
     termShell: "", // last shell picked for in-app terminals ("" = $SHELL)
@@ -184,6 +184,88 @@ const uiConfirm = (message, okLabel = "Confirm") =>
 const uiPrompt = (message, def = "") => uiDialog({ message, input: def });
 const uiAlert = (message) => uiDialog({ message, cancelable: false });
 
+/// A modal that asks the user to pick one of several labeled actions.
+/// `choices` is [{ label, value, primary? }]; resolves to the chosen value,
+/// or null if cancelled. `detail` renders on its own line under the message
+/// (used to show the URL being opened, wrapped so long links don't overflow).
+function uiChoice({ message, detail = null, choices }) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "dialog-backdrop";
+    const box = document.createElement("div");
+    box.className = "dialog-box";
+    const msg = document.createElement("p");
+    msg.textContent = message;
+    box.appendChild(msg);
+    if (detail !== null) {
+      const d = document.createElement("p");
+      d.className = "dialog-detail";
+      d.textContent = detail;
+      box.appendChild(d);
+    }
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    const done = (val) => {
+      backdrop.remove();
+      resolve(val);
+      if (typeof fitAll === "function") fitAll();
+    };
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.onclick = () => done(null);
+    actions.appendChild(cancel);
+    let firstBtn = null;
+    for (const c of choices) {
+      const b = document.createElement("button");
+      b.textContent = c.label;
+      if (c.primary) b.className = "primary";
+      b.onclick = () => done(c.value);
+      actions.appendChild(b);
+      if (!firstBtn || c.primary) firstBtn = b;
+    }
+    box.appendChild(actions);
+    backdrop.appendChild(box);
+    // Native browser webviews paint over the DOM and would hide the dialog —
+    // drop them while it's up; fitAll() (in done) brings them back.
+    if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
+    document.body.appendChild(backdrop);
+    backdrop.onclick = (e) => {
+      if (e.target === backdrop) done(null);
+    };
+    backdrop.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") done(null);
+    });
+    setTimeout(() => firstBtn && firstBtn.focus(), 0);
+  });
+}
+
+/// Open a URL from terminal output per the "Open links" setting: inside the
+/// embedded browser panel, in the system browser, or (default) by asking each
+/// time. The per-open prompt is the requested behavior — a link could belong
+/// in either place, so let the user choose at click time.
+async function openLink(uri) {
+  const embed = () => openBrowserTab(uri, "split");
+  const external = () => invoke("open_external", { url: uri }).catch(() => {});
+  const isHttp = /^https?:\/\//.test(uri);
+  // Non-http(s) schemes (mailto:, tel:, file:, …) can't render in the panel —
+  // always hand them to the OS regardless of the setting.
+  if (!isHttp) return external();
+  const mode = state.settings.linkOpen;
+  if (mode === "embedded") return embed();
+  if (mode === "external") return external();
+  const choice = await uiChoice({
+    message: "Open link",
+    detail: uri,
+    choices: [
+      { label: "In clash", value: "embedded", primary: true },
+      { label: "System browser", value: "external" },
+    ],
+  });
+  if (choice === "embedded") embed();
+  else if (choice === "external") external();
+}
+
 /// The active workspace.
 function ws() {
   return state.workspaces[state.activeWs];
@@ -274,7 +356,12 @@ function applyWorkspacesData(data) {
     if (typeof s.cursorBlink === "boolean") state.settings.cursorBlink = s.cursorBlink;
     if (typeof s.copyOnSelect === "boolean") state.settings.copyOnSelect = s.copyOnSelect;
     if (typeof s.optionMeta === "boolean") state.settings.optionMeta = s.optionMeta;
-    if (typeof s.embedLinks === "boolean") state.settings.embedLinks = s.embedLinks;
+    if (["ask", "embedded", "external"].includes(s.linkOpen)) {
+      state.settings.linkOpen = s.linkOpen;
+    } else if (typeof s.embedLinks === "boolean") {
+      // Legacy boolean setting → map to the new three-way choice.
+      state.settings.linkOpen = s.embedLinks ? "embedded" : "external";
+    }
     if (typeof s.notifications === "boolean") state.settings.notifications = s.notifications;
     if (typeof s.tuiTerminal === "string") state.settings.tuiTerminal = s.tuiTerminal;
     if (typeof s.termShell === "string") state.settings.termShell = s.termShell;
@@ -1769,13 +1856,10 @@ async function openSession(sid, label, opts = {}) {
     // Right-click selects the word under the pointer (parity with double-click),
     // a quick native affordance for grabbing a token to copy.
     rightClickSelectsWord: true,
-    // OSC 8 hyperlinks (Claude Code emits these) — open in the embedded
-    // browser panel, or the system browser per the embedLinks setting.
+    // OSC 8 hyperlinks (Claude Code emits these) — routed through openLink,
+    // which asks / embeds / opens externally per the "Open links" setting.
     linkHandler: {
-      activate: (_e, uri) => {
-        if (/^https?:\/\//.test(uri) && state.settings.embedLinks) openBrowserTab(uri, "split");
-        else invoke("open_external", { url: uri }).catch(() => {});
-      },
+      activate: (_e, uri) => openLink(uri),
     },
   });
   // International layouts (e.g. AZERTY) type brackets/braces with Option
@@ -1865,6 +1949,24 @@ async function openSession(sid, label, opts = {}) {
   // (focusing would resume them); live opens claim the focused pane.
   if (!defer) assignToFocusedPane(sid);
   term.open(el);
+  // GPU-accelerated rendering. The default DOM renderer repaints cells as
+  // styled <span>s and, under Claude Code's rapid streaming output (spinners,
+  // progressive tokens), leaves stale/half-refreshed glyphs — the "not native,
+  // badly refreshed text" symptom. The WebGL renderer draws the whole grid to
+  // one GPU-backed canvas each frame, so it stays crisp and consistent. If the
+  // WebGL context is lost (GPU pressure, tab backgrounded in WKWebView) the
+  // addon emits onContextLoss; we dispose it and xterm falls back to the DOM
+  // renderer automatically. Loading is best-effort: any failure keeps the DOM
+  // renderer rather than leaving a blank terminal.
+  try {
+    if (window.WebglAddon) {
+      const webgl = new WebglAddon.WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    }
+  } catch (e) {
+    console.warn("WebGL renderer unavailable, using DOM renderer:", e);
+  }
   fitAddon.fit();
 
   if (defer) {
@@ -1921,10 +2023,7 @@ async function openSession(sid, label, opts = {}) {
             end: { x: m.index + m[0].length, y },
           },
           text: m[0],
-          activate: (_e, uri) =>
-            state.settings.embedLinks
-              ? openBrowserTab(uri, "split")
-              : invoke("open_external", { url: uri }).catch(() => {}),
+          activate: (_e, uri) => openLink(uri),
         });
       }
       cb(links.length ? links : undefined);
@@ -4233,7 +4332,7 @@ function syncSettingsUi() {
   $("set-cursor-blink").checked = state.settings.cursorBlink;
   $("set-copy-select").checked = state.settings.copyOnSelect;
   $("set-option-meta").checked = state.settings.optionMeta;
-  $("set-embed-links").checked = state.settings.embedLinks;
+  $("set-link-open").value = state.settings.linkOpen;
   $("set-notify").checked = state.settings.notifications;
 }
 
@@ -4301,8 +4400,8 @@ $("set-option-meta").addEventListener("change", () => {
   applyTermOption("macOptionIsMeta", state.settings.optionMeta);
 });
 
-$("set-embed-links").addEventListener("change", () => {
-  state.settings.embedLinks = $("set-embed-links").checked;
+$("set-link-open").addEventListener("change", () => {
+  state.settings.linkOpen = $("set-link-open").value;
   saveWorkspaces();
 });
 

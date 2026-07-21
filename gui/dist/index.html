@@ -69,7 +69,13 @@
         <label class="setting-check"><input id="set-cursor-blink" type="checkbox" /> Cursor blink</label>
         <label class="setting-check"><input id="set-copy-select" type="checkbox" /> Copy on select</label>
         <label class="setting-check"><input id="set-option-meta" type="checkbox" /> ⌥ sends Esc (Meta)</label>
-        <label class="setting-check"><input id="set-embed-links" type="checkbox" /> Links open in embedded browser</label>
+        <label class="setting-row inline">Open links
+          <select id="set-link-open">
+            <option value="ask">Ask each time</option>
+            <option value="embedded">In clash</option>
+            <option value="external">System browser</option>
+          </select>
+        </label>
         <label class="setting-check"><input id="set-notify" type="checkbox" /> Desktop notifications</label>
         <button id="update-btn" class="update-big" title="Download and install the latest clash version">⟳ Update clash</button>
         </div>
@@ -130,6 +136,7 @@
 
   <script src="vendor/xterm.js"></script>
   <script src="vendor/addon-fit.js"></script>
+  <script src="vendor/addon-webgl.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
