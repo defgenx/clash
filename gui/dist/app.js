@@ -305,7 +305,11 @@ function workspacesJson() {
 
 /// Write the workspace/layout state to disk *now*, bypassing the debounce.
 /// Called when clash loses focus / is hidden / is closing so the latest
-/// "where we were" is never lost to a pending debounce timer.
+/// "where we were" is never lost to a pending debounce timer. Returns the
+/// disk-write promise so callers that must guarantee the write lands before
+/// something drastic (e.g. an update re-exec) can await it; the always-.catch
+/// means the promise resolves even on failure. Event-listener callers ignore
+/// the return and stay fire-and-forget.
 function flushWorkspaces() {
   clearTimeout(saveTimer);
   const json = workspacesJson();
@@ -314,7 +318,7 @@ function flushWorkspaces() {
   } catch (e) {
     void e;
   }
-  invoke("save_gui_state", { stateJson: json }).catch(() => {});
+  return invoke("save_gui_state", { stateJson: json }).catch(() => {});
 }
 
 function saveWorkspaces() {
@@ -3545,8 +3549,15 @@ listen("update-phase", (event) => {
       uiDialog({
         message: `clash v${version} installed. Restart now? Running sessions will be closed.`,
         okLabel: "Restart",
-      }).then((restart) => {
-        if (restart) invoke("restart_app").catch((e) => uiAlert(`Restart failed: ${e}`));
+      }).then(async (restart) => {
+        if (!restart) return;
+        // Persist "where we were" BEFORE the re-exec. app.restart() (see the
+        // backend restart_app) replaces the process without firing any window
+        // teardown events, so the blur/pagehide/beforeunload flushes never run
+        // on this path — without this await, the restored layout is stale and
+        // sessions don't come back where we left them.
+        await flushWorkspaces();
+        invoke("restart_app").catch((e) => uiAlert(`Restart failed: ${e}`));
       });
       break;
     case "failed":
