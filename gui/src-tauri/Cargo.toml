@@ -1,6 +1,6 @@
 [package]
 name = "clash-gui"
-version = "1.82.0"
+version = "1.83.0"
 edition = "2021"
 description = "clash GUI — cmux-style desktop client (experimental)"
 
