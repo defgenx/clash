@@ -285,9 +285,17 @@ let saveTimer = null;
 
 function workspacesJson() {
   const browserTabs = [];
+  const viewTabs = [];
   for (const [id, e] of state.open) {
     if (e.kind === "browser") {
       browserTabs.push({ id, url: e.url, name: e.name, renamed: !!e.renamed });
+    } else if (id === "view:wfboard" || id.startsWith("view:workflow:")) {
+      // Workflow tabs are recreatable from their key alone (files on disk);
+      // persist the name + active sub-view so restore lands where we were.
+      const ts = id.startsWith("view:workflow:")
+        ? wfTabState.get(id.slice("view:workflow:".length))
+        : null;
+      viewTabs.push({ id, name: e.name, subView: ts ? ts.subView : null });
     }
   }
   return JSON.stringify({
@@ -303,6 +311,7 @@ function workspacesJson() {
       zoomed: w.zoomed,
     })),
     browserTabs,
+    viewTabs,
     active: state.activeWs,
     settings: state.settings,
   });
@@ -402,9 +411,12 @@ function applyWorkspacesData(data) {
     };
   });
   pendingBrowserTabs = Array.isArray(data.browserTabs) ? data.browserTabs : [];
+  pendingWorkflowTabs = Array.isArray(data.viewTabs) ? data.viewTabs : [];
   state.activeWs = Math.min(data.active || 0, state.workspaces.length - 1);
   return true;
 }
+
+let pendingWorkflowTabs = []; // persisted workflow tabs awaiting restore at boot
 
 async function loadWorkspaces() {
   try {
@@ -432,7 +444,8 @@ async function restoreWorkspaceSessions() {
   // persist the rewrite. Unknown ids pass through unchanged.
   const saved = [];
   for (const w of state.workspaces)
-    for (const p of w.panes) if (p && !isBrowserTab(p)) saved.push(p);
+    for (const p of w.panes)
+      if (p && !isBrowserTab(p) && !p.startsWith("view:")) saved.push(p);
   if (saved.length) {
     try {
       const resolved = await invoke("resolve_session_ids", { ids: saved });
@@ -464,6 +477,19 @@ async function restoreWorkspaceSessions() {
       const sid = w.panes[pi];
       if (!sid) continue;
       if (isBrowserTab(sid)) continue; // restored separately
+      if (sid.startsWith("view:")) {
+        // Workflow tabs are rebuilt from disk state; other view tabs
+        // (conversation / subagents / session diff) keep the historical
+        // drop-on-restart behavior.
+        if (sid === "view:wfboard" || sid.startsWith("view:workflow:")) {
+          state.activeWs = wi;
+          w.focused = pi;
+          restoreWorkflowTab(sid, pendingWorkflowTabs.find((t) => t && t.id === sid));
+        } else {
+          w.panes[pi] = null;
+        }
+        continue;
+      }
       const s = byId.get(sid);
       if (!s) {
         w.panes[pi] = null; // gone from disk — drop the empty slot
@@ -474,6 +500,7 @@ async function restoreWorkspaceSessions() {
       await openSession(sid, null, { defer: !s.is_running });
     }
   }
+  pendingWorkflowTabs = [];
   state.activeWs = savedActive;
   // Restore the focused pane we left off on (clamped), without focusing the
   // terminal — focusing a deferred/stashed tab would auto-resume it, and resume
@@ -3525,6 +3552,26 @@ async function newWorkflowFlow() {
   } catch (e) {
     uiAlert(`Create failed: ${e}`);
   }
+}
+
+/// Recreate a persisted workflow tab at boot (state.open entry + builder);
+/// the saved sub-view is restored so the relaunch lands where we were.
+function restoreWorkflowTab(key, saved) {
+  if (key === "view:wfboard") {
+    openWorkflowBoardTab();
+    return;
+  }
+  const rest = key.slice("view:workflow:".length);
+  const slash = rest.indexOf("/");
+  if (slash < 0) return;
+  const project = rest.slice(0, slash);
+  const slug = rest.slice(slash + 1);
+  if (saved && saved.subView) {
+    wfTabState.set(wfKey(project, slug), { subView: saved.subView, iteration: null });
+  }
+  openViewTab(key, (saved && saved.name) || `⧉ ${slug}`, (el) =>
+    buildWorkflowView(el, project, slug)
+  );
 }
 
 /// Open (or focus) an item's detail tab and clear its unread badge.
