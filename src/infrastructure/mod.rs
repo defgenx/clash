@@ -6,6 +6,7 @@ pub mod env_path;
 pub mod error;
 pub mod event;
 pub mod fs;
+pub mod git;
 pub mod hooks;
 pub mod ide;
 pub mod logging;

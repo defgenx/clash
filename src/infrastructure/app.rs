@@ -1369,31 +1369,20 @@ impl App {
                             .map(|p| p.to_string())
                     });
                     if let Some(dir) = dir {
-                        let start = Instant::now();
-                        let output = tokio::process::Command::new("git")
-                            .args(["diff", "HEAD"])
-                            .current_dir(&dir)
-                            .output()
-                            .await;
-                        let elapsed = start.elapsed();
-                        tracing::debug!("git diff HEAD in {} took {:?}", dir, elapsed);
-                        match output {
-                            Ok(out) if out.status.success() => {
-                                let raw = String::from_utf8_lossy(&out.stdout);
+                        let result = crate::infrastructure::git::git_diff(
+                            std::path::Path::new(&dir),
+                            &crate::infrastructure::git::DiffBase::Head,
+                        )
+                        .await;
+                        match result {
+                            Ok(raw) => {
                                 self.state.diff.lines =
-                                    crate::infrastructure::tui::widgets::diff_widget::parse_diff_lines(&raw);
-                            }
-                            Ok(out) => {
-                                let err = String::from_utf8_lossy(&out.stderr);
-                                self.state.diff.lines = vec![crate::application::state::DiffLine {
-                                    kind: crate::application::state::DiffLineKind::Context,
-                                    content: format!("Error: {}", err.trim()),
-                                }];
+                                    crate::application::diff::parse_diff_lines(&raw);
                             }
                             Err(e) => {
                                 self.state.diff.lines = vec![crate::application::state::DiffLine {
                                     kind: crate::application::state::DiffLineKind::Context,
-                                    content: format!("Failed to run git: {}", e),
+                                    content: format!("Error: {}", e),
                                 }];
                             }
                         }
@@ -1404,9 +1393,7 @@ impl App {
                         }];
                     }
                     self.state.diff.files =
-                        crate::infrastructure::tui::widgets::diff_widget::extract_files(
-                            &self.state.diff.lines,
-                        );
+                        crate::application::diff::extract_files(&self.state.diff.lines);
                     self.state.diff.selected_file = 0;
                     self.state.diff.file_scroll = 0;
                     self.state.diff.loaded = true;

@@ -856,17 +856,11 @@ fn session_dir(state: &GuiState, session_id: &str) -> Result<String, String> {
 #[tauri::command]
 async fn get_diff(state: State<'_, GuiState>, session_id: String) -> Result<String, String> {
     let dir = session_dir(&state, &session_id)?;
-    let output = tokio::process::Command::new("git")
-        .args(["diff", "HEAD"])
-        .current_dir(&dir)
-        .output()
-        .await
-        .map_err(|e| format!("git diff failed: {}", e))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
-    }
+    clash::infrastructure::git::git_diff(
+        std::path::Path::new(&dir),
+        &clash::infrastructure::git::DiffBase::Head,
+    )
+    .await
 }
 
 /// User's home directory — last-resort prefill for the new-session cwd.
