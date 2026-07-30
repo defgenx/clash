@@ -989,6 +989,117 @@ html, body, #app {
 .wf-actions button.primary { background: var(--accent); border-color: var(--accent); color: #1b1b1d; font-weight: 600; }
 .wf-actions button.danger { color: var(--red); border-color: var(--red); background: none; }
 
+/* Workflow diff view (line-comment review) */
+.wf-diff-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.wf-diff-head select {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 3px 8px;
+}
+.wf-diff-count { font-size: 12px; color: var(--accent); }
+.wf-diff { font-family: var(--mono, "SF Mono", Menlo, monospace); font-size: 12px; }
+.wf-file {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+.wf-file-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-sidebar);
+  padding: 6px 10px;
+  cursor: pointer;
+  position: sticky;
+  top: 0;
+}
+.wf-file-head:hover { background: var(--bg-hover); }
+.wf-file-path { font-weight: 600; }
+.wf-file-stats { margin-left: auto; font-size: 11px; color: var(--fg-dim); }
+.wf-file-stats .add { color: var(--green); }
+.wf-file-stats .del { color: var(--red); }
+.wf-hunk-head {
+  color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 8%, transparent);
+  padding: 2px 10px;
+  font-size: 11px;
+}
+.wf-line { display: flex; line-height: 1.5; white-space: pre; }
+.wf-line:hover { background: var(--bg-hover); }
+.wf-line.add { background: color-mix(in srgb, var(--green) 9%, transparent); }
+.wf-line.del { background: color-mix(in srgb, var(--red) 9%, transparent); }
+.wf-line.add .wf-text { color: var(--green); }
+.wf-line.del .wf-text { color: var(--red); }
+.wf-gut {
+  width: 42px;
+  flex: none;
+  text-align: right;
+  padding-right: 8px;
+  color: var(--fg-dim);
+  font-size: 11px;
+  user-select: none;
+}
+.wf-plus {
+  width: 18px;
+  flex: none;
+  text-align: center;
+  color: var(--accent);
+  font-weight: 700;
+  cursor: pointer;
+  opacity: 0;
+  user-select: none;
+}
+.wf-line:hover .wf-plus { opacity: 1; }
+.wf-text { flex: 1; overflow-x: auto; }
+.wf-thread {
+  margin: 2px 8px 6px 60px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--bg-sidebar);
+  padding: 6px 10px;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  white-space: normal;
+}
+.wf-thread.addressed { border-left-color: var(--green); opacity: 0.85; }
+.wf-thread.wontfix { border-left-color: var(--fg-dim); opacity: 0.7; }
+.wf-thread-head { display: flex; align-items: center; gap: 8px; font-size: 11px; margin-bottom: 3px; }
+.wf-ann-state {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+}
+.wf-ann-state.open { color: var(--accent); border-color: var(--accent); }
+.wf-ann-state.addressed { color: var(--green); border-color: var(--green); }
+.wf-ann-state.wontfix { color: var(--fg-dim); }
+.wf-ann-author { color: var(--fg-dim); font-size: 11px; }
+.wf-thread-body { font-size: 12px; }
+.wf-reply {
+  border-top: 1px solid var(--border);
+  margin-top: 5px;
+  padding-top: 5px;
+  font-size: 12px;
+  display: flex;
+  gap: 8px;
+}
+.wf-orphans {
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  margin-top: 12px;
+  padding: 8px 10px;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+}
+.wf-orphans-head { font-size: 12px; color: var(--fg-dim); margin-bottom: 6px; }
+.wf-orphan-ctx { font-size: 11px; color: var(--fg-dim); margin: 6px 0 2px; }
+.wf-orphan-ctx code { font-family: var(--mono, "SF Mono", Menlo, monospace); }
+.wf-orphan .wf-thread { margin-left: 0; }
+
 /* Rendered markdown (workflow plan/review) */
 .wf-md { font-size: 13px; line-height: 1.55; max-width: 860px; }
 .wf-md h1, .wf-md h2, .wf-md h3 { color: var(--fg); margin: 14px 0 6px; line-height: 1.25; }

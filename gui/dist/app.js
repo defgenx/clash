@@ -3720,9 +3720,237 @@ async function renderWfSubView(body, root, item, ts) {
   renderWfDiffView(body, root, item, ts);
 }
 
-/// Diff sub-view — read-only render lands in the next commit.
+// Collapse guards for big diffs: files above this many changed lines render
+// collapsed; a whole diff above the total starts with every file collapsed.
+const WF_FILE_COLLAPSE_LINES = 1500;
+const WF_DIFF_COLLAPSE_TOTAL = 20000;
+
+/// Diff sub-view: iteration switcher + per-file hunks with line numbers.
+/// Annotation threads/composer hook in via the delegated listener (next
+/// commit); this render is already annotation-aware in its data fetch.
 async function renderWfDiffView(body, root, item, ts) {
-  body.innerHTML = "<p class='hint'>diff view — next commit</p>";
+  const { project, slug } = item;
+  body.innerHTML = "<p class='hint'>loading diff…</p>";
+  let text = "";
+  let anchored = [];
+  try {
+    text = await invoke("get_workflow_diff", { project, slug, iteration: ts.iteration });
+    anchored = await invoke("get_anchored_annotations", { project, slug, iteration: ts.iteration });
+  } catch (e) {
+    body.innerHTML = `<p class='hint'>diff failed: ${escapeHtml(e)}</p>`;
+    return;
+  }
+  body.innerHTML = "";
+
+  // Header controls: iteration switcher + unresolved count.
+  const head = document.createElement("div");
+  head.className = "wf-diff-head";
+  const sel = document.createElement("select");
+  const cur = document.createElement("option");
+  cur.value = "";
+  cur.textContent = `current (it.${item.meta.iteration || 1})`;
+  sel.appendChild(cur);
+  for (const it of [...item.historyIterations].reverse()) {
+    const o = document.createElement("option");
+    o.value = String(it);
+    o.textContent = `iteration ${it}`;
+    sel.appendChild(o);
+  }
+  sel.value = ts.iteration === null ? "" : String(ts.iteration);
+  sel.onchange = () => {
+    ts.iteration = sel.value === "" ? null : parseInt(sel.value, 10);
+    buildWorkflowView(root, project, slug);
+  };
+  head.appendChild(sel);
+  const openCount = anchored.filter((a) => a.annotation.status === "open").length;
+  const count = document.createElement("span");
+  count.className = "wf-diff-count";
+  count.textContent = openCount > 0 ? `💬 ${openCount} unresolved` : "";
+  head.appendChild(count);
+  body.appendChild(head);
+
+  const files = parseUnifiedDiff(text);
+  if (!files.length) {
+    body.appendChild(Object.assign(document.createElement("p"), {
+      className: "hint",
+      textContent: ts.iteration === null ? "no changes yet" : "empty snapshot",
+    }));
+    return;
+  }
+  const totalLines = files.reduce((n, f) => n + diffFileChangedLines(f), 0);
+  const container = document.createElement("div");
+  container.className = "wf-diff";
+  body.appendChild(container);
+  buildWorkflowDiff(container, files, anchored, {
+    item,
+    ts,
+    root,
+    collapseAll: totalLines > WF_DIFF_COLLAPSE_TOTAL,
+  });
+}
+
+/// Build the diff DOM: .wf-file > head + hunks > numbered lines. One
+/// delegated click listener on the container handles collapse (and, next
+/// commit, comment composition/threads) — no per-line listeners, so large
+/// diffs stay cheap.
+function buildWorkflowDiff(container, files, anchored, opts) {
+  container.innerHTML = "";
+  opts._files = files;
+  opts._anchored = anchored;
+  container.onclick = (ev) => wfDiffClick(container, ev, opts);
+
+  for (const f of files) {
+    const path = diffFilePath(f);
+    const changed = diffFileChangedLines(f);
+    const fileAnns = anchored.filter((a) => a.currentFile === path);
+    const openHere = fileAnns.filter((a) => a.annotation.status === "open").length;
+
+    const fileEl = document.createElement("div");
+    fileEl.className = "wf-file";
+    fileEl.dataset.file = path;
+
+    const collapsed = opts.collapseAll || changed > WF_FILE_COLLAPSE_LINES;
+    const head = document.createElement("div");
+    head.className = "wf-file-head";
+    head.dataset.wfAct = "toggle-file";
+    let adds = 0;
+    let dels = 0;
+    for (const h of f.hunks)
+      for (const l of h.lines) {
+        if (l.kind === "add") adds++;
+        else if (l.kind === "del") dels++;
+      }
+    head.innerHTML =
+      `<span class="wf-file-caret">${collapsed ? "▸" : "▾"}</span>` +
+      `<span class="wf-file-path">${escapeHtml(path)}</span>` +
+      (f.renamedFrom ? `<span class="dim">← ${escapeHtml(f.renamedFrom)}</span>` : "") +
+      `<span class="wf-file-stats"><span class="add">+${adds}</span> <span class="del">−${dels}</span>` +
+      (openHere ? ` · 💬${openHere}` : "") +
+      (collapsed && changed > WF_FILE_COLLAPSE_LINES ? ` · big file (${changed} lines)` : "") +
+      `</span>`;
+    fileEl.appendChild(head);
+
+    const bodyEl = document.createElement("div");
+    bodyEl.className = "wf-file-body" + (collapsed ? " hidden" : "");
+    if (!collapsed) wfFillFileBody(bodyEl, f, fileAnns, opts);
+    else bodyEl.dataset.lazy = "1";
+    fileEl.appendChild(bodyEl);
+    container.appendChild(fileEl);
+  }
+  wfRenderOrphans(container, files, anchored, opts);
+}
+
+/// Fill a file's hunks (lazily for collapsed big files).
+function wfFillFileBody(bodyEl, f, fileAnns, opts) {
+  const frag = document.createDocumentFragment();
+  const path = diffFilePath(f);
+  for (const h of f.hunks) {
+    const hunkEl = document.createElement("div");
+    hunkEl.className = "wf-hunk";
+    const hh = document.createElement("div");
+    hh.className = "wf-hunk-head";
+    hh.textContent = h.header;
+    hunkEl.appendChild(hh);
+    for (const l of h.lines) {
+      const side = l.kind === "del" ? "old" : "new";
+      const lineNo = side === "old" ? l.oldNo : l.newNo;
+      const row = document.createElement("div");
+      row.className = `wf-line ${l.kind}`;
+      row.dataset.file = path;
+      row.dataset.side = side;
+      row.dataset.line = String(lineNo ?? "");
+      row.innerHTML =
+        `<span class="wf-gut">${l.oldNo ?? ""}</span>` +
+        `<span class="wf-gut">${l.newNo ?? ""}</span>` +
+        `<span class="wf-plus" data-wf-act="compose" title="Comment on this line">+</span>` +
+        `<span class="wf-text">${escapeHtml(l.text)}</span>`;
+      hunkEl.appendChild(row);
+      // Threads anchored to this exact line render right under it.
+      for (const a of fileAnns) {
+        if (a.orphaned || a.currentLine !== lineNo) continue;
+        if ((a.annotation.side === "old" ? "old" : "new") !== side) continue;
+        hunkEl.appendChild(wfBuildThread(a, opts));
+      }
+    }
+    frag.appendChild(hunkEl);
+  }
+  bodyEl.appendChild(frag);
+}
+
+/// Annotations whose anchor no longer resolves — never dropped, rendered in
+/// a tray at the end of the diff with their stored context.
+function wfRenderOrphans(container, files, anchored, opts) {
+  const orphans = anchored.filter((a) => a.orphaned);
+  if (!orphans.length) return;
+  const tray = document.createElement("div");
+  tray.className = "wf-orphans";
+  tray.innerHTML = `<div class="wf-orphans-head">💬 ${orphans.length} comment${
+    orphans.length > 1 ? "s" : ""
+  } no longer anchored to the current diff</div>`;
+  for (const a of orphans) {
+    const wrap = document.createElement("div");
+    wrap.className = "wf-orphan";
+    wrap.innerHTML = `<div class="wf-orphan-ctx">${escapeHtml(a.annotation.file)}:${
+      a.annotation.line
+    } — <code>${escapeHtml(a.annotation.lineContent || "")}</code></div>`;
+    wrap.appendChild(wfBuildThread(a, opts));
+    tray.appendChild(wrap);
+  }
+  container.appendChild(tray);
+}
+
+/// Thread rendering + composer land in the next commit; the read-only view
+/// shows existing comments inline.
+function wfBuildThread(a, opts) {
+  const ann = a.annotation;
+  const t = document.createElement("div");
+  t.className = `wf-thread ${ann.status}`;
+  t.dataset.annId = ann.id;
+  const moved =
+    !a.orphaned && a.currentLine !== null && a.currentLine !== ann.line
+      ? `<span class="dim" title="re-anchored by content">moved from L${ann.line}</span>`
+      : "";
+  t.innerHTML =
+    `<div class="wf-thread-head"><span class="wf-ann-state ${ann.status}">${escapeHtml(
+      ann.status
+    )}</span><span class="wf-ann-author">${escapeHtml(ann.author || "user")}</span>` +
+    `<span class="dim">it.${ann.iteration || 1}</span>${moved}</div>`;
+  const bodyEl = document.createElement("div");
+  bodyEl.className = "wf-thread-body wf-md";
+  renderMarkdown(bodyEl, ann.body || "");
+  t.appendChild(bodyEl);
+  for (const r of ann.replies || []) {
+    const rep = document.createElement("div");
+    rep.className = "wf-reply";
+    const repBody = document.createElement("span");
+    repBody.className = "wf-md";
+    renderMarkdown(repBody, r.body || "");
+    rep.innerHTML = `<span class="wf-ann-author">${escapeHtml(r.author || "")}</span>`;
+    rep.appendChild(repBody);
+    t.appendChild(rep);
+  }
+  return t;
+}
+
+/// Delegated click handler for the whole diff container.
+function wfDiffClick(container, ev, opts) {
+  const act = ev.target.closest("[data-wf-act]");
+  if (!act) return;
+  if (act.dataset.wfAct === "toggle-file") {
+    const fileEl = act.closest(".wf-file");
+    const bodyEl = fileEl.querySelector(".wf-file-body");
+    const caret = act.querySelector(".wf-file-caret");
+    const hidden = bodyEl.classList.toggle("hidden");
+    caret.textContent = hidden ? "▸" : "▾";
+    if (!hidden && bodyEl.dataset.lazy) {
+      delete bodyEl.dataset.lazy;
+      // Lazy-fill big files on first expand.
+      const path = fileEl.dataset.file;
+      const f = opts._files?.find((x) => diffFilePath(x) === path);
+      if (f) wfFillFileBody(bodyEl, f, (opts._anchored || []).filter((a) => a.currentFile === path), opts);
+    }
+    return;
+  }
 }
 
 // ── New session modal ───────────────────────────────────────────
