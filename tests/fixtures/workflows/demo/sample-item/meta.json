@@ -1,0 +1,17 @@
+{
+  "title": "Sample auth refactor",
+  "status": "diff-review",
+  "repoPath": "/tmp/fake-repo",
+  "branch": "feat/sample-auth",
+  "iteration": 2,
+  "createdAt": 1750000000000,
+  "updatedAt": 1750000100000,
+  "pr": {
+    "url": "https://github.com/acme/fake/pull/12",
+    "number": 12,
+    "draft": true,
+    "state": "OPEN",
+    "futurePrField": "kept"
+  },
+  "someFutureField": {"nested": true}
+}

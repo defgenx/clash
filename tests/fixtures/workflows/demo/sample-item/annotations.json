@@ -1,0 +1,29 @@
+{
+  "annotations": [
+    {
+      "id": "a-open-1",
+      "file": "src/auth.rs",
+      "side": "new",
+      "line": 42,
+      "hunkHeader": "@@ -40,6 +40,8 @@ fn login()",
+      "lineContent": "    let token = renew(token)?;",
+      "lineContentHash": "0000000000000000",
+      "body": "handle the expired-token branch",
+      "status": "open",
+      "author": "user",
+      "iteration": 2
+    },
+    {
+      "id": "a-done-1",
+      "file": "src/auth.rs",
+      "side": "new",
+      "line": 7,
+      "body": "rename this helper",
+      "status": "addressed",
+      "author": "user",
+      "iteration": 1,
+      "replies": [{"author": "agent", "body": "renamed to issue_token", "createdAt": 1750000050000}],
+      "futureAnnField": 1
+    }
+  ]
+}

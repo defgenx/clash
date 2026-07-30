@@ -25,6 +25,12 @@ impl TestDataDir {
             copy_dir_recursive(&tasks_src, &temp.path().join("tasks"));
         }
 
+        // Copy workflow items into FsBackend's default workflows root.
+        let workflows_src = fixtures.join("workflows");
+        if workflows_src.exists() {
+            copy_dir_recursive(&workflows_src, &temp.path().join("clash/workflows"));
+        }
+
         Self {
             path: temp.path().to_path_buf(),
             _temp: temp,

@@ -1,0 +1,6 @@
+diff --git a/src/auth.rs b/src/auth.rs
+--- a/src/auth.rs
++++ b/src/auth.rs
+@@ -5,3 +5,4 @@
+ fn helper() {}
++fn issue_token() {}
