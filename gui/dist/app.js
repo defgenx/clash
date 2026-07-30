@@ -3542,9 +3542,187 @@ function openWorkflowBoardTab() {
   flashToast("Workflow board — next up");
 }
 
-/// Item detail view — fleshed out with sub-views in the next commits.
+// Per-tab UI state (active sub-view, viewed iteration) — survives rebuilds
+// triggered by `workflows-changed` so a refresh never yanks you elsewhere.
+const wfTabState = new Map(); // "project/slug" -> { subView, iteration }
+
+/// Item detail view: header strip + sub-view bar + content + action bar.
 async function buildWorkflowView(el, project, slug) {
-  el.innerHTML = "<h4>WORKFLOW</h4><p class='hint'>loading…</p>";
+  const key = wfKey(project, slug);
+  const ts = wfTabState.get(key) || { subView: "plan", iteration: null };
+  wfTabState.set(key, ts);
+  el.classList.add("wf-view");
+  el.innerHTML = "<p class='hint'>loading…</p>";
+
+  let item = wfItem(project, slug);
+  if (!item) {
+    try {
+      state.workflows = await invoke("list_workflow_items");
+    } catch (e) {
+      console.error("list_workflow_items failed:", e);
+    }
+    item = wfItem(project, slug);
+  }
+  if (!item) {
+    el.innerHTML = "<h4>WORKFLOW</h4><p class='hint'>item not found (deleted?)</p>";
+    return;
+  }
+
+  el.innerHTML = "";
+  const info = wfStatusInfo(item.meta.status);
+
+  // ── Header strip ──
+  const head = document.createElement("div");
+  head.className = "wf-head";
+  const warn =
+    item.agentAlive === false
+      ? ` · <span class="wf-warn">⚠ agent gone</span>`
+      : "";
+  head.innerHTML =
+    `<span class="wf-title">${escapeHtml(item.meta.title || item.slug)}</span>` +
+    `<span class="wf-chip ${info.cls}">${info.icon} ${info.label}</span>` +
+    `<span class="wf-meta">${escapeHtml(item.project)} · it.${item.meta.iteration || 1}${warn}</span>` +
+    `<span class="spacer"></span>`;
+  if (item.meta.pr && item.meta.pr.url) {
+    const prBtn = document.createElement("button");
+    prBtn.className = "icon-btn wide";
+    prBtn.innerHTML = `${svgIcon("pr", 12)}<span>#${item.meta.pr.number || "PR"}${item.meta.pr.draft ? " draft" : ""}</span>`;
+    prBtn.title = item.meta.pr.url;
+    prBtn.onclick = () => openWorkflowPr(item);
+    head.appendChild(prBtn);
+  }
+  el.appendChild(head);
+
+  // ── Sub-view bar ──
+  const bar = document.createElement("div");
+  bar.className = "wf-subbar";
+  const subViews = [
+    ["plan", `Plan${item.hasPlan ? "" : " ·empty"}`],
+    ["review", `Review${item.hasReview ? "" : " ·empty"}`],
+    ["diff", item.openAnnotations > 0 ? `Diff 💬${item.openAnnotations}` : "Diff"],
+    ["history", `History${item.historyIterations.length ? ` (${item.historyIterations.length})` : ""}`],
+  ];
+  for (const [id, label] of subViews) {
+    const b = document.createElement("button");
+    b.className = "wf-subtab" + (ts.subView === id ? " active" : "");
+    b.textContent = label;
+    b.onclick = () => {
+      ts.subView = id;
+      if (id !== "diff") ts.iteration = null;
+      buildWorkflowView(el, project, slug);
+    };
+    bar.appendChild(b);
+  }
+  el.appendChild(bar);
+
+  // ── Content ──
+  const body = document.createElement("div");
+  body.className = "wf-body";
+  el.appendChild(body);
+
+  // ── Action bar ──
+  const actions = document.createElement("div");
+  actions.className = "wf-actions";
+  el.appendChild(actions);
+  renderWfActions(actions, el, item);
+
+  renderWfSubView(body, el, item, ts);
+}
+
+/// Open the item's PR in the embedded browser (split pane), falling back to
+/// the system browser when the embedded panel is unavailable.
+function openWorkflowPr(item) {
+  const url = item.meta.pr && item.meta.pr.url;
+  if (!url) return;
+  if (typeof openBrowserTab === "function") openBrowserTab(url, "split");
+  else invoke("open_external", { url });
+}
+
+/// Action bar — per-status primary/secondary actions (fleshed out next).
+function renderWfActions(bar, root, item) {
+  bar.innerHTML = "";
+}
+
+async function renderWfSubView(body, root, item, ts) {
+  const { project, slug } = item;
+  if (ts.subView === "plan" || ts.subView === "review") {
+    const doc = ts.subView === "plan" ? "plan.md" : "review.md";
+    body.innerHTML = "<p class='hint'>loading…</p>";
+    let text = "";
+    try {
+      text = await invoke("get_workflow_doc", { project, slug, doc });
+    } catch (e) {
+      body.innerHTML = `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
+      return;
+    }
+    body.innerHTML = "";
+    const tools = document.createElement("div");
+    tools.className = "wf-doc-tools";
+    const edit = document.createElement("button");
+    edit.className = "icon-btn wide";
+    edit.innerHTML = `${svgIcon("pencil", 12)}<span>Edit ${doc}</span>`;
+    edit.onclick = (ev) =>
+      openScratchInEditor(
+        { path: `${item.path}/${doc}`, title: `${slug} ${doc}` },
+        ev.clientX,
+        ev.clientY
+      );
+    tools.appendChild(edit);
+    body.appendChild(tools);
+    const md = document.createElement("div");
+    md.className = "wf-md";
+    if (text.trim()) renderMarkdown(md, text);
+    else
+      md.innerHTML = `<p class="hint">${
+        ts.subView === "plan"
+          ? "no plan yet — Start planning launches an agent that writes it"
+          : "no review notes yet — they accumulate when you request changes"
+      }</p>`;
+    body.appendChild(md);
+    return;
+  }
+
+  if (ts.subView === "history") {
+    body.innerHTML = "<p class='hint'>loading…</p>";
+    let iters = [];
+    try {
+      iters = await invoke("list_workflow_history", { project, slug });
+    } catch (e) {
+      body.innerHTML = `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
+      return;
+    }
+    body.innerHTML = "";
+    if (!iters.length) {
+      body.innerHTML =
+        "<p class='hint'>no snapshots yet — each Request-changes freezes the diff + annotations of the iteration</p>";
+      return;
+    }
+    for (const it of [...iters].reverse()) {
+      const row = document.createElement("div");
+      row.className = "row-item";
+      const current = item.meta.iteration || 1;
+      row.innerHTML =
+        `<span class="team-icon">${svgIcon("file", 12)}</span>` +
+        `<span>Iteration ${it}</span>` +
+        `<span class="dim">${it === current ? "current" : `superseded by it.${it + 1}`}</span>` +
+        `<span class="spacer"></span><span class="dim">view diff →</span>`;
+      row.onclick = () => {
+        ts.subView = "diff";
+        ts.iteration = it;
+        buildWorkflowView(root, project, slug);
+      };
+      body.appendChild(row);
+    }
+    return;
+  }
+
+  // diff sub-view
+  renderWfDiffView(body, root, item, ts);
+}
+
+/// Diff sub-view — read-only render lands in the next commit.
+async function renderWfDiffView(body, root, item, ts) {
+  body.innerHTML = "<p class='hint'>diff view — next commit</p>";
 }
 
 // ── New session modal ───────────────────────────────────────────
