@@ -1454,3 +1454,32 @@ html, body, #app {
   padding: 5px 16px;
 }
 .wf-stale-banner a { color: var(--blue); }
+
+/* Workflow board (kanban) */
+.wf-board-wrap { overflow-x: auto; }
+.wf-board { display: flex; gap: 10px; align-items: flex-start; min-height: 100%; }
+.wf-col {
+  flex: 0 0 220px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}
+.wf-col-head {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: var(--fg-dim);
+  padding: 2px 4px 8px;
+}
+.wf-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+.wf-card:hover { border-color: var(--accent); }
+.wf-card-title { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+.wf-card-sub { font-size: 11px; color: var(--fg-dim); display: flex; align-items: center; gap: 4px; }

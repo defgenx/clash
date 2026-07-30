@@ -3537,9 +3537,61 @@ function openWorkflowTab(item, opts = {}) {
   );
 }
 
-/// Placeholder until the board tab lands.
+// Board columns: display name → statuses bucketed into it.
+const WF_BOARD_COLUMNS = [
+  ["DRAFT / PLANNING", ["draft", "planning"]],
+  ["PLAN REVIEW", ["plan-review"]],
+  ["CHANGES / IMPL.", ["changes-requested", "implementing"]],
+  ["DIFF REVIEW", ["diff-review"]],
+  ["PR", ["pr-draft", "pr-ready"]],
+  ["DONE", ["done", "abandoned"]],
+];
+
+/// Kanban-style board over all workflow items (singleton tab).
 function openWorkflowBoardTab() {
-  flashToast("Workflow board — next up");
+  openViewTab("view:wfboard", "⧉ Workflows", async (el) => {
+    el.classList.add("wf-board-wrap");
+    el.innerHTML = "<p class='hint'>loading…</p>";
+    if (!state.workflows.length) await refreshWorkflows();
+    renderWorkflowBoard(el);
+  });
+}
+
+function renderWorkflowBoard(el) {
+  el.innerHTML = "";
+  const board = document.createElement("div");
+  board.className = "wf-board";
+  for (const [name, statuses] of WF_BOARD_COLUMNS) {
+    const items = state.workflows.filter((w) => statuses.includes(w.meta.status));
+    const col = document.createElement("div");
+    col.className = "wf-col";
+    col.innerHTML = `<div class="wf-col-head">${name} <span class="dim">${items.length}</span></div>`;
+    for (const item of items) col.appendChild(buildWorkflowCard(item));
+    board.appendChild(col);
+  }
+  el.appendChild(board);
+}
+
+function buildWorkflowCard(item) {
+  const info = wfStatusInfo(item.meta.status);
+  const card = document.createElement("div");
+  card.className = "wf-card";
+  const bits = [`it.${item.meta.iteration || 1}`];
+  if (item.openAnnotations > 0) bits.push(`💬${item.openAnnotations}`);
+  if (item.meta.pr && item.meta.pr.url) bits.push(item.meta.pr.draft ? "PR·draft" : "PR");
+  if (item.agentAlive === false) bits.push("⚠ agent gone");
+  card.innerHTML =
+    `<div class="wf-card-title">${escapeHtml(item.meta.title || item.slug)}</div>` +
+    `<div class="wf-card-sub"><span class="wf-dot ${info.cls}">${info.icon}</span> ${escapeHtml(
+      item.project
+    )} · ${bits.join(" · ")}</div>`;
+  card.onclick = () => openWorkflowTab(item);
+  card.oncontextmenu = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    workflowContextMenu(item, ev.clientX, ev.clientY);
+  };
+  return card;
 }
 
 // Per-tab UI state (active sub-view, viewed iteration) — survives rebuilds
@@ -4994,6 +5046,8 @@ listen("workflows-changed", async () => {
 /// Skipped while a comment composer has focus — a rebuild would eat the
 /// user's draft; a banner offers a manual refresh instead.
 function rebuildOpenWorkflowTabs() {
+  const board = state.open.get("view:wfboard");
+  if (board) renderWorkflowBoard(board.el);
   for (const [key, entry] of state.open) {
     if (!key.startsWith("view:workflow:")) continue;
     const rest = key.slice("view:workflow:".length);
