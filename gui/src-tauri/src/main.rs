@@ -1324,21 +1324,16 @@ fn list_presets(project_dir: String) -> Vec<clash::domain::entities::Preset> {
     )
 }
 
-/// Create a git worktree and spawn a new session in it — the TUI's
-/// worktree-spawn pipeline (worktree add -b <name> + register + daemon spawn).
-#[tauri::command]
-async fn create_worktree_session(
-    state: State<'_, GuiState>,
-    name: String,
-    project_path: String,
-    cols: u16,
-    rows: u16,
-) -> Result<String, String> {
-    let name = name.trim().to_string();
-    if name.is_empty() {
-        return Err("Name is required".to_string());
-    }
-    let project_dir = std::path::Path::new(&project_path);
+/// Create a git worktree for `project_path` named `name`:
+/// `<parent>/<project>-worktrees/<name>`, new branch `name` forked from the
+/// project's current branch. Returns `(worktree_path, source_branch)`.
+/// Extracted from `create_worktree_session` (behavior-preserving); also used
+/// by the workflow agent launch.
+pub(crate) async fn create_worktree(
+    project_path: &str,
+    name: &str,
+) -> Result<(String, String), String> {
+    let project_dir = std::path::Path::new(project_path);
     if !project_dir.is_dir() {
         return Err(format!("Not a directory: {}", project_path));
     }
@@ -1347,7 +1342,7 @@ async fn create_worktree_session(
     let git_branch = {
         let out = tokio::process::Command::new("git")
             .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(&project_path)
+            .current_dir(project_path)
             .output()
             .await
             .map_err(|e| format!("git failed: {}", e))?;
@@ -1362,17 +1357,17 @@ async fn create_worktree_session(
         .parent()
         .unwrap_or(project_dir)
         .join(format!("{}-worktrees", project_name));
-    let worktree_path = worktree_base.join(&name);
+    let worktree_path = worktree_base.join(name);
     std::fs::create_dir_all(&worktree_base).map_err(|e| e.to_string())?;
 
     let wt_str = worktree_path.to_string_lossy().to_string();
-    let mut git_args = vec!["worktree", "add", &wt_str, "-b", &name];
+    let mut git_args = vec!["worktree", "add", &wt_str, "-b", name];
     if !git_branch.is_empty() {
         git_args.push(&git_branch);
     }
     let out = tokio::process::Command::new("git")
         .args(&git_args)
-        .current_dir(&project_path)
+        .current_dir(project_path)
         .output()
         .await
         .map_err(|e| format!("git worktree failed: {}", e))?;
@@ -1382,6 +1377,24 @@ async fn create_worktree_session(
             String::from_utf8_lossy(&out.stderr)
         ));
     }
+    Ok((wt_str, git_branch))
+}
+
+/// Create a git worktree and spawn a new session in it — the TUI's
+/// worktree-spawn pipeline (worktree add -b <name> + register + daemon spawn).
+#[tauri::command]
+async fn create_worktree_session(
+    state: State<'_, GuiState>,
+    name: String,
+    project_path: String,
+    cols: u16,
+    rows: u16,
+) -> Result<String, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("Name is required".to_string());
+    }
+    let (wt_str, git_branch) = create_worktree(&project_path, &name).await?;
 
     let session_id = uuid::Uuid::now_v7().to_string();
     clash::infrastructure::hooks::registry::register(
@@ -2658,7 +2671,8 @@ fn main() {
             workflows::set_workflow_annotation_status,
             workflows::delete_workflow_annotation,
             workflows::workflow_request_changes,
-            workflows::delete_workflow_item
+            workflows::delete_workflow_item,
+            workflows::start_workflow_agent
         ])
         .run(tauri::generate_context!())
         .expect("error while running clash GUI");

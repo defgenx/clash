@@ -571,3 +571,108 @@ pub(crate) fn delete_workflow_item(
         .delete_workflow_item(&project, &slug)
         .map_err(e2s)
 }
+
+// ── Agent launch ────────────────────────────────────────────────────────
+
+/// Spawn a Claude Code session working on this item, in a dedicated worktree
+/// (created on first launch, persisted in meta). The kickoff prompt routes
+/// the session to the `clash-workflow` skill with the item directory and the
+/// requested phase (`plan` | `revise` | `implement`). Reuses the exact
+/// session machinery of `create_new_session`/`create_worktree_session`:
+/// registry + name + status files, then a daemon spawn with `--session-id`
+/// and the prompt as the positional initial argument.
+#[tauri::command]
+pub(crate) async fn start_workflow_agent(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    phase: String,
+    cols: u16,
+    rows: u16,
+) -> Result<String, String> {
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    if meta.repo_path.trim().is_empty() {
+        return Err("This item has no repository path — set repoPath in meta.json".to_string());
+    }
+
+    // First launch: isolate the item in its own worktree + branch (= slug).
+    if meta.worktree.as_deref().unwrap_or("").is_empty() {
+        let (wt, _source_branch) = crate::create_worktree(&meta.repo_path, &slug).await?;
+        meta.worktree = Some(wt);
+        if meta.branch.is_empty() {
+            meta.branch = slug.clone();
+        }
+    }
+    let cwd = meta.worktree.clone().unwrap_or_default();
+
+    let session_id = uuid::Uuid::now_v7().to_string();
+    let name = format!("wf-{}", slug);
+    clash::infrastructure::hooks::registry::register(
+        &session_id,
+        &name,
+        &cwd,
+        Some(meta.branch.as_str()),
+    );
+    clash::infrastructure::hooks::save_session_name(
+        state.backend.base_dir(),
+        &session_id,
+        &name,
+        Some(&cwd),
+    );
+    clash::infrastructure::hooks::write_session_status(
+        state.backend.base_dir(),
+        &session_id,
+        "starting",
+    );
+
+    let item_dir = state
+        .backend
+        .workflows_dir()
+        .join(&project)
+        .join(&slug)
+        .to_string_lossy()
+        .into_owned();
+    let prompt = clash::application::workflow::build_agent_prompt(&item_dir, &phase);
+
+    {
+        let mut control = state.control.lock().await;
+        crate::ensure_connected(&mut control).await;
+        control
+            .create_session(
+                &session_id,
+                &state.claude_bin,
+                &["--session-id".to_string(), session_id.clone(), prompt],
+                Some(&cwd),
+                Some(name),
+                cols,
+                rows,
+                std::collections::HashMap::new(),
+                true, // TUI: Claude sets its own termios
+            )
+            .await
+            .map_err(|e| format!("Failed to spawn session: {}", e))?;
+    }
+
+    // Reflect the launch in meta: session id + phase-appropriate status
+    // (invalid transitions — e.g. relaunching a dead agent mid-phase — keep
+    // the current status).
+    meta.session_id = Some(session_id.clone());
+    let target = if phase == "plan" {
+        WorkflowStatus::Planning
+    } else {
+        WorkflowStatus::Implementing
+    };
+    if meta.status.can_transition_to(target) {
+        meta.status = target;
+    }
+    state
+        .backend
+        .write_workflow_meta(&project, &slug, &meta)
+        .map_err(e2s)?;
+    seed_local(&state, &project, &slug, meta.status);
+
+    Ok(session_id)
+}
