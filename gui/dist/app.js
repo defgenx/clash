@@ -3769,6 +3769,17 @@ async function renderWfDiffView(body, root, item, ts) {
   head.appendChild(count);
   body.appendChild(head);
 
+  // Phase lock (review A2): the agent owns annotations.json while it works;
+  // editing re-opens when the item returns to a review state. The backend
+  // enforces the same rule — this banner just explains it.
+  const locked = wfAnnotationsLocked(item);
+  if (locked) {
+    const banner = document.createElement("div");
+    banner.className = "wf-lock-banner";
+    banner.textContent = "agent is working — comments are locked until it finishes";
+    body.appendChild(banner);
+  }
+
   const files = parseUnifiedDiff(text);
   if (!files.length) {
     body.appendChild(Object.assign(document.createElement("p"), {
@@ -3779,14 +3790,26 @@ async function renderWfDiffView(body, root, item, ts) {
   }
   const totalLines = files.reduce((n, f) => n + diffFileChangedLines(f), 0);
   const container = document.createElement("div");
-  container.className = "wf-diff";
+  container.className = "wf-diff" + (locked ? " locked" : "");
   body.appendChild(container);
   buildWorkflowDiff(container, files, anchored, {
     item,
     ts,
     root,
+    locked,
     collapseAll: totalLines > WF_DIFF_COLLAPSE_TOTAL,
   });
+
+  // Restore the scroll position a rebuild-after-mutation saved.
+  if (ts.scrollTop) {
+    body.scrollTop = ts.scrollTop;
+    ts.scrollTop = 0;
+  }
+}
+
+/// The agent owns annotations.json in these phases (review A2).
+function wfAnnotationsLocked(item) {
+  return item.meta.status === "changes-requested" || item.meta.status === "implementing";
 }
 
 /// Build the diff DOM: .wf-file > head + hunks > numbered lines. One
@@ -3859,6 +3882,7 @@ function wfFillFileBody(bodyEl, f, fileAnns, opts) {
       row.dataset.file = path;
       row.dataset.side = side;
       row.dataset.line = String(lineNo ?? "");
+      row.dataset.hunk = h.header;
       row.innerHTML =
         `<span class="wf-gut">${l.oldNo ?? ""}</span>` +
         `<span class="wf-gut">${l.newNo ?? ""}</span>` +
@@ -3929,6 +3953,22 @@ function wfBuildThread(a, opts) {
     rep.appendChild(repBody);
     t.appendChild(rep);
   }
+  if (!opts.locked) {
+    const actions = document.createElement("div");
+    actions.className = "wf-thread-actions";
+    const btn = (act, label, danger = false) =>
+      `<button data-wf-act="${act}" data-ann-id="${escapeHtml(ann.id)}"${
+        danger ? ' class="danger"' : ""
+      }>${label}</button>`;
+    actions.innerHTML =
+      btn("ann-reply", "Reply") +
+      btn("ann-edit", "Edit") +
+      (ann.status === "open"
+        ? btn("ann-resolve", "Resolve ✓") + btn("ann-wontfix", "Wontfix")
+        : btn("ann-reopen", "Reopen")) +
+      btn("ann-delete", "Delete", true);
+    t.appendChild(actions);
+  }
   return t;
 }
 
@@ -3936,7 +3976,8 @@ function wfBuildThread(a, opts) {
 function wfDiffClick(container, ev, opts) {
   const act = ev.target.closest("[data-wf-act]");
   if (!act) return;
-  if (act.dataset.wfAct === "toggle-file") {
+  const kind = act.dataset.wfAct;
+  if (kind === "toggle-file") {
     const fileEl = act.closest(".wf-file");
     const bodyEl = fileEl.querySelector(".wf-file-body");
     const caret = act.querySelector(".wf-file-caret");
@@ -3950,6 +3991,171 @@ function wfDiffClick(container, ev, opts) {
       if (f) wfFillFileBody(bodyEl, f, (opts._anchored || []).filter((a) => a.currentFile === path), opts);
     }
     return;
+  }
+  if (opts.locked) return;
+  if (kind === "compose") {
+    wfOpenComposer(container, act.closest(".wf-line"), opts);
+    return;
+  }
+  if (kind.startsWith("ann-")) {
+    const id = act.dataset.annId;
+    const a = (opts._anchored || []).find((x) => x.annotation.id === id);
+    if (a) wfThreadAction(container, kind, a, act.closest(".wf-thread"), opts);
+  }
+}
+
+/// Rebuild the item tab after an annotation mutation, keeping the diff
+/// sub-view scroll position (composer focus is gone by then by design).
+function wfReloadAfterMutation(opts) {
+  const body = opts.root.querySelector(".wf-body");
+  if (body) opts.ts.scrollTop = body.scrollTop;
+  refreshWorkflows();
+  buildWorkflowView(opts.root, opts.item.project, opts.item.slug);
+}
+
+/// A single composer at a time, inserted right under the clicked line (or a
+/// thread for replies/edits). `submit(text)` performs the save.
+function wfComposer({ placeholder, initial = "", okLabel = "Comment", onSubmit }) {
+  document.querySelectorAll(".wf-composer").forEach((el) => el.remove());
+  const box = document.createElement("div");
+  box.className = "wf-composer";
+  const ta = document.createElement("textarea");
+  ta.placeholder = placeholder;
+  ta.value = initial;
+  ta.rows = 3;
+  const actions = document.createElement("div");
+  actions.className = "wf-composer-actions";
+  const ok = document.createElement("button");
+  ok.className = "primary";
+  ok.textContent = okLabel;
+  const cancel = document.createElement("button");
+  cancel.textContent = "Cancel";
+  cancel.onclick = () => box.remove();
+  ok.onclick = async () => {
+    const text = ta.value.trim();
+    if (!text) return;
+    ok.disabled = true;
+    try {
+      await onSubmit(text);
+    } catch (e) {
+      ok.disabled = false;
+      uiAlert(`Save failed: ${e}`);
+      return;
+    }
+    box.remove();
+  };
+  ta.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) ok.click();
+    else if (e.key === "Escape") box.remove();
+  });
+  actions.append(cancel, ok);
+  box.append(ta, actions);
+  setTimeout(() => ta.focus(), 0);
+  return box;
+}
+
+/// New line-level comment on the clicked diff row.
+function wfOpenComposer(container, row, opts) {
+  if (!row) return;
+  const { item } = opts;
+  const box = wfComposer({
+    placeholder: `Comment on ${row.dataset.file}:${row.dataset.line}…`,
+    onSubmit: async (text) => {
+      await invoke("save_workflow_annotation", {
+        project: item.project,
+        slug: item.slug,
+        annotation: {
+          id: "",
+          file: row.dataset.file,
+          side: row.dataset.side,
+          line: parseInt(row.dataset.line || "0", 10),
+          hunkHeader: row.dataset.hunk || "",
+          lineContent: row.querySelector(".wf-text")?.textContent ?? "",
+          lineContentHash: "", // backend computes — single hash impl in Rust
+          body: text,
+          status: "open",
+          author: "user",
+          iteration: opts.ts.iteration ?? item.meta.iteration ?? 1,
+          createdAt: 0,
+          updatedAt: 0,
+          replies: [],
+        },
+      });
+      wfReloadAfterMutation(opts);
+    },
+  });
+  row.after(box);
+}
+
+/// Thread buttons: reply / edit / resolve / wontfix / reopen / delete.
+async function wfThreadAction(container, kind, anchoredAnn, threadEl, opts) {
+  const { item } = opts;
+  const ann = anchoredAnn.annotation;
+  const setStatus = async (status) => {
+    await invoke("set_workflow_annotation_status", {
+      project: item.project,
+      slug: item.slug,
+      id: ann.id,
+      status,
+    });
+    wfReloadAfterMutation(opts);
+  };
+  switch (kind) {
+    case "ann-resolve":
+      return setStatus("addressed").catch((e) => uiAlert(`Update failed: ${e}`));
+    case "ann-wontfix":
+      return setStatus("wontfix").catch((e) => uiAlert(`Update failed: ${e}`));
+    case "ann-reopen":
+      return setStatus("open").catch((e) => uiAlert(`Update failed: ${e}`));
+    case "ann-delete": {
+      if (!(await uiConfirm("Delete this comment thread?", "Delete"))) return;
+      try {
+        await invoke("delete_workflow_annotation", {
+          project: item.project,
+          slug: item.slug,
+          id: ann.id,
+        });
+        wfReloadAfterMutation(opts);
+      } catch (e) {
+        uiAlert(`Delete failed: ${e}`);
+      }
+      return;
+    }
+    case "ann-edit": {
+      const box = wfComposer({
+        placeholder: "Edit comment…",
+        initial: ann.body || "",
+        okLabel: "Save",
+        onSubmit: async (text) => {
+          await invoke("save_workflow_annotation", {
+            project: item.project,
+            slug: item.slug,
+            annotation: { ...ann, body: text },
+          });
+          wfReloadAfterMutation(opts);
+        },
+      });
+      threadEl.after(box);
+      return;
+    }
+    case "ann-reply": {
+      const box = wfComposer({
+        placeholder: "Reply…",
+        okLabel: "Reply",
+        onSubmit: async (text) => {
+          const replies = [...(ann.replies || []), { author: "user", body: text, createdAt: Date.now() }];
+          await invoke("save_workflow_annotation", {
+            project: item.project,
+            slug: item.slug,
+            annotation: { ...ann, replies },
+          });
+          wfReloadAfterMutation(opts);
+        },
+      });
+      threadEl.after(box);
+      return;
+    }
   }
 }
 

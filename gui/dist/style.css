@@ -1100,6 +1100,60 @@ html, body, #app {
 .wf-orphan-ctx code { font-family: var(--mono, "SF Mono", Menlo, monospace); }
 .wf-orphan .wf-thread { margin-left: 0; }
 
+/* Annotation composer + thread actions + phase lock */
+.wf-lock-banner {
+  background: color-mix(in srgb, var(--st-waiting) 12%, transparent);
+  border: 1px solid var(--st-waiting);
+  border-radius: 6px;
+  color: var(--st-waiting);
+  font-size: 12px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+}
+.wf-diff.locked .wf-plus { display: none; }
+.wf-composer {
+  margin: 4px 8px 8px 60px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--bg-sidebar);
+  padding: 8px;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  white-space: normal;
+}
+.wf-composer textarea {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 6px 8px;
+  resize: vertical;
+}
+.wf-composer-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+.wf-composer-actions button {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.wf-composer-actions button.primary { background: var(--accent); border-color: var(--accent); color: #1b1b1d; font-weight: 600; }
+.wf-thread-actions { display: flex; gap: 6px; margin-top: 6px; }
+.wf-thread-actions button {
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 11px;
+  padding: 1px 4px;
+  cursor: pointer;
+}
+.wf-thread-actions button:hover { color: var(--fg); text-decoration: underline; }
+.wf-thread-actions button.danger:hover { color: var(--red); }
+
 /* Rendered markdown (workflow plan/review) */
 .wf-md { font-size: 13px; line-height: 1.55; max-width: 860px; }
 .wf-md h1, .wf-md h2, .wf-md h3 { color: var(--fg); margin: 14px 0 6px; line-height: 1.25; }
