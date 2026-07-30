@@ -1444,3 +1444,13 @@ html, body, #app {
   outline: none;
 }
 .dialog-box input:focus { border-color: var(--accent); }
+
+/* Stale-content banner (rebuild deferred while a composer has focus) */
+.wf-stale-banner {
+  background: color-mix(in srgb, var(--blue) 12%, transparent);
+  border-bottom: 1px solid var(--blue);
+  color: var(--blue);
+  font-size: 12px;
+  padding: 5px 16px;
+}
+.wf-stale-banner a { color: var(--blue); }

@@ -4981,10 +4981,85 @@ $("wf-board-btn").onclick = (e) => {
   e.stopPropagation();
   openWorkflowBoardTab();
 };
-// Backend workflows watcher: keep the list fresh while the section is open.
-listen("workflows-changed", () => {
-  if (state.wfOpen) refreshWorkflows();
+// Backend workflows watcher: refresh the sidebar list and rebuild any open
+// workflow tabs. The rebuild refetches only the active sub-view's data
+// (buildWorkflowView is sub-view-scoped), so an agent write burst never
+// spawns git subprocesses for invisible diffs.
+listen("workflows-changed", async () => {
+  await refreshWorkflows();
+  rebuildOpenWorkflowTabs();
 });
+
+/// Rebuild every open workflow tab in place, preserving sub-view + scroll.
+/// Skipped while a comment composer has focus — a rebuild would eat the
+/// user's draft; a banner offers a manual refresh instead.
+function rebuildOpenWorkflowTabs() {
+  for (const [key, entry] of state.open) {
+    if (!key.startsWith("view:workflow:")) continue;
+    const rest = key.slice("view:workflow:".length);
+    const slash = rest.indexOf("/");
+    if (slash < 0) continue;
+    const project = rest.slice(0, slash);
+    const slug = rest.slice(slash + 1);
+    const el = entry.el;
+    const composer = el.querySelector(".wf-composer");
+    if (composer && composer.contains(document.activeElement)) {
+      if (!el.querySelector(".wf-stale-banner")) {
+        const banner = document.createElement("div");
+        banner.className = "wf-stale-banner";
+        banner.innerHTML = `content changed on disk — <a href="#">refresh</a>`;
+        banner.querySelector("a").onclick = (ev) => {
+          ev.preventDefault();
+          buildWorkflowView(el, project, slug);
+        };
+        el.prepend(banner);
+      }
+      continue;
+    }
+    const body = el.querySelector(".wf-body");
+    const ts = wfTabState.get(wfKey(project, slug));
+    if (body && ts) ts.scrollTop = body.scrollTop;
+    buildWorkflowView(el, project, slug);
+  }
+}
+
+// Decision-needed transitions (agent writes only — clash's own clicks are
+// suppressed backend-side by the AttentionLedger): badge the row unless the
+// item's tab is visible and the window focused; always toast. The native
+// desktop notification fires backend-side with the same suppression rules
+// as sessions.
+listen("workflow-attention", (event) => {
+  const { project, slug, title, status } = event.payload;
+  const key = wfKey(project, slug);
+  const tabVisible =
+    ws().panes.includes(`view:workflow:${key}`) && document.hasFocus();
+  if (!tabVisible) {
+    state.wfUnread.add(key);
+    if (state.wfOpen) renderWorkflows();
+    else updateWfBadge();
+  }
+  flashToast(`${title || slug}: ${wfStatusInfo(status).label} — decision needed`);
+});
+
+// Lazy PR polling: while any pr-draft/pr-ready item is on screen (sidebar
+// section or open tab), refresh its recorded PR state once a minute. The
+// backend throttles to one gh call per 30s per item and only writes meta on
+// actual change, so this never churns the FS watcher.
+setInterval(() => {
+  for (const item of state.workflows) {
+    const st = item.meta.status;
+    if (st !== "pr-draft" && st !== "pr-ready") continue;
+    if (!item.meta.pr || !item.meta.pr.url) continue;
+    const key = wfKey(item.project, item.slug);
+    const visible = state.wfOpen || state.open.has(`view:workflow:${key}`);
+    if (!visible) continue;
+    invoke("refresh_workflow_pr", {
+      project: item.project,
+      slug: item.slug,
+      force: false,
+    }).catch(() => {}); // gh absent → buttons already degrade; polling stays quiet
+  }
+}, 60_000);
 
 // ── Browser tabs (first-class tabs, one child webview each) ──────
 // A browser tab is a regular `state.open` entry living in panes and
