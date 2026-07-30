@@ -3638,9 +3638,266 @@ function openWorkflowPr(item) {
   else invoke("open_external", { url });
 }
 
-/// Action bar — per-status primary/secondary actions (fleshed out next).
+/// Launch (or relaunch) the workflow agent for a phase and open its session
+/// tab split next to the workflow tab.
+async function launchWfAgent(item, phase, root) {
+  try {
+    const sid = await invoke("start_workflow_agent", {
+      project: item.project,
+      slug: item.slug,
+      phase,
+      cols: 120,
+      rows: 40,
+    });
+    await refreshSessions();
+    await openSession(sid, `wf-${item.slug}`);
+    await refreshWorkflows();
+    if (root) buildWorkflowView(root, item.project, item.slug);
+  } catch (e) {
+    uiAlert(`Agent launch failed: ${e}`);
+  }
+}
+
+/// Human status transition + tab/sidebar refresh.
+async function wfTransition(item, root, status, note = null) {
+  try {
+    await invoke("update_workflow_status", {
+      project: item.project,
+      slug: item.slug,
+      status,
+      note,
+    });
+    await refreshWorkflows();
+    buildWorkflowView(root, item.project, item.slug);
+  } catch (e) {
+    uiAlert(`Transition failed: ${e}`);
+  }
+}
+
+/// PR-button degradation: gh missing/unauthenticated disables PR flows with
+/// a setup hint instead of a hard failure.
+function wfGhHint(e) {
+  const msg = String(e);
+  if (msg.startsWith("gh-unavailable:"))
+    return "GitHub CLI (gh) is not installed — `brew install gh`, then retry.";
+  if (msg.startsWith("gh-unauthenticated:"))
+    return "gh is not authenticated — run `gh auth login`, then retry.";
+  return null;
+}
+
+/// Action bar — per-status primary/secondary actions. The Mark-ready confirm
+/// IS the validation act (there is deliberately no separate 'validated'
+/// state).
 function renderWfActions(bar, root, item) {
   bar.innerHTML = "";
+  const st = item.meta.status;
+  const add = (label, cls, fn, title = "") => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    if (cls) b.className = cls;
+    if (title) b.title = title;
+    b.onclick = fn;
+    bar.appendChild(b);
+    return b;
+  };
+  const spacer = () => {
+    const sp = document.createElement("span");
+    sp.className = "spacer";
+    bar.appendChild(sp);
+  };
+  const abandon = () =>
+    add("Abandon", "", async () => {
+      if (!(await uiConfirm(`Abandon "${item.meta.title || item.slug}"? The files stay on disk.`)))
+        return;
+      wfTransition(item, root, "abandoned");
+    });
+
+  const requestChanges = async () => {
+    const hasOpen = item.openAnnotations > 0;
+    const note = await uiPrompt(
+      hasOpen
+        ? `Request changes (${item.openAnnotations} open comment${
+            item.openAnnotations > 1 ? "s" : ""
+          } will be sent) — optional note:`
+        : "Request changes — describe what to change:"
+    );
+    if (note === null) return;
+    if (!hasOpen && !note.trim()) {
+      uiAlert("Add at least one diff comment or a note — the agent needs something to act on.");
+      return;
+    }
+    try {
+      await invoke("workflow_request_changes", {
+        project: item.project,
+        slug: item.slug,
+        note: note.trim() || null,
+      });
+      await refreshWorkflows();
+      buildWorkflowView(root, item.project, item.slug);
+    } catch (e) {
+      uiAlert(`Request changes failed: ${e}`);
+    }
+  };
+
+  switch (st) {
+    case "draft":
+      add("▶ Start planning", "primary", () => launchWfAgent(item, "plan", root));
+      spacer();
+      abandon();
+      break;
+
+    case "planning":
+    case "implementing":
+      if (item.agentAlive === false) {
+        add("⚠ Relaunch agent", "primary", () =>
+          launchWfAgent(item, st === "planning" ? "plan" : "revise", root)
+        , "The recorded agent session is gone");
+      } else if (item.meta.sessionId) {
+        add("Open agent session", "primary", () => openSession(item.meta.sessionId));
+      }
+      spacer();
+      abandon();
+      break;
+
+    case "plan-review":
+      add("✓ Approve plan", "primary", async () => {
+        if (!(await uiConfirm("Approve this plan and move to implementation?", "Approve"))) return;
+        await wfTransition(item, root, "implementing");
+        const go = await uiChoice({
+          message: "Launch the implementation agent now?",
+          choices: [{ label: "Launch agent", value: "go", primary: true }],
+        });
+        const fresh = wfItem(item.project, item.slug) || item;
+        if (go === "go") launchWfAgent(fresh, "implement", root);
+      });
+      add("✎ Request changes", "", async () => {
+        const note = await uiPrompt("What should change in the plan?");
+        if (note === null || !note.trim()) return;
+        await wfTransition(item, root, "changes-requested", note.trim());
+      });
+      spacer();
+      abandon();
+      break;
+
+    case "changes-requested":
+      add("▶ Relaunch agent", "primary", () => launchWfAgent(item, "revise", root));
+      spacer();
+      abandon();
+      break;
+
+    case "diff-review": {
+      if (item.meta.pr && item.meta.pr.url) {
+        add("✓ Approve → PR draft", "primary", async () => {
+          const warn =
+            item.openAnnotations > 0
+              ? ` ${item.openAnnotations} comment${item.openAnnotations > 1 ? "s are" : " is"} still open.`
+              : "";
+          if (!(await uiConfirm(`Approve these changes?${warn}`, "Approve"))) return;
+          wfTransition(item, root, "pr-draft");
+        });
+      } else {
+        add("✓ Approve & create draft PR", "primary", async () => {
+          const warn =
+            item.openAnnotations > 0
+              ? ` ${item.openAnnotations} comment${item.openAnnotations > 1 ? "s are" : " is"} still open.`
+              : "";
+          if (!(await uiConfirm(`Approve these changes and open a draft PR?${warn}`, "Approve")))
+            return;
+          try {
+            await invoke("workflow_create_pr", {
+              project: item.project,
+              slug: item.slug,
+              title: null,
+              body: null,
+            });
+            flashToast("Draft PR created");
+            await refreshWorkflows();
+            buildWorkflowView(root, item.project, item.slug);
+          } catch (e) {
+            const hint = wfGhHint(e);
+            if (hint) {
+              const alt = await uiChoice({
+                message: hint,
+                detail: "You can still move the item to pr-draft and attach a PR URL later.",
+                choices: [{ label: "Move to pr-draft anyway", value: "go" }],
+              });
+              if (alt === "go") wfTransition(item, root, "pr-draft");
+            } else {
+              uiAlert(`Create PR failed: ${e}`);
+            }
+          }
+        });
+      }
+      add("✎ Request changes", "", requestChanges);
+      spacer();
+      abandon();
+      break;
+    }
+
+    case "pr-draft": {
+      if (item.meta.pr && item.meta.pr.url) {
+        add("✓ Mark PR ready", "primary", async () => {
+          const warn =
+            item.openAnnotations > 0
+              ? ` ${item.openAnnotations} comment${item.openAnnotations > 1 ? "s are" : " is"} still open —`
+              : "";
+          if (
+            !(await uiConfirm(
+              `This is the validation step:${warn} flip PR #${item.meta.pr.number} to ready-for-review?`,
+              "Mark ready"
+            ))
+          )
+            return;
+          try {
+            const meta = await invoke("mark_workflow_pr_ready", {
+              project: item.project,
+              slug: item.slug,
+            });
+            flashToast(`PR ready: ${meta.pr ? meta.pr.url : ""}`);
+            await refreshWorkflows();
+            buildWorkflowView(root, item.project, item.slug);
+          } catch (e) {
+            uiAlert(wfGhHint(e) || `Mark ready failed: ${e}`);
+          }
+        });
+        add("Open PR", "", () => openWorkflowPr(item));
+      } else {
+        add("Attach PR by URL…", "primary", async () => {
+          const url = await uiPrompt("GitHub PR URL");
+          if (!url || !url.trim()) return;
+          try {
+            await invoke("attach_workflow_pr", {
+              project: item.project,
+              slug: item.slug,
+              url: url.trim(),
+            });
+            await refreshWorkflows();
+            buildWorkflowView(root, item.project, item.slug);
+          } catch (e) {
+            uiAlert(`Attach failed: ${e}`);
+          }
+        });
+      }
+      add("↩ Back to review", "", () => wfTransition(item, root, "diff-review"));
+      spacer();
+      abandon();
+      break;
+    }
+
+    case "pr-ready":
+      if (item.meta.pr && item.meta.pr.url) add("Open PR", "primary", () => openWorkflowPr(item));
+      add("✓ Mark done", "", async () => {
+        if (!(await uiConfirm("Mark this workflow item as done?", "Done"))) return;
+        wfTransition(item, root, "done");
+      });
+      break;
+
+    case "done":
+    case "abandoned":
+      if (item.meta.pr && item.meta.pr.url) add("Open PR", "", () => openWorkflowPr(item));
+      add("Reopen", "", () => wfTransition(item, root, "diff-review"));
+      break;
+  }
 }
 
 async function renderWfSubView(body, root, item, ts) {
