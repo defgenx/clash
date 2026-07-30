@@ -65,6 +65,10 @@ struct GuiState {
     /// every mutating workflow command pre-seeds it via `record_local_write`
     /// so the user is never notified about their own click.
     attention: Mutex<clash::application::workflow::AttentionLedger>,
+    /// In-memory PR-refresh throttle per item (epoch ms of the last gh call)
+    /// — keeps concurrent viewports from stacking gh subprocesses, without
+    /// persisting a timestamp on every poll (which would churn the watcher).
+    pr_checked: Mutex<HashMap<(String, String), i64>>,
 }
 
 /// Refresh cycles a killed session stays filtered from `list_sessions`.
@@ -2434,6 +2438,7 @@ fn main() {
         scratch_watcher: Mutex::new(None),
         workflows_watcher: Mutex::new(None),
         attention: Mutex::new(clash::application::workflow::AttentionLedger::default()),
+        pr_checked: Mutex::new(HashMap::new()),
     };
 
     // FS watcher on ~/.claude/projects — same role as the TUI's watcher
@@ -2672,7 +2677,11 @@ fn main() {
             workflows::delete_workflow_annotation,
             workflows::workflow_request_changes,
             workflows::delete_workflow_item,
-            workflows::start_workflow_agent
+            workflows::start_workflow_agent,
+            workflows::workflow_create_pr,
+            workflows::refresh_workflow_pr,
+            workflows::mark_workflow_pr_ready,
+            workflows::attach_workflow_pr
         ])
         .run(tauri::generate_context!())
         .expect("error while running clash GUI");

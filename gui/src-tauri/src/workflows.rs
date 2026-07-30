@@ -676,3 +676,244 @@ pub(crate) async fn start_workflow_agent(
 
     Ok(session_id)
 }
+
+// ── PR lifecycle (gh) ───────────────────────────────────────────────────
+
+/// Map gh errors to the GUI degradation contract: `gh-unavailable:` /
+/// `gh-unauthenticated:` prefixes disable PR buttons with a setup hint.
+fn gh_err(e: clash::infrastructure::gh::GhError) -> String {
+    use clash::infrastructure::gh::GhError;
+    match e {
+        GhError::NotInstalled => "gh-unavailable: gh CLI not installed".to_string(),
+        GhError::NotAuthenticated(m) => format!("gh-unauthenticated: {}", m),
+        other => other.to_string(),
+    }
+}
+
+/// The directory gh commands run in: the item's worktree, else its repo.
+fn pr_dir(meta: &clash::domain::workflow::WorkflowMeta) -> Result<String, String> {
+    let dir = meta
+        .worktree
+        .clone()
+        .filter(|w| !w.is_empty())
+        .unwrap_or_else(|| meta.repo_path.clone());
+    if dir.is_empty() {
+        Err("No repository directory recorded for this item".to_string())
+    } else {
+        Ok(dir)
+    }
+}
+
+/// Fold a `gh pr view` result into the meta's PR block. Returns true when
+/// anything (besides the check timestamp) actually changed — the caller only
+/// writes meta on change, so the 60s poll never churns the FS watcher.
+fn merge_pr_view(
+    meta: &mut clash::domain::workflow::WorkflowMeta,
+    view: &clash::infrastructure::gh::GhPrView,
+) -> bool {
+    let pr = meta.pr.get_or_insert_with(Default::default);
+    let changed = pr.url != view.url
+        || pr.number != view.number
+        || pr.draft != view.is_draft
+        || pr.state != view.state;
+    if changed {
+        pr.url = view.url.clone();
+        pr.number = view.number;
+        pr.draft = view.is_draft;
+        pr.state = view.state.clone();
+        pr.last_checked_at = now_ms();
+    }
+    changed
+}
+
+/// Create a draft PR for the item's branch via `gh pr create --draft`,
+/// record it in meta, and move the item to `pr-draft`.
+#[tauri::command]
+pub(crate) async fn workflow_create_pr(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    title: Option<String>,
+    body: Option<String>,
+) -> Result<clash::domain::workflow::WorkflowMeta, String> {
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    let dir = pr_dir(&meta)?;
+    let base = crate::origin_default_branch(&dir).await;
+    let pr_title = title
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| meta.title.clone());
+    let pr_body = body.unwrap_or_default();
+
+    let view = tauri::async_runtime::spawn_blocking(move || {
+        clash::infrastructure::gh::pr_create_draft(
+            Path::new(&dir),
+            &pr_title,
+            &pr_body,
+            Some(&base),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(gh_err)?;
+
+    merge_pr_view(&mut meta, &view);
+    if meta.status.can_transition_to(WorkflowStatus::PrDraft) {
+        meta.status = WorkflowStatus::PrDraft;
+    }
+    state
+        .backend
+        .write_workflow_meta(&project, &slug, &meta)
+        .map_err(e2s)?;
+    seed_local(&state, &project, &slug, meta.status);
+    Ok(meta)
+}
+
+/// Refresh the recorded PR state from `gh pr view`. Throttled in-memory
+/// (30s unless `force`); meta is written only when something changed, so
+/// polling never feeds the FS watcher. A PR observed as MERGED moves the
+/// item to `done`.
+#[tauri::command]
+pub(crate) async fn refresh_workflow_pr(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    force: bool,
+) -> Result<clash::domain::workflow::WorkflowMeta, String> {
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    let Some(pr) = meta.pr.clone() else {
+        return Err("No PR recorded for this item".to_string());
+    };
+
+    // In-memory throttle: several viewports polling the same item collapse
+    // into one gh call per window.
+    {
+        let mut checked = state.pr_checked.lock().unwrap();
+        let key = (project.clone(), slug.clone());
+        let now = now_ms();
+        if !force && checked.get(&key).is_some_and(|t| now - t < 30_000) {
+            return Ok(meta);
+        }
+        checked.insert(key, now);
+    }
+
+    let dir = pr_dir(&meta)?;
+    let selector = if pr.number > 0 {
+        pr.number.to_string()
+    } else {
+        meta.branch.clone()
+    };
+    let view = tauri::async_runtime::spawn_blocking(move || {
+        clash::infrastructure::gh::pr_view(Path::new(&dir), &selector)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(gh_err)?;
+
+    let mut changed = merge_pr_view(&mut meta, &view);
+    if view.state == "MERGED" && meta.status.can_transition_to(WorkflowStatus::Done) {
+        meta.status = WorkflowStatus::Done;
+        changed = true;
+    }
+    if changed {
+        state
+            .backend
+            .write_workflow_meta(&project, &slug, &meta)
+            .map_err(e2s)?;
+        seed_local(&state, &project, &slug, meta.status);
+    }
+    Ok(meta)
+}
+
+/// Flip the draft PR to ready-for-review (`gh pr ready`) — the validation
+/// act. Moves the item to `pr-ready`.
+#[tauri::command]
+pub(crate) async fn mark_workflow_pr_ready(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+) -> Result<clash::domain::workflow::WorkflowMeta, String> {
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    let Some(pr) = meta.pr.clone() else {
+        return Err("No PR recorded for this item".to_string());
+    };
+    if pr.number == 0 {
+        return Err("Recorded PR has no number — refresh it first".to_string());
+    }
+    let dir = pr_dir(&meta)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        clash::infrastructure::gh::pr_ready(Path::new(&dir), pr.number)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(gh_err)?;
+
+    if let Some(pr) = meta.pr.as_mut() {
+        pr.draft = false;
+        pr.last_checked_at = now_ms();
+    }
+    if meta.status.can_transition_to(WorkflowStatus::PrReady) {
+        meta.status = WorkflowStatus::PrReady;
+    }
+    state
+        .backend
+        .write_workflow_meta(&project, &slug, &meta)
+        .map_err(e2s)?;
+    seed_local(&state, &project, &slug, meta.status);
+    Ok(meta)
+}
+
+/// Attach an existing PR by URL (e.g. one the agent created, sniffed from
+/// terminal output). Works without gh — state stays unknown until a refresh
+/// succeeds.
+#[tauri::command]
+pub(crate) async fn attach_workflow_pr(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    url: String,
+) -> Result<clash::domain::workflow::WorkflowMeta, String> {
+    let (_repo, number) = clash::infrastructure::gh::parse_pr_url(&url)
+        .ok_or_else(|| format!("Not a GitHub PR URL: {}", url))?;
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    let pr = meta.pr.get_or_insert_with(Default::default);
+    pr.url = url.trim().to_string();
+    pr.number = number;
+    if meta.status.can_transition_to(WorkflowStatus::PrDraft) {
+        meta.status = WorkflowStatus::PrDraft;
+    }
+    state
+        .backend
+        .write_workflow_meta(&project, &slug, &meta)
+        .map_err(e2s)?;
+    seed_local(&state, &project, &slug, meta.status);
+
+    // Best-effort detail fill; ignored when gh is unavailable.
+    let dir = pr_dir(&meta)?;
+    let selector = number.to_string();
+    if let Ok(Ok(view)) = tauri::async_runtime::spawn_blocking(move || {
+        clash::infrastructure::gh::pr_view(Path::new(&dir), &selector)
+    })
+    .await
+    .map(|r| r.map_err(gh_err))
+    {
+        if merge_pr_view(&mut meta, &view) {
+            state
+                .backend
+                .write_workflow_meta(&project, &slug, &meta)
+                .map_err(e2s)?;
+        }
+    }
+    Ok(meta)
+}
