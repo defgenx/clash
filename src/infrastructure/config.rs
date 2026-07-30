@@ -23,6 +23,12 @@ pub struct Config {
     /// TOML serializer emits all scalar fields before the `[[ides]]` tables.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scratch_dir: Option<PathBuf>,
+    /// Override for where workflow items are stored. When unset, defaults to
+    /// `<claude_dir>/clash/workflows` — a dedicated root, deliberately
+    /// independent of the scratch tree. Declared before `ides` for the same
+    /// TOML-ordering reason as `scratch_dir`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflows_dir: Option<PathBuf>,
     #[serde(default = "default_debounce_ms")]
     pub debounce_ms: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -42,6 +48,7 @@ impl Default for Config {
             claude_bin: default_claude_bin(),
             claude_dir: None,
             scratch_dir: None,
+            workflows_dir: None,
             debounce_ms: default_debounce_ms(),
             ides: Vec::new(),
         }
@@ -92,6 +99,20 @@ impl Config {
         self.scratch_dir
             .clone()
             .unwrap_or_else(|| self.claude_dir().join("clash").join("scratch"))
+    }
+
+    /// Effective workflow-items directory: the configured override, or the
+    /// default `<claude_dir>/clash/workflows`. A dedicated root, independent
+    /// of the scratch tree — scratches are free-form notes, workflows are a
+    /// structured store.
+    ///
+    /// `dead_code` is allowed for the same reason as `scratch_dir()`: the
+    /// non-test callers live in the sibling `clash-gui` crate.
+    #[allow(dead_code)]
+    pub fn workflows_dir(&self) -> PathBuf {
+        self.workflows_dir
+            .clone()
+            .unwrap_or_else(|| self.claude_dir().join("clash").join("workflows"))
     }
 
     /// Persist the config back to `config.toml` (atomic write). Used by the
@@ -148,11 +169,48 @@ mod tests {
     }
 
     #[test]
+    fn workflows_dir_defaults_under_claude_dir() {
+        let config = Config {
+            claude_dir: Some(PathBuf::from("/tmp/fake-claude")),
+            ..Config::default()
+        };
+        assert_eq!(
+            config.workflows_dir(),
+            PathBuf::from("/tmp/fake-claude/clash/workflows")
+        );
+    }
+
+    #[test]
+    fn workflows_dir_independent_of_scratch_override() {
+        // Scratches and workflows are separate stores: overriding the scratch
+        // dir must not move the workflows root.
+        let config = Config {
+            claude_dir: Some(PathBuf::from("/tmp/fake-claude")),
+            scratch_dir: Some(PathBuf::from("/tmp/elsewhere/notes")),
+            ..Config::default()
+        };
+        assert_eq!(
+            config.workflows_dir(),
+            PathBuf::from("/tmp/fake-claude/clash/workflows")
+        );
+    }
+
+    #[test]
+    fn workflows_dir_honors_own_override() {
+        let config = Config {
+            workflows_dir: Some(PathBuf::from("/tmp/flows")),
+            ..Config::default()
+        };
+        assert_eq!(config.workflows_dir(), PathBuf::from("/tmp/flows"));
+    }
+
+    #[test]
     fn serializes_scalars_before_ide_tables() {
         // TOML requires scalar fields before array-of-tables; a regression in
         // field order would make this fail to serialize.
         let config = Config {
             scratch_dir: Some(PathBuf::from("/tmp/notes")),
+            workflows_dir: Some(PathBuf::from("/tmp/flows")),
             ides: vec![IdeEntry {
                 command: "code".into(),
                 name: "VS Code".into(),

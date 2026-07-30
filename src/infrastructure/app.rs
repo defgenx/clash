@@ -68,7 +68,9 @@ impl App {
         debug: bool,
         config: crate::infrastructure::config::Config,
     ) -> Self {
-        let backend = FsBackend::new(data_dir.clone()).with_scratch_dir(config.scratch_dir.clone());
+        let backend = FsBackend::new(data_dir.clone())
+            .with_scratch_dir(config.scratch_dir.clone())
+            .with_workflows_dir(config.workflows_dir.clone());
 
         // Install Claude Code hooks for instant status detection
         if let Err(e) = crate::infrastructure::hooks::install_hooks(&data_dir) {

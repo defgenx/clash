@@ -2397,7 +2397,9 @@ fn main() {
     let (wild_processes_tx, wild_processes_rx) = tokio::sync::watch::channel(Vec::new());
 
     let state = GuiState {
-        backend: FsBackend::new(data_dir).with_scratch_dir(config.scratch_dir.clone()),
+        backend: FsBackend::new(data_dir)
+            .with_scratch_dir(config.scratch_dir.clone())
+            .with_workflows_dir(config.workflows_dir.clone()),
         claude_bin,
         config_ides: config.ides.clone(),
         previous: Mutex::new(Vec::new()),

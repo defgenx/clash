@@ -226,6 +226,13 @@ pub struct FsBackend {
     /// mutability mirrors `session_cache`, so the `&self` port methods and the
     /// shared GUI state can both see updates without rebuilding the backend.
     scratch_dir: Mutex<PathBuf>,
+    /// Where workflow items are stored. A dedicated root, deliberately
+    /// independent of `scratch_dir` (scratches are free-form notes; workflows
+    /// are a structured store). Defaults to `<base_dir>/clash/workflows`,
+    /// overridable from config (`with_workflows_dir`) or at runtime from the
+    /// GUI Settings panel (`set_workflows_dir`). Same interior-mutability
+    /// rationale as `scratch_dir`.
+    workflows_dir: Mutex<PathBuf>,
     /// Per-project session cache to avoid re-parsing unchanged projects.
     session_cache: Mutex<SessionCache>,
 }
@@ -233,9 +240,11 @@ pub struct FsBackend {
 impl FsBackend {
     pub fn new(base_dir: PathBuf) -> Self {
         let scratch_dir = base_dir.join("clash").join("scratch");
+        let workflows_dir = base_dir.join("clash").join("workflows");
         Self {
             base_dir,
             scratch_dir: Mutex::new(scratch_dir),
+            workflows_dir: Mutex::new(workflows_dir),
             session_cache: Mutex::new(SessionCache::new()),
         }
     }
@@ -261,6 +270,35 @@ impl FsBackend {
     #[allow(dead_code)]
     pub fn set_scratch_dir(&self, dir: PathBuf) {
         *self.scratch_dir.lock().unwrap() = dir;
+    }
+
+    /// Builder: override the workflows directory from config. `None` keeps
+    /// the default established in `new`.
+    pub fn with_workflows_dir(self, dir: Option<PathBuf>) -> Self {
+        if let Some(dir) = dir {
+            *self.workflows_dir.lock().unwrap() = dir;
+        }
+        self
+    }
+
+    /// Current workflow-items directory.
+    ///
+    /// `dead_code` is allowed temporarily: the workflow port impls (next
+    /// commit) become the in-crate callers; the GUI Settings panel is the
+    /// external one.
+    #[allow(dead_code)]
+    pub fn workflows_dir(&self) -> PathBuf {
+        self.workflows_dir.lock().unwrap().clone()
+    }
+
+    /// Change the workflow-items directory at runtime (GUI Settings).
+    ///
+    /// `dead_code` is allowed because the only non-test caller is the sibling
+    /// `clash-gui` crate; the TUI sets the directory once via
+    /// `with_workflows_dir`.
+    #[allow(dead_code)]
+    pub fn set_workflows_dir(&self, dir: PathBuf) {
+        *self.workflows_dir.lock().unwrap() = dir;
     }
 
     pub fn base_dir(&self) -> &Path {
@@ -1747,6 +1785,23 @@ mod tests {
         let note = backend.create_scratch_note("", "Elsewhere").unwrap();
         assert!(note.path.starts_with(custom.to_string_lossy().as_ref()));
         assert_eq!(backend.load_scratch_notes().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_workflows_dir_override_and_independence() {
+        let (_dir, backend) = setup_test_dir();
+        // Default lives under <base>/clash/workflows.
+        assert!(backend.workflows_dir().ends_with("clash/workflows"));
+
+        // Own override sticks.
+        let custom = _dir.path().join("my-flows");
+        backend.set_workflows_dir(custom.clone());
+        assert_eq!(backend.workflows_dir(), custom);
+
+        // Scratches and workflows are separate stores: moving the scratch
+        // dir must never move the workflows root.
+        backend.set_scratch_dir(_dir.path().join("my-notes"));
+        assert_eq!(backend.workflows_dir(), custom);
     }
 
     #[test]
