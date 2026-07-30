@@ -58,3 +58,32 @@ fn wild_session_prefix_documented_in_tour() {
          Per CLAUDE.md, every new prefix gets a tour step / legend line."
     );
 }
+
+#[test]
+fn workflows_documented_in_readme() {
+    let readme = read("README.md");
+    assert!(
+        readme.contains("## Workflows"),
+        "README.md must keep the Workflows feature section (plan → review → PR pipeline)."
+    );
+    assert!(
+        readme.contains("plan-review"),
+        "README.md must document the workflow lifecycle statuses."
+    );
+    assert!(
+        readme.contains("primary way to use clash"),
+        "README.md must keep the GUI-primary framing (GUI = main mode, TUI = fallback)."
+    );
+}
+
+#[test]
+fn workflows_mentioned_in_tour_and_help() {
+    assert!(
+        read("src/infrastructure/tui/widgets/tour.rs").contains("Workflows"),
+        "tour.rs must mention the Workflows feature so the three doc sources agree."
+    );
+    assert!(
+        read("src/infrastructure/tui/widgets/help_overlay.rs").contains("Workflows"),
+        "help_overlay.rs must mention the Workflows feature so the three doc sources agree."
+    );
+}

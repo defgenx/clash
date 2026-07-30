@@ -3,7 +3,12 @@
 </p>
 
 <p align="center">
-  <strong>Terminal UI for Claude Code Sessions & Agent Teams</strong>
+  <strong>GUI & Terminal UI for Claude Code Sessions, Agent Teams & Dev Workflows</strong>
+</p>
+
+<p align="center">
+  The <a href="#gui-primary-mode">GUI</a> is the primary way to use clash;
+  the TUI is the terminal-native fallback mode.
 </p>
 
 <p align="center">
@@ -27,6 +32,7 @@
 - **Repo config discovery** — auto-detects MCP servers, custom commands, agent definitions, and setup scripts from the project directory
 - **Teams & tasks** — create, rename, configure, and delete teams; manage members (agent type, model, prompt, rename) and see at a glance who's running; full task management (create, cycle status, assign owner, delete); per-agent inboxes. In the GUI, jump straight from a running member to its live session.
 - **Scratches** — keep free-form text notes inside clash (`:scratch`), organized in an IntelliJ-style **"Scratches and Consoles"** tree: create notes and nested folders, rename, delete, and reorganize (move via a folder picker in the TUI, drag-and-drop in the GUI). Each note is a plain file under `~/.claude/clash/scratch/` by default — set `scratch_dir` in `config.toml` (or the GUI **Scratch directory** setting) to store them anywhere. Opening a scratch shows an editor picker: terminal editors (vim/emacs/nano…) open in a tab/pane, GUI editors (VS Code/Cursor/Zed…) launch alongside, like opening a project
+- **Workflows (GUI)** — manage a full plan → plan-review → implement → diff-review → PR pipeline per feature: launch a planning agent, read the plan, approve or request changes, **annotate the diff with line-level comments** the agent addresses on the next round, track the draft PR and **mark it ready** once validated — with per-iteration history snapshots, decision notifications, and a kanban board. See [Workflows](#workflows-gui)
 - **Subagent tracking** — view subagent trees per session, expand/collapse in the sessions table
 - **Open in IDE** — press `e` to open a session's project in your editor (auto-detects Cursor, VS Code, Zed, JetBrains, nvim, vim; configurable)
 - **Keyboard-driven** — vim-style navigation, command mode (`:`), fuzzy filter (`/`), context help (`?`)
@@ -414,10 +420,45 @@ cargo fmt --check   # Check formatting
 
 Releases are automatic — push with conventional commits (`feat:`, `fix:`) and CI handles the rest.
 
-## GUI (experimental)
+## Workflows (GUI)
 
-A cmux-style desktop client lives in `gui/` — a Tauri 2 app sharing the same
-core as the TUI (session pipeline, in-process PTY daemon, protocol). Sidebar
+An all-in-one pipeline manager for AI-assisted development, built on plain
+files so the whole history stays consultable outside clash.
+
+**Lifecycle**: `draft → planning → plan-review → changes-requested →
+implementing → diff-review → pr-draft → pr-ready → done` (plus `abandoned`).
+Decision states (plan-review, diff-review, pr-draft) badge the sidebar and
+fire a desktop notification.
+
+**The loop**: create an item (title + project + repo) → *Start planning*
+spawns a Claude Code session in a dedicated git worktree, driven by the
+`clash-workflow` skill → read the rendered plan, *Approve* or *Request
+changes* with a note → during **diff review**, hover any line of the diff
+and press `+` to leave a GitHub-style comment (threads support reply / edit /
+resolve / wontfix); *Request changes* snapshots the iteration (diff +
+annotations frozen under `history/`), appends your note and the open
+comments to the `review.md` audit trail, and hands back to the agent, which
+must address every open comment → *Approve & create draft PR* (via `gh`) →
+once you've validated everything, *Mark PR ready* flips the draft. A merged
+PR moves the item to done automatically.
+
+**Storage**: `~/.claude/clash/workflows/<project>/<item>/` with `meta.json`,
+`plan.md`, `review.md`, `annotations.json` and `history/<NNN>/` snapshots —
+a dedicated root (not the scratch tree), overridable via `workflows_dir` in
+`config.toml` or the GUI Settings. Comments are re-anchored by content when
+the diff drifts between iterations and never dropped (unanchored ones land
+in an orphan tray). The file contract for agents is documented in
+[`docs/workflows.md`](docs/workflows.md).
+
+Workflows are GUI-only for now; the TUI will grow a read-only view.
+
+## GUI (primary mode)
+
+The GUI is the primary way to use clash — the TUI remains fully supported as
+the terminal-native fallback mode (everything below the [Workflows](#workflows-gui)
+feature exists in both). A cmux-style desktop client lives in `gui/` — a
+Tauri 2 app sharing the same core as the TUI (session pipeline, in-process
+PTY daemon, protocol). Sidebar
 with session sections and status rings; embedded xterm.js terminals
 (GPU-accelerated WebGL rendering, with automatic fallback to the DOM
 renderer on context loss) attach to the same sessions the TUI manages.

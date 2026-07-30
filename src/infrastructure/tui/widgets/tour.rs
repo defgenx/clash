@@ -199,6 +199,15 @@ pub const TOUR_STEPS: &[TourStep] = &[
         ],
     },
     TourStep {
+        title: "Workflows (GUI)",
+        body: &[
+            "The clash GUI adds Workflows — an all-in-one plan → review → implement → PR pipeline: launch a planning agent, approve or request changes, annotate the diff with line-level comments, and mark the draft PR ready once validated.",
+            "",
+            "Items live as plain files under ~/.claude/clash/workflows/ (per-iteration history included), so everything stays consultable from a terminal too. The TUI will grow a read-only view; for now, launch the GUI to use Workflows.",
+        ],
+        keys: &[],
+    },
+    TourStep {
         title: "Commands & Filtering",
         body: &[
             "Press  :  to enter command mode. Type a command and press Enter.",

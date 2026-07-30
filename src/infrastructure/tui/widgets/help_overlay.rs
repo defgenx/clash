@@ -83,6 +83,7 @@ pub fn render_help_overlay(
         (":all", "Show all sessions"),
         (":external", "Show only external/wild sessions"),
         (":tour", "Start guided tour"),
+        ("Workflows", "Plan→review→PR pipeline (GUI feature)"),
         (":update", "Update clash to latest"),
         (":quit", "Quit (stashes running sessions)"),
     ] {
