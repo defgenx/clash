@@ -10,6 +10,7 @@ use crate::domain::entities::{
     ConversationMessage, InboxMessage, ScratchNote, Session, Subagent, Task, Team,
 };
 use crate::domain::error::Result;
+use crate::domain::workflow::{Annotation, AnnotationsFile, WorkflowItem, WorkflowMeta};
 
 /// Repository port for all data access operations.
 ///
@@ -125,6 +126,114 @@ pub trait DataRepository: Send + Sync {
 
     /// Delete the entry at `id`. Folders are removed recursively.
     fn delete_scratch_note(&self, _id: &str) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Port for workflow-item storage — the plan → review → implement → PR
+/// pipeline, stored under the dedicated workflows root (independent of
+/// scratches). Items are identified by `(project, slug)`: the directory path
+/// is the identity. Unlike scratch notes, document contents ARE read/written
+/// through the port — these are clash-owned structured files the agent
+/// co-edits. Default impls keep mock backends valid.
+///
+/// Kept separate from [`DataRepository`] so that trait stays minimal, and
+/// because in v1 only the GUI consumes workflows (via Tauri commands) — the
+/// TUI binary compiles this as dead code (hence the `allow`); a future TUI
+/// view plugs in with a single refresh effect.
+#[allow(dead_code)]
+pub trait WorkflowRepository: Send + Sync {
+    /// List every workflow item, sorted by project then slug. One malformed
+    /// item is skipped, never failing the list.
+    fn load_workflow_items(&self) -> Result<Vec<WorkflowItem>> {
+        Ok(Vec::new())
+    }
+
+    /// Create an item under `project` with a slug derived from `title`
+    /// (deduplicated). Seeds meta/plan/review/annotations files.
+    fn create_workflow_item(
+        &self,
+        _project: &str,
+        _title: &str,
+        _repo_path: &str,
+    ) -> Result<WorkflowItem> {
+        Ok(WorkflowItem::default())
+    }
+
+    /// Read an item's `meta.json`.
+    fn load_workflow_meta(&self, _project: &str, _slug: &str) -> Result<WorkflowMeta> {
+        Ok(WorkflowMeta::default())
+    }
+
+    /// Persist an item's `meta.json` (stamps `updatedAt`).
+    fn write_workflow_meta(&self, _project: &str, _slug: &str, _meta: &WorkflowMeta) -> Result<()> {
+        Ok(())
+    }
+
+    /// Read `plan.md` or `review.md` (whitelisted; missing reads as empty).
+    fn read_workflow_doc(&self, _project: &str, _slug: &str, _doc: &str) -> Result<String> {
+        Ok(String::new())
+    }
+
+    /// Write `plan.md` or `review.md` (whitelisted), atomically.
+    fn write_workflow_doc(
+        &self,
+        _project: &str,
+        _slug: &str,
+        _doc: &str,
+        _content: &str,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Append an iteration section (note + open-annotation digest) to the
+    /// `review.md` audit trail.
+    fn append_workflow_review_iteration(
+        &self,
+        _project: &str,
+        _slug: &str,
+        _iteration: u32,
+        _note: &str,
+        _open_annotations: &[Annotation],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Read `annotations.json` (missing reads as empty; malformed is an
+    /// error so a blind save can never clobber review data).
+    fn load_workflow_annotations(&self, _project: &str, _slug: &str) -> Result<AnnotationsFile> {
+        Ok(AnnotationsFile::default())
+    }
+
+    /// Persist `annotations.json` atomically.
+    fn write_workflow_annotations(
+        &self,
+        _project: &str,
+        _slug: &str,
+        _file: &AnnotationsFile,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Snapshot the current iteration's diff + annotations into
+    /// `history/{iteration:03}/`. Returns the snapshotted iteration. Never
+    /// bumps `iteration` — the caller owns the follow-up meta write.
+    fn snapshot_workflow_iteration(&self, _project: &str, _slug: &str, _diff: &str) -> Result<u32> {
+        Ok(0)
+    }
+
+    /// Read a snapshotted diff for an iteration.
+    fn read_workflow_history_diff(
+        &self,
+        _project: &str,
+        _slug: &str,
+        _iteration: u32,
+    ) -> Result<String> {
+        Ok(String::new())
+    }
+
+    /// Delete an item directory recursively.
+    fn delete_workflow_item(&self, _project: &str, _slug: &str) -> Result<()> {
         Ok(())
     }
 }

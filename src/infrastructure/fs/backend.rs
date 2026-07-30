@@ -22,7 +22,8 @@ fn scratch_err(msg: impl Into<String>) -> crate::domain::error::DomainError {
 ///
 /// Rejects empties, path separators, `.`/`..`, and NULs so a component can
 /// never traverse out of the scratch root. Pure — unit-tested directly.
-fn sanitize_component(name: &str) -> Result<String> {
+/// `pub(crate)` because the workflows store reuses the same guarantee.
+pub(crate) fn sanitize_component(name: &str) -> Result<String> {
     let t = name.trim();
     if t.is_empty() {
         return Err(scratch_err("Name cannot be empty"));
@@ -1531,6 +1532,104 @@ impl FsBackend {
         }
 
         Ok(messages)
+    }
+}
+
+impl crate::domain::ports::WorkflowRepository for FsBackend {
+    fn load_workflow_items(&self) -> Result<Vec<crate::domain::workflow::WorkflowItem>> {
+        super::workflows::load_items(&self.workflows_dir())
+    }
+
+    fn create_workflow_item(
+        &self,
+        project: &str,
+        title: &str,
+        repo_path: &str,
+    ) -> Result<crate::domain::workflow::WorkflowItem> {
+        super::workflows::create_item(&self.workflows_dir(), project, title, repo_path)
+    }
+
+    fn load_workflow_meta(
+        &self,
+        project: &str,
+        slug: &str,
+    ) -> Result<crate::domain::workflow::WorkflowMeta> {
+        super::workflows::read_meta(&self.workflows_dir(), project, slug)
+    }
+
+    fn write_workflow_meta(
+        &self,
+        project: &str,
+        slug: &str,
+        meta: &crate::domain::workflow::WorkflowMeta,
+    ) -> Result<()> {
+        super::workflows::write_meta(&self.workflows_dir(), project, slug, meta)
+    }
+
+    fn read_workflow_doc(&self, project: &str, slug: &str, doc: &str) -> Result<String> {
+        super::workflows::read_doc(&self.workflows_dir(), project, slug, doc)
+    }
+
+    fn write_workflow_doc(
+        &self,
+        project: &str,
+        slug: &str,
+        doc: &str,
+        content: &str,
+    ) -> Result<()> {
+        super::workflows::write_doc(&self.workflows_dir(), project, slug, doc, content)
+    }
+
+    fn append_workflow_review_iteration(
+        &self,
+        project: &str,
+        slug: &str,
+        iteration: u32,
+        note: &str,
+        open_annotations: &[crate::domain::workflow::Annotation],
+    ) -> Result<()> {
+        super::workflows::append_review_iteration(
+            &self.workflows_dir(),
+            project,
+            slug,
+            iteration,
+            note,
+            open_annotations,
+        )
+    }
+
+    fn load_workflow_annotations(
+        &self,
+        project: &str,
+        slug: &str,
+    ) -> Result<crate::domain::workflow::AnnotationsFile> {
+        super::workflows::read_annotations(&self.workflows_dir(), project, slug)
+    }
+
+    fn write_workflow_annotations(
+        &self,
+        project: &str,
+        slug: &str,
+        file: &crate::domain::workflow::AnnotationsFile,
+    ) -> Result<()> {
+        super::workflows::write_annotations(&self.workflows_dir(), project, slug, file)
+    }
+
+    fn snapshot_workflow_iteration(&self, project: &str, slug: &str, diff: &str) -> Result<u32> {
+        super::workflows::snapshot_iteration(&self.workflows_dir(), project, slug, diff)
+    }
+
+    fn read_workflow_history_diff(
+        &self,
+        project: &str,
+        slug: &str,
+        iteration: u32,
+    ) -> Result<String> {
+        super::workflows::read_history_diff(&self.workflows_dir(), project, slug, iteration)
+    }
+
+    fn delete_workflow_item(&self, project: &str, slug: &str) -> Result<()> {
+        super::workflows::delete_item(&self.workflows_dir(), project, slug)
     }
 }
 
