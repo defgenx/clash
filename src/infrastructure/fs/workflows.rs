@@ -351,6 +351,13 @@ pub fn snapshot_iteration(root: &Path, project: &str, slug: &str, diff: &str) ->
     Ok(iter)
 }
 
+/// List snapshotted iterations (detail views need this even for terminal
+/// items, whose listing DTO skips it).
+pub fn history_iterations(root: &Path, project: &str, slug: &str) -> Result<Vec<u32>> {
+    let dir = existing_item_dir(root, project, slug)?;
+    Ok(list_history(&dir))
+}
+
 /// Read a snapshotted diff from `history/{iteration:03}/diff.patch`.
 pub fn read_history_diff(root: &Path, project: &str, slug: &str, iteration: u32) -> Result<String> {
     let dir = existing_item_dir(root, project, slug)?;

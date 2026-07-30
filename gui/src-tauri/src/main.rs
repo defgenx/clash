@@ -20,6 +20,8 @@ use clash::infrastructure::fs::backend::{encode_project_dir, FsBackend};
 use clash::infrastructure::session_refresh;
 use tauri::{Emitter, Manager, State};
 
+mod workflows;
+
 /// Shared backend state for all Tauri commands.
 struct GuiState {
     backend: FsBackend,
@@ -57,6 +59,12 @@ struct GuiState {
     /// Replaced when the scratch dir changes via `set_scratch_dir`; `None` if
     /// the watcher couldn't be created.
     scratch_watcher: Mutex<Option<clash::infrastructure::fs::watcher::FsWatcher>>,
+    /// Same for the workflows directory (`workflows-changed` events).
+    workflows_watcher: Mutex<Option<clash::infrastructure::fs::watcher::FsWatcher>>,
+    /// Workflow attention-transition ledger: `observe` on every list, and
+    /// every mutating workflow command pre-seeds it via `record_local_write`
+    /// so the user is never notified about their own click.
+    attention: Mutex<clash::application::workflow::AttentionLedger>,
 }
 
 /// Refresh cycles a killed session stays filtered from `list_sessions`.
@@ -897,17 +905,24 @@ async fn get_default_branch(
     session_id: String,
 ) -> Result<String, String> {
     let dir = session_dir(&state, &session_id)?;
+    Ok(origin_default_branch(&dir).await)
+}
+
+/// Default branch of the repo at `dir` (from `origin/HEAD`), falling back to
+/// `main` when origin/HEAD isn't recorded locally. Shared by the session
+/// compare links and the workflow diff base.
+pub(crate) async fn origin_default_branch(dir: &str) -> String {
     let output = tokio::process::Command::new("git")
         .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
-        .current_dir(&dir)
+        .current_dir(dir)
         .output()
-        .await
-        .map_err(|e| format!("git symbolic-ref failed: {}", e))?;
-    if output.status.success() {
-        let full = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(full.strip_prefix("origin/").unwrap_or(&full).to_string())
-    } else {
-        Ok("main".to_string())
+        .await;
+    match output {
+        Ok(out) if out.status.success() => {
+            let full = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            full.strip_prefix("origin/").unwrap_or(&full).to_string()
+        }
+        _ => "main".to_string(),
     }
 }
 
@@ -2404,6 +2419,8 @@ fn main() {
         recently_removed: Mutex::new(HashMap::new()),
         notify_enabled: std::sync::atomic::AtomicBool::new(true),
         scratch_watcher: Mutex::new(None),
+        workflows_watcher: Mutex::new(None),
+        attention: Mutex::new(clash::application::workflow::AttentionLedger::default()),
     };
 
     // FS watcher on ~/.claude/projects — same role as the TUI's watcher
@@ -2458,6 +2475,13 @@ fn main() {
                 let dir = st.backend.scratch_dir();
                 *st.scratch_watcher.lock().unwrap() =
                     start_scratch_watcher(app.handle(), dir, debounce);
+            }
+            // Watch the workflows directory the same way (`workflows-changed`).
+            {
+                let st = app.state::<GuiState>();
+                let dir = st.backend.workflows_dir();
+                *st.workflows_watcher.lock().unwrap() =
+                    workflows::start_workflows_watcher(app.handle(), dir, debounce);
             }
             // In-process PTY session manager — the GUI's backbone, identical
             // to the TUI's in-process daemon. Dies with the app. Per-instance
@@ -2618,7 +2642,15 @@ fn main() {
             clipboard_write_text,
             clipboard_read_text,
             save_gui_state,
-            load_gui_state
+            load_gui_state,
+            workflows::list_workflow_items,
+            workflows::get_workflow_doc,
+            workflows::get_workflow_annotations,
+            workflows::list_workflow_history,
+            workflows::get_workflow_diff,
+            workflows::get_anchored_annotations,
+            workflows::get_workflows_dir,
+            workflows::set_workflows_dir
         ])
         .run(tauri::generate_context!())
         .expect("error while running clash GUI");

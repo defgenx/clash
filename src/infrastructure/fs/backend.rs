@@ -1619,6 +1619,10 @@ impl crate::domain::ports::WorkflowRepository for FsBackend {
         super::workflows::snapshot_iteration(&self.workflows_dir(), project, slug, diff)
     }
 
+    fn list_workflow_history(&self, project: &str, slug: &str) -> Result<Vec<u32>> {
+        super::workflows::history_iterations(&self.workflows_dir(), project, slug)
+    }
+
     fn read_workflow_history_diff(
         &self,
         project: &str,

@@ -222,6 +222,12 @@ pub trait WorkflowRepository: Send + Sync {
         Ok(0)
     }
 
+    /// List snapshotted iterations for an item (works for terminal items
+    /// too, unlike the listing DTO's summary field).
+    fn list_workflow_history(&self, _project: &str, _slug: &str) -> Result<Vec<u32>> {
+        Ok(Vec::new())
+    }
+
     /// Read a snapshotted diff for an iteration.
     fn read_workflow_history_diff(
         &self,
