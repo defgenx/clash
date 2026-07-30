@@ -2250,6 +2250,30 @@ function escapeHtml(s) {
     .replaceAll(">", "&gt;");
 }
 
+// Render markdown into an element. DOMPurify is load-bearing, not cosmetic:
+// there is no CSP and withGlobalTauri is on, so unsanitized agent-generated
+// markdown (plan.md!) could reach window.__TAURI__.core.invoke via an
+// injected handler. Everything markdown goes through here.
+function renderMarkdown(el, md) {
+  let html;
+  try {
+    html = marked.parse(md ?? "", { async: false });
+  } catch (e) {
+    el.textContent = md ?? "";
+    return;
+  }
+  el.innerHTML = DOMPurify.sanitize(html, { FORBID_TAGS: ["style", "form"] });
+  // Neutralize link navigation inside the webview: markdown links open via
+  // the OS/system browser path, never by navigating the app webview.
+  for (const a of el.querySelectorAll("a[href]")) {
+    a.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      const href = a.getAttribute("href") || "";
+      if (/^https?:/i.test(href)) invoke("open_external", { url: href });
+    });
+  }
+}
+
 function detailsStatusText(s) {
   return s.is_running ? s.status + " (running)" : s.status;
 }

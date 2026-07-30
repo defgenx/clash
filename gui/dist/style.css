@@ -878,6 +878,43 @@ html, body, #app {
 }
 .view-wrap .chat { max-height: none; }
 
+/* Rendered markdown (workflow plan/review) */
+.wf-md { font-size: 13px; line-height: 1.55; max-width: 860px; }
+.wf-md h1, .wf-md h2, .wf-md h3 { color: var(--fg); margin: 14px 0 6px; line-height: 1.25; }
+.wf-md h1 { font-size: 17px; }
+.wf-md h2 { font-size: 15px; border-bottom: 1px solid var(--border); padding-bottom: 3px; }
+.wf-md h3 { font-size: 13px; }
+.wf-md p, .wf-md ul, .wf-md ol { margin: 6px 0; }
+.wf-md ul, .wf-md ol { padding-left: 22px; }
+.wf-md li { margin: 2px 0; }
+.wf-md code {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.wf-md pre {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.wf-md pre code { background: none; border: none; padding: 0; }
+.wf-md blockquote {
+  border-left: 3px solid var(--border);
+  margin: 8px 0;
+  padding: 2px 12px;
+  color: var(--fg-dim);
+}
+.wf-md table { border-collapse: collapse; margin: 8px 0; }
+.wf-md th, .wf-md td { border: 1px solid var(--border); padding: 4px 8px; font-size: 12px; }
+.wf-md a { color: var(--accent); }
+.wf-md hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+
 /* Scratch-note editor (in-app textarea) */
 .view-wrap.note-view { display: flex; flex-direction: column; padding: 12px 16px; }
 .note-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
