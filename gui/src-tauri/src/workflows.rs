@@ -280,3 +280,294 @@ pub(crate) fn set_workflows_dir(
     );
     Ok(effective.to_string_lossy().into_owned())
 }
+
+// ── Write path ──────────────────────────────────────────────────────────
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Record a status clash itself just wrote, so the watcher-triggered reload
+/// never notifies the user about their own click.
+fn seed_local(state: &GuiState, project: &str, slug: &str, status: WorkflowStatus) {
+    state
+        .attention
+        .lock()
+        .unwrap()
+        .record_local_write(project, slug, status);
+}
+
+/// Annotation phase-lock (review A2): the agent owns `annotations.json`
+/// while it works; the GUI owns it during review phases. Enforced on every
+/// mutating annotation command — the frontend shows the same lock as a
+/// banner.
+fn ensure_annotations_unlocked(meta: &clash::domain::workflow::WorkflowMeta) -> Result<(), String> {
+    if matches!(
+        meta.status,
+        WorkflowStatus::ChangesRequested | WorkflowStatus::Implementing
+    ) {
+        Err("agent is working — annotations are locked until it finishes".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+/// Create a new workflow item (status `draft`, iteration 1).
+#[tauri::command]
+pub(crate) fn create_workflow_item(
+    state: State<'_, GuiState>,
+    project: String,
+    title: String,
+    repo_path: String,
+) -> Result<WorkflowItem, String> {
+    let item = state
+        .backend
+        .create_workflow_item(&project, &title, &repo_path)
+        .map_err(e2s)?;
+    seed_local(&state, &item.project, &item.slug, item.meta.status);
+    Ok(item)
+}
+
+/// Human-initiated status transition, validated against the transition
+/// table. An optional note is appended to the review.md audit trail when the
+/// target is `changes-requested` (the plan-review "request changes" path —
+/// the diff-review path goes through `workflow_request_changes` instead).
+#[tauri::command]
+pub(crate) fn update_workflow_status(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    status: WorkflowStatus,
+    note: Option<String>,
+) -> Result<clash::domain::workflow::WorkflowMeta, String> {
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    if !meta.status.can_transition_to(status) {
+        return Err(format!(
+            "cannot transition from {} to {}",
+            meta.status, status
+        ));
+    }
+    let note = note.unwrap_or_default();
+    if status == WorkflowStatus::ChangesRequested && !note.trim().is_empty() {
+        state
+            .backend
+            .append_workflow_review_iteration(&project, &slug, meta.iteration, &note, &[])
+            .map_err(e2s)?;
+    }
+    meta.status = status;
+    state
+        .backend
+        .write_workflow_meta(&project, &slug, &meta)
+        .map_err(e2s)?;
+    seed_local(&state, &project, &slug, status);
+    Ok(meta)
+}
+
+/// Write `plan.md` or `review.md`.
+#[tauri::command]
+pub(crate) fn save_workflow_doc(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    doc: String,
+    content: String,
+) -> Result<(), String> {
+    state
+        .backend
+        .write_workflow_doc(&project, &slug, &doc, &content)
+        .map_err(e2s)
+}
+
+/// Upsert an annotation (by id; empty id = new). The backend owns hashing:
+/// `line_content_hash` is always recomputed from `line_content` here, so
+/// there is exactly one hash implementation (FNV-1a in the core).
+#[tauri::command]
+pub(crate) fn save_workflow_annotation(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    mut annotation: clash::domain::workflow::Annotation,
+) -> Result<AnnotationsFile, String> {
+    let meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    ensure_annotations_unlocked(&meta)?;
+
+    let now = now_ms();
+    if annotation.id.trim().is_empty() {
+        annotation.id = format!("a-{}", uuid::Uuid::now_v7());
+        annotation.created_at = now;
+        if annotation.iteration == 0 {
+            annotation.iteration = meta.iteration;
+        }
+    }
+    annotation.updated_at = now;
+    if annotation.author.is_empty() {
+        annotation.author = "user".to_string();
+    }
+    annotation.line_content_hash =
+        clash::application::workflow::line_hash(&annotation.line_content);
+
+    let mut file = state
+        .backend
+        .load_workflow_annotations(&project, &slug)
+        .map_err(e2s)?;
+    match file.annotations.iter_mut().find(|a| a.id == annotation.id) {
+        Some(existing) => {
+            // Preserve creation metadata on edits.
+            annotation.created_at = existing.created_at;
+            *existing = annotation;
+        }
+        None => file.annotations.push(annotation),
+    }
+    state
+        .backend
+        .write_workflow_annotations(&project, &slug, &file)
+        .map_err(e2s)?;
+    Ok(file)
+}
+
+/// Change one annotation's resolution state (open / addressed / wontfix).
+#[tauri::command]
+pub(crate) fn set_workflow_annotation_status(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    id: String,
+    status: clash::domain::workflow::AnnotationStatus,
+) -> Result<AnnotationsFile, String> {
+    let meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    ensure_annotations_unlocked(&meta)?;
+    let mut file = state
+        .backend
+        .load_workflow_annotations(&project, &slug)
+        .map_err(e2s)?;
+    let ann = file
+        .annotations
+        .iter_mut()
+        .find(|a| a.id == id)
+        .ok_or_else(|| format!("No annotation '{}'", id))?;
+    ann.status = status;
+    ann.updated_at = now_ms();
+    state
+        .backend
+        .write_workflow_annotations(&project, &slug, &file)
+        .map_err(e2s)?;
+    Ok(file)
+}
+
+/// Delete an annotation thread.
+#[tauri::command]
+pub(crate) fn delete_workflow_annotation(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    id: String,
+) -> Result<AnnotationsFile, String> {
+    let meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    ensure_annotations_unlocked(&meta)?;
+    let mut file = state
+        .backend
+        .load_workflow_annotations(&project, &slug)
+        .map_err(e2s)?;
+    let before = file.annotations.len();
+    file.annotations.retain(|a| a.id != id);
+    if file.annotations.len() == before {
+        return Err(format!("No annotation '{}'", id));
+    }
+    state
+        .backend
+        .write_workflow_annotations(&project, &slug, &file)
+        .map_err(e2s)?;
+    Ok(file)
+}
+
+/// The diff-review "request changes" flow, ordered for crash-safety
+/// (review C2): snapshot the current diff + annotations into
+/// `history/{iteration:03}/`, append the note + open-annotation digest to
+/// review.md, then ONE meta write carrying both `iteration+1` and status
+/// `changes-requested`. Any failure before the meta write aborts cleanly; a
+/// retry overwrites the orphaned snapshot.
+#[tauri::command]
+pub(crate) async fn workflow_request_changes(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    note: Option<String>,
+) -> Result<clash::domain::workflow::WorkflowMeta, String> {
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    if !meta
+        .status
+        .can_transition_to(WorkflowStatus::ChangesRequested)
+    {
+        return Err(format!(
+            "cannot request changes from status {}",
+            meta.status
+        ));
+    }
+
+    let diff = workflow_diff_text(&state, &project, &slug, None)
+        .await
+        .unwrap_or_default();
+    let snapped = state
+        .backend
+        .snapshot_workflow_iteration(&project, &slug, &diff)
+        .map_err(e2s)?;
+
+    let open: Vec<clash::domain::workflow::Annotation> = state
+        .backend
+        .load_workflow_annotations(&project, &slug)
+        .map_err(e2s)?
+        .annotations
+        .into_iter()
+        .filter(|a| a.status == clash::domain::workflow::AnnotationStatus::Open)
+        .collect();
+    state
+        .backend
+        .append_workflow_review_iteration(
+            &project,
+            &slug,
+            snapped,
+            note.as_deref().unwrap_or(""),
+            &open,
+        )
+        .map_err(e2s)?;
+
+    meta.iteration = snapped + 1;
+    meta.status = WorkflowStatus::ChangesRequested;
+    state
+        .backend
+        .write_workflow_meta(&project, &slug, &meta)
+        .map_err(e2s)?;
+    seed_local(&state, &project, &slug, WorkflowStatus::ChangesRequested);
+    Ok(meta)
+}
+
+/// Delete a whole workflow item (used by Abandon → Delete).
+#[tauri::command]
+pub(crate) fn delete_workflow_item(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+) -> Result<(), String> {
+    state
+        .backend
+        .delete_workflow_item(&project, &slug)
+        .map_err(e2s)
+}

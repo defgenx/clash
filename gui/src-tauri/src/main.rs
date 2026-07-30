@@ -2650,7 +2650,15 @@ fn main() {
             workflows::get_workflow_diff,
             workflows::get_anchored_annotations,
             workflows::get_workflows_dir,
-            workflows::set_workflows_dir
+            workflows::set_workflows_dir,
+            workflows::create_workflow_item,
+            workflows::update_workflow_status,
+            workflows::save_workflow_doc,
+            workflows::save_workflow_annotation,
+            workflows::set_workflow_annotation_status,
+            workflows::delete_workflow_annotation,
+            workflows::workflow_request_changes,
+            workflows::delete_workflow_item
         ])
         .run(tauri::generate_context!())
         .expect("error while running clash GUI");
