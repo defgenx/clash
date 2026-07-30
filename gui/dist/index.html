@@ -40,6 +40,15 @@
         </div>
         <div id="notes-list" class="hidden"></div>
       </div>
+      <div class="section-resizer hidden" id="wf-resizer" title="Drag to resize"></div>
+      <div id="wf-section">
+        <div class="section-label collapsible" id="wf-toggle">WORKFLOWS <span id="wf-caret">▸</span><span id="wf-badge" class="wf-badge hidden"></span>
+          <button id="wf-board-btn" class="icon-btn mini" title="Open workflow board">⊞</button>
+          <button id="refresh-wf-btn" class="icon-btn mini" title="Refresh workflows"></button>
+          <button id="new-wf-btn" class="icon-btn mini" title="New workflow item">+</button>
+        </div>
+        <div id="wf-list" class="hidden"></div>
+      </div>
       <div id="sidebar-footer">
         <div class="section-label collapsible" id="settings-toggle">SETTINGS <span id="settings-caret">▸</span></div>
         <div id="settings-body" class="hidden">
@@ -48,6 +57,9 @@
         </label>
         <label class="setting-row">Scratch directory
           <input id="set-scratch-dir" type="text" placeholder="~/.claude/clash/scratch" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="setting-row">Workflows directory
+          <input id="set-workflows-dir" type="text" placeholder="~/.claude/clash/workflows" autocomplete="off" spellcheck="false" />
         </label>
         <label class="setting-row inline">Terminal font size
           <input id="set-fontsize" type="number" min="9" max="24" step="1" />

@@ -878,6 +878,49 @@ html, body, #app {
 }
 .view-wrap .chat { max-height: none; }
 
+/* Workflows sidebar section */
+.wf-badge {
+  background: var(--accent);
+  color: #1b1b1d;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 5px;
+  margin-left: 6px;
+  line-height: 14px;
+}
+.wf-group-label {
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  color: var(--fg-dim);
+  padding: 6px 10px 2px;
+}
+.wf-group-label.clickable { cursor: pointer; }
+.wf-group-label.clickable:hover { color: var(--fg); }
+.wf-item { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.wf-item .team-name { flex: initial; }
+.wf-dot { width: 14px; text-align: center; flex: none; }
+.wf-dot.wf-draft { color: var(--fg-dim); }
+.wf-dot.wf-active { color: var(--accent); animation: wf-pulse 1.6s ease-in-out infinite; }
+.wf-dot.wf-review { color: var(--blue); }
+.wf-dot.wf-changes { color: var(--st-prompting); }
+.wf-dot.wf-pr { color: var(--purple); }
+.wf-dot.wf-pr-ready { color: var(--green); }
+.wf-dot.wf-done { color: var(--green); }
+.wf-dot.wf-dead { color: var(--fg-dim); }
+.wf-sub {
+  flex-basis: 100%;
+  padding-left: 20px;
+  font-size: 10px;
+  color: var(--fg-dim);
+  line-height: 1.2;
+}
+.wf-warn { color: var(--st-waiting); font-size: 11px; }
+@keyframes wf-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
 /* Rendered markdown (workflow plan/review) */
 .wf-md { font-size: 13px; line-height: 1.55; max-width: 860px; }
 .wf-md h1, .wf-md h2, .wf-md h3 { color: var(--fg); margin: 14px 0 6px; line-height: 1.25; }

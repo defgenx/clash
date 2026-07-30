@@ -21,6 +21,10 @@ const state = {
   notesOpen: false,
   notesExpanded: new Set(), // scratch folder ids (rel paths) expanded in the tree
   notesDragId: null, // id of the scratch entry currently being dragged
+  workflows: [], // workflow items (plan → review → implement → PR pipeline)
+  wfOpen: false,
+  wfUnread: new Set(), // "project/slug" keys with unseen attention events
+  wfDoneOpen: false, // DONE/ABANDONED sidebar group expanded
   renaming: null, // session id with an open inline-rename input
   prevStatuses: new Map(), // session id -> status (attention transitions)
   unread: new Set(), // session ids with unseen attention events
@@ -106,6 +110,7 @@ function applyStaticIcons() {
     "new-ws-btn": "plus",
     "new-team-btn": "plus",
     "new-note-btn": "plus",
+    "new-wf-btn": "plus",
     "split-btn": "columns",
     "unsplit-btn": "square",
     "details-btn": "info",
@@ -3267,6 +3272,281 @@ async function createTeamPrompt() {
   }
 }
 
+
+// ── Workflows (plan → review → implement → PR pipeline) ────────
+
+const wfKey = (project, slug) => `${project}/${slug}`;
+
+// Status metadata — mirrors WorkflowStatus in src/domain/workflow.rs (the
+// kebab-case strings are the shared vocabulary; keep both sites in sync).
+function wfStatusInfo(status) {
+  switch (status) {
+    case "draft":
+      return { cls: "wf-draft", icon: "○", label: "DRAFT" };
+    case "planning":
+      return { cls: "wf-active", icon: "◔", label: "PLANNING" };
+    case "plan-review":
+      return { cls: "wf-review", icon: "◆", label: "PLAN REVIEW" };
+    case "changes-requested":
+      return { cls: "wf-changes", icon: "↺", label: "CHANGES REQUESTED" };
+    case "implementing":
+      return { cls: "wf-active", icon: "⟳", label: "IMPLEMENTING" };
+    case "diff-review":
+      return { cls: "wf-review", icon: "◆", label: "DIFF REVIEW" };
+    case "pr-draft":
+      return { cls: "wf-pr", icon: "⇄", label: "PR DRAFT" };
+    case "pr-ready":
+      return { cls: "wf-pr-ready", icon: "⇄", label: "PR READY" };
+    case "done":
+      return { cls: "wf-done", icon: "✓", label: "DONE" };
+    case "abandoned":
+      return { cls: "wf-dead", icon: "⌀", label: "ABANDONED" };
+    default:
+      return { cls: "wf-draft", icon: "?", label: String(status || "?").toUpperCase() };
+  }
+}
+
+// Mirrors WorkflowStatus::needs_attention — the decision-needed states.
+const WF_DECISION = new Set(["plan-review", "diff-review", "pr-draft"]);
+
+function wfGroup(item) {
+  const st = item.meta.status;
+  if (st === "done" || st === "abandoned") return "DONE";
+  if (WF_DECISION.has(st)) return "NEEDS DECISION";
+  if (st === "pr-ready") return "PR READY";
+  return "IN FLIGHT";
+}
+
+async function toggleWorkflows() {
+  state.wfOpen = !state.wfOpen;
+  $("wf-caret").textContent = state.wfOpen ? "▾" : "▸";
+  $("wf-list").classList.toggle("hidden", !state.wfOpen);
+  applySectionHeight("wf-section", "wf-resizer", state.wfOpen, "wfHeight");
+  if (state.wfOpen) await refreshWorkflows();
+}
+
+async function refreshWorkflows() {
+  try {
+    state.workflows = await invoke("list_workflow_items");
+  } catch (e) {
+    console.error("list_workflow_items failed:", e);
+    state.workflows = [];
+  }
+  renderWorkflows();
+}
+
+function wfItem(project, slug) {
+  return state.workflows.find((w) => w.project === project && w.slug === slug);
+}
+
+/// Count chip on the section label — visible even when collapsed, so a
+/// pending decision is never invisible.
+function updateWfBadge() {
+  const badge = $("wf-badge");
+  const n = state.wfUnread.size;
+  badge.classList.toggle("hidden", n === 0);
+  badge.textContent = n > 0 ? String(n) : "";
+}
+
+function renderWorkflows() {
+  updateWfBadge();
+  const list = $("wf-list");
+  list.innerHTML = "";
+  if (state.workflows.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "list-empty";
+    empty.textContent = "no workflows — + to create one";
+    list.appendChild(empty);
+    return;
+  }
+  const groups = new Map([
+    ["NEEDS DECISION", []],
+    ["IN FLIGHT", []],
+    ["PR READY", []],
+    ["DONE", []],
+  ]);
+  for (const item of state.workflows) groups.get(wfGroup(item)).push(item);
+  for (const [name, items] of groups) {
+    if (!items.length) continue;
+    const label = document.createElement("div");
+    label.className = "wf-group-label";
+    if (name === "DONE") {
+      // Finished items collapse by default — history on demand.
+      label.textContent = `${state.wfDoneOpen ? "▾" : "▸"} DONE (${items.length})`;
+      label.classList.add("clickable");
+      label.onclick = () => {
+        state.wfDoneOpen = !state.wfDoneOpen;
+        renderWorkflows();
+      };
+      list.appendChild(label);
+      if (!state.wfDoneOpen) continue;
+    } else {
+      label.textContent = name;
+      list.appendChild(label);
+    }
+    for (const item of items) list.appendChild(buildWorkflowRow(item));
+  }
+}
+
+function buildWorkflowRow(item) {
+  const key = wfKey(item.project, item.slug);
+  const info = wfStatusInfo(item.meta.status);
+  const row = document.createElement("div");
+  row.className = "team-item wf-item";
+  const bits = [escapeHtml(item.project), `it.${item.meta.iteration || 1}`];
+  if (item.openAnnotations > 0) bits.push(`💬${item.openAnnotations}`);
+  if (item.meta.pr && item.meta.pr.url) bits.push(item.meta.pr.draft ? "PR·draft" : "PR");
+  const warn =
+    item.agentAlive === false
+      ? `<span class="wf-warn" title="agent session is gone — relaunch from the item tab">⚠</span>`
+      : "";
+  const unread = state.wfUnread.has(key) ? `<span class="unread-dot"></span>` : "";
+  row.innerHTML =
+    `<span class="wf-dot ${info.cls}" title="${info.label}">${info.icon}</span>` +
+    `<span class="team-name">${escapeHtml(item.meta.title || item.slug)}</span>${warn}${unread}` +
+    `<span class="wf-sub">${bits.join(" · ")}</span>`;
+  row.title = `${item.meta.title || item.slug} — ${info.label}`;
+  row.onclick = () => openWorkflowTab(item);
+  row.oncontextmenu = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    workflowContextMenu(item, ev.clientX, ev.clientY);
+  };
+  return row;
+}
+
+function workflowContextMenu(item, x, y) {
+  const items = [{ label: "Open", icon: "file", action: () => openWorkflowTab(item) }];
+  if (item.meta.pr && item.meta.pr.url) {
+    items.push({
+      label: "Copy PR URL",
+      icon: "copy",
+      action: async () => {
+        try {
+          await invoke("clipboard_write_text", { text: item.meta.pr.url });
+          flashToast("PR URL copied");
+        } catch (e) {
+          uiAlert(`Copy failed: ${e}`);
+        }
+      },
+    });
+  }
+  items.push(null);
+  if (item.meta.status !== "abandoned") {
+    items.push({
+      label: "Abandon…",
+      icon: "x",
+      danger: true,
+      action: async () => {
+        if (!(await uiConfirm(`Abandon "${item.meta.title || item.slug}"? The files stay on disk.`)))
+          return;
+        try {
+          await invoke("update_workflow_status", {
+            project: item.project,
+            slug: item.slug,
+            status: "abandoned",
+            note: null,
+          });
+          refreshWorkflows();
+        } catch (e) {
+          uiAlert(`Abandon failed: ${e}`);
+        }
+      },
+    });
+  }
+  items.push({
+    label: "Delete…",
+    icon: "x",
+    danger: true,
+    action: async () => {
+      if (
+        !(await uiConfirm(
+          `Delete "${item.meta.title || item.slug}" and its whole history from disk?`,
+          "Delete"
+        ))
+      )
+        return;
+      try {
+        await invoke("delete_workflow_item", { project: item.project, slug: item.slug });
+        refreshWorkflows();
+      } catch (e) {
+        uiAlert(`Delete failed: ${e}`);
+      }
+    },
+  });
+  showContextMenu(x, y, items);
+}
+
+/// New-item flow: title → project (from existing workflow projects and open
+/// sessions) → repo path (prefilled from the picked project's sessions).
+async function newWorkflowFlow() {
+  if (!state.wfOpen) await toggleWorkflows();
+  const title = await uiPrompt("New workflow item — title");
+  if (!title || !title.trim()) return;
+
+  const OTHER = "::other::";
+  const seen = new Map(); // project name -> repo path ("" if unknown)
+  for (const w of state.workflows)
+    if (!seen.has(w.project)) seen.set(w.project, w.meta.repoPath || "");
+  for (const s of state.sessions || []) {
+    const dir = s.cwd || s.project_path || "";
+    const name = dir.split("/").filter(Boolean).pop();
+    if (name && !seen.has(name)) seen.set(name, dir);
+  }
+  let project;
+  if (seen.size === 0) {
+    project = OTHER;
+  } else {
+    const choices = [...seen.keys()].sort().map((name) => ({ label: name, value: name }));
+    choices.push({ label: "Other…", value: OTHER });
+    project = await uiChoice({ message: "Project for this workflow item", choices });
+    if (project === null) return;
+  }
+  let repoPath = seen.get(project) || "";
+  if (project === OTHER) {
+    project = ((await uiPrompt("Project name (group under the workflows root)")) || "").trim();
+    if (!project) return;
+    repoPath = "";
+  }
+  if (!repoPath) {
+    repoPath = (
+      (await uiPrompt("Repository path (absolute)", state.settings.defaultCwd || state.homeDir || "")) || ""
+    ).trim();
+    if (!repoPath) return;
+  }
+  try {
+    const item = await invoke("create_workflow_item", {
+      project,
+      title: title.trim(),
+      repoPath,
+    });
+    await refreshWorkflows();
+    openWorkflowTab(item);
+  } catch (e) {
+    uiAlert(`Create failed: ${e}`);
+  }
+}
+
+/// Open (or focus) an item's detail tab and clear its unread badge.
+function openWorkflowTab(item, opts = {}) {
+  const key = wfKey(item.project, item.slug);
+  state.wfUnread.delete(key);
+  renderWorkflows();
+  openViewTab(`view:workflow:${key}`, `⧉ ${item.meta.title || item.slug}`, (el) =>
+    buildWorkflowView(el, item.project, item.slug, opts)
+  );
+}
+
+/// Placeholder until the board tab lands.
+function openWorkflowBoardTab() {
+  flashToast("Workflow board — next up");
+}
+
+/// Item detail view — fleshed out with sub-views in the next commits.
+async function buildWorkflowView(el, project, slug) {
+  el.innerHTML = "<h4>WORKFLOW</h4><p class='hint'>loading…</p>";
+}
+
 // ── New session modal ───────────────────────────────────────────
 
 let nsPresets = [];
@@ -3813,6 +4093,30 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden) flushWorkspaces();
 });
 
+
+// Workflows sidebar section.
+$("wf-toggle").onclick = toggleWorkflows;
+$("refresh-wf-btn").innerHTML = svgIcon("reload", 13);
+$("refresh-wf-btn").onclick = (e) => {
+  e.stopPropagation();
+  spinButton($("refresh-wf-btn"), async () => {
+    if (!state.wfOpen) await toggleWorkflows(); // opening already refreshes
+    else await refreshWorkflows();
+  });
+};
+$("new-wf-btn").onclick = (e) => {
+  e.stopPropagation();
+  newWorkflowFlow();
+};
+$("wf-board-btn").onclick = (e) => {
+  e.stopPropagation();
+  openWorkflowBoardTab();
+};
+// Backend workflows watcher: keep the list fresh while the section is open.
+listen("workflows-changed", () => {
+  if (state.wfOpen) refreshWorkflows();
+});
+
 // ── Browser tabs (first-class tabs, one child webview each) ──────
 // A browser tab is a regular `state.open` entry living in panes and
 // workspaces like terminals do. Its page is a native child webview the
@@ -4287,6 +4591,7 @@ function applySectionHeight(sectionId, resizerId, open, key) {
 function reapplySectionHeights() {
   applySectionHeight("teams-section", "teams-resizer", state.teamsOpen, "teamsHeight");
   applySectionHeight("notes-section", "notes-resizer", state.notesOpen, "notesHeight");
+  applySectionHeight("wf-section", "wf-resizer", state.wfOpen, "wfHeight");
 }
 
 /// Drag the divider to set the section height. The session list (the only
@@ -4321,6 +4626,7 @@ function initSectionResizer(handleId, sectionId, key) {
 
 initSectionResizer("teams-resizer", "teams-section", "teamsHeight");
 initSectionResizer("notes-resizer", "notes-section", "notesHeight");
+initSectionResizer("wf-resizer", "wf-section", "wfHeight");
 reapplySectionHeights();
 window.addEventListener("resize", reapplySectionHeights);
 
@@ -4349,12 +4655,31 @@ $("set-scratch-dir").addEventListener("change", async () => {
   }
 });
 
+/// Same contract for the workflows directory (dedicated root, config.toml).
+$("set-workflows-dir").addEventListener("change", async () => {
+  const el = $("set-workflows-dir");
+  try {
+    el.value = await invoke("set_workflows_dir", { path: el.value.trim() });
+    if (state.wfOpen) await refreshWorkflows();
+  } catch (e) {
+    uiAlert(`Workflows directory: ${e}`);
+    try {
+      el.value = await invoke("get_workflows_dir");
+    } catch (_) {}
+  }
+});
+
 /// Reflect the current scratch directory (from config) into the field at boot.
 async function loadScratchDir() {
   try {
     $("set-scratch-dir").value = await invoke("get_scratch_dir");
   } catch (e) {
     console.error("get_scratch_dir failed:", e);
+  }
+  try {
+    $("set-workflows-dir").value = await invoke("get_workflows_dir");
+  } catch (e) {
+    console.error("get_workflows_dir failed:", e);
   }
 }
 
