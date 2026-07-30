@@ -1,0 +1,197 @@
+//! GitHub CLI (`gh`) integration for workflow PRs.
+//!
+//! Everything shells out to the user's `gh` binary — clash never talks to the
+//! GitHub API directly, so auth is entirely gh's concern. All functions are
+//! synchronous `std::process::Command` (matching the raw-subprocess git
+//! style); the async Tauri layer wraps calls in `spawn_blocking`.
+//!
+//! Degradation contract: [`GhError::NotInstalled`] / [`GhError::NotAuthenticated`]
+//! map to the GUI's `gh-unavailable:` / `gh-unauthenticated:` error prefixes,
+//! which disable PR buttons with a setup hint instead of failing flows.
+
+use std::path::Path;
+use std::process::Command;
+
+/// A pull request as reported by `gh pr view`.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhPrView {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub number: u64,
+    #[serde(default)]
+    pub is_draft: bool,
+    /// "OPEN" | "MERGED" | "CLOSED".
+    #[serde(default)]
+    pub state: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum GhError {
+    #[error("gh CLI not installed")]
+    NotInstalled,
+    #[error("gh not authenticated: {0}")]
+    NotAuthenticated(String),
+    #[error("no pull request found for this branch")]
+    NoPr,
+    #[error("gh failed: {0}")]
+    Command(String),
+    #[error("could not parse gh output: {0}")]
+    Parse(String),
+}
+
+fn run(dir: &Path, args: &[&str]) -> Result<std::process::Output, GhError> {
+    Command::new("gh")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                GhError::NotInstalled
+            } else {
+                GhError::Command(e.to_string())
+            }
+        })
+}
+
+/// Cheap health probe: is `gh` installed and authenticated?
+pub fn check_gh() -> Result<(), GhError> {
+    let output = run(Path::new("."), &["auth", "status"])?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(GhError::NotAuthenticated(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
+}
+
+/// Pure: parse the JSON emitted by `gh pr view --json url,number,isDraft,state`.
+pub fn parse_pr_view_json(s: &str) -> Result<GhPrView, GhError> {
+    serde_json::from_str(s.trim()).map_err(|e| GhError::Parse(e.to_string()))
+}
+
+/// Pure: extract `owner/repo` and PR number from a GitHub PR URL.
+pub fn parse_pr_url(url: &str) -> Option<(String, u64)> {
+    let rest = url
+        .trim()
+        .trim_end_matches('/')
+        .strip_prefix("https://github.com/")?;
+    let mut parts = rest.split('/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    if parts.next()? != "pull" {
+        return None;
+    }
+    let number: u64 = parts.next()?.split(['?', '#']).next()?.parse().ok()?;
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some((format!("{}/{}", owner, repo), number))
+}
+
+/// `gh pr view [branch] --json url,number,isDraft,state` in `dir`.
+/// `branch = ""` means "the PR of the current branch".
+pub fn pr_view(dir: &Path, branch: &str) -> Result<GhPrView, GhError> {
+    let mut args = vec!["pr", "view"];
+    if !branch.is_empty() {
+        args.push(branch);
+    }
+    args.extend(["--json", "url,number,isDraft,state"]);
+    let output = run(dir, &args)?;
+    if output.status.success() {
+        parse_pr_view_json(&String::from_utf8_lossy(&output.stdout))
+    } else {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if err.to_lowercase().contains("no pull requests found") {
+            Err(GhError::NoPr)
+        } else if err.to_lowercase().contains("auth") && err.to_lowercase().contains("login") {
+            Err(GhError::NotAuthenticated(err))
+        } else {
+            Err(GhError::Command(err))
+        }
+    }
+}
+
+/// `gh pr create --draft` for the current branch in `dir`, then read the
+/// created PR back via [`pr_view`].
+pub fn pr_create_draft(
+    dir: &Path,
+    title: &str,
+    body: &str,
+    base: Option<&str>,
+) -> Result<GhPrView, GhError> {
+    let mut args = vec!["pr", "create", "--draft", "--title", title, "--body", body];
+    if let Some(base) = base {
+        args.extend(["--base", base]);
+    }
+    let output = run(dir, &args)?;
+    if !output.status.success() {
+        return Err(GhError::Command(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+    pr_view(dir, "")
+}
+
+/// `gh pr ready <number>` in `dir` — flips a draft PR to ready-for-review.
+pub fn pr_ready(dir: &Path, number: u64) -> Result<(), GhError> {
+    let number = number.to_string();
+    let output = run(dir, &["pr", "ready", &number])?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(GhError::Command(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_pr_view_json_full() {
+        let json =
+            r#"{"url":"https://github.com/o/r/pull/7","number":7,"isDraft":true,"state":"OPEN"}"#;
+        let pr = parse_pr_view_json(json).unwrap();
+        assert_eq!(pr.number, 7);
+        assert!(pr.is_draft);
+        assert_eq!(pr.state, "OPEN");
+        assert_eq!(pr.url, "https://github.com/o/r/pull/7");
+    }
+
+    #[test]
+    fn parse_pr_view_json_missing_fields_default() {
+        let pr = parse_pr_view_json(r#"{"number": 3}"#).unwrap();
+        assert_eq!(pr.number, 3);
+        assert!(!pr.is_draft);
+        assert_eq!(pr.state, "");
+        assert!(parse_pr_view_json("not json").is_err());
+    }
+
+    #[test]
+    fn parse_pr_url_variants() {
+        assert_eq!(
+            parse_pr_url("https://github.com/acme/clash/pull/42"),
+            Some(("acme/clash".to_string(), 42))
+        );
+        assert_eq!(
+            parse_pr_url("https://github.com/acme/clash/pull/42/"),
+            Some(("acme/clash".to_string(), 42))
+        );
+        assert_eq!(
+            parse_pr_url("https://github.com/acme/clash/pull/42#discussion_r1"),
+            Some(("acme/clash".to_string(), 42))
+        );
+        assert_eq!(
+            parse_pr_url("https://github.com/acme/clash/pull/42?diff=split"),
+            Some(("acme/clash".to_string(), 42))
+        );
+        assert!(parse_pr_url("https://github.com/acme/clash/issues/42").is_none());
+        assert!(parse_pr_url("https://gitlab.com/acme/clash/pull/42").is_none());
+        assert!(parse_pr_url("https://github.com/acme/clash/pull/abc").is_none());
+    }
+}

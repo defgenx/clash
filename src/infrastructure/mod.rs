@@ -6,6 +6,10 @@ pub mod env_path;
 pub mod error;
 pub mod event;
 pub mod fs;
+/// gh integration is consumed only through the lib crate (GUI PR commands);
+/// the binary's private-`mod` compilation would otherwise flag it as dead.
+#[allow(dead_code)]
+pub mod gh;
 pub mod git;
 pub mod hooks;
 pub mod ide;
