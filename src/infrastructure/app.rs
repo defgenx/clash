@@ -79,6 +79,11 @@ impl App {
         // Ship/refresh the embedded skills (clash-workflow) so the agent
         // side of Workflows is always present and up-to-date.
         crate::infrastructure::skills::install_skills(&data_dir);
+        // Re-key registry entries whose conversation moved through resume
+        // forks (claude --resume writes a NEW transcript while hooks keep
+        // reporting the old id) so the session list and the first resume
+        // land on the conversation the user actually left off in.
+        crate::infrastructure::hooks::registry::heal_registry_forks(&data_dir.join("projects"));
 
         let (fs_tx, fs_rx) = tokio::sync::mpsc::unbounded_channel();
         let status_dir = crate::infrastructure::hooks::status_dir(&data_dir);
@@ -1002,14 +1007,18 @@ impl App {
                 .filter(|c| !c.is_empty())
                 .or_else(|| Some(s.project_path.clone()).filter(|p| !p.is_empty()))
         });
-        // Resolve a possibly-stale id forward to the current conversation (the
-        // `/clear` re-key lineage) so we resume the latest, not a pre-`/clear`
-        // snapshot. Identity for a normal, already-current id.
-        let resume_id = crate::infrastructure::hooks::registry::resolve_resume_id(
+        // Resolve a possibly-stale id forward to the current conversation:
+        // the `/clear` re-key lineage (registry), then the resume-fork chain
+        // on disk (`claude --resume` writes a NEW transcript while hooks
+        // keep reporting the old id — see chase_resume_forks).
+        let resume_id = crate::infrastructure::hooks::registry::resolve_latest_conversation(
             &self.registry_cache.get(),
+            &self.backend.projects_dir(),
+            resolved_cwd.as_deref().unwrap_or(""),
             session_id,
-        )
-        .unwrap_or_else(|| session_id.to_string());
+        );
+        crate::infrastructure::hooks::registry::record_resumed_conversation(session_id, &resume_id);
+        self.registry_cache.invalidate();
         // `claude --resume <id>` only works when the conversation transcript
         // exists on disk; otherwise Claude exits 1 ("No conversation found")
         // and leaves a blank/dead terminal. Fall back to a fresh `--session-id`
@@ -1543,10 +1552,24 @@ impl App {
                         })
                     });
 
-                    // Build CLI args: provided args for new sessions,
-                    // or --resume for existing sessions
+                    // Build CLI args: provided args for new sessions, or
+                    // --resume for existing ones — resolved through the
+                    // `/clear` lineage and the on-disk resume-fork chain so we
+                    // never reopen a stale conversation.
                     let cmd_args = if args.is_empty() {
-                        vec!["--resume".to_string(), session_id.clone()]
+                        let resume_id =
+                            crate::infrastructure::hooks::registry::resolve_latest_conversation(
+                                &self.registry_cache.get(),
+                                &self.backend.projects_dir(),
+                                resolved_cwd.as_deref().unwrap_or(""),
+                                &session_id,
+                            );
+                        crate::infrastructure::hooks::registry::record_resumed_conversation(
+                            &session_id,
+                            &resume_id,
+                        );
+                        self.registry_cache.invalidate();
+                        vec!["--resume".to_string(), resume_id]
                     } else {
                         args
                     };
@@ -1641,15 +1664,23 @@ impl App {
                     });
 
                     let cmd_args = if args.is_empty() {
-                        // Resolve a stale id forward through the `/clear` lineage,
-                        // then resume only if the transcript exists — otherwise
-                        // start fresh so a missing/never-messaged conversation
-                        // doesn't exit `claude --resume` into a blank terminal.
-                        let resume_id = crate::infrastructure::hooks::registry::resolve_resume_id(
-                            &self.registry_cache.get(),
+                        // Resolve a stale id forward through the `/clear` lineage
+                        // and the on-disk resume-fork chain, then resume only if
+                        // the transcript exists — otherwise start fresh so a
+                        // missing/never-messaged conversation doesn't exit
+                        // `claude --resume` into a blank terminal.
+                        let resume_id =
+                            crate::infrastructure::hooks::registry::resolve_latest_conversation(
+                                &self.registry_cache.get(),
+                                &self.backend.projects_dir(),
+                                resolved_cwd.as_deref().unwrap_or(""),
+                                &session_id,
+                            );
+                        crate::infrastructure::hooks::registry::record_resumed_conversation(
                             &session_id,
-                        )
-                        .unwrap_or_else(|| session_id.clone());
+                            &resume_id,
+                        );
+                        self.registry_cache.invalidate();
                         let has_transcript = resolved_cwd
                             .as_deref()
                             .map(|cwd| self.backend.has_resumable_transcript(cwd, &resume_id))

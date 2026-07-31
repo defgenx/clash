@@ -314,15 +314,26 @@ async fn open_session(
     if !alive {
         // Resume the recorded Claude session in its working directory.
         let (cwd, name) = resume_context(&state, &session_id);
-        // A persisted id may be stale: after a `/clear` the hook re-keys the
-        // registry to the new conversation id and records the old one in the
-        // lineage. Resolve forward so we resume the LATEST conversation, not a
-        // stale pre-`/clear` snapshot.
+        // A persisted id may be stale in two ways: `/clear` re-keyed the
+        // registry (lineage recorded by the hook), and `claude --resume`
+        // itself forks the conversation into a NEW transcript while hooks
+        // keep reporting the old id (no SessionStart carries the new one).
+        // Resolve through both — registry lineage, then the on-disk fork
+        // chain — so we resume the conversation the user actually left off
+        // in, and record the result so the registry stays current.
         let resume_id = {
             let registry = clash::infrastructure::hooks::registry::load();
-            clash::infrastructure::hooks::registry::resolve_resume_id(&registry, &session_id)
-                .unwrap_or_else(|| session_id.clone())
+            clash::infrastructure::hooks::registry::resolve_latest_conversation(
+                &registry,
+                &state.backend.projects_dir(),
+                &cwd,
+                &session_id,
+            )
         };
+        clash::infrastructure::hooks::registry::record_resumed_conversation(
+            &session_id,
+            &resume_id,
+        );
         // `claude --resume <id>` only works when the conversation transcript
         // exists on disk. A session created with `--session-id` but never
         // messaged (e.g. a fresh tab stashed on quit, then restored) — or a
@@ -2460,6 +2471,11 @@ fn main() {
     // of Workflows is always present and up-to-date, even when only the GUI
     // is ever launched.
     clash::infrastructure::skills::install_skills(state.backend.base_dir());
+    // Re-key registry entries whose conversation moved through resume forks
+    // (claude --resume writes a NEW transcript while hooks keep reporting
+    // the old id) so the session list, persisted pane ids, and the first
+    // resume all land on the conversation the user actually left off in.
+    clash::infrastructure::hooks::registry::heal_registry_forks(&state.backend.projects_dir());
 
     // FS watcher on ~/.claude/projects — same role as the TUI's watcher
     // wiring in app.rs. Without it the FsBackend session cache goes stale
