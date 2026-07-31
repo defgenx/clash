@@ -1536,3 +1536,8 @@ html, body, #app {
 }
 .skills-content { flex: 1; min-width: 0; overflow-y: auto; padding: 12px 16px; user-select: text; }
 .skills-managed-note { font-size: 11px; color: var(--fg-dim); margin-right: auto; align-self: center; }
+
+/* Text input with a trailing browse button (new-session modal) */
+.input-with-btn { display: flex; gap: 6px; align-items: center; }
+.input-with-btn input { flex: 1; min-width: 0; }
+.input-with-btn .icon-btn { width: 30px; height: 28px; flex: none; border: 1px solid var(--border); }

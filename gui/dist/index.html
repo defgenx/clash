@@ -133,7 +133,12 @@
   <div id="modal-backdrop" class="hidden">
     <div id="new-session-modal">
       <h3>New session</h3>
-      <label>Working directory <input id="ns-cwd" type="text" placeholder="/Users/you/project" autocomplete="off" spellcheck="false" /></label>
+      <label>Working directory
+        <span class="input-with-btn">
+          <input id="ns-cwd" type="text" placeholder="/Users/you/project" autocomplete="off" spellcheck="false" />
+          <button id="ns-browse" class="icon-btn" title="Browse for a directory" type="button"></button>
+        </span>
+      </label>
       <label id="ns-preset-wrap" class="hidden">Preset
         <select id="ns-preset"><option value="">— none —</option></select>
       </label>

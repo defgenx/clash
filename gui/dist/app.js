@@ -4733,6 +4733,25 @@ function hideNewSessionModal() {
   $("modal-backdrop").classList.add("hidden");
 }
 
+/// Native folder picker (tauri-plugin-dialog) seeded from a starting path.
+/// Returns the chosen absolute directory, or null when cancelled/unavailable.
+async function pickDirectory(defaultPath) {
+  try {
+    const picked = await invoke("plugin:dialog|open", {
+      options: {
+        directory: true,
+        multiple: false,
+        defaultPath: (defaultPath || "").trim() || state.homeDir || undefined,
+        title: "Choose a working directory",
+      },
+    });
+    return typeof picked === "string" ? picked : null;
+  } catch (e) {
+    console.error("folder picker failed:", e);
+    return null;
+  }
+}
+
 async function loadPresetsForCwd() {
   const cwd = $("ns-cwd").value.trim();
   const wrap = $("ns-preset-wrap");
@@ -4897,6 +4916,14 @@ $("search").addEventListener("input", (e) => {
 
 $("new-session-btn").onclick = showNewSessionModal;
 $("ns-cancel").onclick = hideNewSessionModal;
+$("ns-browse").innerHTML = svgIcon("folder", 14);
+$("ns-browse").onclick = async () => {
+  const dir = await pickDirectory($("ns-cwd").value);
+  if (dir) {
+    $("ns-cwd").value = dir;
+    loadPresetsForCwd();
+  }
+};
 $("ns-create").onclick = createSession;
 
 // Fresh workspace: the "no session" overlay is a quick-start surface — click

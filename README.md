@@ -473,7 +473,9 @@ renderer on context loss) attach to the same sessions the TUI manages.
 GUI features: fuzzy search (`/` or `⌘F`), inline rename (double-click),
 new session via the sidebar's `＋ New session` button (`⌘T`) with preset
 picker and git-worktree option — the directory prefills from the configured
-default directory, falling back to the focused session's project, then home —
+default directory, falling back to the focused session's project, then home,
+and a 📁 browse button opens the native folder picker to choose where the
+session starts —
 rename/reload/details/stash/kill/take-over from a per-session `⋯` menu (also on
 right-click of the row), full shell terminals inside the GUI — the
 topbar's terminal button picks among the machine's shells (`/etc/shells`

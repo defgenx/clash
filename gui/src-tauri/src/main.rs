@@ -2494,6 +2494,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .setup(move |app| {
             // Repair any sessions whose quit "idle" status was clobbered by a
