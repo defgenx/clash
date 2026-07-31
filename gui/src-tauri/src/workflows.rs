@@ -587,6 +587,7 @@ pub(crate) async fn start_workflow_agent(
     project: String,
     slug: String,
     phase: String,
+    branch: Option<String>,
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
@@ -598,13 +599,22 @@ pub(crate) async fn start_workflow_agent(
         return Err("This item has no repository path — set repoPath in meta.json".to_string());
     }
 
-    // First launch: isolate the item in its own worktree + branch (= slug).
+    // First launch: isolate the item in its own worktree + branch. The
+    // branch defaults to the slug; when that name is taken the structured
+    // `branch-exists:` error makes the GUI ask for another name and retry.
     if meta.worktree.as_deref().unwrap_or("").is_empty() {
-        let (wt, _source_branch) = crate::create_worktree(&meta.repo_path, &slug).await?;
-        meta.worktree = Some(wt);
-        if meta.branch.is_empty() {
-            meta.branch = slug.clone();
+        let branch_name = branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+            .unwrap_or(&slug)
+            .to_string();
+        if crate::branch_exists(&meta.repo_path, &branch_name).await {
+            return Err(format!("branch-exists:{}", branch_name));
         }
+        let (wt, _source_branch) = crate::create_worktree(&meta.repo_path, &branch_name).await?;
+        meta.worktree = Some(wt);
+        meta.branch = branch_name;
     }
     let cwd = meta.worktree.clone().unwrap_or_default();
 

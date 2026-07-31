@@ -189,6 +189,64 @@ const uiConfirm = (message, okLabel = "Confirm") =>
 const uiPrompt = (message, def = "") => uiDialog({ message, input: def });
 const uiAlert = (message) => uiDialog({ message, cancelable: false });
 
+/// A modal that picks one entry from a (possibly long) list: scrollable
+/// rows with a label and an optional dim detail line. Resolves to the
+/// picked value, or null when cancelled. Use this instead of uiChoice when
+/// the options are data (repos, branches…) rather than 2-3 actions.
+function uiListChoice({ message, items }) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "dialog-backdrop";
+    const box = document.createElement("div");
+    box.className = "dialog-box";
+    const msg = document.createElement("p");
+    msg.textContent = message;
+    box.appendChild(msg);
+    const done = (val) => {
+      backdrop.remove();
+      resolve(val);
+      if (typeof fitAll === "function") fitAll();
+    };
+    const list = document.createElement("div");
+    list.className = "dialog-list";
+    for (const it of items) {
+      const row = document.createElement("div");
+      row.className = "dialog-list-row";
+      const label = document.createElement("div");
+      label.className = "dialog-list-label";
+      label.textContent = it.label;
+      row.appendChild(label);
+      if (it.detail) {
+        const d = document.createElement("div");
+        d.className = "dialog-list-detail";
+        d.textContent = it.detail;
+        row.appendChild(d);
+      }
+      row.onclick = () => done(it.value);
+      list.appendChild(row);
+    }
+    box.appendChild(list);
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.onclick = () => done(null);
+    actions.appendChild(cancel);
+    box.appendChild(actions);
+    backdrop.appendChild(box);
+    if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
+    document.body.appendChild(backdrop);
+    backdrop.onclick = (e) => {
+      if (e.target === backdrop) done(null);
+    };
+    backdrop.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") done(null);
+    });
+    setTimeout(() => cancel.focus(), 0);
+  });
+}
+
 /// A modal that asks the user to pick one of several labeled actions.
 /// `choices` is [{ label, value, primary? }]; resolves to the chosen value,
 /// or null if cancelled. `detail` renders on its own line under the message
@@ -3511,26 +3569,40 @@ async function newWorkflowFlow() {
   const title = await uiPrompt("New workflow item — title");
   if (!title || !title.trim()) return;
 
-  const OTHER = "::other::";
-  const seen = new Map(); // project name -> repo path ("" if unknown)
-  for (const w of state.workflows)
-    if (!seen.has(w.project)) seen.set(w.project, w.meta.repoPath || "");
+  // Candidate repos, deduped by path (two repos can share a basename —
+  // dedupe by name silently dropped one of them).
+  const candidates = new Map(); // repo path -> project name
+  for (const w of state.workflows) {
+    const dir = w.meta.repoPath || "";
+    if (dir && !candidates.has(dir)) candidates.set(dir, w.project);
+  }
   for (const s of state.sessions || []) {
     const dir = s.cwd || s.project_path || "";
     const name = dir.split("/").filter(Boolean).pop();
-    if (name && !seen.has(name)) seen.set(name, dir);
+    if (dir && name && !candidates.has(dir)) candidates.set(dir, name);
   }
   let project;
-  if (seen.size === 0) {
-    project = OTHER;
+  let repoPath = "";
+  if (candidates.size === 0) {
+    project = null; // straight to manual entry
   } else {
-    const choices = [...seen.keys()].sort().map((name) => ({ label: name, value: name }));
-    choices.push({ label: "Other…", value: OTHER });
-    project = await uiChoice({ message: "Project for this workflow item", choices });
-    if (project === null) return;
+    const items = [...candidates.entries()]
+      .sort((a, b) => a[1].localeCompare(b[1]) || a[0].localeCompare(b[0]))
+      .map(([dir, name]) => ({ label: name, detail: dir, value: dir }));
+    items.push({ label: "Other…", detail: "enter a project name and repo path", value: "" });
+    const picked = await uiListChoice({
+      message: "Repository for this workflow item",
+      items,
+    });
+    if (picked === null) return;
+    if (picked) {
+      repoPath = picked;
+      project = candidates.get(picked);
+    } else {
+      project = null;
+    }
   }
-  let repoPath = seen.get(project) || "";
-  if (project === OTHER) {
+  if (!project) {
     project = ((await uiPrompt("Project name (group under the workflows root)")) || "").trim();
     if (!project) return;
     repoPath = "";
@@ -3739,12 +3811,13 @@ function openWorkflowPr(item) {
 
 /// Launch (or relaunch) the workflow agent for a phase and open its session
 /// tab split next to the workflow tab.
-async function launchWfAgent(item, phase, root) {
+async function launchWfAgent(item, phase, root, branch = null) {
   try {
     const sid = await invoke("start_workflow_agent", {
       project: item.project,
       slug: item.slug,
       phase,
+      branch,
       cols: 120,
       rows: 40,
     });
@@ -3753,6 +3826,20 @@ async function launchWfAgent(item, phase, root) {
     await refreshWorkflows();
     if (root) buildWorkflowView(root, item.project, item.slug);
   } catch (e) {
+    // The default branch name (the slug) already exists in the repo — ask
+    // what to call this workflow's branch and retry with it.
+    const msg = String(e);
+    if (msg.startsWith("branch-exists:")) {
+      const taken = msg.slice("branch-exists:".length);
+      const next = await uiPrompt(
+        `Branch "${taken}" already exists in this repo — branch name for this workflow:`,
+        `${taken}-2`
+      );
+      if (next === null) return;
+      const name = next.trim();
+      if (!name) return;
+      return launchWfAgent(item, phase, root, name);
+    }
     uiAlert(`Agent launch failed: ${e}`);
   }
 }

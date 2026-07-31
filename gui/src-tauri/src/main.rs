@@ -1328,6 +1328,21 @@ fn list_presets(project_dir: String) -> Vec<clash::domain::entities::Preset> {
     )
 }
 
+/// True when `refs/heads/<name>` already exists in the repo at `dir` —
+/// lets the workflow agent launch fail with a structured error the GUI can
+/// turn into a "pick another branch name" prompt instead of a raw
+/// `git worktree add` failure.
+pub(crate) async fn branch_exists(dir: &str, name: &str) -> bool {
+    let refname = format!("refs/heads/{}", name);
+    tokio::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", &refname])
+        .current_dir(dir)
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Create a git worktree for `project_path` named `name`:
 /// `<parent>/<project>-worktrees/<name>`, new branch `name` forked from the
 /// project's current branch. Returns `(worktree_path, source_branch)`.

@@ -1483,3 +1483,23 @@ html, body, #app {
 .wf-card:hover { border-color: var(--accent); }
 .wf-card-title { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
 .wf-card-sub { font-size: 11px; color: var(--fg-dim); display: flex; align-items: center; gap: 4px; }
+
+/* List-choice dialog (uiListChoice): scrollable data rows */
+.dialog-list {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 10px 0 4px;
+}
+.dialog-list-row { padding: 7px 10px; cursor: pointer; }
+.dialog-list-row:hover { background: var(--bg-hover); }
+.dialog-list-row + .dialog-list-row { border-top: 1px solid var(--border); }
+.dialog-list-label { font-size: 13px; }
+.dialog-list-detail {
+  font-size: 11px;
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
