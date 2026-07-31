@@ -450,6 +450,13 @@ the diff drifts between iterations and never dropped (unanchored ones land
 in an orphan tray). The file contract for agents is documented in
 [`docs/workflows.md`](docs/workflows.md).
 
+**Skills**: the agent side is the `clash-workflow` skill, embedded in the
+clash binary and auto-installed (and kept up-to-date) under
+`~/.claude/skills/` at every startup — no setup needed. The ☰ button on the
+WORKFLOWS section opens a **Skills viewer** listing every installed skill
+with rendered content; clash-managed ones are badged (local edits to those
+are overwritten on the next launch).
+
 Workflows are GUI-only for now; the TUI will grow a read-only view.
 
 ## GUI (primary mode)
