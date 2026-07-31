@@ -927,3 +927,91 @@ pub(crate) async fn attach_workflow_pr(
     }
     Ok(meta)
 }
+
+// ── Skills (visualize the Claude Code skills clash ships/uses) ──────────
+
+/// One skill under `<claude_dir>/skills/` as listed to the GUI.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SkillInfo {
+    name: String,
+    /// First `description:` line of the frontmatter (may be long; the GUI
+    /// truncates for display).
+    description: String,
+    /// Absolute path of the SKILL.md (for open-in-editor).
+    path: String,
+    /// True when this skill is embedded in the clash binary (managed —
+    /// local edits are overwritten at startup).
+    managed: bool,
+    /// For managed skills: whether the installed copy matches the binary.
+    up_to_date: bool,
+}
+
+/// Pull the `description:` value out of SKILL.md frontmatter (single line).
+fn skill_description(content: &str) -> String {
+    let mut in_frontmatter = false;
+    for line in content.lines() {
+        if line.trim() == "---" {
+            if in_frontmatter {
+                break;
+            }
+            in_frontmatter = true;
+            continue;
+        }
+        if in_frontmatter {
+            if let Some(d) = line.strip_prefix("description:") {
+                return d.trim().to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// List every skill directory containing a SKILL.md, managed ones first.
+#[tauri::command]
+pub(crate) fn list_skills(state: State<'_, GuiState>) -> Vec<SkillInfo> {
+    let skills_dir = state.backend.base_dir().join("skills");
+    let embedded: std::collections::HashMap<&str, &str> = clash::infrastructure::skills::SKILLS
+        .iter()
+        .map(|s| (s.name, s.content))
+        .collect();
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&skills_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let path = entry.path().join("SKILL.md");
+        if !path.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let managed = embedded.contains_key(name.as_str());
+        out.push(SkillInfo {
+            description: skill_description(&content),
+            up_to_date: !managed || embedded.get(name.as_str()) == Some(&content.as_str()),
+            path: path.to_string_lossy().into_owned(),
+            name,
+            managed,
+        });
+    }
+    out.sort_by_key(|s| (!s.managed, s.name.clone()));
+    out
+}
+
+/// Full SKILL.md content for the viewer. `name` is sanitized against
+/// traversal the same way workflow components are.
+#[tauri::command]
+pub(crate) fn get_skill(state: State<'_, GuiState>, name: String) -> Result<String, String> {
+    if name.is_empty() || name.contains(['/', '\\', '\0']) || name == "." || name == ".." {
+        return Err(format!("Invalid skill name: '{}'", name));
+    }
+    let path = state
+        .backend
+        .base_dir()
+        .join("skills")
+        .join(&name)
+        .join("SKILL.md");
+    std::fs::read_to_string(&path).map_err(|e| format!("Cannot read {}: {}", path.display(), e))
+}

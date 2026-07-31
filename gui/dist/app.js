@@ -347,7 +347,11 @@ function workspacesJson() {
   for (const [id, e] of state.open) {
     if (e.kind === "browser") {
       browserTabs.push({ id, url: e.url, name: e.name, renamed: !!e.renamed });
-    } else if (id === "view:wfboard" || id.startsWith("view:workflow:")) {
+    } else if (
+      id === "view:wfboard" ||
+      id === "view:skills" ||
+      id.startsWith("view:workflow:")
+    ) {
       // Workflow tabs are recreatable from their key alone (files on disk);
       // persist the name + active sub-view so restore lands where we were.
       const ts = id.startsWith("view:workflow:")
@@ -539,7 +543,11 @@ async function restoreWorkspaceSessions() {
         // Workflow tabs are rebuilt from disk state; other view tabs
         // (conversation / subagents / session diff) keep the historical
         // drop-on-restart behavior.
-        if (sid === "view:wfboard" || sid.startsWith("view:workflow:")) {
+        if (
+          sid === "view:wfboard" ||
+          sid === "view:skills" ||
+          sid.startsWith("view:workflow:")
+        ) {
           state.activeWs = wi;
           w.focused = pi;
           restoreWorkflowTab(sid, pendingWorkflowTabs.find((t) => t && t.id === sid));
@@ -3633,6 +3641,10 @@ function restoreWorkflowTab(key, saved) {
     openWorkflowBoardTab();
     return;
   }
+  if (key === "view:skills") {
+    openSkillsTab();
+    return;
+  }
   const rest = key.slice("view:workflow:".length);
   const slash = rest.indexOf("/");
   if (slash < 0) return;
@@ -3654,6 +3666,97 @@ function openWorkflowTab(item, opts = {}) {
   openViewTab(`view:workflow:${key}`, `⧉ ${item.meta.title || item.slug}`, (el) =>
     buildWorkflowView(el, item.project, item.slug, opts)
   );
+}
+
+/// Skills viewer: the Claude Code skills clash ships (managed, auto-updated
+/// at startup) and any other skills under ~/.claude/skills. Singleton tab.
+function openSkillsTab(selectName = null) {
+  openViewTab("view:skills", "☰ Skills", (el) => buildSkillsView(el, selectName));
+}
+
+async function buildSkillsView(el, selectName) {
+  el.classList.add("skills-view");
+  el.innerHTML = "<p class='hint'>loading…</p>";
+  let skills = [];
+  try {
+    skills = await invoke("list_skills");
+  } catch (e) {
+    el.innerHTML = `<h4>SKILLS</h4><p class='hint'>failed: ${escapeHtml(e)}</p>`;
+    return;
+  }
+  el.innerHTML = "";
+  const wrap = document.createElement("div");
+  wrap.className = "skills-wrap";
+  const list = document.createElement("div");
+  list.className = "skills-list";
+  const content = document.createElement("div");
+  content.className = "skills-content";
+  wrap.append(list, content);
+  el.appendChild(wrap);
+
+  if (!skills.length) {
+    content.innerHTML =
+      "<p class='hint'>no skills found under ~/.claude/skills — clash installs its own (clash-workflow) at startup</p>";
+    return;
+  }
+
+  let activeRow = null;
+  const show = async (skill, row) => {
+    if (activeRow) activeRow.classList.remove("active");
+    activeRow = row;
+    row.classList.add("active");
+    content.innerHTML = "<p class='hint'>loading…</p>";
+    let text = "";
+    try {
+      text = await invoke("get_skill", { name: skill.name });
+    } catch (e) {
+      content.innerHTML = `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
+      return;
+    }
+    content.innerHTML = "";
+    const tools = document.createElement("div");
+    tools.className = "wf-doc-tools";
+    if (skill.managed) {
+      const note = document.createElement("span");
+      note.className = "skills-managed-note";
+      note.textContent = skill.upToDate
+        ? "managed by clash — auto-updated at startup, local edits are overwritten"
+        : "managed by clash — differs from the embedded version (refreshes on next launch)";
+      tools.appendChild(note);
+    }
+    const open = document.createElement("button");
+    open.className = "icon-btn wide";
+    open.innerHTML = `${svgIcon("pencil", 12)}<span>Open in editor</span>`;
+    open.onclick = (ev) =>
+      openScratchInEditor({ path: skill.path, title: skill.name }, ev.clientX, ev.clientY);
+    tools.appendChild(open);
+    content.appendChild(tools);
+    const md = document.createElement("div");
+    md.className = "wf-md";
+    renderMarkdown(md, text);
+    content.appendChild(md);
+  };
+
+  let first = null;
+  for (const skill of skills) {
+    const row = document.createElement("div");
+    row.className = "skills-row";
+    const badge = skill.managed
+      ? `<span class="skills-badge${skill.upToDate ? "" : " stale"}">${
+          skill.upToDate ? "clash" : "clash·stale"
+        }</span>`
+      : "";
+    row.innerHTML =
+      `<div class="skills-row-name">${escapeHtml(skill.name)}${badge}</div>` +
+      `<div class="skills-row-desc">${escapeHtml(
+        (skill.description || "").slice(0, 140)
+      )}</div>`;
+    row.onclick = () => show(skill, row);
+    list.appendChild(row);
+    if (!first || skill.name === selectName) first = { skill, row };
+    if (skill.name === selectName) first = { skill, row };
+  }
+  if (first) show(first.skill, first.row);
 }
 
 // Board columns: display name → statuses bucketed into it.
@@ -5166,6 +5269,11 @@ $("new-wf-btn").onclick = (e) => {
 $("wf-board-btn").onclick = (e) => {
   e.stopPropagation();
   openWorkflowBoardTab();
+};
+$("wf-skills-btn").innerHTML = svgIcon("zap", 13);
+$("wf-skills-btn").onclick = (e) => {
+  e.stopPropagation();
+  openSkillsTab();
 };
 // Backend workflows watcher: refresh the sidebar list and rebuild any open
 // workflow tabs. The rebuild refetches only the active sub-view's data

@@ -2701,7 +2701,9 @@ fn main() {
             workflows::workflow_create_pr,
             workflows::refresh_workflow_pr,
             workflows::mark_workflow_pr_ready,
-            workflows::attach_workflow_pr
+            workflows::attach_workflow_pr,
+            workflows::list_skills,
+            workflows::get_skill
         ])
         .run(tauri::generate_context!())
         .expect("error while running clash GUI");
