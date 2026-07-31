@@ -3485,7 +3485,8 @@ function buildWorkflowRow(item) {
   const key = wfKey(item.project, item.slug);
   const info = wfStatusInfo(item.meta.status);
   const row = document.createElement("div");
-  row.className = "team-item wf-item";
+  // Same skeleton as session rows: status ring column + two-line meta.
+  row.className = "session-item wf-item";
   const bits = [escapeHtml(item.project), `it.${item.meta.iteration || 1}`];
   if (item.openAnnotations > 0) bits.push(`💬${item.openAnnotations}`);
   if (item.meta.pr && item.meta.pr.url) bits.push(item.meta.pr.draft ? "PR·draft" : "PR");
@@ -3495,9 +3496,12 @@ function buildWorkflowRow(item) {
       : "";
   const unread = state.wfUnread.has(key) ? `<span class="unread-dot"></span>` : "";
   row.innerHTML =
-    `<span class="wf-dot ${info.cls}" title="${info.label}">${info.icon}</span>` +
-    `<span class="team-name">${escapeHtml(item.meta.title || item.slug)}</span>${warn}${unread}` +
-    `<span class="wf-sub">${bits.join(" · ")}</span>`;
+    `<span class="status-ring wf-ring ${info.cls}" title="${info.label}"></span>` +
+    `<span class="session-meta">` +
+    `<span class="session-name">${escapeHtml(item.meta.title || item.slug)}${warn}${unread}</span>` +
+    `<span class="session-sub"><span class="status-label ${info.cls}">${info.label}</span>` +
+    `<span class="dim">${bits.join(" · ")}</span></span>` +
+    `</span>`;
   row.title = `${item.meta.title || item.slug} — ${info.label}`;
   row.onclick = () => openWorkflowTab(item);
   row.oncontextmenu = (ev) => {
@@ -3803,10 +3807,10 @@ function buildWorkflowCard(item) {
   if (item.meta.pr && item.meta.pr.url) bits.push(item.meta.pr.draft ? "PR·draft" : "PR");
   if (item.agentAlive === false) bits.push("⚠ agent gone");
   card.innerHTML =
-    `<div class="wf-card-title">${escapeHtml(item.meta.title || item.slug)}</div>` +
-    `<div class="wf-card-sub"><span class="wf-dot ${info.cls}">${info.icon}</span> ${escapeHtml(
-      item.project
-    )} · ${bits.join(" · ")}</div>`;
+    `<div class="wf-card-title"><span class="status-ring wf-ring ${info.cls}"></span>${escapeHtml(
+      item.meta.title || item.slug
+    )}</div>` +
+    `<div class="wf-card-sub">${escapeHtml(item.project)} · ${bits.join(" · ")}</div>`;
   card.onclick = () => openWorkflowTab(item);
   card.oncontextmenu = (ev) => {
     ev.preventDefault();

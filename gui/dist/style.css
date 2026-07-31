@@ -891,35 +891,32 @@ html, body, #app {
 }
 .wf-group-label {
   font-size: 10px;
-  letter-spacing: 0.6px;
+  font-weight: 700;
+  letter-spacing: 1px;
   color: var(--fg-dim);
-  padding: 6px 10px 2px;
+  padding: 8px 14px 2px;
 }
+.wf-group-label:first-child { padding-top: 4px; }
 .wf-group-label.clickable { cursor: pointer; }
 .wf-group-label.clickable:hover { color: var(--fg); }
-.wf-item { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.wf-item .team-name { flex: initial; }
-.wf-dot { width: 14px; text-align: center; flex: none; }
-.wf-dot.wf-draft { color: var(--fg-dim); }
-.wf-dot.wf-active { color: var(--accent); animation: wf-pulse 1.6s ease-in-out infinite; }
-.wf-dot.wf-review { color: var(--blue); }
-.wf-dot.wf-changes { color: var(--st-prompting); }
-.wf-dot.wf-pr { color: var(--purple); }
-.wf-dot.wf-pr-ready { color: var(--green); }
-.wf-dot.wf-done { color: var(--green); }
-.wf-dot.wf-dead { color: var(--fg-dim); }
-.wf-sub {
-  flex-basis: 100%;
-  padding-left: 20px;
-  font-size: 10px;
-  color: var(--fg-dim);
-  line-height: 1.2;
-}
-.wf-warn { color: var(--st-waiting); font-size: 11px; }
-@keyframes wf-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
+/* Workflow rows reuse the session-item skeleton; the ring + status-label
+   get workflow status colors on top of the shared shape/animation. */
+.wf-ring.wf-draft { border-color: var(--fg-dim); }
+.wf-ring.wf-active { border-color: var(--accent); background: var(--accent); animation: soft-pulse 1.6s ease-in-out infinite; }
+.wf-ring.wf-review { border-color: var(--blue); background: var(--blue); animation: pulse 1.6s ease-in-out infinite; }
+.wf-ring.wf-changes { border-color: var(--st-prompting); background: var(--st-prompting); }
+.wf-ring.wf-pr { border-color: var(--purple); background: var(--purple); }
+.wf-ring.wf-pr-ready { border-color: var(--green); background: var(--green); }
+.wf-ring.wf-done { border-color: var(--fg-dim); }
+.wf-ring.wf-dead { border-color: var(--fg-dim); opacity: 0.5; }
+.status-label.wf-draft, .status-label.wf-done, .status-label.wf-dead { color: var(--fg-dim); }
+.status-label.wf-active { color: var(--accent); }
+.status-label.wf-review { color: var(--blue); }
+.status-label.wf-changes { color: var(--st-prompting); }
+.status-label.wf-pr { color: var(--purple); }
+.status-label.wf-pr-ready { color: var(--green); }
+.wf-item .session-sub .dim { font-size: 10px; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-warn { color: var(--st-waiting); font-size: 11px; margin-left: 4px; }
 
 /* Workflow item detail tab */
 .wf-view { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
@@ -1481,8 +1478,9 @@ html, body, #app {
   cursor: pointer;
 }
 .wf-card:hover { border-color: var(--accent); }
-.wf-card-title { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
-.wf-card-sub { font-size: 11px; color: var(--fg-dim); display: flex; align-items: center; gap: 4px; }
+.wf-card-title { font-size: 12px; font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; gap: 7px; }
+.wf-card-title .wf-ring { margin-top: 0; }
+.wf-card-sub { font-size: 11px; color: var(--fg-dim); padding-left: 16px; }
 
 /* List-choice dialog (uiListChoice): scrollable data rows */
 .dialog-list {
