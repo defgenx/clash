@@ -76,6 +76,9 @@ impl App {
         if let Err(e) = crate::infrastructure::hooks::install_hooks(&data_dir) {
             tracing::warn!("Failed to install hooks: {}", e);
         }
+        // Ship/refresh the embedded skills (clash-workflow) so the agent
+        // side of Workflows is always present and up-to-date.
+        crate::infrastructure::skills::install_skills(&data_dir);
 
         let (fs_tx, fs_rx) = tokio::sync::mpsc::unbounded_channel();
         let status_dir = crate::infrastructure::hooks::status_dir(&data_dir);

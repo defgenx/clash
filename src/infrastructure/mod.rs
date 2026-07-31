@@ -16,6 +16,7 @@ pub mod ide;
 pub mod logging;
 pub mod process_scan;
 pub mod session_refresh;
+pub mod skills;
 pub mod tui;
 pub mod update;
 pub mod windowing;

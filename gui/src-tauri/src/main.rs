@@ -2456,6 +2456,11 @@ fn main() {
         pr_checked: Mutex::new(HashMap::new()),
     };
 
+    // Ship/refresh the embedded skills (clash-workflow) so the agent side
+    // of Workflows is always present and up-to-date, even when only the GUI
+    // is ever launched.
+    clash::infrastructure::skills::install_skills(state.backend.base_dir());
+
     // FS watcher on ~/.claude/projects — same role as the TUI's watcher
     // wiring in app.rs. Without it the FsBackend session cache goes stale
     // after the first scan: sessions created during this launch never gain
