@@ -32,7 +32,7 @@
 - **Repo config discovery** — auto-detects MCP servers, custom commands, agent definitions, and setup scripts from the project directory
 - **Teams & tasks** — create, rename, configure, and delete teams; manage members (agent type, model, prompt, rename) and see at a glance who's running; full task management (create, cycle status, assign owner, delete); per-agent inboxes. In the GUI, jump straight from a running member to its live session.
 - **Scratches** — keep free-form text notes inside clash (`:scratch`), organized in an IntelliJ-style **"Scratches and Consoles"** tree: create notes and nested folders, rename, delete, and reorganize (move via a folder picker in the TUI, drag-and-drop in the GUI). Each note is a plain file under `~/.claude/clash/scratch/` by default — set `scratch_dir` in `config.toml` (or the GUI **Scratch directory** setting) to store them anywhere. Opening a scratch shows an editor picker: terminal editors (vim/emacs/nano…) open in a tab/pane, GUI editors (VS Code/Cursor/Zed…) launch alongside, like opening a project
-- **Workflows (GUI)** — manage a full plan → plan-review → implement → diff-review → PR pipeline per feature: launch a planning agent, read the plan, approve or request changes, **annotate the diff with line-level comments** the agent addresses on the next round, track the draft PR and **mark it ready** once validated — with per-iteration history snapshots, decision notifications, and a kanban board. Start end-to-end, **from a plan you already have**, or **review-only from an existing PR or branch**. See [Workflows](#workflows-gui)
+- **Workflows (GUI)** — manage a full plan → plan-review → implement → diff-review → (optional) PR pipeline per feature: launch a planning agent, read the plan, approve or request changes, **annotate the diff with line-level comments** the agent addresses on the next round, then approve straight to done or — if you use PRs — track the draft PR and **mark it ready** once validated — with per-iteration history snapshots, decision notifications, and a kanban board. Start end-to-end, **from a plan you already have**, or **review-only from an existing PR or branch**. See [Workflows](#workflows-gui)
 - **Subagent tracking** — view subagent trees per session, expand/collapse in the sessions table
 - **Open in IDE** — press `e` to open a session's project in your editor (auto-detects Cursor, VS Code, Zed, JetBrains, nvim, vim; configurable)
 - **Keyboard-driven** — vim-style navigation, command mode (`:`), fuzzy filter (`/`), context help (`?`)
@@ -516,7 +516,8 @@ An all-in-one pipeline manager for AI-assisted development, built on plain
 files so the whole history stays consultable outside clash.
 
 **Lifecycle**: `draft → planning → plan-review → changes-requested →
-implementing → diff-review → pr-draft → pr-ready → done` (plus `abandoned`, and
+implementing → diff-review → pr-draft → pr-ready → done` — the `pr-*` stages are
+optional, so approving a diff can close the item outright (plus `abandoned`, and
 `reviewing` for an [agent review round](#workflows-gui)). Decision states
 (plan-review, diff-review, pr-draft) badge the sidebar and fire a desktop
 notification.
@@ -553,9 +554,11 @@ and press `+` to leave a GitHub-style comment (threads support reply / edit /
 resolve / wontfix); *Request changes* snapshots the iteration (diff +
 annotations frozen under `history/`), appends your note and the open
 comments to the `review.md` audit trail, and hands back to the agent, which
-must address every open comment → *Approve & create draft PR* (via `gh`) →
-once you've validated everything, *Mark PR ready* flips the draft. A merged
-PR moves the item to done automatically.
+must address every open comment → *Approve → done* closes the item, or
+*Create draft PR* (via `gh`) first if you want the PR stages, in which case
+*Mark PR ready* flips the draft once you've validated everything. A merged PR
+moves the item to done automatically. Approving never requires a PR — a repo
+that merges straight to its default branch just approves and is done.
 
 **Agent reviews** — you are not the only reviewer. Wherever the pipeline is
 parked on a decision (`plan-review`, `diff-review`, `pr-draft`, `pr-ready`) an

@@ -130,13 +130,16 @@ Read the **latest** `## Iteration` section of `review.md` first.
 4. Commit the work (small, reviewable commits are fine).
 5. **`review-only`**: push the branch (see Git above), then finish at
    `"diff-review"` — you are done, skip steps 6–7.
-6. Optional but preferred when the work is complete: create the draft PR —
-   `gh pr create --draft --title "<item title>" --body "<summary>"` — then
-   read-modify-write `meta.json` setting `pr.url` to the created URL (clash
-   fills number/state on its next refresh).
+6. **Only if the repo clearly works through PRs** — an existing `pr.url` on this
+   item, or a repo whose recent history is merge commits from PRs — create the
+   draft PR: `gh pr create --draft --title "<item title>" --body "<summary>"`,
+   then read-modify-write `meta.json` setting `pr.url` to the created URL (clash
+   fills number/state on its next refresh). Otherwise **skip this**: a PR is not
+   required to finish, the human approves the diff either way, and an unwanted
+   PR is a chore for them to close. When in doubt, skip it and say so.
 7. Finish: set `status = "diff-review"` — or `"pr-draft"` if you created the
    PR in step 6. Stop — the human reviews the diff in clash and either
-   approves or sends you a new round.
+   approves (which may close the item outright) or sends you a new round.
 
 ## Tone of artifacts
 

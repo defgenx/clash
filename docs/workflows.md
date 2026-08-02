@@ -40,6 +40,11 @@ in `meta.json`. Decision states (`plan-review`, `diff-review`, `pr-draft`)
 notify the user; `reviewing` does not — an agent is working, there is nothing to
 decide yet.
 
+The `pr-*` stages are **optional**. Approving at `diff-review` may go straight to
+`done`, so a repo that merges to its default branch without a PR is never forced
+through a draft-PR step it has no use for. `diff-review → pr-draft` remains for
+items that do use a PR.
+
 ### Status ownership
 
 - **Agent-owned transitions**: `planning → plan-review`,
@@ -168,6 +173,8 @@ for context.
   `## Iteration N` sections; the agent only reads it).
 
 ## PR integration
+
+Entirely optional — an item can go `diff-review → done` without one.
 
 clash records the PR in `meta.json.pr` (`url`, `number`, `draft`, `state`,
 `lastCheckedAt`) via the `gh` CLI. `state == "MERGED"` observed on refresh

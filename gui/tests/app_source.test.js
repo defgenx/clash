@@ -95,3 +95,21 @@ test("an early flush cannot persist unresolved defaults", () => {
   assert.match(APP, /if \(!settingsResolved\) return loadedSettingsBlob \|\| \{\};/);
   assert.match(APP, /settingsResolved = true;/);
 });
+
+test("approving a diff never requires a draft PR", () => {
+  // The only primary action at diff-review used to be "Approve & create draft
+  // PR", which is a dead end for any repo that merges to its default branch
+  // without one. `→ done` must always be offered, and the PR path must be
+  // reachable only as a separate, optional action.
+  const diffReview = APP.slice(
+    APP.indexOf('case "diff-review": {'),
+    APP.indexOf('case "pr-draft": {')
+  );
+  assert.ok(diffReview.length > 0, "the diff-review case must exist");
+  assert.match(diffReview, /✓ Approve → done/);
+  assert.match(diffReview, /wfTransition\(item, root, "done"\)/);
+  // No approve action creates a PR as part of approving.
+  assert.doesNotMatch(diffReview, /Approve & create draft PR/);
+  // Creating a PR is its own opt-in button, offered only when none exists.
+  assert.match(diffReview, /add\("Create draft PR"/);
+});

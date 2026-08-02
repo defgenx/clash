@@ -4971,63 +4971,42 @@ function renderWfActions(bar, root, item) {
       break;
 
     case "diff-review": {
-      // Review-only: clash created neither the branch nor the PR, so there is
-      // no draft-PR ceremony to run — approving IS the end of the item. The
-      // "open a PR" escape hatch only shows when no PR exists yet (a branch
-      // reviewed before it had one).
-      if (wfIsReviewOnly(item)) {
-        add("✓ Approve → done", "primary", async () => {
-          const warn =
-            item.openAnnotations > 0
-              ? ` ${item.openAnnotations} comment${item.openAnnotations > 1 ? "s are" : " is"} still open.`
-              : "";
-          if (!(await uiConfirm(`Approve this review and close the item?${warn}`, "Approve")))
+      // Approval at diff-review means one thing: the human is satisfied with
+      // the diff. What happens *next* is their choice, so a draft PR is never a
+      // precondition — it used to be, and for anyone who merges straight to
+      // their default branch that made the only primary action a dead end.
+      //
+      // `→ done` is therefore always offered. The PR path stays primary only
+      // when clash already knows about a PR (the item is evidently in a PR
+      // flow); otherwise it is an opt-in secondary.
+      const openWarning = () =>
+        item.openAnnotations > 0
+          ? ` ${item.openAnnotations} comment${item.openAnnotations > 1 ? "s are" : " is"} still open.`
+          : "";
+      const hasPr = !!(item.meta.pr && item.meta.pr.url);
+
+      const approveDone = () =>
+        add("✓ Approve → done", hasPr ? "" : "primary", async () => {
+          if (!(await uiConfirm(`Approve this diff and close the item?${openWarning()}`, "Approve")))
             return;
           wfTransition(item, root, "done");
         });
-        add("✎ Request changes", "", requestChanges);
-        if (!(item.meta.pr && item.meta.pr.url)) {
-          add("Create draft PR", "", async () => {
-            if (!(await uiConfirm("Open a draft PR for this branch?", "Create"))) return;
-            try {
-              await invoke("workflow_create_pr", {
-                project: item.project,
-                slug: item.slug,
-                title: null,
-                body: null,
-              });
-              flashToast("Draft PR created");
-              await refreshWorkflows();
-              buildWorkflowView(root, item.project, item.slug);
-            } catch (e) {
-              uiAlert(wfGhHint(e) || `Create PR failed: ${e}`);
-            }
+
+      if (hasPr) {
+        // Review-only items track a PR clash doesn't own, so there is no
+        // draft-PR ceremony to advance into — only the full pipeline has one.
+        if (!wfIsReviewOnly(item)) {
+          add("✓ Approve → PR draft", "primary", async () => {
+            if (!(await uiConfirm(`Approve these changes?${openWarning()}`, "Approve"))) return;
+            wfTransition(item, root, "pr-draft");
           });
-        } else {
-          add("Open PR", "", () => openWorkflowPr(item));
         }
-        reviewButton();
-        spacer();
-        abandon();
-        break;
-      }
-      if (item.meta.pr && item.meta.pr.url) {
-        add("✓ Approve → PR draft", "primary", async () => {
-          const warn =
-            item.openAnnotations > 0
-              ? ` ${item.openAnnotations} comment${item.openAnnotations > 1 ? "s are" : " is"} still open.`
-              : "";
-          if (!(await uiConfirm(`Approve these changes?${warn}`, "Approve"))) return;
-          wfTransition(item, root, "pr-draft");
-        });
+        approveDone();
+        add("Open PR", "", () => openWorkflowPr(item));
       } else {
-        add("✓ Approve & create draft PR", "primary", async () => {
-          const warn =
-            item.openAnnotations > 0
-              ? ` ${item.openAnnotations} comment${item.openAnnotations > 1 ? "s are" : " is"} still open.`
-              : "";
-          if (!(await uiConfirm(`Approve these changes and open a draft PR?${warn}`, "Approve")))
-            return;
+        approveDone();
+        add("Create draft PR", "", async () => {
+          if (!(await uiConfirm("Open a draft PR for this branch?", "Create"))) return;
           try {
             await invoke("workflow_create_pr", {
               project: item.project,
@@ -5039,17 +5018,7 @@ function renderWfActions(bar, root, item) {
             await refreshWorkflows();
             buildWorkflowView(root, item.project, item.slug);
           } catch (e) {
-            const hint = wfGhHint(e);
-            if (hint) {
-              const alt = await uiChoice({
-                message: hint,
-                detail: "You can still move the item to pr-draft and attach a PR URL later.",
-                choices: [{ label: "Move to pr-draft anyway", value: "go" }],
-              });
-              if (alt === "go") wfTransition(item, root, "pr-draft");
-            } else {
-              uiAlert(`Create PR failed: ${e}`);
-            }
+            uiAlert(wfGhHint(e) || `Create PR failed: ${e}`);
           }
         });
       }

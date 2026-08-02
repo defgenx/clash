@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 /// implementing → diff-review → pr-draft → pr-ready → done`, with `abandoned`
 /// reachable from anywhere. Decision states (`needs_attention`) are the ones
 /// where the pipeline is blocked on a human.
+///
+/// The `pr-*` stages are **optional**: approving at `diff-review` may go
+/// straight to `done`. Requiring a draft PR to approve would strand every repo
+/// that merges to its default branch without one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WorkflowStatus {
@@ -103,8 +107,11 @@ impl WorkflowStatus {
                 next,
                 PlanReview | DiffReview | PrDraft | PrReady | ChangesRequested
             ),
-            // `Done` closes a review-only item, where clash owns no PR to
-            // shepherd — approving IS the end of the pipeline.
+            // `Done` closes the item outright. Approval at `diff-review` means
+            // the human is satisfied with the diff; the PR stages are one way to
+            // continue, never a precondition — a repo that merges straight to
+            // its default branch has no PR to shepherd, and review-only items
+            // track a PR clash doesn't own.
             DiffReview => matches!(next, PrDraft | ChangesRequested | Implementing | Done),
             PrDraft => matches!(next, PrReady | Done | DiffReview),
             PrReady => matches!(next, Done | PrDraft),
@@ -144,7 +151,8 @@ impl std::fmt::Display for WorkflowStatus {
 #[serde(rename_all = "kebab-case")]
 pub enum WorkflowMode {
     /// The whole pipeline: an agent plans, the human reviews the plan, the
-    /// agent implements, the human reviews the diff, then the PR.
+    /// agent implements, the human reviews the diff, then — optionally — the PR
+    /// stages. Approving the diff may close the item directly.
     #[default]
     Full,
     /// The human supplies the plan (a file, a scratch note, pasted text), so
@@ -672,8 +680,8 @@ mod tests {
             (Draft, Planning),              // Start planning
             (PlanReview, Implementing),     // Approve plan
             (PlanReview, ChangesRequested), // Request changes
-            (DiffReview, PrDraft),          // Approve
-            (DiffReview, Done),             // Approve (review-only)
+            (DiffReview, PrDraft),          // Approve → PR draft (PR exists)
+            (DiffReview, Done),             // Approve → done (no PR required)
             (DiffReview, ChangesRequested), // Request changes
             (PrDraft, PrReady),             // Mark PR ready
             (PrReady, Done),                // Mark done
