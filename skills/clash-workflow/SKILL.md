@@ -46,14 +46,30 @@ already-checked-out branch.
    (`## Iteration N` sections with the human's notes + the open annotations
    at each round). Later sections override earlier ones.
 4. `annotations.json` — every annotation with `"status": "open"` is work you
-   MUST address this run (see phase `implement`).
-5. The latest `history/<NNN>/diff.patch` if present — what the human last
+   MUST address this run (see phase `implement`). Ones with
+   `"author": "agent"` came from a review round; treat them exactly like the
+   human's.
+5. `agent-review.md` — the review rounds run on this item, if any. Read the
+   latest; its open findings are work.
+6. The latest `history/<NNN>/diff.patch` if present — what the human last
    reviewed, useful context for what changed since.
+
+## You are the executor, not the reviewer
+
+A separate skill (`clash-review`) runs review rounds on the same item: it writes
+findings into `agent-review.md` and `annotations.json` and never touches
+`plan.md` or the code beyond trivial fixes. Two consequences for you:
+
+- `agent-review.md` is **input** for you — read the latest round before
+  implementing or revising; its findings are the same kind of work as the human's
+  annotations. Never write to it.
+- `reviewing` is not a status you may write or work in. If you ever find the item
+  in it, stop and say so — a reviewer is mid-round.
 
 ## Hard rules (violating these corrupts the pipeline)
 
-- **Never** touch `history/` and **never** change `iteration` in meta.json —
-  clash owns both.
+- **Never** touch `history/` and **never** change `iteration` or `reviewRound` in
+  meta.json — clash owns all three.
 - Write `annotations.json` **only while** `meta.json.status` is
   `changes-requested` or `implementing`. During review phases the file
   belongs to the human's GUI.

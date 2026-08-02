@@ -12,7 +12,10 @@ use clash::application::diff::parse_file_diffs;
 use clash::application::workflow::anchor_annotations;
 use clash::application::workflow::AnchoredAnnotation;
 use clash::domain::ports::WorkflowRepository;
-use clash::domain::workflow::{AnnotationsFile, WorkflowItem, WorkflowMode, WorkflowStatus};
+use clash::domain::workflow::{
+    AnnotationsFile, ReviewDepth, ReviewPublish, ReviewTarget, WorkflowItem, WorkflowMode,
+    WorkflowReview, WorkflowStatus,
+};
 use tauri::{Emitter, Manager, State};
 
 use crate::{native_notify, GuiState};
@@ -81,9 +84,12 @@ pub(crate) async fn list_workflow_items(
         .map(|s| s.id.clone())
         .collect();
     for item in &mut items {
+        // `Reviewing` is included so a dead reviewer surfaces the same "the
+        // agent is gone" affordance — without it a crashed round would leave
+        // the item gated with no visible way out.
         if matches!(
             item.meta.status,
-            WorkflowStatus::Planning | WorkflowStatus::Implementing
+            WorkflowStatus::Planning | WorkflowStatus::Implementing | WorkflowStatus::Reviewing
         ) {
             item.agent_alive = item
                 .meta
@@ -315,7 +321,7 @@ fn seed_local(state: &GuiState, project: &str, slug: &str, status: WorkflowStatu
 fn ensure_annotations_unlocked(meta: &clash::domain::workflow::WorkflowMeta) -> Result<(), String> {
     if matches!(
         meta.status,
-        WorkflowStatus::ChangesRequested | WorkflowStatus::Implementing
+        WorkflowStatus::ChangesRequested | WorkflowStatus::Implementing | WorkflowStatus::Reviewing
     ) {
         Err("agent is working — annotations are locked until it finishes".to_string())
     } else {
@@ -753,13 +759,95 @@ pub(crate) fn delete_workflow_item(
 
 // ── Agent launch ────────────────────────────────────────────────────────
 
+/// Spawn a Claude Code session for this item in `cwd`, with a kickoff prompt
+/// built from the item directory. Reuses the exact session machinery of
+/// `create_new_session`/`create_worktree_session`: registry + name + status
+/// files, then a daemon spawn with `--session-id` and the prompt as the
+/// positional initial argument.
+///
+/// Shared by the executor (`start_workflow_agent`) and the reviewer
+/// (`start_workflow_review_agent`) — everything except which skill the prompt
+/// names is identical, and the two drifting apart would be a real bug (an
+/// unregistered session shows up as wild, a missing status file makes it look
+/// dead).
+/// Everything a workflow session spawn needs except the prompt. A struct
+/// rather than a long parameter list, same reasoning as `NewWorkflowItem`.
+struct ItemSessionSpawn<'a> {
+    project: &'a str,
+    slug: &'a str,
+    meta: &'a clash::domain::workflow::WorkflowMeta,
+    /// Directory the agent works in: the item's worktree, or its repo.
+    cwd: &'a str,
+    cols: u16,
+    rows: u16,
+}
+
+async fn spawn_item_session(
+    state: &GuiState,
+    spawn: ItemSessionSpawn<'_>,
+    prompt: impl FnOnce(&str) -> String,
+) -> Result<String, String> {
+    let ItemSessionSpawn {
+        project,
+        slug,
+        meta,
+        cwd,
+        cols,
+        rows,
+    } = spawn;
+    let session_id = uuid::Uuid::now_v7().to_string();
+    let name = format!("wf-{}", slug);
+    clash::infrastructure::hooks::registry::register(
+        &session_id,
+        &name,
+        cwd,
+        Some(meta.branch.as_str()),
+    );
+    clash::infrastructure::hooks::save_session_name(
+        state.backend.base_dir(),
+        &session_id,
+        &name,
+        Some(cwd),
+    );
+    clash::infrastructure::hooks::write_session_status(
+        state.backend.base_dir(),
+        &session_id,
+        "starting",
+    );
+
+    let item_dir = state
+        .backend
+        .workflows_dir()
+        .join(project)
+        .join(slug)
+        .to_string_lossy()
+        .into_owned();
+    let prompt = prompt(&item_dir);
+
+    let claude_bin = state.claude_bin();
+    let mut control = state.control.lock().await;
+    crate::ensure_connected(&mut control).await;
+    control
+        .create_session(
+            &session_id,
+            &claude_bin,
+            &["--session-id".to_string(), session_id.clone(), prompt],
+            if cwd.is_empty() { None } else { Some(cwd) },
+            Some(name),
+            cols,
+            rows,
+            std::collections::HashMap::new(),
+            true, // TUI: Claude sets its own termios
+        )
+        .await
+        .map_err(|e| format!("Failed to spawn session: {}", e))?;
+    Ok(session_id)
+}
+
 /// Spawn a Claude Code session working on this item, in a dedicated worktree
 /// (created on first launch, persisted in meta). The kickoff prompt routes
 /// the session to the `clash-workflow` skill with the item directory and the
-/// requested phase (`plan` | `revise` | `implement`). Reuses the exact
-/// session machinery of `create_new_session`/`create_worktree_session`:
-/// registry + name + status files, then a daemon spawn with `--session-id`
-/// and the prompt as the positional initial argument.
+/// requested phase (`plan` | `revise` | `implement`).
 #[tauri::command]
 pub(crate) async fn start_workflow_agent(
     state: State<'_, GuiState>,
@@ -796,55 +884,19 @@ pub(crate) async fn start_workflow_agent(
         meta.branch = branch_name;
     }
     let cwd = meta.worktree.clone().unwrap_or_default();
-
-    let session_id = uuid::Uuid::now_v7().to_string();
-    let name = format!("wf-{}", slug);
-    clash::infrastructure::hooks::registry::register(
-        &session_id,
-        &name,
-        &cwd,
-        Some(meta.branch.as_str()),
-    );
-    clash::infrastructure::hooks::save_session_name(
-        state.backend.base_dir(),
-        &session_id,
-        &name,
-        Some(&cwd),
-    );
-    clash::infrastructure::hooks::write_session_status(
-        state.backend.base_dir(),
-        &session_id,
-        "starting",
-    );
-
-    let item_dir = state
-        .backend
-        .workflows_dir()
-        .join(&project)
-        .join(&slug)
-        .to_string_lossy()
-        .into_owned();
-    let prompt = clash::application::workflow::build_agent_prompt(&item_dir, &phase, meta.mode);
-
-    {
-        let claude_bin = state.claude_bin();
-        let mut control = state.control.lock().await;
-        crate::ensure_connected(&mut control).await;
-        control
-            .create_session(
-                &session_id,
-                &claude_bin,
-                &["--session-id".to_string(), session_id.clone(), prompt],
-                Some(&cwd),
-                Some(name),
-                cols,
-                rows,
-                std::collections::HashMap::new(),
-                true, // TUI: Claude sets its own termios
-            )
-            .await
-            .map_err(|e| format!("Failed to spawn session: {}", e))?;
-    }
+    let session_id = spawn_item_session(
+        &state,
+        ItemSessionSpawn {
+            project: &project,
+            slug: &slug,
+            meta: &meta,
+            cwd: &cwd,
+            cols,
+            rows,
+        },
+        |item_dir| clash::application::workflow::build_agent_prompt(item_dir, &phase, meta.mode),
+    )
+    .await?;
 
     // Reflect the launch in meta: session id + phase-appropriate status
     // (invalid transitions — e.g. relaunching a dead agent mid-phase — keep
@@ -866,6 +918,149 @@ pub(crate) async fn start_workflow_agent(
     seed_local(&state, &project, &slug, meta.status);
 
     Ok(session_id)
+}
+
+// ── Agent review rounds ─────────────────────────────────────────────────
+
+/// Launch an agent review round over the item, as many times as the human
+/// wants. The round is bounded and self-returning: it records where the item
+/// was, parks it in `reviewing` while the agent works, and the agent's last act
+/// is to put it back — so round N+1 starts from exactly where round N did.
+///
+/// The target is *derived* from the current status (a plan review only makes
+/// sense at `plan-review`), the depth and publish mode come from the human.
+/// The reviewer runs in the item's worktree when it has one and in the repo
+/// otherwise — a `from-plan` item parked at `plan-review` has no branch yet,
+/// and a plan review needs none.
+#[tauri::command]
+pub(crate) async fn start_workflow_review_agent(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    depth: ReviewDepth,
+    publish: ReviewPublish,
+    cols: u16,
+    rows: u16,
+) -> Result<String, String> {
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    if meta.repo_path.trim().is_empty() {
+        return Err("This item has no repository path — set repoPath in meta.json".to_string());
+    }
+    if !meta.status.can_request_review() {
+        return Err(format!(
+            "Can't review an item in '{}' — wait for the current phase to hand back",
+            meta.status
+        ));
+    }
+    // Fail before spawning rather than letting the agent discover it: a round
+    // that talks to the forge needs a PR to talk to.
+    if publish.needs_pr() && meta.pr.as_ref().is_none_or(|p| p.url.is_empty()) {
+        return Err("no-pr: this item has no pull request yet".to_string());
+    }
+    let target = ReviewTarget::for_status(meta.status, meta.mode);
+    if target == ReviewTarget::Plan && !has_plan_content(&state, &project, &slug) {
+        return Err("This item has no plan to review yet".to_string());
+    }
+
+    let review = WorkflowReview {
+        target,
+        depth,
+        publish,
+        return_status: meta.status,
+        round: meta.review_round.saturating_add(1),
+        started_at: now_ms(),
+        ..Default::default()
+    };
+
+    // The worktree is not created here — a reviewer never makes branches.
+    let cwd = meta
+        .worktree
+        .clone()
+        .filter(|w| !w.is_empty())
+        .unwrap_or_else(|| meta.repo_path.clone());
+    let mode = meta.mode;
+    let review_for_prompt = review.clone();
+    let session_id = spawn_item_session(
+        &state,
+        ItemSessionSpawn {
+            project: &project,
+            slug: &slug,
+            meta: &meta,
+            cwd: &cwd,
+            cols,
+            rows,
+        },
+        |item_dir| {
+            clash::application::workflow::build_review_prompt(item_dir, &review_for_prompt, mode)
+        },
+    )
+    .await?;
+
+    meta.session_id = Some(session_id.clone());
+    meta.review_round = review.round;
+    meta.review = Some(review);
+    if meta.status.can_transition_to(WorkflowStatus::Reviewing) {
+        meta.status = WorkflowStatus::Reviewing;
+    }
+    state
+        .backend
+        .write_workflow_meta(&project, &slug, &meta)
+        .map_err(e2s)?;
+    seed_local(&state, &project, &slug, meta.status);
+
+    Ok(session_id)
+}
+
+/// True when `plan.md` has something in it — a plan review with no plan would
+/// just have the reviewer report that back after a full session spawn.
+fn has_plan_content(state: &GuiState, project: &str, slug: &str) -> bool {
+    state
+        .backend
+        .read_workflow_doc(
+            project,
+            slug,
+            clash::infrastructure::fs::workflows::PLAN_FILE,
+        )
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// Put a review round's item back where it came from without waiting for the
+/// agent — the escape hatch for a reviewer that died or was killed mid-round.
+/// Without it a crashed reviewer would wedge the item in `reviewing` with its
+/// Approve button disabled, which is exactly the dead-end the gating choice
+/// risks.
+#[tauri::command]
+pub(crate) fn cancel_workflow_review(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+) -> Result<clash::domain::workflow::WorkflowMeta, String> {
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    if meta.status != WorkflowStatus::Reviewing {
+        return Err("This item is not in a review round".to_string());
+    }
+    // Fall back to diff-review rather than trusting a missing/unknown return
+    // status: it is the state every mode can sit in.
+    let back = meta
+        .review
+        .as_ref()
+        .map(|r| r.return_status)
+        .filter(|s| !matches!(s, WorkflowStatus::Unknown | WorkflowStatus::Reviewing))
+        .unwrap_or(WorkflowStatus::DiffReview);
+    meta.status = back;
+    state
+        .backend
+        .write_workflow_meta(&project, &slug, &meta)
+        .map_err(e2s)?;
+    seed_local(&state, &project, &slug, back);
+    Ok(meta)
 }
 
 // ── PR lifecycle (gh) ───────────────────────────────────────────────────

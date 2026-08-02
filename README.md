@@ -426,9 +426,10 @@ An all-in-one pipeline manager for AI-assisted development, built on plain
 files so the whole history stays consultable outside clash.
 
 **Lifecycle**: `draft → planning → plan-review → changes-requested →
-implementing → diff-review → pr-draft → pr-ready → done` (plus `abandoned`).
-Decision states (plan-review, diff-review, pr-draft) badge the sidebar and
-fire a desktop notification.
+implementing → diff-review → pr-draft → pr-ready → done` (plus `abandoned`, and
+`reviewing` for an [agent review round](#workflows-gui)). Decision states
+(plan-review, diff-review, pr-draft) badge the sidebar and fire a desktop
+notification.
 
 **Entry modes** — an item does not have to start at the beginning. The `+`
 button asks how it starts:
@@ -466,18 +467,52 @@ must address every open comment → *Approve & create draft PR* (via `gh`) →
 once you've validated everything, *Mark PR ready* flips the draft. A merged
 PR moves the item to done automatically.
 
+**Agent reviews** — you are not the only reviewer. Wherever the pipeline is
+parked on a decision (`plan-review`, `diff-review`, `pr-draft`, `pr-ready`) an
+**⌕ Agent review** button hands the item to a reviewer agent, and the button
+comes back as **⌕ Review again (N)** the moment the round finishes: a round is a
+side-trip that returns the item to exactly where it started, so rounds are
+**unbounded**. Run a deep review, read it, run another, publish the third to the
+PR — nothing advances until *you* approve.
+
+Each round asks two things:
+
+| Choice | Options | What changes |
+|---|---|---|
+| **Depth** | `standard` / `deep` | `deep` goes and reads how the code actually works — callers, invariants, existing tests, neighbouring solutions — and checks the artifact against it, so it surfaces things invisible from the plan or diff alone |
+| **Findings** | keep local / post to the PR / answer the PR's comments | local is the default; the PR options only appear once the item has one |
+
+The *target* isn't asked — it follows from where you launched: at `plan-review`
+the round reviews `plan.md`, everywhere else it reviews the code. Code findings
+come back as **real diff annotations** (graded `BLOCKER`/`RISK`/`GAP`/`NIT`,
+authored `agent`) that you triage in the Diff tab exactly like your own, so one
+*Request changes* turns them into the next round of work; plan findings and the
+round's verdict land in an **Agent reviews** tab that accumulates every round.
+The reviewer may fix only trivial mechanical issues (typos, unused imports,
+formatting) and must declare them — anything behavioral is a finding, not a fix,
+because a reviewer that rewrites what it reviews has reviewed nothing. While a
+round runs the item shows `REVIEWING`, approval is gated and the annotation
+editor is locked; **End round** always unlocks it, so a crashed reviewer can
+never wedge an item.
+
 **Storage**: `~/.claude/clash/workflows/<project>/<item>/` with `meta.json`
-(entry mode, status, branch, diff base, PR),
-`plan.md`, `review.md`, `annotations.json` and `history/<NNN>/` snapshots —
+(entry mode, status, branch, diff base, PR, review round),
+`plan.md`, `review.md`, `agent-review.md`, `annotations.json` and
+`history/<NNN>/` snapshots —
 a dedicated root (not the scratch tree), overridable via `workflows_dir` in
-`config.toml` or the GUI Settings. Comments are re-anchored by content when
-the diff drifts between iterations and never dropped (unanchored ones land
-in an orphan tray). The file contract for agents is documented in
+`config.toml` or the GUI Settings. `review.md` is clash's record of *your*
+decisions, `agent-review.md` the reviewer's own append-only rounds — two files so
+ownership stays unambiguous where both sides write. Comments are re-anchored by
+content when the diff drifts between iterations and never dropped (unanchored
+ones land in an orphan tray). The file contract for agents is documented in
 [`docs/workflows.md`](docs/workflows.md).
 
-**Skills**: the agent side is the `clash-workflow` skill, embedded in the
-clash binary and auto-installed (and kept up-to-date) under
-`~/.claude/skills/` at every startup — no setup needed. The ☰ button on the
+**Skills**: the agent side is two skills — `clash-workflow` (the executor: plans,
+implements, addresses comments) and `clash-review` (the reviewer above) — both
+embedded in the clash binary and auto-installed (and kept up-to-date) under
+`~/.claude/skills/` at every startup, no setup needed. They are deliberately
+separate: reviewing and implementing are different jobs, and one skill doing both
+does neither sharply. The ☰ button on the
 WORKFLOWS section opens a **Skills viewer** listing every installed skill
 with rendered content; clash-managed ones are badged (local edits to those
 are overwritten on the next launch).

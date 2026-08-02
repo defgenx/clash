@@ -7,7 +7,8 @@
 //! <root>/<project>/<slug>/
 //! ├── meta.json          # WorkflowMeta — status, PR info, timestamps
 //! ├── plan.md            # the plan (freely editable)
-//! ├── review.md          # append-only iteration audit trail
+//! ├── review.md          # append-only iteration audit trail (clash-written)
+//! ├── agent-review.md    # append-only agent review rounds (agent-written)
 //! ├── annotations.json   # AnnotationsFile — line-level diff comments
 //! └── history/<NNN>/     # per-iteration snapshots (diff.patch + annotations)
 //! ```
@@ -29,6 +30,10 @@ use crate::infrastructure::fs::backend::sanitize_component;
 pub const META_FILE: &str = "meta.json";
 pub const PLAN_FILE: &str = "plan.md";
 pub const REVIEW_FILE: &str = "review.md";
+/// Agent-authored review rounds. Distinct from `review.md` (clash's own
+/// append-only record of *human* decisions) so ownership of each file stays
+/// unambiguous: the agent appends here, never there.
+pub const AGENT_REVIEW_FILE: &str = "agent-review.md";
 pub const ANNOTATIONS_FILE: &str = "annotations.json";
 pub const HISTORY_DIR: &str = "history";
 
@@ -125,6 +130,7 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         path: dir.to_string_lossy().into_owned(),
         has_plan: has_content(&dir.join(PLAN_FILE)),
         has_review: has_content(&dir.join(REVIEW_FILE)),
+        has_agent_review: has_content(&dir.join(AGENT_REVIEW_FILE)),
         open_annotations,
         history_iterations,
         agent_alive: true, // cross-checked against live sessions by the GUI layer
@@ -246,12 +252,12 @@ pub fn write_meta(root: &Path, project: &str, slug: &str, meta: &WorkflowMeta) -
 
 fn doc_path(dir: &Path, doc: &str) -> Result<PathBuf> {
     match doc {
-        PLAN_FILE | REVIEW_FILE => Ok(dir.join(doc)),
+        PLAN_FILE | REVIEW_FILE | AGENT_REVIEW_FILE => Ok(dir.join(doc)),
         _ => Err(parse_err(format!("Not a workflow document: '{}'", doc))),
     }
 }
 
-/// Read `plan.md` or `review.md` (whitelisted). Missing file reads as empty.
+/// Read a whitelisted item document. Missing file reads as empty.
 pub fn read_doc(root: &Path, project: &str, slug: &str, doc: &str) -> Result<String> {
     let dir = existing_item_dir(root, project, slug)?;
     let path = doc_path(&dir, doc)?;
@@ -262,7 +268,7 @@ pub fn read_doc(root: &Path, project: &str, slug: &str, doc: &str) -> Result<Str
     }
 }
 
-/// Write `plan.md` or `review.md` (whitelisted), atomically.
+/// Write a whitelisted item document, atomically.
 pub fn write_doc(root: &Path, project: &str, slug: &str, doc: &str, content: &str) -> Result<()> {
     let dir = existing_item_dir(root, project, slug)?;
     let path = doc_path(&dir, doc)?;
@@ -516,6 +522,27 @@ mod tests {
         assert_eq!(read_doc(&root, "p", "item", PLAN_FILE).unwrap(), "# Plan");
         // has_plan flips once content exists.
         assert!(load_items(&root).unwrap()[0].has_plan);
+    }
+
+    #[test]
+    fn agent_review_doc_is_readable_writable_and_flagged() {
+        let (_g, root) = root();
+        create_item(&root, &req("p", "item", "")).unwrap();
+        // Never created by item setup — a missing file reads as empty, so the
+        // reviewer's first round can append without a seed step.
+        assert_eq!(read_doc(&root, "p", "item", AGENT_REVIEW_FILE).unwrap(), "");
+        assert!(!load_items(&root).unwrap()[0].has_agent_review);
+
+        write_doc(&root, "p", "item", AGENT_REVIEW_FILE, "## Review 1\n").unwrap();
+        assert_eq!(
+            read_doc(&root, "p", "item", AGENT_REVIEW_FILE).unwrap(),
+            "## Review 1\n"
+        );
+        let item = &load_items(&root).unwrap()[0];
+        assert!(item.has_agent_review);
+        // The two review files stay independent — writing the agent's must never
+        // be mistaken for the human decision trail.
+        assert!(!item.has_review);
     }
 
     #[test]

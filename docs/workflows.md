@@ -1,9 +1,9 @@
 # Workflows — file contract
 
 The Workflows feature manages a plan → review → implement → PR pipeline per
-item. clash's GUI renders and mutates the files below; a Claude Code agent
-(driven by the `clash-workflow` skill) co-edits them. This document is the
-contract both sides follow.
+item. clash's GUI renders and mutates the files below; Claude Code agents co-edit
+them — the executor (`clash-workflow` skill) does the work, the reviewer
+(`clash-review` skill) judges it. This document is the contract all sides follow.
 
 ## Layout
 
@@ -14,12 +14,17 @@ workflows are a structured store.
 
 ```
 <root>/<project>/<slug>/
-├── meta.json          # status, PR info, session, iteration, timestamps
+├── meta.json          # status, PR info, session, iteration, review round, timestamps
 ├── plan.md            # the plan (freely editable markdown)
-├── review.md          # append-only iteration audit trail
+├── review.md          # append-only iteration audit trail (clash writes, agent reads)
+├── agent-review.md    # append-only agent review rounds (agent writes, clash renders)
 ├── annotations.json   # line-level diff comments
 └── history/<NNN>/     # per-iteration snapshots (diff.patch + annotations.json)
 ```
+
+`review.md` and `agent-review.md` are deliberately two files: the first is
+clash's record of **human** decisions, the second the reviewer's own findings.
+One file would make ownership ambiguous exactly where concurrent writes happen.
 
 `(project, slug)` — the directory path — is the identity; `meta.json` never
 overrides it. All JSON is lenient: unknown fields must be preserved on
@@ -29,17 +34,68 @@ merge, never rewrite from scratch).
 ## Statuses
 
 `draft → planning → plan-review → changes-requested → implementing →
-diff-review → pr-draft → pr-ready → done`, plus `abandoned` (from anywhere).
-Kebab-case strings in `meta.json`. Decision states (`plan-review`,
-`diff-review`, `pr-draft`) notify the user.
+diff-review → pr-draft → pr-ready → done`, plus `abandoned` (from anywhere) and
+`reviewing` (a side-trip off any decision state, see below). Kebab-case strings
+in `meta.json`. Decision states (`plan-review`, `diff-review`, `pr-draft`)
+notify the user; `reviewing` does not — an agent is working, there is nothing to
+decide yet.
 
 ### Status ownership
 
 - **Agent-owned transitions**: `planning → plan-review`,
   `changes-requested → plan-review` (plan revision round),
-  `changes-requested → implementing → diff-review → pr-draft`.
+  `changes-requested → implementing → diff-review → pr-draft`, and
+  `reviewing → <the status the round started in>`.
 - **Everything else is clash-owned** (buttons in the GUI): approve, request
-  changes, mark PR ready, done, abandon, reopen.
+  changes, mark PR ready, done, abandon, reopen, and launching a review round.
+
+## Agent review rounds
+
+An **agent review** is a bounded side-trip, not a pipeline stage: the item leaves
+a decision state, an agent reviews it, and the item comes back to *the same*
+state. That round-trip is the whole design — it makes rounds **unbounded**. Run a
+deep review, read it, run another, publish the third one to the PR. Nothing about
+the item advances until the human clicks Approve.
+
+```
+plan-review  ──launch──>  reviewing  ──agent returns──>  plan-review   (repeat)
+diff-review  ──launch──>  reviewing  ──agent returns──>  diff-review   (repeat)
+pr-draft / pr-ready likewise
+```
+
+- Launchable from `plan-review`, `diff-review`, `pr-draft`, `pr-ready`
+  (`WorkflowStatus::can_request_review`) — the states holding a reviewable
+  artifact while parked on a human decision. Never from a state where an agent
+  is already working.
+- While `reviewing`, clash **gates approval** and locks the annotation editor
+  (the reviewer writes annotations). The GUI always offers "End round", and
+  abandon stays available, so a dead reviewer can never wedge an item.
+- `meta.json.review` records the round: `target`, `depth`, `publish`,
+  `returnStatus`, `round`, `startedAt`. `meta.json.reviewRound` is the
+  clash-owned counter (like `iteration` — the agent never writes it).
+
+| field | values | meaning |
+|---|---|---|
+| `target` | `plan` \| `diff` | derived from the launch status, never chosen |
+| `depth` | `standard` \| `deep` | `deep` reads the surrounding implementation and checks the artifact against it |
+| `publish` | `local` \| `pr-comments` \| `respond-pr-comments` | what the round does beyond the item |
+| `returnStatus` | any status | where the round puts the item back — the repeatability contract |
+
+Findings land on the surface that fits them: **code** findings become
+`annotations.json` entries with `"author": "agent"` (so the human triages them in
+the diff view and one click turns them into the next change round), **plan**
+findings and the round's verdict go into `agent-review.md`. A reviewer may fix
+only trivial mechanical issues (typos, unused imports, formatting) and must
+declare them; anything behavioral is a finding, not a fix.
+
+### The review agent contract (clash-review skill)
+
+`Use the clash-review skill. Workflow item directory: <abs path>. Target: <plan|diff>. Depth: <standard|deep>. Publish: <local|pr-comments|respond-pr-comments>. Round: <n>. Return to: <status>. Mode: <mode>.`
+
+Every value is also in `meta.json.review`; repeating it in the prompt lets the
+reviewer refuse impossible work before reading anything (a `plan` target with no
+plan, a publish mode needing a PR that does not exist) and makes `Return to:`
+impossible to miss. The reviewer's last act is always to restore that status.
 
 ## Entry modes
 
@@ -101,8 +157,9 @@ for context.
   and shared, so after committing, **push** it (plain `git push`, never
   force) so the PR reflects the fixes — the one mode where pushing is expected;
   a rejected push means stop and report, never force.
-- Never touch `history/` and never change `iteration` — clash owns both
-  (they are written atomically by the request-changes flow).
+- Never touch `history/` and never change `iteration` or `reviewRound` — clash
+  owns all three (the first two are written atomically by the request-changes
+  flow, the third by the review launcher).
 - Write `annotations.json` **only** while status is `changes-requested` or
   `implementing` — during review phases the GUI owns the file (this phase
   split is what makes concurrent writes safe).

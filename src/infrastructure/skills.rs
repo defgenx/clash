@@ -1,7 +1,8 @@
 //! Embedded Claude Code skills, shipped inside the clash binary.
 //!
-//! Skills that clash features depend on (currently `clash-workflow`, the
-//! executor half of Workflows) are compiled in via `include_str!` from the
+//! Skills that clash features depend on (`clash-workflow`, the executor half of
+//! Workflows, and `clash-review`, its reviewer half) are compiled in via
+//! `include_str!` from the
 //! repo's `skills/` directory and installed into `<claude_dir>/skills/` on
 //! every startup of either binary. Installation is compare-then-write: the
 //! file is only rewritten when its content differs from the embedded
@@ -26,10 +27,16 @@ pub struct EmbeddedSkill {
 
 /// Every skill clash ships. Add new entries here and under `skills/` in the
 /// repo; both binaries install them at startup.
-pub const SKILLS: &[EmbeddedSkill] = &[EmbeddedSkill {
-    name: "clash-workflow",
-    content: include_str!("../../skills/clash-workflow/SKILL.md"),
-}];
+pub const SKILLS: &[EmbeddedSkill] = &[
+    EmbeddedSkill {
+        name: "clash-workflow",
+        content: include_str!("../../skills/clash-workflow/SKILL.md"),
+    },
+    EmbeddedSkill {
+        name: "clash-review",
+        content: include_str!("../../skills/clash-review/SKILL.md"),
+    },
+];
 
 /// Install (or refresh) every embedded skill under `<claude_dir>/skills/`.
 /// Best-effort: failures are logged, never fatal — a missing skill degrades
@@ -62,24 +69,55 @@ mod tests {
     fn installs_and_refreshes_skills() {
         let dir = TempDir::new().unwrap();
         install_skills(dir.path());
-        let path = dir.path().join("skills/clash-workflow/SKILL.md");
-        let installed = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(installed, SKILLS[0].content);
-
-        // A locally-modified managed skill is overwritten on the next run —
-        // the embedded copy is the source of truth.
-        std::fs::write(&path, "tampered").unwrap();
-        install_skills(dir.path());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), SKILLS[0].content);
+        // Every embedded skill lands, not just the first.
+        for skill in SKILLS {
+            let path = dir.path().join("skills").join(skill.name).join("SKILL.md");
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                skill.content,
+                "{} not installed",
+                skill.name
+            );
+            // A locally-modified managed skill is overwritten on the next run —
+            // the embedded copy is the source of truth.
+            std::fs::write(&path, "tampered").unwrap();
+            install_skills(dir.path());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), skill.content);
+        }
     }
 
     #[test]
-    fn embedded_skill_has_frontmatter() {
-        // The skill must stay loadable by Claude Code: frontmatter with a
-        // name matching the directory and a description.
-        let content = SKILLS[0].content;
-        assert!(content.starts_with("---\n"), "SKILL.md needs frontmatter");
-        assert!(content.contains("name: clash-workflow"));
-        assert!(content.contains("description:"));
+    fn embedded_skills_have_frontmatter_matching_their_directory() {
+        // Each skill must stay loadable by Claude Code: frontmatter whose name
+        // matches the directory it installs into, plus a description (that is
+        // what the model matches a request against).
+        for skill in SKILLS {
+            let content = skill.content;
+            assert!(
+                content.starts_with("---\n"),
+                "{}: SKILL.md needs frontmatter",
+                skill.name
+            );
+            assert!(
+                content.contains(&format!("name: {}", skill.name)),
+                "{}: frontmatter name must match the directory",
+                skill.name
+            );
+            assert!(
+                content.contains("description:"),
+                "{}: needs a description",
+                skill.name
+            );
+        }
+    }
+
+    #[test]
+    fn skill_names_are_unique() {
+        // Two entries with the same name would silently install over each other.
+        let mut names: Vec<&str> = SKILLS.iter().map(|s| s.name).collect();
+        names.sort_unstable();
+        let count = names.len();
+        names.dedup();
+        assert_eq!(names.len(), count, "duplicate embedded skill name");
     }
 }

@@ -2826,6 +2826,8 @@ fn main() {
             workflows::workflow_request_changes,
             workflows::delete_workflow_item,
             workflows::start_workflow_agent,
+            workflows::start_workflow_review_agent,
+            workflows::cancel_workflow_review,
             workflows::workflow_create_pr,
             workflows::refresh_workflow_pr,
             workflows::mark_workflow_pr_ready,

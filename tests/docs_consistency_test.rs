@@ -77,6 +77,59 @@ fn workflows_documented_in_readme() {
 }
 
 #[test]
+fn agent_reviews_documented_everywhere_they_are_specified() {
+    // Four sources describe review rounds and must not drift: the user-facing
+    // README, the agent file contract, and the two skills that co-edit the item.
+    let readme = read("README.md");
+    assert!(
+        readme.contains("Agent review") && readme.contains("reviewing"),
+        "README.md must document agent review rounds and the `reviewing` status."
+    );
+    assert!(
+        readme.contains("agent-review.md"),
+        "README.md must document the agent-review.md artifact."
+    );
+
+    let contract = read("docs/workflows.md");
+    for needle in [
+        "clash-review skill",
+        "agent-review.md",
+        "reviewing",
+        "returnStatus",
+        "respond-pr-comments",
+    ] {
+        assert!(
+            contract.contains(needle),
+            "docs/workflows.md must document '{needle}'."
+        );
+    }
+
+    let reviewer = read("skills/clash-review/SKILL.md");
+    assert!(
+        reviewer.contains("name: clash-review"),
+        "the reviewer skill's frontmatter name must match its directory."
+    );
+    // The repeatability contract is the whole design — if the skill stops
+    // restoring the launch status, rounds stop being repeatable.
+    assert!(
+        reviewer.contains("Return to"),
+        "clash-review must keep the `Return to:` status contract."
+    );
+    assert!(
+        reviewer.contains("\"author\": \"agent\""),
+        "clash-review must specify that its annotations are authored `agent`."
+    );
+
+    // The executor must know the reviewer's files are read-only to it, or the
+    // two agents will clobber each other.
+    let executor = read("skills/clash-workflow/SKILL.md");
+    assert!(
+        executor.contains("agent-review.md") && executor.contains("clash-review"),
+        "clash-workflow must reference the reviewer's artifacts as input-only."
+    );
+}
+
+#[test]
 fn workflows_mentioned_in_tour_and_help() {
     assert!(
         read("src/infrastructure/tui/widgets/tour.rs").contains("Workflows"),

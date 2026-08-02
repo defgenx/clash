@@ -24,6 +24,12 @@ pub enum WorkflowStatus {
     PlanReview,
     ChangesRequested,
     Implementing,
+    /// An agent reviewer is working on the item. Entered from any state where
+    /// there is something to review and always left by returning to
+    /// [`WorkflowReview::return_status`] — that round-trip is what makes
+    /// reviews repeatable without number: run one, land back where you were,
+    /// run another.
+    Reviewing,
     DiffReview,
     PrDraft,
     PrReady,
@@ -41,6 +47,7 @@ impl WorkflowStatus {
             Self::PlanReview => "plan-review",
             Self::ChangesRequested => "changes-requested",
             Self::Implementing => "implementing",
+            Self::Reviewing => "reviewing",
             Self::DiffReview => "diff-review",
             Self::PrDraft => "pr-draft",
             Self::PrReady => "pr-ready",
@@ -77,12 +84,25 @@ impl WorkflowStatus {
         if next == Abandoned {
             return !matches!(self, Abandoned);
         }
+        // An agent review can be launched from any state that has something to
+        // review, and returns to the one it came from — so a human may run as
+        // many rounds as they want without the item ever advancing.
+        if next == Reviewing {
+            return self.can_request_review();
+        }
         match self {
             Draft => matches!(next, Planning),
             Planning => matches!(next, PlanReview | Draft),
             PlanReview => matches!(next, Implementing | ChangesRequested | Planning),
             ChangesRequested => matches!(next, Implementing | PlanReview),
             Implementing => matches!(next, DiffReview | PrDraft | ChangesRequested),
+            // Back to wherever the review was launched from. `ChangesRequested`
+            // is included so findings can be turned into a change round
+            // directly, without a detour through the origin state.
+            Reviewing => matches!(
+                next,
+                PlanReview | DiffReview | PrDraft | PrReady | ChangesRequested
+            ),
             // `Done` closes a review-only item, where clash owns no PR to
             // shepherd — approving IS the end of the pipeline.
             DiffReview => matches!(next, PrDraft | ChangesRequested | Implementing | Done),
@@ -94,6 +114,17 @@ impl WorkflowStatus {
             // An unknown on-disk status can be repaired to anything.
             Unknown => true,
         }
+    }
+
+    /// States a human may launch an agent review round from: the ones where an
+    /// artifact worth reviewing already exists and the pipeline is parked on a
+    /// decision. Deliberately excludes the states where an agent is already
+    /// working (`planning`, `implementing`, `reviewing`) and the terminal ones.
+    pub fn can_request_review(&self) -> bool {
+        matches!(
+            self,
+            Self::PlanReview | Self::DiffReview | Self::PrDraft | Self::PrReady
+        )
     }
 }
 
@@ -172,6 +203,154 @@ impl std::fmt::Display for WorkflowMode {
     }
 }
 
+/// What an agent review round looks at. Derived from the item's status at
+/// launch (see [`ReviewTarget::for_status`]) rather than chosen by the human,
+/// because a plan review at `diff-review` (or vice versa) has nothing to read.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReviewTarget {
+    /// `plan.md` — is the plan right, complete, and grounded in the real code?
+    #[default]
+    Plan,
+    /// The working diff — is the implementation correct?
+    Diff,
+    #[serde(other)]
+    Unknown,
+}
+
+impl ReviewTarget {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Diff => "diff",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// The only sensible target for an item parked in `status`. `plan-review`
+    /// reviews the plan; everything else reviews the code. A mode with no plan
+    /// phase (`review-only`) can only ever review the diff.
+    pub fn for_status(status: WorkflowStatus, mode: WorkflowMode) -> Self {
+        if status == WorkflowStatus::PlanReview && mode.has_plan_phase() {
+            Self::Plan
+        } else {
+            Self::Diff
+        }
+    }
+}
+
+impl std::fmt::Display for ReviewTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// How hard the reviewer digs. The distinction is about *grounding*, not
+/// verbosity: a standard round reasons about the artifact in front of it, a
+/// deep round goes and reads the surrounding implementation to check the
+/// artifact against how the code actually works.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReviewDepth {
+    /// Read the artifact plus the files it names. Fast pass.
+    #[default]
+    Standard,
+    /// Trace the subsystems the change touches end to end — callers, invariants,
+    /// tests, adjacent code — and verify the artifact against them.
+    Deep,
+    #[serde(other)]
+    Unknown,
+}
+
+impl ReviewDepth {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Deep => "deep",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl std::fmt::Display for ReviewDepth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What the round does with its findings beyond writing them into the item.
+/// Chosen per round, because the answer genuinely changes over the life of an
+/// item: early rounds stay local, a round before handing the PR to reviewers
+/// publishes, and a round after they comment answers them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReviewPublish {
+    /// Findings stay in the item (`agent-review.md` + annotations). Nothing
+    /// leaves the machine.
+    #[default]
+    Local,
+    /// Also post the findings to the PR as a review with line comments.
+    PrComments,
+    /// Read the PR's existing review comments, address them, and reply on the
+    /// PR thread. Findings still land locally.
+    RespondPrComments,
+    #[serde(other)]
+    Unknown,
+}
+
+impl ReviewPublish {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::PrComments => "pr-comments",
+            Self::RespondPrComments => "respond-pr-comments",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// True when the round talks to the forge, so the launcher can refuse it
+    /// on an item with no PR instead of letting the agent discover that.
+    pub fn needs_pr(&self) -> bool {
+        matches!(self, Self::PrComments | Self::RespondPrComments)
+    }
+}
+
+impl std::fmt::Display for ReviewPublish {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The review round currently in flight, recorded in `meta.json.review` when
+/// clash launches a reviewer and left in place afterwards as the record of the
+/// last round.
+///
+/// `return_status` is the whole reason this block exists: the reviewer reads it
+/// to know where to put the item back, so N rounds in a row all land the item
+/// exactly where the human started from.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowReview {
+    #[serde(default)]
+    pub target: ReviewTarget,
+    #[serde(default)]
+    pub depth: ReviewDepth,
+    #[serde(default)]
+    pub publish: ReviewPublish,
+    /// Status to restore when the round finishes — the status the item was in
+    /// when the round was launched.
+    #[serde(default)]
+    pub return_status: WorkflowStatus,
+    /// 1-based round number, matching the `## Review N` section the agent
+    /// appends to `agent-review.md`.
+    #[serde(default)]
+    pub round: u32,
+    #[serde(default)]
+    pub started_at: i64,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
 /// PR block inside a workflow item's `meta.json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -225,6 +404,15 @@ pub struct WorkflowMeta {
     pub session_id: Option<String>,
     #[serde(default)]
     pub pr: Option<WorkflowPr>,
+    /// The agent review round in flight, or the last one that ran. Absent on
+    /// items that were never reviewed by an agent.
+    #[serde(default)]
+    pub review: Option<WorkflowReview>,
+    /// How many agent review rounds have been launched. Bumped only by clash
+    /// (never by the agent), like `iteration` — reviews are unbounded, so this
+    /// just keeps climbing and numbers the `agent-review.md` sections.
+    #[serde(default)]
+    pub review_round: u32,
     /// Review iteration, starting at 1. Bumped only by clash on
     /// request-changes (never by the agent).
     #[serde(default)]
@@ -281,6 +469,8 @@ pub struct WorkflowItem {
     pub meta: WorkflowMeta,
     pub has_plan: bool,
     pub has_review: bool,
+    /// True once `agent-review.md` holds at least one review round.
+    pub has_agent_review: bool,
     /// Count of annotations with status `open` (0 for terminal items, whose
     /// annotations are not read during listing).
     pub open_annotations: usize,
@@ -387,12 +577,13 @@ pub struct AnnotationsFile {
 mod tests {
     use super::*;
 
-    const ALL_WORKFLOW_STATUSES: [WorkflowStatus; 11] = [
+    const ALL_WORKFLOW_STATUSES: [WorkflowStatus; 12] = [
         WorkflowStatus::Draft,
         WorkflowStatus::Planning,
         WorkflowStatus::PlanReview,
         WorkflowStatus::ChangesRequested,
         WorkflowStatus::Implementing,
+        WorkflowStatus::Reviewing,
         WorkflowStatus::DiffReview,
         WorkflowStatus::PrDraft,
         WorkflowStatus::PrReady,
@@ -658,5 +849,153 @@ mod tests {
         // Empty file is valid too.
         let empty: AnnotationsFile = serde_json::from_str("{}").unwrap();
         assert!(empty.annotations.is_empty());
+    }
+
+    // ── Agent review rounds ─────────────────────────────────────────
+
+    #[test]
+    fn review_is_reachable_from_every_decision_state_and_nowhere_else() {
+        use WorkflowStatus::*;
+        for s in [PlanReview, DiffReview, PrDraft, PrReady] {
+            assert!(s.can_request_review(), "{s} should allow a review round");
+            assert!(s.can_transition_to(Reviewing), "{s} -> reviewing");
+        }
+        // States where an agent is already working, or that are finished, have
+        // nothing to hand to a reviewer.
+        for s in [
+            Draft,
+            Planning,
+            ChangesRequested,
+            Implementing,
+            Done,
+            Abandoned,
+        ] {
+            assert!(!s.can_request_review(), "{s} should refuse a review round");
+            assert!(!s.can_transition_to(Reviewing), "{s} -> reviewing");
+        }
+        // Not even from itself — a second round is launched after the first
+        // returns, never on top of it.
+        assert!(!Reviewing.can_transition_to(Reviewing));
+    }
+
+    #[test]
+    fn a_review_round_returns_to_where_it_came_from() {
+        use WorkflowStatus::*;
+        // The repeatability contract: every state a round can start in must be
+        // a legal destination when it ends, or round two could never run.
+        for s in [PlanReview, DiffReview, PrDraft, PrReady] {
+            assert!(
+                Reviewing.can_transition_to(s),
+                "reviewing must be able to return to {s}"
+            );
+        }
+        // Plus the shortcut straight into a change round.
+        assert!(Reviewing.can_transition_to(ChangesRequested));
+        // A round is still an agent-working state: it must not silently finish
+        // the item.
+        assert!(!Reviewing.can_transition_to(Done));
+    }
+
+    #[test]
+    fn reviewing_is_agent_work_not_a_human_decision() {
+        // It must not join the NEEDS DECISION grouping or fire a notification —
+        // the agent is busy, there is nothing to decide yet.
+        assert!(!WorkflowStatus::Reviewing.needs_attention());
+        assert!(!WorkflowStatus::Reviewing.is_terminal());
+        // An abandon is always available, so a wedged round is never a dead end.
+        assert!(WorkflowStatus::Reviewing.can_transition_to(WorkflowStatus::Abandoned));
+    }
+
+    #[test]
+    fn review_target_follows_the_status_and_the_mode() {
+        use WorkflowStatus::*;
+        assert_eq!(
+            ReviewTarget::for_status(PlanReview, WorkflowMode::Full),
+            ReviewTarget::Plan
+        );
+        assert_eq!(
+            ReviewTarget::for_status(PlanReview, WorkflowMode::FromPlan),
+            ReviewTarget::Plan
+        );
+        // review-only has no plan at all, so even at plan-review (which it
+        // never reaches) the only reviewable artifact is the diff.
+        assert_eq!(
+            ReviewTarget::for_status(PlanReview, WorkflowMode::ReviewOnly),
+            ReviewTarget::Diff
+        );
+        for s in [DiffReview, PrDraft, PrReady] {
+            assert_eq!(
+                ReviewTarget::for_status(s, WorkflowMode::Full),
+                ReviewTarget::Diff
+            );
+        }
+    }
+
+    #[test]
+    fn publish_modes_know_when_they_need_a_forge() {
+        assert!(!ReviewPublish::Local.needs_pr());
+        assert!(ReviewPublish::PrComments.needs_pr());
+        assert!(ReviewPublish::RespondPrComments.needs_pr());
+    }
+
+    #[test]
+    fn review_enums_are_kebab_case_and_lenient() {
+        assert_eq!(
+            serde_json::to_string(&ReviewPublish::RespondPrComments).unwrap(),
+            r#""respond-pr-comments""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ReviewDepth::Deep).unwrap(),
+            r#""deep""#
+        );
+        assert_eq!(
+            serde_json::to_string(&WorkflowStatus::Reviewing).unwrap(),
+            r#""reviewing""#
+        );
+        // Unknown on-disk values degrade instead of failing the whole meta read.
+        let d: ReviewDepth = serde_json::from_str(r#""paranoid""#).unwrap();
+        assert_eq!(d, ReviewDepth::Unknown);
+        let p: ReviewPublish = serde_json::from_str(r#""telepathy""#).unwrap();
+        assert_eq!(p, ReviewPublish::Unknown);
+        let t: ReviewTarget = serde_json::from_str(r#""vibes""#).unwrap();
+        assert_eq!(t, ReviewTarget::Unknown);
+    }
+
+    #[test]
+    fn meta_without_a_review_block_round_trips() {
+        // Items written before reviews existed must read back unchanged.
+        let meta: WorkflowMeta = serde_json::from_str(r#"{"title":"old","status":"diff-review"}"#)
+            .expect("pre-review meta must parse");
+        assert!(meta.review.is_none());
+        assert_eq!(meta.review_round, 0);
+        assert_eq!(meta.status, WorkflowStatus::DiffReview);
+    }
+
+    #[test]
+    fn meta_preserves_a_review_block_and_unknown_fields() {
+        let raw = r#"{
+            "title": "auth",
+            "status": "reviewing",
+            "reviewRound": 3,
+            "review": {
+                "target": "diff", "depth": "deep", "publish": "pr-comments",
+                "returnStatus": "pr-draft", "round": 3, "startedAt": 42,
+                "futureField": "kept"
+            },
+            "somethingNew": true
+        }"#;
+        let meta: WorkflowMeta = serde_json::from_str(raw).unwrap();
+        let review = meta.review.clone().expect("review block");
+        assert_eq!(review.target, ReviewTarget::Diff);
+        assert_eq!(review.depth, ReviewDepth::Deep);
+        assert_eq!(review.publish, ReviewPublish::PrComments);
+        assert_eq!(review.return_status, WorkflowStatus::PrDraft);
+        assert_eq!(review.round, 3);
+        assert_eq!(meta.review_round, 3);
+        // Unknown fields survive the round-trip at both levels — the agent and
+        // clash both read-modify-write this file.
+        let back = serde_json::to_string(&meta).unwrap();
+        assert!(back.contains("somethingNew"));
+        assert!(back.contains("futureField"));
     }
 }

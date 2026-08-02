@@ -265,6 +265,34 @@ pub fn build_agent_prompt(item_dir: &str, phase: &str, mode: WorkflowMode) -> St
     )
 }
 
+/// Build the kickoff prompt for an agent **review** round — a different skill
+/// (`clash-review`) than the executor, because reviewing and implementing are
+/// different jobs and mixing them into one skill makes both vaguer.
+///
+/// Every parameter is also in `meta.json.review`, but stating them up front is
+/// what lets the reviewer refuse impossible work immediately: a `plan` target
+/// with no plan, or a publish mode needing a PR that does not exist.
+/// `Return to:` is the repeatability contract — the round ends by putting the
+/// item back exactly where the human launched it from, so the next round can
+/// start from the same place.
+pub fn build_review_prompt(
+    item_dir: &str,
+    review: &crate::domain::workflow::WorkflowReview,
+    mode: WorkflowMode,
+) -> String {
+    format!(
+        "Use the clash-review skill. Workflow item directory: {}. \
+         Target: {}. Depth: {}. Publish: {}. Round: {}. Return to: {}. Mode: {}.",
+        item_dir,
+        review.target,
+        review.depth,
+        review.publish,
+        review.round.max(1),
+        review.return_status,
+        mode
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,6 +562,46 @@ diff --git a/dup.rs b/dup.rs
     }
 
     // ── build_agent_prompt ──────────────────────────────────────────
+
+    #[test]
+    fn review_prompt_carries_the_whole_round() {
+        use crate::domain::workflow::{ReviewDepth, ReviewPublish, ReviewTarget, WorkflowReview};
+        let p = build_review_prompt(
+            "/x/workflows/clash/auth",
+            &WorkflowReview {
+                target: ReviewTarget::Diff,
+                depth: ReviewDepth::Deep,
+                publish: ReviewPublish::RespondPrComments,
+                return_status: WorkflowStatus::PrDraft,
+                round: 4,
+                ..WorkflowReview::default()
+            },
+            WorkflowMode::Full,
+        );
+        // A different skill than the executor — reviewing is not implementing.
+        assert!(p.contains("clash-review skill"));
+        assert!(!p.contains("clash-workflow skill"));
+        assert!(p.contains("/x/workflows/clash/auth"));
+        assert!(p.contains("Target: diff."));
+        assert!(p.contains("Depth: deep."));
+        assert!(p.contains("Publish: respond-pr-comments."));
+        assert!(p.contains("Round: 4."));
+        // The repeatability contract has to be in the prompt, not just on disk.
+        assert!(p.contains("Return to: pr-draft."));
+        assert!(p.contains("Mode: full."));
+    }
+
+    #[test]
+    fn review_prompt_never_says_round_zero() {
+        // A default/legacy review block would otherwise ask the agent to write
+        // a "## Review 0" section.
+        let p = build_review_prompt(
+            "/x/i",
+            &crate::domain::workflow::WorkflowReview::default(),
+            WorkflowMode::Full,
+        );
+        assert!(p.contains("Round: 1."));
+    }
 
     #[test]
     fn prompt_routes_dir_and_phase() {

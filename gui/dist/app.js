@@ -3855,6 +3855,8 @@ function wfStatusInfo(status) {
       return { cls: "wf-changes", icon: "↺", label: "CHANGES REQUESTED" };
     case "implementing":
       return { cls: "wf-active", icon: "⟳", label: "IMPLEMENTING" };
+    case "reviewing":
+      return { cls: "wf-active", icon: "⌕", label: "REVIEWING" };
     case "diff-review":
       return { cls: "wf-review", icon: "◆", label: "DIFF REVIEW" };
     case "pr-draft":
@@ -3877,6 +3879,20 @@ const WF_DECISION = new Set(["plan-review", "diff-review", "pr-draft"]);
 // created before entry modes existed) is the full pipeline.
 const wfIsReviewOnly = (item) => item.meta.mode === "review-only";
 const wfHasPlanPhase = (item) => !wfIsReviewOnly(item);
+
+// Mirrors WorkflowStatus::can_request_review — the states holding an artifact
+// worth reviewing while parked on a human decision. Reviews are unbounded, so
+// this gates only *where* a round can start, never how many.
+const WF_REVIEWABLE = new Set(["plan-review", "diff-review", "pr-draft", "pr-ready"]);
+const wfCanReview = (item) =>
+  WF_REVIEWABLE.has(item.meta.status) && !!(item.meta.repoPath || "").trim();
+
+// Mirrors ReviewTarget::for_status — a plan review only makes sense where a
+// plan exists to read.
+const wfReviewTarget = (item) =>
+  item.meta.status === "plan-review" && wfHasPlanPhase(item) ? "plan" : "diff";
+
+const wfHasPr = (item) => !!(item.meta.pr && item.meta.pr.url);
 
 function wfGroup(item) {
   const st = item.meta.status;
@@ -4418,7 +4434,9 @@ async function buildSkillsView(el, selectName) {
 const WF_BOARD_COLUMNS = [
   ["DRAFT / PLANNING", ["draft", "planning"]],
   ["PLAN REVIEW", ["plan-review"]],
-  ["CHANGES / IMPL.", ["changes-requested", "implementing"]],
+  // `reviewing` is an agent-working state like implementing: an item in a
+  // review round is in flight, not waiting on the human.
+  ["CHANGES / IMPL.", ["changes-requested", "implementing", "reviewing"]],
   ["DIFF REVIEW", ["diff-review"]],
   ["PR", ["pr-draft", "pr-ready"]],
   ["DONE", ["done", "abandoned"]],
@@ -4504,6 +4522,11 @@ async function buildWorkflowView(el, project, slug) {
   // view would render a doc with no tab to leave it by.
   if (!ts.subView || (ts.subView === "plan" && !wfHasPlanPhase(item)))
     ts.subView = wfHasPlanPhase(item) ? "plan" : "diff";
+  // Same coercion for the agent-reviews tab, which only exists once a round has
+  // run: a tab restored from a state where it did would otherwise render a doc
+  // with no tab to leave it by.
+  if (ts.subView === "agentReview" && !(item.hasAgentReview || item.meta.reviewRound))
+    ts.subView = "diff";
 
   el.innerHTML = "";
   const info = wfStatusInfo(item.meta.status);
@@ -4549,6 +4572,11 @@ async function buildWorkflowView(el, project, slug) {
   const subViews = [
     ...(wfHasPlanPhase(item) ? [["plan", `Plan${item.hasPlan ? "" : " ·empty"}`]] : []),
     ["review", `Review${item.hasReview ? "" : " ·empty"}`],
+    // Agent review rounds accumulate, so the tab counts them — that count is
+    // the item's review history and the reason a round is worth repeating.
+    ...(item.hasAgentReview || item.meta.reviewRound
+      ? [["agentReview", `Agent reviews${item.meta.reviewRound ? ` (${item.meta.reviewRound})` : ""}`]]
+      : []),
     ["diff", item.openAnnotations > 0 ? `Diff 💬${item.openAnnotations}` : "Diff"],
     ["history", `History${item.historyIterations.length ? ` (${item.historyIterations.length})` : ""}`],
   ];
@@ -4620,6 +4648,90 @@ async function launchWfAgent(item, phase, root, branch = null) {
       return launchWfAgent(item, phase, root, name);
     }
     uiAlert(`Agent launch failed: ${e}`);
+  }
+}
+
+/// Launch one agent review round: pick the depth, then what to do with the
+/// findings, then spawn the reviewer. The *target* is not asked — it follows
+/// from the item's status (plan at plan-review, code everywhere else), because
+/// the other choice has nothing to read.
+///
+/// Rounds are unbounded by design: the reviewer returns the item to the status
+/// it started in, so this same button is available again the moment it finishes.
+async function launchWfReview(item, root) {
+  const target = wfReviewTarget(item);
+  const what = target === "plan" ? "plan" : "code";
+  const round = (item.meta.reviewRound || 0) + 1;
+
+  const depth = await uiChoice({
+    message: `Review round ${round} — how deep?`,
+    detail:
+      target === "plan"
+        ? "Standard reads the plan and the files it names. Deep goes and reads how the code actually works, then checks the plan against it."
+        : "Standard reviews the diff in context. Deep traces every subsystem the change touches — callers, invariants, existing tests — before judging it.",
+    choices: [
+      { label: "Deep review", value: "deep", primary: true },
+      { label: `Standard ${what} review`, value: "standard" },
+    ],
+  });
+  if (!depth) return;
+
+  // The publish question only exists once there is a PR to talk to.
+  let publish = "local";
+  if (wfHasPr(item)) {
+    const n = item.meta.pr.number ? `#${item.meta.pr.number}` : "the PR";
+    publish = await uiChoice({
+      message: "What should this round do with its findings?",
+      detail: `Findings always land in this item. These options additionally talk to ${n}.`,
+      choices: [
+        { label: "Keep local", value: "local", primary: true },
+        { label: `Post findings to ${n}`, value: "pr-comments" },
+        { label: `Answer ${n}'s review comments`, value: "respond-pr-comments" },
+      ],
+    });
+    if (!publish) return;
+  }
+
+  try {
+    const sid = await invoke("start_workflow_review_agent", {
+      project: item.project,
+      slug: item.slug,
+      depth,
+      publish,
+      cols: 120,
+      rows: 40,
+    });
+    await refreshSessions();
+    await openSession(sid, `wf-${item.slug}`);
+    await refreshWorkflows();
+    if (root) buildWorkflowView(root, item.project, item.slug);
+  } catch (e) {
+    const msg = String(e);
+    if (msg.startsWith("no-pr:")) {
+      uiAlert("This item has no pull request yet — create one first, or keep the round local.");
+      return;
+    }
+    uiAlert(`Review launch failed: ${e}`);
+  }
+}
+
+/// Put a wedged review round back where it came from. The gated `reviewing`
+/// state is the one place a dead agent could strand the item with its Approve
+/// button disabled, so this escape hatch is always reachable.
+async function cancelWfReview(item, root) {
+  if (
+    !(await uiConfirm(
+      "End this review round and unlock the item? Anything the agent already wrote is kept.",
+      "End round"
+    ))
+  )
+    return;
+  try {
+    await invoke("cancel_workflow_review", { project: item.project, slug: item.slug });
+    await refreshWorkflows();
+    buildWorkflowView(root, item.project, item.slug);
+  } catch (e) {
+    uiAlert(`Could not end the round: ${e}`);
   }
 }
 
@@ -4704,12 +4816,48 @@ function renderWfActions(bar, root, item) {
     }
   };
 
+  // Available from every state holding a reviewable artifact, every time the
+  // item lands back there — that is what makes rounds repeatable. The label
+  // counts past rounds so it is obvious this is round N+1, not a one-shot.
+  const reviewButton = () => {
+    if (!wfCanReview(item)) return;
+    const n = item.meta.reviewRound || 0;
+    add(
+      n ? `⌕ Review again (${n})` : "⌕ Agent review",
+      "",
+      () => launchWfReview(item, root),
+      n
+        ? `${n} agent review round${n > 1 ? "s" : ""} so far — run another`
+        : `Have an agent review this item's ${
+            wfReviewTarget(item) === "plan" ? "plan" : "code"
+          } and report findings`
+    );
+  };
+
   switch (st) {
     case "draft":
       add("▶ Start planning", "primary", () => launchWfAgent(item, "plan", root));
       spacer();
       abandon();
       break;
+
+    case "reviewing": {
+      // Gated: no Approve while a round is in flight. The only ways out are the
+      // agent finishing, ending the round, or abandoning the item.
+      const r = item.meta.review || {};
+      const via = r.returnStatus ? wfStatusInfo(r.returnStatus).label : "where it started";
+      if (item.agentAlive === false) {
+        add("⚠ End review round", "primary", () => cancelWfReview(item, root),
+          "The reviewer session is gone — unlock the item");
+      } else if (item.meta.sessionId) {
+        add("Open review session", "primary", () => openSession(item.meta.sessionId),
+          `Review round ${r.round || 1} — ${r.depth || "standard"} ${r.target || ""}`.trim());
+      }
+      add("End round", "", () => cancelWfReview(item, root), `Returns the item to ${via}`);
+      spacer();
+      abandon();
+      break;
+    }
 
     case "planning":
     case "implementing":
@@ -4740,6 +4888,7 @@ function renderWfActions(bar, root, item) {
         if (note === null || !note.trim()) return;
         await wfTransition(item, root, "changes-requested", note.trim());
       });
+      reviewButton();
       spacer();
       abandon();
       break;
@@ -4792,6 +4941,7 @@ function renderWfActions(bar, root, item) {
         } else {
           add("Open PR", "", () => openWorkflowPr(item));
         }
+        reviewButton();
         spacer();
         abandon();
         break;
@@ -4839,6 +4989,7 @@ function renderWfActions(bar, root, item) {
         });
       }
       add("✎ Request changes", "", requestChanges);
+      reviewButton();
       spacer();
       abandon();
       break;
@@ -4889,6 +5040,7 @@ function renderWfActions(bar, root, item) {
         });
       }
       add("↩ Back to review", "", () => wfTransition(item, root, "diff-review"));
+      reviewButton();
       spacer();
       abandon();
       break;
@@ -4900,6 +5052,7 @@ function renderWfActions(bar, root, item) {
         if (!(await uiConfirm("Mark this workflow item as done?", "Done"))) return;
         wfTransition(item, root, "done");
       });
+      reviewButton();
       break;
 
     case "done":
@@ -4912,8 +5065,13 @@ function renderWfActions(bar, root, item) {
 
 async function renderWfSubView(body, root, item, ts) {
   const { project, slug } = item;
-  if (ts.subView === "plan" || ts.subView === "review") {
-    const doc = ts.subView === "plan" ? "plan.md" : "review.md";
+  if (ts.subView === "plan" || ts.subView === "review" || ts.subView === "agentReview") {
+    const doc =
+      ts.subView === "plan"
+        ? "plan.md"
+        : ts.subView === "review"
+          ? "review.md"
+          : "agent-review.md";
     body.innerHTML = "<p class='hint'>loading…</p>";
     let text = "";
     try {
@@ -4943,7 +5101,9 @@ async function renderWfSubView(body, root, item, ts) {
       md.innerHTML = `<p class="hint">${
         ts.subView === "plan"
           ? "no plan yet — Start planning launches an agent that writes it"
-          : "no review notes yet — they accumulate when you request changes"
+          : ts.subView === "review"
+            ? "no review notes yet — they accumulate when you request changes"
+            : "no agent reviews yet — each round appends its findings here"
       }</p>`;
     body.appendChild(md);
     return;
@@ -5074,9 +5234,15 @@ async function renderWfDiffView(body, root, item, ts) {
   }
 }
 
-/// The agent owns annotations.json in these phases (review A2).
+/// The agent owns annotations.json in these phases (review A2). Mirrors
+/// `ensure_annotations_unlocked` — a review round writes its findings as
+/// annotations, so the human's editor is locked while one runs.
 function wfAnnotationsLocked(item) {
-  return item.meta.status === "changes-requested" || item.meta.status === "implementing";
+  return (
+    item.meta.status === "changes-requested" ||
+    item.meta.status === "implementing" ||
+    item.meta.status === "reviewing"
+  );
 }
 
 /// Build the diff DOM: .wf-file > head + hunks > numbered lines. One
