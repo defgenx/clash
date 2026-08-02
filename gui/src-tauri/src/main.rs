@@ -2707,6 +2707,8 @@ fn main() {
             workflows::get_workflows_dir,
             workflows::set_workflows_dir,
             workflows::create_workflow_item,
+            workflows::create_workflow_review,
+            workflows::list_repo_branches,
             workflows::update_workflow_status,
             workflows::save_workflow_doc,
             workflows::save_workflow_annotation,

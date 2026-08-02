@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::workflow::{
-    Annotation, AnnotationStatus, AnnotationsFile, WorkflowItem, WorkflowMeta,
+    Annotation, AnnotationStatus, AnnotationsFile, NewWorkflowItem, WorkflowItem, WorkflowMeta,
 };
 use crate::infrastructure::fs::atomic::write_atomic;
 use crate::infrastructure::fs::backend::sanitize_component;
@@ -167,18 +167,13 @@ pub fn load_items(root: &Path) -> Result<Vec<WorkflowItem>> {
 
 // ── Create / delete ─────────────────────────────────────────────────────
 
-/// Create a new item under `project` with a slug derived from `title`
-/// (deduplicated with `-2`, `-3`, … suffixes). Seeds `meta.json` (status
-/// `draft`, iteration 1), an empty `plan.md`, `review.md`, and an empty
-/// `annotations.json`.
-pub fn create_item(
-    root: &Path,
-    project: &str,
-    title: &str,
-    repo_path: &str,
-) -> Result<WorkflowItem> {
-    let project = sanitize_component(project)?;
-    let base = crate::application::workflow::slugify(title);
+/// Create a new item with a slug derived from its title (deduplicated with
+/// `-2`, `-3`, … suffixes). Seeds `meta.json` (iteration 1, status from the
+/// entry mode), `plan.md` (the request's seed content, usually empty),
+/// `review.md`, and an empty `annotations.json`.
+pub fn create_item(root: &Path, req: &NewWorkflowItem) -> Result<WorkflowItem> {
+    let project = sanitize_component(&req.project)?;
+    let base = crate::application::workflow::slugify(&req.title);
     let project_dir = root.join(&project);
     std::fs::create_dir_all(&project_dir)?;
 
@@ -193,8 +188,14 @@ pub fn create_item(
 
     let now = now_ms();
     let meta = WorkflowMeta {
-        title: title.trim().to_string(),
-        repo_path: repo_path.to_string(),
+        title: req.title.trim().to_string(),
+        status: req.mode.initial_status(),
+        mode: req.mode,
+        repo_path: req.repo_path.clone(),
+        branch: req.branch.clone(),
+        base: req.base.clone(),
+        worktree: req.worktree.clone(),
+        pr: req.pr.clone(),
         iteration: 1,
         created_at: now,
         updated_at: now,
@@ -204,7 +205,7 @@ pub fn create_item(
         &dir.join(META_FILE),
         serde_json::to_string_pretty(&meta)?.as_bytes(),
     )?;
-    write_atomic(&dir.join(PLAN_FILE), b"")?;
+    write_atomic(&dir.join(PLAN_FILE), req.plan.as_bytes())?;
     write_atomic(&dir.join(REVIEW_FILE), b"")?;
     write_atomic(
         &dir.join(ANNOTATIONS_FILE),
@@ -387,10 +388,20 @@ mod tests {
         (dir, root)
     }
 
+    /// Plain full-mode creation request — the shape most tests need.
+    fn req(project: &str, title: &str, repo_path: &str) -> NewWorkflowItem {
+        NewWorkflowItem {
+            project: project.to_string(),
+            title: title.to_string(),
+            repo_path: repo_path.to_string(),
+            ..NewWorkflowItem::default()
+        }
+    }
+
     #[test]
     fn create_then_load_round_trip() {
         let (_g, root) = root();
-        let item = create_item(&root, "clash", "Auth Refactor!", "/w/clash").unwrap();
+        let item = create_item(&root, &req("clash", "Auth Refactor!", "/w/clash")).unwrap();
         assert_eq!(item.project, "clash");
         assert_eq!(item.slug, "auth-refactor");
         assert_eq!(item.meta.title, "Auth Refactor!");
@@ -407,17 +418,90 @@ mod tests {
     }
 
     #[test]
+    fn create_from_plan_seeds_the_plan_and_lands_on_review() {
+        use crate::domain::workflow::WorkflowMode;
+        let (_g, root) = root();
+        let item = create_item(
+            &root,
+            &NewWorkflowItem {
+                mode: WorkflowMode::FromPlan,
+                plan: "# Plan\n\nDo the thing.\n".to_string(),
+                ..req("p", "Supplied plan", "/w/p")
+            },
+        )
+        .unwrap();
+        assert_eq!(item.meta.mode, WorkflowMode::FromPlan);
+        assert_eq!(item.meta.status, WorkflowStatus::PlanReview);
+        assert!(item.has_plan);
+        assert_eq!(
+            read_doc(&root, "p", &item.slug, PLAN_FILE).unwrap(),
+            "# Plan\n\nDo the thing.\n"
+        );
+        // One approval away from implementation.
+        assert!(item
+            .meta
+            .status
+            .can_transition_to(WorkflowStatus::Implementing));
+    }
+
+    #[test]
+    fn create_review_only_starts_at_diff_review_with_the_existing_code() {
+        use crate::domain::workflow::{WorkflowMode, WorkflowPr};
+        let (_g, root) = root();
+        let item = create_item(
+            &root,
+            &NewWorkflowItem {
+                mode: WorkflowMode::ReviewOnly,
+                branch: "feat/thing".to_string(),
+                base: "develop".to_string(),
+                worktree: Some("/w/p-worktrees/feat-thing".to_string()),
+                pr: Some(WorkflowPr {
+                    url: "https://github.com/o/r/pull/9".to_string(),
+                    number: 9,
+                    ..WorkflowPr::default()
+                }),
+                ..req("p", "Review the thing", "/w/p")
+            },
+        )
+        .unwrap();
+        assert_eq!(item.meta.mode, WorkflowMode::ReviewOnly);
+        assert_eq!(item.meta.status, WorkflowStatus::DiffReview);
+        assert_eq!(item.meta.branch, "feat/thing");
+        assert_eq!(item.meta.base, "develop");
+        assert_eq!(
+            item.meta.worktree.as_deref(),
+            Some("/w/p-worktrees/feat-thing")
+        );
+        assert_eq!(item.meta.pr.as_ref().unwrap().number, 9);
+        assert!(!item.has_plan); // review-only never gets a plan
+
+        // Everything survives the round-trip through meta.json.
+        let back = read_meta(&root, "p", &item.slug).unwrap();
+        assert_eq!(back.mode, WorkflowMode::ReviewOnly);
+        assert_eq!(back.base, "develop");
+    }
+
+    #[test]
     fn slug_dedup_appends_counter() {
         let (_g, root) = root();
-        assert_eq!(create_item(&root, "p", "Same", "").unwrap().slug, "same");
-        assert_eq!(create_item(&root, "p", "Same", "").unwrap().slug, "same-2");
-        assert_eq!(create_item(&root, "p", "Same", "").unwrap().slug, "same-3");
+        assert_eq!(
+            create_item(&root, &req("p", "Same", "")).unwrap().slug,
+            "same"
+        );
+        assert_eq!(
+            create_item(&root, &req("p", "Same", "")).unwrap().slug,
+            "same-2"
+        );
+        assert_eq!(
+            create_item(&root, &req("p", "Same", "")).unwrap().slug,
+            "same-3"
+        );
     }
 
     #[test]
     fn sanitization_rejects_traversal() {
         let (_g, root) = root();
-        assert!(create_item(&root, "../evil", "x", "").is_err());
+        assert!(create_item(&root, &req("../evil", "x", "")).is_err());
         assert!(read_meta(&root, "p", "../../etc").is_err());
         assert!(read_doc(&root, "p/x", "s", PLAN_FILE).is_err());
     }
@@ -425,7 +509,7 @@ mod tests {
     #[test]
     fn doc_whitelist_enforced() {
         let (_g, root) = root();
-        create_item(&root, "p", "item", "").unwrap();
+        create_item(&root, &req("p", "item", "")).unwrap();
         assert!(write_doc(&root, "p", "item", "meta.json", "{}").is_err());
         assert!(read_doc(&root, "p", "item", "../plan.md").is_err());
         write_doc(&root, "p", "item", PLAN_FILE, "# Plan").unwrap();
@@ -437,7 +521,7 @@ mod tests {
     #[test]
     fn meta_write_stamps_updated_at() {
         let (_g, root) = root();
-        let item = create_item(&root, "p", "item", "").unwrap();
+        let item = create_item(&root, &req("p", "item", "")).unwrap();
         let mut meta = item.meta.clone();
         meta.status = WorkflowStatus::Planning;
         meta.updated_at = 0;
@@ -451,7 +535,7 @@ mod tests {
     #[test]
     fn annotations_round_trip_and_open_count() {
         let (_g, root) = root();
-        create_item(&root, "p", "item", "").unwrap();
+        create_item(&root, &req("p", "item", "")).unwrap();
         let mut file = AnnotationsFile::default();
         file.annotations.push(Annotation {
             id: "a-1".into(),
@@ -474,7 +558,7 @@ mod tests {
     #[test]
     fn malformed_annotations_error_on_read_but_not_listing() {
         let (_g, root) = root();
-        let item = create_item(&root, "p", "item", "").unwrap();
+        let item = create_item(&root, &req("p", "item", "")).unwrap();
         std::fs::write(Path::new(&item.path).join(ANNOTATIONS_FILE), "{not json").unwrap();
         // Direct read errors (a blind save would clobber review data)…
         assert!(read_annotations(&root, "p", "item").is_err());
@@ -487,7 +571,7 @@ mod tests {
     #[test]
     fn malformed_meta_skips_item_not_list() {
         let (_g, root) = root();
-        create_item(&root, "p", "good", "").unwrap();
+        create_item(&root, &req("p", "good", "")).unwrap();
         let bad = root.join("p").join("bad");
         std::fs::create_dir_all(&bad).unwrap();
         std::fs::write(bad.join(META_FILE), "{not json").unwrap();
@@ -502,7 +586,7 @@ mod tests {
     #[test]
     fn snapshot_writes_history_and_leaves_meta_alone() {
         let (_g, root) = root();
-        let item = create_item(&root, "p", "item", "").unwrap();
+        let item = create_item(&root, &req("p", "item", "")).unwrap();
         let iter = snapshot_iteration(&root, "p", "item", "diff --git a/x b/x\n").unwrap();
         assert_eq!(iter, 1);
         let snap = Path::new(&item.path).join("history").join("001");
@@ -530,7 +614,7 @@ mod tests {
     #[test]
     fn terminal_items_skip_annotation_and_history_reads() {
         let (_g, root) = root();
-        let item = create_item(&root, "p", "item", "").unwrap();
+        let item = create_item(&root, &req("p", "item", "")).unwrap();
         snapshot_iteration(&root, "p", "item", "d").unwrap();
         let mut file = AnnotationsFile::default();
         file.annotations.push(Annotation::default()); // open by default
@@ -548,7 +632,7 @@ mod tests {
     #[test]
     fn review_audit_trail_appends() {
         let (_g, root) = root();
-        create_item(&root, "p", "item", "").unwrap();
+        create_item(&root, &req("p", "item", "")).unwrap();
         let ann = Annotation {
             file: "src/a.rs".into(),
             line: 12,
@@ -570,7 +654,7 @@ mod tests {
     #[test]
     fn missing_history_diff_is_a_clear_error() {
         let (_g, root) = root();
-        create_item(&root, "p", "item", "").unwrap();
+        create_item(&root, &req("p", "item", "")).unwrap();
         let err = read_history_diff(&root, "p", "item", 7).unwrap_err();
         assert!(err.to_string().contains("iteration 7"));
     }
@@ -578,7 +662,7 @@ mod tests {
     #[test]
     fn delete_item_removes_recursively() {
         let (_g, root) = root();
-        create_item(&root, "p", "item", "").unwrap();
+        create_item(&root, &req("p", "item", "")).unwrap();
         snapshot_iteration(&root, "p", "item", "d").unwrap();
         delete_item(&root, "p", "item").unwrap();
         assert!(load_items(&root).unwrap().is_empty());

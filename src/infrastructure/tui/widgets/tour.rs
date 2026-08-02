@@ -203,6 +203,8 @@ pub const TOUR_STEPS: &[TourStep] = &[
         body: &[
             "The clash GUI adds Workflows — an all-in-one plan → review → implement → PR pipeline: launch a planning agent, approve or request changes, annotate the diff with line-level comments, and mark the draft PR ready once validated.",
             "",
+            "An item can also skip ahead: start it from a plan you already have (a file, a scratch note, pasted text), or review-only from an existing PR or branch — clash checks the branch out and gives you just the diff-review ⇄ changes-requested loop, no planning phase.",
+            "",
             "Items live as plain files under ~/.claude/clash/workflows/ (per-iteration history included), so everything stays consultable from a terminal too. The TUI will grow a read-only view; for now, launch the GUI to use Workflows.",
         ],
         keys: &[],

@@ -943,6 +943,12 @@ html, body, #app {
 .wf-chip.wf-pr { color: var(--purple); border-color: var(--purple); }
 .wf-chip.wf-pr-ready, .wf-chip.wf-done { color: var(--green); border-color: var(--green); }
 .wf-chip.wf-dead { color: var(--fg-dim); text-decoration: line-through; }
+/* Entry mode — secondary to the status chip it sits next to: it explains the
+   shape of the pipeline, not where the item currently is. */
+.wf-chip.wf-mode {
+  color: var(--fg-dim);
+  border-style: dashed;
+}
 .wf-meta { font-size: 11px; color: var(--fg-dim); }
 .wf-subbar {
   display: flex;
@@ -1429,7 +1435,8 @@ html, body, #app {
   word-break: break-all;
   font-family: var(--mono, "SF Mono", Menlo, monospace);
 }
-.dialog-box input {
+.dialog-box input,
+.dialog-box textarea {
   width: 100%;
   margin-bottom: 12px;
   background: var(--bg);
@@ -1440,7 +1447,17 @@ html, body, #app {
   font-size: 13px;
   outline: none;
 }
-.dialog-box input:focus { border-color: var(--accent); }
+.dialog-box input:focus,
+.dialog-box textarea:focus { border-color: var(--accent); }
+/* Pasted markdown (a plan) reads as code, and must not stretch the dialog. */
+.dialog-box textarea {
+  font-family: var(--mono, "SF Mono", Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 120px;
+  max-height: 50vh;
+}
 
 /* Stale-content banner (rebuild deferred while a composer has focus) */
 .wf-stale-banner {

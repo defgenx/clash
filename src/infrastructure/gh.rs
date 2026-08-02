@@ -13,6 +13,10 @@ use std::path::Path;
 use std::process::Command;
 
 /// A pull request as reported by `gh pr view`.
+///
+/// One struct for both uses — the PR-lifecycle commands read the first four
+/// fields, review-only item creation also needs the title and refs — so there
+/// is a single `--json` field list and a single parser.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GhPrView {
@@ -25,7 +29,18 @@ pub struct GhPrView {
     /// "OPEN" | "MERGED" | "CLOSED".
     #[serde(default)]
     pub state: String,
+    #[serde(default)]
+    pub title: String,
+    /// Branch the PR is *from* — the one to check out for review.
+    #[serde(default)]
+    pub head_ref_name: String,
+    /// Branch the PR is *into* — the diff base.
+    #[serde(default)]
+    pub base_ref_name: String,
 }
+
+/// The `--json` fields every `gh pr view` call in clash requests.
+const PR_VIEW_FIELDS: &str = "url,number,isDraft,state,title,headRefName,baseRefName";
 
 #[derive(Debug, thiserror::Error)]
 pub enum GhError {
@@ -91,14 +106,14 @@ pub fn parse_pr_url(url: &str) -> Option<(String, u64)> {
     Some((format!("{}/{}", owner, repo), number))
 }
 
-/// `gh pr view [branch] --json url,number,isDraft,state` in `dir`.
-/// `branch = ""` means "the PR of the current branch".
+/// `gh pr view [selector] --json …` in `dir`. The selector is a PR number, a
+/// branch or a URL; `""` means "the PR of the current branch".
 pub fn pr_view(dir: &Path, branch: &str) -> Result<GhPrView, GhError> {
     let mut args = vec!["pr", "view"];
     if !branch.is_empty() {
         args.push(branch);
     }
-    args.extend(["--json", "url,number,isDraft,state"]);
+    args.extend(["--json", PR_VIEW_FIELDS]);
     let output = run(dir, &args)?;
     if output.status.success() {
         parse_pr_view_json(&String::from_utf8_lossy(&output.stdout))
@@ -154,13 +169,17 @@ mod tests {
 
     #[test]
     fn parse_pr_view_json_full() {
-        let json =
-            r#"{"url":"https://github.com/o/r/pull/7","number":7,"isDraft":true,"state":"OPEN"}"#;
+        let json = r#"{"url":"https://github.com/o/r/pull/7","number":7,"isDraft":true,
+            "state":"OPEN","title":"Add auth","headRefName":"feat/auth","baseRefName":"develop"}"#;
         let pr = parse_pr_view_json(json).unwrap();
         assert_eq!(pr.number, 7);
         assert!(pr.is_draft);
         assert_eq!(pr.state, "OPEN");
         assert_eq!(pr.url, "https://github.com/o/r/pull/7");
+        // The review-only creation path needs these three.
+        assert_eq!(pr.title, "Add auth");
+        assert_eq!(pr.head_ref_name, "feat/auth");
+        assert_eq!(pr.base_ref_name, "develop");
     }
 
     #[test]
@@ -169,7 +188,31 @@ mod tests {
         assert_eq!(pr.number, 3);
         assert!(!pr.is_draft);
         assert_eq!(pr.state, "");
+        assert_eq!(pr.title, "");
+        assert_eq!(pr.head_ref_name, "");
+        assert_eq!(pr.base_ref_name, "");
         assert!(parse_pr_view_json("not json").is_err());
+    }
+
+    #[test]
+    fn pr_view_fields_cover_every_struct_field() {
+        // The `--json` list and the struct must not drift apart: every field
+        // parsed here has to be requested from gh.
+        for field in [
+            "url",
+            "number",
+            "isDraft",
+            "state",
+            "title",
+            "headRefName",
+            "baseRefName",
+        ] {
+            assert!(
+                PR_VIEW_FIELDS.split(',').any(|f| f == field),
+                "{} missing from PR_VIEW_FIELDS",
+                field
+            );
+        }
     }
 
     #[test]

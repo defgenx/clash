@@ -10,7 +10,9 @@ use crate::domain::entities::{
     ConversationMessage, InboxMessage, ScratchNote, Session, Subagent, Task, Team,
 };
 use crate::domain::error::Result;
-use crate::domain::workflow::{Annotation, AnnotationsFile, WorkflowItem, WorkflowMeta};
+use crate::domain::workflow::{
+    Annotation, AnnotationsFile, NewWorkflowItem, WorkflowItem, WorkflowMeta,
+};
 
 /// Repository port for all data access operations.
 ///
@@ -149,14 +151,10 @@ pub trait WorkflowRepository: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Create an item under `project` with a slug derived from `title`
-    /// (deduplicated). Seeds meta/plan/review/annotations files.
-    fn create_workflow_item(
-        &self,
-        _project: &str,
-        _title: &str,
-        _repo_path: &str,
-    ) -> Result<WorkflowItem> {
+    /// Create an item with a slug derived from its title (deduplicated).
+    /// Seeds meta/plan/review/annotations files; the request's entry mode
+    /// decides the initial status and which fields are pre-filled.
+    fn create_workflow_item(&self, _req: &NewWorkflowItem) -> Result<WorkflowItem> {
         Ok(WorkflowItem::default())
     }
 

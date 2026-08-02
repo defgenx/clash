@@ -41,10 +41,40 @@ Kebab-case strings in `meta.json`. Decision states (`plan-review`,
 - **Everything else is clash-owned** (buttons in the GUI): approve, request
   changes, mark PR ready, done, abandon, reopen.
 
+## Entry modes
+
+`meta.json.mode` records how the item entered the pipeline. It is fixed at
+creation, kebab-case, and **absent means `full`** (items written before modes
+existed need no migration). The mode decides the initial status, which phases
+exist, and how approval ends the item.
+
+| `mode` | starts at | plan phase | approval at `diff-review` |
+|---|---|---|---|
+| `full` | `draft` | agent writes `plan.md` | `pr-draft` → `pr-ready` → `done` |
+| `from-plan` | `plan-review` | `plan.md` supplied by the human | same as `full` |
+| `review-only` | `diff-review` | **none** | straight to `done` |
+
+- **`from-plan`** — the human's plan (a file, a scratch note, pasted text) is
+  written into `plan.md` at creation, so no planning agent runs. From the
+  agent's side this is identical to `full` from `plan-review` onwards.
+- **`review-only`** — the code already exists (a PR or a branch) and clash
+  owns neither it nor the PR. `meta.branch` is the branch under review,
+  `meta.base` its diff base, `meta.worktree` a checkout clash materialized
+  (reusing an existing worktree of that branch when there is one), and
+  `meta.pr` the PR when the source was one. The only loop is
+  `diff-review ⇄ changes-requested → implementing → diff-review`; there is no
+  plan and there never will be one.
+
+`meta.base` (any mode) is the ref the diff is taken against — empty means the
+repo's origin default branch. A PR targeting `develop` records `develop`.
+
 ## The agent contract (clash-workflow skill)
 
 The kickoff prompt is:
-`Use the clash-workflow skill. Workflow item directory: <abs path>. Phase: <plan|revise|implement>.`
+`Use the clash-workflow skill. Workflow item directory: <abs path>. Phase: <plan|revise|implement>. Mode: <full|from-plan|review-only>.`
+
+The mode is repeated in the prompt (it is also in `meta.json`) so a
+`review-only` run knows before reading anything that it must not write a plan.
 
 On every run, the agent first reads: `meta.json`, `plan.md`, `review.md`
 (top-to-bottom — it is the accumulated decision history), the `open`
@@ -55,7 +85,8 @@ for context.
   `meta.json.status = "plan-review"`.
 - **Phase `revise`**: if the review round was about the plan, revise
   `plan.md` and finish with `"plan-review"`. If it was about code, behave
-  like `implement`.
+  like `implement`. In `review-only` mode there is no plan, so `revise` is
+  always `implement`.
 - **Phase `implement`**: set `"implementing"` while working; address every
   `open` annotation — set it `"addressed"` with a short resolution appended
   to its `replies`, or `"wontfix"` with a justification; commit on the item
@@ -65,6 +96,11 @@ for context.
 
 ### Hard rules
 
+- In `review-only` mode: never write `plan.md`, never transition to
+  `plan-review`, and always finish at `diff-review`. The branch is pre-existing
+  and shared, so after committing, **push** it (plain `git push`, never
+  force) so the PR reflects the fixes — the one mode where pushing is expected;
+  a rejected push means stop and report, never force.
 - Never touch `history/` and never change `iteration` — clash owns both
   (they are written atomically by the request-changes flow).
 - Write `annotations.json` **only** while status is `changes-requested` or

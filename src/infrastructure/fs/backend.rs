@@ -1542,11 +1542,9 @@ impl crate::domain::ports::WorkflowRepository for FsBackend {
 
     fn create_workflow_item(
         &self,
-        project: &str,
-        title: &str,
-        repo_path: &str,
+        req: &crate::domain::workflow::NewWorkflowItem,
     ) -> Result<crate::domain::workflow::WorkflowItem> {
-        super::workflows::create_item(&self.workflows_dir(), project, title, repo_path)
+        super::workflows::create_item(&self.workflows_dir(), req)
     }
 
     fn load_workflow_meta(

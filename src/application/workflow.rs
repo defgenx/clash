@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use crate::application::diff::{FileDiff, HunkLine};
-use crate::domain::workflow::{Annotation, DiffSide, WorkflowItem, WorkflowStatus};
+use crate::domain::workflow::{Annotation, DiffSide, WorkflowItem, WorkflowMode, WorkflowStatus};
 
 // ── Slugs ───────────────────────────────────────────────────────────────
 
@@ -252,12 +252,16 @@ impl AttentionLedger {
 // ── Agent kickoff prompt ────────────────────────────────────────────────
 
 /// Build the initial prompt for a workflow agent session. The skill owns the
-/// actual behavior; the prompt only routes it to the item directory and the
-/// requested phase (`plan` | `revise` | `implement`).
-pub fn build_agent_prompt(item_dir: &str, phase: &str) -> String {
+/// actual behavior; the prompt only routes it to the item directory, the
+/// requested phase (`plan` | `revise` | `implement`) and the item's entry mode.
+///
+/// The mode is also in `meta.json`, but stating it up front is what makes a
+/// `review-only` run reliably skip the plan: the agent knows before it reads
+/// anything that there is no plan to write and no `plan-review` to hand back to.
+pub fn build_agent_prompt(item_dir: &str, phase: &str, mode: WorkflowMode) -> String {
     format!(
-        "Use the clash-workflow skill. Workflow item directory: {}. Phase: {}.",
-        item_dir, phase
+        "Use the clash-workflow skill. Workflow item directory: {}. Phase: {}. Mode: {}.",
+        item_dir, phase, mode
     )
 }
 
@@ -482,6 +486,26 @@ diff --git a/dup.rs b/dup.rs
     }
 
     #[test]
+    fn ledger_silent_when_an_item_is_born_needing_attention() {
+        // from-plan and review-only items are *created* in an attention state.
+        // Creation seeds the ledger, so the very first reload must not notify
+        // the user about a decision they just asked for.
+        for born in [
+            WorkflowMode::FromPlan.initial_status(),
+            WorkflowMode::ReviewOnly.initial_status(),
+        ] {
+            assert!(born.needs_attention(), "{} should need a decision", born);
+            let mut ledger = AttentionLedger::default();
+            ledger.record_local_write("p", "a", born);
+            assert!(
+                ledger.observe(&[item("p", "a", born)]).is_empty(),
+                "{}",
+                born
+            );
+        }
+    }
+
+    #[test]
     fn ledger_does_not_renotify_same_status() {
         let mut ledger = AttentionLedger::default();
         ledger.observe(&[item("p", "a", WorkflowStatus::Planning)]);
@@ -513,9 +537,20 @@ diff --git a/dup.rs b/dup.rs
 
     #[test]
     fn prompt_routes_dir_and_phase() {
-        let p = build_agent_prompt("/x/workflows/clash/auth", "revise");
+        let p = build_agent_prompt("/x/workflows/clash/auth", "revise", WorkflowMode::Full);
         assert!(p.contains("clash-workflow skill"));
         assert!(p.contains("/x/workflows/clash/auth"));
         assert!(p.contains("Phase: revise."));
+        assert!(p.contains("Mode: full."));
+    }
+
+    #[test]
+    fn prompt_carries_the_entry_mode() {
+        // review-only must be visible before the agent reads any file — it is
+        // what tells it there is no plan phase.
+        let p = build_agent_prompt("/x/w/p/item", "revise", WorkflowMode::ReviewOnly);
+        assert!(p.contains("Mode: review-only."));
+        let p = build_agent_prompt("/x/w/p/item", "implement", WorkflowMode::FromPlan);
+        assert!(p.contains("Mode: from-plan."));
     }
 }

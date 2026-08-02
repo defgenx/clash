@@ -32,7 +32,7 @@
 - **Repo config discovery** — auto-detects MCP servers, custom commands, agent definitions, and setup scripts from the project directory
 - **Teams & tasks** — create, rename, configure, and delete teams; manage members (agent type, model, prompt, rename) and see at a glance who's running; full task management (create, cycle status, assign owner, delete); per-agent inboxes. In the GUI, jump straight from a running member to its live session.
 - **Scratches** — keep free-form text notes inside clash (`:scratch`), organized in an IntelliJ-style **"Scratches and Consoles"** tree: create notes and nested folders, rename, delete, and reorganize (move via a folder picker in the TUI, drag-and-drop in the GUI). Each note is a plain file under `~/.claude/clash/scratch/` by default — set `scratch_dir` in `config.toml` (or the GUI **Scratch directory** setting) to store them anywhere. Opening a scratch shows an editor picker: terminal editors (vim/emacs/nano…) open in a tab/pane, GUI editors (VS Code/Cursor/Zed…) launch alongside, like opening a project
-- **Workflows (GUI)** — manage a full plan → plan-review → implement → diff-review → PR pipeline per feature: launch a planning agent, read the plan, approve or request changes, **annotate the diff with line-level comments** the agent addresses on the next round, track the draft PR and **mark it ready** once validated — with per-iteration history snapshots, decision notifications, and a kanban board. See [Workflows](#workflows-gui)
+- **Workflows (GUI)** — manage a full plan → plan-review → implement → diff-review → PR pipeline per feature: launch a planning agent, read the plan, approve or request changes, **annotate the diff with line-level comments** the agent addresses on the next round, track the draft PR and **mark it ready** once validated — with per-iteration history snapshots, decision notifications, and a kanban board. Start end-to-end, **from a plan you already have**, or **review-only from an existing PR or branch**. See [Workflows](#workflows-gui)
 - **Subagent tracking** — view subagent trees per session, expand/collapse in the sessions table
 - **Open in IDE** — press `e` to open a session's project in your editor (auto-detects Cursor, VS Code, Zed, JetBrains, nvim, vim; configurable)
 - **Keyboard-driven** — vim-style navigation, command mode (`:`), fuzzy filter (`/`), context help (`?`)
@@ -430,7 +430,23 @@ implementing → diff-review → pr-draft → pr-ready → done` (plus `abandone
 Decision states (plan-review, diff-review, pr-draft) badge the sidebar and
 fire a desktop notification.
 
-**The loop**: create an item (title + project + repo) → *Start planning*
+**Entry modes** — an item does not have to start at the beginning. The `+`
+button asks how it starts:
+
+| Mode | Starts at | Use it when |
+|---|---|---|
+| **Full workflow** | `draft` | you have an idea: an agent plans, you approve, it implements |
+| **From a plan I already have** | `plan-review` | the plan exists — paste it, point at a markdown file, or pick a scratch note; no planning agent runs and you are one *Approve* from implementation |
+| **Review only** | `diff-review` | the feature is already written: give a **PR** (URL or number) or a **local branch** and get just the review loop |
+
+**Review only** is the reviewer's path: clash resolves the PR through `gh`,
+checks the branch out (reusing an existing worktree of it when you already have
+one), and drops you straight into the diff with the PR's own base as the diff
+base. Annotate, *Request changes* → the agent addresses the comments on that
+branch and pushes, you review again; *Approve* closes the item — no plan is
+ever written and no draft-PR ceremony runs, since the PR isn't clash's.
+
+**The loop** (full mode): create an item (title + project + repo) → *Start planning*
 spawns a Claude Code session in a dedicated git worktree, driven by the
 `clash-workflow` skill → read the rendered plan, *Approve* or *Request
 changes* with a note → during **diff review**, hover any line of the diff
@@ -442,7 +458,8 @@ must address every open comment → *Approve & create draft PR* (via `gh`) →
 once you've validated everything, *Mark PR ready* flips the draft. A merged
 PR moves the item to done automatically.
 
-**Storage**: `~/.claude/clash/workflows/<project>/<item>/` with `meta.json`,
+**Storage**: `~/.claude/clash/workflows/<project>/<item>/` with `meta.json`
+(entry mode, status, branch, diff base, PR),
 `plan.md`, `review.md`, `annotations.json` and `history/<NNN>/` snapshots —
 a dedicated root (not the scratch tree), overridable via `workflows_dir` in
 `config.toml` or the GUI Settings. Comments are re-anchored by content when

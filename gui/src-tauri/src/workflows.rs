@@ -12,7 +12,7 @@ use clash::application::diff::parse_file_diffs;
 use clash::application::workflow::anchor_annotations;
 use clash::application::workflow::AnchoredAnnotation;
 use clash::domain::ports::WorkflowRepository;
-use clash::domain::workflow::{AnnotationsFile, WorkflowItem, WorkflowStatus};
+use clash::domain::workflow::{AnnotationsFile, WorkflowItem, WorkflowMode, WorkflowStatus};
 use tauri::{Emitter, Manager, State};
 
 use crate::{native_notify, GuiState};
@@ -174,8 +174,12 @@ pub(crate) fn list_workflow_history(
 }
 
 /// The diff text for an item: a history snapshot when `iteration` is given,
-/// otherwise the live diff of the item's worktree/repo against the
-/// merge-base with the origin default branch (committed + uncommitted work).
+/// otherwise the live diff of the item's worktree/repo against the merge-base
+/// with its base branch (committed + uncommitted work).
+///
+/// The base is `meta.base` when recorded — a review-only item created from a PR
+/// carries that PR's target branch, which is not necessarily the repo default —
+/// and the origin default branch otherwise.
 pub(crate) async fn workflow_diff_text(
     state: &GuiState,
     project: &str,
@@ -200,7 +204,11 @@ pub(crate) async fn workflow_diff_text(
     if dir.is_empty() {
         return Err("No repository directory recorded for this item".to_string());
     }
-    let base = crate::origin_default_branch(&dir).await;
+    let base = if meta.base.trim().is_empty() {
+        crate::origin_default_branch(&dir).await
+    } else {
+        meta.base.clone()
+    };
     clash::infrastructure::git::git_diff(
         Path::new(&dir),
         &clash::infrastructure::git::DiffBase::MergeBase(base),
@@ -315,20 +323,169 @@ fn ensure_annotations_unlocked(meta: &clash::domain::workflow::WorkflowMeta) -> 
     }
 }
 
-/// Create a new workflow item (status `draft`, iteration 1).
+/// Create a workflow item in `full` or `from-plan` mode (iteration 1; the mode
+/// picks the initial status). `plan_file` seeds `plan.md` from a file on disk —
+/// that is how both the "a markdown file" and the "a scratch note" plan sources
+/// work (the frontend passes the note's absolute path); `plan` carries pasted
+/// text. Review-only items go through [`create_workflow_review`], which has git
+/// work to do first.
 #[tauri::command]
 pub(crate) fn create_workflow_item(
     state: State<'_, GuiState>,
     project: String,
     title: String,
     repo_path: String,
+    mode: Option<WorkflowMode>,
+    plan: Option<String>,
+    plan_file: Option<String>,
 ) -> Result<WorkflowItem, String> {
+    let mode = mode.unwrap_or_default();
+    if mode.is_review_only() {
+        return Err("review-only items are created by create_workflow_review".to_string());
+    }
+    let plan = read_plan_seed(plan, plan_file)?;
+    if mode == WorkflowMode::FromPlan && plan.trim().is_empty() {
+        return Err("A from-plan item needs a plan — the supplied plan is empty".to_string());
+    }
     let item = state
         .backend
-        .create_workflow_item(&project, &title, &repo_path)
+        .create_workflow_item(&clash::domain::workflow::NewWorkflowItem {
+            project,
+            title,
+            repo_path,
+            mode,
+            plan,
+            ..Default::default()
+        })
         .map_err(e2s)?;
     seed_local(&state, &item.project, &item.slug, item.meta.status);
     Ok(item)
+}
+
+/// Resolve the plan seed: a file's content when `plan_file` is given, else the
+/// pasted text, else empty. Reading happens here rather than in the frontend so
+/// no generic read-any-file command has to be exposed to the webview.
+fn read_plan_seed(plan: Option<String>, plan_file: Option<String>) -> Result<String, String> {
+    let Some(path) = plan_file
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+    else {
+        return Ok(plan.unwrap_or_default());
+    };
+    let path = crate::expand_tilde(&path);
+    std::fs::read_to_string(&path).map_err(|e| format!("Cannot read {}: {}", path.display(), e))
+}
+
+/// Create a review-only item over code that already exists: a PR (by URL or
+/// number) or a local branch. Resolves the PR through `gh`, materializes a
+/// checkout of the branch, and lands the item straight in `diff-review` — no
+/// planning, no implementation phase, just the review loop.
+///
+/// The checkout is done *before* creating the item so a failure (missing branch,
+/// gh unavailable, dirty worktree) surfaces as "couldn't start the review"
+/// instead of leaving a half-usable item on disk.
+#[tauri::command]
+pub(crate) async fn create_workflow_review(
+    state: State<'_, GuiState>,
+    project: String,
+    repo_path: String,
+    pr: Option<String>,
+    branch: Option<String>,
+    title: Option<String>,
+) -> Result<WorkflowItem, String> {
+    let repo = crate::expand_tilde(repo_path.trim());
+    if !repo.is_dir() {
+        return Err(format!("Not a directory: {}", repo.display()));
+    }
+    let pr_selector = pr.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+    let branch = branch
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty());
+
+    // Resolve the source into (branch, base, pr block, fallback title).
+    let (head, base, pr_block, pr_title) = match pr_selector {
+        Some(selector) => {
+            // A URL is accepted verbatim by `gh pr view`, but parsing it first
+            // gives a clear error on a non-PR link before shelling out.
+            let selector = match clash::infrastructure::gh::parse_pr_url(&selector) {
+                Some((_repo, number)) => number.to_string(),
+                None if selector.chars().all(|c| c.is_ascii_digit()) => selector,
+                None => return Err(format!("Not a GitHub PR URL or number: {}", selector)),
+            };
+            let dir = repo.clone();
+            let sel = selector.clone();
+            let view = tauri::async_runtime::spawn_blocking(move || {
+                clash::infrastructure::gh::pr_view(&dir, &sel)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(gh_err)?;
+            if view.head_ref_name.is_empty() {
+                return Err(format!(
+                    "gh did not report a head branch for PR {}",
+                    selector
+                ));
+            }
+            let block = clash::domain::workflow::WorkflowPr {
+                url: view.url.clone(),
+                number: view.number,
+                draft: view.is_draft,
+                state: view.state.clone(),
+                last_checked_at: now_ms(),
+                ..Default::default()
+            };
+            (
+                view.head_ref_name.clone(),
+                view.base_ref_name.clone(),
+                Some(block),
+                view.title.clone(),
+            )
+        }
+        None => {
+            let head = branch.ok_or_else(|| "No PR or branch to review".to_string())?;
+            let base = crate::origin_default_branch(&repo.to_string_lossy()).await;
+            (head, base, None, String::new())
+        }
+    };
+
+    let worktree = clash::infrastructure::git::review::checkout_for_review(
+        &repo,
+        &head,
+        pr_block.as_ref().map(|p| p.number),
+    )
+    .await?;
+
+    let title = title
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .or_else(|| (!pr_title.is_empty()).then_some(pr_title))
+        .unwrap_or_else(|| head.clone());
+
+    let item = state
+        .backend
+        .create_workflow_item(&clash::domain::workflow::NewWorkflowItem {
+            project,
+            title,
+            repo_path: repo.to_string_lossy().into_owned(),
+            mode: WorkflowMode::ReviewOnly,
+            branch: head,
+            base,
+            worktree: Some(worktree),
+            pr: pr_block,
+            ..Default::default()
+        })
+        .map_err(e2s)?;
+    seed_local(&state, &item.project, &item.slug, item.meta.status);
+    Ok(item)
+}
+
+/// Local branches of a repo, newest first — the picker for "review a branch".
+#[tauri::command]
+pub(crate) async fn list_repo_branches(
+    repo_path: String,
+) -> Result<Vec<clash::infrastructure::git::review::LocalBranch>, String> {
+    clash::infrastructure::git::review::list_local_branches(&crate::expand_tilde(repo_path.trim()))
+        .await
 }
 
 /// Human-initiated status transition, validated against the transition
@@ -645,7 +802,7 @@ pub(crate) async fn start_workflow_agent(
         .join(&slug)
         .to_string_lossy()
         .into_owned();
-    let prompt = clash::application::workflow::build_agent_prompt(&item_dir, &phase);
+    let prompt = clash::application::workflow::build_agent_prompt(&item_dir, &phase, meta.mode);
 
     {
         let mut control = state.control.lock().await;
@@ -668,9 +825,10 @@ pub(crate) async fn start_workflow_agent(
 
     // Reflect the launch in meta: session id + phase-appropriate status
     // (invalid transitions — e.g. relaunching a dead agent mid-phase — keep
-    // the current status).
+    // the current status). A review-only item has no planning phase, so its
+    // agent always lands in `implementing`.
     meta.session_id = Some(session_id.clone());
-    let target = if phase == "plan" {
+    let target = if phase == "plan" && meta.mode.has_plan_phase() {
         WorkflowStatus::Planning
     } else {
         WorkflowStatus::Implementing
@@ -751,7 +909,11 @@ pub(crate) async fn workflow_create_pr(
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
     let dir = pr_dir(&meta)?;
-    let base = crate::origin_default_branch(&dir).await;
+    let base = if meta.base.trim().is_empty() {
+        crate::origin_default_branch(&dir).await
+    } else {
+        meta.base.clone()
+    };
     let pr_title = title
         .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(|| meta.title.clone());

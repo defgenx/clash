@@ -3,7 +3,7 @@
 mod helpers;
 
 use clash::domain::ports::WorkflowRepository;
-use clash::domain::workflow::{AnnotationStatus, WorkflowStatus};
+use clash::domain::workflow::{AnnotationStatus, NewWorkflowItem, WorkflowMode, WorkflowStatus};
 use clash::infrastructure::fs::backend::FsBackend;
 
 use helpers::test_data_dir::TestDataDir;
@@ -111,10 +111,16 @@ fn test_create_item_lists_alongside_fixtures() {
     let backend = FsBackend::new(test_dir.path.clone());
 
     let created = backend
-        .create_workflow_item("demo", "Brand New Thing", "/tmp/repo")
+        .create_workflow_item(&NewWorkflowItem {
+            project: "demo".into(),
+            title: "Brand New Thing".into(),
+            repo_path: "/tmp/repo".into(),
+            ..NewWorkflowItem::default()
+        })
         .unwrap();
     assert_eq!(created.slug, "brand-new-thing");
     assert_eq!(created.meta.status, WorkflowStatus::Draft);
+    assert_eq!(created.meta.mode, WorkflowMode::Full);
 
     let items = backend.load_workflow_items().unwrap();
     assert_eq!(items.len(), 2);
@@ -126,4 +132,56 @@ fn test_create_item_lists_alongside_fixtures() {
         .delete_workflow_item("demo", "brand-new-thing")
         .unwrap();
     assert_eq!(backend.load_workflow_items().unwrap().len(), 1);
+}
+
+/// The two entry modes that skip ahead land the item mid-pipeline, through the
+/// same port the GUI uses.
+#[test]
+fn test_create_item_entry_modes_skip_ahead() {
+    let test_dir = TestDataDir::new();
+    let backend = FsBackend::new(test_dir.path.clone());
+
+    let from_plan = backend
+        .create_workflow_item(&NewWorkflowItem {
+            project: "demo".into(),
+            title: "Supplied Plan".into(),
+            repo_path: "/tmp/repo".into(),
+            mode: WorkflowMode::FromPlan,
+            plan: "# Plan\n\nStep one.\n".into(),
+            ..NewWorkflowItem::default()
+        })
+        .unwrap();
+    assert_eq!(from_plan.meta.status, WorkflowStatus::PlanReview);
+    assert!(from_plan.has_plan);
+    assert_eq!(
+        backend
+            .read_workflow_doc("demo", &from_plan.slug, "plan.md")
+            .unwrap(),
+        "# Plan\n\nStep one.\n"
+    );
+
+    let review = backend
+        .create_workflow_item(&NewWorkflowItem {
+            project: "demo".into(),
+            title: "Review PR 12".into(),
+            repo_path: "/tmp/repo".into(),
+            mode: WorkflowMode::ReviewOnly,
+            branch: "feat/thing".into(),
+            base: "develop".into(),
+            worktree: Some("/tmp/repo-worktrees/feat-thing".into()),
+            ..NewWorkflowItem::default()
+        })
+        .unwrap();
+    assert_eq!(review.meta.status, WorkflowStatus::DiffReview);
+    assert_eq!(review.meta.mode, WorkflowMode::ReviewOnly);
+    assert!(!review.has_plan);
+
+    // Both are listed like any other item, mode and base intact on reload.
+    let items = backend.load_workflow_items().unwrap();
+    let reloaded = items
+        .iter()
+        .find(|i| i.slug == review.slug)
+        .expect("review item listed");
+    assert_eq!(reloaded.meta.base, "develop");
+    assert_eq!(reloaded.meta.branch, "feat/thing");
 }

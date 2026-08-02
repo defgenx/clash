@@ -130,7 +130,14 @@ function applyStaticIcons() {
 // wry's WKWebView does not implement native alert/confirm/prompt —
 // they silently return undefined — so modal equivalents are built in-page.
 
-function uiDialog({ message, input = null, okLabel = "OK", cancelable = true, danger = false }) {
+function uiDialog({
+  message,
+  input = null,
+  okLabel = "OK",
+  cancelable = true,
+  danger = false,
+  multiline = false,
+}) {
   return new Promise((resolve) => {
     const cancelValue = input !== null ? null : false;
     const backdrop = document.createElement("div");
@@ -142,8 +149,11 @@ function uiDialog({ message, input = null, okLabel = "OK", cancelable = true, da
     box.appendChild(msg);
     let field = null;
     if (input !== null) {
-      field = document.createElement("input");
-      field.type = "text";
+      // A pasted plan is many lines: same dialog, textarea instead of input,
+      // and Enter types a newline (⌘/Ctrl+Enter submits — see keydown below).
+      field = document.createElement(multiline ? "textarea" : "input");
+      if (!multiline) field.type = "text";
+      else field.rows = 14;
       field.value = input;
       field.spellcheck = false;
       box.appendChild(field);
@@ -177,7 +187,8 @@ function uiDialog({ message, input = null, okLabel = "OK", cancelable = true, da
     };
     backdrop.addEventListener("keydown", (e) => {
       e.stopPropagation();
-      if (e.key === "Enter") done(input !== null ? field.value : true);
+      if (e.key === "Enter" && (!multiline || e.metaKey || e.ctrlKey))
+        done(input !== null ? field.value : true);
       else if (e.key === "Escape" && cancelable) done(cancelValue);
     });
     setTimeout(() => (field || ok).focus(), 0);
@@ -188,6 +199,9 @@ const uiConfirm = (message, okLabel = "Confirm") =>
   uiDialog({ message, okLabel, danger: true });
 const uiPrompt = (message, def = "") => uiDialog({ message, input: def });
 const uiAlert = (message) => uiDialog({ message, cancelable: false });
+/// Multi-line prompt for text that doesn't fit one line (a pasted plan).
+const uiTextPrompt = (message, def = "", okLabel = "OK") =>
+  uiDialog({ message, input: def, multiline: true, okLabel });
 
 /// A modal that picks one entry from a (possibly long) list: scrollable
 /// rows with a label and an optional dim detail line. Resolves to the
@@ -3402,6 +3416,11 @@ function wfStatusInfo(status) {
 // Mirrors WorkflowStatus::needs_attention — the decision-needed states.
 const WF_DECISION = new Set(["plan-review", "diff-review", "pr-draft"]);
 
+// Mirrors WorkflowMode::is_review_only / has_plan_phase. An absent mode (items
+// created before entry modes existed) is the full pipeline.
+const wfIsReviewOnly = (item) => item.meta.mode === "review-only";
+const wfHasPlanPhase = (item) => !wfIsReviewOnly(item);
+
 function wfGroup(item) {
   const st = item.meta.status;
   if (st === "done" || st === "abandoned") return "DONE";
@@ -3488,6 +3507,9 @@ function buildWorkflowRow(item) {
   // Same skeleton as session rows: status ring column + two-line meta.
   row.className = "session-item wf-item";
   const bits = [escapeHtml(item.project), `it.${item.meta.iteration || 1}`];
+  // Review-only items never planned or implemented from scratch — say so, or
+  // their empty plan looks like a stalled full workflow.
+  if (wfIsReviewOnly(item)) bits.push("review");
   if (item.openAnnotations > 0) bits.push(`💬${item.openAnnotations}`);
   if (item.meta.pr && item.meta.pr.url) bits.push(item.meta.pr.draft ? "PR·draft" : "PR");
   const warn =
@@ -3574,13 +3596,30 @@ function workflowContextMenu(item, x, y) {
   showContextMenu(x, y, items);
 }
 
-/// New-item flow: title → project (from existing workflow projects and open
-/// sessions) → repo path (prefilled from the picked project's sessions).
-async function newWorkflowFlow() {
-  if (!state.wfOpen) await toggleWorkflows();
-  const title = await uiPrompt("New workflow item — title");
-  if (!title || !title.trim()) return;
+/// Entry modes — mirrors WorkflowMode in src/domain/workflow.rs (the
+/// kebab-case strings are the shared vocabulary; keep both sites in sync).
+const WF_MODES = [
+  {
+    value: "full",
+    label: "Full workflow",
+    detail: "agent plans → you approve → agent implements → you review the diff → PR",
+  },
+  {
+    value: "from-plan",
+    label: "From a plan I already have",
+    detail: "no planning agent — starts at plan review, one approval from implementation",
+  },
+  {
+    value: "review-only",
+    label: "Review only — an existing PR or branch",
+    detail: "no plan, no first implementation: straight to diff review ⇄ changes requested",
+  },
+];
 
+/// Pick the repo + project an item belongs to (from existing workflow projects
+/// and open sessions, else typed in). Resolves to `{ project, repoPath }`, or
+/// null when cancelled. Shared by every entry mode.
+async function pickWorkflowRepo() {
   // Candidate repos, deduped by path (two repos can share a basename —
   // dedupe by name silently dropped one of them).
   const candidates = new Map(); // repo path -> project name
@@ -3606,7 +3645,7 @@ async function newWorkflowFlow() {
       message: "Repository for this workflow item",
       items,
     });
-    if (picked === null) return;
+    if (picked === null) return null;
     if (picked) {
       repoPath = picked;
       project = candidates.get(picked);
@@ -3616,20 +3655,154 @@ async function newWorkflowFlow() {
   }
   if (!project) {
     project = ((await uiPrompt("Project name (group under the workflows root)")) || "").trim();
-    if (!project) return;
+    if (!project) return null;
     repoPath = "";
   }
   if (!repoPath) {
     repoPath = (
       (await uiPrompt("Repository path (absolute)", state.settings.defaultCwd || state.homeDir || "")) || ""
     ).trim();
-    if (!repoPath) return;
+    if (!repoPath) return null;
   }
+  return { project, repoPath };
+}
+
+/// Ask where the plan comes from and resolve it to the backend's two seed
+/// arguments: `plan` (pasted text) or `planFile` (a path the backend reads —
+/// a markdown file, or a scratch note's file). Null = cancelled.
+async function pickWorkflowPlan() {
+  const src = await uiListChoice({
+    message: "Where is the plan?",
+    items: [
+      { label: "Paste it", detail: "type or paste the plan markdown", value: "paste" },
+      { label: "A markdown file", detail: "absolute path to a file on disk", value: "file" },
+      { label: "A scratch note", detail: "pick one of your scratches", value: "note" },
+    ],
+  });
+  if (src === null) return null;
+
+  if (src === "paste") {
+    const text = await uiTextPrompt("Plan (markdown) — ⌘⏎ / Ctrl+⏎ to save", "", "Use this plan");
+    if (text === null || !text.trim()) return null;
+    return { plan: text, planFile: null };
+  }
+  if (src === "file") {
+    const path = ((await uiPrompt("Path to the plan file")) || "").trim();
+    if (!path) return null;
+    return { plan: null, planFile: path };
+  }
+  // Scratch note: the backend reads the note's file, so only the path travels.
+  if (!state.notes || !state.notes.length) {
+    try {
+      state.notes = await invoke("list_scratch_notes");
+    } catch (e) {
+      uiAlert(`Could not list scratches: ${e}`);
+      return null;
+    }
+  }
+  const files = (state.notes || []).filter((n) => !n.isDir);
+  if (!files.length) {
+    uiAlert("No scratch notes yet — write one first, or paste the plan instead.");
+    return null;
+  }
+  const path = await uiListChoice({
+    message: "Which scratch note is the plan?",
+    items: files.map((n) => ({ label: n.title, detail: n.id, value: n.path })),
+  });
+  if (path === null) return null;
+  return { plan: null, planFile: path };
+}
+
+/// Review-only creation: pick the PR or branch, then let the backend resolve
+/// it (gh) and materialize a checkout before the item exists.
+async function newReviewWorkflow({ project, repoPath }) {
+  const src = await uiListChoice({
+    message: "What are you reviewing?",
+    items: [
+      { label: "A pull request", detail: "its GitHub URL or number", value: "pr" },
+      { label: "A local branch", detail: "a branch in this repo", value: "branch" },
+    ],
+  });
+  if (src === null) return;
+
+  let pr = null;
+  let branch = null;
+  if (src === "pr") {
+    pr = ((await uiPrompt("GitHub PR URL (or number)")) || "").trim();
+    if (!pr) return;
+  } else {
+    let branches = [];
+    try {
+      branches = await invoke("list_repo_branches", { repoPath });
+    } catch (e) {
+      uiAlert(`Could not list branches: ${e}`);
+      return;
+    }
+    if (!branches.length) {
+      uiAlert("No local branches found in this repo.");
+      return;
+    }
+    branch = await uiListChoice({
+      message: "Which branch holds the feature?",
+      items: branches.map((b) => ({
+        label: b.name,
+        detail: b.worktree ? `${b.lastCommit} · checked out in ${b.worktree}` : b.lastCommit,
+        value: b.name,
+      })),
+    });
+    if (branch === null) return;
+  }
+
+  // Resolving a PR and checking the branch out can take a few seconds (fetch).
+  flashToast("Preparing the review…");
+  try {
+    const item = await invoke("create_workflow_review", {
+      project,
+      repoPath,
+      pr,
+      branch,
+      title: null,
+    });
+    await refreshWorkflows();
+    openWorkflowTab(item);
+  } catch (e) {
+    uiAlert(wfGhHint(e) || `Could not start the review: ${e}`);
+  }
+}
+
+/// New-item flow: entry mode → repo/project → whatever that mode needs.
+async function newWorkflowFlow() {
+  if (!state.wfOpen) await toggleWorkflows();
+  const mode = await uiListChoice({
+    message: "How does this workflow item start?",
+    items: WF_MODES.map((m) => ({ label: m.label, detail: m.detail, value: m.value })),
+  });
+  if (mode === null) return;
+
+  const repo = await pickWorkflowRepo();
+  if (!repo) return;
+
+  // Review-only takes its title from the PR/branch, so it asks for neither.
+  if (mode === "review-only") return newReviewWorkflow(repo);
+
+  const title = await uiPrompt("Workflow item — title");
+  if (!title || !title.trim()) return;
+
+  let seed = { plan: null, planFile: null };
+  if (mode === "from-plan") {
+    const picked = await pickWorkflowPlan();
+    if (!picked) return;
+    seed = picked;
+  }
+
   try {
     const item = await invoke("create_workflow_item", {
-      project,
+      project: repo.project,
       title: title.trim(),
-      repoPath,
+      repoPath: repo.repoPath,
+      mode,
+      plan: seed.plan,
+      planFile: seed.planFile,
     });
     await refreshWorkflows();
     openWorkflowTab(item);
@@ -3827,7 +4000,7 @@ const wfTabState = new Map(); // "project/slug" -> { subView, iteration }
 /// Item detail view: header strip + sub-view bar + content + action bar.
 async function buildWorkflowView(el, project, slug) {
   const key = wfKey(project, slug);
-  const ts = wfTabState.get(key) || { subView: "plan", iteration: null };
+  const ts = wfTabState.get(key) || { subView: null, iteration: null };
   wfTabState.set(key, ts);
   el.classList.add("wf-view");
   el.innerHTML = "<p class='hint'>loading…</p>";
@@ -3846,6 +4019,14 @@ async function buildWorkflowView(el, project, slug) {
     return;
   }
 
+  // Landing sub-view depends on the mode: a review-only item has no plan, so
+  // the diff is what it is about. Resolved here (not at tab-state creation)
+  // because the mode is only known once the item is loaded. A restored tab can
+  // also carry a "plan" sub-view the item no longer offers — coerce it, or the
+  // view would render a doc with no tab to leave it by.
+  if (!ts.subView || (ts.subView === "plan" && !wfHasPlanPhase(item)))
+    ts.subView = wfHasPlanPhase(item) ? "plan" : "diff";
+
   el.innerHTML = "";
   const info = wfStatusInfo(item.meta.status);
 
@@ -3856,10 +4037,21 @@ async function buildWorkflowView(el, project, slug) {
     item.agentAlive === false
       ? ` · <span class="wf-warn">⚠ agent gone</span>`
       : "";
+  // Non-default entry modes get their own chip: it explains why the pipeline
+  // is shorter than the canonical one (no plan, or a supplied plan).
+  const modeChip = wfIsReviewOnly(item)
+    ? `<span class="wf-chip wf-mode" title="Review-only item — no planning or first implementation phase">⌕ REVIEW ONLY</span>`
+    : item.meta.mode === "from-plan"
+      ? `<span class="wf-chip wf-mode" title="The plan was supplied, not written by an agent">◫ FROM PLAN</span>`
+      : "";
+  const branchBit = item.meta.branch ? ` · ${escapeHtml(item.meta.branch)}` : "";
   head.innerHTML =
     `<span class="wf-title">${escapeHtml(item.meta.title || item.slug)}</span>` +
     `<span class="wf-chip ${info.cls}">${info.icon} ${info.label}</span>` +
-    `<span class="wf-meta">${escapeHtml(item.project)} · it.${item.meta.iteration || 1}${warn}</span>` +
+    modeChip +
+    `<span class="wf-meta">${escapeHtml(item.project)}${branchBit} · it.${
+      item.meta.iteration || 1
+    }${warn}</span>` +
     `<span class="spacer"></span>`;
   if (item.meta.pr && item.meta.pr.url) {
     const prBtn = document.createElement("button");
@@ -3874,8 +4066,10 @@ async function buildWorkflowView(el, project, slug) {
   // ── Sub-view bar ──
   const bar = document.createElement("div");
   bar.className = "wf-subbar";
+  // Review-only items have no plan at all — an always-empty Plan tab would
+  // read as a missing step rather than an absent phase.
   const subViews = [
-    ["plan", `Plan${item.hasPlan ? "" : " ·empty"}`],
+    ...(wfHasPlanPhase(item) ? [["plan", `Plan${item.hasPlan ? "" : " ·empty"}`]] : []),
     ["review", `Review${item.hasReview ? "" : " ·empty"}`],
     ["diff", item.openAnnotations > 0 ? `Diff 💬${item.openAnnotations}` : "Diff"],
     ["history", `History${item.historyIterations.length ? ` (${item.historyIterations.length})` : ""}`],
@@ -4073,12 +4267,57 @@ function renderWfActions(bar, root, item) {
       break;
 
     case "changes-requested":
-      add("▶ Relaunch agent", "primary", () => launchWfAgent(item, "revise", root));
+      // A review-only item reaches this state without any agent having run
+      // yet, so "relaunch" would be a lie on its first round.
+      add(
+        item.meta.sessionId ? "▶ Relaunch agent" : "▶ Launch agent",
+        "primary",
+        () => launchWfAgent(item, "revise", root)
+      );
       spacer();
       abandon();
       break;
 
     case "diff-review": {
+      // Review-only: clash created neither the branch nor the PR, so there is
+      // no draft-PR ceremony to run — approving IS the end of the item. The
+      // "open a PR" escape hatch only shows when no PR exists yet (a branch
+      // reviewed before it had one).
+      if (wfIsReviewOnly(item)) {
+        add("✓ Approve → done", "primary", async () => {
+          const warn =
+            item.openAnnotations > 0
+              ? ` ${item.openAnnotations} comment${item.openAnnotations > 1 ? "s are" : " is"} still open.`
+              : "";
+          if (!(await uiConfirm(`Approve this review and close the item?${warn}`, "Approve")))
+            return;
+          wfTransition(item, root, "done");
+        });
+        add("✎ Request changes", "", requestChanges);
+        if (!(item.meta.pr && item.meta.pr.url)) {
+          add("Create draft PR", "", async () => {
+            if (!(await uiConfirm("Open a draft PR for this branch?", "Create"))) return;
+            try {
+              await invoke("workflow_create_pr", {
+                project: item.project,
+                slug: item.slug,
+                title: null,
+                body: null,
+              });
+              flashToast("Draft PR created");
+              await refreshWorkflows();
+              buildWorkflowView(root, item.project, item.slug);
+            } catch (e) {
+              uiAlert(wfGhHint(e) || `Create PR failed: ${e}`);
+            }
+          });
+        } else {
+          add("Open PR", "", () => openWorkflowPr(item));
+        }
+        spacer();
+        abandon();
+        break;
+      }
       if (item.meta.pr && item.meta.pr.url) {
         add("✓ Approve → PR draft", "primary", async () => {
           const warn =

@@ -83,7 +83,9 @@ impl WorkflowStatus {
             PlanReview => matches!(next, Implementing | ChangesRequested | Planning),
             ChangesRequested => matches!(next, Implementing | PlanReview),
             Implementing => matches!(next, DiffReview | PrDraft | ChangesRequested),
-            DiffReview => matches!(next, PrDraft | ChangesRequested | Implementing),
+            // `Done` closes a review-only item, where clash owns no PR to
+            // shepherd — approving IS the end of the pipeline.
+            DiffReview => matches!(next, PrDraft | ChangesRequested | Implementing | Done),
             PrDraft => matches!(next, PrReady | Done | DiffReview),
             PrReady => matches!(next, Done | PrDraft),
             // Reopen path for finished items.
@@ -96,6 +98,75 @@ impl WorkflowStatus {
 }
 
 impl std::fmt::Display for WorkflowStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// How an item entered the pipeline — the entry mode chosen at creation.
+/// Kebab-case in `meta.json`; absent (items created before modes existed)
+/// reads as [`WorkflowMode::Full`], so nothing on disk needs migrating.
+///
+/// The mode is fixed for the item's life: it decides the initial status, which
+/// phases exist, and how approval ends the item.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkflowMode {
+    /// The whole pipeline: an agent plans, the human reviews the plan, the
+    /// agent implements, the human reviews the diff, then the PR.
+    #[default]
+    Full,
+    /// The human supplies the plan (a file, a scratch note, pasted text), so
+    /// no planning agent runs: the item starts at `plan-review` with `plan.md`
+    /// already written and one approval away from implementation.
+    FromPlan,
+    /// The review loop only, over code that already exists (a PR or a branch):
+    /// the item starts at `diff-review`, has no plan, and approval finishes
+    /// it. `changes-requested → implementing → diff-review` still cycles, so
+    /// the agent addresses annotations exactly as in the full pipeline.
+    ReviewOnly,
+    #[serde(other)]
+    Unknown,
+}
+
+impl WorkflowMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::FromPlan => "from-plan",
+            Self::ReviewOnly => "review-only",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Status a freshly created item of this mode starts in. Creation is not a
+    /// transition, so this deliberately does not consult `can_transition_to`.
+    pub fn initial_status(&self) -> WorkflowStatus {
+        match self {
+            Self::FromPlan => WorkflowStatus::PlanReview,
+            Self::ReviewOnly => WorkflowStatus::DiffReview,
+            // An unknown on-disk mode degrades to the full pipeline.
+            Self::Full | Self::Unknown => WorkflowStatus::Draft,
+        }
+    }
+
+    /// False for review-only, which has no plan phase at all: the frontends
+    /// hide the plan sub-view and the agent must never write `plan.md` nor
+    /// transition to `plan-review`.
+    pub fn has_plan_phase(&self) -> bool {
+        !matches!(self, Self::ReviewOnly)
+    }
+
+    /// True when the code under review predates the item, so clash neither
+    /// created the branch nor owns the PR: approval ends the item instead of
+    /// running the draft-PR ceremony, and the agent may push its fixes to the
+    /// existing branch.
+    pub fn is_review_only(&self) -> bool {
+        matches!(self, Self::ReviewOnly)
+    }
+}
+
+impl std::fmt::Display for WorkflowMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
@@ -133,11 +204,18 @@ pub struct WorkflowMeta {
     pub title: String,
     #[serde(default)]
     pub status: WorkflowStatus,
+    /// Entry mode, fixed at creation. Missing on pre-mode items → `full`.
+    #[serde(default)]
+    pub mode: WorkflowMode,
     /// Absolute path of the main repo checkout this item works on.
     #[serde(default)]
     pub repo_path: String,
     #[serde(default)]
     pub branch: String,
+    /// Ref the diff is taken against (a branch name, e.g. a PR's base).
+    /// Empty means "the repo's origin default branch".
+    #[serde(default)]
+    pub base: String,
     /// Absolute worktree path when the item works in a dedicated worktree.
     #[serde(default)]
     pub worktree: Option<String>,
@@ -157,6 +235,33 @@ pub struct WorkflowMeta {
     pub updated_at: i64,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// Everything needed to create a workflow item. A struct rather than a long
+/// parameter list because the three entry modes contribute different subsets:
+/// `full` needs only project/title/repo, `from-plan` adds `plan`, `review-only`
+/// adds the already-existing `branch`/`base`/`worktree`/`pr`.
+#[derive(Debug, Clone, Default)]
+pub struct NewWorkflowItem {
+    /// Project directory (first level under the workflows root).
+    pub project: String,
+    /// Human title; the slug is derived from it.
+    pub title: String,
+    /// Absolute path of the repo checkout the item works on.
+    pub repo_path: String,
+    pub mode: WorkflowMode,
+    /// Seed content for `plan.md` (from-plan). Empty leaves the file empty.
+    pub plan: String,
+    /// Branch under review (review-only). Full-mode items get theirs when the
+    /// first agent launch creates the worktree.
+    pub branch: String,
+    /// Diff base ref; empty means the repo's origin default branch.
+    pub base: String,
+    /// Pre-materialized checkout for review-only items (the reused or freshly
+    /// created worktree holding `branch`).
+    pub worktree: Option<String>,
+    /// PR being reviewed (review-only, when the source was a PR).
+    pub pr: Option<WorkflowPr>,
 }
 
 /// A workflow item as listed to the frontends — a runtime DTO like
@@ -377,6 +482,7 @@ mod tests {
             (PlanReview, Implementing),     // Approve plan
             (PlanReview, ChangesRequested), // Request changes
             (DiffReview, PrDraft),          // Approve
+            (DiffReview, Done),             // Approve (review-only)
             (DiffReview, ChangesRequested), // Request changes
             (PrDraft, PrReady),             // Mark PR ready
             (PrReady, Done),                // Mark done
@@ -416,6 +522,62 @@ mod tests {
     }
 
     #[test]
+    fn test_workflow_mode_serde_and_entry_points() {
+        // Kebab-case on disk, and as_str agrees with it for every variant.
+        for m in [
+            WorkflowMode::Full,
+            WorkflowMode::FromPlan,
+            WorkflowMode::ReviewOnly,
+            WorkflowMode::Unknown,
+        ] {
+            assert_eq!(
+                serde_json::to_string(&m).unwrap(),
+                format!("\"{}\"", m.as_str())
+            );
+        }
+        let parsed: WorkflowMode = serde_json::from_str(r#""review-only""#).unwrap();
+        assert_eq!(parsed, WorkflowMode::ReviewOnly);
+        // A mode clash doesn't know degrades to the full pipeline.
+        let odd: WorkflowMode = serde_json::from_str(r#""telepathy""#).unwrap();
+        assert_eq!(odd, WorkflowMode::Unknown);
+        assert_eq!(odd.initial_status(), WorkflowStatus::Draft);
+        assert!(odd.has_plan_phase());
+        assert!(!odd.is_review_only());
+
+        assert_eq!(WorkflowMode::Full.initial_status(), WorkflowStatus::Draft);
+        assert_eq!(
+            WorkflowMode::FromPlan.initial_status(),
+            WorkflowStatus::PlanReview
+        );
+        assert_eq!(
+            WorkflowMode::ReviewOnly.initial_status(),
+            WorkflowStatus::DiffReview
+        );
+        assert!(!WorkflowMode::ReviewOnly.has_plan_phase());
+        assert!(WorkflowMode::ReviewOnly.is_review_only());
+        assert!(WorkflowMode::FromPlan.has_plan_phase());
+        assert!(!WorkflowMode::FromPlan.is_review_only());
+    }
+
+    #[test]
+    fn test_entry_mode_pipelines_are_walkable() {
+        use WorkflowStatus::*;
+        // from-plan: land on plan-review, approve into implementation.
+        assert!(WorkflowMode::FromPlan
+            .initial_status()
+            .can_transition_to(Implementing));
+        // review-only: land on diff-review, then either close out or loop
+        // through the agent and come back.
+        let start = WorkflowMode::ReviewOnly.initial_status();
+        assert!(start.can_transition_to(Done));
+        assert!(start.can_transition_to(ChangesRequested));
+        assert!(ChangesRequested.can_transition_to(Implementing));
+        assert!(Implementing.can_transition_to(DiffReview));
+        // …and a closed review-only item reopens into the same loop.
+        assert!(Done.can_transition_to(DiffReview));
+    }
+
+    #[test]
     fn test_parse_workflow_meta_lenient() {
         // Missing fields default; unknown fields survive a round-trip.
         let json = r#"{
@@ -450,6 +612,9 @@ mod tests {
         assert_eq!(meta.status, WorkflowStatus::Draft);
         assert_eq!(meta.iteration, 0);
         assert!(meta.pr.is_none());
+        // Items written before modes existed read as the full pipeline.
+        assert_eq!(meta.mode, WorkflowMode::Full);
+        assert_eq!(meta.base, "");
     }
 
     #[test]
