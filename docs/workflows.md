@@ -54,6 +54,18 @@ items that do use a PR.
 - **Everything else is clash-owned** (buttons in the GUI): approve, request
   changes, mark PR ready, done, abandon, reopen, and launching a review round.
 
+### The change-request note is a prompt
+
+`review.md`'s latest `## Iteration N` section is the first thing the executor
+skill reads, so the human's note *is* that round's instructions. clash composes it
+in a markdown editor (template, preview, the queued annotations shown alongside,
+draft kept on dismiss) rather than a single-line input, and writes it verbatim —
+the agent gets exactly what the human wrote, followed by the auto-generated
+`### Open annotations` list.
+
+A round must carry either a note or at least one open annotation; clash refuses
+to send one with neither, since it would give the agent nothing to act on.
+
 ## Agent review rounds
 
 An **agent review** is a bounded side-trip, not a pipeline stage: the item leaves

@@ -113,3 +113,24 @@ test("approving a diff never requires a draft PR", () => {
   // Creating a PR is its own opt-in button, offered only when none exists.
   assert.match(diffReview, /add\("Create draft PR"/);
 });
+
+test("requesting changes uses the composer, not a one-line prompt", () => {
+  // The note is appended verbatim to review.md and read by the agent as its
+  // instructions for the next round — a single-line <input> could not hold it,
+  // and could not contain a newline at all.
+  assert.match(APP, /function wfComposeChangeRequest\(/);
+  // Both the plan and the diff path go through it; they used to be two
+  // divergent inline uiPrompt calls.
+  assert.match(APP, /wfComposeChangeRequest\(\{ item, target: "plan", annotations: \[\] \}\)/);
+  assert.match(APP, /wfComposeChangeRequest\(\{ item, target: "diff", annotations \}\)/);
+  assert.doesNotMatch(APP, /uiPrompt\("What should change in the plan\?"\)/);
+  assert.doesNotMatch(APP, /Request changes — describe what to change/);
+});
+
+test("a dismissed composer keeps the draft", () => {
+  // Losing a paragraph to a stray Esc or backdrop click is the failure this
+  // guards; submitting clears it so the next round starts empty.
+  assert.match(APP, /const wfDrafts = new Map\(\)/);
+  assert.match(APP, /const dismiss = \(\) => \{\s*keepDraft\(\);/);
+  assert.match(APP, /wfDrafts\.delete\(key\);\s*done\(note\);/);
+});

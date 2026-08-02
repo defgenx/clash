@@ -4816,6 +4816,200 @@ async function wfTransition(item, root, status, note = null) {
   }
 }
 
+/// In-memory change-request drafts, keyed by item.
+///
+/// Guards the real failure: a stray Esc or backdrop click destroying a paragraph
+/// you just wrote. Deliberately not localStorage — that is documented as
+/// unreliable in this webview, and a draft is not state worth promising to
+/// persist across a relaunch.
+const wfDrafts = new Map();
+
+/// Compose a change request, then send it.
+///
+/// This is a prompt-authoring surface, not a form field: the note is appended
+/// verbatim to `review.md` under `## Iteration N`, and the agent's first
+/// instruction is to read that section. It replaced a one-line `uiPrompt` — in
+/// which a multi-paragraph instruction was simply not typeable, and a newline was
+/// impossible.
+///
+/// `target` is "plan" (plan-review) or "diff" (diff-review). One composer serves
+/// both; they used to be two divergent inline prompts.
+function wfComposeChangeRequest({ item, target, annotations }) {
+  return new Promise((resolve) => {
+    const openCount = annotations.length;
+    const key = draftKey(item.project, item.slug);
+
+    const backdrop = document.createElement("div");
+    backdrop.className = "dialog-backdrop";
+    const box = document.createElement("div");
+    box.className = "dialog-box wf-compose";
+
+    const title = document.createElement("p");
+    title.textContent =
+      target === "plan" ? "Request changes to the plan" : "Request changes";
+    box.appendChild(title);
+
+    const hint = document.createElement("p");
+    hint.className = "dialog-detail";
+    hint.textContent =
+      `Markdown. Appended to review.md as iteration ${(item.meta.iteration || 0) + 1} and ` +
+      "read by the agent as its instructions for the next round.";
+    box.appendChild(hint);
+
+    // Toolbar: template + preview. Both are opt-in so the one-sentence path
+    // stays a one-sentence path.
+    const tools = document.createElement("div");
+    tools.className = "wf-compose-tools";
+    const tmplBtn = document.createElement("button");
+    tmplBtn.type = "button";
+    tmplBtn.className = "icon-btn wide";
+    tmplBtn.textContent = "Insert template";
+    tmplBtn.title = "What to change / Why / Out of scope";
+    tools.appendChild(tmplBtn);
+    const previewBtn = document.createElement("button");
+    previewBtn.type = "button";
+    previewBtn.className = "icon-btn wide";
+    previewBtn.textContent = "Preview";
+    tools.appendChild(previewBtn);
+    box.appendChild(tools);
+
+    const field = document.createElement("textarea");
+    field.className = "wf-compose-input";
+    field.rows = 14;
+    field.spellcheck = false;
+    field.value = wfDrafts.get(key) || "";
+    field.placeholder = composerPlaceholder(target, openCount);
+    box.appendChild(field);
+
+    // Rendered preview of exactly what will land in review.md.
+    const preview = document.createElement("div");
+    preview.className = "wf-md wf-compose-preview";
+    preview.hidden = true;
+    box.appendChild(preview);
+
+    let previewing = false;
+    previewBtn.onclick = () => {
+      previewing = !previewing;
+      previewBtn.textContent = previewing ? "Edit" : "Preview";
+      field.hidden = previewing;
+      preview.hidden = !previewing;
+      if (previewing) {
+        const body = field.value.trim();
+        const annos = annotationsMarkdown(annotations);
+        const full =
+          body + (annos ? `${body ? "\n\n" : ""}### Open annotations\n\n${annos}` : "");
+        renderMarkdown(preview, full || "_(nothing to send yet)_");
+      } else {
+        field.focus();
+      }
+    };
+    tmplBtn.onclick = () => {
+      const tmpl = changeRequestTemplate(target);
+      // Prepend rather than replace — never destroy what is already typed.
+      field.value = field.value.trim() ? `${tmpl}\n${field.value}` : tmpl;
+      if (previewing) previewBtn.onclick();
+      field.focus();
+      field.setSelectionRange(0, 0);
+    };
+
+    // The comments already queued for this round, so the note can complement
+    // them instead of repeating them. A bare count could never do that.
+    if (openCount) {
+      const label = document.createElement("p");
+      label.className = "wf-compose-annos-label";
+      label.textContent = `${openCount} open diff comment${openCount > 1 ? "s" : ""} sent with this round:`;
+      box.appendChild(label);
+      const list = document.createElement("div");
+      list.className = "wf-compose-annos";
+      renderMarkdown(list, annotationsMarkdown(annotations));
+      box.appendChild(list);
+    }
+
+    const error = document.createElement("p");
+    error.className = "wf-compose-error";
+    error.hidden = true;
+    box.appendChild(error);
+
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    actions.appendChild(cancel);
+    const send = document.createElement("button");
+    send.className = "primary";
+    send.textContent = "Request changes";
+    actions.appendChild(send);
+    box.appendChild(actions);
+
+    const done = (value) => {
+      backdrop.remove();
+      resolve(value);
+      if (typeof fitAll === "function") fitAll();
+    };
+    const keepDraft = () => {
+      const text = field.value;
+      if (text.trim()) wfDrafts.set(key, text);
+      else wfDrafts.delete(key);
+    };
+    const dismiss = () => {
+      keepDraft();
+      done(null);
+    };
+    const submit = () => {
+      const note = field.value.trim();
+      const check = canSubmitChangeRequest({ note, openCount, target });
+      if (!check.ok) {
+        error.textContent = check.reason;
+        error.hidden = false;
+        field.focus();
+        return;
+      }
+      wfDrafts.delete(key);
+      done(note);
+    };
+
+    cancel.onclick = dismiss;
+    send.onclick = submit;
+    backdrop.onclick = (e) => {
+      if (e.target === backdrop) dismiss();
+    };
+    backdrop.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") dismiss();
+      // Enter types a newline; ⌘/Ctrl+Enter sends — same contract as the
+      // multiline uiDialog, so the muscle memory carries over.
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        submit();
+      }
+    });
+
+    if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
+    document.body.appendChild(backdrop);
+    setTimeout(() => {
+      field.focus();
+      // Cursor at the end, so a restored draft is continued rather than overwritten.
+      field.setSelectionRange(field.value.length, field.value.length);
+    }, 0);
+  });
+}
+
+/// Fetch the open annotations for an item, so the composer can show them.
+/// Failure is non-fatal: the composer still opens, just without the list.
+async function wfOpenAnnotations(item) {
+  try {
+    const file = await invoke("get_workflow_annotations", {
+      project: item.project,
+      slug: item.slug,
+    });
+    const all = (file && file.annotations) || [];
+    return all.filter((a) => a.status === "open");
+  } catch (e) {
+    dlog(`wfOpenAnnotations failed: ${e}`);
+    return [];
+  }
+}
+
 /// PR-button degradation: gh missing/unauthenticated disables PR flows with
 /// a setup hint instead of a hard failure.
 function wfGhHint(e) {
@@ -4855,24 +5049,14 @@ function renderWfActions(bar, root, item) {
     });
 
   const requestChanges = async () => {
-    const hasOpen = item.openAnnotations > 0;
-    const note = await uiPrompt(
-      hasOpen
-        ? `Request changes (${item.openAnnotations} open comment${
-            item.openAnnotations > 1 ? "s" : ""
-          } will be sent) — optional note:`
-        : "Request changes — describe what to change:"
-    );
+    const annotations = await wfOpenAnnotations(item);
+    const note = await wfComposeChangeRequest({ item, target: "diff", annotations });
     if (note === null) return;
-    if (!hasOpen && !note.trim()) {
-      uiAlert("Add at least one diff comment or a note — the agent needs something to act on.");
-      return;
-    }
     try {
       await invoke("workflow_request_changes", {
         project: item.project,
         slug: item.slug,
-        note: note.trim() || null,
+        note: note || null,
       });
       await refreshWorkflows();
       buildWorkflowView(root, item.project, item.slug);
@@ -4949,9 +5133,11 @@ function renderWfActions(bar, root, item) {
         if (go === "go") launchWfAgent(fresh, "implement", root);
       });
       add("✎ Request changes", "", async () => {
-        const note = await uiPrompt("What should change in the plan?");
-        if (note === null || !note.trim()) return;
-        await wfTransition(item, root, "changes-requested", note.trim());
+        // Same composer as the diff path: a plan revision is just as much a
+        // prompt for the next round, and it was the same one-line input.
+        const note = await wfComposeChangeRequest({ item, target: "plan", annotations: [] });
+        if (note === null) return;
+        await wfTransition(item, root, "changes-requested", note);
       });
       reviewButton();
       spacer();
