@@ -241,6 +241,13 @@ pub enum Effect {
         on_complete: Action,
     },
 
+    // ── Config effects ──────────────────────────────────────────
+    /// Re-read `config.toml` and apply the keys that changed.
+    ///
+    /// Also fired by the config watch root, so `:reload` and an external edit
+    /// take exactly the same path.
+    ReloadConfig,
+
     // ── UI state effects ────────────────────────────────────────
     PerformUpdate,
     Quit,

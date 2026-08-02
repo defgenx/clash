@@ -84,6 +84,8 @@ pub fn render_help_overlay(
         (":external", "Show only external/wild sessions"),
         (":tour", "Start guided tour"),
         ("Workflows", "Plan→review→PR pipeline (GUI feature)"),
+        (":config", "Show the config.toml path"),
+        (":reload", "Re-read config.toml now"),
         (":update", "Update clash to latest"),
         (":quit", "Quit (stashes running sessions)"),
     ] {

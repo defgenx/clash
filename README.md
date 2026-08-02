@@ -308,8 +308,98 @@ manual re-list.
 | `:rename <name>` | Rename session (from detail view) |
 | `:active` / `:all` / `:external` | Filter sessions (active only / all / wild + external only) |
 | `:tour` | Replay guided tour |
+| `:config` | Show the `config.toml` path |
+| `:reload` | Re-read `config.toml` now (it is watched, so this is only ever a nudge) |
 | `:update` | Update clash |
 | `:quit` | Exit |
+
+## Configuration
+
+One file, shared by the TUI and the GUI. Find it with `clash config --path`
+(`~/.config/clash/config.toml` on Linux, `~/Library/Application
+Support/clash/config.toml` on macOS).
+
+```bash
+clash config                    # the merged config, annotated with where each value came from
+clash config --path             # just the path
+clash config --defaults         # the full annotated default file, ready to copy lines out of
+clash config --show-effective   # same as bare `clash config`
+clash config --validate         # check the file; exits non-zero on an error
+clash config --schema           # JSON Schema, for taplo / Even Better TOML completion
+```
+
+### Layers
+
+Later layers win, key by key:
+
+| Layer | Where | Notes |
+|-------|-------|-------|
+| defaults | in the binary | `clash config --defaults` prints them |
+| user | `clash config --path` | what the GUI Settings panel writes |
+| project | `<repo>/.clash/config.toml` | **restricted**: paths only (see below) |
+| environment | `CLASH_<SECTION>_<KEY>` | e.g. `CLASH_SESSIONS_REFRESH_SECS=5` |
+
+A project config may set `[paths]` and nothing else. It deliberately **cannot**
+change `claude_bin` — clash spawns processes, so a cloned repo must not be able
+to decide which binary runs. Rejected keys are reported by
+`clash config --validate`, not silently ignored.
+
+### Settings
+
+```toml
+schema_version = 2
+
+[general]
+claude_bin = "claude"      # name on PATH, or an absolute path
+debounce_ms = 200          # filesystem-watcher debounce
+
+[paths]
+claude_dir = ""            # empty = ~/.claude
+scratch_dir = ""           # empty = <claude_dir>/clash/scratch
+workflows_dir = ""         # empty = <claude_dir>/clash/workflows
+
+[sessions]
+default_cwd = ""           # prefill for a new session; empty = home
+confirm_kill = true        # ask before killing (stash never asks)
+refresh_secs = 2           # GUI session-list poll cadence
+
+[terminal]
+shell = ""                 # in-app terminals; empty = $SHELL
+tui_terminal = ""          # TUI launcher target; empty = auto-detect
+
+[notifications]
+enabled = true
+title_attention = true     # "clash (2!)" in the window title
+
+[[ides]]                   # extra editors offered when opening a project or note
+name = "VS Code"
+command = "code"
+terminal = false
+```
+
+The GUI's 20 xterm-rendering settings (font, cursor, scrollback, scroll, link
+handling) and its theme stay in the GUI's own store — the TUI can't apply them.
+Everything above is read by both.
+
+### Behaviour worth knowing
+
+- **Edits apply live.** The config directory is watched; a change by hand, by
+  the GUI, or by another clash instance is picked up without a restart.
+  `:reload` forces it. `general.claude_bin` and `general.debounce_ms` take
+  effect on restart, and clash says so rather than pretending otherwise.
+- **A typo never loses your settings.** A parse error keeps the last good values
+  in memory, reports the failure with `line:column`, and *blocks writes* until
+  you fix it — so the next GUI toggle can't overwrite your file with defaults.
+- **Your comments and unknown keys survive a save.** Writes edit the parsed
+  document and touch only the keys that changed, so comments, key order, and any
+  key this version doesn't know (including one a newer clash wrote) round-trip
+  intact.
+- **Concurrent instances are safe.** Several clash processes run by design; the
+  whole read-modify-write happens under an advisory lock, so two of them editing
+  different settings can't drop each other's change.
+
+See [`docs/configuration.md`](docs/configuration.md) for the full reference —
+every property's metadata, the layer contract, and the migration behaviour.
 
 ## Data
 

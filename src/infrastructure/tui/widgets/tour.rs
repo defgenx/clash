@@ -232,6 +232,30 @@ pub const TOUR_STEPS: &[TourStep] = &[
         ],
     },
     TourStep {
+        title: "Configuration",
+        body: &[
+            "clash reads one config file, shared with the GUI. Run  clash config --path  to find it.",
+            "",
+            "Start from  clash config --defaults  — the full annotated file, ready to copy lines out of.",
+            "Not sure why a setting isn't applying?  clash config --show-effective  prints the merged",
+            "result and names the layer each value came from (default, user, project, environment).",
+            "",
+            "Edits apply immediately — clash watches the file, so there's no restart. Use  :reload  to",
+            "force it. A typo never loses your settings: clash keeps the last good values, shows the",
+            "error with its line and column, and refuses to overwrite the file until you fix it.",
+        ],
+        keys: &[
+            (":config", "Show the config file path"),
+            (":reload", "Re-read config.toml now"),
+            ("clash config --defaults", "Print the annotated defaults"),
+            (
+                "clash config --show-effective",
+                "Print the merged config with per-key provenance",
+            ),
+            ("clash config --validate", "Check the file and report problems"),
+        ],
+    },
+    TourStep {
         title: "You're ready!",
         body: &[
             "That covers the essentials. Here's a quick cheat sheet:",

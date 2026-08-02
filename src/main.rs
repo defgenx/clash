@@ -47,6 +47,30 @@ enum Cmd {
         /// The session ID to attach to
         session_id: String,
     },
+    /// Inspect configuration (default: show the effective config)
+    Config(ConfigArgs),
+}
+
+/// `clash config` — everything you need to answer "why is this setting not
+/// applying" without guessing, plus the schema for editor completion.
+#[derive(Parser, Debug)]
+#[command(group = clap::ArgGroup::new("mode").multiple(false))]
+struct ConfigArgs {
+    /// Print the config file path and exit
+    #[arg(long, group = "mode")]
+    path: bool,
+    /// Print the merged config, annotated with the layer each value came from
+    #[arg(long, group = "mode")]
+    show_effective: bool,
+    /// Print the full annotated default config, ready to copy lines from
+    #[arg(long, group = "mode")]
+    defaults: bool,
+    /// Check the config file and report problems (exit 1 on an error)
+    #[arg(long, group = "mode")]
+    validate: bool,
+    /// Print the JSON Schema (point taplo / Even Better TOML at it)
+    #[arg(long, group = "mode")]
+    schema: bool,
 }
 
 #[tokio::main]
@@ -87,6 +111,9 @@ async fn main() -> Result<()> {
         Some(Cmd::Attach { session_id }) => {
             return infrastructure::windowing::attach::run_attach_client(session_id).await;
         }
+        Some(Cmd::Config(args)) => {
+            return run_config(args);
+        }
         None => {}
     }
 
@@ -97,10 +124,15 @@ async fn main() -> Result<()> {
         default_panic(info);
     }));
 
-    let config = infrastructure::config::Config::load();
-    let data_dir = args.data_dir.unwrap_or_else(|| config.claude_dir());
+    // One shared handle, not an owned copy per call site: a live reload has to
+    // be observable by everything that reads config.
+    let config = infrastructure::config::ConfigHandle::load();
+    let settings = config.get();
+    let data_dir = args.data_dir.unwrap_or_else(|| settings.claude_dir());
     // CLI flag wins over config.toml's claude_bin (which defaults to "claude")
-    let claude_bin = args.claude_bin.unwrap_or_else(|| config.claude_bin.clone());
+    let claude_bin = args
+        .claude_bin
+        .unwrap_or_else(|| settings.general.claude_bin.clone());
 
     tracing::info!("clash starting, data_dir={:?}", data_dir);
 
@@ -186,6 +218,70 @@ fn restore_terminal() {
     // doesn't linger and the cursor shape/visibility/attrs are sane.
     let _ = std::io::stdout().write_all(FINAL_RESET);
     let _ = std::io::stdout().flush();
+}
+
+/// Run the `clash config` subcommand.
+///
+/// Everything here is read-only; nothing writes config. `--validate` is the
+/// only mode that can fail the process, so it is usable in a pre-commit hook.
+fn run_config(args: ConfigArgs) -> Result<()> {
+    use infrastructure::config::{schema, Config, ConfigHandle};
+
+    if args.path {
+        println!("{}", Config::config_path().display());
+        return Ok(());
+    }
+    if args.defaults {
+        print!("{}", schema::defaults_toml());
+        return Ok(());
+    }
+    if args.schema {
+        println!("{}", serde_json::to_string_pretty(&schema::json_schema())?);
+        return Ok(());
+    }
+
+    let handle = ConfigHandle::load();
+
+    if args.validate {
+        let path = handle.config_path();
+        if let Some(error) = handle.error() {
+            println!("{} {}", "✗".red(), error);
+            std::process::exit(1);
+        }
+        let issues = handle.issues();
+        if issues.is_empty() {
+            println!("{} {} is valid", "✓".green(), path.display());
+            return Ok(());
+        }
+        let errors = issues
+            .iter()
+            .filter(|i| i.severity == schema::Severity::Error)
+            .count();
+        for issue in &issues {
+            let mark = match issue.severity {
+                schema::Severity::Error => "✗".red(),
+                schema::Severity::Warning => "!".yellow(),
+            };
+            println!("{} {}: {}", mark, issue.path, issue.message);
+        }
+        if errors > 0 {
+            std::process::exit(1);
+        }
+        println!(
+            "\n{} unknown keys are preserved on save — clash just doesn't read them.",
+            "note:".dark_grey()
+        );
+        return Ok(());
+    }
+
+    // Default (and `--show-effective`): the merged config with provenance.
+    print!("{}", handle.effective_toml());
+    if let Some(error) = handle.error() {
+        eprintln!("\n{} {}", "✗".red(), error);
+        eprintln!("  Values above are defaults; writes are blocked until this is fixed.");
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 /// Run the CLI update command.

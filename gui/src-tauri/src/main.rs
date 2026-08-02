@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use clash::domain::entities::Session;
-use clash::infrastructure::config::Config;
+use clash::infrastructure::config::{Config, ConfigHandle};
 use clash::infrastructure::daemon::client::DaemonClient;
 use clash::infrastructure::daemon::protocol::Event;
 use clash::infrastructure::daemon::server::DaemonServer;
@@ -25,12 +25,11 @@ mod workflows;
 /// Shared backend state for all Tauri commands.
 struct GuiState {
     backend: FsBackend,
-    /// The `claude` binary sessions are spawned with (config.toml). Behind a
-    /// lock so the Settings panel can repoint it live — the next spawn picks up
-    /// the new value; already-running sessions keep their process.
-    claude_bin: Mutex<String>,
-    /// Custom IDE entries from config.toml (merged into detection).
-    config_ides: Vec<clash::infrastructure::config::IdeEntry>,
+    /// The shared config view. A handle, not an owned `Config`, so a live
+    /// reload (an external edit, another instance, the Settings panel) is seen
+    /// by every reader at once — and so `claude_bin` and the custom IDE list
+    /// have exactly one source of truth instead of a cached copy each.
+    config: ConfigHandle,
     /// Previous session list — input to the merge step of the refresh pipeline.
     previous: Mutex<Vec<Session>>,
     /// Last seen status per session — attention-transition detection.
@@ -57,13 +56,13 @@ struct GuiState {
     /// Native desktop notifications on session attention (GUI setting,
     /// pushed by the frontend at boot and on toggle).
     notify_enabled: std::sync::atomic::AtomicBool,
-    /// Watches the scratch directory and emits `scratch-changed` so the notes
-    /// tree auto-refreshes on external edits (an editor, the TUI, git…).
-    /// Replaced when the scratch dir changes via `set_scratch_dir`; `None` if
-    /// the watcher couldn't be created.
-    scratch_watcher: Mutex<Option<clash::infrastructure::fs::watcher::FsWatcher>>,
-    /// Same for the workflows directory (`workflows-changed` events).
-    workflows_watcher: Mutex<Option<clash::infrastructure::fs::watcher::FsWatcher>>,
+    /// One watcher over every directory the GUI cares about — sessions,
+    /// scratch, workflows and the config dir — routed back per root.
+    ///
+    /// Was three separate `FsWatcher`s with three independent debounce windows;
+    /// adding config would have made it four. Rebuilt (not supplemented) when a
+    /// watched directory is repointed in Settings.
+    watcher: Mutex<Option<clash::infrastructure::fs::watcher::RoutedWatcher>>,
     /// Workflow attention-transition ledger: `observe` on every list, and
     /// every mutating workflow command pre-seeds it via `record_local_write`
     /// so the user is never notified about their own click.
@@ -77,8 +76,16 @@ struct GuiState {
 impl GuiState {
     /// The configured `claude` binary, cloned — callers spawn across an await,
     /// so the lock must never be held past this call.
+    /// The `claude` binary to spawn with. Read live, so repointing it in
+    /// Settings affects the next spawn; already-running sessions keep the
+    /// process they started with.
     fn claude_bin(&self) -> String {
-        self.claude_bin.lock().unwrap().clone()
+        self.config.get().general.claude_bin
+    }
+
+    /// Custom IDE entries from config.toml, merged into editor detection.
+    fn config_ides(&self) -> Vec<clash::infrastructure::config::IdeEntry> {
+        self.config.get().ides
     }
 }
 
@@ -1072,7 +1079,7 @@ fn move_scratch(
 /// equivalent of the TUI's `Effect::DetectEditors`.
 #[tauri::command]
 fn detect_editors(state: State<'_, GuiState>) -> Vec<IdeDto> {
-    clash::infrastructure::ide::detect_editors(&state.config_ides)
+    clash::infrastructure::ide::detect_editors(&state.config_ides())
         .into_iter()
         .map(|i| IdeDto {
             label: i.label,
@@ -1124,33 +1131,141 @@ async fn open_scratch_terminal_editor(
     Ok(session_id)
 }
 
-/// Start (or restart) the scratch-directory watcher. Emits `scratch-changed`
-/// to the webview on any change under `dir` so the notes tree stays in sync
-/// with the filesystem without a manual refresh. The dir is created if missing
-/// (harmless — it's clash's own dir) so a fresh install is watched from the
-/// first launch. Returns the live watcher; dropping it stops the watch and
-/// ends the emit task (its channel closes).
-fn start_scratch_watcher(
-    app: &tauri::AppHandle,
-    dir: PathBuf,
-    debounce: std::time::Duration,
-) -> Option<clash::infrastructure::fs::watcher::FsWatcher> {
-    let _ = std::fs::create_dir_all(&dir);
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<PathBuf>>();
-    let watcher = clash::infrastructure::fs::watcher::FsWatcher::new(
-        std::slice::from_ref(&dir),
-        tx,
-        debounce,
-    )
-    .map_err(|e| tracing::warn!("Scratch watcher unavailable: {}", e))
-    .ok()?;
+/// The directories the GUI watches, and what a change in each means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WatchRoot {
+    /// `~/.claude/projects` — session transcripts. Invalidates the session cache.
+    Projects,
+    /// The scratch tree. Emits `scratch-changed` so the notes tree re-lists.
+    Scratch,
+    /// The workflows root. Emits `workflows-changed`.
+    Workflows,
+    /// The config directory. Reloads `config.toml` and emits `config-changed`.
+    Config,
+}
+
+/// Build (or rebuild) the single watcher covering every root.
+///
+/// One watcher with a routing step rather than one per directory: three
+/// separate `FsWatcher`s meant three independent debounce windows, and the
+/// config root would have made four. Repointing a directory in Settings
+/// rebuilds this wholesale, which is why it takes the paths from the live
+/// backend rather than from arguments.
+fn rebuild_watcher(app: &tauri::AppHandle) {
+    let state = app.state::<GuiState>();
+    let settings = state.config.get();
+    let scratch = state.backend.scratch_dir();
+    let workflows = state.backend.workflows_dir();
+    let config_dir = state.config.watch_dir();
+    // Created if missing — the underlying watcher skips paths that don't exist,
+    // so a fresh install would otherwise go unwatched until the next launch.
+    for dir in [&scratch, &workflows, &config_dir] {
+        let _ = std::fs::create_dir_all(dir);
+    }
+
+    let roots = vec![
+        (WatchRoot::Projects, state.backend.projects_dir()),
+        (WatchRoot::Scratch, scratch),
+        (WatchRoot::Workflows, workflows),
+        (WatchRoot::Config, config_dir),
+    ];
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(WatchRoot, Vec<PathBuf>)>();
+    let watcher =
+        clash::infrastructure::fs::watcher::RoutedWatcher::new(roots, tx, settings.debounce())
+            .map_err(|e| tracing::warn!("FS watcher unavailable: {}", e))
+            .ok();
+
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        while rx.recv().await.is_some() {
-            let _ = handle.emit("scratch-changed", ());
+        while let Some((root, paths)) = rx.recv().await {
+            let state = handle.state::<GuiState>();
+            match root {
+                WatchRoot::Projects => {
+                    let jsonl: Vec<PathBuf> = paths
+                        .iter()
+                        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+                        .cloned()
+                        .collect();
+                    if !jsonl.is_empty() && jsonl.len() == paths.len() {
+                        state.backend.invalidate_session_cache(&jsonl);
+                    } else {
+                        // Non-jsonl change (sessions-index.json, a new project
+                        // dir…) — full rescan on the next load.
+                        state.backend.invalidate_session_cache_all();
+                    }
+                }
+                WatchRoot::Scratch => {
+                    let _ = handle.emit("scratch-changed", ());
+                }
+                WatchRoot::Workflows => {
+                    let _ = handle.emit("workflows-changed", ());
+                }
+                WatchRoot::Config => {
+                    // Only config.toml itself is a reload: the advisory lock and
+                    // write_atomic's temp file are siblings in the same dir, and
+                    // reacting to those would make every save reload itself.
+                    if paths.iter().any(|p| state.config.is_config_path(p)) {
+                        emit_config_reload(&handle);
+                    }
+                }
+            }
         }
     });
-    Some(watcher)
+
+    *state.watcher.lock().unwrap() = watcher;
+}
+
+/// Reload `config.toml` and tell the frontend exactly what changed.
+///
+/// The payload is the changed dotted paths plus the subset that needs a
+/// terminal refit, so the frontend applies xterm options only for keys that
+/// moved and enters the (expensive) refit path only when cell metrics changed —
+/// coalesced to one tick on its side. A burst of editor saves at a 200 ms
+/// debounce would otherwise become a burst of refits across every pane.
+fn emit_config_reload(app: &tauri::AppHandle) {
+    use clash::infrastructure::config::schema;
+
+    let state = app.state::<GuiState>();
+    let changed = state.config.reload();
+    if let Some(error) = state.config.error() {
+        let _ = app.emit("config-error", error.summary());
+        return;
+    }
+    if changed.is_empty() {
+        return;
+    }
+
+    // Paths apply live so the notes tree and workflow board follow the new
+    // directory; the watcher is rebuilt so the new dir is actually watched.
+    let settings = state.config.get();
+    let repointed = changed
+        .iter()
+        .any(|p| p == "paths.scratch_dir" || p == "paths.workflows_dir");
+    if repointed {
+        state.backend.set_scratch_dir(settings.scratch_dir());
+        state.backend.set_workflows_dir(settings.workflows_dir());
+    }
+
+    let needs_refit: Vec<&String> = changed
+        .iter()
+        .filter(|path| schema::prop(path).map(|p| p.refit).unwrap_or(false))
+        .collect();
+    let _ = app.emit(
+        "config-changed",
+        serde_json::json!({
+            "changed": changed,
+            "refit": needs_refit,
+            "settings": shared_settings_json(&state.config),
+        }),
+    );
+
+    if repointed {
+        // Rebuilt after the event so the frontend has already been told.
+        rebuild_watcher(app);
+        let _ = app.emit("scratch-changed", ());
+        let _ = app.emit("workflows-changed", ());
+    }
 }
 
 /// Current scratch-notes directory (absolute path) for the Settings field.
@@ -1169,31 +1284,43 @@ fn set_scratch_dir(
     app: tauri::AppHandle,
     path: String,
 ) -> Result<String, String> {
-    let trimmed = path.trim();
-    let mut config = Config::load();
+    let effective = set_path_setting(&state, "paths.scratch_dir", &path, |c| c.scratch_dir())?;
+    state.backend.set_scratch_dir(effective.clone());
+    // Rebuild the watcher so the new directory is the one being watched.
+    rebuild_watcher(&app);
+    Ok(effective.to_string_lossy().into_owned())
+}
 
-    let effective = if trimmed.is_empty() {
-        config.scratch_dir = None;
-        config.scratch_dir()
+/// Shared implementation for the three path settings.
+///
+/// Empty resets to the computed default; anything else is tilde-expanded and
+/// created, because a path that doesn't exist would leave the watcher attached
+/// to nothing and the failure would only show up later as "my notes vanished".
+fn set_path_setting(
+    state: &GuiState,
+    key: &str,
+    raw: &str,
+    effective: impl Fn(&Config) -> PathBuf,
+) -> Result<PathBuf, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        state
+            .config
+            .reset_values(&[key])
+            .map_err(|e| e.to_string())?;
     } else {
         let expanded = expand_tilde(trimmed);
         std::fs::create_dir_all(&expanded)
             .map_err(|e| format!("Cannot use {}: {}", expanded.display(), e))?;
-        config.scratch_dir = Some(expanded.clone());
-        expanded
-    };
-
-    config
-        .save()
-        .map_err(|e| format!("Save config failed: {}", e))?;
-    state.backend.set_scratch_dir(effective.clone());
-    // Re-point the watcher at the new directory (drops the old one).
-    *state.scratch_watcher.lock().unwrap() = start_scratch_watcher(
-        &app,
-        effective.clone(),
-        std::time::Duration::from_millis(config.debounce_ms),
-    );
-    Ok(effective.to_string_lossy().into_owned())
+        state
+            .config
+            .set_json(&[(
+                key,
+                serde_json::Value::String(expanded.to_string_lossy().into_owned()),
+            )])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(effective(&state.config.get()))
 }
 
 /// The `claude` binary sessions are spawned with, for the Settings field.
@@ -1218,18 +1345,155 @@ fn set_claude_bin(state: State<'_, GuiState>, path: String) -> Result<String, St
             return Err(format!("Not a file: {}", expanded.display()));
         }
     }
-    let mut config = Config::load();
-    let effective = if trimmed.is_empty() {
-        Config::default().claude_bin
+    if trimmed.is_empty() {
+        state
+            .config
+            .reset_values(&["general.claude_bin"])
+            .map_err(|e| e.to_string())?;
     } else {
-        trimmed.to_string()
+        state
+            .config
+            .set_json(&[(
+                "general.claude_bin",
+                serde_json::Value::String(trimmed.to_string()),
+            )])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(state.claude_bin())
+}
+
+// ── Configuration ───────────────────────────────────────────────────────
+
+/// Every shared setting, keyed by its legacy camelCase name.
+///
+/// The frontend keeps talking camelCase (`refreshSecs`) while the file is
+/// namespaced snake_case (`sessions.refresh_secs`) — the mapping lives in the
+/// schema's `gui_key`, so neither side hardcodes the other's spelling.
+fn shared_settings_json(config: &ConfigHandle) -> serde_json::Value {
+    use clash::infrastructure::config::schema;
+
+    // Serialized from the typed `Config`, not re-read from the file, so what the
+    // frontend shows is exactly what the rest of clash is acting on.
+    let effective = serde_json::to_value(config.get()).unwrap_or_default();
+    let mut out = serde_json::Map::new();
+    for prop in schema::shared_props() {
+        let Some(key) = prop.gui_key else { continue };
+        let value = effective
+            .get(prop.section())
+            .and_then(|section| section.get(prop.leaf()));
+        // `Option<PathBuf>` fields are skipped when unset; the frontend wants
+        // the empty string it has always used for "not configured".
+        out.insert(
+            key.to_string(),
+            value.cloned().unwrap_or_else(|| match prop.kind {
+                schema::Kind::Path | schema::Kind::Str | schema::Kind::Enum(_) => {
+                    serde_json::Value::String(String::new())
+                }
+                _ => prop.default.to_json(),
+            }),
+        );
+    }
+    serde_json::Value::Object(out)
+}
+
+/// The config the frontend needs at boot: the shared settings, the file path,
+/// and anything wrong with the file.
+///
+/// The frontend derives *which* keys are shared from `settings`' own key set, so
+/// the split lives only in the schema.
+#[tauri::command]
+fn config_get(state: State<'_, GuiState>) -> serde_json::Value {
+    serde_json::json!({
+        "path": state.config.config_path().to_string_lossy(),
+        "settings": shared_settings_json(&state.config),
+        "error": state.config.error().map(|e| e.summary()),
+        "issues": state.config.issues().iter().map(|i| i.to_string()).collect::<Vec<_>>(),
+    })
+}
+
+/// Write one shared setting, by its camelCase GUI key.
+///
+/// Validation lives in the schema, so a value the file would reject is refused
+/// here rather than written and then failing to load next launch.
+#[tauri::command]
+fn config_set(
+    state: State<'_, GuiState>,
+    key: String,
+    value: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use clash::infrastructure::config::schema;
+
+    let prop = schema::prop_by_gui_key(&key).ok_or_else(|| format!("no such setting: {}", key))?;
+    if prop.scope != schema::Scope::Shared {
+        return Err(format!("{} is a GUI-local setting", key));
+    }
+    state
+        .config
+        .set_json(&[(prop.path, value)])
+        .map_err(|e| e.to_string())?;
+    Ok(shared_settings_json(&state.config))
+}
+
+/// Reset one shared setting to its default by removing it from the user layer.
+#[tauri::command]
+fn config_reset(state: State<'_, GuiState>, key: String) -> Result<serde_json::Value, String> {
+    use clash::infrastructure::config::schema;
+
+    let prop = schema::prop_by_gui_key(&key).ok_or_else(|| format!("no such setting: {}", key))?;
+    state
+        .config
+        .reset_values(&[prop.path])
+        .map_err(|e| e.to_string())?;
+    Ok(shared_settings_json(&state.config))
+}
+
+/// The JSON Schema — the same document `clash config --schema` prints.
+///
+/// Carries the frontend hints (`x-term-option`, `x-refit`,
+/// `x-restart-required`) a generated settings panel needs.
+#[tauri::command]
+fn config_schema() -> serde_json::Value {
+    clash::infrastructure::config::schema::json_schema()
+}
+
+/// One-shot migration of the legacy `gui-state.json` settings blob.
+///
+/// The single Rust entry point for settings validation: the 7 cross-frontend
+/// keys are written into `config.toml`, the 21 GUI-local ones come back
+/// validated and normalised (including the legacy `embedLinks` → `linkOpen`
+/// fixup), and every clamp is applied from the schema rather than being
+/// re-implemented in JS where the TUI could never reuse it.
+///
+/// Idempotent: keys already at their stored value are not rewritten, and the
+/// frontend stops persisting shared keys in the blob afterwards — which is also
+/// what stops a stale localStorage blob from resurrecting them, since
+/// WKWebView's localStorage is not `HOME`-isolated.
+#[tauri::command]
+fn config_migrate_gui_blob(
+    state: State<'_, GuiState>,
+    blob: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use clash::infrastructure::config::migrate;
+
+    let migrated = migrate::migrate_gui_blob(&blob);
+
+    // A blocked config (an unparseable file) must not fail the boot — the
+    // frontend still needs its GUI-local settings and the error banner.
+    let mut warnings: Vec<String> = migrated.warnings.iter().map(|w| w.to_string()).collect();
+    let applied = match state.config.apply_gui_migration(&migrated) {
+        Ok(changed) => changed,
+        Err(e) => {
+            warnings.push(e.to_string());
+            Vec::new()
+        }
     };
-    config.claude_bin = effective.clone();
-    config
-        .save()
-        .map_err(|e| format!("Save config failed: {}", e))?;
-    *state.claude_bin.lock().unwrap() = effective.clone();
-    Ok(effective)
+
+    Ok(serde_json::json!({
+        "applied": applied,
+        "guiLocal": migrated.gui_local,
+        "settings": shared_settings_json(&state.config),
+        "warnings": warnings,
+    }))
 }
 
 /// Font families installed on this machine, for the Settings font picker.
@@ -1577,7 +1841,7 @@ struct IdeDto {
 /// Detected IDEs (same detection as the TUI's `e`).
 #[tauri::command]
 fn detect_ides(state: State<'_, GuiState>) -> Vec<IdeDto> {
-    clash::infrastructure::ide::detect_ides(&state.config_ides)
+    clash::infrastructure::ide::detect_ides(&state.config_ides())
         .into_iter()
         .map(|i| IdeDto {
             label: i.label,
@@ -2544,18 +2808,24 @@ fn main() {
     // without this, `claude` can't be found and session spawns fail.
     clash::infrastructure::env_path::adopt_login_shell_path();
 
-    let config = Config::load();
-    let data_dir: PathBuf = config.claude_dir();
-    let claude_bin = config.claude_bin.clone();
+    // One shared handle, not an owned copy per call site: a live reload has to
+    // be observable by every reader at once.
+    let config = ConfigHandle::load();
+    let settings = config.get();
+    let data_dir: PathBuf = settings.claude_dir();
+    if let Some(error) = config.error() {
+        // The frontend surfaces this as a banner via `config_get`; log it too so
+        // a broken config is diagnosable from clash.log alone.
+        tracing::error!("config not loaded: {}", error);
+    }
 
     let (wild_processes_tx, wild_processes_rx) = tokio::sync::watch::channel(Vec::new());
 
     let state = GuiState {
         backend: FsBackend::new(data_dir)
-            .with_scratch_dir(config.scratch_dir.clone())
-            .with_workflows_dir(config.workflows_dir.clone()),
-        claude_bin: Mutex::new(claude_bin),
-        config_ides: config.ides.clone(),
+            .with_scratch_dir(settings.paths.scratch_dir.clone())
+            .with_workflows_dir(settings.paths.workflows_dir.clone()),
+        config,
         previous: Mutex::new(Vec::new()),
         prev_statuses: Mutex::new(HashMap::new()),
         control: tokio::sync::Mutex::new(DaemonClient::new(DaemonClient::instance_socket_path())),
@@ -2563,8 +2833,7 @@ fn main() {
         wild_processes_rx,
         recently_removed: Mutex::new(HashMap::new()),
         notify_enabled: std::sync::atomic::AtomicBool::new(true),
-        scratch_watcher: Mutex::new(None),
-        workflows_watcher: Mutex::new(None),
+        watcher: Mutex::new(None),
         attention: Mutex::new(clash::application::workflow::AttentionLedger::default()),
         pr_checked: Mutex::new(HashMap::new()),
     };
@@ -2583,21 +2852,6 @@ fn main() {
     clash::infrastructure::hooks::registry::heal_registry_file();
     clash::infrastructure::hooks::registry::heal_registry_forks(&state.backend.projects_dir());
 
-    // FS watcher on ~/.claude/projects — same role as the TUI's watcher
-    // wiring in app.rs. Without it the FsBackend session cache goes stale
-    // after the first scan: sessions created during this launch never gain
-    // their disk metadata (encoded project dir, summary), so conversation
-    // and subagent lookups resolve to a non-existent path.
-    let debounce = std::time::Duration::from_millis(config.debounce_ms);
-    let (fs_tx, mut fs_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<PathBuf>>();
-    let fs_watcher = clash::infrastructure::fs::watcher::FsWatcher::new(
-        &[state.backend.projects_dir()],
-        fs_tx,
-        debounce,
-    )
-    .map_err(|e| tracing::warn!("FS watcher unavailable: {}", e))
-    .ok();
-
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
@@ -2606,44 +2860,17 @@ fn main() {
             // Repair any sessions whose quit "idle" status was clobbered by a
             // dying Claude hook on the previous exit, before the first refresh.
             repair_quit_stashed(app.state::<GuiState>().backend.base_dir());
-            if let Some(watcher) = fs_watcher {
-                // Keep the watcher alive for the app's lifetime.
-                app.manage(Mutex::new(watcher));
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    while let Some(paths) = fs_rx.recv().await {
-                        let state = handle.state::<GuiState>();
-                        let jsonl: Vec<PathBuf> = paths
-                            .iter()
-                            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
-                            .cloned()
-                            .collect();
-                        if !jsonl.is_empty() && jsonl.len() == paths.len() {
-                            state.backend.invalidate_session_cache(&jsonl);
-                        } else {
-                            // Non-jsonl change (sessions-index.json, new
-                            // project dir…) — full rescan on next load.
-                            state.backend.invalidate_session_cache_all();
-                        }
-                    }
-                });
-            }
-            // Watch the scratch directory so the notes tree auto-refreshes on
-            // external edits (an editor saving, the TUI, git…). Re-pointed live
-            // when the dir changes via `set_scratch_dir`.
-            {
-                let st = app.state::<GuiState>();
-                let dir = st.backend.scratch_dir();
-                *st.scratch_watcher.lock().unwrap() =
-                    start_scratch_watcher(app.handle(), dir, debounce);
-            }
-            // Watch the workflows directory the same way (`workflows-changed`).
-            {
-                let st = app.state::<GuiState>();
-                let dir = st.backend.workflows_dir();
-                *st.workflows_watcher.lock().unwrap() =
-                    workflows::start_workflows_watcher(app.handle(), dir, debounce);
-            }
+            // One watcher over every root the GUI cares about:
+            //   ~/.claude/projects  → session-cache invalidation. Without it the
+            //     FsBackend cache goes stale after the first scan: sessions
+            //     created during this launch never gain their disk metadata
+            //     (encoded project dir, summary), so conversation and subagent
+            //     lookups resolve to a non-existent path.
+            //   scratch, workflows  → `scratch-changed` / `workflows-changed`, so
+            //     the notes tree and workflow board follow external edits.
+            //   the config dir      → live config reload.
+            // Rebuilt when a directory is repointed in Settings.
+            rebuild_watcher(app.handle());
             // In-process PTY session manager — the GUI's backbone, identical
             // to the TUI's in-process daemon. Dies with the app. Per-instance
             // socket (daemon-<pid>.sock): TUI and GUI can run side by side,
@@ -2765,6 +2992,11 @@ fn main() {
             set_scratch_dir,
             get_claude_bin,
             set_claude_bin,
+            config_get,
+            config_set,
+            config_reset,
+            config_schema,
+            config_migrate_gui_blob,
             list_font_families,
             list_presets,
             detect_ides,

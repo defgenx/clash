@@ -22,6 +22,10 @@ futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+# Format-preserving TOML edits: the GUI writes config.toml, and re-serializing
+# a struct would delete the user's comments and key order. Already in the tree
+# as `toml`'s own backend, so this pins no new version.
+toml_edit = "0.22"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

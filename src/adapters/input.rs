@@ -1037,6 +1037,11 @@ pub fn parse_command(cmd: &str) -> Action {
         "subagents" | "subagent" => Action::Nav(NavAction::NavigateTo(ViewKind::Subagents)),
         "tour" | "guide" => Action::Ui(UiAction::StartTour),
         "update" | "upgrade" => Action::Ui(UiAction::RequestUpdate),
+        "reload" | "reload-config" => Action::Ui(UiAction::ReloadConfig),
+        "config" => Action::Ui(UiAction::Toast(format!(
+            "Config: {} — edit it, then :reload",
+            crate::infrastructure::config::Config::config_path().display()
+        ))),
         "quit" | "q" => Action::Ui(UiAction::Quit),
         _ => Action::Ui(UiAction::Toast(format!("Unknown command: {}", cmd))),
     }
@@ -1051,6 +1056,30 @@ mod tests {
         match parse_command("teams") {
             Action::Nav(NavAction::NavigateTo(ViewKind::Teams)) => {}
             _ => panic!("Expected NavigateTo Teams"),
+        }
+    }
+
+    /// `config.toml` is watched, so `:reload` is only ever a nudge — but it is
+    /// the documented escape hatch when a watcher is unavailable.
+    #[test]
+    fn test_parse_command_reload_config() {
+        for spelling in [":reload", ":reload-config"] {
+            let cmd = spelling.trim_start_matches(':');
+            match parse_command(cmd) {
+                Action::Ui(UiAction::ReloadConfig) => {}
+                other => panic!("{} should reload config, got {:?}", spelling, other),
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_command_config_shows_the_path() {
+        match parse_command("config") {
+            Action::Ui(UiAction::Toast(message)) => {
+                assert!(message.contains("config.toml"), "{}", message);
+                assert!(message.contains(":reload"), "{}", message);
+            }
+            other => panic!("Expected a toast with the path, got {:?}", other),
         }
     }
 

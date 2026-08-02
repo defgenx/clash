@@ -1075,6 +1075,7 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             state.spinner = Some("Updating clash...".to_string());
             vec![Effect::PerformUpdate]
         }
+        UiAction::ReloadConfig => vec![Effect::ReloadConfig],
         UiAction::StartTour => {
             state.tour_step = Some(0);
             vec![]

@@ -436,8 +436,28 @@ function workspacesJson() {
     browserTabs,
     viewTabs,
     active: state.activeWs,
-    settings: state.settings,
+    // Only the GUI-local settings. The cross-frontend ones live in config.toml
+    // from the migration onward; keeping a copy here would let this blob — or
+    // WKWebView's localStorage, which is not HOME-isolated — quietly overwrite
+    // a hand-edited config.toml on the next boot (plan Finding 5).
+    settings: guiLocalSettings(),
   });
+}
+
+/// The settings blob minus everything that now lives in config.toml.
+function guiLocalSettings() {
+  // Until loadSettings() resolves, `state.settings` still holds the in-code
+  // defaults — the persisted values are parked, not applied. A flush in that
+  // window (blur/pagehide fire on any click away, and they run before boot
+  // finishes) would write defaults into the blob, and the next boot would
+  // migrate those defaults straight over the user's real config.toml values.
+  // Echo back what we read instead, verbatim.
+  if (!settingsResolved) return loadedSettingsBlob || {};
+  const out = {};
+  for (const [key, value] of Object.entries(state.settings)) {
+    if (!sharedSettingKeys.has(key)) out[key] = value;
+  }
+  return out;
 }
 
 /// Write the workspace/layout state to disk *now*, bypassing the debounce.
@@ -474,73 +494,37 @@ function saveWorkspaces() {
   }, 250);
 }
 
-/// Font weights offered in Settings — CSS keywords plus the numeric steps
-/// xterm accepts. Also the whitelist when loading a persisted value.
-const FONT_WEIGHTS = ["300", "normal", "500", "600", "bold", "800"];
+/// The raw settings blob from the persisted state, awaiting validation.
+///
+/// Validation and migration happen in Rust (`config_migrate_gui_blob`), so the
+/// range checks and legacy fixups exist once and the TUI can reuse them — this
+/// used to be ~50 lines of hand-written per-key checks that duplicated the
+/// schema's own constraints. `applyWorkspacesData` is synchronous and runs
+/// before the first paint, so it parks the blob here and `loadSettings()`
+/// awaits the backend.
+let pendingSettingsBlob = null;
+/// The same blob, kept after `loadSettings()` consumes it, so a flush that races
+/// boot can echo it back instead of persisting unresolved defaults.
+let loadedSettingsBlob = null;
+/// Whether the parked blob may seed the one-shot migration into config.toml.
+/// False for anything read from localStorage — see `loadWorkspaces`.
+let pendingSettingsMigratable = false;
+/// Set once `loadSettings()` has applied real values to `state.settings`.
+let settingsResolved = false;
+/// Setting keys that live in config.toml rather than gui-state.json. Filled
+/// from the backend (the schema is the source of truth), so this never drifts.
+let sharedSettingKeys = new Set();
 
-/// Copy `key` from a persisted settings blob when it is a number inside
-/// [min, max]; ignore anything else so a stale/corrupt blob keeps the default.
-function numSetting(blob, key, min, max, round = (v) => v) {
-  const v = blob[key];
-  if (typeof v === "number" && Number.isFinite(v) && v >= min && v <= max) {
-    state.settings[key] = round(v);
-  }
-}
-
-function applyWorkspacesData(data) {
+function applyWorkspacesData(data, { migratable = false } = {}) {
   if (!data) return false;
-  // Settings ride along with the workspaces blob but load independently —
-  // a fresh install with no workspaces yet still gets its saved settings.
-  // Per-key type checks so a stale/corrupt blob never poisons defaults.
-  if (data.settings) {
-    const s = data.settings;
-    if (typeof s.theme === "string" && THEMES[s.theme]) state.settings.theme = s.theme;
-    if (typeof s.defaultCwd === "string") state.settings.defaultCwd = s.defaultCwd;
-    if (typeof s.fontSize === "number" && s.fontSize >= 9 && s.fontSize <= 24) {
-      state.settings.fontSize = Math.round(s.fontSize);
-    }
-    if (typeof s.fontFamily === "string" && s.fontFamily.trim()) {
-      state.settings.fontFamily = s.fontFamily.trim();
-    }
-    if (FONT_WEIGHTS.includes(String(s.fontWeight))) {
-      state.settings.fontWeight = String(s.fontWeight);
-    }
-    if (FONT_WEIGHTS.includes(String(s.fontWeightBold))) {
-      state.settings.fontWeightBold = String(s.fontWeightBold);
-    }
-    numSetting(s, "lineHeight", 1, 2);
-    numSetting(s, "letterSpacing", -2, 5);
-    if (typeof s.scrollback === "number" && s.scrollback >= 0 && s.scrollback <= 200000) {
-      state.settings.scrollback = Math.round(s.scrollback);
-    }
-    if (["block", "bar", "underline"].includes(s.cursorStyle)) {
-      state.settings.cursorStyle = s.cursorStyle;
-    }
-    if (["outline", "block", "bar", "underline", "none"].includes(s.cursorInactiveStyle)) {
-      state.settings.cursorInactiveStyle = s.cursorInactiveStyle;
-    }
-    numSetting(s, "cursorWidth", 1, 5, Math.round);
-    if (typeof s.cursorBlink === "boolean") state.settings.cursorBlink = s.cursorBlink;
-    numSetting(s, "minimumContrast", 1, 21);
-    if (typeof s.brightBold === "boolean") state.settings.brightBold = s.brightBold;
-    numSetting(s, "scrollSpeed", 1, 10, Math.round);
-    numSetting(s, "smoothScroll", 0, 500, Math.round);
-    if (typeof s.copyOnSelect === "boolean") state.settings.copyOnSelect = s.copyOnSelect;
-    if (typeof s.rightClickWord === "boolean") state.settings.rightClickWord = s.rightClickWord;
-    if (typeof s.optionMeta === "boolean") state.settings.optionMeta = s.optionMeta;
-    if (typeof s.bellToast === "boolean") state.settings.bellToast = s.bellToast;
-    if (["ask", "embedded", "external"].includes(s.linkOpen)) {
-      state.settings.linkOpen = s.linkOpen;
-    } else if (typeof s.embedLinks === "boolean") {
-      // Legacy boolean setting → map to the new three-way choice.
-      state.settings.linkOpen = s.embedLinks ? "embedded" : "external";
-    }
-    if (typeof s.notifications === "boolean") state.settings.notifications = s.notifications;
-    if (typeof s.titleAttention === "boolean") state.settings.titleAttention = s.titleAttention;
-    if (typeof s.confirmKill === "boolean") state.settings.confirmKill = s.confirmKill;
-    numSetting(s, "refreshSecs", 1, 30, Math.round);
-    if (typeof s.tuiTerminal === "string") state.settings.tuiTerminal = s.tuiTerminal;
-    if (typeof s.termShell === "string") state.settings.termShell = s.termShell;
+  // Settings ride along with the workspaces blob but load independently — a
+  // fresh install with no workspaces yet still gets its saved settings. First
+  // source wins: loadWorkspaces tries disk before the localStorage fallback,
+  // and the fallback must not override what disk already provided.
+  if (data.settings && typeof data.settings === "object" && !pendingSettingsBlob) {
+    pendingSettingsBlob = data.settings;
+    loadedSettingsBlob = data.settings;
+    pendingSettingsMigratable = migratable;
   }
   if (!Array.isArray(data.workspaces) || !data.workspaces.length) return false;
   // Shell terminals die with the app (in-process daemon) — drop any
@@ -579,16 +563,89 @@ let pendingWorkflowTabs = []; // persisted workflow tabs awaiting restore at boo
 async function loadWorkspaces() {
   try {
     const raw = await invoke("load_gui_state");
-    if (raw && applyWorkspacesData(JSON.parse(raw))) return;
+    // `migratable`: only the disk blob may seed the one-shot settings migration.
+    // WKWebView's localStorage resolves the real user home even when clash runs
+    // under an isolated HOME, so a stale copy there must never be allowed to
+    // write into config.toml (plan Finding 5).
+    if (raw && applyWorkspacesData(JSON.parse(raw), { migratable: true })) return;
   } catch (e) {
     console.error("load_gui_state failed:", e);
   }
   try {
     const raw = localStorage.getItem("clash-workspaces");
-    if (raw) applyWorkspacesData(JSON.parse(raw));
+    if (raw) applyWorkspacesData(JSON.parse(raw), { migratable: false });
   } catch (e) {
     console.error("loadWorkspaces (localStorage) failed:", e);
   }
+}
+
+/// Resolve settings through the backend, then apply them to `state.settings`.
+///
+/// Two halves, one schema: the cross-frontend keys come back from config.toml,
+/// the GUI-local ones come back validated and normalised from the same Rust
+/// property table (including the legacy `embedLinks` → `linkOpen` fixup). Must
+/// be awaited before the first paint — `applyTheme` and `syncSettingsUi` both
+/// read `state.settings`.
+async function loadSettings() {
+  const blob = pendingSettingsBlob;
+  const migratable = pendingSettingsMigratable;
+  pendingSettingsBlob = null;
+  pendingSettingsMigratable = false;
+
+  let result = null;
+  try {
+    result = migratable
+      ? await invoke("config_migrate_gui_blob", { blob: blob || {} })
+      : await invoke("config_get");
+  } catch (e) {
+    console.error("loading settings failed:", e);
+  }
+  if (!result) {
+    // A backend that can't answer must not leave the window unstyled; the
+    // in-code defaults already in state.settings stand in. Deliberately *not*
+    // marked resolved: with no answer we don't know which keys are shared, so
+    // the blob keeps being echoed back rather than rewritten from a guess.
+    if (blob) Object.assign(state.settings, blob);
+    return;
+  }
+
+  sharedSettingKeys = new Set(
+    Object.keys(result.settings || {}).filter((k) => k in state.settings)
+  );
+  // A non-migratable (localStorage) blob still supplies the GUI-local half.
+  if (blob && !migratable) {
+    for (const [key, value] of Object.entries(blob)) {
+      if (!sharedSettingKeys.has(key) && key in state.settings) state.settings[key] = value;
+    }
+  }
+  Object.assign(state.settings, result.guiLocal || {});
+  Object.assign(state.settings, result.settings || {});
+  settingsResolved = true;
+
+  for (const warning of result.warnings || []) dlog(`settings: ${warning}`);
+  for (const issue of result.issues || []) dlog(`config: ${issue}`);
+  if (result.error) showConfigError(result.error);
+  if (result.applied && result.applied.length) {
+    dlog(`settings migrated into config.toml: ${result.applied.join(", ")}`);
+    // Rewrite the blob without the migrated keys straight away, so even one
+    // crash later they cannot come back and overwrite config.toml.
+    await flushWorkspaces();
+  }
+}
+
+/// Persist one setting to wherever it lives.
+///
+/// Cross-frontend settings round-trip through config.toml (so the TUI agrees and
+/// the schema validates them); GUI-local ones stay in gui-state.json.
+function persistSetting(key) {
+  if (!sharedSettingKeys.has(key)) {
+    saveWorkspaces();
+    return;
+  }
+  invoke("config_set", { key, value: state.settings[key] }).catch((e) => {
+    console.error(`config_set ${key} failed:`, e);
+    flashToast(`Could not save ${key}: ${e}`);
+  });
 }
 
 /// Restore sessions referenced by saved workspace panes. Running sessions
@@ -4090,8 +4147,16 @@ const WF_MODES = [
 ];
 
 /// Sentinel value for the repo picker's "Browse…" row — a real repo path can
-/// never collide with it (paths are absolute).
-const BROWSE = " browse";
+/// never collide with it.
+///
+/// A `Symbol` rather than a magic string: `uiListChoice` hands `item.value` back
+/// through a closure (it never round-trips through the DOM), so identity
+/// comparison is enough, and nothing a user could type can equal it. It used to
+/// be `"\x00browse"`, whose literal NUL byte made `grep` treat this entire file
+/// as binary — `grep -n BROWSE app.js` returned *nothing* without `-a`, which is
+/// a debugging tax on every future reader. Plain `"browse"` would have been a
+/// plausible path fragment, i.e. a weaker invariant than the one it replaced.
+const BROWSE = Symbol("browse");
 
 /// Folder name of a repo path, tolerating a trailing slash.
 const repoBaseName = (p) => baseName(String(p || "").replace(/[\\/]+$/, ""));
@@ -6986,7 +7051,7 @@ $("new-ws-btn").onclick = newWorkspace;
 
 $("default-cwd").addEventListener("change", () => {
   state.settings.defaultCwd = $("default-cwd").value.trim();
-  saveWorkspaces();
+  persistSetting("defaultCwd");
 });
 
 /// Scratch directory lives in the shared config.toml (not gui-state) so the
@@ -7142,6 +7207,67 @@ function filterSettings(query) {
 }
 
 /// Live-apply an xterm option to every open terminal, then persist.
+// ── Live config reload ──────────────────────────────────────────
+// config.toml is watched, so an edit by hand, by the TUI, or by another clash
+// instance lands here without a restart.
+
+/// Pending refit request, coalesced to one animation frame.
+///
+/// A reload fans out: re-read → diff → push xterm options → possibly refit every
+/// open terminal. At the default 200 ms watcher debounce, an editor that saves on
+/// every keystroke would otherwise turn one burst of saves into a burst of refits
+/// across every pane. Only keys the schema marks `x-refit` (font, line height,
+/// letter spacing) enter that path at all, and never more than once per frame.
+let refitQueued = false;
+function queueRefit() {
+  if (refitQueued) return;
+  refitQueued = true;
+  requestAnimationFrame(() => {
+    refitQueued = false;
+    fitAll();
+  });
+}
+
+/// Show a config load error as a toast. The backend keeps serving the last good
+/// values, so this is the only signal that the file on disk is broken — the old
+/// behaviour logged a warning nobody could see and silently used defaults.
+function showConfigError(message) {
+  flashToast(`Config error — ${message}`);
+}
+
+/// Apply a `config-changed` event: the changed dotted paths, the subset needing
+/// a refit, and the new effective shared settings.
+function applyConfigChange(payload) {
+  const changed = (payload && payload.changed) || [];
+  const settings = (payload && payload.settings) || {};
+  if (!changed.length) return;
+
+  Object.assign(state.settings, settings);
+  syncSettingsUi();
+  $("default-cwd").value = state.settings.defaultCwd;
+
+  // Keys with a live effect beyond the settings panel.
+  if (changed.includes("sessions.refresh_secs")) restartSessionPoll();
+  if (changed.includes("notifications.enabled")) {
+    invoke("set_notifications_enabled", { enabled: state.settings.notifications }).catch(
+      console.error
+    );
+  }
+  if (changed.includes("notifications.title_attention")) refreshSessions();
+
+  if (payload && payload.refit && payload.refit.length) queueRefit();
+  dlog(`config reloaded: ${changed.join(", ")}`);
+}
+
+function listenForConfigReload() {
+  listen("config-changed", (e) => applyConfigChange(e.payload)).catch((err) =>
+    console.error("config-changed listen failed:", err)
+  );
+  listen("config-error", (e) => showConfigError(e.payload)).catch((err) =>
+    console.error("config-error listen failed:", err)
+  );
+}
+
 function applyTermOption(key, value) {
   for (const entry of state.open.values()) {
     if (entry.term) entry.term.options[key] = value;
@@ -7202,7 +7328,7 @@ $("set-link-open").addEventListener("change", () => {
 $("set-notify").addEventListener("change", () => {
   state.settings.notifications = $("set-notify").checked;
   invoke("set_notifications_enabled", { enabled: state.settings.notifications }).catch(console.error);
-  saveWorkspaces();
+  persistSetting("notifications");
 });
 
 // ── Settings: generic wiring ────────────────────────────────────
@@ -7226,7 +7352,7 @@ function bindNumberSetting(id, key, { min, max, step = 1, option = null, refit =
     state.settings[key] = step < 1 ? Number(v.toFixed(2)) : v;
     el.value = state.settings[key];
     if (option) applyTermOption(option, state.settings[key]);
-    else saveWorkspaces();
+    else persistSetting(key);
     if (refit) fitAll();
   });
 }
@@ -7238,7 +7364,7 @@ function bindChoiceSetting(id, key, { option = null, refit = false, onChange = n
   el.addEventListener("change", () => {
     state.settings[key] = el.type === "checkbox" ? el.checked : el.value;
     if (option) applyTermOption(option, state.settings[key]);
-    else saveWorkspaces();
+    else persistSetting(key);
     if (refit) fitAll();
     if (onChange) onChange(state.settings[key]);
   });
@@ -7524,6 +7650,10 @@ function restartSessionPoll() {
 (async () => {
   applyStaticIcons(); // before first paint — never show the unicode fallbacks
   await loadWorkspaces(); // disk-backed — must complete before first render
+  // Settings come from the backend (config.toml + the schema-validated
+  // GUI-local half), so this must land before anything reads state.settings.
+  await loadSettings();
+  listenForConfigReload();
   // Theme and mono font before the first render, so the window never flashes
   // the default palette on the way to the chosen one.
   applyTheme(state.settings.theme);

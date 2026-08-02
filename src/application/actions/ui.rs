@@ -59,6 +59,9 @@ pub enum UiAction {
     TourSkip,
     /// Trigger a self-update check + install.
     RequestUpdate,
+    /// Re-read `config.toml` now (`:reload`), instead of waiting for the
+    /// watcher to notice.
+    ReloadConfig,
     /// The attached session exited.
     SessionExited {
         session_id: String,

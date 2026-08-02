@@ -29,7 +29,9 @@ pub struct App {
     state: AppState,
     backend: FsBackend,
     claude_bin: String,
-    config: crate::infrastructure::config::Config,
+    /// The shared config view. A handle rather than an owned `Config` so a
+    /// live reload is observed here and everywhere else at once.
+    config: crate::infrastructure::config::ConfigHandle,
     _watcher: Option<FsWatcher>,
     fs_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Vec<PathBuf>>>,
     daemon: DaemonClient,
@@ -66,11 +68,12 @@ impl App {
         data_dir: PathBuf,
         claude_bin: String,
         debug: bool,
-        config: crate::infrastructure::config::Config,
+        config: crate::infrastructure::config::ConfigHandle,
     ) -> Self {
+        let settings = config.get();
         let backend = FsBackend::new(data_dir.clone())
-            .with_scratch_dir(config.scratch_dir.clone())
-            .with_workflows_dir(config.workflows_dir.clone());
+            .with_scratch_dir(settings.paths.scratch_dir.clone())
+            .with_workflows_dir(settings.paths.workflows_dir.clone());
 
         // Install Claude Code hooks for instant status detection
         if let Err(e) = crate::infrastructure::hooks::install_hooks(&data_dir) {
@@ -98,6 +101,12 @@ impl App {
         // applied above), so a custom `scratch_dir` is watched too.
         let scratch_dir = backend.scratch_dir();
         let _ = std::fs::create_dir_all(&scratch_dir);
+        // The config directory is a watch root too, so an edit to config.toml
+        // (by hand, by the GUI, or by another instance) live-reloads here
+        // instead of needing a restart. Created first because FsWatcher skips
+        // paths that don't exist yet.
+        let config_dir = config.watch_dir();
+        let _ = std::fs::create_dir_all(&config_dir);
         let watch_paths = vec![
             backend.teams_dir(),
             backend.tasks_dir(),
@@ -105,12 +114,17 @@ impl App {
             scratch_dir,
             status_dir,
             crate::infrastructure::hooks::registry::RegistryCache::watched_path(),
+            config_dir,
         ];
-        let debounce = std::time::Duration::from_millis(config.debounce_ms);
-        let watcher = FsWatcher::new(&watch_paths, fs_tx, debounce).ok();
+        let watcher = FsWatcher::new(&watch_paths, fs_tx, settings.debounce()).ok();
 
         let mut state = AppState::new();
         state.debug_mode = debug;
+        // A config the user has broken must be visible, not a line in a log
+        // file nobody reads — the whole point of the ConfigState error.
+        if let Some(error) = config.error() {
+            state.toast = Some(format!("Config error — {}", error.summary()));
+        }
 
         // Show guided tour on first launch (stored in clash's own data dir)
         let clash_data = crate::infrastructure::config::Config::clash_data_dir();
@@ -206,6 +220,61 @@ impl App {
         self.last_ui_json = Some(json);
     }
 
+    /// Re-read `config.toml` and apply what a running process can apply.
+    ///
+    /// Driven by the config watch root and by `:reload`. Reload applies a
+    /// *diff* (only the keys that changed), and anything the running process
+    /// cannot pick up — the `x-restart-required` keys — is named in the toast
+    /// rather than silently ignored.
+    fn reload_config(&mut self) {
+        let changed = self.config.reload();
+        self.needs_redraw = true;
+
+        if let Some(error) = self.config.error() {
+            self.state.toast = Some(format!("Config error — {}", error.summary()));
+            return;
+        }
+        if changed.is_empty() {
+            return;
+        }
+
+        let settings = self.config.get();
+        // Paths apply live so the notes tree follows the new directory. The
+        // watch root itself is fixed for this process, so an external edit
+        // under a freshly-pointed dir only shows up on the next refresh.
+        if changed.iter().any(|p| p == "paths.scratch_dir") {
+            self.backend.set_scratch_dir(settings.scratch_dir());
+            let _ = self.state.store.refresh_scratch_notes(&self.backend);
+        }
+        if changed.iter().any(|p| p == "paths.workflows_dir") {
+            self.backend.set_workflows_dir(settings.workflows_dir());
+        }
+
+        use crate::infrastructure::config::schema;
+        let deferred: Vec<&str> = changed
+            .iter()
+            .filter_map(|path| schema::prop(path))
+            .filter(|prop| prop.restart_required)
+            .map(|prop| prop.path)
+            .collect();
+        let mut message = format!(
+            "Config reloaded — {} setting{} changed",
+            changed.len(),
+            if changed.len() == 1 { "" } else { "s" }
+        );
+        if !deferred.is_empty() {
+            message.push_str(&format!(" ({} applies on restart)", deferred.join(", ")));
+        }
+        self.state.toast = Some(message);
+    }
+
+    /// A path in the watched config directory that is *not* the config file —
+    /// the advisory lock and `write_atomic`'s temp file. Ignored so clash's own
+    /// save does not trigger a full data refresh.
+    fn is_config_sibling(&self, path: &std::path::Path) -> bool {
+        FsWatcher::is_child_of(path, &self.config.watch_dir())
+    }
+
     /// Run the main event loop.
     ///
     /// When a session attach is requested, the event loop is fully torn down
@@ -285,21 +354,33 @@ impl App {
                 if let Some(ref mut rx) = fs_rx {
                     let mut needs_refresh_all = false;
                     let mut needs_scratch_refresh = false;
+                    let mut needs_config_reload = false;
                     let mut changed_jsonl_paths: Vec<std::path::PathBuf> = Vec::new();
                     let scratch_dir = self.backend.scratch_dir();
                     while let Ok(paths) = rx.try_recv() {
                         for p in &paths {
-                            // Changes under the scratch dir re-list the notes tree
-                            // (checked first: a scratch note may end in `.jsonl`
-                            // and must not be mistaken for a session log).
-                            if p.starts_with(&scratch_dir) {
+                            // Config first: the whole config dir is watched, but
+                            // only config.toml itself is a reload — the lock file
+                            // and write_atomic's temp file are siblings, and
+                            // reacting to those would make every save reload
+                            // itself in a loop.
+                            if self.config.is_config_path(p) {
+                                needs_config_reload = true;
+                            } else if p.starts_with(&scratch_dir) {
+                                // Changes under the scratch dir re-list the notes
+                                // tree (checked before the `.jsonl` branch: a
+                                // scratch note may end in `.jsonl` and must not be
+                                // mistaken for a session log).
                                 needs_scratch_refresh = true;
                             } else if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
                                 changed_jsonl_paths.push(p.clone());
-                            } else {
+                            } else if !self.is_config_sibling(p) {
                                 needs_refresh_all = true;
                             }
                         }
+                    }
+                    if needs_config_reload {
+                        self.reload_config();
                     }
                     if needs_scratch_refresh {
                         if let Err(e) = self.state.store.refresh_scratch_notes(&self.backend) {
@@ -2061,7 +2142,7 @@ impl App {
                 // ── IDE effects ────────────────────────────────
                 Effect::DetectIdes { project_dir } => {
                     tracing::debug!("DetectIdes effect: project_dir={}", project_dir);
-                    let items = crate::infrastructure::ide::detect_ides(&self.config.ides);
+                    let items = crate::infrastructure::ide::detect_ides(&self.config.get().ides);
                     tracing::debug!("DetectIdes: found {} IDEs", items.len());
                     if items.is_empty() {
                         self.state.toast = Some("No IDEs detected".to_string());
@@ -2082,7 +2163,7 @@ impl App {
                     }
                 }
                 Effect::DetectEditors { path } => {
-                    let items = crate::infrastructure::ide::detect_editors(&self.config.ides);
+                    let items = crate::infrastructure::ide::detect_editors(&self.config.get().ides);
                     if items.is_empty() {
                         self.state.toast = Some("No editors detected".to_string());
                     } else {
@@ -2151,6 +2232,7 @@ impl App {
                     // follows is correct either way.
                     crate::infrastructure::process_scan::kill_wild_process(pid).await;
                 }
+                Effect::ReloadConfig => self.reload_config(),
                 Effect::PerformUpdate => {
                     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                     events.set_update_rx(rx);

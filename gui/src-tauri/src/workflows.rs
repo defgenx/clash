@@ -6,7 +6,7 @@
 //! business rules beyond wiring.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use clash::application::diff::parse_file_diffs;
 use clash::application::workflow::anchor_annotations;
@@ -32,33 +32,6 @@ struct WorkflowAttention {
     slug: String,
     title: String,
     status: WorkflowStatus,
-}
-
-/// Start (or restart) the workflows-directory watcher. Emits
-/// `workflows-changed` on any change under `dir` so the sidebar and open
-/// workflow tabs stay in sync with agent writes. Same shape as the scratch
-/// watcher; dropping the returned watcher stops the watch.
-pub(crate) fn start_workflows_watcher(
-    app: &tauri::AppHandle,
-    dir: PathBuf,
-    debounce: std::time::Duration,
-) -> Option<clash::infrastructure::fs::watcher::FsWatcher> {
-    let _ = std::fs::create_dir_all(&dir);
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<PathBuf>>();
-    let watcher = clash::infrastructure::fs::watcher::FsWatcher::new(
-        std::slice::from_ref(&dir),
-        tx,
-        debounce,
-    )
-    .map_err(|e| tracing::warn!("Workflows watcher unavailable: {}", e))
-    .ok()?;
-    let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        while rx.recv().await.is_some() {
-            let _ = handle.emit("workflows-changed", ());
-        }
-    });
-    Some(watcher)
 }
 
 /// List every workflow item, decorated with the agent-liveness cross-check,
@@ -269,29 +242,11 @@ pub(crate) fn set_workflows_dir(
     app: tauri::AppHandle,
     path: String,
 ) -> Result<String, String> {
-    let trimmed = path.trim();
-    let mut config = clash::infrastructure::config::Config::load();
-
-    let effective = if trimmed.is_empty() {
-        config.workflows_dir = None;
-        config.workflows_dir()
-    } else {
-        let expanded = crate::expand_tilde(trimmed);
-        std::fs::create_dir_all(&expanded)
-            .map_err(|e| format!("Cannot use {}: {}", expanded.display(), e))?;
-        config.workflows_dir = Some(expanded.clone());
-        expanded
-    };
-
-    config
-        .save()
-        .map_err(|e| format!("Save config failed: {}", e))?;
+    let effective =
+        crate::set_path_setting(&state, "paths.workflows_dir", &path, |c| c.workflows_dir())?;
     state.backend.set_workflows_dir(effective.clone());
-    *state.workflows_watcher.lock().unwrap() = start_workflows_watcher(
-        &app,
-        effective.clone(),
-        std::time::Duration::from_millis(config.debounce_ms),
-    );
+    // Rebuild the single routed watcher so the new directory is watched.
+    crate::rebuild_watcher(&app);
     Ok(effective.to_string_lossy().into_owned())
 }
 
