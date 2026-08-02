@@ -75,27 +75,186 @@ fn registry_path() -> std::path::PathBuf {
     clash_data_dir().join(REGISTRY_FILE)
 }
 
-/// Load the session registry from disk.
-pub fn load() -> HashMap<String, ClashSession> {
+/// Previous registry content, kept beside the live file.
+const REGISTRY_BACKUP: &str = "sessions.json.bak";
+
+/// Path of the registry backup written before every replace.
+fn backup_path() -> std::path::PathBuf {
+    clash_data_dir().join(REGISTRY_BACKUP)
+}
+
+/// Pure: decode registry JSON. `Ok(empty)` only for a genuinely empty registry
+/// (`{}`); an empty or malformed file is an `Err`, never silently zero sessions.
+fn parse_registry(content: &str) -> Result<HashMap<String, ClashSession>, String> {
+    if content.trim().is_empty() {
+        return Err("file is empty".to_string());
+    }
+    serde_json::from_str(content).map_err(|e| e.to_string())
+}
+
+/// Pure: does persisting `new_len` entries over `old_len` look like data loss
+/// rather than an intended edit?
+///
+/// Every mutation here either grows the registry, keeps its size, or removes the
+/// one entry it was asked to remove — `unregister` can take a second when a
+/// duplicate is keyed by the same conversation id, and that is the worst
+/// legitimate case. A larger drop means the map was built from a bad read, so the
+/// write is refused instead of persisting the loss. `clear()` opts out.
+fn shrink_is_suspicious(old_len: usize, new_len: usize) -> bool {
+    old_len > new_len && old_len - new_len > 2
+}
+
+/// Read the registry, telling "not there yet" apart from "there but unusable".
+///
+/// This distinction is the whole point of the module's write discipline: every
+/// mutation is load → mutate → save, so folding an unreadable file into an empty
+/// map would persist that emptiness on the next write and lose every session
+/// permanently, silently. A missing file is normal (first run) and maps to an
+/// empty registry; anything else is an error the caller must respect.
+fn read_registry() -> Result<HashMap<String, ClashSession>, String> {
     let path = registry_path();
     match std::fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-        Err(_) => HashMap::new(),
+        Ok(content) => parse_registry(&content).map_err(|e| format!("{}: {}", path.display(), e)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(e) => Err(format!("{}: {}", path.display(), e)),
     }
 }
 
-/// Save the session registry to disk (atomic write).
-fn save(registry: &HashMap<String, ClashSession>) {
+/// Load the session registry for reading (display, resume-id resolution).
+///
+/// Never fails: an unusable file falls back to the backup in memory so the UI
+/// still lists sessions, and [`heal_registry_file`] does the repair on disk at
+/// the next startup. Read-only by design — the refresh loop calls this every
+/// couple of seconds.
+pub fn load() -> HashMap<String, ClashSession> {
+    match read_registry() {
+        Ok(registry) => registry,
+        Err(e) => {
+            tracing::error!("session registry unusable ({}) — falling back to backup", e);
+            read_backup().unwrap_or_default()
+        }
+    }
+}
+
+/// The backup's entries, if it is readable and non-empty.
+fn read_backup() -> Option<HashMap<String, ClashSession>> {
+    let content = std::fs::read_to_string(backup_path()).ok()?;
+    let registry = parse_registry(&content).ok()?;
+    (!registry.is_empty()).then_some(registry)
+}
+
+/// Load for mutation. `None` means "the file exists but could not be read" —
+/// callers abort rather than persist a partial view of the registry.
+fn load_for_mutation(op: &str) -> Option<HashMap<String, ClashSession>> {
+    match read_registry() {
+        Ok(registry) => Some(registry),
+        Err(e) => {
+            tracing::error!(
+                "session registry {} aborted — {}. The file was left untouched; \
+                 restart clash to restore it from {}",
+                op,
+                e,
+                REGISTRY_BACKUP
+            );
+            None
+        }
+    }
+}
+
+/// Startup repair: put `sessions.json.bak` back when the live file is unusable
+/// and the backup is not. No-op in the normal case. Also logs the registry size,
+/// so "the session list came back empty" is answerable from clash.log alone.
+pub fn heal_registry_file() {
+    match read_registry() {
+        Ok(registry) => {
+            tracing::info!("session registry: {} entries", registry.len());
+            // Seed the backup so a recovery point exists from the first launch,
+            // not only after the first mutation writes one.
+            if !registry.is_empty() && read_backup().is_none() {
+                if let Ok(json) = serde_json::to_string_pretty(&registry) {
+                    let _ = crate::infrastructure::fs::atomic::write_atomic(
+                        &backup_path(),
+                        json.as_bytes(),
+                    );
+                }
+            }
+        }
+        Err(e) => match read_backup() {
+            Some(backup) => {
+                tracing::warn!(
+                    "session registry unusable ({}) — restoring {} entries from {}",
+                    e,
+                    backup.len(),
+                    REGISTRY_BACKUP
+                );
+                // Keep the unusable bytes for post-mortem instead of overwriting
+                // them; the backup becomes the live file.
+                let broken = registry_path().with_extension("json.broken");
+                let _ = std::fs::rename(registry_path(), &broken);
+                write_registry(&backup);
+            }
+            None => tracing::error!(
+                "session registry unusable ({}) and no usable {} — sessions \
+                 registered before now will not be listed",
+                e,
+                REGISTRY_BACKUP
+            ),
+        },
+    }
+}
+
+/// Save the registry (atomic), refusing a write that would drop entries en
+/// masse. `op` names the caller in the log; `allow_shrink` is for `clear()`,
+/// the one operation whose job is to empty the file.
+fn save_checked(registry: &HashMap<String, ClashSession>, op: &str, allow_shrink: bool) {
+    if !allow_shrink {
+        // Compare against what is on disk *now*: this catches loss introduced
+        // between our read and this write (a concurrent writer — the `/clear`
+        // hook script rewrites this same file from a shell), not just loss from
+        // a bad read of our own.
+        if let Ok(on_disk) = read_registry() {
+            if shrink_is_suspicious(on_disk.len(), registry.len()) {
+                tracing::error!(
+                    "session registry {} refused: would drop {} of {} entries",
+                    op,
+                    on_disk.len() - registry.len(),
+                    on_disk.len()
+                );
+                return;
+            }
+        }
+    }
+    write_registry(registry);
+}
+
+/// Unconditional write: back up the current content, then replace atomically.
+fn write_registry(registry: &HashMap<String, ClashSession>) {
     let path = registry_path();
     let _ = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
-    if let Ok(json) = serde_json::to_string_pretty(registry) {
-        let _ = crate::infrastructure::fs::atomic::write_atomic(&path, json.as_bytes());
+    // Copy-then-replace: the backup is always the last known-good content, so a
+    // future bad read has something to recover from.
+    if let Ok(current) = std::fs::read_to_string(&path) {
+        if parse_registry(&current).is_ok() {
+            let _ =
+                crate::infrastructure::fs::atomic::write_atomic(&backup_path(), current.as_bytes());
+        }
+    }
+    match serde_json::to_string_pretty(registry) {
+        Ok(json) => {
+            if let Err(e) = crate::infrastructure::fs::atomic::write_atomic(&path, json.as_bytes())
+            {
+                tracing::error!("writing session registry failed: {}", e);
+            }
+        }
+        Err(e) => tracing::error!("serializing session registry failed: {}", e),
     }
 }
 
 /// Register a new session in the registry.
 pub fn register(session_id: &str, name: &str, cwd: &str, source_branch: Option<&str>) {
-    let mut registry = load();
+    let Some(mut registry) = load_for_mutation("register") else {
+        return;
+    };
     registry.insert(
         session_id.to_string(),
         ClashSession {
@@ -108,7 +267,7 @@ pub fn register(session_id: &str, name: &str, cwd: &str, source_branch: Option<&
             previous_ids: Vec::new(),
         },
     );
-    save(&registry);
+    save_checked(&registry, "register", false);
 }
 
 /// Find a registry entry matching the given session ID (by registry key or claude_session_id).
@@ -266,7 +425,9 @@ pub fn record_resumed_conversation(session_id: &str, resumed: &str) {
     if resumed.is_empty() {
         return;
     }
-    let mut registry = load();
+    let Some(mut registry) = load_for_mutation("resume-record") else {
+        return;
+    };
     let key = match find_entry(&registry, session_id) {
         Some((k, _)) => k.clone(),
         None => match registry
@@ -287,7 +448,7 @@ pub fn record_resumed_conversation(session_id: &str, resumed: &str) {
     if !old.is_empty() && old != resumed && !entry.previous_ids.contains(&old) {
         entry.previous_ids.push(old);
     }
-    save(&registry);
+    save_checked(&registry, "resume-record", false);
 }
 
 /// Startup pass: chase every registry entry's conversation forward through
@@ -295,50 +456,88 @@ pub fn record_resumed_conversation(session_id: &str, resumed: &str) {
 /// pane ids, and the first resume all agree on the *current* conversation.
 /// Cheap — a handful of transcript-head scans per stale entry.
 pub fn heal_registry_forks(projects_dir: &Path) {
-    let mut registry = load();
+    let Some(registry) = load_for_mutation("fork-heal") else {
+        return;
+    };
+    let healed = rekey_forked_entries(registry, |cwd, from| {
+        chase_resume_forks(projects_dir, cwd, from)
+    });
+    if let Some(healed) = healed {
+        save_checked(&healed, "fork-heal", false);
+    }
+}
+
+/// Pure: re-key every entry whose conversation moved on, using `latest` to
+/// resolve an entry's current conversation. `None` when nothing moved.
+///
+/// The entry is re-keyed to the new conversation id, not just updated in place —
+/// the same shape the `/clear` hook produces, and the invariant the rest of the
+/// code relies on: **the registry key IS the current conversation**. Leaving the
+/// pre-fork id as the key would make `find_entry` match two transcripts for one
+/// session (the key's and `claude_session_id`'s), and `filter_by_registry` would
+/// then list the session twice — once showing the abandoned pre-fork
+/// conversation. The old key moves into `previous_ids`, so ids persisted
+/// elsewhere (GUI panes) still resolve forward via [`resolve_resume_id`].
+fn rekey_forked_entries(
+    registry: HashMap<String, ClashSession>,
+    latest: impl Fn(&str, &str) -> String,
+) -> Option<HashMap<String, ClashSession>> {
+    let mut out: HashMap<String, ClashSession> = HashMap::with_capacity(registry.len());
     let mut changed = false;
-    for entry in registry.values_mut() {
+    for (key, mut entry) in registry {
         if entry.cwd.is_empty() || entry.claude_session_id.is_empty() {
+            out.insert(key, entry);
             continue;
         }
-        let latest = chase_resume_forks(projects_dir, &entry.cwd, &entry.claude_session_id);
-        if latest != entry.claude_session_id {
-            let old = std::mem::replace(&mut entry.claude_session_id, latest);
-            if !entry.previous_ids.contains(&old) {
+        let current = latest(&entry.cwd, &entry.claude_session_id);
+        if current == entry.claude_session_id && current == key {
+            out.insert(key, entry);
+            continue;
+        }
+        changed = true;
+        for old in [
+            std::mem::replace(&mut entry.claude_session_id, current.clone()),
+            key,
+        ] {
+            if !old.is_empty() && old != current && !entry.previous_ids.contains(&old) {
                 entry.previous_ids.push(old);
             }
-            changed = true;
         }
+        entry.session_id = current.clone();
+        out.insert(current, entry);
     }
-    if changed {
-        save(&registry);
-    }
+    changed.then_some(out)
 }
 
 /// Remove a session from the registry.
 pub fn unregister(session_id: &str) {
-    let mut registry = load();
+    let Some(mut registry) = load_for_mutation("unregister") else {
+        return;
+    };
     // Remove by session_id key OR by claude_session_id value
     // (in case /clear updated the claude_session_id)
     registry.retain(|k, v| k != session_id && v.claude_session_id != session_id);
-    save(&registry);
+    save_checked(&registry, "unregister", false);
 }
 
 /// Rename a session in the registry.
 pub fn rename(session_id: &str, new_name: &str) {
-    let mut registry = load();
+    let Some(mut registry) = load_for_mutation("rename") else {
+        return;
+    };
     let key = find_entry(&registry, session_id).map(|(k, _)| k.clone());
     if let Some(key) = key {
         if let Some(entry) = registry.get_mut(&key) {
             entry.name = new_name.to_string();
         }
-        save(&registry);
+        save_checked(&registry, "rename", false);
     }
 }
 
-/// Remove all sessions from the registry.
+/// Remove all sessions from the registry. The one operation allowed to empty
+/// the file, so it bypasses the shrink guard.
 pub fn clear() {
-    save(&HashMap::new());
+    save_checked(&HashMap::new(), "clear", true);
 }
 
 #[cfg(test)]
@@ -365,6 +564,86 @@ mod tests {
         let loaded: HashMap<String, ClashSession> = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded["test-1"].name, "my-session");
         assert_eq!(loaded["test-1"].cwd, "/tmp/project");
+    }
+
+    /// An unusable file must never decode to "zero sessions": every mutation is
+    /// load → mutate → save, so that would persist the loss on the next write.
+    /// Only `{}` — what `clear()` writes — is a legitimately empty registry.
+    #[test]
+    fn unusable_registry_content_is_an_error_not_an_empty_registry() {
+        assert!(parse_registry("").is_err());
+        assert!(parse_registry("   \n").is_err());
+        assert!(parse_registry("{\"a\":").is_err()); // truncated write
+        assert!(parse_registry("not json at all").is_err());
+        assert!(parse_registry("[]").is_err()); // array, not a map
+        let empty = parse_registry("{}").expect("{} is a valid empty registry");
+        assert!(empty.is_empty());
+        let one = parse_registry(
+            r#"{"s1":{"session_id":"s1","name":"n","cwd":"/p","claude_session_id":"s1"}}"#,
+        )
+        .expect("a well-formed entry parses");
+        assert_eq!(one.len(), 1);
+        assert_eq!(one["s1"].name, "n");
+    }
+
+    fn entry(key: &str, claude: &str, cwd: &str) -> ClashSession {
+        ClashSession {
+            session_id: key.to_string(),
+            name: "n".to_string(),
+            cwd: cwd.to_string(),
+            claude_session_id: claude.to_string(),
+            created_at: String::new(),
+            source_branch: None,
+            previous_ids: Vec::new(),
+        }
+    }
+
+    /// A forked entry must end up keyed by the conversation it now points at.
+    /// Keyed by the pre-fork id, `find_entry` matches both transcripts and the
+    /// session is listed twice — the second row showing an abandoned fork.
+    #[test]
+    fn fork_heal_rekeys_the_entry_to_the_current_conversation() {
+        let mut reg = HashMap::new();
+        reg.insert("old".to_string(), entry("old", "old", "/p"));
+        let healed = rekey_forked_entries(reg, |_, from| {
+            if from == "old" {
+                "new".to_string()
+            } else {
+                from.to_string()
+            }
+        })
+        .expect("a moved conversation is a change");
+        assert!(healed.contains_key("new"), "re-keyed to the current id");
+        assert!(!healed.contains_key("old"), "stale key must not survive");
+        let e = &healed["new"];
+        assert_eq!(e.session_id, "new");
+        assert_eq!(e.claude_session_id, "new");
+        assert_eq!(e.previous_ids, vec!["old".to_string()]);
+        // The lineage is what lets a persisted pane id resolve forward.
+        assert_eq!(resolve_resume_id(&healed, "old").as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn fork_heal_leaves_settled_entries_alone() {
+        let mut reg = HashMap::new();
+        reg.insert("a".to_string(), entry("a", "a", "/p"));
+        reg.insert("b".to_string(), entry("b", "b", String::new().as_str()));
+        assert!(
+            rekey_forked_entries(reg, |_, from| from.to_string()).is_none(),
+            "no fork anywhere = no write"
+        );
+    }
+
+    #[test]
+    fn only_mass_loss_counts_as_a_suspicious_shrink() {
+        assert!(!shrink_is_suspicious(0, 1)); // first register
+        assert!(!shrink_is_suspicious(5, 6)); // register
+        assert!(!shrink_is_suspicious(5, 5)); // rename / resume-record
+        assert!(!shrink_is_suspicious(5, 4)); // unregister
+        assert!(!shrink_is_suspicious(5, 3)); // unregister + duplicate key
+        assert!(!shrink_is_suspicious(1, 0)); // unregister of the last session
+        assert!(shrink_is_suspicious(5, 2)); // three gone in one write
+        assert!(shrink_is_suspicious(4, 0)); // the failure this guards against
     }
 
     #[test]

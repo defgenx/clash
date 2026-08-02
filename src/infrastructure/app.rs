@@ -79,6 +79,11 @@ impl App {
         // Ship/refresh the embedded skills (clash-workflow) so the agent
         // side of Workflows is always present and up-to-date.
         crate::infrastructure::skills::install_skills(&data_dir);
+        // Restore the registry from its backup if the live file is unusable,
+        // and log how many sessions it holds — an empty session list is
+        // otherwise indistinguishable from "no sessions were ever registered".
+        // Must run before any registry mutation.
+        crate::infrastructure::hooks::registry::heal_registry_file();
         // Re-key registry entries whose conversation moved through resume
         // forks (claude --resume writes a NEW transcript while hooks keep
         // reporting the old id) so the session list and the first resume
