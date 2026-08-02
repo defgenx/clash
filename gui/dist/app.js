@@ -596,14 +596,15 @@ async function loadWorkspaces() {
 /// resume (claude --resume) only when first focused/clicked. Sessions that
 /// no longer exist on disk are cleared from their slots.
 async function restoreWorkspaceSessions() {
-  // A pane id saved before a `/clear` is stale — Claude re-keyed the
-  // conversation to a new id. Resolve every saved id forward to its current
-  // conversation id so we match list_sessions (and resume the latest), then
-  // persist the rewrite. Unknown ids pass through unchanged.
-  const saved = [];
-  for (const w of state.workspaces)
-    for (const p of w.panes)
-      if (p && !isBrowserTab(p) && !p.startsWith("view:")) saved.push(p);
+  // A persisted id can be stale in two ways: `/clear` re-keyed the registry,
+  // and `claude --resume` forks the conversation into a new transcript (healed
+  // into the registry by `heal_registry_forks` at backend startup). Either way
+  // list_sessions now reports a DIFFERENT id than we saved. Resolve every
+  // persisted id forward — panes AND workspace ownership, not just panes: an
+  // owned-but-not-open session whose id moved would otherwise be pruned from
+  // `w.sessions` while its current id, owned by nobody, surfaces under
+  // UNASSIGNED on every relaunch. Unknown ids pass through unchanged.
+  const saved = persistedSessionIds(state.workspaces, isRealSessionId);
   if (saved.length) {
     try {
       const resolved = await invoke("resolve_session_ids", { ids: saved });
@@ -611,13 +612,7 @@ async function restoreWorkspaceSessions() {
       saved.forEach((id, i) => {
         if (resolved[i] && resolved[i] !== id) remap.set(id, resolved[i]);
       });
-      if (remap.size) {
-        for (const w of state.workspaces) {
-          w.panes = w.panes.map((p) => (p && remap.get(p)) || p);
-          w.sessions = w.sessions.map((s) => remap.get(s) || s);
-        }
-        saveWorkspaces();
-      }
+      if (remapWorkspaceIds(state.workspaces, remap)) saveWorkspaces();
     } catch (e) {
       console.error("resolve_session_ids failed:", e);
     }
@@ -1230,7 +1225,7 @@ async function refreshSessions() {
     // consecutive refreshes (killed/removed) — tolerates transient
     // daemon hiccups without orphaning the workspace's session list.
     const known = new Set(sessions.map((s) => s.id));
-    let pruned = false;
+    const vanished = new Set();
     for (const w of state.workspaces) {
       for (const id of [...w.sessions]) {
         // Shell terminals and browser tabs are never in the session list
@@ -1241,14 +1236,29 @@ async function refreshSessions() {
         }
         const streak = (state.missingStreak.get(id) || 0) + 1;
         state.missingStreak.set(id, streak);
-        if (streak >= 3) {
-          w.sessions = w.sessions.filter((x) => x !== id);
-          state.missingStreak.delete(id);
-          pruned = true;
-        }
+        if (streak >= 3) vanished.add(id);
       }
     }
-    if (pruned) saveWorkspaces();
+    // A vanished id is not necessarily a dead session: a `/clear` (hook re-key)
+    // or a resume fork moves the conversation to a NEW id mid-run, and the old
+    // one simply stops being listed. Resolve each forward before dropping it —
+    // if it moved, transfer ownership to the new id so the session stays in its
+    // workspace instead of resurfacing under UNASSIGNED. Rare, so the extra
+    // round-trip costs nothing on a normal tick. A failed resolve defers the
+    // whole prune to the next tick rather than guessing "dead" — dropping
+    // ownership is the one outcome we can't undo.
+    if (vanished.size) {
+      const ids = [...vanished];
+      try {
+        const resolved = await invoke("resolve_session_ids", { ids });
+        const owned = state.workspaces.flatMap((w) => w.sessions);
+        const moved = ownershipTransfers(ids, resolved, known, owned);
+        if (pruneOwnership(state.workspaces, vanished, moved)) saveWorkspaces();
+        for (const id of ids) state.missingStreak.delete(id);
+      } catch (e) {
+        console.error("resolve_session_ids failed:", e);
+      }
+    }
 
     // Keep open-terminal labels (tabs, pane titles) in sync with the
     // authoritative names from the backend, so a rename made anywhere
@@ -1611,6 +1621,14 @@ function tabContextMenu(ev, sid) {
 /// shellterm- namespace; tabs/panes only, never Claude sessions.
 function isShellTerm(id) {
   return id.startsWith("shellterm-");
+}
+
+/// True for a real Claude conversation id — i.e. an id that `list_sessions`
+/// can report and that the registry can resolve forward. Excludes every
+/// synthetic pane/tab key clash also persists: browser tabs, shell terminals
+/// and view tabs (workflow board, skills, per-session views).
+function isRealSessionId(id) {
+  return !!id && !isBrowserTab(id) && !isShellTerm(id) && !id.startsWith("view:");
 }
 
 /// Session id behind a tab entry — view tabs (`view:conv:<sid>` …) belong
