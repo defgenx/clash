@@ -1,13 +1,22 @@
 /* cmux-style dark theme: vertical sidebar + terminal panes */
 :root {
+  /* Every colour here is overwritten at runtime by the picked theme
+     (THEMES / applyTheme in app.js). These values are the built-in
+     "clash dark" and the fallback if a theme fails to load. */
   --bg: #141414;
   --bg-sidebar: #1b1b1d;
   --bg-hover: #242428;
   --bg-active: #2c2c31;
+  /* Surfaces that float above the app: menus, toasts, code blocks. */
+  --bg-raised: #1f1f23;
+  --bg-3: #1f1f23;
   --border: #2a2a2e;
   --fg: #d4d4d8;
   --fg-dim: #76767e;
   --accent: #e8a33d;
+  /* Text/icon colour on an accent- or red-filled surface. Must contrast with
+     --accent, so it flips to near-white on light themes with a dark accent. */
+  --on-accent: #1b1b1d;
   --green: #4ec975;
   --red: #e5534b;
   --blue: #539bf5;
@@ -21,6 +30,25 @@
   --st-idle: #5f5873;
   --st-error: #c88287;
 }
+
+/* Light themes: the handful of rules that assume a dark background. Shadows go
+   softer (a 55%-black drop shadow reads as dirt on white), the search-clear
+   glyph stops being inverted, and the dialog scrim lightens so it dims the page
+   without turning it into a hole. Everything else is driven by the variables
+   above and needs no light-mode special case. */
+:root.theme-light {
+  --scrim: rgba(32, 30, 26, 0.28);
+  --shadow-strong: 0 12px 32px rgba(32, 30, 26, 0.18), 0 2px 8px rgba(32, 30, 26, 0.1);
+  --shadow-soft: 0 8px 24px rgba(32, 30, 26, 0.14);
+  --shadow-tip: 0 2px 10px rgba(32, 30, 26, 0.14);
+}
+:root {
+  --scrim: rgba(0, 0, 0, 0.55);
+  --shadow-strong: 0 12px 32px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-tip: 0 2px 10px rgba(0, 0, 0, 0.45);
+}
+:root.theme-light #settings-filter::-webkit-search-cancel-button { filter: none; }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -356,7 +384,7 @@ html, body, #app {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 2px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-tip);
 }
 .session-item:hover .session-actions { display: flex; }
 .session-actions button {
@@ -512,7 +540,50 @@ html, body, #app {
   flex-direction: column;
   gap: 10px;
   padding: 4px 0 2px;
+  /* The list is long enough to need its own scroll — the footer rows (session
+     count, version) must stay reachable no matter how many settings there are. */
+  max-height: 52vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
+/* Sticky so the filter stays usable while scrolling a long list. */
+#settings-filter {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
+}
+#settings-filter:focus { border-color: var(--accent); }
+#settings-filter::-webkit-search-cancel-button { filter: invert(0.6); }
+.settings-group {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--fg-dim);
+  opacity: 0.75;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 3px;
+  margin-top: 4px;
+}
+.settings-group:first-of-type { margin-top: 0; }
+/* Path rows: input + folder-picker button on one line. */
+.setting-row .input-with-btn { display: flex; gap: 6px; align-items: center; }
+.setting-row .input-with-btn input { flex: 1; min-width: 0; }
+.setting-row .input-with-btn .icon-btn {
+  width: 28px;
+  height: 26px;
+  flex: none;
+  border: 1px solid var(--border);
+}
+/* Read-only font field: it opens the picker, so it must read as clickable. */
+#set-fontfamily { cursor: pointer; }
 .setting-row {
   display: flex;
   flex-direction: column;
@@ -540,6 +611,10 @@ html, body, #app {
 }
 .setting-row.inline input { width: 56px; padding: 3px 6px; text-align: center; }
 .setting-row.inline input[type="number"]#set-scrollback { width: 74px; }
+/* Inline rows wrap their label — the longer ones ("Attention count in window
+   title") must not squeeze the control to nothing. */
+.setting-row.inline { gap: 8px; }
+.setting-row.inline select { max-width: 55%; }
 .setting-row select {
   background: var(--bg);
   border: 1px solid var(--border);
@@ -650,11 +725,11 @@ html, body, #app {
   position: fixed;
   z-index: 300;
   min-width: 220px;
-  background: #1f1f23;
+  background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 5px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-strong);
   transform-origin: top left;
   animation: menu-in 0.12s ease-out;
 }
@@ -700,12 +775,12 @@ html, body, #app {
   transform: translateX(-50%) translateY(8px);
   z-index: 400;
   padding: 8px 16px;
-  background: #1f1f23;
+  background: var(--bg-raised);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 8px;
   font-size: 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-soft);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.15s ease, transform 0.15s ease;
@@ -881,7 +956,7 @@ html, body, #app {
 /* Workflows sidebar section */
 .wf-badge {
   background: var(--accent);
-  color: #1b1b1d;
+  color: var(--on-accent);
   border-radius: 8px;
   font-size: 10px;
   font-weight: 700;
@@ -989,7 +1064,7 @@ html, body, #app {
   cursor: pointer;
 }
 .wf-actions button:hover { background: var(--bg-active); }
-.wf-actions button.primary { background: var(--accent); border-color: var(--accent); color: #1b1b1d; font-weight: 600; }
+.wf-actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 .wf-actions button.danger { color: var(--red); border-color: var(--red); background: none; }
 
 /* Workflow diff view (line-comment review) */
@@ -1144,7 +1219,7 @@ html, body, #app {
   padding: 3px 10px;
   cursor: pointer;
 }
-.wf-composer-actions button.primary { background: var(--accent); border-color: var(--accent); color: #1b1b1d; font-weight: 600; }
+.wf-composer-actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 .wf-thread-actions { display: flex; gap: 6px; margin-top: 6px; }
 .wf-thread-actions button {
   background: none;
@@ -1342,7 +1417,7 @@ html, body, #app {
 #modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1403,15 +1478,15 @@ html, body, #app {
   font-size: 12px;
   cursor: pointer;
 }
-.modal-actions button.primary { background: var(--accent); color: #1b1b1d; border-color: var(--accent); font-weight: 600; }
-.modal-actions button.danger-primary { background: var(--red); color: #1b1b1d; border-color: var(--red); font-weight: 600; }
+.modal-actions button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
+.modal-actions button.danger-primary { background: var(--red); color: var(--on-accent); border-color: var(--red); font-weight: 600; }
 .error { color: var(--red); font-size: 12px; margin-top: 8px; }
 
 /* In-app confirm/prompt/alert dialogs (native ones are no-ops in wry) */
 .dialog-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1449,6 +1524,10 @@ html, body, #app {
 }
 .dialog-box input:focus,
 .dialog-box textarea:focus { border-color: var(--accent); }
+/* Path prompts pair the input with the native folder picker (same row widget
+   as the new-session modal's cwd field) — the margin moves to the row. */
+.dialog-box .input-with-btn { margin-bottom: 12px; }
+.dialog-box .input-with-btn input { margin-bottom: 0; }
 /* Pasted markdown (a plan) reads as code, and must not stretch the dialog. */
 .dialog-box textarea {
   font-family: var(--mono, "SF Mono", Menlo, monospace);
@@ -1517,6 +1596,21 @@ html, body, #app {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Font picker (pickFontFamily): search + monospace filter + previewed rows */
+.font-picker { width: min(560px, 88vw); }
+.font-picker .dialog-list { max-height: min(52vh, 420px); }
+.font-picker .setting-check { margin: 8px 0 0; font-size: 12px; }
+.font-picker .dialog-list-row.current { border-left: 2px solid var(--accent); }
+.font-picker .dialog-list-row.current .dialog-list-label { color: var(--accent); }
+.font-sample {
+  font-size: 12px;
+  color: var(--fg-dim);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Skills viewer tab */

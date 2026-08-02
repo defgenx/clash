@@ -25,7 +25,10 @@ mod workflows;
 /// Shared backend state for all Tauri commands.
 struct GuiState {
     backend: FsBackend,
-    claude_bin: String,
+    /// The `claude` binary sessions are spawned with (config.toml). Behind a
+    /// lock so the Settings panel can repoint it live — the next spawn picks up
+    /// the new value; already-running sessions keep their process.
+    claude_bin: Mutex<String>,
     /// Custom IDE entries from config.toml (merged into detection).
     config_ides: Vec<clash::infrastructure::config::IdeEntry>,
     /// Previous session list — input to the merge step of the refresh pipeline.
@@ -69,6 +72,14 @@ struct GuiState {
     /// — keeps concurrent viewports from stacking gh subprocesses, without
     /// persisting a timestamp on every poll (which would churn the watcher).
     pr_checked: Mutex<HashMap<(String, String), i64>>,
+}
+
+impl GuiState {
+    /// The configured `claude` binary, cloned — callers spawn across an await,
+    /// so the lock must never be held past this call.
+    fn claude_bin(&self) -> String {
+        self.claude_bin.lock().unwrap().clone()
+    }
 }
 
 /// Refresh cycles a killed session stays filtered from `list_sessions`.
@@ -353,10 +364,11 @@ async fn open_session(
             &session_id,
             "starting",
         );
+        let claude_bin = state.claude_bin();
         client
             .create_session(
                 &session_id,
-                &state.claude_bin,
+                &claude_bin,
                 &args,
                 if cwd.is_empty() { None } else { Some(&cwd) },
                 name,
@@ -837,12 +849,13 @@ async fn create_new_session(
         "starting",
     );
 
+    let claude_bin = state.claude_bin();
     let mut control = state.control.lock().await;
     ensure_connected(&mut control).await;
     control
         .create_session(
             &session_id,
-            &state.claude_bin,
+            &claude_bin,
             &["--session-id".to_string(), session_id.clone()],
             Some(cwd),
             if name.is_empty() {
@@ -1183,6 +1196,93 @@ fn set_scratch_dir(
     Ok(effective.to_string_lossy().into_owned())
 }
 
+/// The `claude` binary sessions are spawned with, for the Settings field.
+#[tauri::command]
+fn get_claude_bin(state: State<'_, GuiState>) -> String {
+    state.claude_bin()
+}
+
+/// Set (or reset) the `claude` binary — a name resolved on PATH, or an absolute
+/// path to a specific install. Empty resets to `claude`. Persisted to the shared
+/// `config.toml` (so the TUI agrees) and applied live: the next session spawn
+/// uses it, running sessions keep the process they were started with. Returns
+/// the effective value.
+#[tauri::command]
+fn set_claude_bin(state: State<'_, GuiState>, path: String) -> Result<String, String> {
+    let trimmed = path.trim();
+    // An absolute path must exist — a typo here breaks every future spawn with
+    // an opaque ENOENT deep in the daemon, so fail while the user is looking.
+    if trimmed.contains('/') {
+        let expanded = expand_tilde(trimmed);
+        if !expanded.is_file() {
+            return Err(format!("Not a file: {}", expanded.display()));
+        }
+    }
+    let mut config = Config::load();
+    let effective = if trimmed.is_empty() {
+        Config::default().claude_bin
+    } else {
+        trimmed.to_string()
+    };
+    config.claude_bin = effective.clone();
+    config
+        .save()
+        .map_err(|e| format!("Save config failed: {}", e))?;
+    *state.claude_bin.lock().unwrap() = effective.clone();
+    Ok(effective)
+}
+
+/// Font families installed on this machine, for the Settings font picker.
+///
+/// macOS answers from `NSFontManager` (the real list, including whatever the
+/// user has installed); every other platform returns an empty list and the
+/// frontend falls back to probing a curated set with `document.fonts.check`.
+/// AppKit is main-thread-only, so the query hops there and back over a channel.
+#[tauri::command]
+async fn list_font_families(app: tauri::AppHandle) -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<String>>();
+        let posted = app.run_on_main_thread(move || {
+            let families = macos_font_families();
+            let _ = tx.send(families);
+        });
+        if posted.is_err() {
+            return Vec::new();
+        }
+        // Bounded wait: a wedged main thread must not hang the Settings panel.
+        rx.recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap_or_default()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Vec::new()
+    }
+}
+
+/// Main-thread half of [`list_font_families`]: every family AppKit knows about,
+/// alphabetical, minus the dot-prefixed system-internal ones (`.SF NS Mono`)
+/// that no user should be picking.
+#[cfg(target_os = "macos")]
+fn macos_font_families() -> Vec<String> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSFontManager;
+    let Some(mtm) = MainThreadMarker::new() else {
+        return Vec::new();
+    };
+    let manager = NSFontManager::sharedFontManager(mtm);
+    let mut out: Vec<String> = manager
+        .availableFontFamilies()
+        .iter()
+        .map(|f| f.to_string())
+        .filter(|f| !f.starts_with('.') && !f.is_empty())
+        .collect();
+    out.sort_by_key(|f| f.to_lowercase());
+    out.dedup();
+    out
+}
+
 /// Expand a leading `~` to the user's home directory.
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
@@ -1445,12 +1545,13 @@ async fn create_worktree_session(
         "starting",
     );
 
+    let claude_bin = state.claude_bin();
     let mut control = state.control.lock().await;
     ensure_connected(&mut control).await;
     control
         .create_session(
             &session_id,
-            &state.claude_bin,
+            &claude_bin,
             &["--session-id".to_string(), session_id.clone()],
             Some(&wt_str),
             Some(name),
@@ -1545,12 +1646,13 @@ async fn takeover_wild(
 ) -> Result<(), String> {
     clash::infrastructure::process_scan::kill_wild_process(pid).await;
 
+    let claude_bin = state.claude_bin();
     let mut control = state.control.lock().await;
     ensure_connected(&mut control).await;
     control
         .create_session(
             &session_id,
-            &state.claude_bin,
+            &claude_bin,
             &["--resume".to_string(), session_id.clone()],
             if cwd.is_empty() { None } else { Some(&cwd) },
             None,
@@ -2452,7 +2554,7 @@ fn main() {
         backend: FsBackend::new(data_dir)
             .with_scratch_dir(config.scratch_dir.clone())
             .with_workflows_dir(config.workflows_dir.clone()),
-        claude_bin,
+        claude_bin: Mutex::new(claude_bin),
         config_ides: config.ides.clone(),
         previous: Mutex::new(Vec::new()),
         prev_statuses: Mutex::new(HashMap::new()),
@@ -2475,6 +2577,10 @@ fn main() {
     // (claude --resume writes a NEW transcript while hooks keep reporting
     // the old id) so the session list, persisted pane ids, and the first
     // resume all land on the conversation the user actually left off in.
+    // Restore the registry from its backup if the live file is unusable, and log
+    // its size — a session list that comes back empty is otherwise
+    // indistinguishable from "nothing was ever registered". Before any mutation.
+    clash::infrastructure::hooks::registry::heal_registry_file();
     clash::infrastructure::hooks::registry::heal_registry_forks(&state.backend.projects_dir());
 
     // FS watcher on ~/.claude/projects — same role as the TUI's watcher
@@ -2657,6 +2763,9 @@ fn main() {
             open_scratch_terminal_editor,
             get_scratch_dir,
             set_scratch_dir,
+            get_claude_bin,
+            set_claude_bin,
+            list_font_families,
             list_presets,
             detect_ides,
             open_in_ide,

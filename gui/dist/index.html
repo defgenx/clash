@@ -53,25 +53,72 @@
       <div id="sidebar-footer">
         <div class="section-label collapsible" id="settings-toggle">SETTINGS <span id="settings-caret">▸</span></div>
         <div id="settings-body" class="hidden">
+        <input id="settings-filter" type="search" placeholder="Filter settings…" autocomplete="off" spellcheck="false" />
+
+        <div class="settings-group">Appearance</div>
+        <label class="setting-row">Theme
+          <select id="set-theme" title="Recolors the whole app and every terminal (◐ dark · ◑ light)"></select>
+        </label>
+
+        <div class="settings-group">Paths</div>
         <label class="setting-row">Default directory
-          <input id="default-cwd" type="text" placeholder="/Users/you" autocomplete="off" spellcheck="false" />
+          <span class="input-with-btn">
+            <input id="default-cwd" type="text" placeholder="/Users/you" autocomplete="off" spellcheck="false" />
+            <button id="default-cwd-browse" class="icon-btn" title="Browse for a directory" type="button"></button>
+          </span>
         </label>
         <label class="setting-row">Scratch directory
-          <input id="set-scratch-dir" type="text" placeholder="~/.claude/clash/scratch" autocomplete="off" spellcheck="false" />
+          <span class="input-with-btn">
+            <input id="set-scratch-dir" type="text" placeholder="~/.claude/clash/scratch" autocomplete="off" spellcheck="false" />
+            <button id="set-scratch-dir-browse" class="icon-btn" title="Browse for a directory" type="button"></button>
+          </span>
         </label>
         <label class="setting-row">Workflows directory
-          <input id="set-workflows-dir" type="text" placeholder="~/.claude/clash/workflows" autocomplete="off" spellcheck="false" />
+          <span class="input-with-btn">
+            <input id="set-workflows-dir" type="text" placeholder="~/.claude/clash/workflows" autocomplete="off" spellcheck="false" />
+            <button id="set-workflows-dir-browse" class="icon-btn" title="Browse for a directory" type="button"></button>
+          </span>
         </label>
-        <label class="setting-row inline">Terminal font size
+        <label class="setting-row">Claude binary
+          <input id="set-claude-bin" type="text" placeholder="claude" autocomplete="off" spellcheck="false" title="Name resolved on PATH, or an absolute path. Applies to sessions started from now on." />
+        </label>
+
+        <div class="settings-group">Terminal · text</div>
+        <label class="setting-row">Font family
+          <span class="input-with-btn">
+            <input id="set-fontfamily" type="text" placeholder="SF Mono, Menlo, monospace" autocomplete="off" spellcheck="false" readonly title="Click to pick from the fonts installed on this machine" />
+            <button id="set-fontfamily-pick" class="icon-btn" title="Choose a font" type="button"></button>
+          </span>
+        </label>
+        <label class="setting-row inline">Font size
           <input id="set-fontsize" type="number" min="9" max="24" step="1" />
         </label>
-        <label class="setting-row">Terminal font family
-          <input id="set-fontfamily" type="text" list="font-options" placeholder="SF Mono, Menlo, monospace" autocomplete="off" spellcheck="false" />
-          <datalist id="font-options"></datalist>
+        <label class="setting-row inline">Font weight
+          <select id="set-font-weight">
+            <option value="300">Light</option>
+            <option value="normal">Normal</option>
+            <option value="500">Medium</option>
+            <option value="600">Semibold</option>
+            <option value="bold">Bold</option>
+          </select>
         </label>
-        <label class="setting-row inline">Scrollback lines
-          <input id="set-scrollback" type="number" min="0" max="200000" step="1000" />
+        <label class="setting-row inline">Bold weight
+          <select id="set-font-weight-bold">
+            <option value="normal">Normal</option>
+            <option value="500">Medium</option>
+            <option value="600">Semibold</option>
+            <option value="bold">Bold</option>
+            <option value="800">Extra bold</option>
+          </select>
         </label>
+        <label class="setting-row inline">Line height
+          <input id="set-line-height" type="number" min="1" max="2" step="0.05" />
+        </label>
+        <label class="setting-row inline">Letter spacing
+          <input id="set-letter-spacing" type="number" min="-2" max="5" step="0.5" />
+        </label>
+
+        <div class="settings-group">Terminal · cursor</div>
         <label class="setting-row inline">Cursor style
           <select id="set-cursor-style">
             <option value="block">Block</option>
@@ -79,9 +126,42 @@
             <option value="underline">Underline</option>
           </select>
         </label>
+        <label class="setting-row inline">Unfocused cursor
+          <select id="set-cursor-inactive">
+            <option value="outline">Outline</option>
+            <option value="block">Block</option>
+            <option value="bar">Bar</option>
+            <option value="underline">Underline</option>
+            <option value="none">Hidden</option>
+          </select>
+        </label>
+        <label class="setting-row inline">Bar cursor width
+          <input id="set-cursor-width" type="number" min="1" max="5" step="1" />
+        </label>
         <label class="setting-check"><input id="set-cursor-blink" type="checkbox" /> Cursor blink</label>
+
+        <div class="settings-group">Terminal · colors</div>
+        <label class="setting-row inline" title="Force a minimum contrast between text and background. 1 = off, 4.5 = WCAG AA, 21 = black on white.">Min contrast
+          <input id="set-min-contrast" type="number" min="1" max="21" step="0.5" />
+        </label>
+        <label class="setting-check"><input id="set-bright-bold" type="checkbox" /> Bold text in bright colors</label>
+
+        <div class="settings-group">Terminal · scroll &amp; input</div>
+        <label class="setting-row inline">Scrollback lines
+          <input id="set-scrollback" type="number" min="0" max="200000" step="1000" />
+        </label>
+        <label class="setting-row inline">Scroll speed
+          <input id="set-scroll-speed" type="number" min="1" max="10" step="1" />
+        </label>
+        <label class="setting-row inline" title="Animation length for scroll-to-bottom jumps. 0 disables smooth scrolling.">Smooth scroll (ms)
+          <input id="set-smooth-scroll" type="number" min="0" max="500" step="25" />
+        </label>
         <label class="setting-check"><input id="set-copy-select" type="checkbox" /> Copy on select</label>
+        <label class="setting-check"><input id="set-rclick-word" type="checkbox" /> Right-click selects word</label>
         <label class="setting-check"><input id="set-option-meta" type="checkbox" /> ⌥ sends Esc (Meta)</label>
+        <label class="setting-check"><input id="set-bell-toast" type="checkbox" /> Show a toast on terminal bell</label>
+
+        <div class="settings-group">clash</div>
         <label class="setting-row inline">Open links
           <select id="set-link-open">
             <option value="ask">Ask each time</option>
@@ -90,6 +170,17 @@
           </select>
         </label>
         <label class="setting-check"><input id="set-notify" type="checkbox" /> Desktop notifications</label>
+        <label class="setting-check"><input id="set-title-attention" type="checkbox" /> Attention count in window title</label>
+        <label class="setting-check"><input id="set-confirm-kill" type="checkbox" /> Confirm before killing a session</label>
+        <label class="setting-row inline" title="How often the session list is refreshed from the backend.">Refresh every (s)
+          <input id="set-refresh-secs" type="number" min="1" max="30" step="1" />
+        </label>
+        <label class="setting-row inline">Default shell
+          <select id="set-term-shell"></select>
+        </label>
+        <label class="setting-row inline">Terminal for TUI
+          <select id="set-tui-terminal"></select>
+        </label>
         <button id="update-btn" class="update-big" title="Download and install the latest clash version">⟳ Update clash</button>
         </div>
         <div class="footer-row">

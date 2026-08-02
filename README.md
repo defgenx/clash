@@ -442,9 +442,17 @@ button asks how it starts:
 **Review only** is the reviewer's path: clash resolves the PR through `gh`,
 checks the branch out (reusing an existing worktree of it when you already have
 one), and drops you straight into the diff with the PR's own base as the diff
-base. Annotate, *Request changes* → the agent addresses the comments on that
+base. The PR can be given as a full URL (scheme optional, `/files` and other
+sub-pages tolerated) or as a bare number resolved against the item's repo — a
+URL is looked up in *its own* repository, so a link pointing somewhere other
+than the repo you picked is refused by name instead of silently resolving to
+whatever PR shares that number locally. Annotate, *Request changes* → the agent addresses the comments on that
 branch and pushes, you review again; *Approve* closes the item — no plan is
 ever written and no draft-PR ceremony runs, since the PR isn't clash's.
+
+The repo is picked from your open sessions and existing workflow projects, or
+via **Browse…** / the 📁 button on the path prompt — the same native folder
+picker as the new-session modal.
 
 **The loop** (full mode): create an item (title + project + repo) → *Start planning*
 spawns a Claude Code session in a dedicated git worktree, driven by the
@@ -538,18 +546,50 @@ Clicking it opens a picker of terminals detected on the OS (Terminal,
 iTerm2, WezTerm, kitty, Alacritty, Ghostty, Warp; GNOME Terminal/Konsole/xterm
 on Linux; tmux when inside one) plus an Auto entry (split pane when the
 GUI was started from a pane-capable terminal, else the default
-terminal); the last choice is marked in the menu. The sidebar footer holds a collapsible SETTINGS section
-(click the header to expand; the choice persists): default directory
-for new sessions, terminal font size and font family (live-applied,
-with autocomplete of the monospace fonts installed on the machine),
-scrollback lines, cursor style (block/bar/underline) and blink,
-copy-on-select, "⌥ sends Esc (Meta)" (off = Option always composes
-characters — international layouts), how terminal links open — ask each
-time (default), always in clash's embedded browser, or always the system
-browser — a desktop-notifications toggle,
-and an `⟳ Update clash` self-update button — when the update lands, a
-modal offers Restart / Cancel (restarting closes running sessions).
-Settings persist in `gui-state.json`. The sidebar and details panel are
+terminal); the last choice is marked in the menu.
+
+The sidebar footer holds a collapsible **SETTINGS** section (click the header to
+expand; the choice persists), grouped and with a filter box at the top — type
+"cursor" or "font" to narrow the list. Every terminal setting is live-applied to
+open terminals, no restart:
+
+| Group | Settings |
+|---|---|
+| **Appearance** | **Theme** — 12 built-in palettes, 8 dark and 4 light (see below) |
+| **Paths** | Default directory for new sessions · scratch directory · workflows directory (each with a 📁 folder picker) · `claude` binary — a name resolved on PATH or an absolute path, validated on entry, used by the next session you start |
+| **Terminal · text** | Font family (opens a **searchable font picker** — see below) · font size · font weight · bold weight · line height · letter spacing |
+| **Terminal · cursor** | Style (block/bar/underline) · unfocused-pane style (outline/block/bar/underline/hidden) · bar width · blink |
+| **Terminal · colors** | Minimum contrast ratio (1 = off, 4.5 = WCAG AA) · bold text in bright colors |
+| **Terminal · scroll & input** | Scrollback lines · scroll speed · smooth-scroll duration · copy-on-select · right-click selects word · "⌥ sends Esc (Meta)" (off = Option always composes characters — international layouts) · toast on terminal bell |
+| **clash** | How terminal links open — ask each time (default), always in clash's embedded browser, or always the system browser · desktop notifications · attention count in the window title · confirm before killing a session (batch kills always ask) · session-list refresh interval · default shell for in-app terminals · terminal used by the TUI launcher |
+
+**Themes** recolor the chrome *and* the terminals in one move — the sidebar,
+tabs, dialogs, status colors and the xterm palette all come from the same table,
+so nothing is left looking out of place:
+
+| Dark | Light |
+|---|---|
+| clash dark *(default)* · Tokyo Night · Catppuccin Mocha · Nord · Dracula · One Dark · Gruvbox Dark · Solarized Dark | clash light · Catppuccin Latte · Solarized Light · GitHub Light |
+
+Switching is instant and applies to every open terminal. Each theme names about
+a dozen colors; the rest is derived — the session-status palette from the
+theme's semantic colors, the text color on accent-filled buttons from the
+accent's luminance, and the eight bright ANSI slots from the eight base ones
+(lightened on dark themes, deepened on light ones, so bold output stays legible).
+Adding one is a single entry in the `THEMES` table in `gui/dist/app.js`.
+
+The **font picker** replaces blind typing: click the field (or its 🔍 button) for
+a searchable list of the families installed on this machine, each row previewed
+in its own face, monospace-only by default with a toggle to show everything, and
+a *Custom…* escape hatch for a full CSS stack like `SF Mono, Menlo, monospace`.
+The list is the union of what AppKit enumerates and a curated set probed in the
+webview — macOS does not enumerate `SF Mono` (clash's own default), so neither
+source alone is complete.
+
+Below the settings sits an `⟳ Update clash` self-update button — when the update
+lands, a modal offers Restart / Cancel (restarting closes running sessions).
+Settings persist in `gui-state.json`, except the three directories and the
+`claude` binary, which live in the shared `config.toml` so the TUI agrees. The sidebar and details panel are
 drag-resizable (widths persist), and the collapsible sidebar sections
 (TEAMS / SCRATCHES) have a draggable divider on top — drag it to trade
 vertical space with the session list above; the heights persist.

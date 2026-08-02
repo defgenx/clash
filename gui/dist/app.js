@@ -32,16 +32,32 @@ const state = {
   // Persisted with workspaces in gui-state.json. optionMeta: ⌥ sends
   // Esc (Meta) in terminals; off = ⌥ always composes characters.
   settings: {
+    theme: "clash-dark", // key into THEMES — drives the chrome and the terminals
     defaultCwd: "",
     fontSize: 13,
     fontFamily: "SF Mono, Menlo, monospace",
+    fontWeight: "normal", // 300 | normal | 500 | 600 | bold
+    fontWeightBold: "bold",
+    lineHeight: 1,
+    letterSpacing: 0,
     scrollback: 10000,
     cursorStyle: "block", // block | bar | underline
+    cursorInactiveStyle: "outline", // outline | block | bar | underline | none
+    cursorWidth: 1, // bar-cursor thickness in px
     cursorBlink: false,
+    minimumContrast: 1, // 1 = off; xterm's minimumContrastRatio
+    brightBold: false, // draw bold text in bright colors
+    scrollSpeed: 1, // lines per wheel notch (xterm scrollSensitivity)
+    smoothScroll: 0, // ms; 0 = instant
     copyOnSelect: false,
+    rightClickWord: true, // right-click selects the word under the pointer
     optionMeta: true,
+    bellToast: false, // surface a terminal bell as an in-app toast
     linkOpen: "ask", // ask | embedded | external — how terminal links open
     notifications: true,
+    titleAttention: true, // "clash (2!)" window title when sessions need input
+    confirmKill: true, // confirm dialog before a kill (never for stash)
+    refreshSecs: 2, // session-list poll cadence
     tuiTerminal: "", // last terminal picked for the TUI launcher ("" = auto)
     termShell: "", // last shell picked for in-app terminals ("" = $SHELL)
   },
@@ -92,6 +108,7 @@ const ICONS = {
   terminal: '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>',
   users:
     '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  search: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
   folder:
     '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>',
@@ -137,6 +154,7 @@ function uiDialog({
   cancelable = true,
   danger = false,
   multiline = false,
+  browse = false,
 }) {
   return new Promise((resolve) => {
     const cancelValue = input !== null ? null : false;
@@ -156,7 +174,28 @@ function uiDialog({
       else field.rows = 14;
       field.value = input;
       field.spellcheck = false;
-      box.appendChild(field);
+      if (browse && !multiline) {
+        // Path prompts get the same native folder picker as the new-session
+        // modal's cwd field — typing an absolute path from memory is the
+        // fallback, not the only way in.
+        const row = document.createElement("div");
+        row.className = "input-with-btn";
+        row.appendChild(field);
+        const pick = document.createElement("button");
+        pick.type = "button";
+        pick.className = "icon-btn";
+        pick.title = "Browse for a directory";
+        pick.innerHTML = svgIcon("folder", 14);
+        pick.onclick = async () => {
+          const dir = await pickDirectory(field.value);
+          if (dir) field.value = dir;
+          field.focus();
+        };
+        row.appendChild(pick);
+        box.appendChild(row);
+      } else {
+        box.appendChild(field);
+      }
     }
     const actions = document.createElement("div");
     actions.className = "modal-actions";
@@ -197,7 +236,15 @@ function uiDialog({
 
 const uiConfirm = (message, okLabel = "Confirm") =>
   uiDialog({ message, okLabel, danger: true });
+/// Confirm a single-session kill, unless the user turned that prompt off in
+/// Settings. Batch kills (`massKill`) always ask — one click taking out several
+/// sessions is a different order of mistake.
+const confirmKillSession = (message, okLabel = "Kill") =>
+  state.settings.confirmKill ? uiConfirm(message, okLabel) : Promise.resolve(true);
 const uiPrompt = (message, def = "") => uiDialog({ message, input: def });
+/// Prompt for a directory: text field plus the native folder picker.
+const uiPathPrompt = (message, def = "") =>
+  uiDialog({ message, input: def, browse: true });
 const uiAlert = (message) => uiDialog({ message, cancelable: false });
 /// Multi-line prompt for text that doesn't fit one line (a pasted plan).
 const uiTextPrompt = (message, def = "", okLabel = "OK") =>
@@ -427,6 +474,19 @@ function saveWorkspaces() {
   }, 250);
 }
 
+/// Font weights offered in Settings — CSS keywords plus the numeric steps
+/// xterm accepts. Also the whitelist when loading a persisted value.
+const FONT_WEIGHTS = ["300", "normal", "500", "600", "bold", "800"];
+
+/// Copy `key` from a persisted settings blob when it is a number inside
+/// [min, max]; ignore anything else so a stale/corrupt blob keeps the default.
+function numSetting(blob, key, min, max, round = (v) => v) {
+  const v = blob[key];
+  if (typeof v === "number" && Number.isFinite(v) && v >= min && v <= max) {
+    state.settings[key] = round(v);
+  }
+}
+
 function applyWorkspacesData(data) {
   if (!data) return false;
   // Settings ride along with the workspaces blob but load independently —
@@ -434,6 +494,7 @@ function applyWorkspacesData(data) {
   // Per-key type checks so a stale/corrupt blob never poisons defaults.
   if (data.settings) {
     const s = data.settings;
+    if (typeof s.theme === "string" && THEMES[s.theme]) state.settings.theme = s.theme;
     if (typeof s.defaultCwd === "string") state.settings.defaultCwd = s.defaultCwd;
     if (typeof s.fontSize === "number" && s.fontSize >= 9 && s.fontSize <= 24) {
       state.settings.fontSize = Math.round(s.fontSize);
@@ -441,15 +502,33 @@ function applyWorkspacesData(data) {
     if (typeof s.fontFamily === "string" && s.fontFamily.trim()) {
       state.settings.fontFamily = s.fontFamily.trim();
     }
+    if (FONT_WEIGHTS.includes(String(s.fontWeight))) {
+      state.settings.fontWeight = String(s.fontWeight);
+    }
+    if (FONT_WEIGHTS.includes(String(s.fontWeightBold))) {
+      state.settings.fontWeightBold = String(s.fontWeightBold);
+    }
+    numSetting(s, "lineHeight", 1, 2);
+    numSetting(s, "letterSpacing", -2, 5);
     if (typeof s.scrollback === "number" && s.scrollback >= 0 && s.scrollback <= 200000) {
       state.settings.scrollback = Math.round(s.scrollback);
     }
     if (["block", "bar", "underline"].includes(s.cursorStyle)) {
       state.settings.cursorStyle = s.cursorStyle;
     }
+    if (["outline", "block", "bar", "underline", "none"].includes(s.cursorInactiveStyle)) {
+      state.settings.cursorInactiveStyle = s.cursorInactiveStyle;
+    }
+    numSetting(s, "cursorWidth", 1, 5, Math.round);
     if (typeof s.cursorBlink === "boolean") state.settings.cursorBlink = s.cursorBlink;
+    numSetting(s, "minimumContrast", 1, 21);
+    if (typeof s.brightBold === "boolean") state.settings.brightBold = s.brightBold;
+    numSetting(s, "scrollSpeed", 1, 10, Math.round);
+    numSetting(s, "smoothScroll", 0, 500, Math.round);
     if (typeof s.copyOnSelect === "boolean") state.settings.copyOnSelect = s.copyOnSelect;
+    if (typeof s.rightClickWord === "boolean") state.settings.rightClickWord = s.rightClickWord;
     if (typeof s.optionMeta === "boolean") state.settings.optionMeta = s.optionMeta;
+    if (typeof s.bellToast === "boolean") state.settings.bellToast = s.bellToast;
     if (["ask", "embedded", "external"].includes(s.linkOpen)) {
       state.settings.linkOpen = s.linkOpen;
     } else if (typeof s.embedLinks === "boolean") {
@@ -457,6 +536,9 @@ function applyWorkspacesData(data) {
       state.settings.linkOpen = s.embedLinks ? "embedded" : "external";
     }
     if (typeof s.notifications === "boolean") state.settings.notifications = s.notifications;
+    if (typeof s.titleAttention === "boolean") state.settings.titleAttention = s.titleAttention;
+    if (typeof s.confirmKill === "boolean") state.settings.confirmKill = s.confirmKill;
+    numSetting(s, "refreshSecs", 1, 30, Math.round);
     if (typeof s.tuiTerminal === "string") state.settings.tuiTerminal = s.tuiTerminal;
     if (typeof s.termShell === "string") state.settings.termShell = s.termShell;
   }
@@ -1115,7 +1197,7 @@ function sessionMenu(s, x, y) {
       icon: "alert",
       danger: true,
       action: async () => {
-        if (!(await uiConfirm(`Kill session "${displayName(s)}"?`, "Kill"))) return;
+        if (!(await confirmKillSession(`Kill session "${displayName(s)}"?`))) return;
         await invoke("kill_session", { sessionId: s.id }).catch(console.error);
         dropTerminal(s.id);
         refreshSessions();
@@ -1140,7 +1222,8 @@ async function refreshSessions() {
       state.prevStatuses.set(s.id, s.status);
       void prev;
     }
-    document.title = attention > 0 ? `clash (${attention}!)` : "clash";
+    document.title =
+      attention > 0 && state.settings.titleAttention ? `clash (${attention}!)` : "clash";
     state.sessions = sessions;
 
     // Prune workspace ownership of sessions gone from the list for 3
@@ -1511,7 +1594,7 @@ function tabContextMenu(ev, sid) {
       action: async () => {
         const s = state.sessions.find((x) => x.id === sid);
         const label = s ? displayName(s) : sid.slice(0, 8);
-        if (!(await uiConfirm(`Kill session "${label}"?`, "Kill"))) return;
+        if (!(await confirmKillSession(`Kill session "${label}"?`))) return;
         await invoke("kill_session", { sessionId: sid }).catch(console.error);
         dropTerminal(sid);
         refreshSessions();
@@ -1897,12 +1980,349 @@ function assignToFocusedPane(sid) {
 
 // ── Terminals ───────────────────────────────────────────────────
 
-const TERM_THEME = {
+// ── Themes ──────────────────────────────────────────────────────
+// A theme drives the CSS custom properties in style.css *and* the xterm
+// palette, so the chrome and the terminals always agree. Only the colours
+// below are per-theme; everything derivable is derived (see applyTheme):
+// the status palette from the semantic colours, `on-accent` from the
+// accent's luminance, and the 8 bright ANSI slots from the 8 base ones.
+//
+// `ansi` is [black, red, green, yellow, blue, magenta, cyan, white]. Omit it
+// to keep xterm's built-in palette (clash dark does, so its terminals look
+// exactly as they always have).
+
+const THEMES = {
+  "clash-dark": {
+    label: "clash dark",
+    dark: true,
+    ui: {
+      bg: "#141414",
+      "bg-sidebar": "#1b1b1d",
+      "bg-hover": "#242428",
+      "bg-active": "#2c2c31",
+      "bg-raised": "#1f1f23",
+      border: "#2a2a2e",
+      fg: "#d4d4d8",
+      "fg-dim": "#76767e",
+      accent: "#e8a33d",
+      green: "#4ec975",
+      red: "#e5534b",
+      blue: "#539bf5",
+      purple: "#b083f0",
+      // The one theme with a hand-tuned status palette (it mirrors the TUI's
+      // theme.rs); every other theme derives these from its semantic colours.
+      "st-running": "#82c396",
+      "st-thinking": "#91afd2",
+      "st-waiting": "#d2be78",
+      "st-starting": "#a591d7",
+      "st-prompting": "#d29187",
+      "st-idle": "#5f5873",
+      "st-error": "#c88287",
+    },
+    selection: "#3a3a40",
+  },
+  "clash-light": {
+    label: "clash light",
+    dark: false,
+    ui: {
+      bg: "#fbfaf8",
+      "bg-sidebar": "#f3f1ed",
+      "bg-hover": "#e9e5df",
+      "bg-active": "#ded9d1",
+      "bg-raised": "#ffffff",
+      border: "#dcd6cd",
+      fg: "#26241f",
+      "fg-dim": "#6e6960",
+      accent: "#b0741a",
+      green: "#17803d",
+      red: "#c02b28",
+      blue: "#1f6feb",
+      purple: "#7b3fd4",
+    },
+    ansi: ["#3b3833", "#c02b28", "#17803d", "#96700f", "#1f6feb", "#7b3fd4", "#0f7c8c", "#e9e5df"],
+  },
+  "solarized-dark": {
+    label: "Solarized Dark",
+    dark: true,
+    ui: {
+      bg: "#002b36",
+      "bg-sidebar": "#01222b",
+      "bg-hover": "#073642",
+      "bg-active": "#0b4a59",
+      "bg-raised": "#073642",
+      border: "#0d4b59",
+      fg: "#93a1a1",
+      "fg-dim": "#657b83",
+      accent: "#b58900",
+      green: "#859900",
+      red: "#dc322f",
+      blue: "#268bd2",
+      purple: "#6c71c4",
+    },
+    ansi: ["#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5"],
+  },
+  "solarized-light": {
+    label: "Solarized Light",
+    dark: false,
+    ui: {
+      bg: "#fdf6e3",
+      "bg-sidebar": "#f4edda",
+      "bg-hover": "#eee8d5",
+      "bg-active": "#ded8c4",
+      "bg-raised": "#fffdf6",
+      border: "#ded8c6",
+      fg: "#586e75",
+      "fg-dim": "#93a1a1",
+      accent: "#b58900",
+      green: "#859900",
+      red: "#dc322f",
+      blue: "#268bd2",
+      purple: "#6c71c4",
+    },
+    ansi: ["#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5"],
+  },
+  nord: {
+    label: "Nord",
+    dark: true,
+    ui: {
+      bg: "#2e3440",
+      "bg-sidebar": "#292e39",
+      "bg-hover": "#3b4252",
+      "bg-active": "#434c5e",
+      "bg-raised": "#3b4252",
+      border: "#3b4252",
+      fg: "#d8dee9",
+      "fg-dim": "#7b88a1",
+      accent: "#88c0d0",
+      green: "#a3be8c",
+      red: "#bf616a",
+      blue: "#81a1c1",
+      purple: "#b48ead",
+    },
+    ansi: ["#3b4252", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0"],
+  },
+  "tokyo-night": {
+    label: "Tokyo Night",
+    dark: true,
+    ui: {
+      bg: "#1a1b26",
+      "bg-sidebar": "#16161e",
+      "bg-hover": "#24283b",
+      "bg-active": "#2f334d",
+      "bg-raised": "#1f2335",
+      border: "#292e42",
+      fg: "#c0caf5",
+      "fg-dim": "#6b7396",
+      accent: "#7aa2f7",
+      green: "#9ece6a",
+      red: "#f7768e",
+      blue: "#7dcfff",
+      purple: "#bb9af7",
+    },
+    ansi: ["#32344a", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5"],
+  },
+  "catppuccin-mocha": {
+    label: "Catppuccin Mocha",
+    dark: true,
+    ui: {
+      bg: "#1e1e2e",
+      "bg-sidebar": "#181825",
+      "bg-hover": "#313244",
+      "bg-active": "#45475a",
+      "bg-raised": "#232334",
+      border: "#313244",
+      fg: "#cdd6f4",
+      "fg-dim": "#9399b2",
+      accent: "#cba6f7",
+      green: "#a6e3a1",
+      red: "#f38ba8",
+      blue: "#89b4fa",
+      purple: "#cba6f7",
+    },
+    ansi: ["#45475a", "#f38ba8", "#a6e3a1", "#f9e2af", "#89b4fa", "#f5c2e7", "#94e2d5", "#bac2de"],
+  },
+  "catppuccin-latte": {
+    label: "Catppuccin Latte",
+    dark: false,
+    ui: {
+      bg: "#eff1f5",
+      "bg-sidebar": "#e6e9ef",
+      "bg-hover": "#dce0e8",
+      "bg-active": "#ccd0da",
+      "bg-raised": "#ffffff",
+      border: "#ccd0da",
+      fg: "#4c4f69",
+      "fg-dim": "#7c7f93",
+      accent: "#8839ef",
+      green: "#40a02b",
+      red: "#d20f39",
+      blue: "#1e66f5",
+      purple: "#8839ef",
+    },
+    ansi: ["#5c5f77", "#d20f39", "#40a02b", "#df8e1d", "#1e66f5", "#ea76cb", "#179299", "#acb0be"],
+  },
+  "gruvbox-dark": {
+    label: "Gruvbox Dark",
+    dark: true,
+    ui: {
+      bg: "#282828",
+      "bg-sidebar": "#1d2021",
+      "bg-hover": "#3c3836",
+      "bg-active": "#504945",
+      "bg-raised": "#32302f",
+      border: "#3c3836",
+      fg: "#ebdbb2",
+      "fg-dim": "#a89984",
+      accent: "#fabd2f",
+      green: "#b8bb26",
+      red: "#fb4934",
+      blue: "#83a598",
+      purple: "#d3869b",
+    },
+    ansi: ["#3c3836", "#fb4934", "#b8bb26", "#fabd2f", "#83a598", "#d3869b", "#8ec07c", "#ebdbb2"],
+  },
+  dracula: {
+    label: "Dracula",
+    dark: true,
+    ui: {
+      bg: "#282a36",
+      "bg-sidebar": "#21222c",
+      "bg-hover": "#343746",
+      "bg-active": "#44475a",
+      "bg-raised": "#2f3140",
+      border: "#3a3d4d",
+      fg: "#f8f8f2",
+      "fg-dim": "#6272a4",
+      accent: "#bd93f9",
+      green: "#50fa7b",
+      red: "#ff5555",
+      blue: "#8be9fd",
+      purple: "#ff79c6",
+    },
+    ansi: ["#44475a", "#ff5555", "#50fa7b", "#f1fa8c", "#bd93f9", "#ff79c6", "#8be9fd", "#f8f8f2"],
+  },
+  "one-dark": {
+    label: "One Dark",
+    dark: true,
+    ui: {
+      bg: "#282c34",
+      "bg-sidebar": "#21252b",
+      "bg-hover": "#2c313a",
+      "bg-active": "#3a3f4b",
+      "bg-raised": "#2c313a",
+      border: "#3a3f4b",
+      fg: "#abb2bf",
+      "fg-dim": "#7f848e",
+      accent: "#61afef",
+      green: "#98c379",
+      red: "#e06c75",
+      blue: "#56b6c2",
+      purple: "#c678dd",
+    },
+    ansi: ["#3f4451", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#abb2bf"],
+  },
+  "github-light": {
+    label: "GitHub Light",
+    dark: false,
+    ui: {
+      bg: "#ffffff",
+      "bg-sidebar": "#f6f8fa",
+      "bg-hover": "#eaeef2",
+      "bg-active": "#dfe3e8",
+      "bg-raised": "#ffffff",
+      border: "#d0d7de",
+      fg: "#1f2328",
+      "fg-dim": "#636c76",
+      accent: "#0969da",
+      green: "#1a7f37",
+      red: "#cf222e",
+      blue: "#0969da",
+      purple: "#8250df",
+    },
+    ansi: ["#24292f", "#cf222e", "#1a7f37", "#9a6700", "#0969da", "#8250df", "#1b7c83", "#6e7781"],
+  },
+};
+
+/// Mix `hex` toward white (amount > 0) or black (amount < 0) by that fraction.
+/// Used for the bright ANSI slots and hover tints — a straight linear mix, which
+/// is enough for palette variants and needs no colour-space machinery.
+function mixColor(hex, amount) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const target = amount > 0 ? 255 : 0;
+  const t = Math.abs(amount);
+  const ch = (shift) => {
+    const v = (n >> shift) & 0xff;
+    return Math.round(v + (target - v) * t);
+  };
+  return `#${[ch(16), ch(8), ch(0)].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/// Perceived brightness (sRGB luma, 0-1) — decides whether text on top of a
+/// colour should be near-black or near-white.
+function luma(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return 0;
+  const n = parseInt(m[1], 16);
+  return (0.2126 * ((n >> 16) & 0xff) + 0.7152 * ((n >> 8) & 0xff) + 0.0722 * (n & 0xff)) / 255;
+}
+
+/// The xterm palette currently in force. Reassigned by applyTheme and read when
+/// a terminal is constructed, so new panes match the theme already on screen.
+let TERM_THEME = {
   background: "#141414",
   foreground: "#d4d4d8",
   cursor: "#e8a33d",
   selectionBackground: "#3a3a40",
 };
+
+/// Paint a theme: CSS custom properties for the chrome, `TERM_THEME` (plus a
+/// live update of every open terminal) for the panes. Unknown id → the default.
+function applyTheme(id) {
+  const t = THEMES[id] || THEMES["clash-dark"];
+  const u = t.ui;
+  const root = document.documentElement;
+  for (const [key, value] of Object.entries(u)) root.style.setProperty(`--${key}`, value);
+  // Derived: code/menu surface, text on filled accent, and the status palette
+  // (unless the theme spelled it out, as clash dark does).
+  root.style.setProperty("--bg-3", u["bg-raised"]);
+  root.style.setProperty("--on-accent", luma(u.accent) > 0.55 ? "#14161a" : "#ffffff");
+  const derived = {
+    "st-running": u.green,
+    "st-thinking": u.blue,
+    "st-waiting": u.accent,
+    "st-starting": u.purple,
+    "st-prompting": u.red,
+    "st-idle": u["fg-dim"],
+    "st-error": u.red,
+  };
+  for (const [key, value] of Object.entries(derived)) {
+    if (!u[key]) root.style.setProperty(`--${key}`, value);
+  }
+  // A few rules can't be expressed as a colour (icon filters, image blending).
+  root.classList.toggle("theme-light", !t.dark);
+
+  TERM_THEME = {
+    background: u.bg,
+    foreground: u.fg,
+    cursor: u.accent,
+    cursorAccent: u.bg,
+    selectionBackground: t.selection || mixColor(u.bg, t.dark ? 0.16 : -0.12),
+  };
+  if (t.ansi) {
+    const names = ["Black", "Red", "Green", "Yellow", "Blue", "Magenta", "Cyan", "White"];
+    t.ansi.forEach((color, i) => {
+      TERM_THEME[names[i].toLowerCase()] = color;
+      // Bright slots: lighten on dark themes, deepen on light ones, so bold
+      // text stays legible instead of washing into the background.
+      TERM_THEME[`bright${names[i]}`] = mixColor(color, t.dark ? 0.22 : -0.18);
+    });
+  }
+  for (const entry of state.open.values()) {
+    if (entry.term) entry.term.options.theme = TERM_THEME;
+  }
+}
 
 /// Take over a wild claude in one step: confirm, kill the outside
 /// process, resume its (dynamically associated, latest) conversation
@@ -1955,10 +2375,20 @@ async function openSession(sid, label, opts = {}) {
   const term = new Terminal({
     fontFamily: state.settings.fontFamily,
     fontSize: state.settings.fontSize,
+    fontWeight: state.settings.fontWeight,
+    fontWeightBold: state.settings.fontWeightBold,
+    lineHeight: state.settings.lineHeight,
+    letterSpacing: state.settings.letterSpacing,
     theme: TERM_THEME,
     scrollback: state.settings.scrollback,
     cursorStyle: state.settings.cursorStyle,
+    cursorInactiveStyle: state.settings.cursorInactiveStyle,
+    cursorWidth: state.settings.cursorWidth,
     cursorBlink: state.settings.cursorBlink,
+    minimumContrastRatio: state.settings.minimumContrast,
+    drawBoldTextInBrightColors: state.settings.brightBold,
+    scrollSensitivity: state.settings.scrollSpeed,
+    smoothScrollDuration: state.settings.smoothScroll,
     macOptionIsMeta: state.settings.optionMeta,
     // Claude Code turns on mouse tracking, so plain mouse drags are reported to
     // it as mouse events and never produce a text selection — making ⌘C / copy
@@ -1970,8 +2400,9 @@ async function openSession(sid, label, opts = {}) {
     // ⌥-composed glyphs (brackets/braces on AZERTY, etc.).
     macOptionClickForcesSelection: true,
     // Right-click selects the word under the pointer (parity with double-click),
-    // a quick native affordance for grabbing a token to copy.
-    rightClickSelectsWord: true,
+    // a quick native affordance for grabbing a token to copy. Off for anyone who
+    // wants right-click to stay out of the selection.
+    rightClickSelectsWord: state.settings.rightClickWord,
     // OSC 8 hyperlinks (Claude Code emits these) — routed through openLink,
     // which asks / embeds / opens externally per the "Open links" setting.
     linkHandler: {
@@ -2119,6 +2550,14 @@ async function openSession(sid, label, opts = {}) {
     if (!state.settings.copyOnSelect || !term.hasSelection()) return;
     const text = term.getSelection();
     if (text) invoke("clipboard_write_text", { text }).catch(() => {});
+  });
+  // BEL (\a) — a script or a shell prompt signalling "done / attention". xterm
+  // has no audible bell, so surface it as the toast the rest of the app uses,
+  // naming the session so a bell from a background pane is still actionable.
+  term.onBell(() => {
+    if (!state.settings.bellToast) return;
+    const s = state.sessions.find((x) => x.id === sid);
+    flashToast(`🔔 ${s ? displayName(s) : label || sid.slice(0, 8)}`);
   });
 
   // URLs in terminal output are clickable — they open in the embedded
@@ -3616,9 +4055,16 @@ const WF_MODES = [
   },
 ];
 
+/// Sentinel value for the repo picker's "Browse…" row — a real repo path can
+/// never collide with it (paths are absolute).
+const BROWSE = " browse";
+
+/// Folder name of a repo path, tolerating a trailing slash.
+const repoBaseName = (p) => baseName(String(p || "").replace(/[\\/]+$/, ""));
+
 /// Pick the repo + project an item belongs to (from existing workflow projects
-/// and open sessions, else typed in). Resolves to `{ project, repoPath }`, or
-/// null when cancelled. Shared by every entry mode.
+/// and open sessions, browsed for, else typed in). Resolves to
+/// `{ project, repoPath }`, or null when cancelled. Shared by every entry mode.
 async function pickWorkflowRepo() {
   // Candidate repos, deduped by path (two repos can share a basename —
   // dedupe by name silently dropped one of them).
@@ -3629,7 +4075,7 @@ async function pickWorkflowRepo() {
   }
   for (const s of state.sessions || []) {
     const dir = s.cwd || s.project_path || "";
-    const name = dir.split("/").filter(Boolean).pop();
+    const name = repoBaseName(dir);
     if (dir && name && !candidates.has(dir)) candidates.set(dir, name);
   }
   let project;
@@ -3640,13 +4086,22 @@ async function pickWorkflowRepo() {
     const items = [...candidates.entries()]
       .sort((a, b) => a[1].localeCompare(b[1]) || a[0].localeCompare(b[0]))
       .map(([dir, name]) => ({ label: name, detail: dir, value: dir }));
+    items.push({ label: "Browse…", detail: "pick a repository folder", value: BROWSE });
     items.push({ label: "Other…", detail: "enter a project name and repo path", value: "" });
     const picked = await uiListChoice({
       message: "Repository for this workflow item",
       items,
     });
     if (picked === null) return null;
-    if (picked) {
+    if (picked === BROWSE) {
+      const dir = await pickDirectory(
+        state.settings.defaultCwd || state.homeDir || "",
+        "Choose a repository folder"
+      );
+      if (!dir) return null;
+      repoPath = dir;
+      project = candidates.get(dir) || repoBaseName(dir);
+    } else if (picked) {
       repoPath = picked;
       project = candidates.get(picked);
     } else {
@@ -3654,15 +4109,20 @@ async function pickWorkflowRepo() {
     }
   }
   if (!project) {
-    project = ((await uiPrompt("Project name (group under the workflows root)")) || "").trim();
-    if (!project) return null;
-    repoPath = "";
-  }
-  if (!repoPath) {
+    // Manual entry: the path first (with the folder picker, like the
+    // new-session modal), then the project name pre-filled from the folder.
     repoPath = (
-      (await uiPrompt("Repository path (absolute)", state.settings.defaultCwd || state.homeDir || "")) || ""
+      (await uiPathPrompt(
+        "Repository path (absolute)",
+        repoPath || state.settings.defaultCwd || state.homeDir || ""
+      )) || ""
     ).trim();
     if (!repoPath) return null;
+    project = (
+      (await uiPrompt("Project name (group under the workflows root)", repoBaseName(repoPath))) ||
+      ""
+    ).trim();
+    if (!project) return null;
   }
   return { project, repoPath };
 }
@@ -4974,14 +5434,14 @@ function hideNewSessionModal() {
 
 /// Native folder picker (tauri-plugin-dialog) seeded from a starting path.
 /// Returns the chosen absolute directory, or null when cancelled/unavailable.
-async function pickDirectory(defaultPath) {
+async function pickDirectory(defaultPath, title = "Choose a working directory") {
   try {
     const picked = await invoke("plugin:dialog|open", {
       options: {
         directory: true,
         multiple: false,
         defaultPath: (defaultPath || "").trim() || state.homeDir || undefined,
-        title: "Choose a working directory",
+        title,
       },
     });
     return typeof picked === "string" ? picked : null;
@@ -5325,6 +5785,12 @@ function toggleSettings(open) {
   const want = open ?? $("settings-body").classList.contains("hidden");
   $("settings-body").classList.toggle("hidden", !want);
   $("settings-caret").textContent = want ? "▾" : "▸";
+  // Reopen shows the whole list — a leftover filter would look like the
+  // settings had vanished.
+  if (want && $("settings-filter").value) {
+    $("settings-filter").value = "";
+    filterSettings("");
+  }
   try {
     localStorage.setItem("clash-settings-open", want ? "1" : "0");
   } catch (e) {
@@ -5338,34 +5804,224 @@ try {
   void e;
 }
 
-// Font-family autocomplete: offer the monospace fonts actually installed
-// (document.fonts.check resolves real families without loading anything).
-// Free typing still works — the datalist only suggests.
-function populateFontOptions() {
-  const candidates = [
-    "SF Mono", "Menlo", "Monaco", "JetBrains Mono", "Fira Code", "Fira Mono",
-    "Hack", "Source Code Pro", "IBM Plex Mono", "Cascadia Code", "Consolas",
-    "Inconsolata", "Ubuntu Mono", "DejaVu Sans Mono", "Roboto Mono",
-    "Iosevka", "Victor Mono", "Geist Mono", "Berkeley Mono", "MesloLGS NF",
-    "Liberation Mono", "PT Mono", "Space Mono", "Noto Sans Mono",
-    "Andale Mono", "Courier New",
-  ];
-  const list = $("font-options");
-  list.innerHTML = "";
-  for (const f of candidates) {
-    let available = false;
+// ── Font picker ─────────────────────────────────────────────────
+// The font field is read-only and opens a searchable list instead: typing a
+// family name blind (and getting a silent fallback when it's misspelled) is the
+// worst way to pick a font. Families come from the OS via `list_font_families`
+// (AppKit on macOS); if that yields nothing, a curated set is probed with
+// `document.fonts.check`, which confirms a family without loading it.
+
+const FONT_CANDIDATES = [
+  "SF Mono", "Menlo", "Monaco", "JetBrains Mono", "JetBrains Mono NL", "Fira Code",
+  "Fira Mono", "Hack", "Source Code Pro", "IBM Plex Mono", "Cascadia Code",
+  "Cascadia Mono", "Consolas", "Inconsolata", "Ubuntu Mono", "DejaVu Sans Mono",
+  "Roboto Mono", "Iosevka", "Iosevka Term", "Victor Mono", "Geist Mono",
+  "Berkeley Mono", "MesloLGS NF", "Liberation Mono", "PT Mono", "Space Mono",
+  "Noto Sans Mono", "Andale Mono", "Courier New", "Courier", "Menlo Regular",
+  "Operator Mono", "Dank Mono", "Comic Mono", "Anonymous Pro", "Monoid",
+  "Terminus", "ProggyClean", "Go Mono", "Nimbus Mono PS", "Recursive Mono",
+];
+
+let fontFamilyCache = null; // [{ name, mono }] — resolved once per launch
+
+/// Monospace test: in a fixed-pitch family every glyph advances the same, so a
+/// narrow and a wide character measure identically. Canvas keeps this cheap
+/// enough to run over a few hundred families.
+function isMonospaceFamily(name, ctx) {
+  ctx.font = `16px "${name}", serif`;
+  const i = ctx.measureText("iiiiiiiiii").width;
+  const w = ctx.measureText("WWWWWWWWWW").width;
+  if (!i || !w) return false;
+  return Math.abs(i - w) < 0.5;
+}
+
+/// Every family we can offer, monospace flagged. Cached: enumeration hops to the
+/// main thread and the measuring loop is pure work — neither changes mid-launch.
+///
+/// The list is a union, because neither source alone is complete: AppKit knows
+/// the installed families but omits system faces the webview can still render
+/// (`SF Mono` — clash's own default — is absent from `availableFontFamilies`),
+/// while the curated probe only ever finds fonts someone thought to list. The
+/// configured family is added too, so the current choice is always in its list.
+async function loadFontFamilies() {
+  if (fontFamilyCache) return fontFamilyCache;
+  let names = [];
+  try {
+    names = (await invoke("list_font_families")) || [];
+  } catch (e) {
+    console.error("list_font_families failed:", e);
+  }
+  const probed = FONT_CANDIDATES.filter((f) => {
     try {
-      available = document.fonts.check(`12px "${f}"`);
+      return document.fonts.check(`12px "${f}"`);
     } catch (e) {
       void e;
+      return false;
     }
-    if (!available) continue;
-    const opt = document.createElement("option");
-    opt.value = f;
-    list.appendChild(opt);
+  });
+  // A stack ("SF Mono, Menlo, monospace") isn't a family — it can't be measured
+  // or previewed as one, and "Custom…" is where stacks are edited.
+  const current = state.settings.fontFamily.includes(",") ? [] : [state.settings.fontFamily];
+  const seen = new Set();
+  const merged = [];
+  for (const name of [...names, ...probed, ...current]) {
+    const key = name.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(name.trim());
   }
+  merged.sort((a, b) => a.localeCompare(b));
+  const ctx = document.createElement("canvas").getContext("2d");
+  fontFamilyCache = merged.map((name) => ({
+    name,
+    mono: ctx ? isMonospaceFamily(name, ctx) : /mono|code|courier|consol/i.test(name),
+  }));
+  return fontFamilyCache;
 }
-populateFontOptions();
+
+/// Modal font list: search box, monospace families first (they are what a
+/// terminal wants), each row previewed in its own face. Resolves to the chosen
+/// family, or null when cancelled. "Custom…" hands over to a text prompt so a
+/// full fallback stack ("SF Mono, Menlo, monospace") stays expressible.
+async function pickFontFamily(current) {
+  const families = await loadFontFamilies();
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "dialog-backdrop";
+    const box = document.createElement("div");
+    box.className = "dialog-box font-picker";
+    const msg = document.createElement("p");
+    msg.textContent = "Terminal font";
+    box.appendChild(msg);
+
+    const search = document.createElement("input");
+    search.type = "search";
+    search.placeholder = "Search fonts…";
+    search.spellcheck = false;
+    box.appendChild(search);
+
+    const monoOnly = document.createElement("label");
+    monoOnly.className = "setting-check";
+    const monoBox = document.createElement("input");
+    monoBox.type = "checkbox";
+    monoBox.checked = true;
+    monoOnly.appendChild(monoBox);
+    monoOnly.appendChild(document.createTextNode(" Monospace only"));
+    box.appendChild(monoOnly);
+
+    const list = document.createElement("div");
+    list.className = "dialog-list";
+    box.appendChild(list);
+
+    const done = (val) => {
+      backdrop.remove();
+      resolve(val);
+      if (typeof fitAll === "function") fitAll();
+    };
+
+    const render = () => {
+      const q = search.value.trim().toLowerCase();
+      list.innerHTML = "";
+      const shown = families
+        .filter((f) => (monoBox.checked ? f.mono : true))
+        .filter((f) => !q || f.name.toLowerCase().includes(q))
+        .sort((a, b) => Number(b.mono) - Number(a.mono) || a.name.localeCompare(b.name));
+      if (!shown.length) {
+        const empty = document.createElement("div");
+        empty.className = "dialog-list-detail";
+        empty.textContent = monoBox.checked
+          ? "No monospace family matches — try unchecking “Monospace only”."
+          : "No font matches.";
+        list.appendChild(empty);
+      }
+      for (const f of shown) {
+        const row = document.createElement("div");
+        row.className = "dialog-list-row";
+        if (f.name === current) row.classList.add("current");
+        const label = document.createElement("div");
+        label.className = "dialog-list-label";
+        label.textContent = f.name;
+        row.appendChild(label);
+        // Preview in the face itself — the whole point of a picker.
+        const sample = document.createElement("div");
+        sample.className = "font-sample";
+        sample.style.fontFamily = `"${f.name}", monospace`;
+        sample.textContent = "if (x === 0) { i1lO0 —> ~/.claude }";
+        row.appendChild(sample);
+        row.onclick = () => done(f.name);
+        list.appendChild(row);
+      }
+    };
+    search.addEventListener("input", render);
+    monoBox.addEventListener("change", render);
+    render();
+
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.onclick = () => done(null);
+    actions.appendChild(cancel);
+    const custom = document.createElement("button");
+    custom.textContent = "Custom…";
+    custom.title = "Type a font stack by hand";
+    custom.onclick = async () => {
+      backdrop.remove();
+      const typed = await uiPrompt("Font family (CSS font stack)", current);
+      resolve(typed === null ? null : typed.trim() || null);
+      if (typeof fitAll === "function") fitAll();
+    };
+    actions.appendChild(custom);
+    box.appendChild(actions);
+
+    backdrop.appendChild(box);
+    if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
+    document.body.appendChild(backdrop);
+    backdrop.onclick = (e) => {
+      if (e.target === backdrop) done(null);
+    };
+    backdrop.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") done(null);
+      // Enter takes the first row — search, Enter, done.
+      else if (e.key === "Enter") {
+        const first = list.querySelector(".dialog-list-row .dialog-list-label");
+        if (first) done(first.textContent);
+      }
+    });
+    setTimeout(() => search.focus(), 0);
+  });
+}
+
+/// Point the app's `--mono` at the terminal font, so in-app monospace text
+/// (markdown code, diffs, paths) is the same face as the terminals.
+function applyMonoFont() {
+  document.documentElement.style.setProperty(
+    "--mono",
+    `${state.settings.fontFamily}, monospace`
+  );
+}
+
+async function openFontPicker() {
+  const picked = await pickFontFamily(state.settings.fontFamily);
+  if (!picked) return;
+  state.settings.fontFamily = picked;
+  $("set-fontfamily").value = picked;
+  applyTermOption("fontFamily", picked);
+  applyMonoFont();
+  fitAll();
+}
+
+// Both the (read-only) field and its button open the picker. The button sits
+// inside the row's <label>, so the click is stopped here — otherwise a browser
+// that forwards label clicks to the labeled input would open two pickers.
+$("set-fontfamily").onclick = openFontPicker;
+$("set-fontfamily-pick").innerHTML = svgIcon("search", 14);
+$("set-fontfamily-pick").onclick = (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  openFontPicker();
+};
 
 document.addEventListener("keydown", (e) => {
   const inInput =
@@ -6195,15 +6851,110 @@ async function loadScratchDir() {
 
 /// Reflect persisted settings into the footer controls.
 function syncSettingsUi() {
-  $("set-fontsize").value = state.settings.fontSize;
-  $("set-fontfamily").value = state.settings.fontFamily;
-  $("set-scrollback").value = state.settings.scrollback;
-  $("set-cursor-style").value = state.settings.cursorStyle;
-  $("set-cursor-blink").checked = state.settings.cursorBlink;
-  $("set-copy-select").checked = state.settings.copyOnSelect;
-  $("set-option-meta").checked = state.settings.optionMeta;
-  $("set-link-open").value = state.settings.linkOpen;
-  $("set-notify").checked = state.settings.notifications;
+  const s = state.settings;
+  const theme = $("set-theme");
+  if (theme) {
+    // Built once, from the theme table — dark first, then light, each group
+    // alphabetical, with the two clash themes pinned to the top of theirs.
+    if (!theme.options.length) {
+      const rank = (id) => (id.startsWith("clash-") ? 0 : 1);
+      const entries = Object.entries(THEMES).sort(
+        (a, b) =>
+          Number(b[1].dark) - Number(a[1].dark) ||
+          rank(a[0]) - rank(b[0]) ||
+          a[1].label.localeCompare(b[1].label)
+      );
+      for (const [id, t] of entries) {
+        const o = document.createElement("option");
+        o.value = id;
+        o.textContent = `${t.label} ${t.dark ? "◐" : "◑"}`;
+        theme.appendChild(o);
+      }
+    }
+    theme.value = s.theme;
+  }
+  $("set-fontfamily").value = s.fontFamily;
+  $("set-fontsize").value = s.fontSize;
+  $("set-font-weight").value = s.fontWeight;
+  $("set-font-weight-bold").value = s.fontWeightBold;
+  $("set-line-height").value = s.lineHeight;
+  $("set-letter-spacing").value = s.letterSpacing;
+  $("set-cursor-style").value = s.cursorStyle;
+  $("set-cursor-inactive").value = s.cursorInactiveStyle;
+  $("set-cursor-width").value = s.cursorWidth;
+  $("set-cursor-blink").checked = s.cursorBlink;
+  $("set-min-contrast").value = s.minimumContrast;
+  $("set-bright-bold").checked = s.brightBold;
+  $("set-scrollback").value = s.scrollback;
+  $("set-scroll-speed").value = s.scrollSpeed;
+  $("set-smooth-scroll").value = s.smoothScroll;
+  $("set-copy-select").checked = s.copyOnSelect;
+  $("set-rclick-word").checked = s.rightClickWord;
+  $("set-option-meta").checked = s.optionMeta;
+  $("set-bell-toast").checked = s.bellToast;
+  $("set-link-open").value = s.linkOpen;
+  $("set-notify").checked = s.notifications;
+  $("set-title-attention").checked = s.titleAttention;
+  $("set-confirm-kill").checked = s.confirmKill;
+  $("set-refresh-secs").value = s.refreshSecs;
+  syncPickerSelects();
+}
+
+/// Fill the shell / TUI-terminal selects from what the backend detected. Called
+/// again once detection lands, since it resolves after the first sync.
+function syncPickerSelects() {
+  const shell = $("set-term-shell");
+  if (shell) {
+    shell.innerHTML = "";
+    for (const [value, label] of [["", "Default ($SHELL)"], ...detectedShells.map((s) => [s, s])]) {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = label;
+      shell.appendChild(o);
+    }
+    shell.value = detectedShells.includes(state.settings.termShell)
+      ? state.settings.termShell
+      : "";
+  }
+  const tui = $("set-tui-terminal");
+  if (tui) {
+    tui.innerHTML = "";
+    const opts = [["", "Auto — split pane or default"], ...detectedTerminals.map((t) => [t.id, t.name])];
+    for (const [value, label] of opts) {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = label;
+      tui.appendChild(o);
+    }
+    tui.value = detectedTerminals.some((t) => t.id === state.settings.tuiTerminal)
+      ? state.settings.tuiTerminal
+      : "";
+  }
+}
+
+/// Filter the settings list as you type: hide rows whose label doesn't match,
+/// and hide a group header when everything under it is hidden. Empty = show all.
+function filterSettings(query) {
+  const q = query.trim().toLowerCase();
+  const rows = [...$("settings-body").children];
+  let lastGroup = null;
+  let groupHasMatch = false;
+  const flushGroup = () => {
+    if (lastGroup) lastGroup.classList.toggle("hidden", !groupHasMatch);
+  };
+  for (const el of rows) {
+    if (el.classList.contains("settings-group")) {
+      flushGroup();
+      lastGroup = el;
+      groupHasMatch = false;
+      continue;
+    }
+    if (el.id === "settings-filter" || el.id === "update-btn") continue;
+    const match = !q || el.textContent.toLowerCase().includes(q);
+    el.classList.toggle("hidden", !match);
+    if (match) groupHasMatch = true;
+  }
+  flushGroup();
 }
 
 /// Live-apply an xterm option to every open terminal, then persist.
@@ -6227,17 +6978,6 @@ $("set-fontsize").addEventListener("change", () => {
   }
   fitAll();
   saveWorkspaces();
-});
-
-$("set-fontfamily").addEventListener("change", () => {
-  const v = $("set-fontfamily").value.trim();
-  if (!v) {
-    $("set-fontfamily").value = state.settings.fontFamily;
-    return;
-  }
-  state.settings.fontFamily = v;
-  applyTermOption("fontFamily", v);
-  fitAll();
 });
 
 $("set-scrollback").addEventListener("change", () => {
@@ -6280,6 +7020,146 @@ $("set-notify").addEventListener("change", () => {
   invoke("set_notifications_enabled", { enabled: state.settings.notifications }).catch(console.error);
   saveWorkspaces();
 });
+
+// ── Settings: generic wiring ────────────────────────────────────
+// Everything below is declarative: one row per control, so a new setting is a
+// line here plus a line in syncSettingsUi — no bespoke handler each time.
+
+/// Bind a numeric input to a setting. Out-of-range or non-numeric input snaps
+/// back to the stored value. `option` live-applies to open terminals (xterm
+/// option name); `refit` re-measures the grid when metrics changed.
+function bindNumberSetting(id, key, { min, max, step = 1, option = null, refit = false }) {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener("change", () => {
+    const raw = Number(el.value);
+    const v = step < 1 ? Math.round(raw / step) * step : Math.round(raw);
+    if (!Number.isFinite(v) || v < min || v > max) {
+      el.value = state.settings[key];
+      return;
+    }
+    // Floating-point steps (line height 1.05) accumulate noise — pin to 2dp.
+    state.settings[key] = step < 1 ? Number(v.toFixed(2)) : v;
+    el.value = state.settings[key];
+    if (option) applyTermOption(option, state.settings[key]);
+    else saveWorkspaces();
+    if (refit) fitAll();
+  });
+}
+
+/// Bind a checkbox or select to a setting; `option` live-applies to terminals.
+function bindChoiceSetting(id, key, { option = null, refit = false, onChange = null } = {}) {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener("change", () => {
+    state.settings[key] = el.type === "checkbox" ? el.checked : el.value;
+    if (option) applyTermOption(option, state.settings[key]);
+    else saveWorkspaces();
+    if (refit) fitAll();
+    if (onChange) onChange(state.settings[key]);
+  });
+}
+
+// Appearance
+bindChoiceSetting("set-theme", "theme", {
+  onChange: (id) => {
+    applyTheme(id);
+    // Terminal colours changed under the WebGL renderer's texture atlas.
+    for (const entry of state.open.values()) {
+      if (entry.term) entry.term.clearTextureAtlas?.();
+    }
+  },
+});
+// Terminal · text (metrics changes need a refit so cols/rows track the cell box)
+bindChoiceSetting("set-font-weight", "fontWeight", { option: "fontWeight", refit: true });
+bindChoiceSetting("set-font-weight-bold", "fontWeightBold", {
+  option: "fontWeightBold",
+  refit: true,
+});
+bindNumberSetting("set-line-height", "lineHeight", {
+  min: 1,
+  max: 2,
+  step: 0.05,
+  option: "lineHeight",
+  refit: true,
+});
+bindNumberSetting("set-letter-spacing", "letterSpacing", {
+  min: -2,
+  max: 5,
+  step: 0.5,
+  option: "letterSpacing",
+  refit: true,
+});
+// Terminal · cursor
+bindChoiceSetting("set-cursor-inactive", "cursorInactiveStyle", {
+  option: "cursorInactiveStyle",
+});
+bindNumberSetting("set-cursor-width", "cursorWidth", { min: 1, max: 5, option: "cursorWidth" });
+// Terminal · colors
+bindNumberSetting("set-min-contrast", "minimumContrast", {
+  min: 1,
+  max: 21,
+  step: 0.5,
+  option: "minimumContrastRatio",
+});
+bindChoiceSetting("set-bright-bold", "brightBold", { option: "drawBoldTextInBrightColors" });
+// Terminal · scroll & input
+bindNumberSetting("set-scroll-speed", "scrollSpeed", {
+  min: 1,
+  max: 10,
+  option: "scrollSensitivity",
+});
+bindNumberSetting("set-smooth-scroll", "smoothScroll", {
+  min: 0,
+  max: 500,
+  option: "smoothScrollDuration",
+});
+bindChoiceSetting("set-rclick-word", "rightClickWord", { option: "rightClickSelectsWord" });
+bindChoiceSetting("set-bell-toast", "bellToast");
+// clash
+bindChoiceSetting("set-title-attention", "titleAttention", {
+  // Drop a stale "(2!)" immediately when the marker is switched off.
+  onChange: () => refreshSessions(),
+});
+bindChoiceSetting("set-confirm-kill", "confirmKill");
+bindNumberSetting("set-refresh-secs", "refreshSecs", { min: 1, max: 30 });
+// Second listener, after the bind above has validated and stored the value.
+$("set-refresh-secs").addEventListener("change", restartSessionPoll);
+bindChoiceSetting("set-term-shell", "termShell");
+bindChoiceSetting("set-tui-terminal", "tuiTerminal");
+
+/// The `claude` binary lives in config.toml (shared with the TUI), so it round
+/// trips through the backend, which validates an absolute path and echoes the
+/// effective value back.
+$("set-claude-bin").addEventListener("change", async () => {
+  const el = $("set-claude-bin");
+  try {
+    el.value = await invoke("set_claude_bin", { path: el.value.trim() });
+  } catch (e) {
+    uiAlert(`Claude binary: ${e}`);
+    try {
+      el.value = await invoke("get_claude_bin");
+    } catch (_) {}
+  }
+});
+
+/// Folder pickers for every directory setting: fill the field, then fire the
+/// same `change` handler typing would (so config-backed rows still persist).
+for (const id of ["default-cwd", "set-scratch-dir", "set-workflows-dir"]) {
+  const btn = $(`${id}-browse`);
+  if (!btn) continue;
+  btn.innerHTML = svgIcon("folder", 14);
+  btn.onclick = async (e) => {
+    e.preventDefault(); // inside the row's <label> — don't re-trigger the input
+    e.stopPropagation();
+    const dir = await pickDirectory($(id).value);
+    if (!dir) return;
+    $(id).value = dir;
+    $(id).dispatchEvent(new Event("change"));
+  };
+}
+
+$("settings-filter").addEventListener("input", () => filterSettings($("settings-filter").value));
 
 // ── TUI launcher (sidebar header) ───────────────────────────────
 // Gold when a clash TUI process is running somewhere, grey when not.
@@ -6449,13 +7329,28 @@ document.addEventListener("click", () => iconTip.remove(), true);
 
 // ── Boot ────────────────────────────────────────────────────────
 
+/// (Re)start the session-list poll at the configured cadence. One handle, so
+/// changing the interval in Settings never leaves two timers running.
+let sessionPoll = null;
+function restartSessionPoll() {
+  clearInterval(sessionPoll);
+  sessionPoll = setInterval(refreshSessions, state.settings.refreshSecs * 1000);
+}
+
 (async () => {
   applyStaticIcons(); // before first paint — never show the unicode fallbacks
   await loadWorkspaces(); // disk-backed — must complete before first render
+  // Theme and mono font before the first render, so the window never flashes
+  // the default palette on the way to the chosen one.
+  applyTheme(state.settings.theme);
+  applyMonoFont();
   restoreBrowserTabs(); // entries only — webviews materialize on first visibility
   $("default-cwd").value = state.settings.defaultCwd;
   syncSettingsUi();
   loadScratchDir();
+  invoke("get_claude_bin")
+    .then((b) => ($("set-claude-bin").value = b))
+    .catch(() => {});
   if (!state.settings.notifications) {
     invoke("set_notifications_enabled", { enabled: false }).catch(console.error);
   }
@@ -6465,13 +7360,32 @@ document.addEventListener("click", () => iconTip.remove(), true);
   setVersionLabel();
   refreshTuiIndicator();
   setInterval(refreshTuiIndicator, 5000);
+  // Detection resolves after the first syncSettingsUi, so refill the selects
+  // that are built from it once the lists land.
   invoke("list_terminals")
-    .then((t) => (detectedTerminals = t))
+    .then((t) => {
+      detectedTerminals = t;
+      syncPickerSelects();
+    })
     .catch(() => {});
   invoke("list_shells")
-    .then((s) => (detectedShells = s))
+    .then((s) => {
+      detectedShells = s;
+      syncPickerSelects();
+    })
     .catch(() => {});
   await refreshSessions();
   await restoreWorkspaceSessions();
-  setInterval(refreshSessions, 2000);
+  restartSessionPoll();
+  // One line in clash.log per launch saying the webview got all the way through
+  // boot. Without it, a frontend that dies early is indistinguishable from a
+  // backend problem: WKWebView has no visible console, so the only symptom is a
+  // blank or half-drawn window and a log that looks perfectly healthy.
+  dlog(
+    `frontend booted: ${state.workspaces.length} workspace(s), ` +
+      `${state.sessions.length} session(s), theme ${state.settings.theme} ` +
+      `(bg ${getComputedStyle(document.documentElement).getPropertyValue("--bg").trim()}), ` +
+      `font "${state.settings.fontFamily}" ${state.settings.fontSize}px, ` +
+      `refresh ${state.settings.refreshSecs}s`
+  );
 })();
