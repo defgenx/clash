@@ -130,6 +130,34 @@ pub mod review {
             .collect()
     }
 
+    /// Pure: GitHub `owner/repo` out of a remote URL — scp-like
+    /// (`git@github.com:owner/repo.git`), `https://`, `ssh://`, with or without
+    /// userinfo and the `.git` suffix. `None` for anything not on github.com,
+    /// so a non-GitHub remote simply skips the checks built on this.
+    pub fn parse_github_slug(remote: &str) -> Option<String> {
+        let raw = remote.trim().trim_end_matches('/');
+        let raw = raw.strip_suffix(".git").unwrap_or(raw);
+        // Scheme, then userinfo — what's left starts at the host.
+        let rest = raw.split_once("://").map(|(_, r)| r).unwrap_or(raw);
+        let rest = rest.split_once('@').map(|(_, r)| r).unwrap_or(rest);
+        // `:` separates host from path in the scp-like form, `/` in a URL.
+        let (host, path) = rest.split_once([':', '/'])?;
+        if !host.eq_ignore_ascii_case("github.com") && !host.eq_ignore_ascii_case("www.github.com")
+        {
+            return None;
+        }
+        let mut parts = path.trim_start_matches('/').split('/');
+        let owner = parts.next()?;
+        let name = parts.next()?;
+        (!owner.is_empty() && !name.is_empty()).then(|| format!("{}/{}", owner, name))
+    }
+
+    /// `owner/repo` of the repo's `origin` remote, when it is a GitHub remote.
+    pub async fn origin_repo_slug(repo: &Path) -> Option<String> {
+        let out = git(repo, &["remote", "get-url", "origin"]).await.ok()?;
+        parse_github_slug(out.trim())
+    }
+
     async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         let out = tokio::process::Command::new("git")
             .args(args)
@@ -348,6 +376,28 @@ detached
                     ("no-date".to_string(), String::new()),
                 ]
             );
+        }
+
+        #[test]
+        fn github_slug_from_every_remote_form() {
+            let want = Some("owner/repo".to_string());
+            assert_eq!(parse_github_slug("git@github.com:owner/repo.git"), want);
+            assert_eq!(parse_github_slug("git@github.com:owner/repo"), want);
+            assert_eq!(parse_github_slug("https://github.com/owner/repo.git"), want);
+            assert_eq!(parse_github_slug("https://github.com/owner/repo/"), want);
+            assert_eq!(
+                parse_github_slug("ssh://git@github.com/owner/repo.git"),
+                want
+            );
+            assert_eq!(
+                parse_github_slug("https://token@github.com/owner/repo"),
+                want
+            );
+            assert_eq!(parse_github_slug("https://GitHub.com/owner/repo"), want);
+            // Not GitHub, or not a repo path.
+            assert_eq!(parse_github_slug("git@gitlab.com:owner/repo.git"), None);
+            assert_eq!(parse_github_slug("https://github.com/owner"), None);
+            assert_eq!(parse_github_slug("/local/bare/repo.git"), None);
         }
 
         #[test]

@@ -88,11 +88,19 @@ pub fn parse_pr_view_json(s: &str) -> Result<GhPrView, GhError> {
 }
 
 /// Pure: extract `owner/repo` and PR number from a GitHub PR URL.
+///
+/// Lenient about how the link was copied: the scheme and `www.` are optional
+/// (a URL pasted from a chat message or a `gh pr view` line often has neither)
+/// and trailing sub-pages (`/files`, `/commits/<sha>`) are ignored. What it
+/// still refuses is a link that isn't a PR (`/issues/42`) or isn't GitHub.
 pub fn parse_pr_url(url: &str) -> Option<(String, u64)> {
-    let rest = url
-        .trim()
-        .trim_end_matches('/')
-        .strip_prefix("https://github.com/")?;
+    let rest = url.trim().trim_end_matches('/');
+    let rest = rest
+        .strip_prefix("https://")
+        .or_else(|| rest.strip_prefix("http://"))
+        .unwrap_or(rest);
+    let rest = rest.strip_prefix("www.").unwrap_or(rest);
+    let rest = rest.strip_prefix("github.com/")?;
     let mut parts = rest.split('/');
     let owner = parts.next()?;
     let repo = parts.next()?;
@@ -109,9 +117,22 @@ pub fn parse_pr_url(url: &str) -> Option<(String, u64)> {
 /// `gh pr view [selector] --json …` in `dir`. The selector is a PR number, a
 /// branch or a URL; `""` means "the PR of the current branch".
 pub fn pr_view(dir: &Path, branch: &str) -> Result<GhPrView, GhError> {
+    pr_view_scoped(dir, branch, None)
+}
+
+/// [`pr_view`] scoped to an explicit `owner/repo` (`gh pr view <n> --repo …`).
+///
+/// A bare number is resolved against whatever repo `dir`'s remotes point at,
+/// so a PR *number* taken from a URL must carry that URL's repo with it —
+/// otherwise the same number silently resolves to a different PR in the local
+/// repo (or to nothing at all).
+pub fn pr_view_scoped(dir: &Path, selector: &str, repo: Option<&str>) -> Result<GhPrView, GhError> {
     let mut args = vec!["pr", "view"];
-    if !branch.is_empty() {
-        args.push(branch);
+    if !selector.is_empty() {
+        args.push(selector);
+    }
+    if let Some(repo) = repo {
+        args.extend(["--repo", repo]);
     }
     args.extend(["--json", PR_VIEW_FIELDS]);
     let output = run(dir, &args)?;
@@ -236,5 +257,33 @@ mod tests {
         assert!(parse_pr_url("https://github.com/acme/clash/issues/42").is_none());
         assert!(parse_pr_url("https://gitlab.com/acme/clash/pull/42").is_none());
         assert!(parse_pr_url("https://github.com/acme/clash/pull/abc").is_none());
+    }
+
+    /// Shapes a user actually pastes: a sub-page of the PR, no scheme (copied
+    /// from a chat message), `www.`, `http://`, surrounding whitespace.
+    #[test]
+    fn parse_pr_url_tolerates_real_world_pastes() {
+        let expected = Some(("acme/clash".to_string(), 42));
+        assert_eq!(
+            parse_pr_url("https://github.com/acme/clash/pull/42/files"),
+            expected
+        );
+        assert_eq!(
+            parse_pr_url("https://github.com/acme/clash/pull/42/commits/abc123"),
+            expected
+        );
+        assert_eq!(parse_pr_url("github.com/acme/clash/pull/42"), expected);
+        assert_eq!(parse_pr_url("www.github.com/acme/clash/pull/42"), expected);
+        assert_eq!(
+            parse_pr_url("http://www.github.com/acme/clash/pull/42"),
+            expected
+        );
+        assert_eq!(
+            parse_pr_url("  https://github.com/acme/clash/pull/42  "),
+            expected
+        );
+        // Still not a PR / not GitHub.
+        assert!(parse_pr_url("github.com/acme/clash/issues/42").is_none());
+        assert!(parse_pr_url("gitlab.com/acme/clash/pull/42").is_none());
     }
 }

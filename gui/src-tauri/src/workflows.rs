@@ -405,17 +405,39 @@ pub(crate) async fn create_workflow_review(
     // Resolve the source into (branch, base, pr block, fallback title).
     let (head, base, pr_block, pr_title) = match pr_selector {
         Some(selector) => {
-            // A URL is accepted verbatim by `gh pr view`, but parsing it first
-            // gives a clear error on a non-PR link before shelling out.
-            let selector = match clash::infrastructure::gh::parse_pr_url(&selector) {
-                Some((_repo, number)) => number.to_string(),
-                None if selector.chars().all(|c| c.is_ascii_digit()) => selector,
+            // A PR *number* is only meaningful against a repo. Parse the URL for
+            // its `owner/repo` and pass that to gh explicitly — dropping it and
+            // resolving the bare number in `repo` would hit a different PR (or
+            // none) whenever the link came from another repository.
+            let (selector, pr_repo) = match clash::infrastructure::gh::parse_pr_url(&selector) {
+                Some((slug, number)) => (number.to_string(), Some(slug)),
+                None if selector.chars().all(|c| c.is_ascii_digit()) => (selector, None),
                 None => return Err(format!("Not a GitHub PR URL or number: {}", selector)),
             };
+            // The review checkout fetches `refs/pull/<n>/head` from *this* repo's
+            // origin, so a PR from elsewhere can't be materialized here — say so
+            // instead of fetching an unrelated PR that happens to share the number.
+            if let (Some(pr_repo), Some(local)) = (
+                pr_repo.as_deref(),
+                clash::infrastructure::git::review::origin_repo_slug(&repo).await,
+            ) {
+                if !pr_repo.eq_ignore_ascii_case(&local) {
+                    return Err(format!(
+                        "That PR is in {} but the selected repository is {} ({}). \
+                         Pick the {} repository, or paste a PR from {}.",
+                        pr_repo,
+                        local,
+                        repo.display(),
+                        pr_repo,
+                        local
+                    ));
+                }
+            }
             let dir = repo.clone();
             let sel = selector.clone();
+            let scope = pr_repo.clone();
             let view = tauri::async_runtime::spawn_blocking(move || {
-                clash::infrastructure::gh::pr_view(&dir, &sel)
+                clash::infrastructure::gh::pr_view_scoped(&dir, &sel, scope.as_deref())
             })
             .await
             .map_err(|e| e.to_string())?
@@ -805,12 +827,13 @@ pub(crate) async fn start_workflow_agent(
     let prompt = clash::application::workflow::build_agent_prompt(&item_dir, &phase, meta.mode);
 
     {
+        let claude_bin = state.claude_bin();
         let mut control = state.control.lock().await;
         crate::ensure_connected(&mut control).await;
         control
             .create_session(
                 &session_id,
-                &state.claude_bin,
+                &claude_bin,
                 &["--session-id".to_string(), session_id.clone(), prompt],
                 Some(&cwd),
                 Some(name),
