@@ -85,12 +85,15 @@ findings into `agent-review.md` and `annotations.json` and never touches
 - Git: commit your work on the current branch with clear conventional
   messages. **Never `--no-verify`** — if a hook fails, fix the cause or stop and
   explain in your final message. Pushing:
-  - `full` / `from-plan`: **never push** unless creating the PR requires it
-    (`gh pr create` pushes the branch).
-  - `review-only`: **push after committing** — plain `git push` (add
-    `-u origin <branch>` if it has no upstream), so the PR under review picks
-    up the fixes. Never force-push, never rewrite published history; if the
-    push is rejected, stop and report it instead of forcing.
+  - `full` / `from-plan` **without a PR**: never push — the branch is
+    unpublished and publishing it is the human's call (creating the PR is
+    what pushes it).
+  - **Any mode with a PR** (`meta.pr.url` is set) or `review-only`: **push
+    after committing** — plain `git push` (add `-u origin <branch>` if it has
+    no upstream). The branch is published and the PR must reflect the fixes;
+    a fix round that only commits locally leaves the PR silently stale.
+    Never force-push, never rewrite published history; if the push is
+    rejected, stop and report it instead of forcing.
 
 ## Phase: plan
 
@@ -128,7 +131,9 @@ Read the **latest** `## Iteration` section of `review.md` first.
      to its `replies`. Keep all other fields intact.
    - Never delete an annotation and never touch ones already
      addressed/wontfixed by earlier rounds.
-4. Commit the work (small, reviewable commits are fine).
+4. Commit the work (small, reviewable commits are fine). If this item
+   already has a PR (`meta.pr.url` is set), push (see Git above) so the PR
+   picks up the fixes.
 5. **`review-only`**: push the branch (see Git above), then finish at
    `"diff-review"` — you are done, skip steps 6–7.
 6. **Only if the repo clearly works through PRs** — an existing `pr.url` on this

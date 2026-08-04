@@ -113,8 +113,12 @@ impl WorkflowStatus {
             // its default branch has no PR to shepherd, and review-only items
             // track a PR clash doesn't own.
             DiffReview => matches!(next, PrDraft | ChangesRequested | Implementing | Done),
-            PrDraft => matches!(next, PrReady | Done | DiffReview),
-            PrReady => matches!(next, Done | PrDraft),
+            PrDraft => matches!(next, PrReady | Done | DiffReview | ChangesRequested),
+            // `ChangesRequested` is reachable from both PR states: review
+            // feedback (agent rounds, GitHub review comments) keeps arriving
+            // after the PR exists, and without this edge those findings could
+            // never become a fix round — the item was a dead end.
+            PrReady => matches!(next, Done | PrDraft | ChangesRequested),
             // Reopen path for finished items.
             Done => matches!(next, DiffReview),
             Abandoned => matches!(next, DiffReview | Draft),
@@ -460,6 +464,23 @@ pub struct NewWorkflowItem {
     pub pr: Option<WorkflowPr>,
 }
 
+/// The latest round of `agent-review.md`, parsed at list time — a runtime DTO,
+/// never persisted (the file is the source of truth). What the GUI needs to
+/// answer "what did the last review round conclude, and did it publish
+/// anything?" without the user opening the whole report.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentReviewSummary {
+    /// 1-based round number from the `## Review <n>` heading.
+    pub round: u32,
+    /// Heading tail after the round number, e.g. `diff · deep · 2026-08-04 17:27`.
+    pub heading: String,
+    /// The `**Verdict:**` paragraph, whitespace-collapsed to one line.
+    pub verdict: String,
+    /// The `### Published` bullet lines; empty when the round declared nothing.
+    pub published: Vec<String>,
+}
+
 /// A workflow item as listed to the frontends — a runtime DTO like
 /// [`crate::domain::entities::ScratchNote`]: `project`/`slug` are computed
 /// from the directory layout (the path *is* the identity, never trusted from
@@ -488,6 +509,9 @@ pub struct WorkflowItem {
     /// alive while the item claims an agent is working (planning /
     /// implementing). Computed by the GUI layer against live sessions.
     pub agent_alive: bool,
+    /// Latest round parsed from `agent-review.md`, when one exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_agent_review: Option<AgentReviewSummary>,
 }
 
 /// Resolution state of a diff annotation.
@@ -684,7 +708,9 @@ mod tests {
             (DiffReview, Done),             // Approve → done (no PR required)
             (DiffReview, ChangesRequested), // Request changes
             (PrDraft, PrReady),             // Mark PR ready
+            (PrDraft, ChangesRequested),    // Request changes on the draft PR
             (PrReady, Done),                // Mark done
+            (PrReady, ChangesRequested),    // Request changes on the ready PR
             (Done, DiffReview),             // Reopen
             (Abandoned, DiffReview),        // Reopen
         ];

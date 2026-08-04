@@ -551,13 +551,20 @@ spawns a Claude Code session in a dedicated git worktree, driven by the
 `clash-workflow` skill → read the rendered plan, *Approve* or *Request
 changes* → during **diff review**, hover any line of the diff
 and press `+` to leave a GitHub-style comment (threads support reply / edit /
-resolve / wontfix); *Request changes* snapshots the iteration (diff +
+resolve / wontfix); *Request changes* snapshots the iteration (diff + plan +
 annotations frozen under `history/`), appends your note and the open
 comments to the `review.md` audit trail, and hands back to the agent, which
 must address every open comment → *Approve → done* closes the item, or
 *Create draft PR* (via `gh`) first if you want the PR stages, in which case
 *Mark PR ready* flips the draft once you've validated everything. A merged PR
-moves the item to done automatically. Approving never requires a PR — a repo
+moves the item to done automatically. *Request changes* stays available at
+`pr-draft` and `pr-ready` — review feedback keeps arriving once a PR is up,
+and a fix round on an item with a PR pushes its commits so the PR follows.
+The **History** tab lists every frozen iteration with both a *code diff* and a
+*plan diff* view, so "what did that revision actually change in the plan" has
+an answer. A **pipeline stepper** at the top of every item shows the mode's
+stages, where the item currently is, and how many change/review rounds it has
+been through. Approving never requires a PR — a repo
 that merges straight to its default branch just approves and is done.
 *Create draft PR* on a branch that has never been pushed pushes it first
 (`git push --set-upstream`, `origin` when it exists) and then opens the PR —
@@ -594,7 +601,14 @@ the round reviews `plan.md`, everywhere else it reviews the code. Code findings
 come back as **real diff annotations** (graded `BLOCKER`/`RISK`/`GAP`/`NIT`,
 authored `agent`) that you triage in the Diff tab exactly like your own, so one
 *Request changes* turns them into the next round of work; plan findings and the
-round's verdict land in an **Agent reviews** tab that accumulates every round.
+round's verdict land in an **Agent reviews** tab that accumulates every round
+(with per-round jump chips, opening on the latest). When a round finishes, its
+**verdict and what it published** show up in the hand-back toast and as a
+clickable strip on the item — a round that posted nothing to the PR (say,
+"answer the PR's comments" found none to answer) says so where you can see it,
+not three screens deep in a report. And publishing is never launch-only:
+**↗ Post round N to PR** shares an already-written round as one PR comment,
+no new review needed.
 The reviewer may fix only trivial mechanical issues (typos, unused imports,
 formatting) and must declare them — anything behavioral is a finding, not a fix,
 because a reviewer that rewrites what it reviews has reviewed nothing. While a

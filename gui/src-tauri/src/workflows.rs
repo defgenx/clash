@@ -32,6 +32,13 @@ struct WorkflowAttention {
     slug: String,
     title: String,
     status: WorkflowStatus,
+    /// The status the item left — `reviewing` means a round just handed back.
+    from: WorkflowStatus,
+    /// The round that just finished, when `from` was `reviewing` — lets the
+    /// toast state the verdict and what was published instead of a bare
+    /// "decision needed".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review: Option<clash::domain::workflow::AgentReviewSummary>,
 }
 
 /// List every workflow item, decorated with the agent-liveness cross-check,
@@ -79,6 +86,14 @@ pub(crate) async fn list_workflow_items(
             .and_then(|w| w.is_focused().ok())
             .unwrap_or(false);
         for ev in events {
+            let review = (ev.from == WorkflowStatus::Reviewing)
+                .then(|| {
+                    items
+                        .iter()
+                        .find(|i| i.project == ev.project && i.slug == ev.slug)
+                        .and_then(|i| i.last_agent_review.clone())
+                })
+                .flatten();
             let _ = app.emit(
                 "workflow-attention",
                 WorkflowAttention {
@@ -86,6 +101,8 @@ pub(crate) async fn list_workflow_items(
                     slug: ev.slug.clone(),
                     title: ev.title.clone(),
                     status: ev.status,
+                    from: ev.from,
+                    review,
                 },
             );
             if !focused
@@ -93,11 +110,16 @@ pub(crate) async fn list_workflow_items(
                     .notify_enabled
                     .load(std::sync::atomic::Ordering::Relaxed)
             {
-                let what = match ev.status {
-                    WorkflowStatus::PlanReview => "plan ready for review",
-                    WorkflowStatus::DiffReview => "changes ready for review",
-                    WorkflowStatus::PrDraft => "draft PR awaiting validation",
-                    _ => "needs your decision",
+                let what = if ev.from == WorkflowStatus::Reviewing {
+                    "review round finished — read the findings"
+                } else {
+                    match ev.status {
+                        WorkflowStatus::PlanReview => "plan ready for review",
+                        WorkflowStatus::DiffReview => "changes ready for review",
+                        WorkflowStatus::PrDraft => "draft PR awaiting validation",
+                        WorkflowStatus::PrReady => "PR ready — merge or keep iterating",
+                        _ => "needs your decision",
+                    }
                 };
                 let title = if ev.title.is_empty() {
                     ev.slug.clone()
@@ -699,6 +721,49 @@ pub(crate) async fn workflow_request_changes(
     Ok(meta)
 }
 
+/// The plan change of one iteration: snapshot `it` against snapshot `it+1`
+/// when one exists, else against the current `plan.md`. Empty string when the
+/// plan did not change (or the snapshot predates plan snapshotting).
+#[tauri::command]
+pub(crate) fn get_workflow_plan_diff(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    iteration: u32,
+) -> Result<String, String> {
+    let old = state
+        .backend
+        .read_workflow_history_plan(&project, &slug, iteration)
+        .map_err(e2s)?;
+    let Some(old) = old else {
+        return Ok(String::new());
+    };
+    let (new, new_label) = match state
+        .backend
+        .read_workflow_history_plan(&project, &slug, iteration + 1)
+        .map_err(e2s)?
+    {
+        Some(next) => (next, format!("plan.md (it.{})", iteration + 1)),
+        None => (
+            state
+                .backend
+                .read_workflow_doc(
+                    &project,
+                    &slug,
+                    clash::infrastructure::fs::workflows::PLAN_FILE,
+                )
+                .map_err(e2s)?,
+            "plan.md (current)".to_string(),
+        ),
+    };
+    Ok(clash::application::diff::unified_diff(
+        &old,
+        &new,
+        &format!("plan.md (it.{})", iteration),
+        &new_label,
+    ))
+}
+
 /// Delete a whole workflow item (used by Abandon → Delete).
 #[tauri::command]
 pub(crate) fn delete_workflow_item(
@@ -1209,6 +1274,62 @@ pub(crate) async fn refresh_workflow_pr(
         seed_local(&state, &project, &slug, meta.status);
     }
     Ok(meta)
+}
+
+/// Post the latest agent-review round to the item's PR as one comment.
+///
+/// This is the recovery path for a round whose findings stayed local — a
+/// `local` round the human decided is worth sharing, or a
+/// `respond-pr-comments` round that found nothing to answer. Publishing was
+/// previously only choosable at launch, so getting findings onto the PR
+/// afterwards meant burning a whole new review round.
+#[tauri::command]
+pub(crate) async fn publish_workflow_review(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+) -> Result<u32, String> {
+    let meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    let pr = meta
+        .pr
+        .clone()
+        .filter(|p| p.number > 0)
+        .ok_or_else(|| "no-pr: this item has no pull request yet".to_string())?;
+    let report = state
+        .backend
+        .read_workflow_doc(
+            &project,
+            &slug,
+            clash::infrastructure::fs::workflows::AGENT_REVIEW_FILE,
+        )
+        .map_err(e2s)?;
+    let (round, section) = clash::application::workflow::latest_agent_review_section(&report)
+        .ok_or_else(|| "This item has no agent review round to post".to_string())?;
+    let body = format!(
+        "### clash · agent review round {}\n\n{}",
+        round,
+        section
+            .strip_prefix(&format!("## Review {}", round))
+            .map(|rest| {
+                // Drop the duplicated heading line, keep everything after it.
+                rest.split_once('\n')
+                    .map(|(_, b)| b)
+                    .unwrap_or("")
+                    .to_string()
+            })
+            .unwrap_or(section)
+    );
+    let dir = pr_dir(&meta)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        clash::infrastructure::gh::pr_comment(Path::new(&dir), pr.number, &body)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(gh_err)?;
+    Ok(round)
 }
 
 /// Flip the draft PR to ready-for-review (`gh pr ready`) — the validation

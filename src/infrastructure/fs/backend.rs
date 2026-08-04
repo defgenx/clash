@@ -1630,6 +1630,15 @@ impl crate::domain::ports::WorkflowRepository for FsBackend {
         super::workflows::read_history_diff(&self.workflows_dir(), project, slug, iteration)
     }
 
+    fn read_workflow_history_plan(
+        &self,
+        project: &str,
+        slug: &str,
+        iteration: u32,
+    ) -> Result<Option<String>> {
+        super::workflows::read_history_plan(&self.workflows_dir(), project, slug, iteration)
+    }
+
     fn delete_workflow_item(&self, project: &str, slug: &str) -> Result<()> {
         super::workflows::delete_item(&self.workflows_dir(), project, slug)
     }

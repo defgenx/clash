@@ -8,7 +8,9 @@
 use std::collections::HashMap;
 
 use crate::application::diff::{FileDiff, HunkLine};
-use crate::domain::workflow::{Annotation, DiffSide, WorkflowItem, WorkflowMode, WorkflowStatus};
+use crate::domain::workflow::{
+    AgentReviewSummary, Annotation, DiffSide, WorkflowItem, WorkflowMode, WorkflowStatus,
+};
 
 // ── Slugs ───────────────────────────────────────────────────────────────
 
@@ -200,6 +202,9 @@ pub struct AttentionEvent {
     pub slug: String,
     pub title: String,
     pub status: WorkflowStatus,
+    /// The status the item left — `Reviewing` means a review round just
+    /// handed back, which the GUI reports with the round's verdict.
+    pub from: WorkflowStatus,
 }
 
 /// Pure transition detector behind workflow notifications.
@@ -240,6 +245,7 @@ impl AttentionLedger {
                         slug: item.slug.clone(),
                         title: item.meta.title.clone(),
                         status,
+                        from: prev,
                     });
                 }
                 _ => {}
@@ -247,6 +253,119 @@ impl AttentionLedger {
         }
         events
     }
+}
+
+// ── Agent review report parsing ─────────────────────────────────────────
+
+/// Pure: parse the **last** `## Review <n> …` round out of `agent-review.md`.
+///
+/// The section shape is contractual (the `clash-review` skill's Finish step):
+/// a `## Review <n> — <heading>` heading, a `**Verdict:**` paragraph, and a
+/// `### Published` list. Everything is parsed leniently — a missing piece
+/// yields an empty field, never a parse failure, because the file is
+/// agent-written prose.
+pub fn latest_agent_review(md: &str) -> Option<AgentReviewSummary> {
+    let lines: Vec<&str> = md.lines().collect();
+    let (start, end, round) = last_round_bounds(&lines)?;
+    let rest = lines[start].strip_prefix("## Review ").unwrap_or_default();
+    let round_tok = rest.split_whitespace().next().unwrap_or_default();
+    let heading = rest[round_tok.len()..]
+        .trim_start()
+        .trim_start_matches(['—', '-'])
+        .trim()
+        .to_string();
+    let section = &lines[start + 1..end];
+
+    // Verdict: from the `**Verdict:**` marker to the first blank line,
+    // collapsed to one line.
+    let verdict = section
+        .iter()
+        .position(|l| l.trim_start().starts_with("**Verdict:**"))
+        .map(|i| {
+            let mut parts: Vec<&str> = Vec::new();
+            let first = section[i].trim_start().trim_start_matches("**Verdict:**");
+            parts.push(first.trim());
+            for l in &section[i + 1..] {
+                if l.trim().is_empty() || l.starts_with('#') {
+                    break;
+                }
+                parts.push(l.trim());
+            }
+            parts.join(" ").trim().to_string()
+        })
+        .unwrap_or_default();
+
+    // Published: the non-empty lines under `### Published`, bullets stripped.
+    let published = section
+        .iter()
+        .position(|l| l.trim() == "### Published")
+        .map(|i| {
+            let mut out = Vec::new();
+            let mut para: Vec<&str> = Vec::new();
+            for l in &section[i + 1..] {
+                if l.starts_with('#') {
+                    break;
+                }
+                let t = l.trim();
+                if t.is_empty() {
+                    continue;
+                }
+                // A new bullet closes the previous one; continuation lines of
+                // a wrapped bullet are joined onto it.
+                if let Some(item) = t.strip_prefix("- ") {
+                    if !para.is_empty() {
+                        out.push(para.join(" "));
+                    }
+                    para = vec![item.trim()];
+                } else if !para.is_empty() {
+                    para.push(t);
+                } else {
+                    para = vec![t];
+                }
+            }
+            if !para.is_empty() {
+                out.push(para.join(" "));
+            }
+            out
+        })
+        .unwrap_or_default();
+
+    Some(AgentReviewSummary {
+        round,
+        heading,
+        verdict,
+        published,
+    })
+}
+
+/// Line span (start inclusive, end exclusive) and round number of the last
+/// `## Review <n> …` section. `end` is the next H2 or EOF.
+fn last_round_bounds(lines: &[&str]) -> Option<(usize, usize, u32)> {
+    let start = lines.iter().rposition(|l| {
+        l.strip_prefix("## Review ")
+            .and_then(|rest| rest.split_whitespace().next())
+            .is_some_and(|tok| tok.parse::<u32>().is_ok())
+    })?;
+    let round: u32 = lines[start]
+        .strip_prefix("## Review ")?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| l.starts_with("## "))
+        .map(|i| start + 1 + i)
+        .unwrap_or(lines.len());
+    Some((start, end, round))
+}
+
+/// Pure: the full markdown of the last `## Review <n>` section, heading
+/// included — what "Post round N to the PR" publishes as one PR comment.
+pub fn latest_agent_review_section(md: &str) -> Option<(u32, String)> {
+    let lines: Vec<&str> = md.lines().collect();
+    let (start, end, round) = last_round_bounds(&lines)?;
+    Some((round, lines[start..end].join("\n").trim_end().to_string()))
 }
 
 // ── Model selection ─────────────────────────────────────────────────────
@@ -298,7 +417,7 @@ pub fn pr_body_from_plan(plan: &str, iteration: u32, review_rounds: u32) -> Opti
     let mut trail = Vec::new();
     if iteration > 0 {
         trail.push(format!(
-            "{} implementation round{}",
+            "{} change round{}",
             iteration,
             if iteration > 1 { "s" } else { "" }
         ));
@@ -508,7 +627,7 @@ mod tests {
         let b = pr_body_from_plan("Add a widget.\n\n- step one", 2, 1).unwrap();
         assert!(b.starts_with("## Plan\n\nAdd a widget."));
         assert!(b.contains("- step one"));
-        assert!(b.contains("2 implementation rounds and 1 agent review round"));
+        assert!(b.contains("2 change rounds and 1 agent review round"));
     }
 
     #[test]
@@ -706,6 +825,74 @@ diff --git a/dup.rs b/dup.rs
         assert_eq!(out[0].current_line, Some(11));
     }
 
+    // ── latest_agent_review ─────────────────────────────────────────
+
+    const REVIEW_MD: &str = "\
+# Agent review\n\n\
+## Review 1 — plan · deep · 2026-08-03 11:52\n\n\
+**Verdict:** ship it\n\n\
+### Blockers\n\nnone\n\n\
+## Review 4 — diff · deep · 2026-08-04 17:27\n\n\
+**Verdict:** 2 blockers, both procedural fallout from round 3's decisions\n\
+not landing in the branch: the commit message still ships a MAJOR.\n\n\
+### Blockers\n\n1. `a.yml:99` — wrong\n\n\
+### Published\n\n\
+- Publish mode was `respond-pr-comments`, but PR #571 has **zero review\n\
+  comments** — nothing to answer, so nothing was posted.\n\
+- Findings live in `annotations.json` (r4-1 … r4-12).\n";
+
+    #[test]
+    fn latest_agent_review_parses_last_round() {
+        let s = latest_agent_review(REVIEW_MD).expect("summary");
+        assert_eq!(s.round, 4);
+        assert_eq!(s.heading, "diff · deep · 2026-08-04 17:27");
+        // Wrapped verdict collapses to one line and stops at the blank line.
+        assert!(s.verdict.starts_with("2 blockers, both procedural"));
+        assert!(s.verdict.ends_with("ships a MAJOR."));
+        assert!(!s.verdict.contains('\n'));
+        // Wrapped bullets are joined; both entries survive.
+        assert_eq!(s.published.len(), 2);
+        assert!(s.published[0].contains("nothing was posted"));
+        assert!(s.published[1].starts_with("Findings live"));
+    }
+
+    #[test]
+    fn latest_agent_review_without_published_or_verdict() {
+        let s = latest_agent_review("## Review 2 — plan · standard · x\n\nprose only\n")
+            .expect("summary");
+        assert_eq!(s.round, 2);
+        assert_eq!(s.verdict, "");
+        assert!(s.published.is_empty());
+    }
+
+    #[test]
+    fn latest_agent_review_ignores_non_round_h2s() {
+        // Interleaved sections like "## Addendum 2 …" or decision logs must not
+        // shadow the last real round (both occur in real files).
+        let md = format!(
+            "{}\n## Addendum 2 — refined against sprint\n\nmore\n",
+            REVIEW_MD
+        );
+        let s = latest_agent_review(&md).expect("summary");
+        assert_eq!(s.round, 4);
+    }
+
+    #[test]
+    fn latest_agent_review_none_when_no_rounds() {
+        assert!(latest_agent_review("").is_none());
+        assert!(latest_agent_review("# notes\n\njust prose\n").is_none());
+    }
+
+    #[test]
+    fn latest_agent_review_section_returns_whole_round() {
+        let (round, section) = latest_agent_review_section(REVIEW_MD).expect("section");
+        assert_eq!(round, 4);
+        assert!(section.starts_with("## Review 4 — diff · deep"));
+        assert!(section.contains("### Published"));
+        // Round 1's content stays out.
+        assert!(!section.contains("ship it"));
+    }
+
     // ── AttentionLedger ─────────────────────────────────────────────
 
     fn item(project: &str, slug: &str, status: WorkflowStatus) -> WorkflowItem {
@@ -734,6 +921,16 @@ diff --git a/dup.rs b/dup.rs
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].status, WorkflowStatus::PlanReview);
         assert_eq!(events[0].slug, "a");
+        assert_eq!(events[0].from, WorkflowStatus::Planning);
+    }
+
+    #[test]
+    fn ledger_review_handback_carries_from_reviewing() {
+        let mut ledger = AttentionLedger::default();
+        ledger.observe(&[item("p", "a", WorkflowStatus::Reviewing)]);
+        let events = ledger.observe(&[item("p", "a", WorkflowStatus::PrDraft)]);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].from, WorkflowStatus::Reviewing);
     }
 
     #[test]

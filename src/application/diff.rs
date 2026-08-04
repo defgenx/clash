@@ -332,6 +332,126 @@ pub fn extract_files(lines: &[DiffLine]) -> Vec<DiffFile> {
     files
 }
 
+// ── Diff generation ─────────────────────────────────────────────────────
+
+/// Pure: produce a unified diff between two texts (LCS-based, 3 context
+/// lines), headed `--- <old_label>` / `+++ <new_label>`.
+///
+/// Exists for diffing *item documents* (plan snapshots against the current
+/// plan) where shelling out to `git diff --no-index` would drag temp-file
+/// paths into the headers and an exit-code-1-on-difference quirk into the
+/// caller. Documents are small; the O(n·m) LCS table is fine here — do not
+/// point this at source trees.
+///
+/// `dead_code` allowed: consumed by the GUI (lib crate) only, like the
+/// workflow port — the private-`mod` bin build never calls it.
+#[allow(dead_code)]
+pub fn unified_diff(old: &str, new: &str, old_label: &str, new_label: &str) -> String {
+    const CTX: usize = 3;
+    let a: Vec<&str> = old.lines().collect();
+    let b: Vec<&str> = new.lines().collect();
+
+    // LCS table (suffix lengths).
+    let mut lcs = vec![vec![0u32; b.len() + 1]; a.len() + 1];
+    for i in (0..a.len()).rev() {
+        for j in (0..b.len()).rev() {
+            lcs[i][j] = if a[i] == b[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+
+    // Walk into an edit script: (kind, old_idx, new_idx).
+    #[derive(Clone, Copy, PartialEq)]
+    enum Op {
+        Ctx,
+        Del,
+        Add,
+    }
+    let mut script: Vec<(Op, usize, usize)> = Vec::new();
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < a.len() && j < b.len() {
+        if a[i] == b[j] {
+            script.push((Op::Ctx, i, j));
+            i += 1;
+            j += 1;
+        } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+            script.push((Op::Del, i, j));
+            i += 1;
+        } else {
+            script.push((Op::Add, i, j));
+            j += 1;
+        }
+    }
+    for k in i..a.len() {
+        script.push((Op::Del, k, j));
+    }
+    for k in j..b.len() {
+        script.push((Op::Add, i, k));
+    }
+    if !script.iter().any(|(op, _, _)| *op != Op::Ctx) {
+        return String::new();
+    }
+
+    // Group changes into hunks with CTX lines of context.
+    let mut out = format!("--- {}\n+++ {}\n", old_label, new_label);
+    let change_idx: Vec<usize> = script
+        .iter()
+        .enumerate()
+        .filter(|(_, (op, _, _))| *op != Op::Ctx)
+        .map(|(k, _)| k)
+        .collect();
+    let mut hunk_start = 0usize;
+    while hunk_start < change_idx.len() {
+        let mut hunk_end = hunk_start;
+        while hunk_end + 1 < change_idx.len()
+            && change_idx[hunk_end + 1] - change_idx[hunk_end] <= CTX * 2
+        {
+            hunk_end += 1;
+        }
+        let lo = change_idx[hunk_start].saturating_sub(CTX);
+        let hi = (change_idx[hunk_end] + CTX + 1).min(script.len());
+        let slice = &script[lo..hi];
+        let old_start = slice
+            .iter()
+            .find(|(op, _, _)| *op != Op::Add)
+            .map(|(_, oi, _)| oi + 1)
+            .unwrap_or_else(|| slice.first().map(|(_, oi, _)| oi + 1).unwrap_or(1));
+        let new_start = slice
+            .iter()
+            .find(|(op, _, _)| *op != Op::Del)
+            .map(|(_, _, ni)| ni + 1)
+            .unwrap_or_else(|| slice.first().map(|(_, _, ni)| ni + 1).unwrap_or(1));
+        let old_count = slice.iter().filter(|(op, _, _)| *op != Op::Add).count();
+        let new_count = slice.iter().filter(|(op, _, _)| *op != Op::Del).count();
+        out.push_str(&format!(
+            "@@ -{},{} +{},{} @@\n",
+            old_start, old_count, new_start, new_count
+        ));
+        for (op, oi, ni) in slice {
+            match op {
+                Op::Ctx => {
+                    out.push(' ');
+                    out.push_str(a[*oi]);
+                }
+                Op::Del => {
+                    out.push('-');
+                    out.push_str(a[*oi]);
+                }
+                Op::Add => {
+                    out.push('+');
+                    out.push_str(b[*ni]);
+                }
+            }
+            out.push('\n');
+        }
+        hunk_start = hunk_end + 1;
+    }
+    out
+}
+
 /// Count Add and Remove lines in the range `[start, end)`.
 fn count_changes(lines: &[DiffLine], start: usize, end: usize) -> (usize, usize) {
     let mut additions = 0;
@@ -349,6 +469,43 @@ fn count_changes(lines: &[DiffLine], start: usize, end: usize) -> (usize, usize)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── unified_diff generation ─────────────────────────────────────
+
+    #[test]
+    fn unified_diff_identical_is_empty() {
+        assert_eq!(unified_diff("a\nb\n", "a\nb\n", "old", "new"), "");
+    }
+
+    #[test]
+    fn unified_diff_simple_change_roundtrips_through_the_parser() {
+        let old = "# Plan\n\nstep one\nstep two\nstep three\ntail\n";
+        let new = "# Plan\n\nstep one\nstep 2 (revised)\nstep three\ntail\n";
+        let d = unified_diff(old, new, "plan.md (it.1)", "plan.md (current)");
+        assert!(d.starts_with("--- plan.md (it.1)\n+++ plan.md (current)\n"));
+        assert!(d.contains("-step two\n"));
+        assert!(d.contains("+step 2 (revised)\n"));
+        // Our own structural parser must be able to consume what we emit.
+        let files = parse_file_diffs(&d);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].hunks.len(), 1);
+    }
+
+    #[test]
+    fn unified_diff_distant_changes_get_separate_hunks() {
+        let old: String = (1..=40).map(|i| format!("line {}\n", i)).collect();
+        let new = old
+            .replace("line 3\n", "LINE 3\n")
+            .replace("line 38\n", "LINE 38\n");
+        let d = unified_diff(&old, &new, "a", "b");
+        assert_eq!(d.matches("@@ ").count(), 2, "{}", d);
+    }
+
+    #[test]
+    fn unified_diff_from_empty_old() {
+        let d = unified_diff("", "first\nsecond\n", "a", "b");
+        assert!(d.contains("+first\n+second\n"), "{}", d);
+    }
 
     // ── display view (moved verbatim from the TUI diff widget) ─────
 

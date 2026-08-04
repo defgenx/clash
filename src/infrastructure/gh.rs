@@ -388,6 +388,31 @@ pub fn pr_create_draft(
     pr_view(dir, "")
 }
 
+/// `gh pr comment <number> --body-file <tmp>` in `dir` — post one issue-level
+/// comment on the PR. The body travels through a temp file: the hardened
+/// runner closes stdin (see `spawn_quiet`), and a full review round pasted
+/// into argv can exceed platform limits.
+pub fn pr_comment(dir: &Path, number: u64, body: &str) -> Result<(), GhError> {
+    let tmp = std::env::temp_dir().join(format!(
+        "clash-pr-comment-{}-{}.md",
+        std::process::id(),
+        number
+    ));
+    std::fs::write(&tmp, body).map_err(|e| GhError::Command(e.to_string()))?;
+    let n = number.to_string();
+    let tmp_arg = tmp.to_string_lossy().into_owned();
+    let result = run(dir, &["pr", "comment", &n, "--body-file", &tmp_arg]);
+    let _ = std::fs::remove_file(&tmp);
+    let output = result?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(GhError::Command(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
+}
+
 /// `gh pr ready <number>` in `dir` — flips a draft PR to ready-for-review.
 pub fn pr_ready(dir: &Path, number: u64) -> Result<(), GhError> {
     let number = number.to_string();

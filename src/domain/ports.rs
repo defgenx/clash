@@ -236,6 +236,17 @@ pub trait WorkflowRepository: Send + Sync {
         Ok(String::new())
     }
 
+    /// Read a snapshotted plan for an iteration — `None` when the snapshot
+    /// predates plan snapshotting or the item has no plan phase.
+    fn read_workflow_history_plan(
+        &self,
+        _project: &str,
+        _slug: &str,
+        _iteration: u32,
+    ) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// Delete an item directory recursively.
     fn delete_workflow_item(&self, _project: &str, _slug: &str) -> Result<()> {
         Ok(())

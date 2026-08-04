@@ -124,16 +124,28 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
     } else {
         (count_open_annotations(&dir), list_history(&dir))
     };
+    let has_agent_review = has_content(&dir.join(AGENT_REVIEW_FILE));
+    // The latest round's verdict/published lines, so the GUI can say what a
+    // finished round concluded without the user opening the whole report.
+    let last_agent_review = if !terminal && has_agent_review {
+        std::fs::read_to_string(dir.join(AGENT_REVIEW_FILE))
+            .ok()
+            .as_deref()
+            .and_then(crate::application::workflow::latest_agent_review)
+    } else {
+        None
+    };
     Ok(WorkflowItem {
         project: project.to_string(),
         slug: slug.to_string(),
         path: dir.to_string_lossy().into_owned(),
         has_plan: has_content(&dir.join(PLAN_FILE)),
         has_review: has_content(&dir.join(REVIEW_FILE)),
-        has_agent_review: has_content(&dir.join(AGENT_REVIEW_FILE)),
+        has_agent_review,
         open_annotations,
         history_iterations,
         agent_alive: true, // cross-checked against live sessions by the GUI layer
+        last_agent_review,
         meta,
     })
 }
@@ -337,7 +349,9 @@ pub fn write_annotations(
 // ── History snapshots ───────────────────────────────────────────────────
 
 /// Snapshot the current iteration into `history/{iteration:03}/`: the given
-/// diff plus a frozen copy of `annotations.json`.
+/// diff, a frozen copy of `annotations.json`, and a frozen copy of `plan.md`
+/// (when the item has one) — without the plan copy, a revision round leaves
+/// no trace of what it changed in the plan.
 ///
 /// Does NOT bump `iteration` or touch `meta.json` — the caller performs the
 /// single meta write (iteration+1 + status) *after* this succeeds, so a
@@ -355,6 +369,11 @@ pub fn snapshot_iteration(root: &Path, project: &str, slug: &str, diff: &str) ->
         &snap_dir.join(ANNOTATIONS_FILE),
         serde_json::to_string_pretty(&annotations)?.as_bytes(),
     )?;
+    if let Ok(plan) = std::fs::read_to_string(dir.join(PLAN_FILE)) {
+        if !plan.trim().is_empty() {
+            write_atomic(&snap_dir.join(PLAN_FILE), plan.as_bytes())?;
+        }
+    }
     Ok(iter)
 }
 
@@ -380,6 +399,26 @@ pub fn read_history_diff(root: &Path, project: &str, slug: &str, iteration: u32)
             e
         ))
     })
+}
+
+/// Read a snapshotted plan from `history/{iteration:03}/plan.md`. `Ok(None)`
+/// when the snapshot predates plan snapshotting or the item had no plan.
+pub fn read_history_plan(
+    root: &Path,
+    project: &str,
+    slug: &str,
+    iteration: u32,
+) -> Result<Option<String>> {
+    let dir = existing_item_dir(root, project, slug)?;
+    let path = dir
+        .join(HISTORY_DIR)
+        .join(format!("{:03}", iteration))
+        .join(PLAN_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[cfg(test)]
@@ -636,6 +675,29 @@ mod tests {
 
         // Listing picks up the snapshot.
         assert_eq!(load_items(&root).unwrap()[0].history_iterations, vec![1]);
+    }
+
+    #[test]
+    fn snapshot_freezes_the_plan_when_one_exists() {
+        let (_g, root) = root();
+        // No plan → no plan file in the snapshot, and reading it says so.
+        create_item(&root, &req("p", "no-plan", "")).unwrap();
+        snapshot_iteration(&root, "p", "no-plan", "d").unwrap();
+        assert_eq!(read_history_plan(&root, "p", "no-plan", 1).unwrap(), None);
+
+        // With a plan → frozen copy, still readable after the live plan moves on.
+        create_item(&root, &req("p", "planned", "")).unwrap();
+        write_doc(&root, "p", "planned", PLAN_FILE, "# v1 plan\n").unwrap();
+        snapshot_iteration(&root, "p", "planned", "d").unwrap();
+        write_doc(&root, "p", "planned", PLAN_FILE, "# v2 plan\n").unwrap();
+        assert_eq!(
+            read_history_plan(&root, "p", "planned", 1)
+                .unwrap()
+                .as_deref(),
+            Some("# v1 plan\n")
+        );
+        // A snapshot that predates plan snapshotting reads as None, not an error.
+        assert_eq!(read_history_plan(&root, "p", "planned", 7).unwrap(), None);
     }
 
     #[test]

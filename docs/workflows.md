@@ -19,7 +19,7 @@ workflows are a structured store.
 ├── review.md          # append-only iteration audit trail (clash writes, agent reads)
 ├── agent-review.md    # append-only agent review rounds (agent writes, clash renders)
 ├── annotations.json   # line-level diff comments
-└── history/<NNN>/     # per-iteration snapshots (diff.patch + annotations.json)
+└── history/<NNN>/     # per-iteration snapshots (diff.patch + plan.md + annotations.json)
 ```
 
 `review.md` and `agent-review.md` are deliberately two files: the first is
@@ -45,6 +45,13 @@ The `pr-*` stages are **optional**. Approving at `diff-review` may go straight t
 through a draft-PR step it has no use for. `diff-review → pr-draft` remains for
 items that do use a PR.
 
+The `pr-*` stages are also **not a dead end**: `pr-draft → changes-requested`
+and `pr-ready → changes-requested` are legal, because review feedback (agent
+rounds, GitHub review comments) keeps arriving after the PR exists and must be
+able to become the next fix round. When a fix round runs on an item that
+already has a PR, the executor pushes after committing — the branch is
+published, and a fix that only commits locally leaves the PR silently stale.
+
 ### Status ownership
 
 - **Agent-owned transitions**: `planning → plan-review`,
@@ -65,6 +72,15 @@ the agent gets exactly what the human wrote, followed by the auto-generated
 
 A round must carry either a note or at least one open annotation; clash refuses
 to send one with neither, since it would give the agent nothing to act on.
+
+**Every Request-changes goes through the same snapshotting flow** — the plan
+path and the diff path alike freeze the current iteration into
+`history/{NNN}/` (`diff.patch`, `plan.md` when the item has one,
+`annotations.json`), append the note to `review.md`, and bump `iteration` in
+one meta write. The plan copy is what makes a revision visible after the fact:
+the GUI's History tab diffs snapshot N against snapshot N+1 (or the current
+plan) via the pure `application::diff::unified_diff`, so "what did that round
+change in the plan" has an answer. Before this, a plan revision left no trace.
 
 ## Agent review rounds
 
@@ -90,6 +106,17 @@ pr-draft / pr-ready likewise
 - `meta.json.review` records the round: `target`, `depth`, `publish`,
   `returnStatus`, `round`, `startedAt`. `meta.json.reviewRound` is the
   clash-owned counter (like `iteration` — the agent never writes it).
+- `meta.review` is **never cleared** — it describes the round in flight while
+  `status == reviewing`, and the *most recent* round afterwards (the reviewer's
+  hand-back changes `status` and nothing else; clearing would need a second
+  writer). Anything that wants "is a round running?" must gate on the status,
+  not on the block's presence.
+- Round *outcomes* are read from `agent-review.md`, not from meta: the pure
+  `application::workflow::latest_agent_review` parses the last `## Review <n>`
+  section (verdict + `### Published` lines) into
+  `WorkflowItem.lastAgentReview`, which the GUI shows as a strip on the item
+  and in the hand-back toast — "nothing was posted" must be visible without
+  opening the report.
 
 | field | values | meaning |
 |---|---|---|
@@ -97,6 +124,20 @@ pr-draft / pr-ready likewise
 | `depth` | `standard` \| `deep` | `deep` reads the surrounding implementation and checks the artifact against it |
 | `publish` | `local` \| `pr-comments` \| `respond-pr-comments` | what the round does beyond the item |
 | `returnStatus` | any status | where the round puts the item back — the repeatability contract |
+
+Publish rules that earned their place:
+
+- Every round's report ends with a **mandatory `### Published` section**, even
+  `local` rounds — clash parses it, and a missing section reads as "silently
+  did nothing".
+- `respond-pr-comments` fetches the PR's comments **twice — at the start and
+  right before finishing**. A round takes long enough that comments routinely
+  arrive mid-round; a single early check reported "zero comments" on a PR that
+  had two by the time the round published.
+- Publishing is **recoverable after the fact**: `publish_workflow_review`
+  (GUI: "Post round N to PR") posts the latest `agent-review.md` round as one
+  PR comment via `gh pr comment`, so sharing an already-written round never
+  costs a new review.
 
 Findings land on the surface that fits them: **code** findings become
 `annotations.json` entries with `"author": "agent"` (so the human triages them in
@@ -207,8 +248,12 @@ for context.
 - In `review-only` mode: never write `plan.md`, never transition to
   `plan-review`, and always finish at `diff-review`. The branch is pre-existing
   and shared, so after committing, **push** it (plain `git push`, never
-  force) so the PR reflects the fixes — the one mode where pushing is expected;
-  a rejected push means stop and report, never force.
+  force) so the PR reflects the fixes; a rejected push means stop and report,
+  never force.
+- In any mode, once the item **has a PR** (`meta.pr.url` set), pushing after a
+  commit follows the same rule — the branch is published, and a fix round that
+  only commits locally leaves the PR silently stale. An unpublished branch
+  (`full`/`from-plan`, no PR) is still never pushed.
 - Never touch `history/` and never change `iteration` or `reviewRound` — clash
   owns all three (the first two are written atomically by the request-changes
   flow, the third by the review launcher).

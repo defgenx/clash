@@ -168,6 +168,15 @@ instead.
   thread you did not fix, and never argue: if you disagree, say so once,
   briefly, and record it as a finding for the human to arbitrate.
 
+  **Fetch the comments twice: once at the start, and again right before you
+  finish.** A review round takes long enough that comments routinely arrive
+  while you work — a single check at the start silently misses them (this
+  happened: a round found "zero comments" on a PR that had two by the time it
+  finished). Answer anything the second fetch surfaces. If the final fetch
+  still finds nothing to answer, your report and final message must say so
+  explicitly — and point the human at clash's "Post round N to PR" button if
+  they wanted the findings published (that is `pr-comments`, a different mode).
+
 If `gh` is missing or unauthenticated, do the local half of the work, then say
 clearly in your final message that publishing was skipped and why. Never fail
 the whole round over it.
@@ -199,8 +208,19 @@ the whole round over it.
 - `src/lib.rs` — removed unused import (commit abc1234)
 
 ### Published
-- Posted 3 line comments to PR #41    ← only when Publish was a PR mode
+- Posted 3 line comments to PR #41
 ```
+
+`### Published` is **mandatory in every round**, whatever the publish mode —
+clash parses it to show the outcome next to the item, and a missing section
+reads as "silently did nothing". State exactly what left the machine, or that
+nothing did and why:
+
+- `local` round → `- Nothing — local round by request.`
+- a PR mode that had nothing to do → say so and when you checked, e.g.
+  `- Publish was respond-pr-comments, but the PR had no unanswered review
+  comments at 17:25 — nothing posted. Findings are in annotations.json.`
+- `gh` failed → `- Publishing skipped: gh not authenticated.`
 
 2. Read-modify-write `meta.json`: set `status` to the prompt's **`Return to:`**
    value. Change nothing else.

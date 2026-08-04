@@ -119,10 +119,12 @@ test("requesting changes uses the composer, not a one-line prompt", () => {
   // instructions for the next round — a single-line <input> could not hold it,
   // and could not contain a newline at all.
   assert.match(APP, /function wfComposeChangeRequest\(/);
-  // Both the plan and the diff path go through it; they used to be two
-  // divergent inline uiPrompt calls.
-  assert.match(APP, /wfComposeChangeRequest\(\{ item, target: "plan", annotations: \[\] \}\)/);
-  assert.match(APP, /wfComposeChangeRequest\(\{ item, target: "diff", annotations \}\)/);
+  // Both the plan and the diff path go through the one requestChanges flow
+  // (composer + workflow_request_changes, which snapshots the iteration);
+  // they used to be two divergent inline prompts, and the plan path used to
+  // skip the snapshot entirely.
+  assert.match(APP, /wfComposeChangeRequest\(\{ item, target, annotations \}\)/);
+  assert.match(APP, /requestChanges\("plan"\)/);
   assert.doesNotMatch(APP, /uiPrompt\("What should change in the plan\?"\)/);
   assert.doesNotMatch(APP, /Request changes — describe what to change/);
 });

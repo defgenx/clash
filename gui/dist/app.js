@@ -4665,6 +4665,50 @@ async function buildWorkflowView(el, project, slug) {
   }
   el.appendChild(head);
 
+  // ── Pipeline stepper ──
+  // "Where am I, what happened, what's left" at a glance: the mode's main
+  // line with done/current/future states, the loop counters as chips.
+  {
+    const model = wfPipelineModel({
+      status: item.meta.status,
+      mode: item.meta.mode || "full",
+      reviewRound: item.meta.reviewRound || 0,
+      iteration: item.meta.iteration || 1,
+      prDraft: item.meta.pr && item.meta.pr.url ? !!item.meta.pr.draft : null,
+      reviewReturnStatus: item.meta.review ? item.meta.review.returnStatus : null,
+      reviewRoundInFlight:
+        item.meta.status === "reviewing" && item.meta.review ? item.meta.review.round : 0,
+    });
+    const strip = document.createElement("div");
+    strip.className = "wf-pipeline" + (model.dead ? " dead" : "");
+    model.nodes.forEach((n, i) => {
+      if (i) {
+        const sep = document.createElement("span");
+        sep.className = "wf-pipe-sep" + (n.state === "future" ? " future" : "");
+        strip.appendChild(sep);
+      }
+      const node = document.createElement("span");
+      node.className = `wf-pipe-node ${n.state}`;
+      node.innerHTML =
+        `<span class="wf-pipe-dot">${n.state === "done" ? "✓" : ""}</span>` +
+        `<span class="wf-pipe-label">${escapeHtml(n.label)}</span>` +
+        (n.sub ? `<span class="wf-pipe-sub">${escapeHtml(n.sub)}</span>` : "");
+      strip.appendChild(node);
+    });
+    if (model.chips.length) {
+      const sp = document.createElement("span");
+      sp.className = "spacer";
+      strip.appendChild(sp);
+      for (const c of model.chips) {
+        const chip = document.createElement("span");
+        chip.className = "wf-pipe-chip";
+        chip.textContent = c;
+        strip.appendChild(chip);
+      }
+    }
+    el.appendChild(strip);
+  }
+
   // ── Sub-view bar ──
   const bar = document.createElement("div");
   bar.className = "wf-subbar";
@@ -4683,7 +4727,9 @@ async function buildWorkflowView(el, project, slug) {
   ];
   for (const [id, label] of subViews) {
     const b = document.createElement("button");
-    b.className = "wf-subtab" + (ts.subView === id ? " active" : "");
+    // planDiff is a drill-down of History, not a tab of its own.
+    const active = ts.subView === id || (ts.subView === "planDiff" && id === "history");
+    b.className = "wf-subtab" + (active ? " active" : "");
     b.textContent = label;
     b.onclick = () => {
       ts.subView = id;
@@ -4693,6 +4739,30 @@ async function buildWorkflowView(el, project, slug) {
     bar.appendChild(b);
   }
   el.appendChild(bar);
+
+  // ── Last review round outcome ──
+  // The verdict and what (if anything) was published, without opening the
+  // report. Hidden while a round is in flight — the action bar owns that.
+  if (item.lastAgentReview && item.meta.status !== "reviewing") {
+    const r = item.lastAgentReview;
+    const strip = document.createElement("div");
+    strip.className = "wf-review-strip";
+    const posted = (r.published || []).length
+      ? `Published: ${r.published.join(" · ")}`
+      : "Nothing published — findings are local to this item";
+    strip.innerHTML =
+      `<span class="wf-review-strip-round">⌕ Round ${r.round}${
+        r.heading ? ` · ${escapeHtml(r.heading)}` : ""
+      }</span>` +
+      `<span class="wf-review-strip-verdict">${escapeHtml(wfShort(r.verdict, 180))}</span>` +
+      `<span class="wf-review-strip-published">${escapeHtml(wfShort(posted, 140))}</span>`;
+    strip.title = `${r.verdict}\n\n${posted}\n\nClick to open the full report`;
+    strip.onclick = () => {
+      ts.subView = "agentReview";
+      buildWorkflowView(el, project, slug);
+    };
+    el.appendChild(strip);
+  }
 
   // ── Content ──
   const body = document.createElement("div");
@@ -4816,6 +4886,31 @@ async function launchWfReview(item, root) {
       return;
     }
     uiAlert(`Review launch failed: ${e}`);
+  }
+}
+
+/// Post the latest agent-review round to the PR as one comment — the recovery
+/// path for findings that stayed local: publish is otherwise only choosable
+/// when launching a round, so sharing an already-written round meant burning
+/// a whole new one.
+async function publishWfReview(item) {
+  const r = item.lastAgentReview;
+  const n = item.meta.pr && item.meta.pr.number ? `#${item.meta.pr.number}` : "the PR";
+  if (
+    !(await uiConfirm(
+      `Post agent review round ${r ? r.round : ""} to ${n} as a comment? This publishes the findings on GitHub.`,
+      "Post"
+    ))
+  )
+    return;
+  try {
+    const round = await invoke("publish_workflow_review", {
+      project: item.project,
+      slug: item.slug,
+    });
+    flashToast(`Review round ${round} posted to ${n}`);
+  } catch (e) {
+    uiAlert(wfGhHint(e) || `Post to PR failed: ${e}`);
   }
 }
 
@@ -5090,9 +5185,13 @@ function renderWfActions(bar, root, item) {
       wfTransition(item, root, "abandoned");
     });
 
-  const requestChanges = async () => {
-    const annotations = await wfOpenAnnotations(item);
-    const note = await wfComposeChangeRequest({ item, target: "diff", annotations });
+  // One flow for both targets: it snapshots the iteration (diff + plan +
+  // annotations) into history/ and bumps the counter, so every change round
+  // has a before/after — a plan revision used to leave no trace of what it
+  // changed.
+  const requestChanges = async (target = "diff") => {
+    const annotations = target === "plan" ? [] : await wfOpenAnnotations(item);
+    const note = await wfComposeChangeRequest({ item, target, annotations });
     if (note === null) return;
     try {
       await invoke("workflow_request_changes", {
@@ -5105,6 +5204,18 @@ function renderWfActions(bar, root, item) {
     } catch (e) {
       uiAlert(`Request changes failed: ${e}`);
     }
+  };
+
+  // Offered wherever a PR and a finished round coexist: sharing an existing
+  // round must never cost a new one.
+  const postRoundButton = () => {
+    if (!item.lastAgentReview || !(item.meta.pr && item.meta.pr.url)) return;
+    add(
+      `↗ Post round ${item.lastAgentReview.round} to PR`,
+      "",
+      () => publishWfReview(item),
+      "Post the latest agent review round to the pull request as one comment — no agent, no tokens"
+    );
   };
 
   // Available from every state holding a reviewable artifact, every time the
@@ -5176,13 +5287,7 @@ function renderWfActions(bar, root, item) {
         const fresh = wfItem(item.project, item.slug) || item;
         if (go === "go") launchWfAgent(fresh, "implement", root);
       });
-      add("✎ Request changes", "", async () => {
-        // Same composer as the diff path: a plan revision is just as much a
-        // prompt for the next round, and it was the same one-line input.
-        const note = await wfComposeChangeRequest({ item, target: "plan", annotations: [] });
-        if (note === null) return;
-        await wfTransition(item, root, "changes-requested", note);
-      });
+      add("✎ Request changes", "", () => requestChanges("plan"));
       reviewButton();
       spacer();
       abandon();
@@ -5276,6 +5381,7 @@ function renderWfActions(bar, root, item) {
       }
       add("✎ Request changes", "", requestChanges);
       reviewButton();
+      postRoundButton();
       spacer();
       abandon();
       break;
@@ -5325,6 +5431,9 @@ function renderWfActions(bar, root, item) {
           }
         });
       }
+      // Review feedback keeps arriving once a PR exists (agent rounds, GitHub
+      // review comments) — without this the findings were a dead end here.
+      add("✎ Request changes", "", requestChanges);
       // Names the destination stage; no agent involved. See reviewButton().
       add(
         "↩ Back to diff review",
@@ -5333,6 +5442,7 @@ function renderWfActions(bar, root, item) {
         "Move this item back to the DIFF REVIEW stage — no agent, no tokens"
       );
       reviewButton();
+      postRoundButton();
       spacer();
       abandon();
       break;
@@ -5344,7 +5454,11 @@ function renderWfActions(bar, root, item) {
         if (!(await uiConfirm("Mark this workflow item as done?", "Done"))) return;
         wfTransition(item, root, "done");
       });
+      // Same rationale as pr-draft: a ready PR still gets review comments and
+      // agent-round findings; both need a way to become the next fix round.
+      add("✎ Request changes", "", requestChanges);
       reviewButton();
+      postRoundButton();
       break;
 
     case "done":
@@ -5397,6 +5511,26 @@ async function renderWfSubView(body, root, item, ts) {
             ? "no review notes yet — they accumulate when you request changes"
             : "no agent reviews yet — each round appends its findings here"
       }</p>`;
+
+    // Rounds accumulate top-down, so a long report opens on round 1 — the one
+    // the user has already read. Jump chips per section + land on the latest.
+    if (ts.subView === "agentReview" && text.trim()) {
+      const heads = [...md.querySelectorAll("h2")];
+      if (heads.length > 1) {
+        const nav = document.createElement("div");
+        nav.className = "wf-round-nav";
+        heads.forEach((h) => {
+          const chip = document.createElement("button");
+          const m = /^Review (\d+)/.exec(h.textContent || "");
+          chip.textContent = m ? `Round ${m[1]}` : wfShort(h.textContent, 24);
+          chip.onclick = () => h.scrollIntoView({ block: "start" });
+          nav.appendChild(chip);
+        });
+        body.appendChild(nav);
+      }
+      if (heads.length)
+        requestAnimationFrame(() => heads[heads.length - 1].scrollIntoView({ block: "start" }));
+    }
     body.appendChild(md);
     return;
   }
@@ -5413,7 +5547,7 @@ async function renderWfSubView(body, root, item, ts) {
     body.innerHTML = "";
     if (!iters.length) {
       body.innerHTML =
-        "<p class='hint'>no snapshots yet — each Request-changes freezes the diff + annotations of the iteration</p>";
+        "<p class='hint'>no snapshots yet — each Request-changes freezes the plan + diff + annotations of the iteration</p>";
       return;
     }
     for (const it of [...iters].reverse()) {
@@ -5424,7 +5558,21 @@ async function renderWfSubView(body, root, item, ts) {
         `<span class="team-icon">${svgIcon("file", 12)}</span>` +
         `<span>Iteration ${it}</span>` +
         `<span class="dim">${it === current ? "current" : `superseded by it.${it + 1}`}</span>` +
-        `<span class="spacer"></span><span class="dim">view diff →</span>`;
+        `<span class="spacer"></span>`;
+      const link = (label, subView) => {
+        const a = document.createElement("span");
+        a.className = "wf-history-link";
+        a.textContent = label;
+        a.onclick = (ev) => {
+          ev.stopPropagation();
+          ts.subView = subView;
+          ts.iteration = it;
+          buildWorkflowView(root, project, slug);
+        };
+        row.appendChild(a);
+      };
+      if (wfHasPlanPhase(item)) link("plan diff →", "planDiff");
+      link("code diff →", "diff");
       row.onclick = () => {
         ts.subView = "diff";
         ts.iteration = it;
@@ -5432,6 +5580,65 @@ async function renderWfSubView(body, root, item, ts) {
       };
       body.appendChild(row);
     }
+    return;
+  }
+
+  // What one change round did to the plan: snapshot it.N against it.N+1 (or
+  // the current plan). Read-only, rendered as a plain unified diff — plans
+  // are prose, so the annotation machinery of the code-diff view would add
+  // nothing here.
+  if (ts.subView === "planDiff") {
+    body.innerHTML = "<p class='hint'>loading plan diff…</p>";
+    let text = "";
+    try {
+      text = await invoke("get_workflow_plan_diff", {
+        project,
+        slug,
+        iteration: ts.iteration || 1,
+      });
+    } catch (e) {
+      body.innerHTML = `<p class='hint'>plan diff failed: ${escapeHtml(e)}</p>`;
+      return;
+    }
+    body.innerHTML = "";
+    const head = document.createElement("div");
+    head.className = "wf-diff-head";
+    const back = document.createElement("button");
+    back.className = "icon-btn wide";
+    back.textContent = "← history";
+    back.onclick = () => {
+      ts.subView = "history";
+      ts.iteration = null;
+      buildWorkflowView(root, project, slug);
+    };
+    head.appendChild(back);
+    const label = document.createElement("span");
+    label.className = "dim";
+    label.textContent = `plan changes of iteration ${ts.iteration || 1}`;
+    head.appendChild(label);
+    body.appendChild(head);
+    if (!text.trim()) {
+      body.appendChild(
+        Object.assign(document.createElement("p"), {
+          className: "hint",
+          textContent:
+            "no plan changes recorded for this iteration (the snapshot may predate plan history)",
+        })
+      );
+      return;
+    }
+    const pre = document.createElement("pre");
+    pre.className = "wf-plan-diff";
+    for (const line of text.split("\n")) {
+      const span = document.createElement("span");
+      span.textContent = line + "\n";
+      if (line.startsWith("+++") || line.startsWith("---")) span.className = "pd-file";
+      else if (line.startsWith("@@")) span.className = "pd-hunk";
+      else if (line.startsWith("+")) span.className = "pd-add";
+      else if (line.startsWith("-")) span.className = "pd-del";
+      pre.appendChild(span);
+    }
+    body.appendChild(pre);
     return;
   }
 
@@ -6849,7 +7056,7 @@ function rebuildOpenWorkflowTabs() {
 // desktop notification fires backend-side with the same suppression rules
 // as sessions.
 listen("workflow-attention", (event) => {
-  const { project, slug, title, status } = event.payload;
+  const { project, slug, title, status, from, review } = event.payload;
   const key = wfKey(project, slug);
   const tabVisible =
     ws().panes.includes(`view:workflow:${key}`) && document.hasFocus();
@@ -6858,8 +7065,26 @@ listen("workflow-attention", (event) => {
     if (state.wfOpen) renderWorkflows();
     else updateWfBadge();
   }
-  flashToast(`${title || slug}: ${wfStatusInfo(status).label} — decision needed`);
+  // A review hand-back gets its outcome in the toast: the verdict and whether
+  // anything left the machine — "nothing was posted" must be visible without
+  // opening agent-review.md.
+  if (from === "reviewing" && review) {
+    const posted = (review.published || []).length
+      ? `Published: ${review.published.join(" · ")}`
+      : "Nothing published — findings are local";
+    flashToast(
+      `${title || slug}: review round ${review.round} finished — ${wfShort(review.verdict, 120)}. ${wfShort(posted, 160)}`
+    );
+  } else {
+    flashToast(`${title || slug}: ${wfStatusInfo(status).label} — decision needed`);
+  }
 });
+
+/// One-line truncation for toast/strip copy.
+function wfShort(s, n) {
+  const t = (s || "").trim();
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+}
 
 // Lazy PR polling: while any pr-draft/pr-ready item is on screen (sidebar
 // section or open tab), refresh its recorded PR state once a minute. The

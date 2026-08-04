@@ -3063,6 +3063,8 @@ fn main() {
             workflows::workflow_create_pr,
             workflows::refresh_workflow_pr,
             workflows::mark_workflow_pr_ready,
+            workflows::publish_workflow_review,
+            workflows::get_workflow_plan_diff,
             workflows::attach_workflow_pr,
             workflows::list_skills,
             workflows::get_skill
