@@ -155,6 +155,7 @@ function uiDialog({
   danger = false,
   multiline = false,
   browse = false,
+  browseFilters = null,
 }) {
   return new Promise((resolve) => {
     const cancelValue = input !== null ? null : false;
@@ -175,20 +176,24 @@ function uiDialog({
       field.value = input;
       field.spellcheck = false;
       if (browse && !multiline) {
-        // Path prompts get the same native folder picker as the new-session
-        // modal's cwd field — typing an absolute path from memory is the
-        // fallback, not the only way in.
+        // Every path prompt gets the native picker, whether it names a
+        // directory (`browse: true` / `"dir"`) or a file (`browse: "file"`) —
+        // typing an absolute path from memory is the fallback, not the only
+        // way in.
+        const wantsFile = browse === "file";
         const row = document.createElement("div");
         row.className = "input-with-btn";
         row.appendChild(field);
         const pick = document.createElement("button");
         pick.type = "button";
         pick.className = "icon-btn";
-        pick.title = "Browse for a directory";
-        pick.innerHTML = svgIcon("folder", 14);
+        pick.title = wantsFile ? "Browse for a file" : "Browse for a directory";
+        pick.innerHTML = svgIcon(wantsFile ? "file" : "folder", 14);
         pick.onclick = async () => {
-          const dir = await pickDirectory(field.value);
-          if (dir) field.value = dir;
+          const picked = wantsFile
+            ? await pickFile(field.value, message, browseFilters)
+            : await pickDirectory(field.value, message);
+          if (picked) field.value = picked;
           field.focus();
         };
         row.appendChild(pick);
@@ -245,6 +250,10 @@ const uiPrompt = (message, def = "") => uiDialog({ message, input: def });
 /// Prompt for a directory: text field plus the native folder picker.
 const uiPathPrompt = (message, def = "") =>
   uiDialog({ message, input: def, browse: true });
+/// Prompt for a file path: text field plus the native file picker. `filters` is
+/// tauri-plugin-dialog's `[{ name, extensions }]`; omit it for "any file".
+const uiFilePrompt = (message, def = "", filters = null) =>
+  uiDialog({ message, input: def, browse: "file", browseFilters: filters });
 const uiAlert = (message) => uiDialog({ message, cancelable: false });
 /// Multi-line prompt for text that doesn't fit one line (a pasted plan).
 const uiTextPrompt = (message, def = "", okLabel = "OK") =>
@@ -4246,7 +4255,11 @@ async function pickWorkflowPlan() {
     return { plan: text, planFile: null };
   }
   if (src === "file") {
-    const path = ((await uiPrompt("Path to the plan file")) || "").trim();
+    const path = (
+      (await uiFilePrompt("Path to the plan file", "", [
+        { name: "Markdown", extensions: ["md", "markdown", "mdx", "txt"] },
+      ])) || ""
+    ).trim();
     if (!path) return null;
     return { plan: null, planFile: path };
   }
@@ -5855,6 +5868,34 @@ async function pickDirectory(defaultPath, title = "Choose a working directory") 
   }
 }
 
+/// Native file picker — the sibling of [`pickDirectory`] for the path fields
+/// that name a *file* (a plan's markdown, the `claude` binary). `filters` is
+/// tauri-plugin-dialog's shape: `[{ name, extensions }]`; omit it to accept
+/// anything, which is what an executable with no extension needs.
+///
+/// The seed is a directory, so a field already holding a file path is trimmed
+/// back to its parent — handing a file to `defaultPath` opens the wrong place
+/// (or nothing) depending on the platform dialog.
+async function pickFile(defaultPath, title = "Choose a file", filters = null) {
+  const seed = (defaultPath || "").trim();
+  const dir = seed.includes("/") ? seed.slice(0, seed.lastIndexOf("/")) : "";
+  try {
+    const picked = await invoke("plugin:dialog|open", {
+      options: {
+        directory: false,
+        multiple: false,
+        defaultPath: dir || state.homeDir || undefined,
+        title,
+        ...(filters ? { filters } : {}),
+      },
+    });
+    return typeof picked === "string" ? picked : null;
+  } catch (e) {
+    console.error("file picker failed:", e);
+    return null;
+  }
+}
+
 async function loadPresetsForCwd() {
   const cwd = $("ns-cwd").value.trim();
   const wrap = $("ns-preset-wrap");
@@ -6287,8 +6328,13 @@ async function loadFontFamilies() {
 /// terminal wants), each row previewed in its own face. Resolves to the chosen
 /// family, or null when cancelled. "Custom…" hands over to a text prompt so a
 /// full fallback stack ("SF Mono, Menlo, monospace") stays expressible.
-async function pickFontFamily(current) {
-  const families = await loadFontFamilies();
+///
+/// The dialog opens *before* the families are known and fills in when they
+/// arrive: enumeration hops to AppKit's main thread (up to a 3s bounded wait)
+/// and the monospace measuring loop runs over a few hundred names, so awaiting
+/// it first made the click look like it had done nothing at all.
+function pickFontFamily(current) {
+  let families = null;
   return new Promise((resolve) => {
     const backdrop = document.createElement("div");
     backdrop.className = "dialog-backdrop";
@@ -6324,15 +6370,22 @@ async function pickFontFamily(current) {
     };
 
     const render = () => {
-      const q = search.value.trim().toLowerCase();
       list.innerHTML = "";
+      if (families === null) {
+        const loading = document.createElement("div");
+        loading.className = "dialog-list-loading";
+        loading.textContent = "loading the fonts installed on this machine…";
+        list.appendChild(loading);
+        return;
+      }
+      const q = search.value.trim().toLowerCase();
       const shown = families
         .filter((f) => (monoBox.checked ? f.mono : true))
         .filter((f) => !q || f.name.toLowerCase().includes(q))
         .sort((a, b) => Number(b.mono) - Number(a.mono) || a.name.localeCompare(b.name));
       if (!shown.length) {
         const empty = document.createElement("div");
-        empty.className = "dialog-list-detail";
+        empty.className = "dialog-list-loading";
         empty.textContent = monoBox.checked
           ? "No monospace family matches — try unchecking “Monospace only”."
           : "No font matches.";
@@ -6344,12 +6397,24 @@ async function pickFontFamily(current) {
         if (f.name === current) row.classList.add("current");
         const label = document.createElement("div");
         label.className = "dialog-list-label";
-        label.textContent = f.name;
+        const name = document.createElement("span");
+        name.className = "name";
+        name.textContent = f.name;
+        label.appendChild(name);
+        // With "Monospace only" off the list fills with faces whose name says
+        // nothing about their shape — tag each one rather than leave the user
+        // to infer it from the sample.
+        const kind = document.createElement("span");
+        kind.className = `font-kind${f.mono ? " mono" : ""}`;
+        kind.textContent = f.mono ? "mono" : "proportional";
+        label.appendChild(kind);
         row.appendChild(label);
-        // Preview in the face itself — the whole point of a picker.
+        // Preview in the face itself — the whole point of a picker. The
+        // fallback is the generic family, so a face that fails to load still
+        // reads as text instead of silently borrowing another sample's shape.
         const sample = document.createElement("div");
         sample.className = "font-sample";
-        sample.style.fontFamily = `"${f.name}", monospace`;
+        sample.style.fontFamily = `"${f.name}", ${f.mono ? "monospace" : "sans-serif"}`;
         sample.textContent = "if (x === 0) { i1lO0 —> ~/.claude }";
         row.appendChild(sample);
         row.onclick = () => done(f.name);
@@ -6359,6 +6424,12 @@ async function pickFontFamily(current) {
     search.addEventListener("input", render);
     monoBox.addEventListener("change", render);
     render();
+    // Fill in when the enumeration lands — unless the dialog is already gone.
+    loadFontFamilies().then((f) => {
+      if (!backdrop.isConnected) return;
+      families = f;
+      render();
+    });
 
     const actions = document.createElement("div");
     actions.className = "modal-actions";
@@ -6389,7 +6460,7 @@ async function pickFontFamily(current) {
       if (e.key === "Escape") done(null);
       // Enter takes the first row — search, Enter, done.
       else if (e.key === "Enter") {
-        const first = list.querySelector(".dialog-list-row .dialog-list-label");
+        const first = list.querySelector(".dialog-list-row .dialog-list-label .name");
         if (first) done(first.textContent);
       }
     });
@@ -7608,18 +7679,30 @@ $("set-claude-bin").addEventListener("change", async () => {
   }
 });
 
-/// Folder pickers for every directory setting: fill the field, then fire the
-/// same `change` handler typing would (so config-backed rows still persist).
-for (const id of ["default-cwd", "set-scratch-dir", "set-workflows-dir"]) {
+/// Native pickers for every path setting — a folder picker for the directory
+/// rows, a file picker for the ones naming an executable. Each fills the field
+/// and then fires the same `change` handler typing would, so config-backed rows
+/// still persist and validate exactly as before.
+const PATH_SETTINGS = [
+  { id: "default-cwd", kind: "dir", title: "Choose the default working directory" },
+  { id: "set-scratch-dir", kind: "dir", title: "Choose the scratch directory" },
+  { id: "set-workflows-dir", kind: "dir", title: "Choose the workflows directory" },
+  // A binary has no extension to filter on, so this is an unfiltered file pick.
+  { id: "set-claude-bin", kind: "file", title: "Choose the claude executable" },
+];
+for (const { id, kind, title } of PATH_SETTINGS) {
   const btn = $(`${id}-browse`);
   if (!btn) continue;
-  btn.innerHTML = svgIcon("folder", 14);
+  btn.innerHTML = svgIcon(kind === "file" ? "file" : "folder", 14);
   btn.onclick = async (e) => {
     e.preventDefault(); // inside the row's <label> — don't re-trigger the input
     e.stopPropagation();
-    const dir = await pickDirectory($(id).value);
-    if (!dir) return;
-    $(id).value = dir;
+    const picked =
+      kind === "file"
+        ? await pickFile($(id).value, title)
+        : await pickDirectory($(id).value, title);
+    if (!picked) return;
+    $(id).value = picked;
     $(id).dispatchEvent(new Event("change"));
   };
 }

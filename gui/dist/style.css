@@ -220,7 +220,21 @@ html, body, #app {
 }
 #search:focus { border-color: var(--accent); }
 
-#session-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+/* `flex: 1` means basis 0, so this is the only item that absorbs free space —
+   and the only one that gives it back. Without a floor, opening TEAMS +
+   SCRATCHES + WORKFLOWS (35% each) squeezed the session list to nothing.
+   The floor matches the drag clamp's MIN_SESSION_H. */
+#session-list { flex: 1; min-height: 80px; overflow-y: auto; padding: 4px 0; }
+
+/* Group headers inside a scrolling list stick to its top, so "which section
+   am I in" survives a scroll (same treatment as the diff's file headers). */
+#session-list > .section-label,
+#wf-list > .wf-group-label {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-sidebar);
+}
 
 .section-label {
   padding: 12px 14px 4px;
@@ -402,11 +416,41 @@ html, body, #app {
 .session-actions button:hover { color: var(--fg); background: var(--bg-active); }
 .session-actions button.danger:hover { color: var(--red); }
 
-/* Teams */
-#teams-section { border-top: 1px solid var(--border); max-height: 35%; overflow-y: auto; }
-#teams-list { padding-bottom: 6px; }
-#notes-section { border-top: 1px solid var(--border); max-height: 35%; overflow-y: auto; }
-#notes-list { padding-bottom: 6px; }
+/* Collapsible lower sidebar sections (TEAMS / SCRATCHES / WORKFLOWS).
+   Each one is a column of [pinned header, own scrolling list]. The scroll
+   used to sit on the *section*, which scrolled the header away with the
+   content — and that header is the section's only affordance for collapsing
+   it, adding an entry or refreshing, so it has to stay put. Keeping the
+   overflow on the list also gives the section a real height to be resized
+   to: with no scroller inside, a dragged height just clipped the rows.
+   WORKFLOWS shares the rules — it had none of its own, so it had no
+   separator, no cap and nothing to scroll, which is why its divider could
+   not resize anything. */
+#teams-section,
+#notes-section,
+#wf-section {
+  border-top: 1px solid var(--border);
+  max-height: 35%;
+  /* A section capped at its max-height is frozen by the flex algorithm, so the
+     whole squeeze of "all three open" lands on whichever one is still
+     flexible — leaving it at half a row. The floor matches MIN_SECTION_H (the
+     drag clamp): a header plus one row, or don't bother showing it. */
+  min-height: 56px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#teams-section > .section-label,
+#notes-section > .section-label,
+#wf-section > .section-label { flex: none; }
+#teams-list,
+#notes-list,
+#wf-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 6px;
+}
 
 /* Draggable divider above a collapsible sidebar section (TEAMS / SCRATCHES):
    dragging sets that section's height and the session list above absorbs the
@@ -1510,7 +1554,10 @@ html, body, #app {
   word-break: break-all;
   font-family: var(--mono, "SF Mono", Menlo, monospace);
 }
-.dialog-box input,
+/* Text fields fill the dialog — but a checkbox is not a text field. The
+   unscoped selector gave the font picker's "Monospace only" box `width: 100%`,
+   which as a flex item pushed its own label out past the dialog's right edge. */
+.dialog-box input:not([type="checkbox"]):not([type="radio"]),
 .dialog-box textarea {
   width: 100%;
   margin-bottom: 12px;
@@ -1522,8 +1569,15 @@ html, body, #app {
   font-size: 13px;
   outline: none;
 }
-.dialog-box input:focus,
+.dialog-box input:not([type="checkbox"]):not([type="radio"]):focus,
 .dialog-box textarea:focus { border-color: var(--accent); }
+.dialog-box input[type="checkbox"],
+.dialog-box input[type="radio"] {
+  width: auto;
+  flex: none;
+  margin: 0;
+  accent-color: var(--accent);
+}
 /* Path prompts pair the input with the native folder picker (same row widget
    as the new-session modal's cwd field) — the margin moves to the row. */
 .dialog-box .input-with-btn { margin-bottom: 12px; }
@@ -1598,20 +1652,55 @@ html, body, #app {
   white-space: nowrap;
 }
 
-/* Font picker (pickFontFamily): search + monospace filter + previewed rows */
-.font-picker { width: min(560px, 88vw); }
-.font-picker .dialog-list { max-height: min(52vh, 420px); }
+/* Font picker (pickFontFamily): search + monospace filter + previewed rows.
+   A column so the list — not the dialog — is what grows: with a few hundred
+   families installed the box would otherwise run off the bottom of the window
+   and take Cancel / Custom… with it. */
+.font-picker {
+  width: min(560px, 88vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.font-picker > p,
+.font-picker > input,
+.font-picker > .setting-check,
+.font-picker > .modal-actions { flex: none; }
+.font-picker .dialog-list { flex: 1 1 auto; max-height: min(52vh, 420px); min-height: 80px; }
 .font-picker .setting-check { margin: 8px 0 0; font-size: 12px; }
 .font-picker .dialog-list-row.current { border-left: 2px solid var(--accent); }
 .font-picker .dialog-list-row.current .dialog-list-label { color: var(--accent); }
-.font-sample {
-  font-size: 12px;
+/* Name row: the family, then a right-aligned kind tag. Non-monospace families
+   are the ones you can't tell apart from the name, so the tag earns its keep
+   as soon as "Monospace only" is off. */
+.font-picker .dialog-list-label { display: flex; align-items: baseline; gap: 8px; }
+.font-picker .dialog-list-label .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.font-kind {
+  margin-left: auto;
+  flex: none;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--fg-dim);
-  margin-top: 2px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+.font-kind.mono { color: var(--accent); border-color: var(--accent); }
+.font-sample {
+  font-size: 13px;
+  color: var(--fg-dim);
+  margin-top: 3px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.font-picker .dialog-list-row:hover .font-sample { color: var(--fg); }
+/* "loading fonts…" — the enumeration hops to the AppKit main thread, so the
+   list can take a beat to arrive; the dialog opens first regardless. */
+.font-picker .dialog-list-loading { padding: 14px 10px; font-size: 12px; color: var(--fg-dim); }
 
 /* Skills viewer tab */
 .skills-view { padding: 0; overflow: hidden; display: flex; }

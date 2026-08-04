@@ -80,7 +80,10 @@
           </span>
         </label>
         <label class="setting-row">Claude binary
-          <input id="set-claude-bin" type="text" placeholder="claude" autocomplete="off" spellcheck="false" title="Name resolved on PATH, or an absolute path. Applies to sessions started from now on." />
+          <span class="input-with-btn">
+            <input id="set-claude-bin" type="text" placeholder="claude" autocomplete="off" spellcheck="false" title="Name resolved on PATH, or an absolute path. Applies to sessions started from now on." />
+            <button id="set-claude-bin-browse" class="icon-btn" title="Browse for the claude executable" type="button"></button>
+          </span>
         </label>
 
         <div class="settings-group">Terminal · text</div>

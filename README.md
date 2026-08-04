@@ -693,7 +693,7 @@ open terminals, no restart:
 | Group | Settings |
 |---|---|
 | **Appearance** | **Theme** — 12 built-in palettes, 8 dark and 4 light (see below) |
-| **Paths** | Default directory for new sessions · scratch directory · workflows directory (each with a 📁 folder picker) · `claude` binary — a name resolved on PATH or an absolute path, validated on entry, used by the next session you start |
+| **Paths** | Default directory for new sessions · scratch directory · workflows directory (each with a 📁 folder picker) · `claude` binary — a name resolved on PATH or an absolute path, validated on entry, used by the next session you start (📄 file picker) |
 | **Terminal · text** | Font family (opens a **searchable font picker** — see below) · font size · font weight · bold weight · line height · letter spacing |
 | **Terminal · cursor** | Style (block/bar/underline) · unfocused-pane style (outline/block/bar/underline/hidden) · bar width · blink |
 | **Terminal · colors** | Minimum contrast ratio (1 = off, 4.5 = WCAG AA) · bold text in bright colors |
@@ -717,19 +717,28 @@ Adding one is a single entry in the `THEMES` table in `gui/dist/app.js`.
 
 The **font picker** replaces blind typing: click the field (or its 🔍 button) for
 a searchable list of the families installed on this machine, each row previewed
-in its own face, monospace-only by default with a toggle to show everything, and
-a *Custom…* escape hatch for a full CSS stack like `SF Mono, Menlo, monospace`.
-The list is the union of what AppKit enumerates and a curated set probed in the
-webview — macOS does not enumerate `SF Mono` (clash's own default), so neither
-source alone is complete.
+in its own face and tagged *mono* or *proportional*, monospace-only by default
+with a toggle to show everything, and a *Custom…* escape hatch for a full CSS
+stack like `SF Mono, Menlo, monospace`. The list is the union of what AppKit
+enumerates and a curated set probed in the webview — macOS does not enumerate
+`SF Mono` (clash's own default), so neither source alone is complete. The dialog
+opens immediately and fills in as the families arrive, because enumerating them
+hops to AppKit's main thread and can take a moment on a machine with hundreds
+installed.
 
 Below the settings sits an `⟳ Update clash` self-update button — when the update
 lands, a modal offers Restart / Cancel (restarting closes running sessions).
 Settings persist in `gui-state.json`, except the three directories and the
 `claude` binary, which live in the shared `config.toml` so the TUI agrees. The sidebar and details panel are
 drag-resizable (widths persist), and the collapsible sidebar sections
-(TEAMS / SCRATCHES) have a draggable divider on top — drag it to trade
-vertical space with the session list above; the heights persist.
+(TEAMS / SCRATCHES / WORKFLOWS) have a draggable divider on top — drag it to
+trade vertical space with the session list above; the heights persist. Each
+section keeps its own scrollbar with its header pinned in place, so the controls
+on it (collapse, refresh, +) stay reachable however far you scroll, and the
+session list keeps a minimum height rather than being squeezed to nothing when
+all three are open. Group headers inside a scrolling list (ACTIVE / UNASSIGNED /
+⚡ EXTERNAL, and the workflow groups) stick to the top of their list while you
+scroll past them.
 
 Sessions carry the same status vocabulary as the TUI — animated
 PROMPTING / THINKING / RUNNING / WAITING / STARTING / STASHED / ERRORED
