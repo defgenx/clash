@@ -1,6 +1,6 @@
 ---
 name: clash-workflow
-description: Execute one phase of a clash Workflow item (plan | revise | implement) in one of its entry modes (full | from-plan | review-only). Invoked by clash's GUI with a kickoff prompt naming the item directory, phase and mode. Reads meta.json/plan.md/review.md/annotations.json, does the work in the current worktree, addresses open diff annotations, and hands the item back to the human via a status transition. Triggers on "Use the clash-workflow skill", "Workflow item directory:", or when asked to run a clash workflow phase.
+description: Execute one phase of a clash Workflow item (plan | revise | implement | pr) in one of its entry modes (full | from-plan | review-only). Invoked by clash's GUI with a kickoff prompt naming the item directory, phase and mode. Reads meta.json/plan.md/review.md/annotations.json, does the work in the current worktree, addresses open diff annotations, and hands the item back to the human via a status transition. Triggers on "Use the clash-workflow skill", "Workflow item directory:", or when asked to run a clash workflow phase.
 ---
 
 # clash-workflow — one pipeline phase per run
@@ -14,7 +14,7 @@ implementation.
 
 The kickoff prompt gives you:
 - **Item directory** — absolute path to `<workflows_root>/<project>/<slug>/`
-- **Phase** — `plan` | `revise` | `implement`
+- **Phase** — `plan` | `revise` | `implement` | `pr`
 - **Mode** — `full` | `from-plan` | `review-only` (also in `meta.json.mode`;
   a missing value means `full`)
 
@@ -80,7 +80,8 @@ findings into `agent-review.md` and `annotations.json` and never touches
 - Statuses you may write, and only these transitions:
   `planning → plan-review`, `changes-requested → plan-review` (plan-revision
   round), `changes-requested → implementing`,
-  `implementing → diff-review | pr-draft`.
+  `implementing → diff-review | pr-draft`, and in phase `pr` only,
+  `diff-review → pr-draft`.
 - Git: commit your work on the current branch with clear conventional
   messages. **Never `--no-verify`** — if a hook fails, fix the cause or stop and
   explain in your final message. Pushing:
@@ -140,6 +141,39 @@ Read the **latest** `## Iteration` section of `review.md` first.
 7. Finish: set `status = "diff-review"` — or `"pr-draft"` if you created the
    PR in step 6. Stop — the human reviews the diff in clash and either
    approves (which may close the item outright) or sends you a new round.
+
+## Phase: pr
+
+Write and open the draft PR for a diff that is already finished. You are here
+because the human chose "let Claude Code write it" instead of clash's own
+deterministic PR body — so the description is the deliverable, and it must be
+better than a transcription of `plan.md` (which is what they declined).
+
+**Do not change code in this phase.** No fixes, no refactors, no "while I'm
+here". If you find something wrong, say so in your final message and leave it —
+the human decides whether that becomes a new round.
+
+1. Read the actual diff against the base branch (`git diff <base>...HEAD`, base
+   from `meta.json.base`, else the repo's default branch) and the commit
+   messages. Read `plan.md` and `review.md` for intent, but describe what the
+   diff *does*, not what the plan promised.
+2. Follow the repo's PR conventions if it states any — a
+   `.github/pull_request_template.md`, a CONTRIBUTING file, or a
+   repo/organisation skill for opening PRs. Use them; they encode house style
+   (title format, ticket references, checklists) that this skill does not.
+3. Write a title in the repo's own convention (look at recent merged PR titles,
+   `git log --merges`), and a body that gives a reviewer: what changed and why,
+   anything reviewers should look at closely, and how it was verified. Keep it
+   proportional — a small diff gets a short body.
+4. Push the branch if it is not on the remote, then
+   `gh pr create --draft --title "<title>" --body "<body>"` (add `--base` when
+   `meta.json.base` is set).
+5. Read-modify-write `meta.json`: set `pr.url` to the created URL and
+   `status = "pr-draft"`. Leave `iteration` and `reviewRound` alone — those are
+   clash's.
+
+If the repo clearly does not work through PRs, stop before step 4 and say so
+rather than opening one nobody wants.
 
 ## Tone of artifacts
 

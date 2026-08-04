@@ -66,6 +66,27 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+/// Swap a labelled button for a spinner ring and lock it while `work` runs.
+/// Sibling of spinButton(), which spins an icon button's SVG instead.
+///
+/// The lock is load-bearing, not cosmetic: a second click on an in-flight
+/// "Create draft PR" opens a second PR.
+async function busyButton(btn, work) {
+  if (!btn) return work();
+  if (btn.dataset.busy) return;
+  btn.dataset.busy = "1";
+  btn.classList.add("busy");
+  btn.disabled = true;
+  try {
+    return await work();
+  } finally {
+    // `work` often re-renders the bar, detaching this node; harmless to touch.
+    delete btn.dataset.busy;
+    btn.classList.remove("busy");
+    btn.disabled = false;
+  }
+}
+
 /// Spin an icon button's glyph while an async task runs, so a click gives
 /// immediate visible feedback. A minimum spin time keeps near-instant work
 /// (e.g. re-listing scratches) perceptible; the class is always cleared, even
@@ -1611,7 +1632,7 @@ function tabContextMenu(ev, sid) {
   if (entry && entry.kind === "browser") {
     showContextMenu(ev.clientX, ev.clientY, [
       { label: "Rename tab…", icon: "pencil", action: () => renameTabDialog(sid) },
-      { label: "Copy URL", icon: "copy", action: () => navigator.clipboard?.writeText(entry.url).catch(() => {}) },
+      { label: "Copy URL", icon: "copy", action: () => copyText(entry.url, "URL") },
       {
         label: "Open in system browser",
         icon: "external-link",
@@ -3387,9 +3408,11 @@ function baseName(p) {
   return parts[parts.length - 1] || "";
 }
 
-/// Copy `text` to the clipboard via the backend plugin (the bare WKWebView's
-/// navigator.clipboard is unreliable — same reasoning as ⌘C) and flash a toast.
-function copyScratchPath(text, kind) {
+/// Copy `text` to the clipboard via the backend plugin and flash a toast.
+///
+/// The single copy path for the frontend: `navigator.clipboard` is often absent
+/// in the bare WKWebView, where `?.` on it fails silently.
+function copyText(text, kind) {
   if (!text) return;
   invoke("clipboard_write_text", { text })
     .then(() => flashToast(`Copied ${kind}`))
@@ -3424,17 +3447,17 @@ function noteContextMenu(n, x, y) {
   items.push({
     label: "Copy absolute path",
     icon: "copy",
-    action: () => copyScratchPath(n.path, "absolute path"),
+    action: () => copyText(n.path, "absolute path"),
   });
   items.push({
     label: "Copy relative path",
     icon: "copy",
-    action: () => copyScratchPath(n.id, "relative path"),
+    action: () => copyText(n.id, "relative path"),
   });
   items.push({
     label: n.isDir ? "Copy folder name" : "Copy file name",
     icon: "copy",
-    action: () => copyScratchPath(baseName(n.path) || n.title, "name"),
+    action: () => copyText(baseName(n.path) || n.title, "name"),
   });
   items.push(null);
   items.push({
@@ -4729,30 +4752,33 @@ async function launchWfAgent(item, phase, root, branch = null) {
   }
 }
 
-/// Launch one agent review round: pick the depth, then what to do with the
-/// findings, then spawn the reviewer. The *target* is not asked — it follows
-/// from the item's status (plan at plan-review, code everywhere else), because
-/// the other choice has nothing to read.
+/// Launch one agent review round: pick the depth (code reviews only), then what
+/// to do with the findings, then spawn the reviewer. The *target* is not asked —
+/// it follows from the item's status (plan at plan-review, code everywhere else),
+/// because the other choice has nothing to read.
 ///
 /// Rounds are unbounded by design: the reviewer returns the item to the status
 /// it started in, so this same button is available again the moment it finishes.
 async function launchWfReview(item, root) {
   const target = wfReviewTarget(item);
-  const what = target === "plan" ? "plan" : "code";
   const round = (item.meta.reviewRound || 0) + 1;
 
-  const depth = await uiChoice({
-    message: `Review round ${round} — how deep?`,
-    detail:
-      target === "plan"
-        ? "Standard reads the plan and the files it names. Deep goes and reads how the code actually works, then checks the plan against it."
-        : "Standard reviews the diff in context. Deep traces every subsystem the change touches — callers, invariants, existing tests — before judging it.",
-    choices: [
-      { label: "Deep review", value: "deep", primary: true },
-      { label: `Standard ${what} review`, value: "standard" },
-    ],
-  });
-  if (!depth) return;
+  // A plan has one review: the plan-review skill. Depth tunes how hard a *diff*
+  // is read — there are no hunks in a plan to read harder — so asking here was
+  // offering a choice with one real answer. Mirrors review_engine_for.
+  let depth = "standard";
+  if (target !== "plan") {
+    depth = await uiChoice({
+      message: `Code review round ${round} — how deep?`,
+      detail:
+        "Standard reviews the diff in context. Deep traces every subsystem the change touches — callers, invariants, existing tests — before judging it.",
+      choices: [
+        { label: "Deep review", value: "deep", primary: true },
+        { label: "Standard code review", value: "standard" },
+      ],
+    });
+    if (!depth) return;
+  }
 
   // The publish question only exists once there is a PR to talk to.
   let publish = "local";
@@ -5045,7 +5071,10 @@ function renderWfActions(bar, root, item) {
     b.textContent = label;
     if (cls) b.className = cls;
     if (title) b.title = title;
-    b.onclick = fn;
+    // Wrapped centrally rather than per-handler so a *new* action cannot ship
+    // without feedback: a sync handler settles before paint and never shows the
+    // spinner, an async one shows it for exactly as long as it runs.
+    b.onclick = () => busyButton(b, () => fn());
     bar.appendChild(b);
     return b;
   };
@@ -5084,15 +5113,17 @@ function renderWfActions(bar, root, item) {
   const reviewButton = () => {
     if (!wfCanReview(item)) return;
     const n = item.meta.reviewRound || 0;
+    // Label names the ACTOR (an agent, spending tokens); the sibling "↩ Back to
+    // <stage> review" names a DESTINATION (a free status move). Keep them
+    // distinguishable — the round number is a suffix, not the noun.
     add(
-      n ? `⌕ Review again (${n})` : "⌕ Agent review",
+      n ? `⌕ Agent review · round ${n + 1}` : "⌕ Agent review",
       "",
       () => launchWfReview(item, root),
-      n
-        ? `${n} agent review round${n > 1 ? "s" : ""} so far — run another`
-        : `Have an agent review this item's ${
-            wfReviewTarget(item) === "plan" ? "plan" : "code"
-          } and report findings`
+      `Spend tokens: launch an agent session to review this item's ${
+        wfReviewTarget(item) === "plan" ? "plan" : "code"
+      } and report findings` +
+        (n ? ` (${n} round${n > 1 ? "s" : ""} so far)` : "")
     );
   };
 
@@ -5204,8 +5235,30 @@ function renderWfActions(bar, root, item) {
         add("Open PR", "", () => openWorkflowPr(item));
       } else {
         approveDone();
+        // Two ways to open the PR, because the description has two honest price
+        // points: clash can transcribe plan.md for free and instantly, or a
+        // Claude Code session can read the actual diff and write a real one.
+        // Whether that is worth tokens is the human's call, not a default.
         add("Create draft PR", "", async () => {
-          if (!(await uiConfirm("Open a draft PR for this branch?", "Create"))) return;
+          const how = await uiChoice({
+            message: "Open a draft PR for this branch?",
+            detail:
+              "clash writes the description from this item's plan — free and instant. " +
+              "Claude Code reads the real diff and writes a proper one, in the repo's " +
+              "PR conventions — spends tokens.",
+            choices: [
+              { label: "Open it now (from the plan)", value: "now", primary: true },
+              { label: "Let Claude Code write it", value: "agent" },
+            ],
+          });
+          if (!how) return;
+
+          if (how === "agent") {
+            // Same launcher as every other phase, so the session is registered,
+            // named and status-stamped identically.
+            await launchWfAgent(item, "pr", root);
+            return;
+          }
           try {
             await invoke("workflow_create_pr", {
               project: item.project,
@@ -5272,7 +5325,13 @@ function renderWfActions(bar, root, item) {
           }
         });
       }
-      add("↩ Back to review", "", () => wfTransition(item, root, "diff-review"));
+      // Names the destination stage; no agent involved. See reviewButton().
+      add(
+        "↩ Back to diff review",
+        "",
+        () => wfTransition(item, root, "diff-review"),
+        "Move this item back to the DIFF REVIEW stage — no agent, no tokens"
+      );
       reviewButton();
       spacer();
       abandon();
@@ -5831,6 +5890,9 @@ let nsPresets = [];
 
 function showNewSessionModal() {
   $("ns-error").classList.add("hidden");
+  // Native browser webviews paint over all DOM regardless of z-index — every
+  // dialog must drop them or it opens invisibly behind one. fitAll() restores.
+  hideBrowserWebviews();
   $("modal-backdrop").classList.remove("hidden");
   // Prefill cwd fresh on every open — a stale value from a previous open
   // is never kept. The configured default directory (settings) wins, then
@@ -5847,6 +5909,7 @@ function showNewSessionModal() {
 
 function hideNewSessionModal() {
   $("modal-backdrop").classList.add("hidden");
+  fitAll(); // bring the browser webviews hidden by showNewSessionModal() back
 }
 
 /// Native folder picker (tauri-plugin-dialog) seeded from a starting path.
@@ -6498,6 +6561,64 @@ $("set-fontfamily-pick").onclick = (e) => {
   openFontPicker();
 };
 
+/// ⌘C/⌘X/⌘V/⌘A inside a text field, done by hand — clash ships no macOS menu
+/// bar, and the Edit menu is what dispatches those to a WKWebView text field.
+/// The terminal equivalent is in attachCustomKeyEventHandler. See CLAUDE.md.
+///
+/// Returns true when it consumed the event.
+function handleInputClipboard(e) {
+  const el = document.activeElement;
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag !== "INPUT" && tag !== "TEXTAREA") return false;
+  // xterm's hidden helper textarea is a terminal, not a text field — its own
+  // handler owns these keys.
+  if (el.classList.contains("xterm-helper-textarea")) return false;
+  if (!e.metaKey || e.ctrlKey || e.altKey) return false;
+  const key = e.key.toLowerCase();
+  const sel = () => el.value.slice(el.selectionStart ?? 0, el.selectionEnd ?? 0);
+
+  if (key === "a") {
+    el.select();
+    e.preventDefault();
+    return true;
+  }
+  if (key === "c" || key === "x") {
+    const text = sel();
+    if (!text) return false; // nothing selected — let the keystroke be
+    invoke("clipboard_write_text", { text }).catch(console.error);
+    if (key === "x" && !el.readOnly && !el.disabled) {
+      const start = el.selectionStart;
+      el.value = el.value.slice(0, start) + el.value.slice(el.selectionEnd);
+      el.selectionStart = el.selectionEnd = start;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    e.preventDefault();
+    return true;
+  }
+  if (key === "v") {
+    if (el.readOnly || el.disabled) return false;
+    invoke("clipboard_read_text")
+      .then((text) => {
+        if (!text) return;
+        const start = el.selectionStart ?? el.value.length;
+        const end = el.selectionEnd ?? el.value.length;
+        el.value = el.value.slice(0, start) + text + el.value.slice(end);
+        el.selectionStart = el.selectionEnd = start + text.length;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      })
+      .catch(console.error);
+    e.preventDefault();
+    return true;
+  }
+  return false;
+}
+
+// Capture phase, so it also covers inputs inside dialogs — every dialog's own
+// keydown handler calls stopPropagation(), which would starve a bubble-phase
+// listener exactly where text entry matters most.
+document.addEventListener("keydown", handleInputClipboard, true);
+
 document.addEventListener("keydown", (e) => {
   const inInput =
     document.activeElement &&
@@ -6564,7 +6685,9 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.metaKey && e.shiftKey && e.key.toLowerCase() === "b") {
     e.preventDefault();
-    openBrowserTab(); // blank tab, address bar focused
+    // Blank tab, address bar focused, in its own split — see openBrowserTab's
+    // note on why no browser open evicts the focused pane.
+    openBrowserTab(null, "split");
     return;
   }
   // Browser-pane shortcuts (apply when the focused pane holds a browser
@@ -6873,7 +6996,22 @@ function buildBrowserPaneEl(entry) {
   urlInput.spellcheck = false;
   urlInput.placeholder = "Search or enter address";
   urlInput.value = entry.url === "about:blank" ? "" : entry.url;
-  urlInput.addEventListener("focus", () => urlInput.select());
+  // Select-all on focus EXCEPT from a mouse press, where the pointer decides.
+  // Selecting on `focus` unconditionally makes the URL unselectable by hand:
+  // mousedown focuses first, so the ensuing mouseup collapses the selection to a
+  // caret and a drag has nothing left to extend.
+  let mouseFocus = false;
+  urlInput.addEventListener("mousedown", () => {
+    mouseFocus = document.activeElement !== urlInput;
+  });
+  urlInput.addEventListener("focus", () => {
+    if (!mouseFocus) urlInput.select();
+  });
+  urlInput.addEventListener("mouseup", () => {
+    // Only a click with no drag (empty selection) means "select all".
+    if (mouseFocus && urlInput.selectionStart === urlInput.selectionEnd) urlInput.select();
+    mouseFocus = false;
+  });
   urlInput.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       urlInput.value = entry.url === "about:blank" ? "" : entry.url;
@@ -6889,9 +7027,7 @@ function buildBrowserPaneEl(entry) {
   chrome.appendChild(urlInput);
   entry.urlInput = urlInput;
 
-  btn("copy", "Copy URL", () => {
-    navigator.clipboard?.writeText(entry.url).catch(() => {});
-  });
+  btn("copy", "Copy URL", () => copyText(entry.url, "URL"));
   btn("external-link", "Open in system browser", () =>
     invoke("open_external", { url: entry.url }).catch(console.error),
   );
@@ -6944,10 +7080,11 @@ function ensureFreePane() {
 }
 
 /// Open a URL in a clash browser tab. `mode` controls placement:
-///   - undefined: take over the focused pane (the blank "new tab" command).
-///   - "split": open in a NEW split pane beside the current session, which
-///     stays visible — used by PR/link/port/repo opens so a browser never
-///     evicts the session you're working in.
+///   - "split": a NEW split pane beside the current session, which stays
+///     visible. Every open path uses this — PR/link/port/repo and the blank
+///     "new tab" command — so a browser never evicts what you were looking at.
+///   - undefined: take over the focused pane. No caller uses it; `ensureFreePane`
+///     is what makes "split" non-destructive and this opts out.
 ///   - "background": always create a fresh tab in the strip/sidebar without
 ///     stealing focus — used by link clicks (target="_blank", window.open)
 ///     inside the embedded browser; no dedup, no pane takeover, no switch.
@@ -7810,7 +7947,7 @@ function showNewTabMenu(x, y) {
       label: "New browser tab",
       icon: "external-link",
       hint: "⌘⇧B",
-      action: () => openBrowserTab(),
+      action: () => openBrowserTab(null, "split"),
     },
     null,
     {

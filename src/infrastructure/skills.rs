@@ -36,6 +36,10 @@ pub const SKILLS: &[EmbeddedSkill] = &[
         name: "clash-review",
         content: include_str!("../../skills/clash-review/SKILL.md"),
     },
+    EmbeddedSkill {
+        name: "clash-plan-review",
+        content: include_str!("../../skills/clash-plan-review/SKILL.md"),
+    },
 ];
 
 /// Install (or refresh) every embedded skill under `<claude_dir>/skills/`.

@@ -781,7 +781,8 @@ session branch against the default branch), the session's PR, or the
 repository. (The local diff opens as an in-app tab, not in the browser.)
 
 Browser tabs are first-class tabs (`⌘⇧B` opens a blank one with the
-address bar focused, also via the `+` new-tab menu): each lives in the
+address bar focused, in its own split pane, also via the `+` new-tab
+menu): each lives in the
 tab strip and panes exactly like a terminal or Claude session — split it
 next to a terminal, move it between panes, zoom it, own it per
 workspace. Each browser pane has full chrome: back/forward,

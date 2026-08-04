@@ -114,6 +114,41 @@ reviewer refuse impossible work before reading anything (a `plan` target with no
 plan, a publish mode needing a PR that does not exist) and makes `Return to:`
 impossible to miss. The reviewer's last act is always to restore that status.
 
+The prompt also names the **review engine** — the skill that performs the
+judgement, while `clash-review` remains the harness owning the file contract
+(`annotations.json` + `agent-review.md`) and the status hand-back. Splitting the
+two is what lets the reviewing itself be a general-purpose skill: those skills
+know how to review, but nothing about where clash expects findings to land.
+
+| Target | Depth | Engine |
+|--------|-------|--------|
+| `plan` | any | `clash-plan-review` (embedded skill) |
+| `diff` | `deep` | `/code-review` (Claude Code built-in, reads the working diff) |
+| `diff` | `standard` | `/review` |
+
+Every engine is either a skill clash itself installs or a Claude Code built-in,
+so a review round needs no third-party plugin present. A unit test asserts any
+skill named there is in `SKILLS`; otherwise the round would die on an
+unresolvable skill *after* a full session spawn.
+
+`clash-plan-review` is derived from the public `plan-review` skill and carries its
+four sections (architecture, code quality, tests, performance), its engineering
+preferences, and its per-issue options-with-a-recommendation shape. The one
+deliberate divergence: the original is **interactive** — it pauses per section and
+calls `AskUserQuestion`. A review round has no human in the session, so the clash
+version never asks; it writes findings and the human's answer arrives as the next
+round. Copying it verbatim would have produced a round that hangs waiting for
+input nobody is there to give.
+
+Depth does not branch a plan review: it tunes how hard a diff is read, and a
+plan has no hunks to read harder. The mapping is the pure
+`application::workflow::review_engine_for`, and the GUI matches it by not asking
+for depth at all on a plan round — a choice with one real answer is not a choice.
+
+A code review is available at `diff-review`, `pr-draft` **and** `pr-ready`
+(`WF_REVIEWABLE` / `can_request_review`), so an item that already has a PR can
+still be reviewed without moving it backwards.
+
 ## Entry modes
 
 `meta.json.mode` records how the item entered the pipeline. It is fixed at
@@ -200,3 +235,48 @@ branch to a remote"* rather than offering to push, so clash pushes
 the create once. The retry is gated on that one message — any other `gh`
 failure surfaces unchanged — and a detached HEAD or a remote-less repo fails
 with a real error instead of a guess.
+
+Every `gh`/`git` subprocess runs with stdin closed, prompting disabled
+(`GIT_TERMINAL_PROMPT=0`, `ssh -oBatchMode=yes`, `GH_PROMPT_DISABLED=1`) and a
+hard timeout that kills the child. All three are needed: `Command::output()`
+inherits stdin, so a credential prompt used to park the call indefinitely — a
+GUI launched from Finder has no terminal to answer on. `ssh` reads `/dev/tty`
+directly and ignores the closed stdin, which is why the env matters; and a hung
+connection ignores both, which is why the timeout exists.
+
+Opening a draft PR has two paths, because the description has two honest price
+points and which one is worth it is the human's call:
+
+- **From the plan** (default, free, instant) — `workflow_create_pr` transcribes
+  the item's `plan.md` plus its implementation/review round counts. No model runs,
+  so the body cannot describe a change that isn't in the plan. An explicit body
+  passed to the command always wins; an item with an empty plan gets an empty body
+  rather than a bare heading.
+- **Written by an agent** (spends tokens) — phase `pr` of `clash-workflow` spawns
+  a session that reads the real diff against the base, follows the repo's PR
+  conventions (`.github/pull_request_template.md`, recent merged titles, a repo
+  skill for opening PRs), opens the draft PR and sets `pr.url`.
+
+Phase `pr` is the one phase that does **not** move the item to a working status on
+launch (`phase_keeps_status`): it runs on an item parked at a human decision, and
+flipping it to `implementing` would both advertise work that isn't happening and
+let it re-enter the implement loop. It is also forbidden from changing code — the
+description is the whole deliverable.
+
+## Model per phase
+
+Phases are pinned to a model rather than inheriting whatever the user last
+selected, so a round is reproducible — two review rounds on one item are
+comparable because the reviewer was the same model both times.
+
+| Phase | Model |
+|-------|-------|
+| `plan`, `revise` (both rewrite the *plan*) | `claude-fable-5` |
+| agent review rounds (`clash-review`) | `claude-fable-5` |
+| `pr` (writes prose about a finished diff) | `claude-fable-5` |
+| `implement` | `claude-opus-5` |
+
+The mapping is the pure `application::workflow::model_for_phase`, passed to the
+session as `--model`. An unrecognized phase falls back to the implementation
+model: a phase name that isn't listed is assumed to do work, and
+under-powering real work is the worse failure.

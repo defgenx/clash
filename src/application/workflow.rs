@@ -249,6 +249,78 @@ impl AttentionLedger {
     }
 }
 
+// ── Model selection ─────────────────────────────────────────────────────
+
+/// The model a *thinking* phase runs on — planning and reviewing.
+pub const MODEL_PLAN_REVIEW: &str = "claude-fable-5";
+
+/// The model an *implementing* phase runs on.
+pub const MODEL_IMPLEMENT: &str = "claude-opus-5";
+
+/// Pure: pin the model for a workflow phase. See `docs/workflows.md`.
+///
+/// `revise` is a *planning* phase — it rewrites the plan, not the code — and
+/// `pr` writes prose about a finished diff without touching it. An unrecognized
+/// phase gets the implementation model, since under-powering real work is the
+/// worse failure.
+pub fn model_for_phase(phase: &str) -> &'static str {
+    match phase {
+        "plan" | "revise" | "review" | "pr" => MODEL_PLAN_REVIEW,
+        _ => MODEL_IMPLEMENT,
+    }
+}
+
+/// Phases that do not move the item into a working status when launched.
+///
+/// `pr` runs *on* an item parked at a human decision and its only output is a
+/// PR; flipping it to `implementing` would advertise work that isn't happening
+/// and, worse, let it re-enter the implement loop. The agent's own last act
+/// sets `pr-draft`.
+pub fn phase_keeps_status(phase: &str) -> bool {
+    phase == "pr"
+}
+
+// ── PR body ─────────────────────────────────────────────────────────────
+
+/// Pure: compose a draft PR body from the item's own `plan.md`. A transcription,
+/// not a summary — no model runs. See `docs/workflows.md`.
+///
+/// `None` when there is no plan, so the caller leaves the body empty rather than
+/// opening a PR described by a bare heading.
+pub fn pr_body_from_plan(plan: &str, iteration: u32, review_rounds: u32) -> Option<String> {
+    let plan = plan.trim();
+    if plan.is_empty() {
+        return None;
+    }
+    let mut body = String::from("## Plan\n\n");
+    body.push_str(plan);
+    body.push_str("\n\n---\n");
+    let mut trail = Vec::new();
+    if iteration > 0 {
+        trail.push(format!(
+            "{} implementation round{}",
+            iteration,
+            if iteration > 1 { "s" } else { "" }
+        ));
+    }
+    if review_rounds > 0 {
+        trail.push(format!(
+            "{} agent review round{}",
+            review_rounds,
+            if review_rounds > 1 { "s" } else { "" }
+        ));
+    }
+    if trail.is_empty() {
+        body.push_str("Drafted from a clash workflow item.\n");
+    } else {
+        body.push_str(&format!(
+            "Drafted from a clash workflow item after {}.\n",
+            trail.join(" and ")
+        ));
+    }
+    Some(body)
+}
+
 // ── Agent kickoff prompt ────────────────────────────────────────────────
 
 /// Build the initial prompt for a workflow agent session. The skill owns the
@@ -263,6 +335,26 @@ pub fn build_agent_prompt(item_dir: &str, phase: &str, mode: WorkflowMode) -> St
         "Use the clash-workflow skill. Workflow item directory: {}. Phase: {}. Mode: {}.",
         item_dir, phase, mode
     )
+}
+
+/// Pure: the skill or slash command that performs the actual reviewing for a
+/// round. `clash-review` stays the harness — it owns the file contract — and
+/// delegates the judgement to this. See `docs/workflows.md`.
+///
+/// Engines are either clash-owned embedded skills or Claude Code built-ins, so
+/// a review round needs no third-party plugin installed to work.
+pub fn review_engine_for(
+    target: crate::domain::workflow::ReviewTarget,
+    depth: crate::domain::workflow::ReviewDepth,
+) -> &'static str {
+    use crate::domain::workflow::{ReviewDepth, ReviewTarget};
+    match (target, depth) {
+        (ReviewTarget::Plan, _) => "clash-plan-review",
+        // `/code-review` reads the working diff, which is what an item has in
+        // its worktree; `/review` is the lighter pass.
+        (_, ReviewDepth::Deep) => "/code-review",
+        _ => "/review",
+    }
 }
 
 /// Build the kickoff prompt for an agent **review** round — a different skill
@@ -280,16 +372,27 @@ pub fn build_review_prompt(
     review: &crate::domain::workflow::WorkflowReview,
     mode: WorkflowMode,
 ) -> String {
+    let engine = review_engine_for(review.target, review.depth);
+    let via = if engine.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " Perform the review itself with {} — clash-review still owns the file \
+             contract (annotations.json + agent-review.md) and the status hand-back.",
+            engine
+        )
+    };
     format!(
         "Use the clash-review skill. Workflow item directory: {}. \
-         Target: {}. Depth: {}. Publish: {}. Round: {}. Return to: {}. Mode: {}.",
+         Target: {}. Depth: {}. Publish: {}. Round: {}. Return to: {}. Mode: {}.{}",
         item_dir,
         review.target,
         review.depth,
         review.publish,
         review.round.max(1),
         review.return_status,
-        mode
+        mode,
+        via
     )
 }
 
@@ -298,6 +401,137 @@ mod tests {
     use super::*;
     use crate::application::diff::parse_file_diffs;
     use crate::domain::workflow::AnnotationStatus;
+
+    #[test]
+    fn thinking_phases_run_on_fable() {
+        // `revise` rewrites the *plan*, so it belongs with planning, not with
+        // implementing — the easy one to get wrong.
+        for phase in ["plan", "revise", "review"] {
+            assert_eq!(model_for_phase(phase), MODEL_PLAN_REVIEW, "phase {}", phase);
+        }
+    }
+
+    #[test]
+    fn implement_runs_on_opus() {
+        assert_eq!(model_for_phase("implement"), MODEL_IMPLEMENT);
+    }
+
+    #[test]
+    fn review_engine_routes_by_target_then_depth() {
+        use crate::domain::workflow::{ReviewDepth, ReviewTarget};
+        // Depth never branches a plan review: it tunes how hard a diff is read,
+        // and a plan has no hunks to read harder.
+        for d in [
+            ReviewDepth::Standard,
+            ReviewDepth::Deep,
+            ReviewDepth::Unknown,
+        ] {
+            assert_eq!(
+                review_engine_for(ReviewTarget::Plan, d),
+                "clash-plan-review"
+            );
+        }
+        assert_eq!(
+            review_engine_for(ReviewTarget::Diff, ReviewDepth::Deep),
+            "/code-review"
+        );
+        assert_eq!(
+            review_engine_for(ReviewTarget::Diff, ReviewDepth::Standard),
+            "/review"
+        );
+    }
+
+    /// Embedded skills are clash's own, so a name collision can't hijack a
+    /// third party's skill (or be hijacked by one).
+    #[test]
+    fn only_clash_owned_skills_are_embedded() {
+        for s in crate::infrastructure::skills::SKILLS {
+            assert!(
+                s.name.starts_with("clash-"),
+                "embedded skill {:?} is not clash-owned",
+                s.name
+            );
+        }
+    }
+
+    /// A review engine naming a skill must name one clash actually installs —
+    /// otherwise the round dies on an unresolvable skill after a full session
+    /// spawn. Built-in `/slash` engines are Claude Code's and exempt.
+    #[test]
+    fn every_skill_engine_is_one_clash_installs() {
+        use crate::domain::workflow::{ReviewDepth, ReviewTarget};
+        let installed: Vec<&str> = crate::infrastructure::skills::SKILLS
+            .iter()
+            .map(|s| s.name)
+            .collect();
+        for t in [
+            ReviewTarget::Plan,
+            ReviewTarget::Diff,
+            ReviewTarget::Unknown,
+        ] {
+            for d in [
+                ReviewDepth::Standard,
+                ReviewDepth::Deep,
+                ReviewDepth::Unknown,
+            ] {
+                let e = review_engine_for(t, d);
+                if e.is_empty() || e.starts_with('/') {
+                    continue;
+                }
+                assert!(
+                    installed.contains(&e),
+                    "engine {:?} is not an embedded skill — add it to SKILLS or \
+                     use a built-in",
+                    e
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn review_prompt_names_the_engine_and_keeps_the_harness() {
+        use crate::domain::workflow::{ReviewDepth, ReviewTarget, WorkflowReview};
+        let review = WorkflowReview {
+            target: ReviewTarget::Diff,
+            depth: ReviewDepth::Deep,
+            ..Default::default()
+        };
+        let p = build_review_prompt("/items/x", &review, WorkflowMode::Full);
+        assert!(p.contains("Use the clash-review skill"));
+        assert!(p.contains("/code-review"));
+        // The harness must stay named, or findings land nowhere clash reads.
+        assert!(p.contains("annotations.json"));
+    }
+
+    #[test]
+    fn pr_body_transcribes_the_plan_and_the_round_trail() {
+        let b = pr_body_from_plan("Add a widget.\n\n- step one", 2, 1).unwrap();
+        assert!(b.starts_with("## Plan\n\nAdd a widget."));
+        assert!(b.contains("- step one"));
+        assert!(b.contains("2 implementation rounds and 1 agent review round"));
+    }
+
+    #[test]
+    fn pr_body_is_none_without_a_plan() {
+        // Better an empty body than a PR described only by a bare heading.
+        assert!(pr_body_from_plan("", 0, 0).is_none());
+        assert!(pr_body_from_plan("   \n\t\n ", 3, 2).is_none());
+    }
+
+    #[test]
+    fn pr_body_omits_a_trail_it_has_no_counts_for() {
+        let b = pr_body_from_plan("Do the thing.", 0, 0).unwrap();
+        assert!(b.contains("Drafted from a clash workflow item.\n"));
+        assert!(!b.contains("after"));
+    }
+
+    #[test]
+    fn unknown_phase_falls_back_to_the_implementation_model() {
+        // Deliberate: an unrecognized phase is assumed to do work, and
+        // under-powering real work is the worse of the two failures.
+        assert_eq!(model_for_phase("something-new"), MODEL_IMPLEMENT);
+        assert_eq!(model_for_phase(""), MODEL_IMPLEMENT);
+    }
 
     fn ann(file: &str, side: DiffSide, line: u32, content: &str) -> Annotation {
         Annotation {

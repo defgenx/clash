@@ -1111,6 +1111,36 @@ html, body, #app {
 .wf-actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 .wf-actions button.danger { color: var(--red); border-color: var(--red); background: none; }
 
+/* Busy state for any text button running async work (busyButton() in app.js).
+   `gh pr create` can take minutes, and with no feedback a click was
+   indistinguishable from a dead button. The spinner says "working", the
+   disabled state says "don't click again" — a second click on Create draft PR
+   would have opened a second PR. */
+button.busy {
+  position: relative;
+  color: transparent !important;
+  pointer-events: none;
+}
+/* The label is hidden rather than replaced so the button keeps its width and
+   the action bar does not reflow mid-click. */
+button.busy::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  color: var(--fg);
+  animation: icon-spin 0.7s linear infinite;
+}
+button.busy.primary::after,
+button.busy.danger-primary::after { color: var(--on-accent); }
+button.busy:disabled { opacity: 1; }
+
 /* Workflow diff view (line-comment review) */
 .wf-diff-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .wf-diff-head select {

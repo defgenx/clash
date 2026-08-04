@@ -9,8 +9,22 @@
 //! map to the GUI's `gh-unavailable:` / `gh-unauthenticated:` error prefixes,
 //! which disable PR buttons with a setup hint instead of failing flows.
 
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// Timeout for a read-only query (`gh auth status`, `gh pr view`, `gh pr ready`).
+/// These are one small API call; a minute is already pathological.
+const QUERY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Timeout for `gh pr create`. Longer than a query because gh may resolve the
+/// repo, push and open the PR in one go.
+const CREATE_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Timeout for `git push`. The one call here that legitimately takes minutes —
+/// a first push of a long-lived branch over a slow link is real work.
+const PUSH_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// A pull request as reported by `gh pr view`.
 ///
@@ -54,20 +68,118 @@ pub enum GhError {
     Command(String),
     #[error("could not parse gh output: {0}")]
     Parse(String),
+    #[error("`{cmd}` did not finish within {secs}s — it was killed. {hint}")]
+    TimedOut {
+        cmd: String,
+        secs: u64,
+        hint: &'static str,
+    },
+}
+
+/// Spawn `program` so it can never block on a prompt. Every `gh`/`git` call
+/// here must go through this (or [`run_bounded`]).
+///
+/// Closed stdin alone is not enough — `ssh` reads `/dev/tty` directly, so the
+/// env below is load-bearing, and the timeout backstops both. See the PR
+/// integration section of `docs/workflows.md`.
+fn spawn_quiet(program: &str, args: &[&str], dir: &Path) -> std::io::Result<std::process::Child> {
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        // Empty, not unset: an askpass helper would pop a dialog or hang
+        // headless instead of erroring.
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS", "")
+        .env("SSH_ASKPASS_REQUIRE", "never")
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1");
+    // Only when unset: clobbering a custom ssh command would break working
+    // proxy/identity setups.
+    if std::env::var_os("GIT_SSH_COMMAND").is_none() {
+        cmd.env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes -oConnectTimeout=15");
+    }
+    cmd.spawn()
+}
+
+/// Read a child pipe to EOF on its own thread. Required, not an optimization:
+/// polling `try_wait` while a child fills a pipe buffer deadlocks.
+fn drain<P: Read + Send + 'static>(pipe: Option<P>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut p) = pipe {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    })
+}
+
+/// Run `program args` in `dir`, killing it if it outruns `timeout`.
+fn run_bounded(
+    program: &str,
+    args: &[&str],
+    dir: &Path,
+    timeout: Duration,
+    hint: &'static str,
+) -> Result<std::process::Output, GhError> {
+    let mut child = spawn_quiet(program, args, dir).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            if program == "gh" {
+                GhError::NotInstalled
+            } else {
+                GhError::Command(format!("could not run {}: {}", program, e))
+            }
+        } else {
+            GhError::Command(e.to_string())
+        }
+    })?;
+
+    let out = drain(child.stdout.take());
+    let err = drain(child.stderr.take());
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Err(e) => return Err(GhError::Command(e.to_string())),
+            Ok(None) => {}
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            tracing::warn!(
+                "killed `{} {}` after {}s — exceeded timeout",
+                program,
+                args.join(" "),
+                timeout.as_secs()
+            );
+            return Err(GhError::TimedOut {
+                cmd: format!("{} {}", program, args.join(" ")),
+                secs: timeout.as_secs(),
+                hint,
+            });
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    Ok(std::process::Output {
+        status,
+        stdout: out.join().unwrap_or_default(),
+        stderr: err.join().unwrap_or_default(),
+    })
 }
 
 fn run(dir: &Path, args: &[&str]) -> Result<std::process::Output, GhError> {
-    Command::new("gh")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                GhError::NotInstalled
-            } else {
-                GhError::Command(e.to_string())
-            }
-        })
+    run_bounded(
+        "gh",
+        args,
+        dir,
+        QUERY_TIMEOUT,
+        "Check `gh auth status` in a terminal.",
+    )
 }
 
 /// Cheap health probe: is `gh` installed and authenticated?
@@ -179,11 +291,20 @@ pub fn pick_push_remote(remote_list: &str) -> Option<String> {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, GhError> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .map_err(|e| GhError::Command(format!("could not run git: {}", e)))?;
+    git_bounded(dir, args, QUERY_TIMEOUT)
+}
+
+/// `git` with an explicit timeout — `push` needs a far longer one than the
+/// local queries (`rev-parse`, `remote`) that surround it.
+fn git_bounded(dir: &Path, args: &[&str], timeout: Duration) -> Result<String, GhError> {
+    let output = run_bounded(
+        "git",
+        args,
+        dir,
+        timeout,
+        "It was most likely waiting on a credential prompt — \
+         try the same command in a terminal.",
+    )?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
@@ -211,9 +332,17 @@ fn push_current_branch(dir: &Path) -> Result<(), GhError> {
         GhError::Command("this repo has no git remote to push the branch to".to_string())
     })?;
     tracing::info!("pushing {} to {} so a PR can be opened", branch, remote);
-    git(dir, &["push", "--set-upstream", &remote, &branch])
-        .map(|_| ())
-        .map_err(|e| GhError::Command(format!("git push {} {}: {}", remote, branch, e)))
+    git_bounded(
+        dir,
+        &["push", "--set-upstream", &remote, &branch],
+        PUSH_TIMEOUT,
+    )
+    .map(|_| ())
+    .map_err(|e| match e {
+        // Passed through unwrapped: its message already names the cause.
+        timed_out @ GhError::TimedOut { .. } => timed_out,
+        other => GhError::Command(format!("git push {} {}: {}", remote, branch, other)),
+    })
 }
 
 /// `gh pr create --draft` for the current branch in `dir`, then read the
@@ -232,14 +361,24 @@ pub fn pr_create_draft(
     if let Some(base) = base {
         args.extend(["--base", base]);
     }
-    let output = run(dir, &args)?;
+    let create = |args: &[&str]| {
+        run_bounded(
+            "gh",
+            args,
+            dir,
+            CREATE_TIMEOUT,
+            "It may have been waiting on a credential or remote prompt — \
+             try `gh pr create --draft` in a terminal.",
+        )
+    };
+    let output = create(&args)?;
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if !is_unpushed_branch_error(&err) {
             return Err(GhError::Command(err));
         }
         push_current_branch(dir)?;
-        let retry = run(dir, &args)?;
+        let retry = create(&args)?;
         if !retry.status.success() {
             return Err(GhError::Command(
                 String::from_utf8_lossy(&retry.stderr).trim().to_string(),

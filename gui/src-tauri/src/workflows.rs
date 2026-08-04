@@ -733,6 +733,8 @@ struct ItemSessionSpawn<'a> {
     meta: &'a clash::domain::workflow::WorkflowMeta,
     /// Directory the agent works in: the item's worktree, or its repo.
     cwd: &'a str,
+    /// Model to pin the session to — see `workflow::model_for_phase`.
+    model: &'a str,
     cols: u16,
     rows: u16,
 }
@@ -747,6 +749,7 @@ async fn spawn_item_session(
         slug,
         meta,
         cwd,
+        model,
         cols,
         rows,
     } = spawn;
@@ -786,7 +789,16 @@ async fn spawn_item_session(
         .create_session(
             &session_id,
             &claude_bin,
-            &["--session-id".to_string(), session_id.clone(), prompt],
+            // `--model` is pinned per phase rather than inherited: see
+            // `workflow::model_for_phase`. It precedes the prompt because the
+            // prompt is the positional argument.
+            &[
+                "--session-id".to_string(),
+                session_id.clone(),
+                "--model".to_string(),
+                model.to_string(),
+                prompt,
+            ],
             if cwd.is_empty() { None } else { Some(cwd) },
             Some(name),
             cols,
@@ -846,6 +858,7 @@ pub(crate) async fn start_workflow_agent(
             slug: &slug,
             meta: &meta,
             cwd: &cwd,
+            model: clash::application::workflow::model_for_phase(&phase),
             cols,
             rows,
         },
@@ -858,13 +871,15 @@ pub(crate) async fn start_workflow_agent(
     // the current status). A review-only item has no planning phase, so its
     // agent always lands in `implementing`.
     meta.session_id = Some(session_id.clone());
-    let target = if phase == "plan" && meta.mode.has_plan_phase() {
-        WorkflowStatus::Planning
-    } else {
-        WorkflowStatus::Implementing
-    };
-    if meta.status.can_transition_to(target) {
-        meta.status = target;
+    if !clash::application::workflow::phase_keeps_status(&phase) {
+        let target = if phase == "plan" && meta.mode.has_plan_phase() {
+            WorkflowStatus::Planning
+        } else {
+            WorkflowStatus::Implementing
+        };
+        if meta.status.can_transition_to(target) {
+            meta.status = target;
+        }
     }
     state
         .backend
@@ -945,6 +960,8 @@ pub(crate) async fn start_workflow_review_agent(
             slug: &slug,
             meta: &meta,
             cwd: &cwd,
+            // A reviewer is always a thinking phase, whatever it is reviewing.
+            model: clash::application::workflow::model_for_phase("review"),
             cols,
             rows,
         },
@@ -1090,7 +1107,26 @@ pub(crate) async fn workflow_create_pr(
     let pr_title = title
         .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(|| meta.title.clone());
-    let pr_body = body.unwrap_or_default();
+    // An explicit body wins; otherwise transcribe the item's plan rather than
+    // opening an empty PR (which is what a bare `unwrap_or_default()` did).
+    let pr_body = body.filter(|b| !b.trim().is_empty()).unwrap_or_else(|| {
+        state
+            .backend
+            .read_workflow_doc(
+                &project,
+                &slug,
+                clash::infrastructure::fs::workflows::PLAN_FILE,
+            )
+            .ok()
+            .and_then(|plan| {
+                clash::application::workflow::pr_body_from_plan(
+                    &plan,
+                    meta.iteration,
+                    meta.review_round,
+                )
+            })
+            .unwrap_or_default()
+    });
 
     let view = tauri::async_runtime::spawn_blocking(move || {
         clash::infrastructure::gh::pr_create_draft(
