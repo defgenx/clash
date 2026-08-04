@@ -559,6 +559,11 @@ must address every open comment → *Approve → done* closes the item, or
 *Mark PR ready* flips the draft once you've validated everything. A merged PR
 moves the item to done automatically. Approving never requires a PR — a repo
 that merges straight to its default branch just approves and is done.
+*Create draft PR* on a branch that has never been pushed pushes it first
+(`git push --set-upstream`, `origin` when it exists) and then opens the PR —
+run non-interactively, `gh` otherwise just aborts with "you must first push the
+current branch", and publishing the branch is not a separate decision when the
+whole point of the click is to open a PR from it.
 
 **Requesting changes** — the note you write is not a form field: it is appended
 verbatim to `review.md` and is the first thing the agent reads next round, so it

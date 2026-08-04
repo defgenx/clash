@@ -192,3 +192,11 @@ clash records the PR in `meta.json.pr` (`url`, `number`, `draft`, `state`,
 `lastCheckedAt`) via the `gh` CLI. `state == "MERGED"` observed on refresh
 moves the item to `done`. The agent may create the draft PR itself — writing
 `pr.url` is enough; clash fills the rest on the next refresh.
+
+Creating the PR publishes the branch when it is not on the remote yet: `gh pr
+create` run non-interactively aborts with *"you must first push the current
+branch to a remote"* rather than offering to push, so clash pushes
+(`git push --set-upstream <remote> <branch>`, preferring `origin`) and retries
+the create once. The retry is gated on that one message — any other `gh`
+failure surfaces unchanged — and a detached HEAD or a remote-less repo fails
+with a real error instead of a guess.

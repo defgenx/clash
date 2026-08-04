@@ -150,8 +150,78 @@ pub fn pr_view_scoped(dir: &Path, selector: &str, repo: Option<&str>) -> Result<
     }
 }
 
+/// Pure: does this `gh pr create` failure mean "the branch is not on the remote
+/// yet"?
+///
+/// Run from a terminal, `gh` offers to push the branch itself; clash always
+/// runs it non-interactively, so instead it aborts with
+/// `aborted: you must first push the current branch to a remote, or use the
+/// --head flag`. There is no distinct exit code, so the message is the only
+/// signal — match the stable middle of it, not the punctuation around it.
+pub fn is_unpushed_branch_error(stderr: &str) -> bool {
+    stderr
+        .to_lowercase()
+        .contains("must first push the current branch")
+}
+
+/// Pure: pick the remote to push to out of `git remote`'s output. `origin`
+/// wins when present (that is what `gh` resolves the repo from), otherwise the
+/// first one listed; `None` when the repo has no remotes at all.
+pub fn pick_push_remote(remote_list: &str) -> Option<String> {
+    let mut first = None;
+    for name in remote_list.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if name == "origin" {
+            return Some(name.to_string());
+        }
+        first = first.or_else(|| Some(name.to_string()));
+    }
+    first
+}
+
+fn git(dir: &Path, args: &[&str]) -> Result<String, GhError> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .map_err(|e| GhError::Command(format!("could not run git: {}", e)))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(GhError::Command(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
+}
+
+/// `git push --set-upstream <remote> <current branch>` in `dir`.
+///
+/// Publishing the branch is the missing half of "create a PR" — a PR cannot
+/// exist without a remote branch — so this is not a separate decision the user
+/// has to make; it is what `gh` itself would have offered interactively.
+fn push_current_branch(dir: &Path) -> Result<(), GhError> {
+    let branch = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"])?
+        .trim()
+        .to_string();
+    if branch.is_empty() || branch == "HEAD" {
+        return Err(GhError::Command(
+            "cannot push a detached HEAD — check out a branch first".to_string(),
+        ));
+    }
+    let remote = pick_push_remote(&git(dir, &["remote"])?).ok_or_else(|| {
+        GhError::Command("this repo has no git remote to push the branch to".to_string())
+    })?;
+    tracing::info!("pushing {} to {} so a PR can be opened", branch, remote);
+    git(dir, &["push", "--set-upstream", &remote, &branch])
+        .map(|_| ())
+        .map_err(|e| GhError::Command(format!("git push {} {}: {}", remote, branch, e)))
+}
+
 /// `gh pr create --draft` for the current branch in `dir`, then read the
 /// created PR back via [`pr_view`].
+///
+/// A branch that has never been pushed is pushed first and the create retried
+/// once — see [`is_unpushed_branch_error`]. The retry is single and gated on
+/// that one message, so any other failure still surfaces as gh reported it.
 pub fn pr_create_draft(
     dir: &Path,
     title: &str,
@@ -164,9 +234,17 @@ pub fn pr_create_draft(
     }
     let output = run(dir, &args)?;
     if !output.status.success() {
-        return Err(GhError::Command(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if !is_unpushed_branch_error(&err) {
+            return Err(GhError::Command(err));
+        }
+        push_current_branch(dir)?;
+        let retry = run(dir, &args)?;
+        if !retry.status.success() {
+            return Err(GhError::Command(
+                String::from_utf8_lossy(&retry.stderr).trim().to_string(),
+            ));
+        }
     }
     pr_view(dir, "")
 }
@@ -285,5 +363,48 @@ mod tests {
         // Still not a PR / not GitHub.
         assert!(parse_pr_url("github.com/acme/clash/issues/42").is_none());
         assert!(parse_pr_url("gitlab.com/acme/clash/pull/42").is_none());
+    }
+
+    /// The message gh actually prints when a PR is opened from a branch that
+    /// has never been pushed. Only this one aborts into a push-and-retry —
+    /// everything else must keep surfacing as gh reported it.
+    #[test]
+    fn unpushed_branch_error_is_recognized() {
+        assert!(is_unpushed_branch_error(
+            "aborted: you must first push the current branch to a remote, or use the --head flag"
+        ));
+        // Case is not guaranteed across gh versions.
+        assert!(is_unpushed_branch_error(
+            "You must first push the current branch to a remote"
+        ));
+        assert!(!is_unpushed_branch_error(
+            "pull request create failed: GraphQL: No commits between main and feat/x"
+        ));
+        assert!(!is_unpushed_branch_error(
+            "a pull request for branch \"feat/x\" already exists"
+        ));
+        assert!(!is_unpushed_branch_error(""));
+    }
+
+    #[test]
+    fn push_remote_prefers_origin() {
+        assert_eq!(
+            pick_push_remote("upstream\norigin\nfork\n"),
+            Some("origin".to_string())
+        );
+        // No origin: the first one listed, which is what a single-remote fork
+        // (`git remote` → "upstream") needs.
+        assert_eq!(
+            pick_push_remote("upstream\nfork\n"),
+            Some("upstream".to_string())
+        );
+        assert_eq!(
+            pick_push_remote("  \n  origin  \n"),
+            Some("origin".to_string())
+        );
+        // No remotes at all — the caller turns this into a real error rather
+        // than pushing to a guessed name.
+        assert_eq!(pick_push_remote(""), None);
+        assert_eq!(pick_push_remote("\n \n"), None);
     }
 }
