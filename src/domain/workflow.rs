@@ -380,6 +380,11 @@ pub struct WorkflowPr {
     /// Epoch ms of the last successful `gh pr view` refresh (poll throttle).
     #[serde(default)]
     pub last_checked_at: i64,
+    /// Review-comment threads on the PR nobody has replied to, as of the last
+    /// refresh. `None` until first fetched (gh unavailable, pre-existing
+    /// items) — the GUI shows the count on its "Answer PR comments" action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unanswered_comments: Option<u64>,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }

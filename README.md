@@ -589,15 +589,24 @@ side-trip that returns the item to exactly where it started, so rounds are
 **unbounded**. Run a deep review, read it, run another, publish the third to the
 PR — nothing advances until *you* approve.
 
-Each round asks two things:
+Launching opens **one composer** that shows the round's whole shape before
+anything spends tokens:
 
 | Choice | Options | What changes |
 |---|---|---|
-| **Depth** | `standard` / `deep` | `deep` goes and reads how the code actually works — callers, invariants, existing tests, neighbouring solutions — and checks the artifact against it, so it surfaces things invisible from the plan or diff alone |
-| **Findings** | keep local / post to the PR / answer the PR's comments | local is the default; the PR options only appear once the item has one |
+| **Depth** | `standard` / `deep` (default) | `deep` goes and reads how the code actually works — callers, invariants, existing tests, neighbouring solutions — and checks the artifact against it, so it surfaces things invisible from the plan or diff alone |
+| **Findings** | keep local (default) / also post to the PR | the PR option only appears once the item has one; posting is one review with line comments, never an approval |
 
 The *target* isn't asked — it follows from where you launched: at `plan-review`
-the round reviews `plan.md`, everywhere else it reviews the code. Code findings
+the round reviews `plan.md`, everywhere else it reviews the code.
+
+Answering the PR's existing review comments is a different job and gets its own
+button: **⇄ Answer PR comments** (on any reviewable state with a PR) launches an
+agent that reads every review thread, fixes the trivial ones with commits,
+replies on each thread, and mirrors the rest into the item's comment queue for
+your triage. clash polls the PR while the item is on screen and puts the
+unanswered-thread count right on the button (**⇄ Answer 3 PR comments**), so you
+can see there's work waiting without opening GitHub. Code findings
 come back as **real diff annotations** (graded `BLOCKER`/`RISK`/`GAP`/`NIT`,
 authored `agent`) that you triage in the Diff tab exactly like your own, so one
 *Request changes* turns them into the next round of work; plan findings and the

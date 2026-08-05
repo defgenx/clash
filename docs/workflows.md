@@ -127,6 +127,12 @@ pr-draft / pr-ready likewise
 
 Publish rules that earned their place:
 
+- The GUI launches `local` / `pr-comments` rounds from one composer (depth +
+  findings destination on a single screen) and `respond-pr-comments` from its
+  own **Answer PR comments** action (depth `standard`) — answering reviewers is
+  a different job from producing a fresh review, and as the third option of a
+  second dialog it was invisible. The meta and kickoff-prompt contract is
+  identical for all three.
 - Every round's report ends with a **mandatory `### Published` section**, even
   `local` rounds — clash parses it, and a missing section reads as "silently
   did nothing".
@@ -269,9 +275,16 @@ for context.
 Entirely optional — an item can go `diff-review → done` without one.
 
 clash records the PR in `meta.json.pr` (`url`, `number`, `draft`, `state`,
-`lastCheckedAt`) via the `gh` CLI. `state == "MERGED"` observed on refresh
-moves the item to `done`. The agent may create the draft PR itself — writing
-`pr.url` is enough; clash fills the rest on the next refresh.
+`lastCheckedAt`, `unansweredComments`) via the `gh` CLI. `state == "MERGED"`
+observed on refresh moves the item to `done`. The agent may create the draft PR
+itself — writing `pr.url` is enough; clash fills the rest on the next refresh.
+
+`unansweredComments` is the count of review-comment threads nobody has replied
+to (clash-only, refreshed with the rest of the PR state, absent until first
+fetched). It exists so the GUI's "Answer PR comments" action — a
+`respond-pr-comments` round launched as its own button — can show whether such a
+round has work waiting. It is advisory: the count is up to a poll stale and
+capped at one API page, and the reviewer re-fetches the comments itself.
 
 Creating the PR publishes the branch when it is not on the remote yet: `gh pr
 create` run non-interactively aborts with *"you must first push the current

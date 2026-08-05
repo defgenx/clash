@@ -1254,14 +1254,32 @@ pub(crate) async fn refresh_workflow_pr(
     } else {
         meta.branch.clone()
     };
-    let view = tauri::async_runtime::spawn_blocking(move || {
-        clash::infrastructure::gh::pr_view(Path::new(&dir), &selector)
+    let (view, unanswered) = tauri::async_runtime::spawn_blocking(move || {
+        let view = clash::infrastructure::gh::pr_view(Path::new(&dir), &selector)?;
+        // Best-effort: a failed count keeps the previous value rather than
+        // failing the refresh — the count is a button label, not PR state.
+        let unanswered = (view.number > 0)
+            .then(|| {
+                clash::infrastructure::gh::pr_unanswered_review_comments(
+                    Path::new(&dir),
+                    view.number,
+                )
+                .ok()
+            })
+            .flatten();
+        Ok::<_, clash::infrastructure::gh::GhError>((view, unanswered))
     })
     .await
     .map_err(|e| e.to_string())?
     .map_err(gh_err)?;
 
     let mut changed = merge_pr_view(&mut meta, &view);
+    if let (Some(n), Some(pr)) = (unanswered, meta.pr.as_mut()) {
+        if pr.unanswered_comments != Some(n) {
+            pr.unanswered_comments = Some(n);
+            changed = true;
+        }
+    }
     if view.state == "MERGED" && meta.status.can_transition_to(WorkflowStatus::Done) {
         meta.status = WorkflowStatus::Done;
         changed = true;

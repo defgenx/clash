@@ -413,6 +413,51 @@ pub fn pr_comment(dir: &Path, number: u64, body: &str) -> Result<(), GhError> {
     }
 }
 
+/// One review comment from `GET /pulls/{n}/comments` — only the two fields
+/// threading needs. GitHub flattens threads: every reply's `in_reply_to_id`
+/// points at the thread's root comment.
+#[derive(serde::Deserialize)]
+struct ReviewComment {
+    #[serde(default)]
+    id: u64,
+    #[serde(default)]
+    in_reply_to_id: Option<u64>,
+}
+
+/// Pure: count review-comment threads nobody has replied to yet — root
+/// comments (no `in_reply_to_id`) with no comment pointing back at them.
+/// This matches the `respond-pr-comments` round's notion of "still
+/// unanswered", so the count tells the human whether such a round has work.
+pub fn count_unanswered_review_comments(json: &str) -> Result<u64, GhError> {
+    let comments: Vec<ReviewComment> =
+        serde_json::from_str(json.trim()).map_err(|e| GhError::Parse(e.to_string()))?;
+    let replied: std::collections::HashSet<u64> =
+        comments.iter().filter_map(|c| c.in_reply_to_id).collect();
+    Ok(comments
+        .iter()
+        .filter(|c| c.in_reply_to_id.is_none() && !replied.contains(&c.id))
+        .count() as u64)
+}
+
+/// Unanswered review-comment count for PR `number`, via
+/// `gh api repos/{owner}/{repo}/pulls/<n>/comments`. The placeholders resolve
+/// from `dir`'s remotes, same as every other call here. One page of 100 —
+/// the count is advisory (a button label), not an audit.
+pub fn pr_unanswered_review_comments(dir: &Path, number: u64) -> Result<u64, GhError> {
+    let path = format!(
+        "repos/{{owner}}/{{repo}}/pulls/{}/comments?per_page=100",
+        number
+    );
+    let output = run(dir, &["api", &path])?;
+    if output.status.success() {
+        count_unanswered_review_comments(&String::from_utf8_lossy(&output.stdout))
+    } else {
+        Err(GhError::Command(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
+}
+
 /// `gh pr ready <number>` in `dir` — flips a draft PR to ready-for-review.
 pub fn pr_ready(dir: &Path, number: u64) -> Result<(), GhError> {
     let number = number.to_string();
@@ -548,6 +593,30 @@ mod tests {
             "a pull request for branch \"feat/x\" already exists"
         ));
         assert!(!is_unpushed_branch_error(""));
+    }
+
+    #[test]
+    fn unanswered_counts_only_replyless_roots() {
+        // Two roots, one replied to (GitHub points replies at the thread root),
+        // plus fields the parser must ignore.
+        let json = r#"[
+            {"id": 1, "body": "root, answered", "user": {"login": "alice"}},
+            {"id": 2, "in_reply_to_id": 1, "body": "the answer"},
+            {"id": 3, "body": "root, unanswered"}
+        ]"#;
+        assert_eq!(count_unanswered_review_comments(json).unwrap(), 1);
+        // A second reply on the same thread changes nothing.
+        let json = r#"[
+            {"id": 1}, {"id": 2, "in_reply_to_id": 1}, {"id": 4, "in_reply_to_id": 1}
+        ]"#;
+        assert_eq!(count_unanswered_review_comments(json).unwrap(), 0);
+        assert_eq!(count_unanswered_review_comments("[]").unwrap(), 0);
+        // An explicit null reply-id is a root, same as an absent one.
+        assert_eq!(
+            count_unanswered_review_comments(r#"[{"id": 9, "in_reply_to_id": null}]"#).unwrap(),
+            1
+        );
+        assert!(count_unanswered_review_comments("not json").is_err());
     }
 
     #[test]

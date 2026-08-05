@@ -4822,50 +4822,34 @@ async function launchWfAgent(item, phase, root, branch = null) {
   }
 }
 
-/// Launch one agent review round: pick the depth (code reviews only), then what
-/// to do with the findings, then spawn the reviewer. The *target* is not asked —
-/// it follows from the item's status (plan at plan-review, code everywhere else),
-/// because the other choice has nothing to read.
+/// Launch one agent review round via the composer. The *target* is not asked —
+/// it follows from the item's status (plan at plan-review, code everywhere
+/// else), because the other choice has nothing to read.
 ///
 /// Rounds are unbounded by design: the reviewer returns the item to the status
 /// it started in, so this same button is available again the moment it finishes.
 async function launchWfReview(item, root) {
-  const target = wfReviewTarget(item);
-  const round = (item.meta.reviewRound || 0) + 1;
+  const picked = await wfComposeReviewRound(item);
+  if (!picked) return;
+  await spawnWfReview(item, root, picked.depth, picked.publish);
+}
 
-  // A plan has one review: the plan-review skill. Depth tunes how hard a *diff*
-  // is read — there are no hunks in a plan to read harder — so asking here was
-  // offering a choice with one real answer. Mirrors review_engine_for.
-  let depth = "standard";
-  if (target !== "plan") {
-    depth = await uiChoice({
-      message: `Code review round ${round} — how deep?`,
-      detail:
-        "Standard reviews the diff in context. Deep traces every subsystem the change touches — callers, invariants, existing tests — before judging it.",
-      choices: [
-        { label: "Deep review", value: "deep", primary: true },
-        { label: "Standard code review", value: "standard" },
-      ],
-    });
-    if (!depth) return;
-  }
+/// Launch a respond round: the agent reads the PR's review comments, fixes
+/// the trivial ones with commits, replies on each thread, and mirrors the
+/// rest into the item's comment queue. Its own action, not a publish mode
+/// buried two dialogs deep — answering reviewers is a different job from
+/// producing a fresh review, and a job you can't see is a job you don't have.
+async function launchWfReviewRespond(item, root) {
+  const prName = item.meta.pr && item.meta.pr.number ? `#${item.meta.pr.number}` : "the PR";
+  const count = item.meta.pr ? item.meta.pr.unansweredComments : null;
+  if (!(await uiConfirm(answerCommentsConfirm(prName, count), "Launch"))) return;
+  await spawnWfReview(item, root, "standard", "respond-pr-comments");
+}
 
-  // The publish question only exists once there is a PR to talk to.
-  let publish = "local";
-  if (wfHasPr(item)) {
-    const n = item.meta.pr.number ? `#${item.meta.pr.number}` : "the PR";
-    publish = await uiChoice({
-      message: "What should this round do with its findings?",
-      detail: `Findings always land in this item. These options additionally talk to ${n}.`,
-      choices: [
-        { label: "Keep local", value: "local", primary: true },
-        { label: `Post findings to ${n}`, value: "pr-comments" },
-        { label: `Answer ${n}'s review comments`, value: "respond-pr-comments" },
-      ],
-    });
-    if (!publish) return;
-  }
-
+/// Shared spawn for both review-launch surfaces (the composer and the
+/// "Answer PR comments" action), so a reviewer session is registered, named
+/// and refreshed identically wherever it starts.
+async function spawnWfReview(item, root, depth, publish) {
   try {
     const sid = await invoke("start_workflow_review_agent", {
       project: item.project,
@@ -4887,6 +4871,106 @@ async function launchWfReview(item, root) {
     }
     uiAlert(`Review launch failed: ${e}`);
   }
+}
+
+/// The review-round composer: one dialog holding the whole shape of the round
+/// — what will be reviewed, how deep, where the findings go — before anything
+/// launches. Replaces two stacked uiChoice dialogs, which never showed the
+/// publish question and the depth question on the same screen. Pure model in
+/// wf-review.js. Resolves { depth, publish } or null on cancel.
+function wfComposeReviewRound(item) {
+  return new Promise((resolve) => {
+    const model = reviewRoundModel({
+      round: (item.meta.reviewRound || 0) + 1,
+      target: wfReviewTarget(item),
+      hasPr: wfHasPr(item),
+      prNumber: item.meta.pr ? item.meta.pr.number : 0,
+    });
+
+    const backdrop = document.createElement("div");
+    backdrop.className = "dialog-backdrop";
+    const box = document.createElement("div");
+    box.className = "dialog-box wf-review";
+    const msg = document.createElement("p");
+    msg.textContent = model.title;
+    box.appendChild(msg);
+    const intro = document.createElement("p");
+    intro.className = "dialog-detail";
+    intro.textContent = model.intro;
+    box.appendChild(intro);
+
+    const buildGroup = (group, name) => {
+      const fs = document.createElement("fieldset");
+      fs.className = "wf-review-group";
+      const lg = document.createElement("legend");
+      lg.textContent = group.legend;
+      fs.appendChild(lg);
+      for (const c of group.choices) {
+        const row = document.createElement("label");
+        row.className = "wf-review-opt";
+        const input = document.createElement("input");
+        input.type = "radio";
+        input.name = name;
+        input.value = c.value;
+        input.checked = c.value === group.default;
+        const text = document.createElement("span");
+        text.className = "wf-review-opt-text";
+        const label = document.createElement("span");
+        label.className = "wf-review-opt-label";
+        label.textContent = c.label;
+        const detail = document.createElement("span");
+        detail.className = "wf-review-opt-detail";
+        detail.textContent = c.detail;
+        text.appendChild(label);
+        text.appendChild(detail);
+        row.appendChild(input);
+        row.appendChild(text);
+        fs.appendChild(row);
+      }
+      box.appendChild(fs);
+      return fs;
+    };
+    // A null group means the dimension has one real answer — render nothing
+    // and use the fallback, instead of offering a choice that isn't one.
+    const depthGroup = model.depth ? buildGroup(model.depth, "wf-review-depth") : null;
+    const publishGroup = model.publish ? buildGroup(model.publish, "wf-review-publish") : null;
+    const picked = (fs, fallback) => {
+      const el = fs && fs.querySelector("input:checked");
+      return el ? el.value : fallback;
+    };
+
+    const done = (val) => {
+      backdrop.remove();
+      resolve(val);
+      if (typeof fitAll === "function") fitAll();
+    };
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.onclick = () => done(null);
+    const launch = document.createElement("button");
+    launch.className = "primary";
+    launch.textContent = model.launchLabel;
+    launch.onclick = () =>
+      done({ depth: picked(depthGroup, "standard"), publish: picked(publishGroup, "local") });
+    actions.appendChild(cancel);
+    actions.appendChild(launch);
+    box.appendChild(actions);
+    backdrop.appendChild(box);
+    // Native browser webviews paint over the DOM and would hide the dialog —
+    // drop them while it's up; fitAll() (in done) brings them back.
+    if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
+    document.body.appendChild(backdrop);
+    backdrop.onclick = (e) => {
+      if (e.target === backdrop) done(null);
+    };
+    backdrop.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") done(null);
+    });
+    setTimeout(() => launch.focus(), 0);
+  });
 }
 
 /// Post the latest agent-review round to the PR as one comment — the recovery
@@ -5218,6 +5302,22 @@ function renderWfActions(bar, root, item) {
     );
   };
 
+  // The "read the PR's reviews and deal with them" job, first-class wherever
+  // a reviewable item has a PR. The label carries the unanswered-thread count
+  // from the last PR refresh when it's known, so the button doubles as the
+  // signal that a respond round has work waiting.
+  const answerCommentsButton = () => {
+    if (!wfCanReview(item) || !wfHasPr(item)) return;
+    const count = item.meta.pr.unansweredComments;
+    const prName = item.meta.pr.number ? `#${item.meta.pr.number}` : "the PR";
+    add(
+      `⇄ ${answerCommentsLabel(count)}`,
+      "",
+      () => launchWfReviewRespond(item, root),
+      answerCommentsTitle(count, prName)
+    );
+  };
+
   // Available from every state holding a reviewable artifact, every time the
   // item lands back there — that is what makes rounds repeatable. The label
   // counts past rounds so it is obvious this is round N+1, not a one-shot.
@@ -5381,6 +5481,7 @@ function renderWfActions(bar, root, item) {
       }
       add("✎ Request changes", "", requestChanges);
       reviewButton();
+      answerCommentsButton();
       postRoundButton();
       spacer();
       abandon();
@@ -5442,6 +5543,7 @@ function renderWfActions(bar, root, item) {
         "Move this item back to the DIFF REVIEW stage — no agent, no tokens"
       );
       reviewButton();
+      answerCommentsButton();
       postRoundButton();
       spacer();
       abandon();
@@ -5458,6 +5560,7 @@ function renderWfActions(bar, root, item) {
       // agent-round findings; both need a way to become the next fix round.
       add("✎ Request changes", "", requestChanges);
       reviewButton();
+      answerCommentsButton();
       postRoundButton();
       break;
 
@@ -7086,14 +7189,16 @@ function wfShort(s, n) {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 }
 
-// Lazy PR polling: while any pr-draft/pr-ready item is on screen (sidebar
-// section or open tab), refresh its recorded PR state once a minute. The
-// backend throttles to one gh call per 30s per item and only writes meta on
-// actual change, so this never churns the FS watcher.
+// Lazy PR polling: while any PR-bearing item parked on a decision is on
+// screen (sidebar section or open tab), refresh its recorded PR state — and
+// the unanswered review-comment count — once a minute. diff-review is
+// included because review-only items park there with a PR clash doesn't own.
+// The backend throttles to one gh call per 30s per item and only writes meta
+// on actual change, so this never churns the FS watcher.
 setInterval(() => {
   for (const item of state.workflows) {
     const st = item.meta.status;
-    if (st !== "pr-draft" && st !== "pr-ready") continue;
+    if (st !== "pr-draft" && st !== "pr-ready" && st !== "diff-review") continue;
     if (!item.meta.pr || !item.meta.pr.url) continue;
     const key = wfKey(item.project, item.slug);
     const visible = state.wfOpen || state.open.has(`view:workflow:${key}`);

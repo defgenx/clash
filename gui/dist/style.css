@@ -1916,3 +1916,35 @@ button.busy:disabled { opacity: 1; }
   color: var(--red, #e06c75);
   margin-bottom: 8px !important;
 }
+
+/* Review-round composer: one dialog holding the round's whole shape (depth +
+   findings destination) before anything launches. */
+.dialog-box.wf-review { width: min(520px, 92vw); }
+.dialog-box.wf-review p.dialog-detail {
+  word-break: normal;
+  font-family: inherit;
+}
+.wf-review-group {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+}
+.wf-review-group legend {
+  font-size: 12px;
+  color: var(--fg-dim, #8a8a8a);
+  padding: 0 4px;
+}
+.wf-review-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 2px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.wf-review-opt:hover { background: var(--bg-hover); }
+.wf-review-opt input[type="radio"] { margin-top: 2px; }
+.wf-review-opt-text { display: flex; flex-direction: column; gap: 2px; }
+.wf-review-opt-label { font-size: 13px; }
+.wf-review-opt-detail { font-size: 12px; color: var(--fg-dim, #8a8a8a); }
