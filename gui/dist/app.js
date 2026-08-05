@@ -5207,7 +5207,7 @@ function wfComposeChangeRequest({ item, target, annotations, onJump }) {
     field.rows = 14;
     field.spellcheck = false;
     field.value = wfDrafts.get(key) || "";
-    field.placeholder = composerPlaceholder(target, openCount);
+    field.placeholder = composerPlaceholder(target, live.length);
     box.appendChild(field);
 
     // Rendered preview of exactly what will land in review.md.
