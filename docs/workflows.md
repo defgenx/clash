@@ -333,7 +333,10 @@ Entirely optional — an item can go `diff-review → done` without one.
 clash records the PR in `meta.json.pr` (`url`, `number`, `draft`, `state`,
 `lastCheckedAt`, `unansweredComments`) via the `gh` CLI. `state == "MERGED"`
 observed on refresh moves the item to `done`. The agent may create the draft PR
-itself — writing `pr.url` is enough; clash fills the rest on the next refresh.
+itself — writing `pr.url` is enough: clash fills the rest on the next refresh,
+and every command that needs the number derives it from the URL in the
+meantime (a URL-only record must never make a button fail with "refresh
+first"; opening a PR-bearing item also triggers a throttled refresh).
 
 `unansweredComments` is the count of review-comment threads nobody has replied
 to (clash-only, refreshed with the rest of the PR state, absent until first

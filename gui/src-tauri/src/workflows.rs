@@ -1290,6 +1290,22 @@ fn gh_err(e: clash::infrastructure::gh::GhError) -> String {
     }
 }
 
+/// A recorded PR's number, derived from the URL when the record is URL-only.
+///
+/// The agent contract says writing `pr.url` is enough — clash fills the rest.
+/// The only filler used to be the lazy 60s poll, so any command demanding a
+/// number inside that window failed with "refresh it first" against a URL
+/// that literally contains the number.
+fn recorded_pr_number(pr: &clash::domain::workflow::WorkflowPr) -> u64 {
+    if pr.number > 0 {
+        pr.number
+    } else {
+        clash::infrastructure::gh::parse_pr_url(&pr.url)
+            .map(|(_, n)| n)
+            .unwrap_or(0)
+    }
+}
+
 /// The directory gh commands run in: the item's worktree, else its repo.
 fn pr_dir(meta: &clash::domain::workflow::WorkflowMeta) -> Result<String, String> {
     let dir = meta
@@ -1426,8 +1442,12 @@ pub(crate) async fn refresh_workflow_pr(
     }
 
     let dir = pr_dir(&meta)?;
-    let selector = if pr.number > 0 {
-        pr.number.to_string()
+    // Prefer the number (from the record, or derived from the URL), then the
+    // branch — a URL-only record must still be refreshable, it is the state
+    // the agent contract deliberately produces.
+    let number = recorded_pr_number(&pr);
+    let selector = if number > 0 {
+        number.to_string()
     } else {
         meta.branch.clone()
     };
@@ -1488,10 +1508,11 @@ pub(crate) async fn publish_workflow_review(
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
-    let pr = meta
+    let number = meta
         .pr
-        .clone()
-        .filter(|p| p.number > 0)
+        .as_ref()
+        .map(recorded_pr_number)
+        .filter(|&n| n > 0)
         .ok_or_else(|| "no-pr: this item has no pull request yet".to_string())?;
     let report = state
         .backend
@@ -1519,7 +1540,7 @@ pub(crate) async fn publish_workflow_review(
     );
     let dir = pr_dir(&meta)?;
     tauri::async_runtime::spawn_blocking(move || {
-        clash::infrastructure::gh::pr_comment(Path::new(&dir), pr.number, &body)
+        clash::infrastructure::gh::pr_comment(Path::new(&dir), number, &body)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1542,18 +1563,23 @@ pub(crate) async fn mark_workflow_pr_ready(
     let Some(pr) = meta.pr.clone() else {
         return Err("No PR recorded for this item".to_string());
     };
-    if pr.number == 0 {
-        return Err("Recorded PR has no number — refresh it first".to_string());
+    let number = recorded_pr_number(&pr);
+    if number == 0 {
+        return Err(format!(
+            "Cannot tell the PR number from '{}' — re-attach the PR by URL",
+            pr.url
+        ));
     }
     let dir = pr_dir(&meta)?;
     tauri::async_runtime::spawn_blocking(move || {
-        clash::infrastructure::gh::pr_ready(Path::new(&dir), pr.number)
+        clash::infrastructure::gh::pr_ready(Path::new(&dir), number)
     })
     .await
     .map_err(|e| e.to_string())?
     .map_err(gh_err)?;
 
     if let Some(pr) = meta.pr.as_mut() {
+        pr.number = number; // heal a URL-only record while we're writing anyway
         pr.draft = false;
         pr.last_checked_at = now_ms();
     }

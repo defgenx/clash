@@ -4618,6 +4618,23 @@ async function buildWorkflowView(el, project, slug) {
     return;
   }
 
+  // Opening a PR-bearing parked item refreshes its recorded PR state right
+  // away (number, draft/merged state, unanswered-comment count) instead of
+  // waiting for the next 60s poll tick — an agent-created PR is URL-only
+  // until a refresh fills it. Fire-and-forget: the backend throttles to one
+  // gh call per 30s per item and only writes meta on change, so this can
+  // never loop the FS watcher.
+  {
+    const st = item.meta.status;
+    if (
+      (st === "pr-draft" || st === "pr-ready" || st === "diff-review") &&
+      item.meta.pr &&
+      item.meta.pr.url
+    ) {
+      invoke("refresh_workflow_pr", { project, slug, force: false }).catch(() => {});
+    }
+  }
+
   // Landing sub-view depends on the mode: a review-only item has no plan, so
   // the diff is what it is about. Resolved here (not at tab-state creation)
   // because the mode is only known once the item is loaded. A restored tab can
