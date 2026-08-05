@@ -209,12 +209,16 @@ pub struct Workflows {
     /// Skill the workflow PR phase opens pull requests with; empty means
     /// "follow the repo's own conventions with `gh`".
     pub pr_skill: String,
+    /// Forge override for PR features: `auto` (detect from the origin
+    /// remote), `github`, or `none`.
+    pub forge: String,
 }
 
 impl Default for Workflows {
     fn default() -> Self {
         Self {
             pr_skill: default_str("workflows.pr_skill"),
+            forge: default_str("workflows.forge"),
         }
     }
 }

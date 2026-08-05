@@ -90,6 +90,13 @@
         <label class="setting-row">PR skill
           <input id="set-wf-pr-skill" type="text" placeholder="e.g. hivebrite-engineering:github-pr" autocomplete="off" spellcheck="false" title="Skill the workflow PR phase opens pull requests with. Empty: the agent follows the repo's own PR conventions with gh." />
         </label>
+        <label class="setting-row inline">Forge
+          <select id="set-wf-forge" title="Code forge for workflow PR features. Auto detects from the repo's origin remote (unknown hosts count as GitHub, so GitHub Enterprise keeps working); None disables change-request features.">
+            <option value="auto">Auto-detect</option>
+            <option value="github">GitHub</option>
+            <option value="none">None</option>
+          </select>
+        </label>
 
         <div class="settings-group">Terminal · text</div>
         <label class="setting-row">Font family

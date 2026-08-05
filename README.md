@@ -762,7 +762,7 @@ open terminals, no restart:
 |---|---|
 | **Appearance** | **Theme** — 12 built-in palettes, 8 dark and 4 light (see below) |
 | **Paths** | Default directory for new sessions · scratch directory · workflows directory (each with a 📁 folder picker) · `claude` binary — a name resolved on PATH or an absolute path, validated on entry, used by the next session you start (📄 file picker) |
-| **Workflows** | PR skill — the skill workflow agents open pull requests with (e.g. `hivebrite-engineering:github-pr`); empty means the repo's own conventions via `gh` |
+| **Workflows** | PR skill — the skill workflow agents open pull requests with (e.g. `hivebrite-engineering:github-pr`); empty means the repo's own conventions via `gh` · Forge — auto-detect (from the repo's origin remote) / GitHub / none (disables PR features for repos without a supported forge) |
 | **Terminal · text** | Font family (opens a **searchable font picker** — see below) · font size · font weight · bold weight · line height · letter spacing |
 | **Terminal · cursor** | Style (block/bar/underline) · unfocused-pane style (outline/block/bar/underline/hidden) · bar width · blink |
 | **Terminal · colors** | Minimum contrast ratio (1 = off, 4.5 = WCAG AA) · bold text in bright colors |

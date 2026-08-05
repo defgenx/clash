@@ -302,6 +302,14 @@ pub const PROPS: &[Prop] = &[
          `hivebrite-engineering:github-pr`). Empty means the agent follows the repo's own \
          PR conventions with `gh`.",
     ),
+    Prop::new(
+        "workflows.forge",
+        Kind::Enum(&["auto", "github", "none"]),
+        Val::Str("auto"),
+        "Code forge for workflow PR features. `auto` detects from the repo's origin remote \
+         (unknown hosts count as GitHub, so GitHub Enterprise keeps working); `none` disables \
+         change-request features for repos without a supported forge.",
+    ),
     // ── [appearance] — GUI-local ────────────────────────────────────
     Prop::new(
         "appearance.theme",

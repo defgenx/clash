@@ -5312,6 +5312,11 @@ function wfGhHint(e) {
     return "GitHub CLI (gh) is not installed — `brew install gh`, then retry.";
   if (msg.startsWith("gh-unauthenticated:"))
     return "gh is not authenticated — run `gh auth login`, then retry.";
+  if (msg.startsWith("forge-unsupported:"))
+    return (
+      "This repository's forge isn't supported for PR features — " +
+      "Settings → Workflows → Forge can force GitHub if the detection is wrong."
+    );
   return null;
 }
 
@@ -8468,6 +8473,21 @@ $("set-wf-pr-skill").addEventListener("change", async () => {
   }
 });
 
+/// The forge override lives in config.toml (shared with the TUI): auto
+/// detects from the repo's origin remote, github forces the gh path, none
+/// disables PR features for repos without a supported forge.
+$("set-wf-forge").addEventListener("change", async () => {
+  const el = $("set-wf-forge");
+  try {
+    el.value = await invoke("set_workflow_forge", { forge: el.value });
+  } catch (e) {
+    uiAlert(`Forge: ${e}`);
+    try {
+      el.value = await invoke("get_workflow_forge");
+    } catch (_) {}
+  }
+});
+
 /// Native pickers for every path setting — a folder picker for the directory
 /// rows, a file picker for the ones naming an executable. Each fills the field
 /// and then fires the same `change` handler typing would, so config-backed rows
@@ -8694,6 +8714,9 @@ function restartSessionPoll() {
     .catch(() => {});
   invoke("get_workflow_pr_skill")
     .then((s) => ($("set-wf-pr-skill").value = s))
+    .catch(() => {});
+  invoke("get_workflow_forge")
+    .then((f) => ($("set-wf-forge").value = f || "auto"))
     .catch(() => {});
   // A clash upgrade that rewrote/retired skills must be visible, not silent:
   // the backend kept the startup install report for exactly this toast.

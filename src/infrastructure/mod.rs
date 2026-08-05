@@ -5,6 +5,11 @@ pub mod daemon;
 pub mod env_path;
 pub mod error;
 pub mod event;
+/// Forge implementations are consumed only through the lib crate (GUI Tauri
+/// commands), like `domain::forge` — same dead-code allowance, same exit
+/// condition (a TUI with PR features).
+#[allow(dead_code)]
+pub mod forge;
 pub mod fs;
 /// gh integration is consumed only through the lib crate (GUI PR commands);
 /// the binary's private-`mod` compilation would otherwise flag it as dead.

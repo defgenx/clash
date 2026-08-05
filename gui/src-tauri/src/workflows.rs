@@ -291,6 +291,39 @@ pub(crate) fn set_workflow_pr_skill(
     Ok(state.config.get().workflows.pr_skill)
 }
 
+/// The configured forge override, for the Settings field.
+#[tauri::command]
+pub(crate) fn get_workflow_forge(state: State<'_, GuiState>) -> String {
+    state.config.get().workflows.forge
+}
+
+/// Set the forge override: `auto` (detect from the origin remote), `github`,
+/// or `none`. `auto` resets to the default. Persisted to the shared
+/// `config.toml` and read live at the next forge operation (overrides never
+/// consult the detection cache).
+#[tauri::command]
+pub(crate) fn set_workflow_forge(
+    state: State<'_, GuiState>,
+    forge: String,
+) -> Result<String, String> {
+    let value = forge.trim().to_ascii_lowercase();
+    if !["auto", "github", "none"].contains(&value.as_str()) {
+        return Err(format!("Unknown forge '{}'", forge));
+    }
+    if value == "auto" {
+        state
+            .config
+            .reset_values(&["workflows.forge"])
+            .map_err(|e| e.to_string())?;
+    } else {
+        state
+            .config
+            .set_json(&[("workflows.forge", serde_json::Value::String(value))])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(state.config.get().workflows.forge)
+}
+
 /// What the startup skill install changed — the frontend toasts a non-noop
 /// report so a clash upgrade that rewrote skills is visible, not silent.
 #[tauri::command]
@@ -447,29 +480,30 @@ pub(crate) async fn create_workflow_review(
             let dir = repo.clone();
             let sel = selector.clone();
             let scope = pr_repo.clone();
+            let forge = state.forge_for_dir(&repo.to_string_lossy());
             let view = tauri::async_runtime::spawn_blocking(move || {
-                clash::infrastructure::gh::pr_view_scoped(&dir, &sel, scope.as_deref())
+                forge.view(&dir, &sel, scope.as_deref())
             })
             .await
             .map_err(|e| e.to_string())?
-            .map_err(gh_err)?;
-            if view.head_ref_name.is_empty() {
+            .map_err(forge_err)?;
+            if view.head_ref.is_empty() {
                 return Err(format!(
-                    "gh did not report a head branch for PR {}",
+                    "the forge did not report a head branch for PR {}",
                     selector
                 ));
             }
             let block = clash::domain::workflow::WorkflowPr {
                 url: view.url.clone(),
                 number: view.number,
-                draft: view.is_draft,
-                state: view.state.clone(),
+                draft: view.draft,
+                state: view.state.as_str().to_string(),
                 last_checked_at: now_ms(),
                 ..Default::default()
             };
             (
-                view.head_ref_name.clone(),
-                view.base_ref_name.clone(),
+                view.head_ref.clone(),
+                view.base_ref.clone(),
                 Some(block),
                 view.title.clone(),
             )
@@ -1279,14 +1313,18 @@ pub(crate) fn cancel_workflow_review(
 
 // ── PR lifecycle (gh) ───────────────────────────────────────────────────
 
-/// Map gh errors to the GUI degradation contract: `gh-unavailable:` /
-/// `gh-unauthenticated:` prefixes disable PR buttons with a setup hint.
-fn gh_err(e: clash::infrastructure::gh::GhError) -> String {
-    use clash::infrastructure::gh::GhError;
+/// Map forge errors to the GUI degradation contract: `gh-unavailable:` /
+/// `gh-unauthenticated:` prefixes disable PR buttons with a setup hint, and
+/// `forge-unsupported:` explains a repo whose forge clash can't drive. The
+/// `gh-` spelling is a frontend contract, kept even though the tool name now
+/// rides in the error.
+fn forge_err(e: clash::domain::forge::ForgeError) -> String {
+    use clash::domain::forge::ForgeError;
     match e {
-        GhError::NotInstalled => "gh-unavailable: gh CLI not installed".to_string(),
-        GhError::NotAuthenticated(m) => format!("gh-unauthenticated: {}", m),
-        other => other.to_string(),
+        ForgeError::NotInstalled(tool) => format!("gh-unavailable: {} CLI not installed", tool),
+        ForgeError::NotAuthenticated(m) => format!("gh-unauthenticated: {}", m),
+        ForgeError::Unsupported(m) => format!("forge-unsupported: {}", m),
+        ForgeError::Other(m) => m,
     }
 }
 
@@ -1320,23 +1358,23 @@ fn pr_dir(meta: &clash::domain::workflow::WorkflowMeta) -> Result<String, String
     }
 }
 
-/// Fold a `gh pr view` result into the meta's PR block. Returns true when
-/// anything (besides the check timestamp) actually changed — the caller only
-/// writes meta on change, so the 60s poll never churns the FS watcher.
+/// Fold a forge view into the meta's PR block. Returns true when anything
+/// (besides the check timestamp) actually changed — the caller only writes
+/// meta on change, so the 60s poll never churns the FS watcher.
 fn merge_pr_view(
     meta: &mut clash::domain::workflow::WorkflowMeta,
-    view: &clash::infrastructure::gh::GhPrView,
+    view: &clash::domain::forge::ChangeView,
 ) -> bool {
     let pr = meta.pr.get_or_insert_with(Default::default);
     let changed = pr.url != view.url
         || pr.number != view.number
-        || pr.draft != view.is_draft
-        || pr.state != view.state;
+        || pr.draft != view.draft
+        || pr.state != view.state.as_str();
     if changed {
         pr.url = view.url.clone();
         pr.number = view.number;
-        pr.draft = view.is_draft;
-        pr.state = view.state.clone();
+        pr.draft = view.draft;
+        pr.state = view.state.as_str().to_string();
         pr.last_checked_at = now_ms();
     }
     changed
@@ -1386,17 +1424,13 @@ pub(crate) async fn workflow_create_pr(
             .unwrap_or_default()
     });
 
+    let forge = state.forge_for_dir(&dir);
     let view = tauri::async_runtime::spawn_blocking(move || {
-        clash::infrastructure::gh::pr_create_draft(
-            Path::new(&dir),
-            &pr_title,
-            &pr_body,
-            Some(&base),
-        )
+        forge.create_draft(Path::new(&dir), &pr_title, &pr_body, Some(&base))
     })
     .await
     .map_err(|e| e.to_string())?
-    .map_err(gh_err)?;
+    .map_err(forge_err)?;
 
     merge_pr_view(&mut meta, &view);
     if meta.status.can_transition_to(WorkflowStatus::PrDraft) {
@@ -1451,24 +1485,23 @@ pub(crate) async fn refresh_workflow_pr(
     } else {
         meta.branch.clone()
     };
+    let forge = state.forge_for_dir(&dir);
     let (view, unanswered) = tauri::async_runtime::spawn_blocking(move || {
-        let view = clash::infrastructure::gh::pr_view(Path::new(&dir), &selector)?;
+        let view = forge.view(Path::new(&dir), &selector, None)?;
         // Best-effort: a failed count keeps the previous value rather than
         // failing the refresh — the count is a button label, not PR state.
         let unanswered = (view.number > 0)
             .then(|| {
-                clash::infrastructure::gh::pr_unanswered_review_comments(
-                    Path::new(&dir),
-                    view.number,
-                )
-                .ok()
+                forge
+                    .unanswered_review_comments(Path::new(&dir), view.number)
+                    .ok()
             })
             .flatten();
-        Ok::<_, clash::infrastructure::gh::GhError>((view, unanswered))
+        Ok::<_, clash::domain::forge::ForgeError>((view, unanswered))
     })
     .await
     .map_err(|e| e.to_string())?
-    .map_err(gh_err)?;
+    .map_err(forge_err)?;
 
     let mut changed = merge_pr_view(&mut meta, &view);
     if let (Some(n), Some(pr)) = (unanswered, meta.pr.as_mut()) {
@@ -1477,7 +1510,9 @@ pub(crate) async fn refresh_workflow_pr(
             changed = true;
         }
     }
-    if view.state == "MERGED" && meta.status.can_transition_to(WorkflowStatus::Done) {
+    if view.state == clash::domain::forge::ChangeState::Merged
+        && meta.status.can_transition_to(WorkflowStatus::Done)
+    {
         meta.status = WorkflowStatus::Done;
         changed = true;
     }
@@ -1539,12 +1574,11 @@ pub(crate) async fn publish_workflow_review(
             .unwrap_or(section)
     );
     let dir = pr_dir(&meta)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        clash::infrastructure::gh::pr_comment(Path::new(&dir), number, &body)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(gh_err)?;
+    let forge = state.forge_for_dir(&dir);
+    tauri::async_runtime::spawn_blocking(move || forge.comment(Path::new(&dir), number, &body))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(forge_err)?;
     Ok(round)
 }
 
@@ -1571,12 +1605,11 @@ pub(crate) async fn mark_workflow_pr_ready(
         ));
     }
     let dir = pr_dir(&meta)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        clash::infrastructure::gh::pr_ready(Path::new(&dir), number)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(gh_err)?;
+    let forge = state.forge_for_dir(&dir);
+    tauri::async_runtime::spawn_blocking(move || forge.mark_ready(Path::new(&dir), number))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(forge_err)?;
 
     if let Some(pr) = meta.pr.as_mut() {
         pr.number = number; // heal a URL-only record while we're writing anyway
@@ -1622,14 +1655,14 @@ pub(crate) async fn attach_workflow_pr(
         .map_err(e2s)?;
     seed_local(&state, &project, &slug, meta.status);
 
-    // Best-effort detail fill; ignored when gh is unavailable.
+    // Best-effort detail fill; ignored when the forge tool is unavailable.
     let dir = pr_dir(&meta)?;
     let selector = number.to_string();
-    if let Ok(Ok(view)) = tauri::async_runtime::spawn_blocking(move || {
-        clash::infrastructure::gh::pr_view(Path::new(&dir), &selector)
-    })
-    .await
-    .map(|r| r.map_err(gh_err))
+    let forge = state.forge_for_dir(&dir);
+    if let Ok(Ok(view)) =
+        tauri::async_runtime::spawn_blocking(move || forge.view(Path::new(&dir), &selector, None))
+            .await
+            .map(|r| r.map_err(forge_err))
     {
         if merge_pr_view(&mut meta, &view) {
             state

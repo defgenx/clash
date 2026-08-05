@@ -31,7 +31,7 @@ const PUSH_TIMEOUT: Duration = Duration::from_secs(600);
 /// One struct for both uses — the PR-lifecycle commands read the first four
 /// fields, review-only item creation also needs the title and refs — so there
 /// is a single `--json` field list and a single parser.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GhPrView {
     #[serde(default)]

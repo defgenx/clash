@@ -76,6 +76,12 @@ struct GuiState {
     /// non-noop install — skills silently rewritten by an upgrade were
     /// invisible before this.
     skills_report: clash::infrastructure::skills::SkillsReport,
+    /// Detected forge per repo directory. Detection is one local `git
+    /// remote get-url` subprocess; the PR poll resolves a forge every 30s per
+    /// visible item, so the answer is cached (a repo's origin host does not
+    /// change mid-session; repointing `workflows.forge` bypasses the cache
+    /// entirely since overrides never consult it).
+    forge_cache: Mutex<HashMap<String, clash::domain::forge::ForgeKind>>,
 }
 
 impl GuiState {
@@ -91,6 +97,29 @@ impl GuiState {
     /// Custom IDE entries from config.toml, merged into editor detection.
     fn config_ides(&self) -> Vec<clash::infrastructure::config::IdeEntry> {
         self.config.get().ides
+    }
+
+    /// The forge for a repo directory: the `workflows.forge` override when
+    /// set, else detected from the origin remote (cached per directory). The
+    /// cache-miss path runs one local `git remote get-url` synchronously —
+    /// milliseconds, no network — which is why this stays a plain method
+    /// instead of an async hop.
+    pub(crate) fn forge_for_dir(
+        &self,
+        dir: &str,
+    ) -> std::sync::Arc<dyn clash::domain::forge::Forge> {
+        use clash::domain::forge::ForgeKind;
+        let kind = match self.config.get().workflows.forge.as_str() {
+            "github" => ForgeKind::GitHub,
+            "none" => ForgeKind::None,
+            _ => *self
+                .forge_cache
+                .lock()
+                .unwrap()
+                .entry(dir.to_string())
+                .or_insert_with(|| clash::infrastructure::forge::detect(std::path::Path::new(dir))),
+        };
+        clash::infrastructure::forge::forge_of(kind)
     }
 }
 
@@ -2842,6 +2871,7 @@ fn main() {
         attention: Mutex::new(clash::application::workflow::AttentionLedger::default()),
         pr_checked: Mutex::new(HashMap::new()),
         skills_report: clash::infrastructure::skills::SkillsReport::default(),
+        forge_cache: Mutex::new(HashMap::new()),
     };
 
     // Ship/refresh the embedded skills so the agent side of Workflows is
@@ -3077,6 +3107,8 @@ fn main() {
             workflows::attach_workflow_pr,
             workflows::get_workflow_pr_skill,
             workflows::set_workflow_pr_skill,
+            workflows::get_workflow_forge,
+            workflows::set_workflow_forge,
             workflows::get_skills_report,
             workflows::list_skills,
             workflows::get_skill

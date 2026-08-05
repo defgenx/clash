@@ -330,8 +330,20 @@ for context.
 
 Entirely optional — an item can go `diff-review → done` without one.
 
+Every PR operation goes through the **forge port** (`domain::forge::Forge` —
+view, create-draft, mark-ready, comment, unanswered-count, URL parse,
+capabilities), so the code host is an implementation, not an assumption.
+`GithubForge` (the `gh` CLI, today's only implementation) and the explicit
+`NoForge` live in `infrastructure::forge`; which one an item gets is decided
+by the `workflows.forge` setting (`auto` | `github` | `none`) — `auto`
+detects from the host of `git remote get-url origin`, cached per repo.
+Detection is deliberately conservative: unknown hosts count as GitHub
+(a GitHub Enterprise remote with a configured `gh` worked before detection
+existed and must keep working); only hosts recognizably another forge
+(gitlab, bitbucket) map to `none` until they have an implementation.
+
 clash records the PR in `meta.json.pr` (`url`, `number`, `draft`, `state`,
-`lastCheckedAt`, `unansweredComments`) via the `gh` CLI. `state == "MERGED"`
+`lastCheckedAt`, `unansweredComments`) via the forge. `state == "MERGED"`
 observed on refresh moves the item to `done`. The agent may create the draft PR
 itself — writing `pr.url` is enough: clash fills the rest on the next refresh,
 and every command that needs the number derives it from the URL in the
