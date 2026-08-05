@@ -129,6 +129,22 @@ test("requesting changes uses the composer, not a one-line prompt", () => {
   assert.doesNotMatch(APP, /Request changes — describe what to change/);
 });
 
+test("every dialog backdrop attaches its box", () => {
+  // A dialog builder that forgets `backdrop.appendChild(box)` still "works":
+  // the backdrop dims the screen, the handlers run, nothing throws — but the
+  // dialog itself is invisible and the app looks frozen. This shipped once
+  // (the change-request composer), so pin the pairing: one box attach per
+  // backdrop creation.
+  const backdrops = APP.match(/className = "dialog-backdrop"/g) || [];
+  const attaches = APP.match(/backdrop\.appendChild\(box\)/g) || [];
+  assert.ok(backdrops.length > 0, "dialog builders must exist");
+  assert.equal(
+    attaches.length,
+    backdrops.length,
+    "every `dialog-backdrop` needs a matching `backdrop.appendChild(box)`"
+  );
+});
+
 test("a dismissed composer keeps the draft", () => {
   // Losing a paragraph to a stray Esc or backdrop click is the failure this
   // guards; submitting clears it so the next round starts empty.

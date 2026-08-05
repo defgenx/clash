@@ -600,6 +600,21 @@ anything spends tokens:
 The *target* isn't asked — it follows from where you launched: at `plan-review`
 the round reviews `plan.md`, everywhere else it reviews the code.
 
+Rounds are **interactive**: the reviewer drafts its findings, then walks you
+through them in the session pane before anything is written — you keep, drop or
+regrade each one (plan reviews go further: every issue comes with lettered
+options and a recommendation, and you pick the direction). It asks again before
+making any trivial fix and before anything is posted to the PR. Dropped
+findings are recorded in the round report (so later rounds don't re-raise
+them) but never become annotations.
+
+**Applying a round's findings** is the *Request changes* step — a review never
+applies itself, and approving doesn't either (approval means "ship it as it
+stands"). Code findings you kept are already open diff comments, so the next
+change round picks them up automatically; for plan findings, the change-request
+composer's **Insert round N findings** button pastes the latest round into your
+note — which is exactly the next round's prompt.
+
 Answering the PR's existing review comments is a different job and gets its own
 button: **⇄ Answer PR comments** (on any reviewable state with a PR) launches an
 agent that reads every review thread, fixes the trivial ones with commits,
@@ -619,8 +634,9 @@ not three screens deep in a report. And publishing is never launch-only:
 **↗ Post round N to PR** shares an already-written round as one PR comment,
 no new review needed.
 The reviewer may fix only trivial mechanical issues (typos, unused imports,
-formatting) and must declare them — anything behavioral is a finding, not a fix,
-because a reviewer that rewrites what it reviews has reviewed nothing. While a
+formatting) — after asking you — and must declare them; anything behavioral is
+a finding, not a fix, because a reviewer that rewrites what it reviews has
+reviewed nothing. While a
 round runs the item shows `REVIEWING`, approval is gated and the annotation
 editor is locked; **End round** always unlocks it, so a crashed reviewer can
 never wedge an item.
@@ -637,12 +653,13 @@ content when the diff drifts between iterations and never dropped (unanchored
 ones land in an orphan tray). The file contract for agents is documented in
 [`docs/workflows.md`](docs/workflows.md).
 
-**Skills**: the agent side is two skills — `clash-workflow` (the executor: plans,
-implements, addresses comments) and `clash-review` (the reviewer above) — both
-embedded in the clash binary and auto-installed (and kept up-to-date) under
-`~/.claude/skills/` at every startup, no setup needed. They are deliberately
-separate: reviewing and implementing are different jobs, and one skill doing both
-does neither sharply. The ☰ button on the
+**Skills**: the agent side is three skills — `clash-workflow` (the executor:
+plans, implements, addresses comments), `clash-review` (the reviewer harness
+above) and `clash-plan-review` (the interactive plan-review engine it delegates
+to) — all embedded in the clash binary and auto-installed (and kept up-to-date)
+under `~/.claude/skills/` at every startup, no setup needed. Executor and
+reviewer are deliberately separate: reviewing and implementing are different
+jobs, and one skill doing both does neither sharply. The ☰ button on the
 WORKFLOWS section opens a **Skills viewer** listing every installed skill
 with rendered content; clash-managed ones are badged (local edits to those
 are overwritten on the next launch).

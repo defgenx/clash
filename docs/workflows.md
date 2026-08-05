@@ -117,6 +117,15 @@ pr-draft / pr-ready likewise
   `WorkflowItem.lastAgentReview`, which the GUI shows as a strip on the item
   and in the hand-back toast — "nothing was posted" must be visible without
   opening the report.
+- Rounds are **interactive by default**: the reviewer drafts its findings, then
+  triages them with the human in the session (`AskUserQuestion`) *before*
+  anything is written — and asks again before making a trivial fix and before
+  anything is posted to the PR. Findings the human drops never become
+  annotations; they are recorded under `### Dismissed in triage` in the round
+  report, which is what stops later rounds from re-raising them. A kickoff
+  prompt may end with `Interactive: no` to run a round unattended (the GUI
+  never sends it today; it exists for direct invocations and future
+  unattended launchers).
 
 | field | values | meaning |
 |---|---|---|
@@ -149,8 +158,20 @@ Findings land on the surface that fits them: **code** findings become
 `annotations.json` entries with `"author": "agent"` (so the human triages them in
 the diff view and one click turns them into the next change round), **plan**
 findings and the round's verdict go into `agent-review.md`. A reviewer may fix
-only trivial mechanical issues (typos, unused imports, formatting) and must
-declare them; anything behavioral is a finding, not a fix.
+only trivial mechanical issues (typos, unused imports, formatting), asks the
+human before making them, and must declare them; anything behavioral is a
+finding, not a fix.
+
+**How a round becomes applied work** — a review never applies itself; the
+executor does, and the hand-off is *Request changes*: code findings kept in
+triage are already open annotations, so the next change round carries them
+automatically; plan findings ride the note — the change-request composer's
+**Insert round N findings** button pastes the latest round (minus its
+record-keeping tails: `### Published`, `### Fixed in this round`,
+`### Dismissed in triage`, extracted by the pure
+`latestAgentRoundFindings` in `gui/dist/wf-compose.js`) into the note, which
+is the next round's prompt. Approving never applies findings — approval is
+"ship it as it stands".
 
 ### The review agent contract (clash-review skill)
 
@@ -160,6 +181,7 @@ Every value is also in `meta.json.review`; repeating it in the prompt lets the
 reviewer refuse impossible work before reading anything (a `plan` target with no
 plan, a publish mode needing a PR that does not exist) and makes `Return to:`
 impossible to miss. The reviewer's last act is always to restore that status.
+One optional trailing field: `Interactive: no` — absent means interactive.
 
 The prompt also names the **review engine** — the skill that performs the
 judgement, while `clash-review` remains the harness owning the file contract
@@ -180,12 +202,16 @@ unresolvable skill *after* a full session spawn.
 
 `clash-plan-review` is derived from the public `plan-review` skill and carries its
 four sections (architecture, code quality, tests, performance), its engineering
-preferences, and its per-issue options-with-a-recommendation shape. The one
-deliberate divergence: the original is **interactive** — it pauses per section and
-calls `AskUserQuestion`. A review round has no human in the session, so the clash
-version never asks; it writes findings and the human's answer arrives as the next
-round. Copying it verbatim would have produced a round that hangs waiting for
-input nobody is there to give.
+preferences, its per-issue options-with-a-recommendation shape — and its
+**interactivity**: it pauses to `AskUserQuestion` per issue, recommended option
+first, options labeled `3b` so a change request can approve one by name. The
+round runs in a clash session pane with the human who launched it watching, so
+blocking on a question is safe: the item is parked in `reviewing` and "End
+round" is always available. (An earlier version stripped the questions on the
+assumption nobody was in the session; it produced rounds that made every call
+alone — which is exactly the human's job in this pipeline. The human's per-issue
+decisions are recorded in the round report, which is what lets round N+1 skip
+what round N already settled.)
 
 Depth does not branch a plan review: it tunes how hard a diff is read, and a
 plan has no hunks to read harder. The mapping is the pure

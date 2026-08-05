@@ -100,12 +100,57 @@
     return `${project}/${slug}`;
   }
 
+  /// The latest `## Review <n>` round of agent-review.md, reshaped as change
+  /// request material — what "Insert round N findings" pastes into the
+  /// composer. This is the bridge from a review round to applied work: the
+  /// note is the next round's prompt, so the findings must be able to become
+  /// that note without retyping.
+  ///
+  /// Subsections that are records rather than instructions are dropped:
+  /// `### Published` (what left the machine), `### Fixed in this round`
+  /// (already done), `### Dismissed in triage` (explicitly not work).
+  /// Returns `{ round, text }`, or null when no round exists.
+  function latestAgentRoundFindings(md) {
+    const lines = String(md || "").split("\n");
+    let start = -1;
+    let round = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const m = /^## Review (\d+)\b/.exec(lines[i]);
+      if (m) {
+        start = i;
+        round = Number(m[1]);
+      }
+    }
+    if (start < 0) return null;
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i++) {
+      if (/^## /.test(lines[i])) {
+        end = i;
+        break;
+      }
+    }
+    const OMIT = new Set([
+      "### Published",
+      "### Fixed in this round",
+      "### Dismissed in triage",
+    ]);
+    const out = [];
+    let skipping = false;
+    for (const line of lines.slice(start + 1, end)) {
+      if (/^###? /.test(line)) skipping = OMIT.has(line.trim());
+      if (!skipping) out.push(line);
+    }
+    const text = out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    return text ? { round, text } : null;
+  }
+
   const api = {
     changeRequestTemplate,
     composerPlaceholder,
     annotationsMarkdown,
     canSubmitChangeRequest,
     draftKey,
+    latestAgentRoundFindings,
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;

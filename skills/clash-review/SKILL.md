@@ -1,6 +1,6 @@
 ---
 name: clash-review
-description: Run one review round on a clash Workflow item — a plan review or a deep code/diff review — and hand the item back where it came from so the human can run another. Reads meta.json/plan.md/review.md/annotations.json, grounds the review in the real codebase, writes findings as diff annotations plus an appended round in agent-review.md, fixes only trivial mechanical issues, and optionally publishes findings to the PR or answers existing PR review comments. Triggers on "Use the clash-review skill", "Target: plan|diff" in a clash kickoff prompt, or when asked for a deep review / plan review of a clash workflow item.
+description: Run one review round on a clash Workflow item — a plan review or a deep code/diff review — and hand the item back where it came from so the human can run another. Reads meta.json/plan.md/review.md/annotations.json, grounds the review in the real codebase, triages the findings with the human in the session before anything is written, then records them as diff annotations plus an appended round in agent-review.md, fixes only trivial mechanical issues (after asking), and optionally publishes findings to the PR or answers existing PR review comments (after showing what will be posted). Triggers on "Use the clash-review skill", "Target: plan|diff" in a clash kickoff prompt, or when asked for a deep review / plan review of a clash workflow item.
 ---
 
 # clash-review — one review round per run
@@ -22,9 +22,47 @@ The kickoff prompt gives you:
 - **Round** — the 1-based round number; use it as your section heading
 - **Return to** — the status to restore when you finish. **This is a contract.**
 - **Mode** — `full` | `from-plan` | `review-only`
+- **Interactive** — optional; `no` skips the checkpoints below. Absent means
+  interactive.
 
 Your shell cwd is the item's worktree when it has one, otherwise the repo. The
 full file contract is in the clash repo at `docs/workflows.md`.
+
+## The human is in the session — checkpoints
+
+The round runs in a clash session pane that the human who launched it is
+watching. A round is **interactive by default**: your judgement produces the
+findings, but what happens to them is the human's call, made in-session with
+`AskUserQuestion`. Blocking on a question is safe — the item is parked in
+`reviewing` and clash always offers "End round" — so wait for answers; never
+time out and decide for them.
+
+Three checkpoints, in order:
+
+1. **Findings triage** — after the review is done and the findings are
+   drafted, *before writing anything*: print the findings (numbered, graded,
+   one line + the concrete failure each), then ask which to keep.
+   `AskUserQuestion` holds at most 4 options per question, so batch — one
+   multiSelect question per batch, options labeled by finding number and
+   grade. A dropped finding never reaches `annotations.json`; record it under
+   `### Dismissed in triage` in the round report so no later round re-raises
+   it. Free-text answers ("downgrade 2 to NIT", "merge 4 into 1") are
+   instructions — apply them.
+2. **Fixes** — before making any trivial mechanical fix, list exactly what you
+   intend to change and ask. No edit before the yes.
+3. **Publish** — before anything leaves the machine. `pr-comments`: show the
+   review summary and each line comment as it will be posted, then ask.
+   `respond-pr-comments`: per unanswered comment, show the proposed action —
+   the fix, or the mirror-to-annotation, and the reply text — and ask before
+   posting.
+
+At any checkpoint the human may answer "apply your recommendations and finish"
+— from then on, stop asking for the rest of the round. Skip all checkpoints
+only when the kickoff prompt says `Interactive: no` or the human says so.
+
+When the review engine already triaged interactively (`clash-plan-review`
+walks the human through every issue itself), do not re-ask the same questions
+— carry its decisions straight into the report.
 
 ## Step 0 — read first, every run
 
@@ -137,12 +175,14 @@ fix — even when the fix is obvious to you. If you are unsure which side of the
 line something falls on, it is a finding.
 
 When you do fix things:
-1. Make the fixes, run the project's formatter, linter and tests.
-2. Commit them **separately** from nothing else, message
+1. Ask first — checkpoint 2 above. List the intended fixes; no edit before
+   the yes.
+2. Make the fixes, run the project's formatter, linter and tests.
+3. Commit them **separately** from nothing else, message
    `chore(review): fix trivial findings from review round <N>`.
-3. List them under `### Fixed in this round` in your report — the human must
+4. List them under `### Fixed in this round` in your report — the human must
    never discover an edit you did not declare.
-4. Push only in `review-only` mode (plain `git push`; that branch is shared and
+5. Push only in `review-only` mode (plain `git push`; that branch is shared and
    already published). In `full`/`from-plan`, commit and leave it.
 
 If the fixes break a test you cannot fix trivially, revert them and report
@@ -154,19 +194,23 @@ instead.
 - **`pr-comments`** — also post this round to the PR (`meta.pr.url`) as a review
   with line comments: `gh pr review <n> --comment --body-file <file>` for the
   summary, and `gh api` on
-  `/repos/{owner}/{repo}/pulls/{n}/comments` for line comments. Post **one**
-  review per round. Never `--approve` and never `--request-changes` — approval
-  is the human's call, not yours. Findings you already published in an earlier
-  round must not be posted twice.
+  `/repos/{owner}/{repo}/pulls/{n}/comments` for line comments. Show the human
+  exactly what will be posted and get their yes first (checkpoint 3). Post
+  **one** review per round. Never `--approve` and never `--request-changes` —
+  approval is the human's call, not yours. Findings you already published in an
+  earlier round must not be posted twice.
 - **`respond-pr-comments`** — read the PR's review comments
   (`gh api /repos/{owner}/{repo}/pulls/<n>/comments` and
   `gh pr view <n> --json reviews,comments`), and for each one still unanswered:
   address it if it is a trivial fix under the rule above, otherwise mirror it
   into `annotations.json` as an `author: "agent"` annotation so it enters the
-  human's triage queue. Reply on the PR thread with what you did — one short
-  reply per comment, pointing at the commit when you fixed it. Never resolve a
-  thread you did not fix, and never argue: if you disagree, say so once,
-  briefly, and record it as a finding for the human to arbitrate.
+  human's triage queue. Before posting anything, walk the human through each
+  comment with the proposed action and reply text (checkpoint 3) — they decide
+  what gets fixed, what gets mirrored, and what gets said in their PR. Reply on
+  the PR thread with what you did — one short reply per comment, pointing at
+  the commit when you fixed it. Never resolve a thread you did not fix, and
+  never argue: if you disagree, say so once, briefly, and record it as a
+  finding for the human to arbitrate.
 
   **Fetch the comments twice: once at the start, and again right before you
   finish.** A review round takes long enough that comments routinely arrive
@@ -204,12 +248,19 @@ the whole round over it.
 ### Nits
 4. ...
 
+### Dismissed in triage
+- `src/watch.rs:88` — RISK, debounce window — human: known and accepted.
+
 ### Fixed in this round
 - `src/lib.rs` — removed unused import (commit abc1234)
 
 ### Published
 - Posted 3 line comments to PR #41
 ```
+
+`### Dismissed in triage` records the human's calls from checkpoint 1 — it is
+what stops a later round from re-raising them. Omit the section only when
+nothing was dismissed.
 
 `### Published` is **mandatory in every round**, whatever the publish mode —
 clash parses it to show the outcome next to the item, and a missing section

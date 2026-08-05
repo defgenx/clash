@@ -5089,6 +5089,19 @@ function wfComposeChangeRequest({ item, target, annotations }) {
     previewBtn.className = "icon-btn wide";
     previewBtn.textContent = "Preview";
     tools.appendChild(previewBtn);
+    // The bridge from an agent review round to applied work: the note is the
+    // next round's prompt, so a round's findings must become that note without
+    // retyping. Only offered once a round exists.
+    let findingsBtn = null;
+    if (item.lastAgentReview) {
+      findingsBtn = document.createElement("button");
+      findingsBtn.type = "button";
+      findingsBtn.className = "icon-btn wide";
+      findingsBtn.textContent = `Insert round ${item.lastAgentReview.round} findings`;
+      findingsBtn.title =
+        "Paste the latest agent review round's findings here, to edit into this round's instructions";
+      tools.appendChild(findingsBtn);
+    }
     box.appendChild(tools);
 
     const field = document.createElement("textarea");
@@ -5129,6 +5142,33 @@ function wfComposeChangeRequest({ item, target, annotations }) {
       field.focus();
       field.setSelectionRange(0, 0);
     };
+    if (findingsBtn) {
+      findingsBtn.onclick = async () => {
+        let md = "";
+        try {
+          md = await invoke("get_workflow_doc", {
+            project: item.project,
+            slug: item.slug,
+            doc: "agent-review.md",
+          });
+        } catch (e) {
+          dlog(`insert findings failed: ${e}`);
+        }
+        const found = latestAgentRoundFindings(md);
+        if (!found) {
+          flashToast("No findings to insert in the latest round");
+          return;
+        }
+        // Append rather than replace — the note frames the findings, so what
+        // is already typed stays on top.
+        field.value = field.value.trim()
+          ? `${field.value.replace(/\s+$/, "")}\n\n${found.text}\n`
+          : `${found.text}\n`;
+        if (previewing) previewBtn.onclick();
+        field.focus();
+        field.setSelectionRange(field.value.length, field.value.length);
+      };
+    }
 
     // The comments already queued for this round, so the note can complement
     // them instead of repeating them. A bare count could never do that.
@@ -5202,6 +5242,7 @@ function wfComposeChangeRequest({ item, target, annotations }) {
       }
     });
 
+    backdrop.appendChild(box);
     if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
     document.body.appendChild(backdrop);
     setTimeout(() => {

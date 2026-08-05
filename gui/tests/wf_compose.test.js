@@ -11,6 +11,7 @@ const {
   annotationsMarkdown,
   canSubmitChangeRequest,
   draftKey,
+  latestAgentRoundFindings,
 } = require("../dist/wf-compose.js");
 
 test("the template carries the three things a change request needs", () => {
@@ -92,6 +93,54 @@ test("drafts are keyed per item so parallel reviews don't share a buffer", () =>
   assert.notEqual(draftKey("a", "x"), draftKey("b", "x"));
 });
 
+test("insert-findings takes the LAST round, minus the record-keeping tails", () => {
+  const md = [
+    "## Review 1 — plan · deep · 2026-08-01",
+    "",
+    "**Verdict:** 2 blockers",
+    "",
+    "### Blockers",
+    "1. `src/a.rs:3` — old finding",
+    "",
+    "## Review 2 — diff · deep · 2026-08-05",
+    "",
+    "**Verdict:** 1 blocker, 1 risk",
+    "",
+    "### Blockers",
+    "1. `src/auth.rs:42` — timing leak",
+    "",
+    "### Dismissed in triage",
+    "- `src/watch.rs:88` — human: known and accepted.",
+    "",
+    "### Fixed in this round",
+    "- `src/lib.rs` — removed unused import",
+    "",
+    "### Published",
+    "- Posted 2 line comments to PR #41",
+  ].join("\n");
+  const got = latestAgentRoundFindings(md);
+  assert.equal(got.round, 2);
+  // The findings and verdict survive…
+  assert.match(got.text, /timing leak/);
+  assert.match(got.text, /\*\*Verdict:\*\*/);
+  // …the earlier round and the record-keeping subsections do not: Published is
+  // what left the machine, Fixed is already done, Dismissed is explicitly not
+  // work — none of them is an instruction for the next round.
+  assert.doesNotMatch(got.text, /old finding/);
+  assert.doesNotMatch(got.text, /Published|Posted 2 line/);
+  assert.doesNotMatch(got.text, /removed unused import/);
+  assert.doesNotMatch(got.text, /known and accepted/);
+});
+
+test("insert-findings has nothing to offer without a round", () => {
+  assert.equal(latestAgentRoundFindings(""), null);
+  assert.equal(latestAgentRoundFindings(null), null);
+  assert.equal(latestAgentRoundFindings("# notes\nno rounds here"), null);
+  // A round that is ONLY record-keeping yields null, not an empty paste.
+  const onlyPublished = "## Review 3 — diff\n### Published\n- Nothing — local round.";
+  assert.equal(latestAgentRoundFindings(onlyPublished), null);
+});
+
 test("the browser branch publishes every name app.js calls", () => {
   // app.js is a plain script that reads these off `window`, so a rename here
   // (or a missing `<script>` tag) fails at click time, not at boot — the
@@ -113,6 +162,7 @@ test("the browser branch publishes every name app.js calls", () => {
     "annotationsMarkdown",
     "canSubmitChangeRequest",
     "draftKey",
+    "latestAgentRoundFindings",
   ];
   for (const name of used) {
     assert.equal(typeof win[name], "function", `${name} must be on window`);
