@@ -64,7 +64,38 @@
               },
             ],
           },
+      interaction: {
+        legend: "How does the round run?",
+        default: "ask",
+        choices: [
+          {
+            value: "ask",
+            label: "Ask me when it starts",
+            detail: "The reviewer opens its session by asking interactive vs autonomous — decide there.",
+          },
+          {
+            value: "interactive",
+            label: "Interactive",
+            detail:
+              "Findings are triaged with you in the session; fixes and PR posts are confirmed before they happen.",
+          },
+          {
+            value: "autonomous",
+            label: "Autonomous",
+            detail: "No questions — the reviewer decides alone and reports at the end.",
+          },
+        ],
+      },
     };
+  }
+
+  /// Map the composer's interaction choice to the backend's tri-state
+  /// `interactive` parameter: null = unset (the skill asks in-session),
+  /// true/false = the human already decided at launch.
+  function interactiveParam(value) {
+    if (value === "interactive") return true;
+    if (value === "autonomous") return false;
+    return null;
   }
 
   /// Label for the "Answer PR comments" action. `count` is the unanswered
@@ -104,6 +135,7 @@
 
   const api = {
     reviewRoundModel,
+    interactiveParam,
     answerCommentsLabel,
     answerCommentsTitle,
     answerCommentsConfirm,

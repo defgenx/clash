@@ -293,6 +293,15 @@ pub const PROPS: &[Prop] = &[
         "Show a count of sessions needing input in the window title, e.g. `clash (2!)`.",
     )
     .gui("titleAttention"),
+    // ── [workflows] ─────────────────────────────────────────────────
+    Prop::new(
+        "workflows.pr_skill",
+        Kind::Str,
+        Val::Str(""),
+        "Skill the workflow PR phase opens pull requests with (e.g. \
+         `hivebrite-engineering:github-pr`). Empty means the agent follows the repo's own \
+         PR conventions with `gh`.",
+    ),
     // ── [appearance] — GUI-local ────────────────────────────────────
     Prop::new(
         "appearance.theme",

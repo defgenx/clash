@@ -71,6 +71,11 @@ struct GuiState {
     /// — keeps concurrent viewports from stacking gh subprocesses, without
     /// persisting a timestamp on every poll (which would churn the watcher).
     pr_checked: Mutex<HashMap<(String, String), i64>>,
+    /// What the startup skill install changed (set once at boot, before
+    /// `manage`). The frontend reads it via `get_skills_report` and toasts a
+    /// non-noop install — skills silently rewritten by an upgrade were
+    /// invisible before this.
+    skills_report: clash::infrastructure::skills::SkillsReport,
 }
 
 impl GuiState {
@@ -2821,7 +2826,7 @@ fn main() {
 
     let (wild_processes_tx, wild_processes_rx) = tokio::sync::watch::channel(Vec::new());
 
-    let state = GuiState {
+    let mut state = GuiState {
         backend: FsBackend::new(data_dir)
             .with_scratch_dir(settings.paths.scratch_dir.clone())
             .with_workflows_dir(settings.paths.workflows_dir.clone()),
@@ -2836,12 +2841,15 @@ fn main() {
         watcher: Mutex::new(None),
         attention: Mutex::new(clash::application::workflow::AttentionLedger::default()),
         pr_checked: Mutex::new(HashMap::new()),
+        skills_report: clash::infrastructure::skills::SkillsReport::default(),
     };
 
-    // Ship/refresh the embedded skills (clash-workflow) so the agent side
-    // of Workflows is always present and up-to-date, even when only the GUI
-    // is ever launched.
-    clash::infrastructure::skills::install_skills(state.backend.base_dir());
+    // Ship/refresh the embedded skills so the agent side of Workflows is
+    // always present and up-to-date, even when only the GUI is ever launched.
+    // The report is kept for the frontend: a non-noop install (a clash upgrade
+    // rewrote skills, retired one, or overwrote local edits) gets a toast
+    // instead of happening silently.
+    state.skills_report = clash::infrastructure::skills::install_skills(state.backend.base_dir());
     // Re-key registry entries whose conversation moved through resume forks
     // (claude --resume writes a NEW transcript while hooks keep reporting
     // the old id) so the session list, persisted pane ids, and the first
@@ -3042,7 +3050,6 @@ fn main() {
             workflows::list_workflow_items,
             workflows::get_workflow_doc,
             workflows::get_workflow_annotations,
-            workflows::list_workflow_history,
             workflows::get_workflow_diff,
             workflows::get_anchored_annotations,
             workflows::get_workflows_dir,
@@ -3065,7 +3072,12 @@ fn main() {
             workflows::mark_workflow_pr_ready,
             workflows::publish_workflow_review,
             workflows::get_workflow_plan_diff,
+            workflows::get_workflow_timeline,
+            workflows::get_workflow_history_plan,
             workflows::attach_workflow_pr,
+            workflows::get_workflow_pr_skill,
+            workflows::set_workflow_pr_skill,
+            workflows::get_skills_report,
             workflows::list_skills,
             workflows::get_skill
         ])

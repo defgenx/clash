@@ -99,7 +99,10 @@ impl WorkflowStatus {
             Planning => matches!(next, PlanReview | Draft),
             PlanReview => matches!(next, Implementing | ChangesRequested | Planning),
             ChangesRequested => matches!(next, Implementing | PlanReview),
-            Implementing => matches!(next, DiffReview | PrDraft | ChangesRequested),
+            // `PlanReview` is included because a `revise` launch parks the item
+            // in `implementing` while the agent works, and a revision that only
+            // touched the plan legally hands back to `plan-review`.
+            Implementing => matches!(next, DiffReview | PrDraft | ChangesRequested | PlanReview),
             // Back to wherever the review was launched from. `ChangesRequested`
             // is included so findings can be turned into a change round
             // directly, without a detour through the origin state.
@@ -357,6 +360,11 @@ pub struct WorkflowReview {
     /// appends to `agent-review.md`.
     #[serde(default)]
     pub round: u32,
+    /// How the round runs: `Some(true)` = interactive (checkpoints, no
+    /// opening question), `Some(false)` = autonomous, `None` = the human
+    /// chose neither at launch, so the skill asks in-session before starting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interactive: Option<bool>,
     #[serde(default)]
     pub started_at: i64,
     #[serde(flatten)]
@@ -467,6 +475,25 @@ pub struct NewWorkflowItem {
     pub worktree: Option<String>,
     /// PR being reviewed (review-only, when the source was a PR).
     pub pr: Option<WorkflowPr>,
+}
+
+/// One `## Iteration N` section of `review.md`, parsed at read time — a
+/// runtime DTO, never persisted (the file is the source of truth). The
+/// Timeline view renders one change-round card per entry: the human's note is
+/// *why* that round happened, which the flat history list never showed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewIterationNote {
+    /// Iteration number from the `## Iteration <n>` heading.
+    pub iteration: u32,
+    /// Heading tail after the number — normally the `YYYY-MM-DD HH:MM` stamp
+    /// clash wrote.
+    pub heading: String,
+    /// The human's change-request note, verbatim markdown (open-annotations
+    /// digest excluded).
+    pub note: String,
+    /// The `### Open annotations` digest lines, bullets stripped.
+    pub annotations: Vec<String>,
 }
 
 /// The latest round of `agent-review.md`, parsed at list time — a runtime DTO,
@@ -740,6 +767,9 @@ mod tests {
             (ChangesRequested, Implementing),
             (Implementing, DiffReview),
             (Implementing, PrDraft),
+            // A `revise` launch parks the item in `implementing`; a revision
+            // that only touched the plan hands back to `plan-review`.
+            (Implementing, PlanReview),
         ];
         for (from, to) in agent {
             assert!(
@@ -1019,6 +1049,7 @@ mod tests {
             "review": {
                 "target": "diff", "depth": "deep", "publish": "pr-comments",
                 "returnStatus": "pr-draft", "round": 3, "startedAt": 42,
+                "interactive": false,
                 "futureField": "kept"
             },
             "somethingNew": true
@@ -1030,7 +1061,12 @@ mod tests {
         assert_eq!(review.publish, ReviewPublish::PrComments);
         assert_eq!(review.return_status, WorkflowStatus::PrDraft);
         assert_eq!(review.round, 3);
+        assert_eq!(review.interactive, Some(false));
         assert_eq!(meta.review_round, 3);
+        // A review block written before `interactive` existed reads as None —
+        // "ask in-session", the safe default.
+        let old: WorkflowReview = serde_json::from_str(r#"{"target":"plan"}"#).unwrap();
+        assert_eq!(old.interactive, None);
         // Unknown fields survive the round-trip at both levels — the agent and
         // clash both read-modify-write this file.
         let back = serde_json::to_string(&meta).unwrap();

@@ -1,49 +1,97 @@
 ---
 name: clash-plan-review
-description: Review a clash Workflow item's plan.md before it is implemented, walk the human through every issue with options and a recommendation, and write their decisions into the item's files. Invoked by the clash-review skill as the plan-review engine; also usable directly on any plan when asked for a thorough plan review. Covers architecture, code quality, tests and performance, gives each issue concrete options with an opinionated recommendation, and asks the human which direction to take before recording it. Triggers on "Use the clash-plan-review skill", "Target: plan" in a clash kickoff prompt, or a request to review/critique an implementation plan.
+description: Run one plan review round on a clash Workflow item — judge plan.md against the real codebase before it is implemented, walk the human through every issue with options and a recommendation (or run autonomously, their call), record their decisions as an appended round in agent-review.md, and hand the item back where it came from so the human can run another. Covers architecture, code quality, tests and performance. Triggers on "Use the clash-plan-review skill", "Target: plan" in a clash kickoff prompt, or a request to review/critique an implementation plan.
 ---
 
-# clash-plan-review — review the plan, not the code
+# clash-plan-review — one plan review round per run
 
-The plan-review engine for clash Workflows. `clash-review` invokes you and owns
-the file contract and the status hand-back; you supply the judgement.
+You are one of clash's two **reviewer** skills. This one reviews the **plan**
+— `plan.md`, before it is implemented. Its sibling, `clash-code-review`,
+reviews the diff; the two are deliberately separate skills because reviewing a
+plan and reviewing a diff are different jobs with different outputs. The
+**executor** (`clash-workflow`) writes and revises the plan; you judge it.
+Never both: a reviewer who rewrites the thing they are reviewing has reviewed
+nothing.
 
-Derived from the public `plan-review` skill, and **interactive like it**: the
-human launched this round from clash and is watching it in a session pane.
-Your recommendations are input; their decisions are the deliverable. Present
-each issue with options and an opinionated recommendation, ask with
-`AskUserQuestion` which direction they want, and record the answer in the
-round. Never silently settle something they would have decided differently.
+The human is in the cockpit. They launch a round, read what you found, and
+launch another. Rounds are **unbounded**, so your last act is always to put
+the item back exactly where you found it.
+
+The kickoff prompt gives you:
+- **Item directory** — absolute path to `<workflows_root>/<project>/<slug>/`
+- **Target** — always `plan` for this skill (a `diff` target belongs to
+  `clash-code-review`; if you get one, stop and say so)
+- **Depth** — advisory here; a plan has no hunks to read harder, so every
+  plan round verifies against the real code (see Scope)
+- **Publish** — normally `local` for a plan round; honor a PR mode only if the
+  item actually has a PR
+- **Round** — the 1-based round number; use it as your section heading
+- **Return to** — the status to restore when you finish. **This is a contract.**
+- **Mode** — `full` | `from-plan` (a `review-only` item has no plan; refuse)
+- **Interactive** — optional; see the opening question below.
+
+Your shell cwd is the item's worktree when it has one, otherwise the repo. The
+full file contract is in the clash repo at `docs/workflows.md`. Do not set a
+model — clash pins one when it launches the session.
+
+## Opening question — interactive or autonomous
+
+Before reviewing anything, settle how the round runs:
+
+- Kickoff says `Interactive: yes` → run interactively, no question asked.
+- Kickoff says `Interactive: no` → run autonomously: no questions; state each
+  recommendation in the report and move on — the human's answers arrive as
+  the next round instead.
+- **The field is absent → ask.** One `AskUserQuestion`, first thing:
+  1. **Interactive, section by section** (recommended) — review one section at
+     a time (Architecture → Code quality → Tests → Performance), pausing after
+     each to triage its issues while they are fresh.
+  2. **Interactive, batched** — full review first, then one triage pass over
+     every finding at the end.
+  3. **Autonomous** — no further questions; the report carries your
+     recommendations.
 
 Blocking on a question is safe: the item is parked in `reviewing` while you
 run, and clash always offers "End round" if the human walks away. Wait for the
-answer — never time out and pick for them. Run without questions **only** when
-the kickoff prompt says `Interactive: no` or the human tells you to finish
-without them; then state each recommendation and move on, and their answer
-arrives as the next round instead.
+answer — never time out and pick for them. In interactive rounds your
+recommendations are input; their decisions are the deliverable.
 
-Do not set a model — clash pins one when it launches the session.
+## Step 0 — read first, every run
 
-## Opening question
+1. `meta.json` — status, mode, `review` (this round), `reviewRound`. Parse
+   leniently.
+2. `plan.md` — the artifact under review.
+3. `review.md` — the human's accumulated decisions, top to bottom. Later
+   sections override earlier ones. **Read-only for you, always.**
+4. `agent-review.md` — **previous review rounds.** Read them before writing.
+   Never repeat a finding an earlier round already made, and never re-raise
+   one the human dismissed.
+5. `annotations.json` — existing comments, in case earlier rounds left any.
 
-Ask once, before reviewing, how to run the round:
+## Hard rules (violating these corrupts the pipeline)
 
-1. **Section by section** (recommended) — review one section at a time
-   (Architecture → Code quality → Tests → Performance), pausing after each to
-   triage its issues while they are fresh.
-2. **Batched** — do the full review first, then one triage pass over every
-   finding at the end.
-3. **Unattended** — no further questions; write the report with your
-   recommendations, exactly as if the kickoff had said `Interactive: no`.
+- **Never** touch `history/`, `iteration`, `reviewRound`, or `review.md` — clash
+  owns all four.
+- **Never** write `plan.md`. Reviewing a plan does not mean fixing it; that is
+  the executor's job on the next `revise`. Report what is wrong instead.
+- The only status you may write is the prompt's **`Return to:`** value, and only
+  as your final act. Never `done`, never `changes-requested` — the human decides
+  what happens to your findings.
+- Do not change code. A trivial, obviously-correct fix (a typo in a doc, an
+  unused import) is the one allowance — ask first in interactive rounds, and
+  declare it under `### Fixed in this round`. Anything more is a finding.
+- If you add an annotation (rare — only when a finding lands on a specific
+  existing line of code), set `"author": "agent"`; never delete or edit a
+  human's annotation.
 
 ## Scope
 
-Review `plan.md` against the **real codebase**. A plan review that only reads the
-plan is a proofreading pass: open the files the plan names, check the APIs it
-assumes exist, and confirm the approach fits how the code actually works today.
-
-Do not change code. A trivial, obviously-correct fix is the reviewer's one
-allowance (see `clash-review`); anything else is a finding, not an edit.
+Review `plan.md` against the **real codebase**. A plan review that only reads
+the plan is a proofreading pass: open the files the plan names, check the APIs
+it assumes exist, and confirm the approach fits how the code actually works
+today. Verify every file and symbol the plan names actually exists and means
+what the plan assumes. Read the repo's own `CLAUDE.md`/`AGENTS.md` and hold
+the plan to it.
 
 ## Engineering preferences (use these to rank and recommend)
 
@@ -77,12 +125,14 @@ with nothing wrong gets one line saying so — padding it dilutes the rest.
 3. For each option: implementation effort, risk, blast radius on other code, and
    maintenance burden.
 4. Name your recommended option and tie the reason to a preference above.
-5. **Then ask.** After presenting a section's issues (or the whole batch, in
-   batched mode), put them to the human with `AskUserQuestion` — one question
-   per issue, at most 4 per call. Label every option with the issue number and
-   option letter (`3b — extract the shared helper`), put your recommended
-   option **first**, and always include a "Dismiss — not an issue" option. A
-   free-text answer is an instruction: fold it into the record.
+5. **Then ask** (interactive rounds). After presenting a section's issues (or
+   the whole batch, in batched mode), put them to the human with
+   `AskUserQuestion` — one question per issue, at most 4 per call. Label every
+   option with the issue number and option letter (`3b — extract the shared
+   helper`), put your recommended option **first**, and always include a
+   "Dismiss — not an issue" option. A free-text answer is an instruction: fold
+   it into the record. Autonomous rounds skip the asking and record
+   `unreviewed (autonomous round)` instead.
 
 Number the issues and letter the options (`3b`), so the human can approve one by
 name in their change request.
@@ -92,31 +142,62 @@ never edit `plan.md`. The point of asking is the **record** — each issue carri
 the human's call, so their next *Request changes* can say `apply 1a and 3b`
 instead of re-litigating the round.
 
-## Where findings go
+## Finish — in this order, every run
 
-`clash-review` owns these files; follow its contract exactly.
+1. **Append** your round to `agent-review.md`. Never rewrite earlier rounds;
+   append-only, same discipline as `review.md`. Shape:
 
-- **Plan-level findings and the verdict** → appended as a new round in
-  `agent-review.md`. This is the whole output for most plan reviews: a plan has
-  no diff to annotate.
-- **Findings that land on a specific existing line** → `annotations.json` with
-  `"author": "agent"`, so they enter the human's triage loop and one *Request
-  changes* turns them into work.
-- Never write `plan.md` (you would be reviewing your own text next round) and
-  never write `review.md` (clash's record of human decisions).
+```markdown
+## Review <round> — plan · <depth> · <YYYY-MM-DD HH:MM>
 
-Record the human's decisions in the round itself: give each issue a
-`**Decision:**` line — `accepted 3b`, `dismissed — <their words>`, or
-`unreviewed (unattended round)`. Dismissed issues stay in the report (that is
-what stops a future round from re-raising them) but never become annotations.
-Close the round with an `### Accepted changes` list — one line per accepted
-issue+option — written to be pasted into clash's *Request changes* composer:
-that note is the next round's prompt, and this list is how the review turns
-into applied work.
+**Verdict:** <one line — safe to implement as written / safe with the accepted
+changes / needs rework before implementation>
 
-## Verdict
+### Architecture
+1. <issue> — options a/b/c, recommended <x>.
+   **Decision:** accepted 1a | dismissed — <their words> | unreviewed (autonomous round)
 
-End the round with one explicit line: is this plan safe to implement as written,
-safe with the accepted changes, or does it need rework before implementation?
-When running interactively, confirm the verdict with the human as the final
-question — it is theirs, not yours. Be willing to say the plan is fine.
+### Code quality
+…
+
+### Tests
+…
+
+### Performance
+…
+
+### Accepted changes
+- 1a — <one line, written to be pasted into the Request-changes composer>
+- 3b — …
+
+### Dismissed in triage
+- 2 — <issue> — human: not an issue because …
+
+### Fixed in this round
+- <only if the one-allowance fix was used; otherwise omit>
+
+### Published
+- Nothing — local round by request.
+```
+
+   Every issue carries a `**Decision:**` line. Dismissed issues stay in the
+   report (that is what stops a future round from re-raising them) but never
+   become annotations. The `### Accepted changes` list is how the review turns
+   into applied work: clash's change-request composer pastes it into the note
+   that becomes the next round's prompt.
+
+   `### Published` is **mandatory in every round** — clash parses it, and a
+   missing section reads as "silently did nothing". A plan round is normally
+   local: say so. If the round did post to a PR, list exactly what.
+
+2. Read-modify-write `meta.json`: set `status` to the prompt's **`Return to:`**
+   value. Change nothing else.
+3. Final chat message: the verdict, the issue count per section, and what the
+   human accepted or dismissed. Two or three sentences — the report is the
+   artifact. When running interactively, confirm the verdict with the human as
+   the final question — it is theirs, not yours. Be willing to say the plan is
+   fine.
+
+Leaving the item in `reviewing` is the one failure the human cannot work around
+from the keyboard, so do step 2 even when the round went badly. If you must
+stop early, still return the status and say what you did not finish.

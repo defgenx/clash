@@ -7,6 +7,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   reviewRoundModel,
+  interactiveParam,
   answerCommentsLabel,
   answerCommentsTitle,
   answerCommentsConfirm,
@@ -51,6 +52,31 @@ test("defaults match what the old dialogs made primary", () => {
   const m = reviewRoundModel({ round: 1, target: "diff", hasPr: true, prNumber: 1 });
   assert.equal(m.depth.default, "deep");
   assert.equal(m.publish.default, "local");
+});
+
+test("every round offers the interaction choice, defaulting to ask-in-session", () => {
+  // Unlike depth/publish, the dimension always exists: plan rounds and
+  // PR-less rounds still run interactively or not.
+  for (const args of [
+    { target: "plan", hasPr: false },
+    { target: "diff", hasPr: true, prNumber: 3 },
+    {},
+  ]) {
+    const m = reviewRoundModel(args);
+    assert.equal(m.interaction.default, "ask");
+    assert.deepEqual(
+      m.interaction.choices.map((c) => c.value),
+      ["ask", "interactive", "autonomous"]
+    );
+  }
+});
+
+test("the interaction choice maps to the backend tri-state", () => {
+  // null = "the skill asks in-session" — the kickoff omits the field.
+  assert.equal(interactiveParam("ask"), null);
+  assert.equal(interactiveParam("interactive"), true);
+  assert.equal(interactiveParam("autonomous"), false);
+  assert.equal(interactiveParam(undefined), null);
 });
 
 test("the model tolerates an empty call", () => {
@@ -99,6 +125,7 @@ test("the browser branch publishes every name app.js calls", () => {
   const app = fs.readFileSync(path.join(__dirname, "..", "dist", "app.js"), "utf8");
   const used = [
     "reviewRoundModel",
+    "interactiveParam",
     "answerCommentsLabel",
     "answerCommentsTitle",
     "answerCommentsConfirm",

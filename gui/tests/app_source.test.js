@@ -111,7 +111,7 @@ test("approving a diff never requires a draft PR", () => {
   // No approve action creates a PR as part of approving.
   assert.doesNotMatch(diffReview, /Approve & create draft PR/);
   // Creating a PR is its own opt-in button, offered only when none exists.
-  assert.match(diffReview, /add\("Create draft PR"/);
+  assert.match(diffReview, /add\("Create draft PR…"/);
 });
 
 test("requesting changes uses the composer, not a one-line prompt", () => {

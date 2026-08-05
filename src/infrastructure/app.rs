@@ -79,9 +79,18 @@ impl App {
         if let Err(e) = crate::infrastructure::hooks::install_hooks(&data_dir) {
             tracing::warn!("Failed to install hooks: {}", e);
         }
-        // Ship/refresh the embedded skills (clash-workflow) so the agent
-        // side of Workflows is always present and up-to-date.
-        crate::infrastructure::skills::install_skills(&data_dir);
+        // Ship/refresh the embedded skills so the agent side of Workflows is
+        // always present and up-to-date.
+        let skills = crate::infrastructure::skills::install_skills(&data_dir);
+        if !skills.is_noop() {
+            tracing::info!(
+                "skills refreshed for clash v{} (updated: {:?}, removed: {:?}, local edits overwritten: {:?})",
+                skills.version,
+                skills.updated,
+                skills.removed,
+                skills.locally_edited
+            );
+        }
         // Restore the registry from its backup if the live file is unusable,
         // and log how many sessions it holds — an empty session list is
         // otherwise indistinguishable from "no sessions were ever registered".

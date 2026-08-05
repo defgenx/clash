@@ -92,11 +92,13 @@ fn agent_reviews_documented_everywhere_they_are_specified() {
 
     let contract = read("docs/workflows.md");
     for needle in [
-        "clash-review skill",
+        "clash-plan-review",
+        "clash-code-review",
         "agent-review.md",
         "reviewing",
         "returnStatus",
         "respond-pr-comments",
+        "Interactive:",
     ] {
         assert!(
             contract.contains(needle),
@@ -104,28 +106,49 @@ fn agent_reviews_documented_everywhere_they_are_specified() {
         );
     }
 
-    let reviewer = read("skills/clash-review/SKILL.md");
-    assert!(
-        reviewer.contains("name: clash-review"),
-        "the reviewer skill's frontmatter name must match its directory."
-    );
-    // The repeatability contract is the whole design — if the skill stops
-    // restoring the launch status, rounds stop being repeatable.
-    assert!(
-        reviewer.contains("Return to"),
-        "clash-review must keep the `Return to:` status contract."
-    );
-    assert!(
-        reviewer.contains("\"author\": \"agent\""),
-        "clash-review must specify that its annotations are authored `agent`."
-    );
+    // Plan review and code review are two self-contained skills; each must
+    // keep the whole reviewer contract on its own.
+    for name in ["clash-plan-review", "clash-code-review"] {
+        let reviewer = read(&format!("skills/{name}/SKILL.md"));
+        assert!(
+            reviewer.contains(&format!("name: {name}")),
+            "{name}: the skill's frontmatter name must match its directory."
+        );
+        // The repeatability contract is the whole design — if the skill stops
+        // restoring the launch status, rounds stop being repeatable.
+        assert!(
+            reviewer.contains("Return to"),
+            "{name} must keep the `Return to:` status contract."
+        );
+        assert!(
+            reviewer.contains("### Published"),
+            "{name} must keep the mandatory `### Published` round section."
+        );
+        // The interactivity is the human's call, settled up front.
+        assert!(
+            reviewer.contains("Interactive"),
+            "{name} must keep the interactive-vs-autonomous opening contract."
+        );
+        assert!(
+            reviewer.contains("\"author\": \"agent\"")
+                || reviewer.contains("`\"author\": \"agent\"`"),
+            "{name} must specify that its annotations are authored `agent`."
+        );
+    }
 
-    // The executor must know the reviewer's files are read-only to it, or the
-    // two agents will clobber each other.
+    // The executor must know the reviewers' files are read-only to it, or the
+    // agents will clobber each other.
     let executor = read("skills/clash-workflow/SKILL.md");
     assert!(
-        executor.contains("agent-review.md") && executor.contains("clash-review"),
-        "clash-workflow must reference the reviewer's artifacts as input-only."
+        executor.contains("agent-review.md")
+            && executor.contains("clash-plan-review")
+            && executor.contains("clash-code-review"),
+        "clash-workflow must reference the reviewers' artifacts as input-only."
+    );
+    // The retired harness must not linger anywhere it could be re-installed.
+    assert!(
+        !repo_root().join("skills/clash-review").exists(),
+        "skills/clash-review was retired — it must not come back."
     );
 }
 

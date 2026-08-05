@@ -202,6 +202,23 @@ impl Default for Notifications {
     }
 }
 
+/// `[workflows]`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Workflows {
+    /// Skill the workflow PR phase opens pull requests with; empty means
+    /// "follow the repo's own conventions with `gh`".
+    pub pr_skill: String,
+}
+
+impl Default for Workflows {
+    fn default() -> Self {
+        Self {
+            pr_skill: default_str("workflows.pr_skill"),
+        }
+    }
+}
+
 /// The effective configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -212,6 +229,7 @@ pub struct Config {
     pub sessions: Sessions,
     pub terminal: Terminal,
     pub notifications: Notifications,
+    pub workflows: Workflows,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ides: Vec<IdeEntry>,
 }
@@ -225,6 +243,7 @@ impl Default for Config {
             sessions: Sessions::default(),
             terminal: Terminal::default(),
             notifications: Notifications::default(),
+            workflows: Workflows::default(),
             ides: Vec::new(),
         }
     }
@@ -270,6 +289,16 @@ impl Config {
     /// Watcher debounce as a `Duration`.
     pub fn debounce(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.general.debounce_ms)
+    }
+
+    /// The configured PR-creation skill for workflow agents, or `None` when
+    /// unset — the kickoff prompt omits the field and the agent follows the
+    /// repo's own conventions. GUI-only in v1 (the TUI launches no workflow
+    /// agents), so the private-`mod` bin build sees it as dead.
+    #[allow(dead_code)]
+    pub fn workflow_pr_skill(&self) -> Option<String> {
+        let s = self.workflows.pr_skill.trim();
+        (!s.is_empty()).then(|| s.to_string())
     }
 
     /// Clash's own data directory for all RW state: `~/.claude/clash/`.

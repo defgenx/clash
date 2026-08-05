@@ -1160,6 +1160,30 @@ html, body, #app {
 /* Plan diff (History drill-down) — prose diff, plain unified rendering. */
 .wf-history-link { color: var(--fg-dim); font-size: 11px; cursor: pointer; margin-left: 10px; }
 .wf-history-link:hover { color: var(--accent); }
+
+/* Timeline: one newest-first feed of change rounds, review rounds and the
+   item's creation, drawn as cards on a left rail. */
+.wf-timeline { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 20px; max-width: 860px; }
+.wf-tl-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px 10px;
+  background: color-mix(in srgb, var(--bg-hover) 40%, transparent);
+  position: relative;
+}
+.wf-tl-card.created { opacity: 0.75; }
+.wf-tl-head { display: flex; align-items: baseline; gap: 8px; }
+.wf-tl-dot { font-size: 12px; color: var(--accent); width: 16px; text-align: center; flex: none; }
+.wf-tl-card.agent-review .wf-tl-dot { color: var(--blue); }
+.wf-tl-card.created .wf-tl-dot { color: var(--fg-dim); }
+.wf-tl-title { font-size: 12px; font-weight: 600; }
+.wf-tl-date { font-size: 11px; color: var(--fg-dim); }
+.wf-tl-note { padding: 4px 0 0 24px; }
+.wf-tl-note.wf-md { max-width: none; font-size: 12px; }
+.wf-tl-verdict { padding: 4px 0 0 24px; font-size: 12px; }
+.wf-tl-published { padding: 2px 0 0 24px; font-size: 11px; }
+.wf-tl-annotations { padding: 2px 0 0 24px; font-size: 11px; }
+.wf-tl-links { padding: 4px 0 0 14px; }
 .wf-plan-diff {
   font-family: var(--mono, ui-monospace, monospace);
   font-size: 12px;

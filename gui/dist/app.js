@@ -4126,7 +4126,6 @@ function workflowContextMenu(item, x, y) {
             project: item.project,
             slug: item.slug,
             status: "abandoned",
-            note: null,
           });
           refreshWorkflows();
         } catch (e) {
@@ -4450,8 +4449,10 @@ async function buildSkillsView(el, selectName) {
   el.classList.add("skills-view");
   el.innerHTML = "<p class='hint'>loading…</p>";
   let skills = [];
+  let skillsVersion = "";
   try {
     skills = await invoke("list_skills");
+    skillsVersion = (await invoke("get_skills_report").catch(() => null))?.version || "";
   } catch (e) {
     el.innerHTML = `<h4>SKILLS</h4><p class='hint'>failed: ${escapeHtml(e)}</p>`;
     return;
@@ -4491,9 +4492,10 @@ async function buildSkillsView(el, selectName) {
     if (skill.managed) {
       const note = document.createElement("span");
       note.className = "skills-managed-note";
+      const v = skillsVersion ? ` (v${skillsVersion})` : "";
       note.textContent = skill.upToDate
-        ? "managed by clash — auto-updated at startup, local edits are overwritten"
-        : "managed by clash — differs from the embedded version (refreshes on next launch)";
+        ? `managed by clash${v} — auto-updated at startup, local edits are overwritten`
+        : `managed by clash${v} — differs from the embedded version (refreshes on next launch)`;
       tools.appendChild(note);
     }
     const open = document.createElement("button");
@@ -4723,12 +4725,21 @@ async function buildWorkflowView(el, project, slug) {
       ? [["agentReview", `Agent reviews${item.meta.reviewRound ? ` (${item.meta.reviewRound})` : ""}`]]
       : []),
     ["diff", item.openAnnotations > 0 ? `Diff 💬${item.openAnnotations}` : "Diff"],
-    ["history", `History${item.historyIterations.length ? ` (${item.historyIterations.length})` : ""}`],
+    // The timeline counts everything it feeds on: change rounds + review rounds.
+    [
+      "history",
+      (() => {
+        const n = item.historyIterations.length + (item.meta.reviewRound || 0);
+        return `Timeline${n ? ` (${n})` : ""}`;
+      })(),
+    ],
   ];
   for (const [id, label] of subViews) {
     const b = document.createElement("button");
-    // planDiff is a drill-down of History, not a tab of its own.
-    const active = ts.subView === id || (ts.subView === "planDiff" && id === "history");
+    // planDiff / planAt are drill-downs of the Timeline, not tabs of their own.
+    const active =
+      ts.subView === id ||
+      ((ts.subView === "planDiff" || ts.subView === "planAt") && id === "history");
     b.className = "wf-subtab" + (active ? " active" : "");
     b.textContent = label;
     b.onclick = () => {
@@ -4831,7 +4842,7 @@ async function launchWfAgent(item, phase, root, branch = null) {
 async function launchWfReview(item, root) {
   const picked = await wfComposeReviewRound(item);
   if (!picked) return;
-  await spawnWfReview(item, root, picked.depth, picked.publish);
+  await spawnWfReview(item, root, picked.depth, picked.publish, picked.interactive);
 }
 
 /// Launch a respond round: the agent reads the PR's review comments, fixes
@@ -4849,13 +4860,14 @@ async function launchWfReviewRespond(item, root) {
 /// Shared spawn for both review-launch surfaces (the composer and the
 /// "Answer PR comments" action), so a reviewer session is registered, named
 /// and refreshed identically wherever it starts.
-async function spawnWfReview(item, root, depth, publish) {
+async function spawnWfReview(item, root, depth, publish, interactive = null) {
   try {
     const sid = await invoke("start_workflow_review_agent", {
       project: item.project,
       slug: item.slug,
       depth,
       publish,
+      interactive,
       cols: 120,
       rows: 40,
     });
@@ -4934,6 +4946,7 @@ function wfComposeReviewRound(item) {
     // and use the fallback, instead of offering a choice that isn't one.
     const depthGroup = model.depth ? buildGroup(model.depth, "wf-review-depth") : null;
     const publishGroup = model.publish ? buildGroup(model.publish, "wf-review-publish") : null;
+    const interactionGroup = buildGroup(model.interaction, "wf-review-interaction");
     const picked = (fs, fallback) => {
       const el = fs && fs.querySelector("input:checked");
       return el ? el.value : fallback;
@@ -4953,7 +4966,11 @@ function wfComposeReviewRound(item) {
     launch.className = "primary";
     launch.textContent = model.launchLabel;
     launch.onclick = () =>
-      done({ depth: picked(depthGroup, "standard"), publish: picked(publishGroup, "local") });
+      done({
+        depth: picked(depthGroup, "standard"),
+        publish: picked(publishGroup, "local"),
+        interactive: interactiveParam(picked(interactionGroup, "ask")),
+      });
     actions.appendChild(cancel);
     actions.appendChild(launch);
     box.appendChild(actions);
@@ -5018,14 +5035,15 @@ async function cancelWfReview(item, root) {
   }
 }
 
-/// Human status transition + tab/sidebar refresh.
-async function wfTransition(item, root, status, note = null) {
+/// Human status transition + tab/sidebar refresh. Notes never ride a bare
+/// transition — every change request goes through workflow_request_changes,
+/// which snapshots the iteration first.
+async function wfTransition(item, root, status) {
   try {
     await invoke("update_workflow_status", {
       project: item.project,
       slug: item.slug,
       status,
-      note,
     });
     await refreshWorkflows();
     buildWorkflowView(root, item.project, item.slug);
@@ -5304,11 +5322,18 @@ function renderWfActions(bar, root, item) {
     bar.appendChild(sp);
   };
   const abandon = () =>
-    add("Abandon", "", async () => {
-      if (!(await uiConfirm(`Abandon "${item.meta.title || item.slug}"? The files stay on disk.`)))
-        return;
-      wfTransition(item, root, "abandoned");
-    });
+    add(
+      "Abandon",
+      "",
+      async () => {
+        if (
+          !(await uiConfirm(`Abandon "${item.meta.title || item.slug}"? The files stay on disk.`))
+        )
+          return;
+        wfTransition(item, root, "abandoned");
+      },
+      "Park this item — nothing is deleted, and Reopen brings it back"
+    );
 
   // One flow for both targets: it snapshots the iteration (diff + plan +
   // annotations) into history/ and bumps the counter, so every change round
@@ -5381,7 +5406,12 @@ function renderWfActions(bar, root, item) {
 
   switch (st) {
     case "draft":
-      add("▶ Start planning", "primary", () => launchWfAgent(item, "plan", root));
+      add(
+        "▶ Start planning",
+        "primary",
+        () => launchWfAgent(item, "plan", root),
+        "Spend tokens: launch an agent session that explores the repo and writes plan.md, then hands it back for your review"
+      );
       spacer();
       abandon();
       break;
@@ -5407,28 +5437,47 @@ function renderWfActions(bar, root, item) {
     case "planning":
     case "implementing":
       if (item.agentAlive === false) {
-        add("⚠ Relaunch agent", "primary", () =>
-          launchWfAgent(item, st === "planning" ? "plan" : "revise", root)
-        , "The recorded agent session is gone");
+        add(
+          "⚠ Relaunch agent",
+          "primary",
+          () => launchWfAgent(item, st === "planning" ? "plan" : "revise", root),
+          "The recorded agent session is gone — spend tokens to start a fresh one on the same phase"
+        );
       } else if (item.meta.sessionId) {
-        add("Open agent session", "primary", () => openSession(item.meta.sessionId));
+        add(
+          "Open agent session",
+          "primary",
+          () => openSession(item.meta.sessionId),
+          "Open the running agent's terminal — watch it work or answer its questions"
+        );
       }
       spacer();
       abandon();
       break;
 
     case "plan-review":
-      add("✓ Approve plan", "primary", async () => {
-        if (!(await uiConfirm("Approve this plan and move to implementation?", "Approve"))) return;
-        await wfTransition(item, root, "implementing");
-        const go = await uiChoice({
-          message: "Launch the implementation agent now?",
-          choices: [{ label: "Launch agent", value: "go", primary: true }],
-        });
-        const fresh = wfItem(item.project, item.slug) || item;
-        if (go === "go") launchWfAgent(fresh, "implement", root);
-      });
-      add("✎ Request changes", "", () => requestChanges("plan"));
+      add(
+        "✓ Approve plan → implement",
+        "primary",
+        async () => {
+          if (!(await uiConfirm("Approve this plan and move to implementation?", "Approve")))
+            return;
+          await wfTransition(item, root, "implementing");
+          const go = await uiChoice({
+            message: "Launch the implementation agent now?",
+            choices: [{ label: "Launch agent", value: "go", primary: true }],
+          });
+          const fresh = wfItem(item.project, item.slug) || item;
+          if (go === "go") launchWfAgent(fresh, "implement", root);
+        },
+        "Accept plan.md as written — the item moves to implementation (you choose whether to launch the agent right away)"
+      );
+      add(
+        "✎ Request changes…",
+        "",
+        () => requestChanges("plan"),
+        "Open the change-request composer — your note becomes the next round's instructions, and this plan revision is frozen into history first"
+      );
       reviewButton();
       spacer();
       abandon();
@@ -5440,7 +5489,8 @@ function renderWfActions(bar, root, item) {
       add(
         item.meta.sessionId ? "▶ Relaunch agent" : "▶ Launch agent",
         "primary",
-        () => launchWfAgent(item, "revise", root)
+        () => launchWfAgent(item, "revise", root),
+        "Spend tokens: launch the agent to apply the requested changes — it reads your latest note and every open annotation"
       );
       spacer();
       abandon();
@@ -5462,30 +5512,42 @@ function renderWfActions(bar, root, item) {
       const hasPr = !!(item.meta.pr && item.meta.pr.url);
 
       const approveDone = () =>
-        add("✓ Approve → done", hasPr ? "" : "primary", async () => {
-          if (!(await uiConfirm(`Approve this diff and close the item?${openWarning()}`, "Approve")))
-            return;
-          wfTransition(item, root, "done");
-        });
+        add(
+          "✓ Approve → done",
+          hasPr ? "" : "primary",
+          async () => {
+            if (
+              !(await uiConfirm(`Approve this diff and close the item?${openWarning()}`, "Approve"))
+            )
+              return;
+            wfTransition(item, root, "done");
+          },
+          "Accept the diff as it stands and close the item — no PR required"
+        );
 
       if (hasPr) {
         // Review-only items track a PR clash doesn't own, so there is no
         // draft-PR ceremony to advance into — only the full pipeline has one.
         if (!wfIsReviewOnly(item)) {
-          add("✓ Approve → PR draft", "primary", async () => {
-            if (!(await uiConfirm(`Approve these changes?${openWarning()}`, "Approve"))) return;
-            wfTransition(item, root, "pr-draft");
-          });
+          add(
+            "✓ Approve → PR draft",
+            "primary",
+            async () => {
+              if (!(await uiConfirm(`Approve these changes?${openWarning()}`, "Approve"))) return;
+              wfTransition(item, root, "pr-draft");
+            },
+            "Accept the diff and move to the PR stage — the draft PR becomes the thing under validation"
+          );
         }
         approveDone();
-        add("Open PR", "", () => openWorkflowPr(item));
+        add("Open PR", "", () => openWorkflowPr(item), "Open the pull request in the browser panel");
       } else {
         approveDone();
         // Two ways to open the PR, because the description has two honest price
         // points: clash can transcribe plan.md for free and instantly, or a
         // Claude Code session can read the actual diff and write a real one.
         // Whether that is worth tokens is the human's call, not a default.
-        add("Create draft PR", "", async () => {
+        add("Create draft PR…", "", async () => {
           const how = await uiChoice({
             message: "Open a draft PR for this branch?",
             detail:
@@ -5518,9 +5580,14 @@ function renderWfActions(bar, root, item) {
           } catch (e) {
             uiAlert(wfGhHint(e) || `Create PR failed: ${e}`);
           }
-        });
+        }, "Open a draft PR for this branch — from the plan (free, instant) or written by Claude Code (reads the real diff, spends tokens); you pick next");
       }
-      add("✎ Request changes", "", requestChanges);
+      add(
+        "✎ Request changes…",
+        "",
+        requestChanges,
+        "Open the change-request composer — your note + the open annotations become the next fix round, and this iteration's diff is frozen into history first"
+      );
       reviewButton();
       answerCommentsButton();
       postRoundButton();
@@ -5531,51 +5598,66 @@ function renderWfActions(bar, root, item) {
 
     case "pr-draft": {
       if (item.meta.pr && item.meta.pr.url) {
-        add("✓ Mark PR ready", "primary", async () => {
-          const warn =
-            item.openAnnotations > 0
-              ? ` ${item.openAnnotations} comment${item.openAnnotations > 1 ? "s are" : " is"} still open —`
-              : "";
-          if (
-            !(await uiConfirm(
-              `This is the validation step:${warn} flip PR #${item.meta.pr.number} to ready-for-review?`,
-              "Mark ready"
-            ))
-          )
-            return;
-          try {
-            const meta = await invoke("mark_workflow_pr_ready", {
-              project: item.project,
-              slug: item.slug,
-            });
-            flashToast(`PR ready: ${meta.pr ? meta.pr.url : ""}`);
-            await refreshWorkflows();
-            buildWorkflowView(root, item.project, item.slug);
-          } catch (e) {
-            uiAlert(wfGhHint(e) || `Mark ready failed: ${e}`);
-          }
-        });
-        add("Open PR", "", () => openWorkflowPr(item));
+        add(
+          "✓ Mark PR ready",
+          "primary",
+          async () => {
+            const warn =
+              item.openAnnotations > 0
+                ? ` ${item.openAnnotations} comment${item.openAnnotations > 1 ? "s are" : " is"} still open —`
+                : "";
+            if (
+              !(await uiConfirm(
+                `This is the validation step:${warn} flip PR #${item.meta.pr.number} to ready-for-review?`,
+                "Mark ready"
+              ))
+            )
+              return;
+            try {
+              const meta = await invoke("mark_workflow_pr_ready", {
+                project: item.project,
+                slug: item.slug,
+              });
+              flashToast(`PR ready: ${meta.pr ? meta.pr.url : ""}`);
+              await refreshWorkflows();
+              buildWorkflowView(root, item.project, item.slug);
+            } catch (e) {
+              uiAlert(wfGhHint(e) || `Mark ready failed: ${e}`);
+            }
+          },
+          `Flip PR #${item.meta.pr.number || ""} from draft to ready-for-review on GitHub — the validation step`
+        );
+        add("Open PR", "", () => openWorkflowPr(item), "Open the pull request in the browser panel");
       } else {
-        add("Attach PR by URL…", "primary", async () => {
-          const url = await uiPrompt("GitHub PR URL");
-          if (!url || !url.trim()) return;
-          try {
-            await invoke("attach_workflow_pr", {
-              project: item.project,
-              slug: item.slug,
-              url: url.trim(),
-            });
-            await refreshWorkflows();
-            buildWorkflowView(root, item.project, item.slug);
-          } catch (e) {
-            uiAlert(`Attach failed: ${e}`);
-          }
-        });
+        add(
+          "Attach PR by URL…",
+          "primary",
+          async () => {
+            const url = await uiPrompt("GitHub PR URL");
+            if (!url || !url.trim()) return;
+            try {
+              await invoke("attach_workflow_pr", {
+                project: item.project,
+                slug: item.slug,
+                url: url.trim(),
+              });
+              await refreshWorkflows();
+              buildWorkflowView(root, item.project, item.slug);
+            } catch (e) {
+              uiAlert(`Attach failed: ${e}`);
+            }
+          },
+          "Link an existing GitHub pull request to this item — clash then tracks its state and comments"
+        );
       }
       // Review feedback keeps arriving once a PR exists (agent rounds, GitHub
       // review comments) — without this the findings were a dead end here.
-      add("✎ Request changes", "", requestChanges);
+      add(
+        "✎ Request changes…",
+        "",
+        requestChanges,
+        "Open the change-request composer — your note + the open annotations become the next fix round (the agent pushes, so the PR picks up the fixes)"
+      );
       // Names the destination stage; no agent involved. See reviewButton().
       add(
         "↩ Back to diff review",
@@ -5592,23 +5674,47 @@ function renderWfActions(bar, root, item) {
     }
 
     case "pr-ready":
-      if (item.meta.pr && item.meta.pr.url) add("Open PR", "primary", () => openWorkflowPr(item));
-      add("✓ Mark done", "", async () => {
-        if (!(await uiConfirm("Mark this workflow item as done?", "Done"))) return;
-        wfTransition(item, root, "done");
-      });
+      if (item.meta.pr && item.meta.pr.url)
+        add(
+          "Open PR",
+          "primary",
+          () => openWorkflowPr(item),
+          "Open the pull request in the browser panel — merging happens there"
+        );
+      add(
+        "✓ Mark done",
+        "",
+        async () => {
+          if (!(await uiConfirm("Mark this workflow item as done?", "Done"))) return;
+          wfTransition(item, root, "done");
+        },
+        "Close the item — merged PRs close it automatically on the next refresh"
+      );
       // Same rationale as pr-draft: a ready PR still gets review comments and
       // agent-round findings; both need a way to become the next fix round.
-      add("✎ Request changes", "", requestChanges);
+      add(
+        "✎ Request changes…",
+        "",
+        requestChanges,
+        "Open the change-request composer — your note + the open annotations become the next fix round (the agent pushes, so the PR picks up the fixes)"
+      );
       reviewButton();
       answerCommentsButton();
       postRoundButton();
+      spacer();
+      abandon();
       break;
 
     case "done":
     case "abandoned":
-      if (item.meta.pr && item.meta.pr.url) add("Open PR", "", () => openWorkflowPr(item));
-      add("Reopen", "", () => wfTransition(item, root, "diff-review"));
+      if (item.meta.pr && item.meta.pr.url)
+        add("Open PR", "", () => openWorkflowPr(item), "Open the pull request in the browser panel");
+      add(
+        "Reopen",
+        "",
+        () => wfTransition(item, root, "diff-review"),
+        "Bring the item back at the DIFF REVIEW stage — no agent, no tokens"
+      );
       break;
   }
 }
@@ -5679,51 +5785,194 @@ async function renderWfSubView(body, root, item, ts) {
     return;
   }
 
+  // Timeline: one newest-first feed joining the change rounds (with the note
+  // that caused each — the "why" the flat history list never showed), the
+  // agent review rounds (verdict + published), the snapshots and the item's
+  // creation. Merge/ordering is the pure timelineModel (wf-timeline.js).
   if (ts.subView === "history") {
-    body.innerHTML = "<p class='hint'>loading…</p>";
-    let iters = [];
+    body.innerHTML = "<p class='hint'>loading timeline…</p>";
+    let data = null;
     try {
-      iters = await invoke("list_workflow_history", { project, slug });
+      data = await invoke("get_workflow_timeline", { project, slug });
     } catch (e) {
       body.innerHTML = `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
       return;
     }
     body.innerHTML = "";
-    if (!iters.length) {
+    const events = timelineModel({
+      iterations: data.iterations,
+      reviews: data.reviews,
+      history: data.history,
+      planSnapshots: data.planSnapshots,
+      hasPlanPhase: wfHasPlanPhase(item),
+      createdAt: item.meta.createdAt || 0,
+      mode: item.meta.mode || "full",
+    });
+    if (events.length <= 1) {
       body.innerHTML =
-        "<p class='hint'>no snapshots yet — each Request-changes freezes the plan + diff + annotations of the iteration</p>";
+        "<p class='hint'>nothing here yet — each Request-changes and each agent review round adds a card (the diff, the plan and the note of every round stay reachable here)</p>";
       return;
     }
-    for (const it of [...iters].reverse()) {
-      const row = document.createElement("div");
-      row.className = "row-item";
-      const current = item.meta.iteration || 1;
-      row.innerHTML =
-        `<span class="team-icon">${svgIcon("file", 12)}</span>` +
-        `<span>Iteration ${it}</span>` +
-        `<span class="dim">${it === current ? "current" : `superseded by it.${it + 1}`}</span>` +
-        `<span class="spacer"></span>`;
-      const link = (label, subView) => {
-        const a = document.createElement("span");
-        a.className = "wf-history-link";
-        a.textContent = label;
-        a.onclick = (ev) => {
-          ev.stopPropagation();
-          ts.subView = subView;
-          ts.iteration = it;
-          buildWorkflowView(root, project, slug);
-        };
-        row.appendChild(a);
-      };
-      if (wfHasPlanPhase(item)) link("plan diff →", "planDiff");
-      link("code diff →", "diff");
-      row.onclick = () => {
-        ts.subView = "diff";
-        ts.iteration = it;
+    const feed = document.createElement("div");
+    feed.className = "wf-timeline";
+    const current = item.meta.iteration || 1;
+    const drill = (links, label, subView, iteration, title) => {
+      const a = document.createElement("span");
+      a.className = "wf-history-link";
+      a.textContent = label;
+      if (title) a.title = title;
+      a.onclick = () => {
+        ts.subView = subView;
+        ts.iteration = iteration;
         buildWorkflowView(root, project, slug);
       };
-      body.appendChild(row);
+      links.appendChild(a);
+    };
+    for (const ev of events) {
+      const card = document.createElement("div");
+      card.className = `wf-tl-card ${ev.kind}`;
+      const head = document.createElement("div");
+      head.className = "wf-tl-head";
+      card.appendChild(head);
+
+      if (ev.kind === "change-round") {
+        head.innerHTML =
+          `<span class="wf-tl-dot">✎</span>` +
+          `<span class="wf-tl-title">Change round — iteration ${ev.iteration}</span>` +
+          `<span class="dim">${
+            ev.iteration === current ? "current" : `superseded by it.${ev.iteration + 1}`
+          }</span>` +
+          `<span class="spacer"></span>` +
+          `<span class="wf-tl-date">${escapeHtml(ev.date)}</span>`;
+        if (ev.note.trim()) {
+          const note = document.createElement("div");
+          note.className = "wf-md wf-tl-note";
+          renderMarkdown(note, ev.note);
+          card.appendChild(note);
+        } else {
+          card.appendChild(
+            Object.assign(document.createElement("p"), {
+              className: "hint",
+              textContent: "no note recorded for this round",
+            })
+          );
+        }
+        if (ev.annotations.length) {
+          card.appendChild(
+            Object.assign(document.createElement("div"), {
+              className: "wf-tl-annotations dim",
+              textContent: `💬 ${ev.annotations.length} annotation${
+                ev.annotations.length > 1 ? "s" : ""
+              } sent with this round`,
+            })
+          );
+        }
+        const links = document.createElement("div");
+        links.className = "wf-tl-links";
+        if (ev.hasPlanDiff)
+          drill(links, "plan diff →", "planDiff", ev.iteration, "What this round changed in the plan");
+        if (ev.hasPlanSnapshot)
+          drill(
+            links,
+            `plan @ it.${ev.iteration} →`,
+            "planAt",
+            ev.iteration,
+            "The full plan text as it stood at this iteration"
+          );
+        if (ev.hasCodeDiff)
+          drill(links, "code diff →", "diff", ev.iteration, "The diff as reviewed at this iteration");
+        if (links.childNodes.length) card.appendChild(links);
+      } else if (ev.kind === "agent-review") {
+        const what = [ev.target, ev.depth].filter(Boolean).join(" · ");
+        head.innerHTML =
+          `<span class="wf-tl-dot">⌕</span>` +
+          `<span class="wf-tl-title">Agent review — round ${ev.round}${
+            what ? ` · ${escapeHtml(what)}` : ""
+          }</span>` +
+          `<span class="spacer"></span>` +
+          `<span class="wf-tl-date">${escapeHtml(ev.date)}</span>`;
+        if (ev.verdict) {
+          card.appendChild(
+            Object.assign(document.createElement("div"), {
+              className: "wf-tl-verdict",
+              textContent: ev.verdict,
+            })
+          );
+        }
+        card.appendChild(
+          Object.assign(document.createElement("div"), {
+            className: "wf-tl-published dim",
+            textContent: ev.published.length
+              ? `Published: ${ev.published.join(" · ")}`
+              : "Nothing published — findings are local to this item",
+          })
+        );
+        const links = document.createElement("div");
+        links.className = "wf-tl-links";
+        const a = document.createElement("span");
+        a.className = "wf-history-link";
+        a.textContent = "open report →";
+        a.onclick = () => {
+          ts.subView = "agentReview";
+          buildWorkflowView(root, project, slug);
+        };
+        links.appendChild(a);
+        card.appendChild(links);
+      } else {
+        const when = ev.stamp ? new Date(ev.stamp).toLocaleString() : "";
+        head.innerHTML =
+          `<span class="wf-tl-dot">＋</span>` +
+          `<span class="wf-tl-title">Item created — ${escapeHtml(ev.mode || "full")} mode</span>` +
+          `<span class="spacer"></span>` +
+          `<span class="wf-tl-date">${escapeHtml(when)}</span>`;
+      }
+      feed.appendChild(card);
     }
+    body.appendChild(feed);
+    return;
+  }
+
+  // The full plan text as frozen at one iteration — the Timeline's
+  // "plan @ it.N" drill-down. Read-only; the live plan stays on the Plan tab.
+  if (ts.subView === "planAt") {
+    body.innerHTML = "<p class='hint'>loading plan snapshot…</p>";
+    let text = "";
+    try {
+      text = await invoke("get_workflow_history_plan", {
+        project,
+        slug,
+        iteration: ts.iteration || 1,
+      });
+    } catch (e) {
+      body.innerHTML = `<p class='hint'>plan snapshot failed: ${escapeHtml(e)}</p>`;
+      return;
+    }
+    body.innerHTML = "";
+    const head = document.createElement("div");
+    head.className = "wf-diff-head";
+    const back = document.createElement("button");
+    back.className = "icon-btn wide";
+    back.textContent = "← timeline";
+    back.onclick = () => {
+      ts.subView = "history";
+      ts.iteration = null;
+      buildWorkflowView(root, project, slug);
+    };
+    head.appendChild(back);
+    head.appendChild(
+      Object.assign(document.createElement("span"), {
+        className: "dim",
+        textContent: `plan as frozen at iteration ${ts.iteration || 1} (read-only)`,
+      })
+    );
+    body.appendChild(head);
+    const md = document.createElement("div");
+    md.className = "wf-md";
+    if (text.trim()) renderMarkdown(md, text);
+    else
+      md.innerHTML =
+        "<p class='hint'>no plan copy in this snapshot (it may predate plan history)</p>";
+    body.appendChild(md);
     return;
   }
 
@@ -5749,7 +5998,7 @@ async function renderWfSubView(body, root, item, ts) {
     head.className = "wf-diff-head";
     const back = document.createElement("button");
     back.className = "icon-btn wide";
-    back.textContent = "← history";
+    back.textContent = "← timeline";
     back.onclick = () => {
       ts.subView = "history";
       ts.iteration = null;
@@ -8187,6 +8436,21 @@ $("set-claude-bin").addEventListener("change", async () => {
   }
 });
 
+/// The workflow PR skill lives in config.toml (shared with the TUI): when set,
+/// the PR phase's kickoff carries it and the agent opens PRs through that
+/// skill instead of raw `gh pr create`. Empty means repo conventions.
+$("set-wf-pr-skill").addEventListener("change", async () => {
+  const el = $("set-wf-pr-skill");
+  try {
+    el.value = await invoke("set_workflow_pr_skill", { skill: el.value.trim() });
+  } catch (e) {
+    uiAlert(`PR skill: ${e}`);
+    try {
+      el.value = await invoke("get_workflow_pr_skill");
+    } catch (_) {}
+  }
+});
+
 /// Native pickers for every path setting — a folder picker for the directory
 /// rows, a file picker for the ones naming an executable. Each fills the field
 /// and then fires the same `change` handler typing would, so config-backed rows
@@ -8410,6 +8674,23 @@ function restartSessionPoll() {
   loadScratchDir();
   invoke("get_claude_bin")
     .then((b) => ($("set-claude-bin").value = b))
+    .catch(() => {});
+  invoke("get_workflow_pr_skill")
+    .then((s) => ($("set-wf-pr-skill").value = s))
+    .catch(() => {});
+  // A clash upgrade that rewrote/retired skills must be visible, not silent:
+  // the backend kept the startup install report for exactly this toast.
+  invoke("get_skills_report")
+    .then((r) => {
+      if (!r || (!r.updated.length && !r.removed.length && !r.locallyEdited.length)) return;
+      const bits = [];
+      if (r.updated.length) bits.push(`updated: ${r.updated.join(", ")}`);
+      if (r.removed.length) bits.push(`retired: ${r.removed.join(", ")}`);
+      if (r.locallyEdited.length)
+        bits.push(`local edits overwritten: ${r.locallyEdited.join(", ")}`);
+      flashToast(`Skills refreshed for clash v${r.version} — ${bits.join(" · ")}`);
+      dlog(`skills report: ${JSON.stringify(r)}`);
+    })
     .catch(() => {});
   if (!state.settings.notifications) {
     invoke("set_notifications_enabled", { enabled: false }).catch(console.error);

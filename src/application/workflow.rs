@@ -267,6 +267,51 @@ impl AttentionLedger {
 pub fn latest_agent_review(md: &str) -> Option<AgentReviewSummary> {
     let lines: Vec<&str> = md.lines().collect();
     let (start, end, round) = last_round_bounds(&lines)?;
+    Some(parse_round(&lines, start, end, round))
+}
+
+/// Pure: every `## Review <n>` round of `agent-review.md`, in file order —
+/// the Timeline view renders one card per round, not just the latest.
+pub fn all_agent_reviews(md: &str) -> Vec<AgentReviewSummary> {
+    let lines: Vec<&str> = md.lines().collect();
+    round_starts(&lines)
+        .into_iter()
+        .map(|(start, round)| {
+            // A round's section ends at the next H2 of any kind — same rule as
+            // `last_round_bounds`, so an interleaved "## Addendum" never leaks
+            // into the preceding round's content.
+            let end = next_h2(&lines, start).unwrap_or(lines.len());
+            parse_round(&lines, start, end, round)
+        })
+        .collect()
+}
+
+/// Indices and round numbers of every `## Review <n>` heading.
+fn round_starts(lines: &[&str]) -> Vec<(usize, u32)> {
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            let round = l
+                .strip_prefix("## Review ")?
+                .split_whitespace()
+                .next()?
+                .parse::<u32>()
+                .ok()?;
+            Some((i, round))
+        })
+        .collect()
+}
+
+/// Index of the first `## ` heading after `start`, if any.
+fn next_h2(lines: &[&str], start: usize) -> Option<usize> {
+    lines[start + 1..]
+        .iter()
+        .position(|l| l.starts_with("## "))
+        .map(|i| start + 1 + i)
+}
+
+fn parse_round(lines: &[&str], start: usize, end: usize, round: u32) -> AgentReviewSummary {
     let rest = lines[start].strip_prefix("## Review ").unwrap_or_default();
     let round_tok = rest.split_whitespace().next().unwrap_or_default();
     let heading = rest[round_tok.len()..]
@@ -330,12 +375,12 @@ pub fn latest_agent_review(md: &str) -> Option<AgentReviewSummary> {
         })
         .unwrap_or_default();
 
-    Some(AgentReviewSummary {
+    AgentReviewSummary {
         round,
         heading,
         verdict,
         published,
-    })
+    }
 }
 
 /// Line span (start inclusive, end exclusive) and round number of the last
@@ -366,6 +411,70 @@ pub fn latest_agent_review_section(md: &str) -> Option<(u32, String)> {
     let lines: Vec<&str> = md.lines().collect();
     let (start, end, round) = last_round_bounds(&lines)?;
     Some((round, lines[start..end].join("\n").trim_end().to_string()))
+}
+
+// ── review.md iteration parsing ─────────────────────────────────────────
+
+/// Pure: every `## Iteration <n>` section of `review.md`, in file order.
+///
+/// A section runs to the next `## Iteration` heading — **not** to any H2,
+/// because the human's note is markdown and legitimately contains its own H2s
+/// (the change-request composer's template starts with `## What to change`).
+/// The `### Open annotations` digest clash appends is split out so the
+/// Timeline can render the note and the annotation count separately.
+pub fn parse_review_iterations(md: &str) -> Vec<crate::domain::workflow::ReviewIterationNote> {
+    let lines: Vec<&str> = md.lines().collect();
+    let starts: Vec<(usize, u32)> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            let n = l
+                .strip_prefix("## Iteration ")?
+                .split_whitespace()
+                .next()?
+                .parse::<u32>()
+                .ok()?;
+            Some((i, n))
+        })
+        .collect();
+    starts
+        .iter()
+        .enumerate()
+        .map(|(idx, &(start, iteration))| {
+            let end = starts.get(idx + 1).map(|&(s, _)| s).unwrap_or(lines.len());
+            let rest = lines[start]
+                .strip_prefix("## Iteration ")
+                .unwrap_or_default();
+            let tok = rest.split_whitespace().next().unwrap_or_default();
+            let heading = rest[tok.len()..]
+                .trim_start()
+                .trim_start_matches(['—', '-'])
+                .trim()
+                .to_string();
+            let section = &lines[start + 1..end];
+            let ann_pos = section
+                .iter()
+                .position(|l| l.trim() == "### Open annotations");
+            let note = section[..ann_pos.unwrap_or(section.len())]
+                .join("\n")
+                .trim()
+                .to_string();
+            let annotations = ann_pos
+                .map(|i| {
+                    section[i + 1..]
+                        .iter()
+                        .filter_map(|l| l.trim().strip_prefix("- ").map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            crate::domain::workflow::ReviewIterationNote {
+                iteration,
+                heading,
+                note,
+                annotations,
+            }
+        })
+        .collect()
 }
 
 // ── Model selection ─────────────────────────────────────────────────────
@@ -444,41 +553,54 @@ pub fn pr_body_from_plan(plan: &str, iteration: u32, review_rounds: u32) -> Opti
 
 /// Build the initial prompt for a workflow agent session. The skill owns the
 /// actual behavior; the prompt only routes it to the item directory, the
-/// requested phase (`plan` | `revise` | `implement`) and the item's entry mode.
+/// requested phase (`plan` | `revise` | `implement` | `pr`) and the item's
+/// entry mode.
 ///
 /// The mode is also in `meta.json`, but stating it up front is what makes a
 /// `review-only` run reliably skip the plan: the agent knows before it reads
 /// anything that there is no plan to write and no `plan-review` to hand back to.
-pub fn build_agent_prompt(item_dir: &str, phase: &str, mode: WorkflowMode) -> String {
-    format!(
+///
+/// `pr_skill` names the user's preferred PR-creation skill (from config); when
+/// present the agent must open PRs through it instead of a raw `gh pr create`,
+/// so org conventions (templates, ticket links) ride along.
+pub fn build_agent_prompt(
+    item_dir: &str,
+    phase: &str,
+    mode: WorkflowMode,
+    pr_skill: Option<&str>,
+) -> String {
+    let mut prompt = format!(
         "Use the clash-workflow skill. Workflow item directory: {}. Phase: {}. Mode: {}.",
         item_dir, phase, mode
-    )
+    );
+    if let Some(skill) = pr_skill.map(str::trim).filter(|s| !s.is_empty()) {
+        prompt.push_str(&format!(" PR skill: {}.", skill));
+    }
+    prompt
 }
 
-/// Pure: the skill or slash command that performs the actual reviewing for a
-/// round. `clash-review` stays the harness — it owns the file contract — and
-/// delegates the judgement to this. See `docs/workflows.md`.
+/// Pure: the review skill for a round's target. Plan reviews and code reviews
+/// are deliberately **separate skills** — a reviewer that may rewrite what it
+/// reviews has reviewed nothing, and a skill that does both jobs describes
+/// neither well. Each skill is self-contained: it owns its file contract
+/// (`agent-review.md` + `annotations.json`) and the status hand-back.
 ///
-/// Engines are either clash-owned embedded skills or Claude Code built-ins, so
-/// a review round needs no third-party plugin installed to work.
-pub fn review_engine_for(
-    target: crate::domain::workflow::ReviewTarget,
-    depth: crate::domain::workflow::ReviewDepth,
-) -> &'static str {
-    use crate::domain::workflow::{ReviewDepth, ReviewTarget};
-    match (target, depth) {
-        (ReviewTarget::Plan, _) => "clash-plan-review",
-        // `/code-review` reads the working diff, which is what an item has in
-        // its worktree; `/review` is the lighter pass.
-        (_, ReviewDepth::Deep) => "/code-review",
-        _ => "/review",
+/// Engines are always clash-owned embedded skills, so a review round needs no
+/// third-party plugin installed to work.
+pub fn review_engine_for(target: crate::domain::workflow::ReviewTarget) -> &'static str {
+    use crate::domain::workflow::ReviewTarget;
+    match target {
+        ReviewTarget::Plan => "clash-plan-review",
+        // Unknown degrades to the code reviewer: every mode has a diff to
+        // read, while a plan may not exist at all.
+        ReviewTarget::Diff | ReviewTarget::Unknown => "clash-code-review",
     }
 }
 
 /// Build the kickoff prompt for an agent **review** round — a different skill
-/// (`clash-review`) than the executor, because reviewing and implementing are
-/// different jobs and mixing them into one skill makes both vaguer.
+/// per target (see [`review_engine_for`]), never the executor: reviewing and
+/// implementing are different jobs and mixing them into one skill makes both
+/// vaguer.
 ///
 /// Every parameter is also in `meta.json.review`, but stating them up front is
 /// what lets the reviewer refuse impossible work immediately: a `plan` target
@@ -486,24 +608,24 @@ pub fn review_engine_for(
 /// `Return to:` is the repeatability contract — the round ends by putting the
 /// item back exactly where the human launched it from, so the next round can
 /// start from the same place.
+///
+/// `Interactive:` carries the human's launch-time choice; when they made none
+/// the field is omitted and the skill's own opening question asks in-session.
 pub fn build_review_prompt(
     item_dir: &str,
     review: &crate::domain::workflow::WorkflowReview,
     mode: WorkflowMode,
 ) -> String {
-    let engine = review_engine_for(review.target, review.depth);
-    let via = if engine.is_empty() {
-        String::new()
-    } else {
-        format!(
-            " Perform the review itself with {} — clash-review still owns the file \
-             contract (annotations.json + agent-review.md) and the status hand-back.",
-            engine
-        )
+    let engine = review_engine_for(review.target);
+    let interactive = match review.interactive {
+        Some(true) => " Interactive: yes.",
+        Some(false) => " Interactive: no.",
+        None => "",
     };
     format!(
-        "Use the clash-review skill. Workflow item directory: {}. \
+        "Use the {} skill. Workflow item directory: {}. \
          Target: {}. Depth: {}. Publish: {}. Round: {}. Return to: {}. Mode: {}.{}",
+        engine,
         item_dir,
         review.target,
         review.depth,
@@ -511,7 +633,7 @@ pub fn build_review_prompt(
         review.round.max(1),
         review.return_status,
         mode,
-        via
+        interactive
     )
 }
 
@@ -536,27 +658,16 @@ mod tests {
     }
 
     #[test]
-    fn review_engine_routes_by_target_then_depth() {
-        use crate::domain::workflow::{ReviewDepth, ReviewTarget};
-        // Depth never branches a plan review: it tunes how hard a diff is read,
-        // and a plan has no hunks to read harder.
-        for d in [
-            ReviewDepth::Standard,
-            ReviewDepth::Deep,
-            ReviewDepth::Unknown,
-        ] {
-            assert_eq!(
-                review_engine_for(ReviewTarget::Plan, d),
-                "clash-plan-review"
-            );
-        }
+    fn review_engine_routes_by_target() {
+        use crate::domain::workflow::ReviewTarget;
+        // Plan review and code review are separate skills — that split is a
+        // correctness property, not packaging.
+        assert_eq!(review_engine_for(ReviewTarget::Plan), "clash-plan-review");
+        assert_eq!(review_engine_for(ReviewTarget::Diff), "clash-code-review");
+        // Unknown degrades to the code reviewer: every mode has a diff.
         assert_eq!(
-            review_engine_for(ReviewTarget::Diff, ReviewDepth::Deep),
-            "/code-review"
-        );
-        assert_eq!(
-            review_engine_for(ReviewTarget::Diff, ReviewDepth::Standard),
-            "/review"
+            review_engine_for(ReviewTarget::Unknown),
+            "clash-code-review"
         );
     }
 
@@ -573,12 +684,11 @@ mod tests {
         }
     }
 
-    /// A review engine naming a skill must name one clash actually installs —
-    /// otherwise the round dies on an unresolvable skill after a full session
-    /// spawn. Built-in `/slash` engines are Claude Code's and exempt.
+    /// A review engine must name a skill clash actually installs — otherwise
+    /// the round dies on an unresolvable skill after a full session spawn.
     #[test]
     fn every_skill_engine_is_one_clash_installs() {
-        use crate::domain::workflow::{ReviewDepth, ReviewTarget};
+        use crate::domain::workflow::ReviewTarget;
         let installed: Vec<&str> = crate::infrastructure::skills::SKILLS
             .iter()
             .map(|s| s.name)
@@ -588,38 +698,55 @@ mod tests {
             ReviewTarget::Diff,
             ReviewTarget::Unknown,
         ] {
-            for d in [
-                ReviewDepth::Standard,
-                ReviewDepth::Deep,
-                ReviewDepth::Unknown,
-            ] {
-                let e = review_engine_for(t, d);
-                if e.is_empty() || e.starts_with('/') {
-                    continue;
-                }
-                assert!(
-                    installed.contains(&e),
-                    "engine {:?} is not an embedded skill — add it to SKILLS or \
-                     use a built-in",
-                    e
-                );
-            }
+            let e = review_engine_for(t);
+            assert!(
+                installed.contains(&e),
+                "engine {:?} is not an embedded skill — add it to SKILLS",
+                e
+            );
         }
     }
 
     #[test]
-    fn review_prompt_names_the_engine_and_keeps_the_harness() {
+    fn review_prompt_names_the_skill_for_the_target() {
         use crate::domain::workflow::{ReviewDepth, ReviewTarget, WorkflowReview};
-        let review = WorkflowReview {
+        let diff = WorkflowReview {
             target: ReviewTarget::Diff,
             depth: ReviewDepth::Deep,
             ..Default::default()
         };
-        let p = build_review_prompt("/items/x", &review, WorkflowMode::Full);
-        assert!(p.contains("Use the clash-review skill"));
-        assert!(p.contains("/code-review"));
-        // The harness must stay named, or findings land nowhere clash reads.
-        assert!(p.contains("annotations.json"));
+        let p = build_review_prompt("/items/x", &diff, WorkflowMode::Full);
+        assert!(p.contains("Use the clash-code-review skill"));
+
+        let plan = WorkflowReview {
+            target: ReviewTarget::Plan,
+            ..Default::default()
+        };
+        let p = build_review_prompt("/items/x", &plan, WorkflowMode::Full);
+        assert!(p.contains("Use the clash-plan-review skill"));
+        // The retired harness must never come back into a kickoff.
+        assert!(!p.contains("clash-review skill"));
+    }
+
+    #[test]
+    fn review_prompt_carries_the_interactivity_choice_or_omits_it() {
+        use crate::domain::workflow::WorkflowReview;
+        // No launch-time choice → no field: the skill asks in-session.
+        let ask = WorkflowReview::default();
+        let p = build_review_prompt("/x", &ask, WorkflowMode::Full);
+        assert!(!p.contains("Interactive:"));
+
+        let yes = WorkflowReview {
+            interactive: Some(true),
+            ..Default::default()
+        };
+        assert!(build_review_prompt("/x", &yes, WorkflowMode::Full).ends_with("Interactive: yes."));
+
+        let no = WorkflowReview {
+            interactive: Some(false),
+            ..Default::default()
+        };
+        assert!(build_review_prompt("/x", &no, WorkflowMode::Full).ends_with("Interactive: no."));
     }
 
     #[test]
@@ -884,6 +1011,60 @@ not landing in the branch: the commit message still ships a MAJOR.\n\n\
     }
 
     #[test]
+    fn all_agent_reviews_returns_every_round_in_order() {
+        let rounds = all_agent_reviews(REVIEW_MD);
+        assert_eq!(rounds.len(), 2);
+        assert_eq!(rounds[0].round, 1);
+        assert_eq!(rounds[0].verdict, "ship it");
+        assert_eq!(rounds[1].round, 4);
+        assert_eq!(rounds[1].published.len(), 2);
+        // Interleaved non-round H2s neither become rounds nor leak into one.
+        let md = format!("{}\n## Addendum 2 — notes\n\nmore\n", REVIEW_MD);
+        let rounds = all_agent_reviews(&md);
+        assert_eq!(rounds.len(), 2);
+        assert!(!rounds[1].published.iter().any(|p| p.contains("more")));
+        assert!(all_agent_reviews("just prose\n").is_empty());
+    }
+
+    // ── parse_review_iterations ─────────────────────────────────────
+
+    #[test]
+    fn review_iterations_parse_notes_and_annotation_digests() {
+        let md = "\
+## Iteration 1 — 2026-08-01 10:00\n\n\
+Tighten the API.\n\n\
+### Open annotations\n\n\
+- `src/a.rs:12` — rename this\n\
+- `src/b.rs:3` — split it\n\n\
+## Iteration 2 — 2026-08-02 11:30\n\n\
+## What to change\n\nUse the helper instead.\n\n## Out of scope\n\nPerf.\n";
+        let its = parse_review_iterations(md);
+        assert_eq!(its.len(), 2);
+        assert_eq!(its[0].iteration, 1);
+        assert_eq!(its[0].heading, "2026-08-01 10:00");
+        assert_eq!(its[0].note, "Tighten the API.");
+        assert_eq!(its[0].annotations.len(), 2);
+        assert!(its[0].annotations[0].contains("src/a.rs:12"));
+        // The composer template's own H2s stay inside the note — a section
+        // ends only at the next `## Iteration` heading.
+        assert_eq!(its[1].iteration, 2);
+        assert!(its[1].note.contains("## What to change"));
+        assert!(its[1].note.contains("## Out of scope"));
+        assert!(its[1].annotations.is_empty());
+    }
+
+    #[test]
+    fn review_iterations_empty_and_noteless_sections() {
+        assert!(parse_review_iterations("").is_empty());
+        // A round sent with annotations only (no note) parses to an empty note.
+        let md = "## Iteration 3 — x\n\n### Open annotations\n\n- `f:1` — fix\n";
+        let its = parse_review_iterations(md);
+        assert_eq!(its.len(), 1);
+        assert_eq!(its[0].note, "");
+        assert_eq!(its[0].annotations, vec!["`f:1` — fix".to_string()]);
+    }
+
+    #[test]
     fn latest_agent_review_section_returns_whole_round() {
         let (round, section) = latest_agent_review_section(REVIEW_MD).expect("section");
         assert_eq!(round, 4);
@@ -1010,7 +1191,7 @@ not landing in the branch: the commit message still ships a MAJOR.\n\n\
             WorkflowMode::Full,
         );
         // A different skill than the executor — reviewing is not implementing.
-        assert!(p.contains("clash-review skill"));
+        assert!(p.contains("clash-code-review skill"));
         assert!(!p.contains("clash-workflow skill"));
         assert!(p.contains("/x/workflows/clash/auth"));
         assert!(p.contains("Target: diff."));
@@ -1036,7 +1217,12 @@ not landing in the branch: the commit message still ships a MAJOR.\n\n\
 
     #[test]
     fn prompt_routes_dir_and_phase() {
-        let p = build_agent_prompt("/x/workflows/clash/auth", "revise", WorkflowMode::Full);
+        let p = build_agent_prompt(
+            "/x/workflows/clash/auth",
+            "revise",
+            WorkflowMode::Full,
+            None,
+        );
         assert!(p.contains("clash-workflow skill"));
         assert!(p.contains("/x/workflows/clash/auth"));
         assert!(p.contains("Phase: revise."));
@@ -1047,9 +1233,25 @@ not landing in the branch: the commit message still ships a MAJOR.\n\n\
     fn prompt_carries_the_entry_mode() {
         // review-only must be visible before the agent reads any file — it is
         // what tells it there is no plan phase.
-        let p = build_agent_prompt("/x/w/p/item", "revise", WorkflowMode::ReviewOnly);
+        let p = build_agent_prompt("/x/w/p/item", "revise", WorkflowMode::ReviewOnly, None);
         assert!(p.contains("Mode: review-only."));
-        let p = build_agent_prompt("/x/w/p/item", "implement", WorkflowMode::FromPlan);
+        let p = build_agent_prompt("/x/w/p/item", "implement", WorkflowMode::FromPlan, None);
         assert!(p.contains("Mode: from-plan."));
+    }
+
+    #[test]
+    fn prompt_names_the_pr_skill_only_when_configured() {
+        let p = build_agent_prompt("/x/i", "pr", WorkflowMode::Full, None);
+        assert!(!p.contains("PR skill:"));
+        // Blank config reads as "not configured".
+        let p = build_agent_prompt("/x/i", "pr", WorkflowMode::Full, Some("   "));
+        assert!(!p.contains("PR skill:"));
+        let p = build_agent_prompt(
+            "/x/i",
+            "pr",
+            WorkflowMode::Full,
+            Some("hivebrite-engineering:github-pr"),
+        );
+        assert!(p.ends_with("PR skill: hivebrite-engineering:github-pr."));
     }
 }

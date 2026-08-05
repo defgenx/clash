@@ -86,6 +86,11 @@
           </span>
         </label>
 
+        <div class="settings-group">Workflows</div>
+        <label class="setting-row">PR skill
+          <input id="set-wf-pr-skill" type="text" placeholder="e.g. hivebrite-engineering:github-pr" autocomplete="off" spellcheck="false" title="Skill the workflow PR phase opens pull requests with. Empty: the agent follows the repo's own PR conventions with gh." />
+        </label>
+
         <div class="settings-group">Terminal · text</div>
         <label class="setting-row">Font family
           <span class="input-with-btn">
@@ -255,6 +260,7 @@
   <script src="wf-compose.js"></script>
   <script src="wf-pipeline.js"></script>
   <script src="wf-review.js"></script>
+  <script src="wf-timeline.js"></script>
   <script src="ws-ownership.js"></script>
   <script src="app.js"></script>
 </body>

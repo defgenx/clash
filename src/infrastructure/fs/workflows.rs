@@ -287,9 +287,33 @@ pub fn write_doc(root: &Path, project: &str, slug: &str, doc: &str, content: &st
     write_atomic(&path, content.as_bytes()).map_err(DomainError::from)
 }
 
+/// Drop an already-written `## Iteration {n} — ` section (and everything
+/// after it) from the accumulated review text. Idempotency guard for
+/// [`append_review_iteration`]: request-changes appends the section *before*
+/// the meta write that bumps `iteration`, so a crash between the two makes the
+/// retry arrive with the same number — without this, the file would grow a
+/// second `## Iteration N` and the audit trail would lie.
+///
+/// Truncating from the stale heading (rather than skipping the append) keeps
+/// the retry's note, which is the fresher one. The ` — ` suffix in the needle
+/// keeps `Iteration 1` from matching `Iteration 10`.
+fn drop_stale_iteration_section(existing: &str, iteration: u32) -> String {
+    let needle = format!("## Iteration {} — ", iteration);
+    let pos = if existing.starts_with(&needle) {
+        Some(0)
+    } else {
+        existing.find(&format!("\n{}", needle)).map(|p| p + 1) // keep the preceding newline's content boundary
+    };
+    match pos {
+        Some(p) => existing[..p].trim_end().to_string(),
+        None => existing.to_string(),
+    }
+}
+
 /// Append an iteration section to `review.md` — the human-readable audit
 /// trail. Called by request-changes with the user's note and the digest of
-/// currently-open annotations.
+/// currently-open annotations. Idempotent per iteration number: a retry after
+/// a crash replaces the stale section instead of duplicating it.
 pub fn append_review_iteration(
     root: &Path,
     project: &str,
@@ -299,7 +323,7 @@ pub fn append_review_iteration(
     open_annotations: &[Annotation],
 ) -> Result<()> {
     let existing = read_doc(root, project, slug, REVIEW_FILE)?;
-    let mut out = existing;
+    let mut out = drop_stale_iteration_section(&existing, iteration);
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
     }
@@ -738,6 +762,30 @@ mod tests {
         let one = review.find("## Iteration 1").unwrap();
         let two = review.find("## Iteration 2").unwrap();
         assert!(one < two, "append-only ordering");
+    }
+
+    #[test]
+    fn review_append_retry_replaces_the_stale_section() {
+        // Request-changes appends the section before the meta write bumps
+        // `iteration`; a crash between the two retries with the same number.
+        let (_g, root) = root();
+        create_item(&root, &req("p", "item", "")).unwrap();
+        append_review_iteration(&root, "p", "item", 1, "first attempt", &[]).unwrap();
+        append_review_iteration(&root, "p", "item", 1, "retried note", &[]).unwrap();
+        let review = read_doc(&root, "p", "item", REVIEW_FILE).unwrap();
+        assert_eq!(review.matches("## Iteration 1").count(), 1, "{review}");
+        // The retry's note wins — it is the fresher one.
+        assert!(review.contains("retried note"));
+        assert!(!review.contains("first attempt"));
+
+        // Earlier iterations are untouched by a later retry, and `Iteration 1`
+        // never matches `Iteration 10`.
+        append_review_iteration(&root, "p", "item", 10, "round ten", &[]).unwrap();
+        append_review_iteration(&root, "p", "item", 10, "round ten retry", &[]).unwrap();
+        let review = read_doc(&root, "p", "item", REVIEW_FILE).unwrap();
+        assert!(review.contains("retried note"));
+        assert_eq!(review.matches("## Iteration 10").count(), 1);
+        assert!(review.contains("round ten retry"));
     }
 
     #[test]

@@ -2,8 +2,9 @@
 
 The Workflows feature manages a plan → review → implement → PR pipeline per
 item. clash's GUI renders and mutates the files below; Claude Code agents co-edit
-them — the executor (`clash-workflow` skill) does the work, the reviewer
-(`clash-review` skill) judges it. This document is the contract all sides follow.
+them — the executor (`clash-workflow` skill) does the work, the reviewers
+(`clash-plan-review` for plans, `clash-code-review` for diffs) judge it. This
+document is the contract all sides follow.
 
 ## Layout
 
@@ -56,8 +57,10 @@ published, and a fix that only commits locally leaves the PR silently stale.
 
 - **Agent-owned transitions**: `planning → plan-review`,
   `changes-requested → plan-review` (plan revision round),
-  `changes-requested → implementing → diff-review → pr-draft`, and
-  `reviewing → <the status the round started in>`.
+  `changes-requested → implementing → diff-review → pr-draft`,
+  `implementing → plan-review` (a `revise` launch parks the item in
+  `implementing`; a revision that only touched the plan hands back to
+  `plan-review`), and `reviewing → <the status the round started in>`.
 - **Everything else is clash-owned** (buttons in the GUI): approve, request
   changes, mark PR ready, done, abandon, reopen, and launching a review round.
 
@@ -77,10 +80,20 @@ to send one with neither, since it would give the agent nothing to act on.
 path and the diff path alike freeze the current iteration into
 `history/{NNN}/` (`diff.patch`, `plan.md` when the item has one,
 `annotations.json`), append the note to `review.md`, and bump `iteration` in
-one meta write. The plan copy is what makes a revision visible after the fact:
-the GUI's History tab diffs snapshot N against snapshot N+1 (or the current
-plan) via the pure `application::diff::unified_diff`, so "what did that round
-change in the plan" has an answer. Before this, a plan revision left no trace.
+one meta write. This is enforced, not conventional: the bare status-transition
+command accepts no note (a note-append that skipped the snapshot was how plan
+revisions once vanished), the `review.md` append is idempotent per iteration
+number (a crash between the append and the meta write retries with the same
+number — the stale section is replaced, never duplicated), and a failed
+`git diff` aborts the round instead of freezing an empty `diff.patch` (except
+at `plan-review`, where the plan — snapshotted anyway — is the artifact).
+
+The plan copy is what makes a revision visible after the fact: the GUI's
+**Timeline** renders one card per change round — the note that caused it, the
+plan diff of snapshot N against N+1 (via the pure
+`application::diff::unified_diff`), the full frozen plan text, and the code
+diff — interleaved with the agent review rounds parsed from
+`agent-review.md`. Before this, a plan revision left no trace.
 
 ## Agent review rounds
 
@@ -116,22 +129,26 @@ pr-draft / pr-ready likewise
   section (verdict + `### Published` lines) into
   `WorkflowItem.lastAgentReview`, which the GUI shows as a strip on the item
   and in the hand-back toast — "nothing was posted" must be visible without
-  opening the report.
-- Rounds are **interactive by default**: the reviewer drafts its findings, then
-  triages them with the human in the session (`AskUserQuestion`) *before*
-  anything is written — and asks again before making a trivial fix and before
+  opening the report. The Timeline uses the all-rounds sibling
+  (`all_agent_reviews`) plus `parse_review_iterations` over `review.md`.
+- **Interactivity is the human's call, made either at launch or in-session.**
+  Every clash skill (reviewers *and* executor phases) opens with one
+  `AskUserQuestion` — interactive or autonomous? — unless the kickoff prompt
+  pre-answers it with `Interactive: yes` or `Interactive: no`. The GUI's
+  review composer offers the three-way choice (ask in session / interactive /
+  autonomous), recorded as `meta.review.interactive` (absent = ask). In
+  interactive rounds the reviewer triages drafted findings with the human
+  *before* anything is written, asks before making a trivial fix and before
   anything is posted to the PR. Findings the human drops never become
   annotations; they are recorded under `### Dismissed in triage` in the round
-  report, which is what stops later rounds from re-raising them. A kickoff
-  prompt may end with `Interactive: no` to run a round unattended (the GUI
-  never sends it today; it exists for direct invocations and future
-  unattended launchers).
+  report, which is what stops later rounds from re-raising them.
 
 | field | values | meaning |
 |---|---|---|
 | `target` | `plan` \| `diff` | derived from the launch status, never chosen |
 | `depth` | `standard` \| `deep` | `deep` reads the surrounding implementation and checks the artifact against it |
 | `publish` | `local` \| `pr-comments` \| `respond-pr-comments` | what the round does beyond the item |
+| `interactive` | absent \| `true` \| `false` | absent = the skill asks in-session; the composer's launch-time answer otherwise |
 | `returnStatus` | any status | where the round puts the item back — the repeatability contract |
 
 Publish rules that earned their place:
@@ -173,32 +190,37 @@ record-keeping tails: `### Published`, `### Fixed in this round`,
 is the next round's prompt. Approving never applies findings — approval is
 "ship it as it stands".
 
-### The review agent contract (clash-review skill)
+### The review agent contract (clash-plan-review / clash-code-review skills)
 
-`Use the clash-review skill. Workflow item directory: <abs path>. Target: <plan|diff>. Depth: <standard|deep>. Publish: <local|pr-comments|respond-pr-comments>. Round: <n>. Return to: <status>. Mode: <mode>.`
+`Use the <clash-plan-review|clash-code-review> skill. Workflow item directory: <abs path>. Target: <plan|diff>. Depth: <standard|deep>. Publish: <local|pr-comments|respond-pr-comments>. Round: <n>. Return to: <status>. Mode: <mode>.`
 
 Every value is also in `meta.json.review`; repeating it in the prompt lets the
 reviewer refuse impossible work before reading anything (a `plan` target with no
 plan, a publish mode needing a PR that does not exist) and makes `Return to:`
 impossible to miss. The reviewer's last act is always to restore that status.
-One optional trailing field: `Interactive: no` — absent means interactive.
+One optional trailing field: `Interactive: yes|no` — **absent means the skill
+asks in-session** before starting (the GUI composer's "ask me when it starts"
+default omits the field).
 
-The prompt also names the **review engine** — the skill that performs the
-judgement, while `clash-review` remains the harness owning the file contract
-(`annotations.json` + `agent-review.md`) and the status hand-back. Splitting the
-two is what lets the reviewing itself be a general-purpose skill: those skills
-know how to review, but nothing about where clash expects findings to land.
+Plan review and code review are **two separate, self-contained skills** — each
+owns the whole job for its target: the judgement, the file contract
+(`annotations.json` + `agent-review.md`, `### Published` mandatory) and the
+status hand-back. They replaced a three-piece design (a `clash-review` harness
+delegating diff judgement to the `/code-review` / `/review` built-ins), which
+entangled the two review jobs through the shared harness and made neither
+describable on its own.
 
-| Target | Depth | Engine |
-|--------|-------|--------|
-| `plan` | any | `clash-plan-review` (embedded skill) |
-| `diff` | `deep` | `/code-review` (Claude Code built-in, reads the working diff) |
-| `diff` | `standard` | `/review` |
+| Target | Engine |
+|--------|--------|
+| `plan` | `clash-plan-review` (embedded skill) |
+| `diff` | `clash-code-review` (embedded skill) |
 
-Every engine is either a skill clash itself installs or a Claude Code built-in,
-so a review round needs no third-party plugin present. A unit test asserts any
-skill named there is in `SKILLS`; otherwise the round would die on an
-unresolvable skill *after* a full session spawn.
+Every engine is a skill clash itself installs, so a review round needs no
+third-party plugin present. A unit test asserts any skill named by
+`review_engine_for` is in `SKILLS`; otherwise the round would die on an
+unresolvable skill *after* a full session spawn. The retired `clash-review` is
+removed from `<claude_dir>/skills/` at startup (`RETIRED_SKILLS`) so it can
+never shadow its replacements.
 
 `clash-plan-review` is derived from the public `plan-review` skill and carries its
 four sections (architecture, code quality, tests, performance), its engineering
@@ -213,10 +235,11 @@ alone — which is exactly the human's job in this pipeline. The human's per-iss
 decisions are recorded in the round report, which is what lets round N+1 skip
 what round N already settled.)
 
-Depth does not branch a plan review: it tunes how hard a diff is read, and a
-plan has no hunks to read harder. The mapping is the pure
-`application::workflow::review_engine_for`, and the GUI matches it by not asking
-for depth at all on a plan round — a choice with one real answer is not a choice.
+Depth does not select the engine: the mapping is the pure
+`application::workflow::review_engine_for(target)`. For a code round the
+`Depth:` field tunes how hard the diff is read inside `clash-code-review`; a
+plan has no hunks to read harder, so the GUI does not ask for depth on a plan
+round — a choice with one real answer is not a choice.
 
 A code review is available at `diff-review`, `pr-draft` **and** `pr-ready`
 (`WF_REVIEWABLE` / `can_request_review`), so an item that already has a PR can
@@ -252,10 +275,17 @@ repo's origin default branch. A PR targeting `develop` records `develop`.
 ## The agent contract (clash-workflow skill)
 
 The kickoff prompt is:
-`Use the clash-workflow skill. Workflow item directory: <abs path>. Phase: <plan|revise|implement>. Mode: <full|from-plan|review-only>.`
+`Use the clash-workflow skill. Workflow item directory: <abs path>. Phase: <plan|revise|implement|pr>. Mode: <full|from-plan|review-only>.`
+with two optional trailing fields: `PR skill: <name>.` (from the
+`workflows.pr_skill` config — see PR integration) and `Interactive: yes|no.`
+(absent means the skill's opening question asks in-session).
 
 The mode is repeated in the prompt (it is also in `meta.json`) so a
 `review-only` run knows before reading anything that it must not write a plan.
+Like the reviewers, every executor phase opens by settling interactive vs
+autonomous — what "interactive" means per phase (approach options before
+writing a plan, confirmation before a `wontfix` or a plan deviation, title/body
+preview before a PR) is defined in the skill.
 
 On every run, the agent first reads: `meta.json`, `plan.md`, `review.md`
 (top-to-bottom — it is the accumulated decision history), the `open`
@@ -341,6 +371,15 @@ points and which one is worth it is the human's call:
   conventions (`.github/pull_request_template.md`, recent merged titles, a repo
   skill for opening PRs), opens the draft PR and sets `pr.url`.
 
+When the `workflows.pr_skill` config setting names a skill (e.g.
+`hivebrite-engineering:github-pr`), the agent-written path carries it in the
+kickoff as `PR skill: <name>` and the executor **must** open the PR through
+that skill instead of a raw `gh pr create` — org house style (templates,
+ticket references, review requests) rides along instead of being
+re-discovered per repo. Unset, the executor falls back to convention
+discovery. The setting is one `PROPS` row (shared scope, editable in the GUI
+Settings panel under *Workflows*).
+
 Phase `pr` is the one phase that does **not** move the item to a working status on
 launch (`phase_keeps_status`): it runs on an item parked at a human decision, and
 flipping it to `implementing` would both advertise work that isn't happening and
@@ -364,3 +403,23 @@ The mapping is the pure `application::workflow::model_for_phase`, passed to the
 session as `--model`. An unrecognized phase falls back to the implementation
 model: a phase name that isn't listed is assumed to do work, and
 under-powering real work is the worse failure.
+
+## Embedded skills — install, versioning, retirement
+
+The three skills (`clash-workflow`, `clash-plan-review`, `clash-code-review`)
+are compiled into both binaries and installed under `<claude_dir>/skills/` at
+every startup, compare-then-write. The embedded copy is the source of truth:
+local edits are overwritten (copy under a different name for a custom
+variant). Two mechanisms make that visible instead of silent:
+
+- A manifest, `<claude_dir>/skills/.clash-skills.json`, records the clash
+  version and a per-skill content hash of what was last installed. It gates
+  nothing — it is how the installer can tell "this file changed because clash
+  upgraded" from "the user edited it since we last wrote it".
+- `install_skills` returns a report (updated / retired-and-removed /
+  locally-edited-and-overwritten). The GUI toasts a non-noop report at boot
+  and shows the installing version in the Skills tab; the TUI logs it.
+
+Skills clash used to ship live in `RETIRED_SKILLS` and are deleted from the
+install dir at startup — a retired `clash-review` left behind would keep
+matching kickoff prompts its replacements now own.

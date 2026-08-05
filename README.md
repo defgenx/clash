@@ -32,7 +32,7 @@
 - **Repo config discovery** — auto-detects MCP servers, custom commands, agent definitions, and setup scripts from the project directory
 - **Teams & tasks** — create, rename, configure, and delete teams; manage members (agent type, model, prompt, rename) and see at a glance who's running; full task management (create, cycle status, assign owner, delete); per-agent inboxes. In the GUI, jump straight from a running member to its live session.
 - **Scratches** — keep free-form text notes inside clash (`:scratch`), organized in an IntelliJ-style **"Scratches and Consoles"** tree: create notes and nested folders, rename, delete, and reorganize (move via a folder picker in the TUI, drag-and-drop in the GUI). Each note is a plain file under `~/.claude/clash/scratch/` by default — set `scratch_dir` in `config.toml` (or the GUI **Scratch directory** setting) to store them anywhere. Opening a scratch shows an editor picker: terminal editors (vim/emacs/nano…) open in a tab/pane, GUI editors (VS Code/Cursor/Zed…) launch alongside, like opening a project
-- **Workflows (GUI)** — manage a full plan → plan-review → implement → diff-review → (optional) PR pipeline per feature: launch a planning agent, read the plan, approve or request changes, **annotate the diff with line-level comments** the agent addresses on the next round, then approve straight to done or — if you use PRs — track the draft PR and **mark it ready** once validated — with per-iteration history snapshots, decision notifications, and a kanban board. Start end-to-end, **from a plan you already have**, or **review-only from an existing PR or branch**. See [Workflows](#workflows-gui)
+- **Workflows (GUI)** — manage a full plan → plan-review → implement → diff-review → (optional) PR pipeline per feature: launch a planning agent, read the plan, approve or request changes, **annotate the diff with line-level comments** the agent addresses on the next round, then approve straight to done or — if you use PRs — track the draft PR and **mark it ready** once validated — with a full **revision timeline** (every round's note, plan diff, frozen plan and code diff), decision notifications, and a kanban board. Start end-to-end, **from a plan you already have**, or **review-only from an existing PR or branch**. See [Workflows](#workflows-gui)
 - **Subagent tracking** — view subagent trees per session, expand/collapse in the sessions table
 - **Open in IDE** — press `e` to open a session's project in your editor (auto-detects Cursor, VS Code, Zed, JetBrains, nvim, vim; configurable)
 - **Keyboard-driven** — vim-style navigation, command mode (`:`), fuzzy filter (`/`), context help (`?`)
@@ -560,11 +560,16 @@ must address every open comment → *Approve → done* closes the item, or
 moves the item to done automatically. *Request changes* stays available at
 `pr-draft` and `pr-ready` — review feedback keeps arriving once a PR is up,
 and a fix round on an item with a PR pushes its commits so the PR follows.
-The **History** tab lists every frozen iteration with both a *code diff* and a
-*plan diff* view, so "what did that revision actually change in the plan" has
-an answer. A **pipeline stepper** at the top of every item shows the mode's
-stages, where the item currently is, and how many change/review rounds it has
-been through. Approving never requires a PR — a repo
+The **Timeline** tab is the item's whole revision record in one newest-first
+feed: every change round as a card carrying the note you wrote (the *why*),
+the *plan diff* of that revision, the full **plan as it stood** at that
+iteration, and the *code diff* you reviewed — interleaved with every agent
+review round (its verdict and what it published) and the item's creation. So
+"what did that revision actually change in the plan", "why did round 3
+happen" and "what did the second review conclude" all have an answer without
+opening any file. A **pipeline stepper** at the top of every item shows the
+mode's stages, where the item currently is, and how many change/review rounds
+it has been through. Approving never requires a PR — a repo
 that merges straight to its default branch just approves and is done.
 *Create draft PR* on a branch that has never been pushed pushes it first
 (`git push --set-upstream`, `origin` when it exists) and then opens the PR —
@@ -596,17 +601,24 @@ anything spends tokens:
 |---|---|---|
 | **Depth** | `standard` / `deep` (default) | `deep` goes and reads how the code actually works — callers, invariants, existing tests, neighbouring solutions — and checks the artifact against it, so it surfaces things invisible from the plan or diff alone |
 | **Findings** | keep local (default) / also post to the PR | the PR option only appears once the item has one; posting is one review with line comments, never an approval |
+| **Interaction** | ask me when it starts (default) / interactive / autonomous | interactive = the round checks in with you at every decision; autonomous = it decides alone and reports at the end; the default defers the question to the session itself |
 
 The *target* isn't asked — it follows from where you launched: at `plan-review`
-the round reviews `plan.md`, everywhere else it reviews the code.
+the round reviews `plan.md` (the `clash-plan-review` skill), everywhere else it
+reviews the code (`clash-code-review`).
 
-Rounds are **interactive**: the reviewer drafts its findings, then walks you
-through them in the session pane before anything is written — you keep, drop or
-regrade each one (plan reviews go further: every issue comes with lettered
-options and a recommendation, and you pick the direction). It asks again before
-making any trivial fix and before anything is posted to the PR. Dropped
-findings are recorded in the round report (so later rounds don't re-raise
-them) but never become annotations.
+**Interactive or autonomous is always your call.** Unless you pre-answered it
+in the composer, the reviewer opens its session by asking — and in an
+interactive round it drafts its findings, then walks you through them in the
+session pane before anything is written: you keep, drop or regrade each one
+(plan reviews go further: every issue comes with lettered options and a
+recommendation, and you pick the direction). It asks again before making any
+trivial fix and before anything is posted to the PR. Dropped findings are
+recorded in the round report (so later rounds don't re-raise them) but never
+become annotations. An autonomous round asks nothing and reports everything at
+the end. The executor phases open with the same question: interactive planning
+proposes approaches before writing `plan.md`, an interactive implement round
+confirms plan deviations and `wontfix` calls instead of deciding alone.
 
 **Applying a round's findings** is the *Request changes* step — a review never
 applies itself, and approving doesn't either (approval means "ship it as it
@@ -654,15 +666,26 @@ ones land in an orphan tray). The file contract for agents is documented in
 [`docs/workflows.md`](docs/workflows.md).
 
 **Skills**: the agent side is three skills — `clash-workflow` (the executor:
-plans, implements, addresses comments), `clash-review` (the reviewer harness
-above) and `clash-plan-review` (the interactive plan-review engine it delegates
-to) — all embedded in the clash binary and auto-installed (and kept up-to-date)
-under `~/.claude/skills/` at every startup, no setup needed. Executor and
-reviewer are deliberately separate: reviewing and implementing are different
-jobs, and one skill doing both does neither sharply. The ☰ button on the
-WORKFLOWS section opens a **Skills viewer** listing every installed skill
-with rendered content; clash-managed ones are badged (local edits to those
-are overwritten on the next launch).
+plans, implements, addresses comments, opens PRs), `clash-plan-review` (the
+interactive plan reviewer) and `clash-code-review` (the code/diff reviewer) —
+all embedded in the clash binary and auto-installed (and kept up-to-date)
+under `~/.claude/skills/` at every startup, no setup needed. The separations
+are deliberate, twice over: executor vs reviewer because reviewing and
+implementing are different jobs, and plan review vs code review because one
+skill doing both describes neither sharply (the old combined `clash-review`
+is retired and removed automatically on upgrade). Installs are **versioned
+and visible**: a manifest records which clash version installed what, and
+when an upgrade rewrites a skill (or overwrites a local edit) the GUI says so
+in a toast instead of doing it silently. The ☰ button on the WORKFLOWS
+section opens a **Skills viewer** listing every installed skill with rendered
+content; clash-managed ones are badged with the installing version (local
+edits to those are overwritten on the next launch).
+
+**PR creation through your own skill**: set *Settings → Workflows → PR skill*
+(e.g. `hivebrite-engineering:github-pr`) and every agent-written PR goes
+through that skill — your org's titles, templates and ticket links — instead
+of a raw `gh pr create`. Empty means the agent follows the repo's own
+conventions.
 
 Workflows are GUI-only for now; the TUI will grow a read-only view.
 
@@ -739,6 +762,7 @@ open terminals, no restart:
 |---|---|
 | **Appearance** | **Theme** — 12 built-in palettes, 8 dark and 4 light (see below) |
 | **Paths** | Default directory for new sessions · scratch directory · workflows directory (each with a 📁 folder picker) · `claude` binary — a name resolved on PATH or an absolute path, validated on entry, used by the next session you start (📄 file picker) |
+| **Workflows** | PR skill — the skill workflow agents open pull requests with (e.g. `hivebrite-engineering:github-pr`); empty means the repo's own conventions via `gh` |
 | **Terminal · text** | Font family (opens a **searchable font picker** — see below) · font size · font weight · bold weight · line height · letter spacing |
 | **Terminal · cursor** | Style (block/bar/underline) · unfocused-pane style (outline/block/bar/underline/hidden) · bar width · blink |
 | **Terminal · colors** | Minimum contrast ratio (1 = off, 4.5 = WCAG AA) · bold text in bright colors |

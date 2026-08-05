@@ -17,9 +17,38 @@ The kickoff prompt gives you:
 - **Phase** — `plan` | `revise` | `implement` | `pr`
 - **Mode** — `full` | `from-plan` | `review-only` (also in `meta.json.mode`;
   a missing value means `full`)
+- **PR skill** — optional; the skill to open pull requests with (see the PR
+  steps below)
+- **Interactive** — optional; see the opening question below
 
 Your shell cwd is the item's git worktree. All code work happens there, on the
 already-checked-out branch.
+
+## Opening question — interactive or autonomous
+
+Before doing anything else, settle how this run goes:
+
+- Kickoff says `Interactive: yes` → run interactively, no question asked.
+- Kickoff says `Interactive: no` → run autonomously: no questions, decide
+  alone, report your calls in the final message.
+- **The field is absent → ask.** One `AskUserQuestion`, first thing:
+  1. **Interactive** (recommended) — check in at the phase's decision points
+     before acting on them.
+  2. **Autonomous** — decide alone; every judgement call is reported at the
+     end instead of asked.
+
+What "interactive" means per phase:
+- `plan` — before writing `plan.md`, present the 2–3 viable approaches with a
+  recommendation and ask which to plan around.
+- `revise` — when the change-request note is ambiguous or conflicts with an
+  earlier decision in `review.md`, ask instead of guessing.
+- `implement` — ask before deviating from the plan, before marking any
+  annotation `wontfix`, and before creating the optional draft PR.
+- `pr` — show the title and body before creating the PR.
+
+Blocking on a question is safe: the human launched this session from clash and
+is watching it. Wait for answers; never time out and decide for them. At any
+point they may answer "continue autonomously" — from then on, stop asking.
 
 ## Modes — read this before anything else
 
@@ -56,8 +85,9 @@ already-checked-out branch.
 
 ## You are the executor, not the reviewer
 
-A separate skill (`clash-review`) runs review rounds on the same item: it writes
-findings into `agent-review.md` and `annotations.json` and never touches
+Two separate skills run review rounds on the same item — `clash-plan-review`
+(judges `plan.md`) and `clash-code-review` (judges the diff). They write
+findings into `agent-review.md` and `annotations.json` and never touch
 `plan.md` or the code beyond trivial fixes. Two consequences for you:
 
 - `agent-review.md` is **input** for you — read the latest round before
@@ -138,11 +168,13 @@ Read the **latest** `## Iteration` section of `review.md` first.
    `"diff-review"` — you are done, skip steps 6–7.
 6. **Only if the repo clearly works through PRs** — an existing `pr.url` on this
    item, or a repo whose recent history is merge commits from PRs — create the
-   draft PR: `gh pr create --draft --title "<item title>" --body "<summary>"`,
-   then read-modify-write `meta.json` setting `pr.url` to the created URL (clash
-   fills number/state on its next refresh). Otherwise **skip this**: a PR is not
-   required to finish, the human approves the diff either way, and an unwanted
-   PR is a chore for them to close. When in doubt, skip it and say so.
+   draft PR. When the kickoff prompt names a **PR skill**, invoke that skill to
+   open it (it encodes the org's house style); otherwise
+   `gh pr create --draft --title "<item title>" --body "<summary>"`. Either
+   way, read-modify-write `meta.json` setting `pr.url` to the created URL
+   (clash fills number/state on its next refresh). Otherwise **skip this**: a
+   PR is not required to finish, the human approves the diff either way, and an
+   unwanted PR is a chore for them to close. When in doubt, skip it and say so.
 7. Finish: set `status = "diff-review"` — or `"pr-draft"` if you created the
    PR in step 6. Stop — the human reviews the diff in clash and either
    approves (which may close the item outright) or sends you a new round.
@@ -162,14 +194,19 @@ the human decides whether that becomes a new round.
    from `meta.json.base`, else the repo's default branch) and the commit
    messages. Read `plan.md` and `review.md` for intent, but describe what the
    diff *does*, not what the plan promised.
-2. Follow the repo's PR conventions if it states any — a
+2. **When the kickoff prompt names a PR skill, use it.** Invoke that skill to
+   write and open the PR — it encodes the org's house style (title format,
+   ticket references, templates, review requests) better than convention
+   archaeology. Keep its draft/`--base` behavior consistent with step 4, and
+   skip to step 5 once it has opened the PR.
+3. Otherwise, follow the repo's PR conventions if it states any — a
    `.github/pull_request_template.md`, a CONTRIBUTING file, or a
-   repo/organisation skill for opening PRs. Use them; they encode house style
-   (title format, ticket references, checklists) that this skill does not.
-3. Write a title in the repo's own convention (look at recent merged PR titles,
-   `git log --merges`), and a body that gives a reviewer: what changed and why,
-   anything reviewers should look at closely, and how it was verified. Keep it
-   proportional — a small diff gets a short body.
+   repo/organisation skill for opening PRs. Write a title in the repo's own
+   convention (look at recent merged PR titles, `git log --merges`), and a body
+   that gives a reviewer: what changed and why, anything reviewers should look
+   at closely, and how it was verified. Keep it proportional — a small diff
+   gets a short body. In interactive runs, show the title and body before
+   creating anything.
 4. Push the branch if it is not on the remote, then
    `gh pr create --draft --title "<title>" --body "<body>"` (add `--base` when
    `meta.json.base` is set).
