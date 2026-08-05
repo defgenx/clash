@@ -145,6 +145,20 @@ test("every dialog backdrop attaches its box", () => {
   );
 });
 
+test("PR-identity errors recover in place instead of dead-ending", () => {
+  // The backend prefixes identity-shaped failures (no-pr: / pr-number-unknown:)
+  // and the frontend must answer them by asking for the PR URL, attaching it
+  // and retrying — never by a bare alert the user can't act on.
+  assert.match(APP, /async function wfPrRecovery\(item, err, retry\)/);
+  assert.match(APP, /msg\.startsWith\("pr-number-unknown:"\)/);
+  // Every surface that demands a PR identity goes through the recovery:
+  // Mark ready, Post round to PR, and the review-round launcher.
+  const uses = APP.match(/await wfPrRecovery\(/g) || [];
+  assert.ok(uses.length >= 3, `expected ≥3 wfPrRecovery call sites, got ${uses.length}`);
+  // The launcher's no-pr path offers the local downgrade, not just attach.
+  assert.match(APP, /Run the round locally instead/);
+});
+
 test("a dismissed composer keeps the draft", () => {
   // Losing a paragraph to a stray Esc or backdrop click is the failure this
   // guards; submitting clears it so the next round starts empty.

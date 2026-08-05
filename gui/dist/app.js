@@ -4878,6 +4878,36 @@ async function launchWfReviewRespond(item, root) {
   await spawnWfReview(item, root, "standard", "respond-pr-comments");
 }
 
+/// Recovery for PR-identity errors (`no-pr:` / `pr-number-unknown:` from the
+/// backend): instead of a dead-end alert, ask for the missing piece — the PR
+/// URL — attach it, and retry the original action once. The user keeps
+/// working; the underlying data gap can be fixed in parallel. Returns true
+/// when the error was handled (recovered, retried, or the user declined).
+async function wfPrRecovery(item, err, retry) {
+  const msg = String(err);
+  const noPr = msg.startsWith("no-pr:");
+  if (!noPr && !msg.startsWith("pr-number-unknown:")) return false;
+  const url = await uiPrompt(
+    noPr
+      ? "This item has no PR recorded — paste the PR URL to attach it and continue:"
+      : "clash can't tell the PR number from what's recorded — paste the PR URL to re-attach it and continue:"
+  );
+  if (!url || !url.trim()) return true; // declined: handled, nothing to retry
+  try {
+    await invoke("attach_workflow_pr", {
+      project: item.project,
+      slug: item.slug,
+      url: url.trim(),
+    });
+    await refreshWorkflows();
+  } catch (e) {
+    uiAlert(`Attach failed: ${e}`);
+    return true;
+  }
+  if (retry) await retry(wfItem(item.project, item.slug) || item);
+  return true;
+}
+
 /// Shared spawn for both review-launch surfaces (the composer and the
 /// "Answer PR comments" action), so a reviewer session is registered, named
 /// and refreshed identically wherever it starts.
@@ -4899,7 +4929,23 @@ async function spawnWfReview(item, root, depth, publish, interactive = null) {
   } catch (e) {
     const msg = String(e);
     if (msg.startsWith("no-pr:")) {
-      uiAlert("This item has no pull request yet — create one first, or keep the round local.");
+      // Never a dead end: attach the PR here, downgrade to a local round, or
+      // walk away — the user decides, and work continues either way.
+      const how = await uiChoice({
+        message: "This item has no pull request recorded, and this round needs one.",
+        detail: "Attach the PR to continue as planned, or keep the findings local for now.",
+        choices: [
+          { label: "Attach PR by URL…", value: "attach", primary: true },
+          { label: "Run the round locally instead", value: "local" },
+        ],
+      });
+      if (how === "attach") {
+        await wfPrRecovery(item, e, (fresh) =>
+          spawnWfReview(fresh, root, depth, publish, interactive)
+        );
+      } else if (how === "local") {
+        await spawnWfReview(item, root, depth, "local", interactive);
+      }
       return;
     }
     uiAlert(`Review launch failed: ${e}`);
@@ -5015,10 +5061,11 @@ function wfComposeReviewRound(item) {
 /// path for findings that stayed local: publish is otherwise only choosable
 /// when launching a round, so sharing an already-written round meant burning
 /// a whole new one.
-async function publishWfReview(item) {
+async function publishWfReview(item, confirmed = false) {
   const r = item.lastAgentReview;
   const n = item.meta.pr && item.meta.pr.number ? `#${item.meta.pr.number}` : "the PR";
   if (
+    !confirmed &&
     !(await uiConfirm(
       `Post agent review round ${r ? r.round : ""} to ${n} as a comment? This publishes the findings on GitHub.`,
       "Post"
@@ -5032,6 +5079,8 @@ async function publishWfReview(item) {
     });
     flashToast(`Review round ${round} posted to ${n}`);
   } catch (e) {
+    // PR-identity gaps recover in place (attach → retry, already confirmed).
+    if (await wfPrRecovery(item, e, (fresh) => publishWfReview(fresh, true))) return;
     uiAlert(wfGhHint(e) || `Post to PR failed: ${e}`);
   }
 }
@@ -5801,22 +5850,27 @@ function renderWfActions(bar, root, item) {
                 : "";
             if (
               !(await uiConfirm(
-                `This is the validation step:${warn} flip PR #${item.meta.pr.number} to ready-for-review?`,
+                `This is the validation step:${warn} flip PR #${item.meta.pr.number || "?"} to ready-for-review?`,
                 "Mark ready"
               ))
             )
               return;
-            try {
-              const meta = await invoke("mark_workflow_pr_ready", {
-                project: item.project,
-                slug: item.slug,
-              });
-              flashToast(`PR ready: ${meta.pr ? meta.pr.url : ""}`);
-              await refreshWorkflows();
-              buildWorkflowView(root, item.project, item.slug);
-            } catch (e) {
-              uiAlert(wfGhHint(e) || `Mark ready failed: ${e}`);
-            }
+            const markReady = async (target) => {
+              try {
+                const meta = await invoke("mark_workflow_pr_ready", {
+                  project: target.project,
+                  slug: target.slug,
+                });
+                flashToast(`PR ready: ${meta.pr ? meta.pr.url : ""}`);
+                await refreshWorkflows();
+                buildWorkflowView(root, target.project, target.slug);
+              } catch (e) {
+                // PR-identity gaps recover in place: paste the URL, retry.
+                if (await wfPrRecovery(target, e, markReady)) return;
+                uiAlert(wfGhHint(e) || `Mark ready failed: ${e}`);
+              }
+            };
+            await markReady(item);
           },
           `Flip PR #${item.meta.pr.number || ""} from draft to ready-for-review on GitHub — the validation step`
         );

@@ -364,7 +364,18 @@ existed and must keep working); only hosts recognizably another forge
 (gitlab, bitbucket) map to `none` until they have an implementation.
 
 clash records the PR in `meta.json.pr` (`url`, `number`, `draft`, `state`,
-`lastCheckedAt`, `unansweredComments`) via the forge. `state == "MERGED"`
+`lastCheckedAt`, `unansweredComments`) via the forge.
+
+**Identity-shaped PR errors are recoverable in place, never dead ends.**
+Commands that need a PR identity return machine prefixes — `no-pr:` (nothing
+recorded) and `pr-number-unknown:` (a URL clash cannot parse) — and the GUI
+answers them by asking for the missing piece: paste the PR URL, it attaches
+(`attach_workflow_pr`, which deliberately never demotes a `pr-ready` item)
+and the original action retries once. A review round needing a PR
+additionally offers "run the round locally instead". The principle
+generalizes: an error caused by a data gap must offer the human a way to
+supply the datum and continue, so the pipeline is never blocked on a bug
+that can be fixed in parallel. `state == "MERGED"`
 observed on refresh moves the item to `done`. The agent may create the draft PR
 itself — writing `pr.url` is enough: clash fills the rest on the next refresh,
 and every command that needs the number derives it from the URL in the

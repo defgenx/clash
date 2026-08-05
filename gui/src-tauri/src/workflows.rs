@@ -1647,13 +1647,16 @@ pub(crate) async fn mark_workflow_pr_ready(
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
+    // Identity-shaped failures carry machine prefixes (`no-pr:` /
+    // `pr-number-unknown:`): the frontend turns them into "paste the PR URL"
+    // prompts that attach and retry, so a data gap never dead-ends the user.
     let Some(pr) = meta.pr.clone() else {
-        return Err("No PR recorded for this item".to_string());
+        return Err("no-pr: this item has no pull request recorded yet".to_string());
     };
     let number = recorded_pr_number(&pr);
     if number == 0 {
         return Err(format!(
-            "Cannot tell the PR number from '{}' — re-attach the PR by URL",
+            "pr-number-unknown: cannot tell the PR number from '{}'",
             pr.url
         ));
     }
@@ -1699,7 +1702,12 @@ pub(crate) async fn attach_workflow_pr(
     let pr = meta.pr.get_or_insert_with(Default::default);
     pr.url = url.trim().to_string();
     pr.number = number;
-    if meta.status.can_transition_to(WorkflowStatus::PrDraft) {
+    // Attach doubles as the recovery path for identity-shaped PR errors, so
+    // it must never move an item BACKWARDS: re-attaching at `pr-ready` (whose
+    // → pr-draft edge is legal) keeps the status.
+    if meta.status != WorkflowStatus::PrReady
+        && meta.status.can_transition_to(WorkflowStatus::PrDraft)
+    {
         meta.status = WorkflowStatus::PrDraft;
     }
     state
