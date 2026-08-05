@@ -123,7 +123,7 @@ test("requesting changes uses the composer, not a one-line prompt", () => {
   // (composer + workflow_request_changes, which snapshots the iteration);
   // they used to be two divergent inline prompts, and the plan path used to
   // skip the snapshot entirely.
-  assert.match(APP, /wfComposeChangeRequest\(\{ item, target, annotations \}\)/);
+  assert.match(APP, /wfComposeChangeRequest\(\{\s*item,\s*target,\s*annotations,\s*onJump[\s\S]{0,80}\}\)/);
   assert.match(APP, /requestChanges\("plan"\)/);
   assert.doesNotMatch(APP, /uiPrompt\("What should change in the plan\?"\)/);
   assert.doesNotMatch(APP, /Request changes — describe what to change/);
@@ -150,5 +150,6 @@ test("a dismissed composer keeps the draft", () => {
   // guards; submitting clears it so the next round starts empty.
   assert.match(APP, /const wfDrafts = new Map\(\)/);
   assert.match(APP, /const dismiss = \(\) => \{\s*keepDraft\(\);/);
-  assert.match(APP, /wfDrafts\.delete\(key\);\s*done\(note\);/);
+  // Submitting clears the draft and resolves the composer's result object.
+  assert.match(APP, /wfDrafts\.delete\(key\);\s*done\(\{\s*note,/);
 });

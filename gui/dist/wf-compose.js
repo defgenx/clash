@@ -100,26 +100,36 @@
     return `${project}/${slug}`;
   }
 
-  /// The latest `## Review <n>` round of agent-review.md, reshaped as change
-  /// request material — what "Insert round N findings" pastes into the
-  /// composer. This is the bridge from a review round to applied work: the
-  /// note is the next round's prompt, so the findings must be able to become
-  /// that note without retyping.
+  /// Every `## Review <n>` round of agent-review.md, in file order —
+  /// `{ round, heading }` per entry. Drives the composer's round picker, so a
+  /// change request can pull findings from ANY round, not just the latest.
+  function agentReviewRounds(md) {
+    const out = [];
+    for (const line of String(md || "").split("\n")) {
+      const m = /^## Review (\d+)\b\s*[—-]?\s*(.*)$/.exec(line);
+      if (m) out.push({ round: Number(m[1]), heading: m[2].trim() });
+    }
+    return out;
+  }
+
+  /// One round of agent-review.md, reshaped as change-request material — what
+  /// "Insert round N findings" pastes into the composer. This is the bridge
+  /// from a review round to applied work: the note is the next round's
+  /// prompt, so the findings must be able to become that note without
+  /// retyping.
   ///
   /// Subsections that are records rather than instructions are dropped:
   /// `### Published` (what left the machine), `### Fixed in this round`
   /// (already done), `### Dismissed in triage` (explicitly not work).
-  /// Returns `{ round, text }`, or null when no round exists.
-  function latestAgentRoundFindings(md) {
+  /// Returns `{ round, text }`, or null when the round doesn't exist or has
+  /// nothing usable. When several sections share the number (should not
+  /// happen), the last one wins — same rule as the latest-round parser.
+  function roundFindings(md, round) {
     const lines = String(md || "").split("\n");
     let start = -1;
-    let round = 0;
     for (let i = 0; i < lines.length; i++) {
       const m = /^## Review (\d+)\b/.exec(lines[i]);
-      if (m) {
-        start = i;
-        round = Number(m[1]);
-      }
+      if (m && Number(m[1]) === round) start = i;
     }
     if (start < 0) return null;
     let end = lines.length;
@@ -144,12 +154,23 @@
     return text ? { round, text } : null;
   }
 
+  /// The latest round's findings — `roundFindings` over the last entry of
+  /// `agentReviewRounds`. Kept as its own name because "insert the latest"
+  /// is the common path.
+  function latestAgentRoundFindings(md) {
+    const rounds = agentReviewRounds(md);
+    if (!rounds.length) return null;
+    return roundFindings(md, rounds[rounds.length - 1].round);
+  }
+
   const api = {
     changeRequestTemplate,
     composerPlaceholder,
     annotationsMarkdown,
     canSubmitChangeRequest,
     draftKey,
+    agentReviewRounds,
+    roundFindings,
     latestAgentRoundFindings,
   };
 

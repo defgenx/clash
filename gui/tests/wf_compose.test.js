@@ -11,6 +11,8 @@ const {
   annotationsMarkdown,
   canSubmitChangeRequest,
   draftKey,
+  agentReviewRounds,
+  roundFindings,
   latestAgentRoundFindings,
 } = require("../dist/wf-compose.js");
 
@@ -141,6 +143,28 @@ test("insert-findings has nothing to offer without a round", () => {
   assert.equal(latestAgentRoundFindings(onlyPublished), null);
 });
 
+test("every round is listed and individually insertable, not just the latest", () => {
+  const md = [
+    "## Review 1 — plan · deep · 2026-08-01",
+    "",
+    "1. `src/a.rs:3` — split the module",
+    "",
+    "## Review 2 — diff · deep · 2026-08-05",
+    "",
+    "1. `src/auth.rs:42` — timing leak",
+  ].join("\n");
+  assert.deepEqual(agentReviewRounds(md), [
+    { round: 1, heading: "plan · deep · 2026-08-01" },
+    { round: 2, heading: "diff · deep · 2026-08-05" },
+  ]);
+  // Round 2 landing does not orphan round 1's findings.
+  assert.match(roundFindings(md, 1).text, /split the module/);
+  assert.doesNotMatch(roundFindings(md, 1).text, /timing leak/);
+  assert.match(roundFindings(md, 2).text, /timing leak/);
+  assert.equal(roundFindings(md, 7), null);
+  assert.deepEqual(agentReviewRounds(""), []);
+});
+
 test("the browser branch publishes every name app.js calls", () => {
   // app.js is a plain script that reads these off `window`, so a rename here
   // (or a missing `<script>` tag) fails at click time, not at boot — the
@@ -162,7 +186,8 @@ test("the browser branch publishes every name app.js calls", () => {
     "annotationsMarkdown",
     "canSubmitChangeRequest",
     "draftKey",
-    "latestAgentRoundFindings",
+    "agentReviewRounds",
+    "roundFindings",
   ];
   for (const name of used) {
     assert.equal(typeof win[name], "function", `${name} must be on window`);

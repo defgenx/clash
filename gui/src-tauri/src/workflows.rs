@@ -713,17 +713,24 @@ pub(crate) fn delete_workflow_annotation(
 }
 
 /// The diff-review "request changes" flow, ordered for crash-safety
-/// (review C2): snapshot the current diff + annotations into
-/// `history/{iteration:03}/`, append the note + open-annotation digest to
-/// review.md, then ONE meta write carrying both `iteration+1` and status
-/// `changes-requested`. Any failure before the meta write aborts cleanly; a
-/// retry overwrites the orphaned snapshot.
+/// (review C2): park the comments the human excluded, snapshot the current
+/// diff + annotations into `history/{iteration:03}/`, append the note +
+/// open-annotation digest to review.md, then ONE meta write carrying both
+/// `iteration+1` and status `changes-requested`. Any failure before the meta
+/// write aborts cleanly; a retry overwrites the orphaned snapshot.
+///
+/// `park` holds annotation ids the composer excluded from this round: they
+/// flip to `parked` (kept, but no longer `open`, so the agent contract —
+/// address every open annotation — skips them without any skill change).
+/// Parking happens *before* the snapshot so `history/<NNN>/annotations.json`
+/// records the round exactly as it was sent.
 #[tauri::command]
 pub(crate) async fn workflow_request_changes(
     state: State<'_, GuiState>,
     project: String,
     slug: String,
     note: Option<String>,
+    park: Option<Vec<String>>,
 ) -> Result<clash::domain::workflow::WorkflowMeta, String> {
     let mut meta = state
         .backend
@@ -737,6 +744,30 @@ pub(crate) async fn workflow_request_changes(
             "cannot request changes from status {}",
             meta.status
         ));
+    }
+
+    let park = park.unwrap_or_default();
+    if !park.is_empty() {
+        let mut file = state
+            .backend
+            .load_workflow_annotations(&project, &slug)
+            .map_err(e2s)?;
+        let mut changed = false;
+        for ann in file.annotations.iter_mut() {
+            if ann.status == clash::domain::workflow::AnnotationStatus::Open
+                && park.iter().any(|id| id == &ann.id)
+            {
+                ann.status = clash::domain::workflow::AnnotationStatus::Parked;
+                ann.updated_at = now_ms();
+                changed = true;
+            }
+        }
+        if changed {
+            state
+                .backend
+                .write_workflow_annotations(&project, &slug, &file)
+                .map_err(e2s)?;
+        }
     }
 
     // The snapshot is this iteration's only record — freezing an empty
@@ -1020,8 +1051,15 @@ async fn spawn_item_session(
 
 /// Spawn a Claude Code session working on this item, in a dedicated worktree
 /// (created on first launch, persisted in meta). The kickoff prompt routes
-/// the session to the `clash-workflow` skill with the item directory and the
-/// requested phase (`plan` | `revise` | `implement`).
+/// the session to the executor skill (`clash-workflow`, or the `skill`
+/// override — the composer's escape hatch for routing a round through a
+/// custom skill that honors the same file contract) with the item directory
+/// and the requested phase (`plan` | `revise` | `implement` | `pr`).
+/// `interactive` pre-answers the skill's opening question when the human
+/// already chose at launch.
+// Tauri command parameters map 1:1 onto the frontend's named invoke args —
+// same reasoning as `start_workflow_review_agent`.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub(crate) async fn start_workflow_agent(
     state: State<'_, GuiState>,
@@ -1029,9 +1067,20 @@ pub(crate) async fn start_workflow_agent(
     slug: String,
     phase: String,
     branch: Option<String>,
+    skill: Option<String>,
+    interactive: Option<bool>,
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
+    // The skill name lands verbatim in the kickoff prompt — one token only.
+    let skill = skill
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(s) = &skill {
+        if s.chars().any(char::is_whitespace) {
+            return Err(format!("Skill names contain no whitespace: '{}'", s));
+        }
+    }
     let mut meta = state
         .backend
         .load_workflow_meta(&project, &slug)
@@ -1103,9 +1152,13 @@ pub(crate) async fn start_workflow_agent(
         |item_dir| {
             clash::application::workflow::build_agent_prompt(
                 item_dir,
-                &phase,
-                meta.mode,
-                pr_skill.as_deref(),
+                &clash::application::workflow::ExecutorKickoff {
+                    phase: &phase,
+                    mode: meta.mode,
+                    pr_skill: pr_skill.as_deref(),
+                    skill: skill.as_deref(),
+                    interactive,
+                },
             )
         },
     )

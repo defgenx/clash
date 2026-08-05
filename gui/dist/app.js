@@ -4816,14 +4816,18 @@ function openWorkflowPr(item) {
 }
 
 /// Launch (or relaunch) the workflow agent for a phase and open its session
-/// tab split next to the workflow tab.
-async function launchWfAgent(item, phase, root, branch = null) {
+/// tab split next to the workflow tab. `opts` carries the composer's launch
+/// choices: `interactive` (tri-state; null = the skill asks in-session) and
+/// `skill` (executor override; null = clash-workflow).
+async function launchWfAgent(item, phase, root, branch = null, opts = {}) {
   try {
     const sid = await invoke("start_workflow_agent", {
       project: item.project,
       slug: item.slug,
       phase,
       branch,
+      skill: opts.skill || null,
+      interactive: opts.interactive ?? null,
       cols: 120,
       rows: 40,
     });
@@ -4844,7 +4848,7 @@ async function launchWfAgent(item, phase, root, branch = null) {
       if (next === null) return;
       const name = next.trim();
       if (!name) return;
-      return launchWfAgent(item, phase, root, name);
+      return launchWfAgent(item, phase, root, name, opts);
     }
     uiAlert(`Agent launch failed: ${e}`);
   }
@@ -5087,10 +5091,19 @@ const wfDrafts = new Map();
 ///
 /// `target` is "plan" (plan-review) or "diff" (diff-review). One composer serves
 /// both; they used to be two divergent inline prompts.
-function wfComposeChangeRequest({ item, target, annotations }) {
+///
+/// Resolves `{ note, park, launch }` (or null on dismiss): `park` holds the
+/// ids of open comments the human excluded from this round, `launch` is null
+/// for "record only" or `{ interactive, skill }` when the fix round should
+/// start right away. `onJump(annId)` closes the composer (keeping the draft)
+/// and navigates to a comment in the diff.
+function wfComposeChangeRequest({ item, target, annotations, onJump }) {
   return new Promise((resolve) => {
-    const openCount = annotations.length;
     const key = draftKey(item.project, item.slug);
+    // Live copies: rows can be deleted and un/checked while the dialog is up.
+    const included = new Map(annotations.map((a) => [a.id, true]));
+    let live = [...annotations];
+    const includedAnnotations = () => live.filter((a) => included.get(a.id));
 
     const backdrop = document.createElement("div");
     backdrop.className = "dialog-backdrop";
@@ -5126,15 +5139,16 @@ function wfComposeChangeRequest({ item, target, annotations }) {
     tools.appendChild(previewBtn);
     // The bridge from an agent review round to applied work: the note is the
     // next round's prompt, so a round's findings must become that note without
-    // retyping. Only offered once a round exists.
+    // retyping. Only offered once a round exists — and offers EVERY round,
+    // not just the latest: round 2's findings stay insertable after round 5.
     let findingsBtn = null;
-    if (item.lastAgentReview) {
+    if (item.hasAgentReview || item.meta.reviewRound) {
       findingsBtn = document.createElement("button");
       findingsBtn.type = "button";
       findingsBtn.className = "icon-btn wide";
-      findingsBtn.textContent = `Insert round ${item.lastAgentReview.round} findings`;
+      findingsBtn.textContent = "Insert review findings…";
       findingsBtn.title =
-        "Paste the latest agent review round's findings here, to edit into this round's instructions";
+        "Paste an agent review round's findings here, to edit into this round's instructions";
       tools.appendChild(findingsBtn);
     }
     box.appendChild(tools);
@@ -5161,7 +5175,7 @@ function wfComposeChangeRequest({ item, target, annotations }) {
       preview.hidden = !previewing;
       if (previewing) {
         const body = field.value.trim();
-        const annos = annotationsMarkdown(annotations);
+        const annos = annotationsMarkdown(includedAnnotations());
         const full =
           body + (annos ? `${body ? "\n\n" : ""}### Open annotations\n\n${annos}` : "");
         renderMarkdown(preview, full || "_(nothing to send yet)_");
@@ -5189,9 +5203,28 @@ function wfComposeChangeRequest({ item, target, annotations }) {
         } catch (e) {
           dlog(`insert findings failed: ${e}`);
         }
-        const found = latestAgentRoundFindings(md);
+        const rounds = agentReviewRounds(md);
+        if (!rounds.length) {
+          flashToast("No agent review rounds to insert from");
+          return;
+        }
+        // One round → insert it; several → pick (newest first, latest primary).
+        let round = rounds[rounds.length - 1].round;
+        if (rounds.length > 1) {
+          const picked = await uiChoice({
+            message: "Insert which review round's findings?",
+            choices: [...rounds].reverse().map((r, i) => ({
+              label: `Round ${r.round}${r.heading ? ` — ${r.heading}` : ""}`,
+              value: String(r.round),
+              primary: i === 0,
+            })),
+          });
+          if (!picked) return;
+          round = Number(picked);
+        }
+        const found = roundFindings(md, round);
         if (!found) {
-          flashToast("No findings to insert in the latest round");
+          flashToast(`Round ${round} has no findings to insert`);
           return;
         }
         // Append rather than replace — the note frames the findings, so what
@@ -5205,18 +5238,130 @@ function wfComposeChangeRequest({ item, target, annotations }) {
       };
     }
 
-    // The comments already queued for this round, so the note can complement
-    // them instead of repeating them. A bare count could never do that.
-    if (openCount) {
+    // The comments queued for this round — interactive, not a bare list: each
+    // row can be excluded (parked: kept, but the agent won't see it), jumped
+    // to in the diff, or deleted outright. Open comments used to be swept
+    // along wholesale and were hard to find again once written.
+    const annosWrap = document.createElement("div");
+    box.appendChild(annosWrap);
+    const renderAnnos = () => {
+      annosWrap.innerHTML = "";
+      if (!live.length) return;
+      const n = includedAnnotations().length;
       const label = document.createElement("p");
       label.className = "wf-compose-annos-label";
-      label.textContent = `${openCount} open diff comment${openCount > 1 ? "s" : ""} sent with this round:`;
-      box.appendChild(label);
+      label.textContent =
+        n === live.length
+          ? `${n} open diff comment${n > 1 ? "s" : ""} sent with this round — uncheck to park one for later:`
+          : `${n} of ${live.length} open diff comments sent with this round (unchecked ones are parked, not lost):`;
+      annosWrap.appendChild(label);
       const list = document.createElement("div");
       list.className = "wf-compose-annos";
-      renderMarkdown(list, annotationsMarkdown(annotations));
-      box.appendChild(list);
+      for (const a of live) {
+        const row = document.createElement("div");
+        row.className = "wf-compose-anno";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = !!included.get(a.id);
+        cb.title = "Send this comment with the round (unchecked = park it for a later round)";
+        cb.onchange = () => {
+          included.set(a.id, cb.checked);
+          renderAnnos();
+        };
+        const text = document.createElement("span");
+        text.className = "wf-compose-anno-text" + (cb.checked ? "" : " dim");
+        text.textContent = `${a.file}:${a.line} — ${a.body || ""}`;
+        text.title = a.body || "";
+        const jump = document.createElement("button");
+        jump.type = "button";
+        jump.className = "icon-btn";
+        jump.textContent = "view →";
+        jump.title = "Show this comment in the diff (the dialog closes; your note is kept as a draft)";
+        jump.onclick = () => {
+          keepDraft();
+          done(null);
+          if (onJump) onJump(a.id);
+        };
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "icon-btn danger";
+        del.textContent = "✕";
+        del.title = "Delete this comment thread";
+        del.onclick = async () => {
+          if (!(await uiConfirm(`Delete the comment on ${a.file}:${a.line}?`, "Delete"))) return;
+          try {
+            await invoke("delete_workflow_annotation", {
+              project: item.project,
+              slug: item.slug,
+              id: a.id,
+            });
+            live = live.filter((x) => x.id !== a.id);
+            included.delete(a.id);
+            renderAnnos();
+          } catch (e) {
+            uiAlert(`Delete failed: ${e}`);
+          }
+        };
+        row.append(cb, text, jump, del);
+        list.appendChild(row);
+      }
+      annosWrap.appendChild(list);
+    };
+    renderAnnos();
+
+    // What happens once the request is recorded. "Launch now" folds the
+    // second click — and the how — into the same screen, so the composer is
+    // the round's whole launchpad: interaction mode and even the executor
+    // skill (a custom skill honoring the docs/workflows.md file contract).
+    const next = document.createElement("fieldset");
+    next.className = "wf-compose-next";
+    const legend = document.createElement("legend");
+    legend.textContent = "After recording";
+    next.appendChild(legend);
+    const mkNext = (value, label, checked) => {
+      const row = document.createElement("label");
+      row.className = "wf-compose-next-opt";
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "wf-compose-next";
+      input.value = value;
+      input.checked = checked;
+      row.appendChild(input);
+      row.appendChild(document.createTextNode(` ${label}`));
+      next.appendChild(row);
+      return input;
+    };
+    const recordOnly = mkNext("record", "Record only — launch the agent later from the action bar", true);
+    const launchNow = mkNext("launch", "Record and launch the fix round now", false);
+    const launchRow = document.createElement("div");
+    launchRow.className = "wf-compose-launch";
+    launchRow.hidden = true;
+    const interactionSel = document.createElement("select");
+    interactionSel.title = "How the round runs — the agent asks in-session when you leave it on 'ask'";
+    for (const [v, l] of [
+      ["ask", "Ask me when it starts"],
+      ["interactive", "Interactive"],
+      ["autonomous", "Autonomous"],
+    ]) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = l;
+      interactionSel.appendChild(o);
     }
+    const skillInput = document.createElement("input");
+    skillInput.type = "text";
+    skillInput.placeholder = "clash-workflow (default skill)";
+    skillInput.spellcheck = false;
+    skillInput.title =
+      "Executor skill for this round. Leave empty for clash-workflow; a custom skill must honor the same file contract (docs/workflows.md).";
+    launchRow.append(interactionSel, skillInput);
+    next.appendChild(launchRow);
+    const syncLaunchRow = () => {
+      launchRow.hidden = !launchNow.checked;
+    };
+    recordOnly.onchange = syncLaunchRow;
+    launchNow.onchange = syncLaunchRow;
+    box.appendChild(next);
 
     const error = document.createElement("p");
     error.className = "wf-compose-error";
@@ -5250,7 +5395,11 @@ function wfComposeChangeRequest({ item, target, annotations }) {
     };
     const submit = () => {
       const note = field.value.trim();
-      const check = canSubmitChangeRequest({ note, openCount, target });
+      const check = canSubmitChangeRequest({
+        note,
+        openCount: includedAnnotations().length,
+        target,
+      });
       if (!check.ok) {
         error.textContent = check.reason;
         error.hidden = false;
@@ -5258,7 +5407,16 @@ function wfComposeChangeRequest({ item, target, annotations }) {
         return;
       }
       wfDrafts.delete(key);
-      done(note);
+      done({
+        note,
+        park: live.filter((a) => !included.get(a.id)).map((a) => a.id),
+        launch: launchNow.checked
+          ? {
+              interactive: interactiveParam(interactionSel.value),
+              skill: skillInput.value.trim() || null,
+            }
+          : null,
+      });
     };
 
     cancel.onclick = dismiss;
@@ -5360,19 +5518,32 @@ function renderWfActions(bar, root, item) {
   // One flow for both targets: it snapshots the iteration (diff + plan +
   // annotations) into history/ and bumps the counter, so every change round
   // has a before/after — a plan revision used to leave no trace of what it
-  // changed.
+  // changed. The composer decides the round's whole shape: which comments
+  // ride along (unchecked ones are parked), and whether the fix round
+  // launches immediately (with interaction mode + optional skill override).
   const requestChanges = async (target = "diff") => {
     const annotations = target === "plan" ? [] : await wfOpenAnnotations(item);
-    const note = await wfComposeChangeRequest({ item, target, annotations });
-    if (note === null) return;
+    const req = await wfComposeChangeRequest({
+      item,
+      target,
+      annotations,
+      onJump: (annId) => wfJumpToAnnotation(root, item.project, item.slug, annId),
+    });
+    if (!req) return;
     try {
       await invoke("workflow_request_changes", {
         project: item.project,
         slug: item.slug,
-        note: note || null,
+        note: req.note || null,
+        park: req.park.length ? req.park : null,
       });
       await refreshWorkflows();
-      buildWorkflowView(root, item.project, item.slug);
+      if (req.launch) {
+        const fresh = wfItem(item.project, item.slug) || item;
+        await launchWfAgent(fresh, "revise", root, null, req.launch);
+      } else {
+        buildWorkflowView(root, item.project, item.slug);
+      }
     } catch (e) {
       uiAlert(`Request changes failed: ${e}`);
     }
@@ -6108,6 +6279,29 @@ async function renderWfDiffView(body, root, item, ts) {
   count.className = "wf-diff-count";
   count.textContent = openCount > 0 ? `💬 ${openCount} unresolved` : "";
   head.appendChild(count);
+  // Comment navigation: open comments scattered across a long diff were
+  // effectively lost once written — these cycle through them (expanding
+  // collapsed files on the way).
+  if (openCount > 0) {
+    const openIds = anchored
+      .filter((a) => a.annotation.status === "open")
+      .map((a) => a.annotation.id);
+    let at = -1;
+    const nav = (dir) => {
+      at = (at + dir + openIds.length) % openIds.length;
+      wfRevealAnnotation(body, openIds[at]);
+    };
+    const mk = (glyph, dir, tip) => {
+      const b = document.createElement("button");
+      b.className = "icon-btn";
+      b.textContent = glyph;
+      b.title = tip;
+      b.onclick = () => nav(dir);
+      head.appendChild(b);
+    };
+    mk("↑", -1, "Previous open comment");
+    mk("↓", +1, "Next open comment");
+  }
   body.appendChild(head);
 
   // Phase lock (review A2): the agent owns annotations.json while it works;
@@ -6311,7 +6505,7 @@ function wfBuildThread(a, opts) {
       btn("ann-reply", "Reply") +
       btn("ann-edit", "Edit") +
       (ann.status === "open"
-        ? btn("ann-resolve", "Resolve ✓") + btn("ann-wontfix", "Wontfix")
+        ? btn("ann-resolve", "Resolve ✓") + btn("ann-wontfix", "Wontfix") + btn("ann-park", "Park")
         : btn("ann-reopen", "Reopen")) +
       btn("ann-delete", "Delete", true);
     t.appendChild(actions);
@@ -6349,6 +6543,49 @@ function wfDiffClick(container, ev, opts) {
     const a = (opts._anchored || []).find((x) => x.annotation.id === id);
     if (a) wfThreadAction(container, kind, a, act.closest(".wf-thread"), opts);
   }
+}
+
+/// Scroll a comment thread into view, expanding the lazy-collapsed file that
+/// holds it when needed, and flash it. Open comments in a long diff are
+/// otherwise effectively lost once written.
+function wfRevealAnnotation(container, annId) {
+  const find = () => container.querySelector(`.wf-thread[data-ann-id="${CSS.escape(annId)}"]`);
+  let el = find();
+  if (!el) {
+    // Big-diff files render collapsed and empty until first expand — the
+    // thread may simply not be in the DOM yet. Expand lazy bodies until it is.
+    for (const lazy of container.querySelectorAll(".wf-file-body[data-lazy]")) {
+      const toggle = lazy.closest(".wf-file")?.querySelector('[data-wf-act="toggle-file"]');
+      if (toggle) toggle.click();
+      el = find();
+      if (el) break;
+    }
+  }
+  if (!el) return false;
+  el.scrollIntoView({ block: "center" });
+  el.classList.remove("flash");
+  void el.offsetWidth; // restart the animation on repeat visits
+  el.classList.add("flash");
+  return true;
+}
+
+/// Jump from anywhere (the change-request composer, mainly) to a comment in
+/// the diff sub-view: switch the tab there, then reveal once the async render
+/// has produced the thread.
+function wfJumpToAnnotation(root, project, slug, annId) {
+  const ts = wfTabState.get(wfKey(project, slug));
+  if (ts) {
+    ts.subView = "diff";
+    ts.iteration = null;
+  }
+  buildWorkflowView(root, project, slug);
+  let tries = 0;
+  const poll = () => {
+    const body = root.querySelector(".wf-body");
+    if (body && wfRevealAnnotation(body, annId)) return;
+    if (++tries < 25) setTimeout(poll, 120);
+  };
+  setTimeout(poll, 120);
 }
 
 /// Rebuild the item tab after an annotation mutation, keeping the diff
@@ -6453,6 +6690,10 @@ async function wfThreadAction(container, kind, anchoredAnn, threadEl, opts) {
       return setStatus("addressed").catch((e) => uiAlert(`Update failed: ${e}`));
     case "ann-wontfix":
       return setStatus("wontfix").catch((e) => uiAlert(`Update failed: ${e}`));
+    // Parked = kept but not sent: the agent acts on `open` comments only, so
+    // a parked one waits without riding the next change round. Reopen unparks.
+    case "ann-park":
+      return setStatus("parked").catch((e) => uiAlert(`Update failed: ${e}`));
     case "ann-reopen":
       return setStatus("open").catch((e) => uiAlert(`Update failed: ${e}`));
     case "ann-delete": {

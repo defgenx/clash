@@ -76,6 +76,25 @@ the agent gets exactly what the human wrote, followed by the auto-generated
 A round must carry either a note or at least one open annotation; clash refuses
 to send one with neither, since it would give the agent nothing to act on.
 
+The composer is the round's whole launchpad, not just a text field:
+
+- **Findings from any review round** are insertable (a round picker over
+  `agent-review.md`'s `## Review <n>` sections) — round 2's findings stay
+  reachable after round 5 lands.
+- **Every queued comment is individually held back**: unchecking one *parks*
+  it (`annotations.json` status `parked` — kept, findable, reopenable, but no
+  longer `open`, so the agent contract "address every open annotation" skips
+  it without any skill change). Parking happens before the snapshot, so
+  `history/<NNN>/annotations.json` records the round exactly as sent. Each
+  row also jumps to the comment in the diff (the draft is kept) or deletes
+  it — open comments used to be swept along wholesale and were hard to find
+  again.
+- **"Record and launch the fix round now"** folds the second click into the
+  same screen, carrying the interaction mode (ask in session / interactive /
+  autonomous → the kickoff's `Interactive:` field) and an optional **executor
+  skill override** — the kickoff then says `Use the <skill> skill.` instead of
+  `clash-workflow`, for a custom skill that honors this same file contract.
+
 **Every Request-changes goes through the same snapshotting flow** — the plan
 path and the diff path alike freeze the current iteration into
 `history/{NNN}/` (`diff.patch`, `plan.md` when the item has one,
@@ -321,7 +340,9 @@ for context.
   flow, the third by the review launcher).
 - Write `annotations.json` **only** while status is `changes-requested` or
   `implementing` — during review phases the GUI owns the file (this phase
-  split is what makes concurrent writes safe).
+  split is what makes concurrent writes safe). Only `open` annotations are
+  work; `parked` ones are human-owned (kept back from the round) and must
+  never be touched, like `addressed`/`wontfix` ones.
 - Read-modify-write `meta.json`; keep unknown fields.
 - Never rewrite `review.md` history — it is append-only (clash appends the
   `## Iteration N` sections; the agent only reads it).

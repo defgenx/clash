@@ -579,12 +579,21 @@ whole point of the click is to open a PR from it.
 
 **Requesting changes** — the note you write is not a form field: it is appended
 verbatim to `review.md` and is the first thing the agent reads next round, so it
-is effectively that round's prompt. The composer is a markdown editor sized for
-that: *Insert template* scaffolds **What to change / Why / Out of scope**,
-*Preview* renders exactly what will land in `review.md`, the open diff comments
-being sent with the round are listed beside it so your note can complement rather
-than repeat them, ⌘↵ sends, and a dismissed composer keeps your draft. The same
-composer handles plan revisions.
+is effectively that round's prompt. The composer is the round's whole launchpad:
+*Insert template* scaffolds **What to change / Why / Out of scope**, *Insert
+review findings…* pastes **any** agent review round's findings (not just the
+latest), *Preview* renders exactly what will land in `review.md`, ⌘↵ sends, and
+a dismissed composer keeps your draft. The open diff comments queued for the
+round are listed as **interactive rows**: uncheck one to *park* it (kept and
+reopenable, but the agent won't see it this round — comments used to be swept
+along wholesale), jump to it in the diff, or delete it outright. And **After
+recording** decides what happens next: record only, or launch the fix round
+immediately — choosing how it runs (ask in session / interactive / autonomous)
+and even which executor skill drives it (default `clash-workflow`; a custom
+skill honoring the same file contract works too). The same composer handles
+plan revisions. In the diff itself, ↑/↓ buttons cycle through your open
+comments (expanding collapsed files on the way), so no comment is ever lost in
+a long diff — threads can also be *parked* right there.
 
 **Agent reviews** — you are not the only reviewer. Wherever the pipeline is
 parked on a decision (`plan-review`, `diff-review`, `pr-draft`, `pr-ready`) an

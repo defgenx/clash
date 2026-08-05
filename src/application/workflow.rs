@@ -551,30 +551,50 @@ pub fn pr_body_from_plan(plan: &str, iteration: u32, review_rounds: u32) -> Opti
 
 // ── Agent kickoff prompt ────────────────────────────────────────────────
 
+/// Everything that shapes an executor kickoff beyond the item directory.
+/// A struct because the launch surfaces keep growing options (the composer's
+/// "launch now" carries interaction mode and a skill override) and a
+/// five-positional-argument prompt builder is how fields get swapped.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ExecutorKickoff<'a> {
+    /// `plan` | `revise` | `implement` | `pr`.
+    pub phase: &'a str,
+    pub mode: WorkflowMode,
+    /// PR-creation skill from config; the agent must open PRs through it.
+    pub pr_skill: Option<&'a str>,
+    /// Executor skill override. `None`/blank means `clash-workflow`; a value
+    /// routes the round through a custom skill that honors the same file
+    /// contract (`docs/workflows.md`) — the power-user escape hatch.
+    pub skill: Option<&'a str>,
+    /// Launch-time interactivity choice; `None` means the skill's opening
+    /// question asks in-session.
+    pub interactive: Option<bool>,
+}
+
 /// Build the initial prompt for a workflow agent session. The skill owns the
 /// actual behavior; the prompt only routes it to the item directory, the
-/// requested phase (`plan` | `revise` | `implement` | `pr`) and the item's
-/// entry mode.
+/// requested phase and the item's entry mode.
 ///
 /// The mode is also in `meta.json`, but stating it up front is what makes a
 /// `review-only` run reliably skip the plan: the agent knows before it reads
 /// anything that there is no plan to write and no `plan-review` to hand back to.
-///
-/// `pr_skill` names the user's preferred PR-creation skill (from config); when
-/// present the agent must open PRs through it instead of a raw `gh pr create`,
-/// so org conventions (templates, ticket links) ride along.
-pub fn build_agent_prompt(
-    item_dir: &str,
-    phase: &str,
-    mode: WorkflowMode,
-    pr_skill: Option<&str>,
-) -> String {
+pub fn build_agent_prompt(item_dir: &str, kickoff: &ExecutorKickoff) -> String {
+    let skill = kickoff
+        .skill
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("clash-workflow");
     let mut prompt = format!(
-        "Use the clash-workflow skill. Workflow item directory: {}. Phase: {}. Mode: {}.",
-        item_dir, phase, mode
+        "Use the {} skill. Workflow item directory: {}. Phase: {}. Mode: {}.",
+        skill, item_dir, kickoff.phase, kickoff.mode
     );
-    if let Some(skill) = pr_skill.map(str::trim).filter(|s| !s.is_empty()) {
-        prompt.push_str(&format!(" PR skill: {}.", skill));
+    if let Some(s) = kickoff.pr_skill.map(str::trim).filter(|s| !s.is_empty()) {
+        prompt.push_str(&format!(" PR skill: {}.", s));
+    }
+    match kickoff.interactive {
+        Some(true) => prompt.push_str(" Interactive: yes."),
+        Some(false) => prompt.push_str(" Interactive: no."),
+        None => {}
     }
     prompt
 }
@@ -1215,13 +1235,19 @@ Tighten the API.\n\n\
         assert!(p.contains("Round: 1."));
     }
 
+    fn kickoff<'a>(phase: &'a str, mode: WorkflowMode) -> ExecutorKickoff<'a> {
+        ExecutorKickoff {
+            phase,
+            mode,
+            ..ExecutorKickoff::default()
+        }
+    }
+
     #[test]
     fn prompt_routes_dir_and_phase() {
         let p = build_agent_prompt(
             "/x/workflows/clash/auth",
-            "revise",
-            WorkflowMode::Full,
-            None,
+            &kickoff("revise", WorkflowMode::Full),
         );
         assert!(p.contains("clash-workflow skill"));
         assert!(p.contains("/x/workflows/clash/auth"));
@@ -1233,25 +1259,78 @@ Tighten the API.\n\n\
     fn prompt_carries_the_entry_mode() {
         // review-only must be visible before the agent reads any file — it is
         // what tells it there is no plan phase.
-        let p = build_agent_prompt("/x/w/p/item", "revise", WorkflowMode::ReviewOnly, None);
+        let p = build_agent_prompt("/x/w/p/item", &kickoff("revise", WorkflowMode::ReviewOnly));
         assert!(p.contains("Mode: review-only."));
-        let p = build_agent_prompt("/x/w/p/item", "implement", WorkflowMode::FromPlan, None);
+        let p = build_agent_prompt("/x/w/p/item", &kickoff("implement", WorkflowMode::FromPlan));
         assert!(p.contains("Mode: from-plan."));
     }
 
     #[test]
     fn prompt_names_the_pr_skill_only_when_configured() {
-        let p = build_agent_prompt("/x/i", "pr", WorkflowMode::Full, None);
+        let p = build_agent_prompt("/x/i", &kickoff("pr", WorkflowMode::Full));
         assert!(!p.contains("PR skill:"));
         // Blank config reads as "not configured".
-        let p = build_agent_prompt("/x/i", "pr", WorkflowMode::Full, Some("   "));
+        let p = build_agent_prompt(
+            "/x/i",
+            &ExecutorKickoff {
+                pr_skill: Some("   "),
+                ..kickoff("pr", WorkflowMode::Full)
+            },
+        );
         assert!(!p.contains("PR skill:"));
         let p = build_agent_prompt(
             "/x/i",
-            "pr",
-            WorkflowMode::Full,
-            Some("hivebrite-engineering:github-pr"),
+            &ExecutorKickoff {
+                pr_skill: Some("hivebrite-engineering:github-pr"),
+                ..kickoff("pr", WorkflowMode::Full)
+            },
         );
         assert!(p.ends_with("PR skill: hivebrite-engineering:github-pr."));
+    }
+
+    #[test]
+    fn prompt_honors_the_executor_skill_override() {
+        // The composer's escape hatch: route a round through a custom skill
+        // that honors the same file contract. Blank falls back to the default.
+        let p = build_agent_prompt(
+            "/x/i",
+            &ExecutorKickoff {
+                skill: Some("my-org-flow"),
+                ..kickoff("revise", WorkflowMode::Full)
+            },
+        );
+        assert!(p.starts_with("Use the my-org-flow skill."));
+        assert!(!p.contains("clash-workflow"));
+        let p = build_agent_prompt(
+            "/x/i",
+            &ExecutorKickoff {
+                skill: Some("  "),
+                ..kickoff("revise", WorkflowMode::Full)
+            },
+        );
+        assert!(p.starts_with("Use the clash-workflow skill."));
+    }
+
+    #[test]
+    fn prompt_carries_the_executor_interactivity_choice_or_omits_it() {
+        // Absent → the skill's opening question asks in-session.
+        let p = build_agent_prompt("/x/i", &kickoff("implement", WorkflowMode::Full));
+        assert!(!p.contains("Interactive:"));
+        let p = build_agent_prompt(
+            "/x/i",
+            &ExecutorKickoff {
+                interactive: Some(true),
+                ..kickoff("implement", WorkflowMode::Full)
+            },
+        );
+        assert!(p.ends_with("Interactive: yes."));
+        let p = build_agent_prompt(
+            "/x/i",
+            &ExecutorKickoff {
+                interactive: Some(false),
+                ..kickoff("implement", WorkflowMode::Full)
+            },
+        );
+        assert!(p.ends_with("Interactive: no."));
     }
 }

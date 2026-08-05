@@ -160,7 +160,8 @@ Read the **latest** `## Iteration` section of `review.md` first.
      `{"author": "agent", "body": "<one-line resolution or justification>", "createdAt": <epoch ms>}`
      to its `replies`. Keep all other fields intact.
    - Never delete an annotation and never touch ones already
-     addressed/wontfixed by earlier rounds.
+     addressed/wontfixed by earlier rounds — nor `parked` ones (comments the
+     human deliberately held back from this round).
 4. Commit the work (small, reviewable commits are fine). If this item
    already has a PR (`meta.pr.url` is set), push (see Git above) so the PR
    picks up the fixes.

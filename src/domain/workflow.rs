@@ -547,6 +547,11 @@ pub struct WorkflowItem {
 }
 
 /// Resolution state of a diff annotation.
+///
+/// `Parked` is "kept but not sent": the human wrote it, chose not to include
+/// it in a change round yet, and can reopen it later. The agent contract is
+/// untouched by parking — agents act on `open` annotations only, so a parked
+/// one is invisible to them without any skill change.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnnotationStatus {
@@ -554,6 +559,7 @@ pub enum AnnotationStatus {
     Open,
     Addressed,
     Wontfix,
+    Parked,
     #[serde(other)]
     Unknown,
 }
@@ -895,6 +901,13 @@ mod tests {
         assert_eq!(ann.status, AnnotationStatus::Wontfix);
         assert_eq!(ann.replies.len(), 1);
         assert!(ann.extra.contains_key("futureField"));
+        // Parked round-trips (kept-but-not-sent; agents act on `open` only).
+        let parked: Annotation = serde_json::from_str(r#"{"status": "parked"}"#).unwrap();
+        assert_eq!(parked.status, AnnotationStatus::Parked);
+        assert_eq!(
+            serde_json::to_string(&AnnotationStatus::Parked).unwrap(),
+            r#""parked""#
+        );
         // Unknown status value degrades, never fails.
         let odd: Annotation = serde_json::from_str(r#"{"status": "deferred"}"#).unwrap();
         assert_eq!(odd.status, AnnotationStatus::Unknown);
