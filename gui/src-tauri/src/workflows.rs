@@ -324,6 +324,29 @@ pub(crate) fn set_workflow_forge(
     Ok(state.config.get().workflows.forge)
 }
 
+/// Per-item session-naming toggle (the item Settings tab): bare job names
+/// (`implement`) vs the title-prefixed default (`Auth refactor · implement`).
+/// Applies to sessions launched from now on.
+#[tauri::command]
+pub(crate) fn set_workflow_bare_session_names(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    bare: bool,
+) -> Result<clash::domain::workflow::WorkflowMeta, String> {
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    meta.bare_session_names = bare;
+    state
+        .backend
+        .write_workflow_meta(&project, &slug, &meta)
+        .map_err(e2s)?;
+    seed_local(&state, &project, &slug, meta.status);
+    Ok(meta)
+}
+
 /// What the startup skill install changed — the frontend toasts a non-noop
 /// report so a clash upgrade that rewrote skills is visible, not silent.
 #[tauri::command]
@@ -968,6 +991,10 @@ struct ItemSessionSpawn<'a> {
     /// has no recovery path, while "recorded but never spawned" is exactly
     /// what the ⚠ relaunch/end-round affordances already handle.
     session_id: &'a str,
+    /// Session display name — says what the agent DOES, not just which item
+    /// it belongs to (`workflow::executor_session_name` /
+    /// `review_session_name`): `wf-auth · implement`, `wf-auth · explain`.
+    name: &'a str,
     meta: &'a clash::domain::workflow::WorkflowMeta,
     /// Directory the agent works in: the item's worktree, or its repo.
     cwd: &'a str,
@@ -986,13 +1013,14 @@ async fn spawn_item_session(
         project,
         slug,
         session_id,
+        name,
         meta,
         cwd,
         model,
         cols,
         rows,
     } = spawn;
-    let name = format!("wf-{}", slug);
+    let name = name.to_string();
     clash::infrastructure::hooks::registry::register(
         session_id,
         &name,
@@ -1143,6 +1171,7 @@ pub(crate) async fn start_workflow_agent(
             project: &project,
             slug: &slug,
             session_id: &session_id,
+            name: &clash::application::workflow::workflow_session_name(&meta, &slug, &phase),
             meta: &meta,
             cwd: &cwd,
             model: clash::application::workflow::model_for_phase(&phase),
@@ -1214,6 +1243,7 @@ pub(crate) async fn start_workflow_review_agent(
     depth: ReviewDepth,
     publish: ReviewPublish,
     interactive: Option<bool>,
+    target: Option<ReviewTarget>,
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
@@ -1235,7 +1265,15 @@ pub(crate) async fn start_workflow_review_agent(
     if publish.needs_pr() && meta.pr.as_ref().is_none_or(|p| p.url.is_empty()) {
         return Err("no-pr: this item has no pull request yet".to_string());
     }
-    let target = ReviewTarget::for_status(meta.status, meta.mode);
+    // Plan/diff stay DERIVED from the launch status (a plan review at
+    // diff-review has nothing to read); `structure` is the one explicitly
+    // requested target — the "Explain changes" button's round, which writes
+    // structure.md instead of findings. Any other explicit value is ignored
+    // rather than trusted.
+    let target = match target {
+        Some(ReviewTarget::Structure) => ReviewTarget::Structure,
+        _ => ReviewTarget::for_status(meta.status, meta.mode),
+    };
     if target == ReviewTarget::Plan && !has_plan_content(&state, &project, &slug) {
         return Err("This item has no plan to review yet".to_string());
     }
@@ -1284,6 +1322,11 @@ pub(crate) async fn start_workflow_review_agent(
             project: &project,
             slug: &slug,
             session_id: &session_id,
+            name: &clash::application::workflow::workflow_session_name(
+                &meta,
+                &slug,
+                &clash::application::workflow::review_job(&review),
+            ),
             meta: &meta,
             cwd: &cwd,
             // A reviewer is always a thinking phase, whatever it is reviewing.

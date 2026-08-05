@@ -629,6 +629,21 @@ the end. The executor phases open with the same question: interactive planning
 proposes approaches before writing `plan.md`, an interactive implement round
 confirms plan deviations and `wontfix` calls instead of deciding alone.
 
+**Understanding a change** has its own agent and its own tab: **◫ Explain
+changes** (wherever a diff is parked on a decision) launches the
+`clash-explain` skill, which reads the diff *and the surrounding code*, then
+writes the **Structure** tab — what the change does organized by functional
+part (behavior first, files second), **mermaid diagrams** of how the pieces
+fit (rendered right in the tab), the risks a reviewer should focus on, and a
+suggested reading order for the diff. It explains and never judges — reviews
+stay a separate job — and each run regenerates the document, so re-explain
+after a change round to keep it current. Every workflow session is also named
+by the item's title plus its job (`Auth refactor · implement`,
+`Auth refactor · plan review r2`, `· explain`), so the sessions list says what
+each agent is doing and for what — and each item's **⚙ Settings tab** (per-item
+configuration + the item's facts: mode, repo, branch, base, worktree) can
+switch that item to bare job names.
+
 **Applying a round's findings** is the *Request changes* step — a review never
 applies itself, and approving doesn't either (approval means "ship it as it
 stands"). Code findings you kept are already open diff comments, so the next
@@ -674,11 +689,12 @@ content when the diff drifts between iterations and never dropped (unanchored
 ones land in an orphan tray). The file contract for agents is documented in
 [`docs/workflows.md`](docs/workflows.md).
 
-**Skills**: the agent side is three skills — `clash-workflow` (the executor:
+**Skills**: the agent side is four skills — `clash-workflow` (the executor:
 plans, implements, addresses comments, opens PRs), `clash-plan-review` (the
-interactive plan reviewer) and `clash-code-review` (the code/diff reviewer) —
-all embedded in the clash binary and auto-installed (and kept up-to-date)
-under `~/.claude/skills/` at every startup, no setup needed. The separations
+interactive plan reviewer), `clash-code-review` (the code/diff reviewer) and
+`clash-explain` (the explainer — see the Structure tab below) — all embedded
+in the clash binary and auto-installed (and kept up-to-date) under
+`~/.claude/skills/` at every startup, no setup needed. The separations
 are deliberate, twice over: executor vs reviewer because reviewing and
 implementing are different jobs, and plan review vs code review because one
 skill doing both describes neither sharply (the old combined `clash-review`

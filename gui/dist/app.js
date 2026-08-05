@@ -2930,6 +2930,52 @@ function renderMarkdown(el, md) {
   }
 }
 
+/// Lazy-load the vendored mermaid bundle (2.7MB — parsed only when a document
+/// actually contains a diagram, never at boot). Resolves false when the
+/// vendor file is missing, in which case the fenced code stays visible — the
+/// readable fallback.
+let mermaidLoading = null;
+function ensureMermaid() {
+  if (typeof mermaid !== "undefined") return Promise.resolve(true);
+  if (!mermaidLoading) {
+    mermaidLoading = new Promise((resolve) => {
+      const s = document.createElement("script");
+      s.src = "vendor/mermaid.min.js";
+      s.onload = () => resolve(typeof mermaid !== "undefined");
+      s.onerror = () => resolve(false);
+      document.head.appendChild(s);
+    });
+  }
+  return mermaidLoading;
+}
+
+let wfMermaidSeq = 0;
+/// Render ```mermaid fences inside an element renderMarkdown just filled —
+/// structure.md carries architecture/flow diagrams, and any other doc may.
+/// Each failure leaves that fence as visible code instead of a blank hole.
+async function renderMermaidIn(el) {
+  const blocks = el.querySelectorAll("pre > code.language-mermaid");
+  if (!blocks.length) return;
+  if (!(await ensureMermaid())) return;
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: "strict",
+    theme: document.documentElement.classList.contains("theme-light") ? "default" : "dark",
+  });
+  for (const code of blocks) {
+    if (!el.isConnected) return; // the tab was rebuilt while we loaded
+    try {
+      const { svg } = await mermaid.render(`wf-mmd-${++wfMermaidSeq}`, code.textContent || "");
+      const holder = document.createElement("div");
+      holder.className = "wf-mermaid";
+      holder.innerHTML = svg;
+      code.closest("pre").replaceWith(holder);
+    } catch (e) {
+      dlog(`mermaid render failed: ${e}`);
+    }
+  }
+}
+
 function detailsStatusText(s) {
   return s.is_running ? s.status + " (running)" : s.status;
 }
@@ -4647,6 +4693,8 @@ async function buildWorkflowView(el, project, slug) {
   // with no tab to leave it by.
   if (ts.subView === "agentReview" && !(item.hasAgentReview || item.meta.reviewRound))
     ts.subView = "diff";
+  // And for Structure, which only exists once an explain round wrote it.
+  if (ts.subView === "structure" && !item.hasStructure) ts.subView = "diff";
 
   el.innerHTML = "";
   const info = wfStatusInfo(item.meta.status);
@@ -4741,6 +4789,8 @@ async function buildWorkflowView(el, project, slug) {
     ...(item.hasAgentReview || item.meta.reviewRound
       ? [["agentReview", `Agent reviews${item.meta.reviewRound ? ` (${item.meta.reviewRound})` : ""}`]]
       : []),
+    // The explain round's document — appears once ◫ Explain changes wrote it.
+    ...(item.hasStructure ? [["structure", "Structure"]] : []),
     ["diff", item.openAnnotations > 0 ? `Diff 💬${item.openAnnotations}` : "Diff"],
     // The timeline counts everything it feeds on: change rounds + review rounds.
     [
@@ -4750,6 +4800,8 @@ async function buildWorkflowView(el, project, slug) {
         return `Timeline${n ? ` (${n})` : ""}`;
       })(),
     ],
+    // Per-item configuration (session naming today; grows as items gain knobs).
+    ["settings", "⚙"],
   ];
   for (const [id, label] of subViews) {
     const b = document.createElement("button");
@@ -4832,7 +4884,7 @@ async function launchWfAgent(item, phase, root, branch = null, opts = {}) {
       rows: 40,
     });
     await refreshSessions();
-    await openSession(sid, `wf-${item.slug}`);
+    await openSession(sid, wfSessionName(item, phase));
     await refreshWorkflows();
     if (root) buildWorkflowView(root, item.project, item.slug);
   } catch (e) {
@@ -4878,6 +4930,17 @@ async function launchWfReviewRespond(item, root) {
   await spawnWfReview(item, root, "standard", "respond-pr-comments");
 }
 
+/// Mirror of the backend's `workflow_session_name`: the item title (shortened,
+/// `wf-<slug>` when empty) followed by the job — or the bare job when the
+/// item's Settings tab turned the prefix off. Used for the tab title in the
+/// instant before the registry name lands on the next session refresh.
+function wfSessionName(item, job) {
+  if (item.meta.bareSessionNames) return job;
+  const t = (item.meta.title || "").trim();
+  const prefix = t ? (t.length > 28 ? `${t.slice(0, 27)}…` : t) : `wf-${item.slug}`;
+  return `${prefix} · ${job}`;
+}
+
 /// Recovery for PR-identity errors (`no-pr:` / `pr-number-unknown:` from the
 /// backend): instead of a dead-end alert, ask for the missing piece — the PR
 /// URL — attach it, and retry the original action once. The user keeps
@@ -4908,10 +4971,11 @@ async function wfPrRecovery(item, err, retry) {
   return true;
 }
 
-/// Shared spawn for both review-launch surfaces (the composer and the
-/// "Answer PR comments" action), so a reviewer session is registered, named
-/// and refreshed identically wherever it starts.
-async function spawnWfReview(item, root, depth, publish, interactive = null) {
+/// Shared spawn for every review-shaped round (the composer, the "Answer PR
+/// comments" action, and the "Explain changes" structure round), so the
+/// session is registered, named and refreshed identically wherever it starts.
+/// `target` is only ever "structure" — plan/diff stay derived by the backend.
+async function spawnWfReview(item, root, depth, publish, interactive = null, target = null) {
   try {
     const sid = await invoke("start_workflow_review_agent", {
       project: item.project,
@@ -4919,11 +4983,18 @@ async function spawnWfReview(item, root, depth, publish, interactive = null) {
       depth,
       publish,
       interactive,
+      target,
       cols: 120,
       rows: 40,
     });
     await refreshSessions();
-    await openSession(sid, `wf-${item.slug}`);
+    const job =
+      target === "structure"
+        ? "explain"
+        : publish === "respond-pr-comments"
+          ? "answer PR comments"
+          : "review";
+    await openSession(sid, wfSessionName(item, job));
     await refreshWorkflows();
     if (root) buildWorkflowView(root, item.project, item.slug);
   } catch (e) {
@@ -4941,10 +5012,10 @@ async function spawnWfReview(item, root, depth, publish, interactive = null) {
       });
       if (how === "attach") {
         await wfPrRecovery(item, e, (fresh) =>
-          spawnWfReview(fresh, root, depth, publish, interactive)
+          spawnWfReview(fresh, root, depth, publish, interactive, target)
         );
       } else if (how === "local") {
-        await spawnWfReview(item, root, depth, "local", interactive);
+        await spawnWfReview(item, root, depth, "local", interactive, target);
       }
       return;
     }
@@ -5626,6 +5697,30 @@ function renderWfActions(bar, root, item) {
     );
   };
 
+  // The explainer round: an agent reads the diff + surrounding code and
+  // writes the Structure tab (what the change does, by functional part, with
+  // diagrams). Review-shaped (parks in `reviewing`, returns), but it judges
+  // nothing — a different job from the review button next to it. Needs a
+  // diff, so plan-review is excluded.
+  const explainButton = () => {
+    if (!wfCanReview(item) || item.meta.status === "plan-review") return;
+    add(
+      item.hasStructure ? "◫ Re-explain changes" : "◫ Explain changes",
+      "",
+      async () => {
+        if (
+          !(await uiConfirm(
+            "Spend tokens: an agent reads the diff and the surrounding code, then writes the Structure tab — what this change does, organized by functional part, with diagrams. The item is parked while it runs and comes back here.",
+            "Explain"
+          ))
+        )
+          return;
+        await spawnWfReview(item, root, "standard", "local", null, "structure");
+      },
+      "Generate the Structure tab: an in-depth explanation of what this change does (functional parts + mermaid diagrams). Spends tokens; regenerates on each run."
+    );
+  };
+
   // Available from every state holding a reviewable artifact, every time the
   // item lands back there — that is what makes rounds repeatable. The label
   // counts past rounds so it is obvious this is round N+1, not a one-shot.
@@ -5831,6 +5926,7 @@ function renderWfActions(bar, root, item) {
         "Open the change-request composer — your note + the open annotations become the next fix round, and this iteration's diff is frozen into history first"
       );
       reviewButton();
+      explainButton();
       answerCommentsButton();
       postRoundButton();
       spacer();
@@ -5913,6 +6009,7 @@ function renderWfActions(bar, root, item) {
         "Move this item back to the DIFF REVIEW stage — no agent, no tokens"
       );
       reviewButton();
+      explainButton();
       answerCommentsButton();
       postRoundButton();
       spacer();
@@ -5946,6 +6043,7 @@ function renderWfActions(bar, root, item) {
         "Open the change-request composer — your note + the open annotations become the next fix round (the agent pushes, so the PR picks up the fixes)"
       );
       reviewButton();
+      explainButton();
       answerCommentsButton();
       postRoundButton();
       spacer();
@@ -5968,13 +6066,20 @@ function renderWfActions(bar, root, item) {
 
 async function renderWfSubView(body, root, item, ts) {
   const { project, slug } = item;
-  if (ts.subView === "plan" || ts.subView === "review" || ts.subView === "agentReview") {
+  if (
+    ts.subView === "plan" ||
+    ts.subView === "review" ||
+    ts.subView === "agentReview" ||
+    ts.subView === "structure"
+  ) {
     const doc =
       ts.subView === "plan"
         ? "plan.md"
         : ts.subView === "review"
           ? "review.md"
-          : "agent-review.md";
+          : ts.subView === "structure"
+            ? "structure.md"
+            : "agent-review.md";
     body.innerHTML = "<p class='hint'>loading…</p>";
     let text = "";
     try {
@@ -5999,14 +6104,19 @@ async function renderWfSubView(body, root, item, ts) {
     body.appendChild(tools);
     const md = document.createElement("div");
     md.className = "wf-md";
-    if (text.trim()) renderMarkdown(md, text);
-    else
+    if (text.trim()) {
+      renderMarkdown(md, text);
+      // Structure documents carry mermaid diagrams; other docs may too.
+      renderMermaidIn(md);
+    } else
       md.innerHTML = `<p class="hint">${
         ts.subView === "plan"
           ? "no plan yet — Start planning launches an agent that writes it"
           : ts.subView === "review"
             ? "no review notes yet — they accumulate when you request changes"
-            : "no agent reviews yet — each round appends its findings here"
+            : ts.subView === "structure"
+              ? "no structure document yet — ◫ Explain changes writes it"
+              : "no agent reviews yet — each round appends its findings here"
       }</p>`;
 
     // Rounds accumulate top-down, so a long report opens on round 1 — the one
@@ -6279,6 +6389,74 @@ async function renderWfSubView(body, root, item, ts) {
       pre.appendChild(span);
     }
     body.appendChild(pre);
+    return;
+  }
+
+  // Per-item settings: the knobs that differ item by item (global ones live
+  // in the sidebar SETTINGS panel), plus the item's facts in one place.
+  if (ts.subView === "settings") {
+    body.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.className = "wf-settings";
+
+    const sessions = document.createElement("fieldset");
+    sessions.className = "wf-settings-group";
+    const lg = document.createElement("legend");
+    lg.textContent = "Sessions";
+    sessions.appendChild(lg);
+    const row = document.createElement("label");
+    row.className = "wf-settings-row";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !item.meta.bareSessionNames;
+    cb.onchange = async () => {
+      try {
+        await invoke("set_workflow_bare_session_names", {
+          project,
+          slug,
+          bare: !cb.checked,
+        });
+        await refreshWorkflows();
+        buildWorkflowView(root, project, slug);
+      } catch (e) {
+        cb.checked = !cb.checked;
+        uiAlert(`Save failed: ${e}`);
+      }
+    };
+    row.appendChild(cb);
+    row.appendChild(document.createTextNode(" Prefix agent sessions with the item title"));
+    sessions.appendChild(row);
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = `On: “${wfSessionName({ ...item, meta: { ...item.meta, bareSessionNames: false } }, "implement")}” · Off: “implement”. Applies to sessions launched from now on.`;
+    sessions.appendChild(hint);
+    wrap.appendChild(sessions);
+
+    const facts = document.createElement("fieldset");
+    facts.className = "wf-settings-group";
+    const flg = document.createElement("legend");
+    flg.textContent = "Item";
+    facts.appendChild(flg);
+    const dl = document.createElement("dl");
+    dl.className = "wf-settings-facts";
+    const fact = (label, value) => {
+      if (!value) return;
+      const dt = document.createElement("dt");
+      dt.textContent = label;
+      const dd = document.createElement("dd");
+      dd.textContent = value;
+      dl.append(dt, dd);
+    };
+    fact("Mode", item.meta.mode || "full");
+    fact("Repository", item.meta.repoPath);
+    fact("Branch", item.meta.branch);
+    fact("Diff base", item.meta.base || "(origin default branch)");
+    fact("Worktree", item.meta.worktree);
+    fact("Created", item.meta.createdAt ? new Date(item.meta.createdAt).toLocaleString() : "");
+    facts.appendChild(dl);
+    wrap.appendChild(facts);
+
+    body.appendChild(wrap);
     return;
   }
 

@@ -49,6 +49,10 @@ pub const SKILLS: &[EmbeddedSkill] = &[
         name: "clash-code-review",
         content: include_str!("../../skills/clash-code-review/SKILL.md"),
     },
+    EmbeddedSkill {
+        name: "clash-explain",
+        content: include_str!("../../skills/clash-explain/SKILL.md"),
+    },
 ];
 
 /// Skills clash used to ship and no longer does. Removed from the install dir

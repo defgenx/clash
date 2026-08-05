@@ -1352,6 +1352,20 @@ button.busy:disabled { opacity: 1; }
 .wf-ann-state.addressed { color: var(--green); border-color: var(--green); }
 .wf-ann-state.wontfix { color: var(--fg-dim); }
 .wf-ann-state.parked { color: var(--purple, #b58cd8); border-color: var(--purple, #b58cd8); }
+/* Per-item Settings tab: small grouped form + fact list. */
+.wf-settings { padding: 14px 18px; max-width: 640px; display: flex; flex-direction: column; gap: 12px; }
+.wf-settings-group { border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px 10px; }
+.wf-settings-group legend { font-size: 11px; color: var(--fg-dim); padding: 0 4px; }
+.wf-settings-row { display: block; font-size: 12px; padding: 2px 0; cursor: pointer; }
+.wf-settings-facts { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 12px; margin: 4px 0 0; }
+.wf-settings-facts dt { color: var(--fg-dim); }
+.wf-settings-facts dd { margin: 0; overflow-wrap: anywhere; }
+
+/* Mermaid diagrams (structure.md and any other doc): scroll wide graphs
+   inside their own box rather than the whole tab. */
+.wf-mermaid { overflow-x: auto; margin: 12px 0; }
+.wf-mermaid svg { max-width: 100%; height: auto; }
+
 /* Comment navigation / composer jumps flash the revealed thread. */
 .wf-thread.flash { animation: wf-thread-flash 1.4s ease-out; }
 @keyframes wf-thread-flash {

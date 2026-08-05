@@ -218,9 +218,11 @@ impl std::fmt::Display for WorkflowMode {
     }
 }
 
-/// What an agent review round looks at. Derived from the item's status at
-/// launch (see [`ReviewTarget::for_status`]) rather than chosen by the human,
-/// because a plan review at `diff-review` (or vice versa) has nothing to read.
+/// What an agent review round looks at. Plan/diff are derived from the item's
+/// status at launch (see [`ReviewTarget::for_status`]) rather than chosen by
+/// the human, because a plan review at `diff-review` (or vice versa) has
+/// nothing to read; `structure` is launched by its own explicit action (the
+/// "Explain changes" button) and never derived.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReviewTarget {
@@ -229,6 +231,9 @@ pub enum ReviewTarget {
     Plan,
     /// The working diff — is the implementation correct?
     Diff,
+    /// The working diff again, but to *explain* rather than judge: the round
+    /// writes `structure.md` (the Structure tab) instead of findings.
+    Structure,
     #[serde(other)]
     Unknown,
 }
@@ -238,6 +243,7 @@ impl ReviewTarget {
         match self {
             Self::Plan => "plan",
             Self::Diff => "diff",
+            Self::Structure => "structure",
             Self::Unknown => "unknown",
         }
     }
@@ -438,6 +444,14 @@ pub struct WorkflowMeta {
     /// just keeps climbing and numbers the `agent-review.md` sections.
     #[serde(default)]
     pub review_round: u32,
+    /// When true, this item's agent sessions carry the bare job name
+    /// (`implement`) instead of the title-prefixed default
+    /// (`Auth refactor · implement`). Stored as the negative so both serde's
+    /// missing-field default and `WorkflowMeta::default()` agree on
+    /// "prefixed" — a `default = "true_fn"` field silently reads `false` on
+    /// every struct-literal construction. Toggled in the item Settings tab.
+    #[serde(default)]
+    pub bare_session_names: bool,
     /// Review iteration, starting at 1. Bumped only by clash on
     /// request-changes (never by the agent).
     #[serde(default)]
@@ -532,6 +546,9 @@ pub struct WorkflowItem {
     pub has_review: bool,
     /// True once `agent-review.md` holds at least one review round.
     pub has_agent_review: bool,
+    /// True once `structure.md` (the explain round's document) has content —
+    /// gates the GUI's Structure tab.
+    pub has_structure: bool,
     /// Count of annotations with status `open` (0 for terminal items, whose
     /// annotations are not read during listing).
     pub open_annotations: usize,
@@ -881,6 +898,12 @@ mod tests {
         // Items written before modes existed read as the full pipeline.
         assert_eq!(meta.mode, WorkflowMode::Full);
         assert_eq!(meta.base, "");
+        // Items written before the toggle existed keep prefixed sessions
+        // (and so does a bare struct-literal construction).
+        assert!(!meta.bare_session_names);
+        assert!(!WorkflowMeta::default().bare_session_names);
+        let off: WorkflowMeta = serde_json::from_str(r#"{"bareSessionNames": true}"#).unwrap();
+        assert!(off.bare_session_names);
     }
 
     #[test]
@@ -1034,6 +1057,13 @@ mod tests {
             serde_json::to_string(&WorkflowStatus::Reviewing).unwrap(),
             r#""reviewing""#
         );
+        // The explicit explain-round target round-trips.
+        assert_eq!(
+            serde_json::to_string(&ReviewTarget::Structure).unwrap(),
+            r#""structure""#
+        );
+        let s: ReviewTarget = serde_json::from_str(r#""structure""#).unwrap();
+        assert_eq!(s, ReviewTarget::Structure);
         // Unknown on-disk values degrade instead of failing the whole meta read.
         let d: ReviewDepth = serde_json::from_str(r#""paranoid""#).unwrap();
         assert_eq!(d, ReviewDepth::Unknown);

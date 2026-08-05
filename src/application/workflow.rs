@@ -549,6 +549,51 @@ pub fn pr_body_from_plan(plan: &str, iteration: u32, review_rounds: u32) -> Opti
     Some(body)
 }
 
+// ── Session naming ──────────────────────────────────────────────────────
+
+/// The job half of a review-shaped round's session name: what the agent is
+/// *doing* (plan review / code review / explain / answer PR comments), with
+/// the round number where rounds accumulate.
+pub fn review_job(review: &crate::domain::workflow::WorkflowReview) -> String {
+    use crate::domain::workflow::{ReviewPublish, ReviewTarget};
+    if review.publish == ReviewPublish::RespondPrComments {
+        return "answer PR comments".to_string();
+    }
+    match review.target {
+        ReviewTarget::Structure => "explain".to_string(),
+        ReviewTarget::Plan => format!("plan review r{}", review.round.max(1)),
+        ReviewTarget::Diff | ReviewTarget::Unknown => {
+            format!("code review r{}", review.round.max(1))
+        }
+    }
+}
+
+/// Compose an item session's display name: the item title (shortened; falls
+/// back to `wf-<slug>` when empty) followed by the job — `Auth refactor ·
+/// implement` — so the sessions sidebar says what each agent is doing and for
+/// which item. An item with `bareSessionNames: true` (the item Settings tab's
+/// toggle) gets the bare job instead.
+pub fn workflow_session_name(
+    meta: &crate::domain::workflow::WorkflowMeta,
+    slug: &str,
+    job: &str,
+) -> String {
+    if meta.bare_session_names {
+        return job.to_string();
+    }
+    let title = meta.title.trim();
+    let prefix = if title.is_empty() {
+        format!("wf-{}", slug)
+    } else if title.chars().count() > 28 {
+        let mut s: String = title.chars().take(27).collect();
+        s.push('…');
+        s
+    } else {
+        title.to_string()
+    };
+    format!("{} · {}", prefix, job)
+}
+
 // ── Agent kickoff prompt ────────────────────────────────────────────────
 
 /// Everything that shapes an executor kickoff beyond the item directory.
@@ -611,6 +656,8 @@ pub fn review_engine_for(target: crate::domain::workflow::ReviewTarget) -> &'sta
     use crate::domain::workflow::ReviewTarget;
     match target {
         ReviewTarget::Plan => "clash-plan-review",
+        // The explainer: writes structure.md instead of findings.
+        ReviewTarget::Structure => "clash-explain",
         // Unknown degrades to the code reviewer: every mode has a diff to
         // read, while a plan may not exist at all.
         ReviewTarget::Diff | ReviewTarget::Unknown => "clash-code-review",
@@ -684,6 +731,8 @@ mod tests {
         // correctness property, not packaging.
         assert_eq!(review_engine_for(ReviewTarget::Plan), "clash-plan-review");
         assert_eq!(review_engine_for(ReviewTarget::Diff), "clash-code-review");
+        // The explainer writes structure.md instead of findings.
+        assert_eq!(review_engine_for(ReviewTarget::Structure), "clash-explain");
         // Unknown degrades to the code reviewer: every mode has a diff.
         assert_eq!(
             review_engine_for(ReviewTarget::Unknown),
@@ -716,6 +765,7 @@ mod tests {
         for t in [
             ReviewTarget::Plan,
             ReviewTarget::Diff,
+            ReviewTarget::Structure,
             ReviewTarget::Unknown,
         ] {
             let e = review_engine_for(t);
@@ -1233,6 +1283,76 @@ Tighten the API.\n\n\
             WorkflowMode::Full,
         );
         assert!(p.contains("Round: 1."));
+    }
+
+    #[test]
+    fn session_names_say_what_the_agent_does() {
+        use crate::domain::workflow::{
+            ReviewDepth, ReviewPublish, ReviewTarget, WorkflowMeta, WorkflowReview,
+        };
+        let mk = |target, publish, round| WorkflowReview {
+            target,
+            publish,
+            round,
+            depth: ReviewDepth::Deep,
+            ..Default::default()
+        };
+        assert_eq!(
+            review_job(&mk(ReviewTarget::Plan, ReviewPublish::Local, 2)),
+            "plan review r2"
+        );
+        assert_eq!(
+            review_job(&mk(ReviewTarget::Diff, ReviewPublish::PrComments, 4)),
+            "code review r4"
+        );
+        // The job overrides the target for a respond round, and explain rounds
+        // name the job, not a round number (the document is regenerated).
+        assert_eq!(
+            review_job(&mk(ReviewTarget::Diff, ReviewPublish::RespondPrComments, 3)),
+            "answer PR comments"
+        );
+        assert_eq!(
+            review_job(&mk(ReviewTarget::Structure, ReviewPublish::Local, 5)),
+            "explain"
+        );
+        // A default/legacy round never says "r0".
+        assert_eq!(
+            review_job(&mk(ReviewTarget::Diff, ReviewPublish::Local, 0)),
+            "code review r1"
+        );
+
+        // The prefix is the human title, shortened; wf-<slug> when untitled;
+        // nothing at all when the item opted out in its Settings tab.
+        let meta = WorkflowMeta {
+            title: "Auth refactor".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            workflow_session_name(&meta, "auth-refactor", "implement"),
+            "Auth refactor · implement"
+        );
+        let untitled = WorkflowMeta::default();
+        assert_eq!(
+            workflow_session_name(&untitled, "auth-refactor", "plan"),
+            "wf-auth-refactor · plan"
+        );
+        let long = WorkflowMeta {
+            title: "A very long workflow item title that keeps going".into(),
+            ..Default::default()
+        };
+        let name = workflow_session_name(&long, "x", "explain");
+        assert!(name.ends_with(" · explain"));
+        assert!(name.starts_with("A very long workflow item"));
+        assert!(name.contains('…'));
+        let bare = WorkflowMeta {
+            title: "Auth refactor".into(),
+            bare_session_names: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            workflow_session_name(&bare, "auth-refactor", "implement"),
+            "implement"
+        );
     }
 
     fn kickoff<'a>(phase: &'a str, mode: WorkflowMode) -> ExecutorKickoff<'a> {

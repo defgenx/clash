@@ -19,6 +19,7 @@ workflows are a structured store.
 ├── plan.md            # the plan (freely editable markdown)
 ├── review.md          # append-only iteration audit trail (clash writes, agent reads)
 ├── agent-review.md    # append-only agent review rounds (agent writes, clash renders)
+├── structure.md       # the explain round's document (clash-explain overwrites, Structure tab renders)
 ├── annotations.json   # line-level diff comments
 └── history/<NNN>/     # per-iteration snapshots (diff.patch + plan.md + annotations.json)
 ```
@@ -30,7 +31,10 @@ One file would make ownership ambiguous exactly where concurrent writes happen.
 `(project, slug)` — the directory path — is the identity; `meta.json` never
 overrides it. All JSON is lenient: unknown fields must be preserved on
 read-modify-write (clash uses `#[serde(flatten)]` extras; the agent must
-merge, never rewrite from scratch).
+merge, never rewrite from scratch). `meta.bareSessionNames` is clash-owned
+(the item ⚙ Settings tab): it switches that item's agent sessions from the
+title-prefixed default (`Auth refactor · implement`) to bare job names —
+agents never read or write it.
 
 ## Statuses
 
@@ -164,7 +168,7 @@ pr-draft / pr-ready likewise
 
 | field | values | meaning |
 |---|---|---|
-| `target` | `plan` \| `diff` | derived from the launch status, never chosen |
+| `target` | `plan` \| `diff` \| `structure` | plan/diff derived from the launch status, never chosen; `structure` only via the explicit **Explain changes** action |
 | `depth` | `standard` \| `deep` | `deep` reads the surrounding implementation and checks the artifact against it |
 | `publish` | `local` \| `pr-comments` \| `respond-pr-comments` | what the round does beyond the item |
 | `interactive` | absent \| `true` \| `false` | absent = the skill asks in-session; the composer's launch-time answer otherwise |
@@ -233,6 +237,7 @@ describable on its own.
 |--------|--------|
 | `plan` | `clash-plan-review` (embedded skill) |
 | `diff` | `clash-code-review` (embedded skill) |
+| `structure` | `clash-explain` (embedded skill — explains, never judges) |
 
 Every engine is a skill clash itself installs, so a review round needs no
 third-party plugin present. A unit test asserts any skill named by
@@ -259,6 +264,23 @@ Depth does not select the engine: the mapping is the pure
 `Depth:` field tunes how hard the diff is read inside `clash-code-review`; a
 plan has no hunks to read harder, so the GUI does not ask for depth on a plan
 round — a choice with one real answer is not a choice.
+
+### Explain rounds (clash-explain skill)
+
+An **explain round** is review-shaped (parks in `reviewing`, restores
+`Return to:`) but judges nothing: it reads the diff and enough surrounding
+code, then writes **`structure.md`** — what the change does, organized by
+functional part (behavior first, files second), with mermaid diagrams of how
+the pieces fit, risks/review-focus observations, and a suggested reading
+order. The GUI renders it as the **Structure** tab (mermaid fences are drawn
+as real diagrams) and offers the round as the **◫ Explain changes** action
+wherever a diff is parked on a decision (`diff-review`, `pr-draft`,
+`pr-ready`). `structure.md` is a living document — each round overwrites it —
+while the round still appends a `## Review <n> — structure · …` entry to
+`agent-review.md` (verdict = a one-line summary, `### Published` = "wrote
+structure.md"), so hand-back toasts, the outcome strip and the Timeline stay
+truthful. Rounds are unbounded like every side-trip: regenerate after each
+change round.
 
 A code review is available at `diff-review`, `pr-draft` **and** `pr-ready`
 (`WF_REVIEWABLE` / `can_request_review`), so an item that already has a PR can

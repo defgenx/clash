@@ -34,6 +34,10 @@ pub const REVIEW_FILE: &str = "review.md";
 /// append-only record of *human* decisions) so ownership of each file stays
 /// unambiguous: the agent appends here, never there.
 pub const AGENT_REVIEW_FILE: &str = "agent-review.md";
+/// The explain round's document — what the change does, by functional part,
+/// with diagrams. Written (overwritten — a living document, not a log) by the
+/// `clash-explain` skill, rendered by the GUI's Structure tab.
+pub const STRUCTURE_FILE: &str = "structure.md";
 pub const ANNOTATIONS_FILE: &str = "annotations.json";
 pub const HISTORY_DIR: &str = "history";
 
@@ -142,6 +146,7 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         has_plan: has_content(&dir.join(PLAN_FILE)),
         has_review: has_content(&dir.join(REVIEW_FILE)),
         has_agent_review,
+        has_structure: has_content(&dir.join(STRUCTURE_FILE)),
         open_annotations,
         history_iterations,
         agent_alive: true, // cross-checked against live sessions by the GUI layer
@@ -264,7 +269,7 @@ pub fn write_meta(root: &Path, project: &str, slug: &str, meta: &WorkflowMeta) -
 
 fn doc_path(dir: &Path, doc: &str) -> Result<PathBuf> {
     match doc {
-        PLAN_FILE | REVIEW_FILE | AGENT_REVIEW_FILE => Ok(dir.join(doc)),
+        PLAN_FILE | REVIEW_FILE | AGENT_REVIEW_FILE | STRUCTURE_FILE => Ok(dir.join(doc)),
         _ => Err(parse_err(format!("Not a workflow document: '{}'", doc))),
     }
 }
@@ -606,6 +611,25 @@ mod tests {
         // The two review files stay independent — writing the agent's must never
         // be mistaken for the human decision trail.
         assert!(!item.has_review);
+    }
+
+    #[test]
+    fn structure_doc_is_readable_writable_and_flagged() {
+        let (_g, root) = root();
+        create_item(&root, &req("p", "item", "")).unwrap();
+        // Never seeded — a missing file reads as empty so the explain round's
+        // first write needs no setup step.
+        assert_eq!(read_doc(&root, "p", "item", STRUCTURE_FILE).unwrap(), "");
+        assert!(!load_items(&root).unwrap()[0].has_structure);
+        write_doc(
+            &root,
+            "p",
+            "item",
+            STRUCTURE_FILE,
+            "# What this change does\n",
+        )
+        .unwrap();
+        assert!(load_items(&root).unwrap()[0].has_structure);
     }
 
     #[test]
