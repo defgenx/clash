@@ -452,6 +452,17 @@ pub struct WorkflowMeta {
     /// every struct-literal construction. Toggled in the item Settings tab.
     #[serde(default)]
     pub bare_session_names: bool,
+    /// Per-item PR-creation skill override (item Settings tab). Empty
+    /// inherits the global `workflows.pr_skill` setting; `none` disables the
+    /// skill for this item.
+    #[serde(default)]
+    pub pr_skill: String,
+    /// Per-item default for how agent rounds run (item Settings tab):
+    /// `""`/`ask` (the skill asks in-session), `interactive`, or
+    /// `autonomous`. Pre-fills the review composer and applies to executor
+    /// launches that offer no interaction choice of their own.
+    #[serde(default)]
+    pub interaction_default: String,
     /// Review iteration, starting at 1. Bumped only by clash on
     /// request-changes (never by the agent).
     #[serde(default)]

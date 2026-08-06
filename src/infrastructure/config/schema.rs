@@ -297,10 +297,10 @@ pub const PROPS: &[Prop] = &[
     Prop::new(
         "workflows.pr_skill",
         Kind::Str,
-        Val::Str(""),
-        "Skill the workflow PR phase opens pull requests with (e.g. \
-         `hivebrite-engineering:github-pr`). Empty means the agent follows the repo's own \
-         PR conventions with `gh`.",
+        Val::Str("hivebrite-engineering:github-pr"),
+        "Skill the workflow PR phase opens pull requests with. `none` disables it (the agent \
+         follows the repo's own PR conventions with `gh`); the skill itself falls back to \
+         conventions when it isn't installed in the session.",
     ),
     Prop::new(
         "workflows.forge",

@@ -594,6 +594,35 @@ pub fn workflow_session_name(
     format!("{} · {}", prefix, job)
 }
 
+// ── PR-skill resolution ─────────────────────────────────────────────────
+
+/// The PR skill a launch actually carries: the item's override when set
+/// (`none` = explicitly disabled for this item), else the global setting.
+pub fn effective_pr_skill(item_value: &str, global: Option<&str>) -> Option<String> {
+    let item = item_value.trim();
+    if item.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    if !item.is_empty() {
+        return Some(item.to_string());
+    }
+    global
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Map an item's `interactionDefault` setting to the kickoff tri-state:
+/// `interactive`/`autonomous` pre-answer the skill's opening question,
+/// anything else leaves it to be asked in-session.
+pub fn interaction_param(mode: &str) -> Option<bool> {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "interactive" => Some(true),
+        "autonomous" => Some(false),
+        _ => None,
+    }
+}
+
 // ── Agent kickoff prompt ────────────────────────────────────────────────
 
 /// Everything that shapes an executor kickoff beyond the item directory.
@@ -1283,6 +1312,27 @@ Tighten the API.\n\n\
             WorkflowMode::Full,
         );
         assert!(p.contains("Round: 1."));
+    }
+
+    #[test]
+    fn pr_skill_resolution_item_over_global_with_none_opt_out() {
+        // Item override wins; `none` disables even against a global default;
+        // empty inherits; a blank global reads as disabled.
+        assert_eq!(
+            effective_pr_skill("my-org:pr", Some("hivebrite-engineering:github-pr")),
+            Some("my-org:pr".to_string())
+        );
+        assert_eq!(
+            effective_pr_skill("none", Some("hivebrite-engineering:github-pr")),
+            None
+        );
+        assert_eq!(effective_pr_skill("NONE", Some("x")), None);
+        assert_eq!(
+            effective_pr_skill("", Some("hivebrite-engineering:github-pr")),
+            Some("hivebrite-engineering:github-pr".to_string())
+        );
+        assert_eq!(effective_pr_skill("", None), None);
+        assert_eq!(effective_pr_skill("  ", Some("  ")), None);
     }
 
     #[test]

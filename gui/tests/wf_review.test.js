@@ -71,6 +71,19 @@ test("every round offers the interaction choice, defaulting to ask-in-session", 
   }
 });
 
+test("the item's interaction default pre-selects, junk falls back to ask", () => {
+  assert.equal(
+    reviewRoundModel({ interactionDefault: "autonomous" }).interaction.default,
+    "autonomous"
+  );
+  assert.equal(
+    reviewRoundModel({ interactionDefault: "interactive" }).interaction.default,
+    "interactive"
+  );
+  assert.equal(reviewRoundModel({ interactionDefault: "ask" }).interaction.default, "ask");
+  assert.equal(reviewRoundModel({ interactionDefault: "banana" }).interaction.default, "ask");
+});
+
 test("the interaction choice maps to the backend tri-state", () => {
   // null = "the skill asks in-session" — the kickoff omits the field.
   assert.equal(interactiveParam("ask"), null);

@@ -68,9 +68,17 @@ html, body, #app {
 
 /* Thin themed scrollbars (WebKit) — one design everywhere, matching the
    sidebar's unobtrusive look. The tab strip gets an extra-thin bar. */
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+/* Always-visible scrollbars: the faint track tints the gutter so a
+   scrollable area reads as scrollable before any scroll happens, and the
+   thumb carries enough contrast to be seen even when it is tiny. */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: color-mix(in srgb, var(--fg-dim) 8%, transparent); }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg-dim) 55%, transparent);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
 ::-webkit-scrollbar-thumb:hover { background: var(--fg-dim); }
 ::-webkit-scrollbar-corner { background: transparent; }
 #tabs::-webkit-scrollbar { height: 3px; }
@@ -1219,6 +1227,20 @@ html, body, #app {
 }
 .wf-actions:empty { display: none; }
 .wf-actions .spacer { flex: 1; }
+/* Three labeled zones: step actions | pipeline decisions | item lifecycle.
+   The captions are what make "which button moves this forward?" answerable
+   at a glance; the Item zone hugs the right edge. */
+.wf-actions-group { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wf-actions-item { margin-left: auto; }
+.wf-actions-caption {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  padding-left: 2px;
+}
+.wf-actions-btns { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.wf-actions-group + .wf-actions-group { border-left: 1px solid var(--border); padding-left: 10px; }
 .wf-actions button {
   background: var(--bg-hover);
   border: 1px solid var(--border);
@@ -1352,6 +1374,35 @@ button.busy:disabled { opacity: 1; }
 .wf-ann-state.addressed { color: var(--green); border-color: var(--green); }
 .wf-ann-state.wontfix { color: var(--fg-dim); }
 .wf-ann-state.parked { color: var(--purple, #b58cd8); border-color: var(--purple, #b58cd8); }
+/* The ⚙ Settings tab is meta, not content — it hugs the right edge. */
+.wf-subtab-end { margin-left: auto; }
+
+/* Structure documents read as an exposé, not a dump: generous headings,
+   sectioned h2s, calmer body rhythm. */
+.wf-md.wf-structure { max-width: 900px; padding-bottom: 48px; }
+.wf-md.wf-structure h1 {
+  font-size: 22px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  margin: 18px 0 14px;
+}
+.wf-md.wf-structure h2 {
+  font-size: 16px;
+  margin: 28px 0 10px;
+  padding: 6px 0 6px 10px;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--bg-hover) 45%, transparent);
+  border-radius: 0 5px 5px 0;
+}
+.wf-md.wf-structure h3 { font-size: 13.5px; margin: 18px 0 6px; color: var(--fg); }
+.wf-md.wf-structure li { margin: 3px 0; }
+.wf-md.wf-structure .wf-mermaid {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--bg-hover) 35%, transparent);
+}
+
 /* Per-item Settings tab: small grouped form + fact list. */
 .wf-settings { padding: 14px 18px; max-width: 640px; display: flex; flex-direction: column; gap: 12px; }
 .wf-settings-group { border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px 10px; }
@@ -1360,6 +1411,11 @@ button.busy:disabled { opacity: 1; }
 .wf-settings-facts { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 12px; margin: 4px 0 0; }
 .wf-settings-facts dt { color: var(--fg-dim); }
 .wf-settings-facts dd { margin: 0; overflow-wrap: anywhere; }
+.wf-settings-row select, .wf-settings-row input[type="text"] {
+  margin-left: 6px;
+  min-width: 240px;
+  font-size: 12px;
+}
 
 /* Mermaid diagrams (structure.md and any other doc): scroll wide graphs
    inside their own box rather than the whole tab. */
@@ -1924,7 +1980,6 @@ button.busy:disabled { opacity: 1; }
   word-break: normal;
   font-family: inherit;
 }
-.wf-compose-tools { display: flex; gap: 6px; margin-bottom: 8px; }
 .dialog-box .wf-compose-input {
   min-height: 220px;
   resize: vertical;
@@ -1944,6 +1999,31 @@ button.busy:disabled { opacity: 1; }
   font-size: 12px;
   color: var(--fg-dim, #8a8a8a);
   margin-bottom: 4px !important;
+}
+/* Section captions give the composer the same scannable zones as the action
+   bar; the Note caption anchors the toolbar row, buttons pushed right. */
+.wf-compose-caption {
+  display: block;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  margin: 2px 0 4px;
+}
+.wf-compose-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.wf-compose-tools .wf-compose-caption { margin: 0 auto 0 0; }
+.wf-compose-anno { border-radius: 4px; padding: 3px 4px; }
+.wf-compose-anno:hover { background: var(--bg-hover); }
+.wf-compose-next { margin-top: 2px; }
+.wf-compose-next legend {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 /* The comments already queued for this round, so the note can complement them
    rather than repeat them — a bare count could never show that. */

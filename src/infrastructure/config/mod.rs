@@ -296,13 +296,15 @@ impl Config {
     }
 
     /// The configured PR-creation skill for workflow agents, or `None` when
-    /// unset — the kickoff prompt omits the field and the agent follows the
-    /// repo's own conventions. GUI-only in v1 (the TUI launches no workflow
+    /// disabled — the kickoff prompt omits the field and the agent follows the
+    /// repo's own conventions. The default is a real skill, so `none` is the
+    /// explicit opt-out spelling (an empty value also reads as disabled for
+    /// hand-edited files). GUI-only in v1 (the TUI launches no workflow
     /// agents), so the private-`mod` bin build sees it as dead.
     #[allow(dead_code)]
     pub fn workflow_pr_skill(&self) -> Option<String> {
         let s = self.workflows.pr_skill.trim();
-        (!s.is_empty()).then(|| s.to_string())
+        (!s.is_empty() && !s.eq_ignore_ascii_case("none")).then(|| s.to_string())
     }
 
     /// Clash's own data directory for all RW state: `~/.claude/clash/`.

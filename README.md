@@ -640,9 +640,17 @@ stay a separate job — and each run regenerates the document, so re-explain
 after a change round to keep it current. Every workflow session is also named
 by the item's title plus its job (`Auth refactor · implement`,
 `Auth refactor · plan review r2`, `· explain`), so the sessions list says what
-each agent is doing and for what — and each item's **⚙ Settings tab** (per-item
-configuration + the item's facts: mode, repo, branch, base, worktree) can
-switch that item to bare job names.
+each agent is doing and for what — and each item's **⚙ Settings tab** (right edge of
+the tab bar) holds the per-item configuration — session-name prefix on/off,
+a per-item **PR skill** override (`none` disables), the default **interaction
+mode** for that item's agent rounds (ask at start / interactive / autonomous,
+pre-selected in the review composer and applied to one-click launches) — plus
+the item's facts (mode, repo, branch, base, worktree). The action bar below
+every item is organized into three labeled zones — **This step** (actions on
+the current artifact: reviews, explain, open the PR or the session),
+**Continue** (the decisions that advance the pipeline) and **Item**
+(lifecycle: abandon, reopen, back) — so which button moves the workflow
+forward is always legible.
 
 **Applying a round's findings** is the *Request changes* step — a review never
 applies itself, and approving doesn't either (approval means "ship it as it
@@ -787,7 +795,7 @@ open terminals, no restart:
 |---|---|
 | **Appearance** | **Theme** — 12 built-in palettes, 8 dark and 4 light (see below) |
 | **Paths** | Default directory for new sessions · scratch directory · workflows directory (each with a 📁 folder picker) · `claude` binary — a name resolved on PATH or an absolute path, validated on entry, used by the next session you start (📄 file picker) |
-| **Workflows** | PR skill — the skill workflow agents open pull requests with (e.g. `hivebrite-engineering:github-pr`); empty means the repo's own conventions via `gh` · Forge — auto-detect (from the repo's origin remote) / GitHub / none (disables PR features for repos without a supported forge) |
+| **Workflows** | PR skill — the skill workflow agents open pull requests with (**default `hivebrite-engineering:github-pr`**; `none` disables and falls back to each repo's own conventions via `gh`; agents also fall back automatically when the skill isn't installed) · Forge — auto-detect (from the repo's origin remote) / GitHub / none. Both are overridable per item in its ⚙ Settings tab (PR skill) |
 | **Terminal · text** | Font family (opens a **searchable font picker** — see below) · font size · font weight · bold weight · line height · letter spacing |
 | **Terminal · cursor** | Style (block/bar/underline) · unfocused-pane style (outline/block/bar/underline/hidden) · bar width · blink |
 | **Terminal · colors** | Minimum contrast ratio (1 = off, 4.5 = WCAG AA) · bold text in bright colors |
@@ -825,7 +833,7 @@ lands, a modal offers Restart / Cancel (restarting closes running sessions).
 Settings persist in `gui-state.json`, except the three directories and the
 `claude` binary, which live in the shared `config.toml` so the TUI agrees. The sidebar and details panel are
 drag-resizable (widths persist), and the collapsible sidebar sections
-(TEAMS / SCRATCHES / WORKFLOWS) have a draggable divider on top — drag it to
+(WORKFLOWS / SCRATCHES / TEAMS, in that order) have a draggable divider on top — drag it to
 trade vertical space with the session list above; the heights persist. Each
 section keeps its own scrollbar with its header pinned in place, so the controls
 on it (collapse, refresh, +) stay reachable however far you scroll, and the

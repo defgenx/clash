@@ -4800,8 +4800,8 @@ async function buildWorkflowView(el, project, slug) {
         return `Timeline${n ? ` (${n})` : ""}`;
       })(),
     ],
-    // Per-item configuration (session naming today; grows as items gain knobs).
-    ["settings", "⚙"],
+    // Per-item configuration — right-aligned, meta rather than content.
+    ["settings", "⚙ Settings"],
   ];
   for (const [id, label] of subViews) {
     const b = document.createElement("button");
@@ -4809,7 +4809,7 @@ async function buildWorkflowView(el, project, slug) {
     const active =
       ts.subView === id ||
       ((ts.subView === "planDiff" || ts.subView === "planAt") && id === "history");
-    b.className = "wf-subtab" + (active ? " active" : "");
+    b.className = "wf-subtab" + (active ? " active" : "") + (id === "settings" ? " wf-subtab-end" : "");
     b.textContent = label;
     b.onclick = () => {
       ts.subView = id;
@@ -5035,6 +5035,7 @@ function wfComposeReviewRound(item) {
       target: wfReviewTarget(item),
       hasPr: wfHasPr(item),
       prNumber: item.meta.pr ? item.meta.pr.number : 0,
+      interactionDefault: item.meta.interactionDefault || "",
     });
 
     const backdrop = document.createElement("div");
@@ -5246,6 +5247,10 @@ function wfComposeChangeRequest({ item, target, annotations, onJump }) {
     // stays a one-sentence path.
     const tools = document.createElement("div");
     tools.className = "wf-compose-tools";
+    const noteCaption = document.createElement("span");
+    noteCaption.className = "wf-compose-caption";
+    noteCaption.textContent = "Note";
+    tools.appendChild(noteCaption);
     const tmplBtn = document.createElement("button");
     tmplBtn.type = "button";
     tmplBtn.className = "icon-btn wide";
@@ -5368,12 +5373,16 @@ function wfComposeChangeRequest({ item, target, annotations, onJump }) {
       annosWrap.innerHTML = "";
       if (!live.length) return;
       const n = includedAnnotations().length;
+      const cap = document.createElement("span");
+      cap.className = "wf-compose-caption";
+      cap.textContent = "Comments in this round";
+      annosWrap.appendChild(cap);
       const label = document.createElement("p");
       label.className = "wf-compose-annos-label";
       label.textContent =
         n === live.length
-          ? `${n} open diff comment${n > 1 ? "s" : ""} sent with this round — uncheck to park one for later:`
-          : `${n} of ${live.length} open diff comments sent with this round (unchecked ones are parked, not lost):`;
+          ? `${n} open comment${n > 1 ? "s" : ""} ride along — uncheck to park one for a later round`
+          : `${n} of ${live.length} comments ride along (unchecked ones are parked, not lost)`;
       annosWrap.appendChild(label);
       const list = document.createElement("div");
       list.className = "wf-compose-annos";
@@ -5604,7 +5613,29 @@ function wfGhHint(e) {
 function renderWfActions(bar, root, item) {
   bar.innerHTML = "";
   const st = item.meta.status;
-  const add = (label, cls, fn, title = "") => {
+  // Three labeled zones instead of one undifferentiated row: actions ON the
+  // current step's artifact (reviews, explain, open things — nothing moves),
+  // the decisions that ADVANCE the pipeline, and item-lifecycle actions.
+  // Mixed together, "which button moves this forward?" was a guessing game.
+  const zones = {};
+  for (const [key, label] of [
+    ["step", "This step"],
+    ["advance", "Continue"],
+    ["item", "Item"],
+  ]) {
+    const g = document.createElement("div");
+    g.className = `wf-actions-group wf-actions-${key}`;
+    const cap = document.createElement("span");
+    cap.className = "wf-actions-caption";
+    cap.textContent = label;
+    g.appendChild(cap);
+    const btns = document.createElement("span");
+    btns.className = "wf-actions-btns";
+    g.appendChild(btns);
+    bar.appendChild(g);
+    zones[key] = { group: g, btns };
+  }
+  const add = (label, cls, fn, title = "", zone = "advance") => {
     const b = document.createElement("button");
     b.textContent = label;
     if (cls) b.className = cls;
@@ -5613,14 +5644,10 @@ function renderWfActions(bar, root, item) {
     // without feedback: a sync handler settles before paint and never shows the
     // spinner, an async one shows it for exactly as long as it runs.
     b.onclick = () => busyButton(b, () => fn());
-    bar.appendChild(b);
+    zones[zone].btns.appendChild(b);
     return b;
   };
-  const spacer = () => {
-    const sp = document.createElement("span");
-    sp.className = "spacer";
-    bar.appendChild(sp);
-  };
+  // Empty zones vanish at the end of the render (see the tail of this fn).
   const abandon = () =>
     add(
       "Abandon",
@@ -5632,7 +5659,8 @@ function renderWfActions(bar, root, item) {
           return;
         wfTransition(item, root, "abandoned");
       },
-      "Park this item — nothing is deleted, and Reopen brings it back"
+      "Park this item — nothing is deleted, and Reopen brings it back",
+      "item"
     );
 
   // One flow for both targets: it snapshots the iteration (diff + plan +
@@ -5677,7 +5705,8 @@ function renderWfActions(bar, root, item) {
       `↗ Post round ${item.lastAgentReview.round} to PR`,
       "",
       () => publishWfReview(item),
-      "Post the latest agent review round to the pull request as one comment — no agent, no tokens"
+      "Post the latest agent review round to the pull request as one comment — no agent, no tokens",
+      "step"
     );
   };
 
@@ -5693,7 +5722,8 @@ function renderWfActions(bar, root, item) {
       `⇄ ${answerCommentsLabel(count)}`,
       "",
       () => launchWfReviewRespond(item, root),
-      answerCommentsTitle(count, prName)
+      answerCommentsTitle(count, prName),
+      "step"
     );
   };
 
@@ -5717,7 +5747,8 @@ function renderWfActions(bar, root, item) {
           return;
         await spawnWfReview(item, root, "standard", "local", null, "structure");
       },
-      "Generate the Structure tab: an in-depth explanation of what this change does (functional parts + mermaid diagrams). Spends tokens; regenerates on each run."
+      "Generate the Structure tab: an in-depth explanation of what this change does (functional parts + mermaid diagrams). Spends tokens; regenerates on each run.",
+      "step"
     );
   };
 
@@ -5737,7 +5768,8 @@ function renderWfActions(bar, root, item) {
       `Spend tokens: launch an agent session to review this item's ${
         wfReviewTarget(item) === "plan" ? "plan" : "code"
       } and report findings` +
-        (n ? ` (${n} round${n > 1 ? "s" : ""} so far)` : "")
+        (n ? ` (${n} round${n > 1 ? "s" : ""} so far)` : ""),
+      "step"
     );
   };
 
@@ -5749,7 +5781,6 @@ function renderWfActions(bar, root, item) {
         () => launchWfAgent(item, "plan", root),
         "Spend tokens: launch an agent session that explores the repo and writes plan.md, then hands it back for your review"
       );
-      spacer();
       abandon();
       break;
 
@@ -5760,13 +5791,12 @@ function renderWfActions(bar, root, item) {
       const via = r.returnStatus ? wfStatusInfo(r.returnStatus).label : "where it started";
       if (item.agentAlive === false) {
         add("⚠ End review round", "primary", () => cancelWfReview(item, root),
-          "The reviewer session is gone — unlock the item");
+          "The reviewer session is gone — unlock the item", "step");
       } else if (item.meta.sessionId) {
         add("Open review session", "primary", () => openSession(item.meta.sessionId),
-          `Review round ${r.round || 1} — ${r.depth || "standard"} ${r.target || ""}`.trim());
+          `Review round ${r.round || 1} — ${r.depth || "standard"} ${r.target || ""}`.trim(), "step");
       }
-      add("End round", "", () => cancelWfReview(item, root), `Returns the item to ${via}`);
-      spacer();
+      add("End round", "", () => cancelWfReview(item, root), `Returns the item to ${via}`, "step");
       abandon();
       break;
     }
@@ -5778,17 +5808,18 @@ function renderWfActions(bar, root, item) {
           "⚠ Relaunch agent",
           "primary",
           () => launchWfAgent(item, st === "planning" ? "plan" : "revise", root),
-          "The recorded agent session is gone — spend tokens to start a fresh one on the same phase"
+          "The recorded agent session is gone — spend tokens to start a fresh one on the same phase",
+          "step"
         );
       } else if (item.meta.sessionId) {
         add(
           "Open agent session",
           "primary",
           () => openSession(item.meta.sessionId),
-          "Open the running agent's terminal — watch it work or answer its questions"
+          "Open the running agent's terminal — watch it work or answer its questions",
+          "step"
         );
       }
-      spacer();
       abandon();
       break;
 
@@ -5816,7 +5847,6 @@ function renderWfActions(bar, root, item) {
         "Open the change-request composer — your note becomes the next round's instructions, and this plan revision is frozen into history first"
       );
       reviewButton();
-      spacer();
       abandon();
       break;
 
@@ -5829,7 +5859,6 @@ function renderWfActions(bar, root, item) {
         () => launchWfAgent(item, "revise", root),
         "Spend tokens: launch the agent to apply the requested changes — it reads your latest note and every open annotation"
       );
-      spacer();
       abandon();
       break;
 
@@ -5877,7 +5906,7 @@ function renderWfActions(bar, root, item) {
           );
         }
         approveDone();
-        add("Open PR", "", () => openWorkflowPr(item), "Open the pull request in the browser panel");
+        add("Open PR", "", () => openWorkflowPr(item), "Open the pull request in the browser panel", "step");
       } else {
         approveDone();
         // Two ways to open the PR, because the description has two honest price
@@ -5929,7 +5958,6 @@ function renderWfActions(bar, root, item) {
       explainButton();
       answerCommentsButton();
       postRoundButton();
-      spacer();
       abandon();
       break;
     }
@@ -5970,7 +5998,7 @@ function renderWfActions(bar, root, item) {
           },
           `Flip PR #${item.meta.pr.number || ""} from draft to ready-for-review on GitHub — the validation step`
         );
-        add("Open PR", "", () => openWorkflowPr(item), "Open the pull request in the browser panel");
+        add("Open PR", "", () => openWorkflowPr(item), "Open the pull request in the browser panel", "step");
       } else {
         add(
           "Attach PR by URL…",
@@ -6006,13 +6034,13 @@ function renderWfActions(bar, root, item) {
         "↩ Back to diff review",
         "",
         () => wfTransition(item, root, "diff-review"),
-        "Move this item back to the DIFF REVIEW stage — no agent, no tokens"
+        "Move this item back to the DIFF REVIEW stage — no agent, no tokens",
+        "item"
       );
       reviewButton();
       explainButton();
       answerCommentsButton();
       postRoundButton();
-      spacer();
       abandon();
       break;
     }
@@ -6023,7 +6051,8 @@ function renderWfActions(bar, root, item) {
           "Open PR",
           "primary",
           () => openWorkflowPr(item),
-          "Open the pull request in the browser panel — merging happens there"
+          "Open the pull request in the browser panel — merging happens there",
+          "step"
         );
       add(
         "✓ Mark done",
@@ -6046,21 +6075,26 @@ function renderWfActions(bar, root, item) {
       explainButton();
       answerCommentsButton();
       postRoundButton();
-      spacer();
       abandon();
       break;
 
     case "done":
     case "abandoned":
       if (item.meta.pr && item.meta.pr.url)
-        add("Open PR", "", () => openWorkflowPr(item), "Open the pull request in the browser panel");
+        add("Open PR", "", () => openWorkflowPr(item), "Open the pull request in the browser panel", "step");
       add(
         "Reopen",
         "",
         () => wfTransition(item, root, "diff-review"),
-        "Bring the item back at the DIFF REVIEW stage — no agent, no tokens"
+        "Bring the item back at the DIFF REVIEW stage — no agent, no tokens",
+        "item"
       );
       break;
+  }
+
+  // A zone with no buttons would render as a floating caption.
+  for (const { group, btns } of Object.values(zones)) {
+    if (!btns.childNodes.length) group.remove();
   }
 }
 
@@ -6118,6 +6152,24 @@ async function renderWfSubView(body, root, item, ts) {
               ? "no structure document yet — ◫ Explain changes writes it"
               : "no agent reviews yet — each round appends its findings here"
       }</p>`;
+
+    // Structure reads as a document, not a dump: dedicated typography plus
+    // section chips built from its H2s, so it navigates like an exposé.
+    if (ts.subView === "structure" && text.trim()) {
+      md.classList.add("wf-structure");
+      const heads = [...md.querySelectorAll("h2")];
+      if (heads.length > 1) {
+        const nav = document.createElement("div");
+        nav.className = "wf-round-nav";
+        heads.forEach((h) => {
+          const chip = document.createElement("button");
+          chip.textContent = wfShort(h.textContent || "", 28);
+          chip.onclick = () => h.scrollIntoView({ block: "start" });
+          nav.appendChild(chip);
+        });
+        body.appendChild(nav);
+      }
+    }
 
     // Rounds accumulate top-down, so a long report opens on round 1 — the one
     // the user has already read. Jump chips per section + land on the latest.
@@ -6399,6 +6451,18 @@ async function renderWfSubView(body, root, item, ts) {
     const wrap = document.createElement("div");
     wrap.className = "wf-settings";
 
+    // One patch command serves every knob on this tab.
+    const save = async (patch, revert) => {
+      try {
+        await invoke("set_workflow_item_settings", { project, slug, ...patch });
+        await refreshWorkflows();
+        buildWorkflowView(root, project, slug);
+      } catch (e) {
+        if (revert) revert();
+        uiAlert(`Save failed: ${e}`);
+      }
+    };
+
     const sessions = document.createElement("fieldset");
     sessions.className = "wf-settings-group";
     const lg = document.createElement("legend");
@@ -6409,20 +6473,8 @@ async function renderWfSubView(body, root, item, ts) {
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = !item.meta.bareSessionNames;
-    cb.onchange = async () => {
-      try {
-        await invoke("set_workflow_bare_session_names", {
-          project,
-          slug,
-          bare: !cb.checked,
-        });
-        await refreshWorkflows();
-        buildWorkflowView(root, project, slug);
-      } catch (e) {
-        cb.checked = !cb.checked;
-        uiAlert(`Save failed: ${e}`);
-      }
-    };
+    cb.onchange = () =>
+      save({ bareSessionNames: !cb.checked }, () => (cb.checked = !cb.checked));
     row.appendChild(cb);
     row.appendChild(document.createTextNode(" Prefix agent sessions with the item title"));
     sessions.appendChild(row);
@@ -6431,6 +6483,53 @@ async function renderWfSubView(body, root, item, ts) {
     hint.textContent = `On: “${wfSessionName({ ...item, meta: { ...item.meta, bareSessionNames: false } }, "implement")}” · Off: “implement”. Applies to sessions launched from now on.`;
     sessions.appendChild(hint);
     wrap.appendChild(sessions);
+
+    const agents = document.createElement("fieldset");
+    agents.className = "wf-settings-group";
+    const alg = document.createElement("legend");
+    alg.textContent = "Agents";
+    agents.appendChild(alg);
+
+    const modeRow = document.createElement("label");
+    modeRow.className = "wf-settings-row";
+    modeRow.appendChild(document.createTextNode("Rounds run "));
+    const modeSel = document.createElement("select");
+    for (const [v, l] of [
+      ["", "ask me when they start (default)"],
+      ["interactive", "interactive"],
+      ["autonomous", "autonomous"],
+    ]) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = l;
+      modeSel.appendChild(o);
+    }
+    modeSel.value = ["interactive", "autonomous"].includes(item.meta.interactionDefault)
+      ? item.meta.interactionDefault
+      : "";
+    const prevMode = modeSel.value;
+    modeSel.onchange = () =>
+      save({ interactionDefault: modeSel.value }, () => (modeSel.value = prevMode));
+    modeSel.title =
+      "How this item's agent rounds run unless chosen at launch: the review composer pre-selects it, and one-click launches (revise, explain, answer PR comments) apply it directly.";
+    modeRow.appendChild(modeSel);
+    agents.appendChild(modeRow);
+
+    const prRow = document.createElement("label");
+    prRow.className = "wf-settings-row";
+    prRow.appendChild(document.createTextNode("PR skill "));
+    const prInput = document.createElement("input");
+    prInput.type = "text";
+    prInput.spellcheck = false;
+    prInput.placeholder = "inherit global setting";
+    prInput.value = item.meta.prSkill || "";
+    prInput.title =
+      "Per-item override of Settings → Workflows → PR skill. Empty inherits the global value; “none” disables the skill for this item.";
+    prInput.onchange = () =>
+      save({ prSkill: prInput.value.trim() }, () => (prInput.value = item.meta.prSkill || ""));
+    prRow.appendChild(prInput);
+    agents.appendChild(prRow);
+    wrap.appendChild(agents);
 
     const facts = document.createElement("fieldset");
     facts.className = "wf-settings-group";

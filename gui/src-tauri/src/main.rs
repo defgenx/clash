@@ -3109,7 +3109,7 @@ fn main() {
             workflows::set_workflow_pr_skill,
             workflows::get_workflow_forge,
             workflows::set_workflow_forge,
-            workflows::set_workflow_bare_session_names,
+            workflows::set_workflow_item_settings,
             workflows::get_skills_report,
             workflows::list_skills,
             workflows::get_skill

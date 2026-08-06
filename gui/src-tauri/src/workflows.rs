@@ -266,8 +266,10 @@ pub(crate) fn get_workflow_pr_skill(state: State<'_, GuiState>) -> String {
 }
 
 /// Set (or reset) the PR-creation skill workflow agents open PRs with.
-/// Empty resets to "follow the repo's own conventions with gh". Persisted to
-/// the shared `config.toml` and read live at the next agent launch.
+/// Empty resets to the schema default (`hivebrite-engineering:github-pr`);
+/// `none` disables it (repo conventions via `gh`). Persisted to the shared
+/// `config.toml` and read live at the next agent launch; items can override
+/// per item in their ⚙ Settings tab.
 #[tauri::command]
 pub(crate) fn set_workflow_pr_skill(
     state: State<'_, GuiState>,
@@ -324,21 +326,45 @@ pub(crate) fn set_workflow_forge(
     Ok(state.config.get().workflows.forge)
 }
 
-/// Per-item session-naming toggle (the item Settings tab): bare job names
-/// (`implement`) vs the title-prefixed default (`Auth refactor · implement`).
-/// Applies to sessions launched from now on.
+/// Patch the per-item settings (the item ⚙ Settings tab). Every field is
+/// optional: `Some` sets, `None` leaves the current value — one command for
+/// the whole tab, so it grows without new commands per knob.
+///
+/// - `bare_session_names`: bare job names vs the title-prefixed default.
+/// - `pr_skill`: per-item PR-skill override; empty inherits the global
+///   setting, `none` disables for this item.
+/// - `interaction_default`: `""`/`ask` | `interactive` | `autonomous` — how
+///   this item's agent rounds run unless chosen at launch.
 #[tauri::command]
-pub(crate) fn set_workflow_bare_session_names(
+pub(crate) fn set_workflow_item_settings(
     state: State<'_, GuiState>,
     project: String,
     slug: String,
-    bare: bool,
+    bare_session_names: Option<bool>,
+    pr_skill: Option<String>,
+    interaction_default: Option<String>,
 ) -> Result<clash::domain::workflow::WorkflowMeta, String> {
     let mut meta = state
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
-    meta.bare_session_names = bare;
+    if let Some(bare) = bare_session_names {
+        meta.bare_session_names = bare;
+    }
+    if let Some(skill) = pr_skill {
+        let skill = skill.trim().to_string();
+        if skill.chars().any(char::is_whitespace) {
+            return Err(format!("Skill names contain no whitespace: '{}'", skill));
+        }
+        meta.pr_skill = skill;
+    }
+    if let Some(mode) = interaction_default {
+        let mode = mode.trim().to_ascii_lowercase();
+        if !["", "ask", "interactive", "autonomous"].contains(&mode.as_str()) {
+            return Err(format!("Unknown interaction mode '{}'", mode));
+        }
+        meta.interaction_default = if mode == "ask" { String::new() } else { mode };
+    }
     state
         .backend
         .write_workflow_meta(&project, &slug, &meta)
@@ -1164,7 +1190,14 @@ pub(crate) async fn start_workflow_agent(
         .map_err(e2s)?;
     seed_local(&state, &project, &slug, meta.status);
 
-    let pr_skill = state.config.get().workflow_pr_skill();
+    // Item override → global setting; the item's interaction default fills
+    // in when the launch surface offered no explicit choice.
+    let pr_skill = clash::application::workflow::effective_pr_skill(
+        &meta.pr_skill,
+        state.config.get().workflow_pr_skill().as_deref(),
+    );
+    let interactive = interactive
+        .or_else(|| clash::application::workflow::interaction_param(&meta.interaction_default));
     let spawned = spawn_item_session(
         &state,
         ItemSessionSpawn {
@@ -1278,6 +1311,11 @@ pub(crate) async fn start_workflow_review_agent(
         return Err("This item has no plan to review yet".to_string());
     }
 
+    // The item's interaction default fills in when the launch surface offered
+    // no explicit choice (the composer pre-selects it, so its answer arrives
+    // explicit; the one-click actions don't ask).
+    let interactive = interactive
+        .or_else(|| clash::application::workflow::interaction_param(&meta.interaction_default));
     let review = WorkflowReview {
         target,
         depth,

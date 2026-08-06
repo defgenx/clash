@@ -16,7 +16,13 @@
   /// `depth` is null for a plan (the plan-review engine has one depth —
   /// there are no hunks to read harder); `publish` is null without a PR
   /// (there is nothing to talk to).
-  function reviewRoundModel({ round = 1, target = "diff", hasPr = false, prNumber = 0 } = {}) {
+  function reviewRoundModel({
+    round = 1,
+    target = "diff",
+    hasPr = false,
+    prNumber = 0,
+    interactionDefault = "",
+  } = {}) {
     const prName = prNumber ? `#${prNumber}` : "the PR";
     return {
       title: `Agent review — round ${round}`,
@@ -66,7 +72,11 @@
           },
       interaction: {
         legend: "How does the round run?",
-        default: "ask",
+        // The item's Settings-tab default pre-selects; the human still sees
+        // and can change it — an explicit choice always leaves this dialog.
+        default: ["interactive", "autonomous"].includes(interactionDefault)
+          ? interactionDefault
+          : "ask",
         choices: [
           {
             value: "ask",

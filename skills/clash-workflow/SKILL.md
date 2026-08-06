@@ -170,7 +170,8 @@ Read the **latest** `## Iteration` section of `review.md` first.
 6. **Only if the repo clearly works through PRs** — an existing `pr.url` on this
    item, or a repo whose recent history is merge commits from PRs — create the
    draft PR. When the kickoff prompt names a **PR skill**, invoke that skill to
-   open it (it encodes the org's house style); otherwise
+   open it (it encodes the org's house style; if it is not available in this
+   session, fall back to the `gh` path below and say so); otherwise
    `gh pr create --draft --title "<item title>" --body "<summary>"`. Either
    way, read-modify-write `meta.json` setting `pr.url` to the created URL
    (clash fills number/state on its next refresh). Otherwise **skip this**: a
@@ -199,7 +200,10 @@ the human decides whether that becomes a new round.
    write and open the PR — it encodes the org's house style (title format,
    ticket references, templates, review requests) better than convention
    archaeology. Keep its draft/`--base` behavior consistent with step 4, and
-   skip to step 5 once it has opened the PR.
+   skip to step 5 once it has opened the PR. If the named skill is **not
+   available** in this session, say so in your final message and continue
+   with step 3 — the PR must still open; a missing skill is never a reason
+   to stop.
 3. Otherwise, follow the repo's PR conventions if it states any — a
    `.github/pull_request_template.md`, a CONTRIBUTING file, or a
    repo/organisation skill for opening PRs. Write a title in the repo's own

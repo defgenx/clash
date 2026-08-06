@@ -31,10 +31,14 @@ One file would make ownership ambiguous exactly where concurrent writes happen.
 `(project, slug)` — the directory path — is the identity; `meta.json` never
 overrides it. All JSON is lenient: unknown fields must be preserved on
 read-modify-write (clash uses `#[serde(flatten)]` extras; the agent must
-merge, never rewrite from scratch). `meta.bareSessionNames` is clash-owned
-(the item ⚙ Settings tab): it switches that item's agent sessions from the
-title-prefixed default (`Auth refactor · implement`) to bare job names —
-agents never read or write it.
+merge, never rewrite from scratch). Three fields are clash-owned per-item settings
+(the item ⚙ Settings tab; agents never read or write them):
+`meta.bareSessionNames` switches that item's agent sessions from the
+title-prefixed default (`Auth refactor · implement`) to bare job names;
+`meta.prSkill` overrides the global PR skill for this item (`none`
+disables); `meta.interactionDefault` (`interactive` | `autonomous`, absent =
+ask) pre-answers the skills' opening question for rounds launched without an
+explicit choice.
 
 ## Statuses
 
@@ -440,14 +444,16 @@ points and which one is worth it is the human's call:
   conventions (`.github/pull_request_template.md`, recent merged titles, a repo
   skill for opening PRs), opens the draft PR and sets `pr.url`.
 
-When the `workflows.pr_skill` config setting names a skill (e.g.
-`hivebrite-engineering:github-pr`), the agent-written path carries it in the
-kickoff as `PR skill: <name>` and the executor **must** open the PR through
-that skill instead of a raw `gh pr create` — org house style (templates,
-ticket references, review requests) rides along instead of being
-re-discovered per repo. Unset, the executor falls back to convention
-discovery. The setting is one `PROPS` row (shared scope, editable in the GUI
-Settings panel under *Workflows*).
+When the effective PR skill names a skill, the agent-written path carries it
+in the kickoff as `PR skill: <name>` and the executor **must** open the PR
+through that skill instead of a raw `gh pr create` — org house style
+(templates, ticket references, review requests) rides along instead of being
+re-discovered per repo (when the named skill isn't available in the session,
+the executor says so and falls back to convention discovery rather than
+stopping). Resolution is the pure `effective_pr_skill(item, global)`: the
+item's ⚙ Settings-tab override wins (its `none` disables for that item),
+else the global `workflows.pr_skill` setting — one `PROPS` row, **default
+`hivebrite-engineering:github-pr`**, `none` to disable globally.
 
 Phase `pr` is the one phase that does **not** move the item to a working status on
 launch (`phase_keeps_status`): it runs on an item parked at a human decision, and
