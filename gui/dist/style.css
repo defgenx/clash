@@ -81,6 +81,11 @@ html, body, #app {
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--fg-dim); }
 ::-webkit-scrollbar-corner { background: transparent; }
+/* Terminals are exempt: a Claude Code session runs in the alternate screen
+   with mouse tracking, so xterm's viewport scrollbar neither reflects nor
+   controls what is on screen — dragging it scrolls stale scrollback while
+   the app ignores it. A visible-but-lying scrollbar is worse than none. */
+.xterm-viewport::-webkit-scrollbar { width: 0; height: 0; }
 #tabs::-webkit-scrollbar { height: 3px; }
 
 /* Ghost icon buttons (Superset-style): borderless, transparent until
