@@ -104,8 +104,14 @@ findings into `agent-review.md` and `annotations.json` and never touch
   `changes-requested` or `implementing`. During review phases the file
   belongs to the human's GUI.
 - Every `meta.json` write is a **read-modify-write**: re-read the file, edit
-  only your fields (`status`, `pr.url`), keep every field you don't
-  understand. Never rewrite it from a template.
+  only your fields (`status`, `pr.url`, `linkedPrs` appends), keep every
+  field you don't understand. Never rewrite it from a template.
+- If your work opened PRs in **other repositories** (multi-repo work), record
+  each one by appending `{"url": "<pr url>"}` to `meta.json.linkedPrs` (create
+  the array if absent) — clash fills state/draft on its next refresh and shows
+  them on the item. Never remove or reorder existing entries; unlinking is the
+  human's action. Linked PRs never change this item's status — only `pr.url`
+  (the primary) does.
 - `review.md` is append-only history — read it, never edit it.
 - Statuses you may write, and only these transitions:
   `planning → plan-review`, `changes-requested → plan-review` (plan-revision

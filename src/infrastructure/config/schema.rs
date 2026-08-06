@@ -319,6 +319,30 @@ pub const PROPS: &[Prop] = &[
          (unknown hosts count as GitHub, so GitHub Enterprise keeps working); `none` disables \
          change-request features for repos without a supported forge.",
     ),
+    Prop::new(
+        "workflows.slack_webhook",
+        Kind::Str,
+        Val::Str(""),
+        "Slack incoming-webhook URL used by workflow sharing and notifications. Empty disables \
+         the Slack destination. Nothing is ever sent without an explicit action or the \
+         notify_webhook opt-in.",
+    ),
+    Prop::new(
+        "workflows.discord_webhook",
+        Kind::Str,
+        Val::Str(""),
+        "Discord webhook URL used by workflow sharing and notifications. Empty disables the \
+         Discord destination. Nothing is ever sent without an explicit action or the \
+         notify_webhook opt-in.",
+    ),
+    Prop::new(
+        "workflows.notify_webhook",
+        Kind::Enum(&["off", "slack", "discord"]),
+        Val::Str("off"),
+        "Announce workflow items that park at a decision state (plan review, diff review, PR \
+         draft) on the configured webhook. Only agent-driven transitions post — never your own \
+         clicks.",
+    ),
     // ── [appearance] — GUI-local ────────────────────────────────────
     Prop::new(
         "appearance.theme",

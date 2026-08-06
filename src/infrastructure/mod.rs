@@ -24,4 +24,8 @@ pub mod session_refresh;
 pub mod skills;
 pub mod tui;
 pub mod update;
+/// Webhook transport is consumed only through the lib crate (GUI share and
+/// notify commands) — same dead-code allowance as `gh`/`forge`.
+#[allow(dead_code)]
+pub mod webhook;
 pub mod windowing;

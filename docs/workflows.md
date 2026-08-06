@@ -415,6 +415,42 @@ fetched). It exists so the GUI's "Answer PR comments" action — a
 round has work waiting. It is advisory: the count is up to a poll stale and
 capped at one API page, and the reviewer re-fetches the comments itself.
 
+### Linked PRs (multi-repo work)
+
+One piece of work often lands as several PRs (backend + frontend + contracts).
+`meta.json.linkedPrs` is an array of the same PR-block shape as `meta.pr`, for
+change requests in **other** repositories that belong to this item. Rules:
+
+- **They never drive the item's status.** Only the primary `pr` moves the item
+  (`MERGED → done`, the `pr-*` stages); linked PRs are tracked, refreshed and
+  opened alongside it, nothing more.
+- The entry's `url` is the identity (`owner/repo#number` after parsing — two
+  spellings of one PR are one PR); every refresh call about a linked PR is
+  scoped to the `owner/repo` its URL names, since the item's checkout points
+  at a different repository.
+- The refresh is best-effort per entry: a linked PR that fails to resolve
+  keeps its previous recorded state rather than failing the primary's refresh.
+- The **agent may append to `linkedPrs`** when its work opened PRs in other
+  repositories — a URL-only entry is enough (clash fills state/draft on the
+  next refresh, exactly like the primary's contract). The agent must never
+  remove or reorder entries; unlinking is the human's (GUI) action.
+
+### Sharing, export and webhook notifications (clash-side, informative)
+
+These are clash features, not agent contract — listed here so a reader of this
+file knows they exist and what they read. The GUI's share dialog composes one
+markdown document from the item's files (summary, `plan.md`, `review.md`
+iteration notes, `agent-review.md` verdicts, open annotations, the current
+diff — each section optional) and sends **exactly the previewed text** to a
+clipboard, a `.md`/`.html` export, or a Slack/Discord webhook configured in
+`config.toml` (`workflows.slack_webhook` / `workflows.discord_webhook`).
+Nothing is ever posted without an explicit human action, with one opt-in
+exception: `workflows.notify_webhook` (`off` by default) announces items that
+an **agent** parks at a decision state — the same events as the desktop
+notification, suppressed for clash's own writes by the attention ledger.
+Agents never call these; they just mean the files above have readers beyond
+the GUI, which is one more reason to keep their formats stable.
+
 Creating the PR publishes the branch when it is not on the remote yet: `gh pr
 create` run non-interactively aborts with *"you must first push the current
 branch to a remote"* rather than offering to push, so clash pushes

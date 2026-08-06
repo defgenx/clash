@@ -440,6 +440,7 @@ function workspacesJson() {
       browserTabs.push({ id, url: e.url, name: e.name, renamed: !!e.renamed });
     } else if (
       id === "view:wfboard" ||
+      id === "view:wfprs" ||
       id === "view:skills" ||
       id.startsWith("view:workflow:")
     ) {
@@ -475,6 +476,8 @@ function workspacesJson() {
     // localStorage ("clash-panel-sizes") because the bare WKWebView loses
     // localStorage — gui-state.json is the durable copy, seeded back at boot.
     sidebar: sidebarPersistState(),
+    // First-run guided tour: shown once, rerunnable from Settings.
+    tour: { seen: tourSeen },
   });
 }
 
@@ -570,6 +573,10 @@ let settingsResolved = false;
 let sharedSettingKeys = new Set();
 /// Sidebar geometry + open sections from the persisted blob, applied at boot.
 let savedSidebar = null;
+/// Whether the guided tour already ran once (completed or skipped). A
+/// top-level blob field like `sidebar` — not a setting, so it stays out of
+/// the schema-validated settings blob.
+let tourSeen = false;
 
 function applyWorkspacesData(data, { migratable = false } = {}) {
   if (!data) return false;
@@ -577,6 +584,7 @@ function applyWorkspacesData(data, { migratable = false } = {}) {
   if (data.sidebar && typeof data.sidebar === "object" && !savedSidebar) {
     savedSidebar = data.sidebar;
   }
+  if (data.tour && data.tour.seen) tourSeen = true;
   // Settings ride along with the workspaces blob but load independently — a
   // fresh install with no workspaces yet still gets its saved settings. First
   // source wins: loadWorkspaces tries disk before the localStorage fallback,
@@ -753,6 +761,7 @@ async function restoreWorkspaceSessions() {
         // drop-on-restart behavior.
         if (
           sid === "view:wfboard" ||
+          sid === "view:wfprs" ||
           sid === "view:skills" ||
           sid.startsWith("view:workflow:")
         ) {
@@ -2488,6 +2497,39 @@ async function adoptWild(s) {
   openSession(s.id);
 }
 
+/// Attach xterm's WebGL renderer, reacquiring it when the GL context is lost.
+///
+/// A lost context (WKWebView backgrounding, GPU pressure, the ~16-context cap
+/// with many panes) used to silently drop the terminal to the DOM renderer —
+/// whose stale/half-refreshed glyphs are exactly the "statusline redraws
+/// badly" symptom — with nothing in clash.log to say it happened. Losses are
+/// routinely transient, so try to get the context back a couple of times;
+/// only then settle for the DOM renderer, and say so in the log either way.
+function attachWebgl(term, label, attempt = 0) {
+  if (!window.WebglAddon) return;
+  try {
+    const webgl = new WebglAddon.WebglAddon();
+    webgl.onContextLoss(() => {
+      webgl.dispose();
+      if (attempt < 2) {
+        dlog(`webgl context lost on "${label}" — reacquiring (attempt ${attempt + 1})`);
+        setTimeout(() => {
+          // The terminal may have been closed while we waited.
+          if (term.element && term.element.isConnected) attachWebgl(term, label, attempt + 1);
+        }, 1500);
+      } else {
+        dlog(
+          `webgl context lost on "${label}" ${attempt + 1}× — staying on the DOM renderer ` +
+            `(rapid redraws like statuslines will look rougher until this terminal reopens)`
+        );
+      }
+    });
+    term.loadAddon(webgl);
+  } catch (e) {
+    dlog(`webgl unavailable on "${label}": ${e} — DOM renderer in use`);
+  }
+}
+
 async function openSession(sid, label, opts = {}) {
   // Sessions are workspace-scoped: owned elsewhere → switch there first;
   // unowned → the active workspace claims it.
@@ -2633,22 +2675,10 @@ async function openSession(sid, label, opts = {}) {
   term.open(el);
   // GPU-accelerated rendering. The default DOM renderer repaints cells as
   // styled <span>s and, under Claude Code's rapid streaming output (spinners,
-  // progressive tokens), leaves stale/half-refreshed glyphs — the "not native,
-  // badly refreshed text" symptom. The WebGL renderer draws the whole grid to
-  // one GPU-backed canvas each frame, so it stays crisp and consistent. If the
-  // WebGL context is lost (GPU pressure, tab backgrounded in WKWebView) the
-  // addon emits onContextLoss; we dispose it and xterm falls back to the DOM
-  // renderer automatically. Loading is best-effort: any failure keeps the DOM
-  // renderer rather than leaving a blank terminal.
-  try {
-    if (window.WebglAddon) {
-      const webgl = new WebglAddon.WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
-    }
-  } catch (e) {
-    console.warn("WebGL renderer unavailable, using DOM renderer:", e);
-  }
+  // progressive tokens, statusline redraws), leaves stale/half-refreshed
+  // glyphs — the "not native, badly refreshed text" symptom. The WebGL
+  // renderer draws the whole grid to one GPU-backed canvas each frame.
+  attachWebgl(term, label || sid);
   fitAddon.fit();
 
   if (defer) {
@@ -4152,7 +4182,11 @@ function buildWorkflowRow(item) {
   // their empty plan looks like a stalled full workflow.
   if (wfIsReviewOnly(item)) bits.push("review");
   if (item.openAnnotations > 0) bits.push(`💬${item.openAnnotations}`);
-  if (item.meta.pr && item.meta.pr.url) bits.push(item.meta.pr.draft ? "PR·draft" : "PR");
+  {
+    const prs = itemPrs(item.meta);
+    if (prs.length > 1) bits.push(`PR×${prs.length}`);
+    else if (prs.length) bits.push(prs[0].draft ? "PR·draft" : "PR");
+  }
   const warn =
     item.agentAlive === false
       ? `<span class="wf-warn" title="agent session is gone — relaunch from the item tab">⚠</span>`
@@ -4177,20 +4211,26 @@ function buildWorkflowRow(item) {
 
 function workflowContextMenu(item, x, y) {
   const items = [{ label: "Open", icon: "file", action: () => openWorkflowTab(item) }];
-  if (item.meta.pr && item.meta.pr.url) {
+  const prs = itemPrs(item.meta);
+  if (prs.length) {
     items.push({
-      label: "Copy PR URL",
+      label: prs.length > 1 ? `Copy PR URLs (${prs.length})` : "Copy PR URL",
       icon: "copy",
       action: async () => {
         try {
-          await invoke("clipboard_write_text", { text: item.meta.pr.url });
-          flashToast("PR URL copied");
+          await invoke("clipboard_write_text", { text: prs.map((p) => p.url).join("\n") });
+          flashToast(prs.length > 1 ? "PR URLs copied" : "PR URL copied");
         } catch (e) {
           uiAlert(`Copy failed: ${e}`);
         }
       },
     });
   }
+  items.push({
+    label: "Share / Export…",
+    icon: "file",
+    action: () => wfShareDialog(item),
+  });
   items.push(null);
   if (item.meta.status !== "abandoned") {
     items.push({
@@ -4491,6 +4531,10 @@ function restoreWorkflowTab(key, saved) {
     openWorkflowBoardTab();
     return;
   }
+  if (key === "view:wfprs") {
+    openWorkflowPrDashboardTab();
+    return;
+  }
   if (key === "view:skills") {
     openSkillsTab();
     return;
@@ -4655,7 +4699,11 @@ function buildWorkflowCard(item) {
   card.className = "wf-card";
   const bits = [`it.${item.meta.iteration || 1}`];
   if (item.openAnnotations > 0) bits.push(`💬${item.openAnnotations}`);
-  if (item.meta.pr && item.meta.pr.url) bits.push(item.meta.pr.draft ? "PR·draft" : "PR");
+  {
+    const prs = itemPrs(item.meta);
+    if (prs.length > 1) bits.push(`PR×${prs.length}`);
+    else if (prs.length) bits.push(prs[0].draft ? "PR·draft" : "PR");
+  }
   if (item.agentAlive === false) bits.push("⚠ agent gone");
   card.innerHTML =
     `<div class="wf-card-title"><span class="status-ring wf-ring ${info.cls}"></span>${escapeHtml(
@@ -4669,6 +4717,96 @@ function buildWorkflowCard(item) {
     workflowContextMenu(item, ev.clientX, ev.clientY);
   };
   return card;
+}
+
+/// Cross-project PR dashboard (singleton tab): every item holding at least
+/// one PR — primary or linked — with state chips, unanswered counts and a
+/// last-touched stamp. The ordering (decisions first, settled last) is the
+/// pure `prDashboardModel` in wf-prs.js.
+function openWorkflowPrDashboardTab() {
+  openViewTab("view:wfprs", "⇄ PRs", async (el) => {
+    el.classList.add("wf-board-wrap");
+    el.innerHTML = "<p class='hint'>loading…</p>";
+    if (!state.workflows.length) await refreshWorkflows();
+    renderWorkflowPrDashboard(el);
+  });
+}
+
+/// Compact "how long ago" for dashboard rows; empty for unknown stamps.
+function wfAgo(ms) {
+  if (!ms) return "";
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 90) return "just now";
+  if (s < 5400) return `${Math.round(s / 60)}m ago`;
+  if (s < 129600) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+
+function renderWorkflowPrDashboard(el) {
+  el.innerHTML = "";
+  const rows = prDashboardModel(state.workflows);
+  // Passive state refresh for what's on screen: backend-throttled (30s/item,
+  // write-on-change only), so redraws never churn gh or the FS watcher.
+  for (const r of rows) {
+    invoke("refresh_workflow_pr", { project: r.project, slug: r.slug, force: false }).catch(
+      () => {}
+    );
+  }
+  const wrap = document.createElement("div");
+  wrap.className = "wf-prs";
+  const head = document.createElement("div");
+  head.className = "wf-prs-head";
+  head.innerHTML = `<h4>PULL REQUESTS</h4><span class="dim">${rows.length} item${
+    rows.length === 1 ? "" : "s"
+  } across all projects</span>`;
+  wrap.appendChild(head);
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent =
+      "no workflow item has a pull request yet — create one from an item's DIFF REVIEW stage, or link existing PRs to an item";
+    wrap.appendChild(empty);
+    el.appendChild(wrap);
+    return;
+  }
+  for (const r of rows) {
+    const info = wfStatusInfo(r.status);
+    const row = document.createElement("div");
+    row.className = "wf-prs-row" + (r.allSettled ? " settled" : "");
+    const left = document.createElement("div");
+    left.className = "wf-prs-item";
+    left.innerHTML =
+      `<span class="status-ring wf-ring ${info.cls}" title="${info.label}"></span>` +
+      `<span class="wf-prs-title">${escapeHtml(r.title)}</span>` +
+      `<span class="dim">${escapeHtml(r.project)} · ${info.label}${
+        r.unanswered ? ` · 💬${r.unanswered} unanswered` : ""
+      }${r.updatedAt ? ` · ${wfAgo(r.updatedAt)}` : ""}</span>`;
+    left.onclick = () => {
+      const item = wfItem(r.project, r.slug);
+      if (item) openWorkflowTab(item);
+    };
+    row.appendChild(left);
+    const chips = document.createElement("div");
+    chips.className = "wf-prs-chips";
+    for (const pr of r.prs) {
+      const chip = document.createElement("button");
+      const stateBit = prStateLabel(pr);
+      chip.className = `wf-prs-chip${stateBit ? ` pr-${stateBit}` : ""}`;
+      chip.innerHTML = `${svgIcon("pr", 11)}<span>${escapeHtml(prChipLabel(pr))}${
+        stateBit && stateBit !== "open" ? ` · ${escapeHtml(stateBit)}` : ""
+      }</span>`;
+      chip.title = pr.url + (pr.primary ? " (primary)" : " (linked)");
+      chip.onclick = (ev) => {
+        ev.stopPropagation();
+        if (typeof openBrowserTab === "function") openBrowserTab(pr.url, "split");
+        else invoke("open_external", { url: pr.url });
+      };
+      chips.appendChild(chip);
+    }
+    row.appendChild(chips);
+    wrap.appendChild(row);
+  }
+  el.appendChild(wrap);
 }
 
 // Per-tab UI state (active sub-view, viewed iteration) — survives rebuilds
@@ -4707,8 +4845,7 @@ async function buildWorkflowView(el, project, slug) {
     const st = item.meta.status;
     if (
       (st === "pr-draft" || st === "pr-ready" || st === "diff-review") &&
-      item.meta.pr &&
-      item.meta.pr.url
+      itemPrs(item.meta).length
     ) {
       invoke("refresh_workflow_pr", { project, slug, force: false }).catch(() => {});
     }
@@ -4755,12 +4892,63 @@ async function buildWorkflowView(el, project, slug) {
       item.meta.iteration || 1
     }${warn}</span>` +
     `<span class="spacer"></span>`;
-  if (item.meta.pr && item.meta.pr.url) {
+  // One button per PR: the primary (numbers only — its repo is the item's),
+  // then each linked PR named by repo. Right-clicking a linked one offers
+  // unlink; the primary's lifecycle stays on the action bar.
+  for (const pr of itemPrs(item.meta)) {
     const prBtn = document.createElement("button");
-    prBtn.className = "icon-btn wide";
-    prBtn.innerHTML = `${svgIcon("pr", 12)}<span>#${item.meta.pr.number || "PR"}${item.meta.pr.draft ? " draft" : ""}</span>`;
-    prBtn.title = item.meta.pr.url;
-    prBtn.onclick = () => openWorkflowPr(item);
+    prBtn.className = "icon-btn wide" + (pr.primary ? "" : " wf-linked-pr");
+    const label = pr.primary ? `#${pr.number || "PR"}` : prChipLabel(pr);
+    const stateBit = prStateLabel(pr);
+    prBtn.innerHTML = `${svgIcon("pr", 12)}<span>${escapeHtml(label)}${
+      stateBit && stateBit !== "open" ? ` ${escapeHtml(stateBit)}` : ""
+    }</span>`;
+    prBtn.title = pr.primary ? pr.url : `${pr.url} — linked PR (right-click to unlink)`;
+    prBtn.onclick = () =>
+      typeof openBrowserTab === "function"
+        ? openBrowserTab(pr.url, "split")
+        : invoke("open_external", { url: pr.url });
+    if (!pr.primary) {
+      prBtn.oncontextmenu = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        showContextMenu(ev.clientX, ev.clientY, [
+          {
+            label: "Copy URL",
+            icon: "copy",
+            action: async () => {
+              try {
+                await invoke("clipboard_write_text", { text: pr.url });
+                flashToast("PR URL copied");
+              } catch (e) {
+                uiAlert(`Copy failed: ${e}`);
+              }
+            },
+          },
+          null,
+          {
+            label: "Unlink…",
+            icon: "x",
+            danger: true,
+            action: async () => {
+              if (
+                !(await uiConfirm(
+                  `Stop tracking ${prChipLabel(pr)} on this item? The PR itself is untouched.`
+                ))
+              )
+                return;
+              try {
+                await invoke("remove_workflow_linked_pr", { project, slug, url: pr.url });
+                await refreshWorkflows();
+                buildWorkflowView(el, project, slug);
+              } catch (e) {
+                uiAlert(`Unlink failed: ${e}`);
+              }
+            },
+          },
+        ]);
+      };
+    }
     head.appendChild(prBtn);
   }
   el.appendChild(head);
@@ -4891,13 +5079,21 @@ async function buildWorkflowView(el, project, slug) {
   renderWfSubView(body, el, item, ts);
 }
 
-/// Open the item's PR in the embedded browser (split pane), falling back to
-/// the system browser when the embedded panel is unavailable.
+/// Open ALL of the item's PRs — the primary and every linked one (multi-repo
+/// work lands as several PRs; opening one of three is a stale review waiting
+/// to happen) — in the embedded browser (split pane), falling back to the
+/// system browser when the embedded panel is unavailable.
 function openWorkflowPr(item) {
-  const url = item.meta.pr && item.meta.pr.url;
-  if (!url) return;
-  if (typeof openBrowserTab === "function") openBrowserTab(url, "split");
-  else invoke("open_external", { url });
+  for (const pr of itemPrs(item.meta)) {
+    if (typeof openBrowserTab === "function") openBrowserTab(pr.url, "split");
+    else invoke("open_external", { url: pr.url });
+  }
+}
+
+/// Label for the open-PR action: says how many tabs the click opens.
+function wfOpenPrLabel(item) {
+  const n = itemPrs(item.meta).length;
+  return n > 1 ? `Open PRs (${n})` : "Open PR";
 }
 
 /// Launch (or relaunch) the workflow agent for a phase and open its session
@@ -5054,6 +5250,195 @@ async function spawnWfReview(item, root, depth, publish, interactive = null, tar
     }
     uiAlert(`Review launch failed: ${e}`);
   }
+}
+
+/// The share dialog: sections on the left, a live preview on the right, the
+/// destinations underneath. The core rule it exists to keep: **the preview IS
+/// the payload** — every destination sends exactly the markdown on screen
+/// (the backend's pure builder composes it), so nothing leaves the machine
+/// unseen. Section presets + availability are the pure model in wf-share.js.
+async function wfShareDialog(item) {
+  let settings = { slackWebhook: "", discordWebhook: "", notifyWebhook: "off" };
+  try {
+    settings = await invoke("get_workflow_share_settings");
+  } catch (e) {
+    void e; // webhooks just show as unconfigured
+  }
+  const model = shareModel({
+    hasPlan: wfHasPlanPhase(item),
+    slackConfigured: !!settings.slackWebhook,
+    discordConfigured: !!settings.discordWebhook,
+    preset: "packet",
+  });
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "dialog-backdrop";
+  const box = document.createElement("div");
+  box.className = "dialog-box wf-share-box";
+  const msg = document.createElement("p");
+  msg.textContent = `Share “${item.meta.title || item.slug}”`;
+  box.appendChild(msg);
+
+  const layout = document.createElement("div");
+  layout.className = "wf-share-layout";
+  const side = document.createElement("div");
+  side.className = "wf-share-side";
+  const preview = document.createElement("div");
+  preview.className = "wf-share-preview wf-md";
+  layout.append(side, preview);
+  box.appendChild(layout);
+
+  const checks = {};
+  const checkboxes = {};
+  let current = ""; // the latest composed markdown — what every send uses
+  let buildSeq = 0;
+  const sizeNote = document.createElement("span");
+  sizeNote.className = "dim";
+  const rebuild = async () => {
+    const seq = ++buildSeq;
+    try {
+      const md = await invoke("build_workflow_share", {
+        project: item.project,
+        slug: item.slug,
+        sections: sectionsFromChecks(checks),
+      });
+      if (seq !== buildSeq) return; // a newer rebuild superseded this one
+      current = md;
+      preview.innerHTML = "";
+      renderMarkdown(preview, md);
+      sizeNote.textContent = `${md.length.toLocaleString()} characters`;
+    } catch (e) {
+      if (seq === buildSeq) preview.innerHTML = `<p class="hint">failed: ${escapeHtml(e)}</p>`;
+    }
+  };
+
+  // Preset picker — a preset just sets the checkboxes; they stay editable.
+  const presetRow = document.createElement("label");
+  presetRow.className = "wf-share-preset";
+  presetRow.textContent = "Preset ";
+  const presetSel = document.createElement("select");
+  for (const p of model.presets) {
+    const o = document.createElement("option");
+    o.value = p.id;
+    o.textContent = p.label;
+    if (p.id === model.preset) o.selected = true;
+    presetSel.appendChild(o);
+  }
+  presetSel.onchange = () => {
+    const wanted = presetSections(presetSel.value);
+    for (const s of model.sections) {
+      if (s.disabled) continue;
+      checks[s.id] = wanted[s.id];
+      checkboxes[s.id].checked = wanted[s.id];
+    }
+    rebuild();
+  };
+  presetRow.appendChild(presetSel);
+  side.appendChild(presetRow);
+
+  for (const s of model.sections) {
+    checks[s.id] = s.checked;
+    const row = document.createElement("label");
+    row.className = "wf-share-section" + (s.disabled ? " disabled" : "");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = s.checked;
+    cb.disabled = !!s.disabled;
+    cb.onchange = () => {
+      checks[s.id] = cb.checked;
+      rebuild();
+    };
+    checkboxes[s.id] = cb;
+    const text = document.createElement("span");
+    text.innerHTML =
+      `<span class="wf-share-section-label">${escapeHtml(s.label)}</span>` +
+      `<span class="dim">${escapeHtml(s.detail)}</span>`;
+    row.append(cb, text);
+    side.appendChild(row);
+  }
+  side.appendChild(sizeNote);
+
+  const done = () => {
+    backdrop.remove();
+    if (typeof fitAll === "function") fitAll();
+  };
+
+  // Destinations: each sends `current` — the previewed document, nothing
+  // else. The dialog stays open so one composition can go several places.
+  const actions = document.createElement("div");
+  actions.className = "modal-actions wf-share-actions";
+  const closeBtn = document.createElement("button");
+  closeBtn.textContent = "Close";
+  closeBtn.onclick = done;
+  actions.appendChild(closeBtn);
+  for (const d of model.destinations) {
+    const b = document.createElement("button");
+    b.textContent = d.label;
+    if (d.id === "clipboard") b.className = "primary";
+    if (!d.enabled) {
+      b.disabled = true;
+      b.title = d.hint;
+      actions.appendChild(b);
+      continue;
+    }
+    b.onclick = () =>
+      busyButton(b, async () => {
+        try {
+          if (d.id === "clipboard") {
+            await invoke("clipboard_write_text", { text: current });
+            flashToast("Markdown copied");
+          } else if (d.id === "md" || d.id === "html") {
+            const dir = await pickDirectory(
+              state.settings.defaultCwd || state.homeDir || "",
+              "Choose a folder for the export"
+            );
+            if (!dir) return;
+            let content = current;
+            if (d.id === "html") {
+              // Render (markdown + mermaid → inline SVG) in a detached node,
+              // then wrap in the self-contained shell — no scripts ride along.
+              const stage = document.createElement("div");
+              renderMarkdown(stage, current);
+              await renderMermaidIn(stage);
+              content = shareHtmlDocument(item.meta.title || item.slug, stage.innerHTML);
+            }
+            const path = await invoke("export_workflow_share", {
+              project: item.project,
+              slug: item.slug,
+              format: d.id,
+              content,
+              dir,
+            });
+            flashToast(`Saved ${path}`);
+          } else {
+            // slack / discord — the backend truncates to the service limit
+            // and says so, rather than letting the tail vanish silently.
+            const truncated = await invoke("share_workflow_webhook", {
+              kind: d.id,
+              text: current,
+            });
+            flashToast(`Sent to ${d.label.replace("Send to ", "")}${truncated ? " (truncated to fit)" : ""}`);
+          }
+        } catch (e) {
+          uiAlert(`${d.label} failed: ${e}`);
+        }
+      });
+    actions.appendChild(b);
+  }
+  box.appendChild(actions);
+
+  backdrop.appendChild(box);
+  if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
+  document.body.appendChild(backdrop);
+  backdrop.onclick = (e) => {
+    if (e.target === backdrop) done();
+  };
+  backdrop.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Escape") done();
+  });
+  setTimeout(() => closeBtn.focus(), 0);
+  rebuild();
 }
 
 /// The review-round composer: one dialog holding the whole shape of the round
@@ -5834,6 +6219,37 @@ function renderWfActions(bar, root, item) {
     );
   };
 
+  // Multi-repo work lands as several PRs (backend + frontend + contracts);
+  // linking the others makes the item track/refresh/open all of them. The
+  // linked list never drives status — that stays the primary PR's job.
+  const linkPrButton = () => {
+    if (!["diff-review", "pr-draft", "pr-ready"].includes(st)) return;
+    add(
+      "🔗 Link a PR…",
+      "",
+      async () => {
+        const url = await uiPrompt(
+          "PR URL in another repository — this item will track it alongside its own PR:"
+        );
+        if (!url || !url.trim()) return;
+        try {
+          await invoke("attach_workflow_linked_pr", {
+            project: item.project,
+            slug: item.slug,
+            url: url.trim(),
+          });
+          flashToast("PR linked");
+          await refreshWorkflows();
+          buildWorkflowView(root, item.project, item.slug);
+        } catch (e) {
+          uiAlert(`Link failed: ${e}`);
+        }
+      },
+      "Track a pull request from another repository on this item — multi-repo work lands as several PRs, and Open PRs opens them all",
+      "step"
+    );
+  };
+
   switch (st) {
     case "draft":
       add(
@@ -5967,7 +6383,7 @@ function renderWfActions(bar, root, item) {
           );
         }
         approveDone();
-        add("Open PR", "", () => openWorkflowPr(item), "Open the pull request in the browser panel", "step");
+        add(wfOpenPrLabel(item), "", () => openWorkflowPr(item), "Open this item's pull request(s) — the primary and every linked one — in the browser panel", "step");
       } else {
         approveDone();
         // Two ways to open the PR, because the description has two honest price
@@ -6019,6 +6435,7 @@ function renderWfActions(bar, root, item) {
       explainButton();
       answerCommentsButton();
       postRoundButton();
+      linkPrButton();
       abandon();
       break;
     }
@@ -6059,7 +6476,7 @@ function renderWfActions(bar, root, item) {
           },
           `Flip PR #${item.meta.pr.number || ""} from draft to ready-for-review on GitHub — the validation step`
         );
-        add("Open PR", "", () => openWorkflowPr(item), "Open the pull request in the browser panel", "step");
+        add(wfOpenPrLabel(item), "", () => openWorkflowPr(item), "Open this item's pull request(s) — the primary and every linked one — in the browser panel", "step");
       } else {
         add(
           "Attach PR by URL…",
@@ -6102,6 +6519,7 @@ function renderWfActions(bar, root, item) {
       explainButton();
       answerCommentsButton();
       postRoundButton();
+      linkPrButton();
       abandon();
       break;
     }
@@ -6109,10 +6527,10 @@ function renderWfActions(bar, root, item) {
     case "pr-ready":
       if (item.meta.pr && item.meta.pr.url)
         add(
-          "Open PR",
+          wfOpenPrLabel(item),
           "primary",
           () => openWorkflowPr(item),
-          "Open the pull request in the browser panel — merging happens there",
+          "Open this item's pull request(s) in the browser panel — merging happens there",
           "step"
         );
       add(
@@ -6136,13 +6554,14 @@ function renderWfActions(bar, root, item) {
       explainButton();
       answerCommentsButton();
       postRoundButton();
+      linkPrButton();
       abandon();
       break;
 
     case "done":
     case "abandoned":
       if (item.meta.pr && item.meta.pr.url)
-        add("Open PR", "", () => openWorkflowPr(item), "Open the pull request in the browser panel", "step");
+        add(wfOpenPrLabel(item), "", () => openWorkflowPr(item), "Open this item's pull request(s) — the primary and every linked one — in the browser panel", "step");
       add(
         "Reopen",
         "",
@@ -6152,6 +6571,16 @@ function renderWfActions(bar, root, item) {
       );
       break;
   }
+
+  // Sharing is stage-independent: a plan is shareable before any code
+  // exists, a done item is shareable as a record. Always in the Item zone.
+  add(
+    "↗ Share…",
+    "",
+    () => wfShareDialog(item),
+    "Compose a share document from this item — copy it, save it as .md/.html, or send it to Slack/Discord. The preview shows exactly what leaves the machine.",
+    "item"
+  );
 
   // A zone with no buttons would render as a floating caption.
   for (const { group, btns } of Object.values(zones)) {
@@ -8050,6 +8479,10 @@ $("wf-board-btn").onclick = (e) => {
   e.stopPropagation();
   openWorkflowBoardTab();
 };
+$("wf-prs-btn").onclick = (e) => {
+  e.stopPropagation();
+  openWorkflowPrDashboardTab();
+};
 $("wf-skills-btn").innerHTML = svgIcon("zap", 13);
 $("wf-skills-btn").onclick = (e) => {
   e.stopPropagation();
@@ -8070,6 +8503,8 @@ listen("workflows-changed", async () => {
 function rebuildOpenWorkflowTabs() {
   const board = state.open.get("view:wfboard");
   if (board) renderWorkflowBoard(board.el);
+  const prs = state.open.get("view:wfprs");
+  if (prs) renderWorkflowPrDashboard(prs.el);
   for (const [key, entry] of state.open) {
     if (!key.startsWith("view:workflow:")) continue;
     const rest = key.slice("view:workflow:".length);
@@ -8145,9 +8580,12 @@ setInterval(() => {
   for (const item of state.workflows) {
     const st = item.meta.status;
     if (st !== "pr-draft" && st !== "pr-ready" && st !== "diff-review") continue;
-    if (!item.meta.pr || !item.meta.pr.url) continue;
+    if (!itemPrs(item.meta).length) continue;
     const key = wfKey(item.project, item.slug);
-    const visible = state.wfOpen || state.open.has(`view:workflow:${key}`);
+    const visible =
+      state.wfOpen ||
+      state.open.has(`view:workflow:${key}`) ||
+      state.open.has("view:wfprs");
     if (!visible) continue;
     invoke("refresh_workflow_pr", {
       project: item.project,
@@ -9148,6 +9586,29 @@ $("set-wf-forge").addEventListener("change", async () => {
   }
 });
 
+/// Share/notify webhooks live in config.toml (shared with the TUI). Each
+/// field patches its own key; the backend validates the URL / enum and echoes
+/// the effective values back. Nothing is ever posted without an explicit
+/// share action or the notify opt-in below.
+function bindShareWebhookSetting(id, sendKey, readKey) {
+  $(id).addEventListener("change", async () => {
+    const el = $(id);
+    try {
+      const s = await invoke("set_workflow_share_settings", { [sendKey]: el.value });
+      el.value = s[readKey] || (readKey === "notifyWebhook" ? "off" : "");
+    } catch (e) {
+      uiAlert(`Webhook setting: ${e}`);
+      try {
+        const s = await invoke("get_workflow_share_settings");
+        el.value = s[readKey] || (readKey === "notifyWebhook" ? "off" : "");
+      } catch (_) {}
+    }
+  });
+}
+bindShareWebhookSetting("set-wf-slack-webhook", "slackWebhook", "slackWebhook");
+bindShareWebhookSetting("set-wf-discord-webhook", "discordWebhook", "discordWebhook");
+bindShareWebhookSetting("set-wf-notify-webhook", "notifyWebhook", "notifyWebhook");
+
 /// Startup policy for changed skills: ask (popup) or one of the silent modes.
 $("set-skills-update").addEventListener("change", async () => {
   const el = $("set-skills-update");
@@ -9190,6 +9651,8 @@ for (const { id, kind, title } of PATH_SETTINGS) {
 }
 
 $("settings-filter").addEventListener("input", () => filterSettings($("settings-filter").value));
+
+$("tour-guide-btn").onclick = () => startGuiTour();
 
 // ── TUI launcher (sidebar header) ───────────────────────────────
 // Gold when a clash TUI process is running somewhere, grey when not.
@@ -9357,6 +9820,135 @@ document.addEventListener("mouseout", (e) => {
 // the mouseout — drop the label on any click.
 document.addEventListener("click", () => iconTip.remove(), true);
 
+// ── Guided tour ─────────────────────────────────────────────────
+// The GUI twin of the TUI's tour widget: a scrim, a spotlight ring on one
+// area at a time, and a tooltip placed by the pure `tourPlacement` (tour.js).
+// Runs once on first launch (persisted top-level in gui-state.json) and any
+// time from Settings → clash → "Show the tour".
+
+function startGuiTour() {
+  if (document.querySelector(".tour-backdrop")) return; // one at a time
+  // Steps whose anchor exists right now; a hidden/removed element would ring
+  // nothing.
+  const steps = TOUR_STEPS.filter((s) => document.getElementById(s.target));
+  if (!steps.length) return;
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "tour-backdrop";
+  backdrop.tabIndex = -1; // focusable, so Esc/arrows land here
+  const ring = document.createElement("div");
+  ring.className = "tour-ring";
+  const tip = document.createElement("div");
+  tip.className = "tour-tip";
+  backdrop.append(ring, tip);
+
+  let i = 0;
+  const done = () => {
+    window.removeEventListener("resize", show);
+    document.removeEventListener("keydown", onKey, true);
+    backdrop.remove();
+    // Completed or skipped, the tour has been seen — never auto-runs again.
+    tourSeen = true;
+    saveWorkspaces();
+    if (typeof fitAll === "function") fitAll();
+  };
+  const move = (delta) => {
+    i = Math.min(Math.max(i + delta, 0), steps.length - 1);
+    show();
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      done();
+    } else if (e.key === "ArrowRight" || e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (i === steps.length - 1) done();
+      else move(1);
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      e.stopPropagation();
+      move(-1);
+    }
+  };
+
+  const show = () => {
+    const step = steps[i];
+    const target = document.getElementById(step.target);
+    if (!target) {
+      if (i < steps.length - 1) move(1);
+      else done();
+      return;
+    }
+    const r = target.getBoundingClientRect();
+    const pad = 6;
+    ring.style.left = `${r.left - pad}px`;
+    ring.style.top = `${r.top - pad}px`;
+    ring.style.width = `${r.width + pad * 2}px`;
+    ring.style.height = `${r.height + pad * 2}px`;
+
+    tip.innerHTML =
+      `<div class="tour-tip-title">${escapeHtml(step.title)}</div>` +
+      `<div class="tour-tip-body">${escapeHtml(step.body)}</div>`;
+    const nav = document.createElement("div");
+    nav.className = "tour-tip-nav";
+    const count = document.createElement("span");
+    count.className = "dim";
+    count.textContent = `${i + 1} / ${steps.length}`;
+    nav.appendChild(count);
+    const spacer = document.createElement("span");
+    spacer.className = "spacer";
+    nav.appendChild(spacer);
+    const skip = document.createElement("button");
+    skip.textContent = "Skip tour";
+    skip.onclick = done;
+    nav.appendChild(skip);
+    if (i > 0) {
+      const back = document.createElement("button");
+      back.textContent = "← Back";
+      back.onclick = () => move(-1);
+      nav.appendChild(back);
+    }
+    const next = document.createElement("button");
+    next.className = "primary";
+    next.textContent = i === steps.length - 1 ? "Done" : "Next →";
+    next.onclick = () => (i === steps.length - 1 ? done() : move(1));
+    nav.appendChild(next);
+    tip.appendChild(nav);
+
+    // Place after the tooltip has a size: measure, then run the pure math.
+    tip.style.visibility = "hidden";
+    requestAnimationFrame(() => {
+      const placed = tourPlacement(
+        { left: r.left, top: r.top, width: r.width, height: r.height },
+        { width: tip.offsetWidth, height: tip.offsetHeight },
+        { width: window.innerWidth, height: window.innerHeight },
+        "right"
+      );
+      tip.style.left = `${placed.left}px`;
+      tip.style.top = `${placed.top}px`;
+      tip.style.visibility = "visible";
+      next.focus();
+    });
+  };
+
+  // Native browser webviews paint over all DOM — same rule as every dialog.
+  if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
+  document.body.appendChild(backdrop);
+  // Click on the scrim advances (the tooltip's own buttons stop propagation
+  // by being children of `tip`); Esc / Skip end it.
+  backdrop.onclick = (e) => {
+    if (e.target === backdrop || e.target === ring) {
+      if (i === steps.length - 1) done();
+      else move(1);
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
+  window.addEventListener("resize", show);
+  show();
+}
+
 // ── Boot ────────────────────────────────────────────────────────
 
 /// (Re)start the session-list poll at the configured cadence. One handle, so
@@ -9393,6 +9985,13 @@ function restartSessionPoll() {
     .catch(() => {});
   invoke("get_skills_update_mode")
     .then((m) => ($("set-skills-update").value = m || "ask"))
+    .catch(() => {});
+  invoke("get_workflow_share_settings")
+    .then((s) => {
+      $("set-wf-slack-webhook").value = s.slackWebhook || "";
+      $("set-wf-discord-webhook").value = s.discordWebhook || "";
+      $("set-wf-notify-webhook").value = s.notifyWebhook || "off";
+    })
     .catch(() => {});
   // A clash upgrade that shipped changed skills is a DECISION, not a side
   // effect: ask (default), or apply the Settings policy silently. Missing
@@ -9468,6 +10067,9 @@ function restartSessionPoll() {
   await refreshSessions();
   await restoreWorkspaceSessions();
   restartSessionPoll();
+  // First launch only: walk the window once the layout has settled. Skipping
+  // or finishing persists the flag; Settings → clash → "Show the tour" reruns.
+  if (!tourSeen) setTimeout(startGuiTour, 800);
   // One line in clash.log per launch saying the webview got all the way through
   // boot. Without it, a frontend that dies early is indistinguishable from a
   // backend problem: WKWebView has no visible console, so the only symptom is a

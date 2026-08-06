@@ -435,6 +435,13 @@ pub struct WorkflowMeta {
     pub session_id: Option<String>,
     #[serde(default)]
     pub pr: Option<WorkflowPr>,
+    /// Change requests in *other* repositories that belong to this piece of
+    /// work (a backend/frontend/contract split lands as several PRs). Tracked,
+    /// refreshed and opened alongside the primary `pr`, but they never drive
+    /// the item's status — only the primary does. Each entry's `url` is the
+    /// identity; the owning repo is derived from it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub linked_prs: Vec<WorkflowPr>,
     /// The agent review round in flight, or the last one that ran. Absent on
     /// items that were never reviewed by an agent.
     #[serde(default)]
@@ -898,6 +905,37 @@ mod tests {
         let reparsed: WorkflowMeta = serde_json::from_str(&back).unwrap();
         assert!(reparsed.extra.contains_key("somethingNew"));
         assert!(reparsed.pr.unwrap().extra.contains_key("futureField"));
+    }
+
+    #[test]
+    fn test_linked_prs_round_trip_and_stay_off_disk_when_empty() {
+        // Items written before linked PRs existed read back with an empty
+        // list, and an empty list never lands on disk (no churn on every
+        // meta write of every existing item).
+        let old: WorkflowMeta = serde_json::from_str(r#"{"title":"pre-linked"}"#).unwrap();
+        assert!(old.linked_prs.is_empty());
+        let back = serde_json::to_string(&old).unwrap();
+        assert!(!back.contains("linkedPrs"));
+
+        let json = r#"{
+            "pr": {"url": "https://github.com/o/r/pull/7", "number": 7},
+            "linkedPrs": [
+                {"url": "https://github.com/o/front/pull/12", "number": 12, "draft": true},
+                {"url": "https://github.com/o/contracts/pull/3", "state": "MERGED", "futureField": 1}
+            ]
+        }"#;
+        let meta: WorkflowMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.linked_prs.len(), 2);
+        assert_eq!(meta.linked_prs[0].number, 12);
+        assert!(meta.linked_prs[0].draft);
+        // A URL-only entry is legal — number derives from the URL at need,
+        // same as the primary's agent contract.
+        assert_eq!(meta.linked_prs[1].number, 0);
+        assert_eq!(meta.linked_prs[1].state, "MERGED");
+        let back = serde_json::to_string(&meta).unwrap();
+        let reparsed: WorkflowMeta = serde_json::from_str(&back).unwrap();
+        assert_eq!(reparsed.linked_prs.len(), 2);
+        assert!(reparsed.linked_prs[1].extra.contains_key("futureField"));
     }
 
     #[test]

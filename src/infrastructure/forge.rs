@@ -102,8 +102,13 @@ impl Forge for GithubForge {
         gh::pr_comment(dir, number, body).map_err(err_from_gh)
     }
 
-    fn unanswered_review_comments(&self, dir: &Path, number: u64) -> Result<u64, ForgeError> {
-        gh::pr_unanswered_review_comments(dir, number).map_err(err_from_gh)
+    fn unanswered_review_comments(
+        &self,
+        dir: &Path,
+        number: u64,
+        repo: Option<&str>,
+    ) -> Result<u64, ForgeError> {
+        gh::pr_unanswered_review_comments(dir, number, repo).map_err(err_from_gh)
     }
 }
 
@@ -154,7 +159,12 @@ impl Forge for NoForge {
         Err(unsupported())
     }
 
-    fn unanswered_review_comments(&self, _: &Path, _: u64) -> Result<u64, ForgeError> {
+    fn unanswered_review_comments(
+        &self,
+        _: &Path,
+        _: u64,
+        _: Option<&str>,
+    ) -> Result<u64, ForgeError> {
         Err(unsupported())
     }
 }

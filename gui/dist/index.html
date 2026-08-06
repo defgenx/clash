@@ -29,6 +29,7 @@
       <div id="wf-section">
         <div class="section-label collapsible" id="wf-toggle">WORKFLOWS <span id="wf-caret">▸</span><span id="wf-badge" class="wf-badge hidden"></span>
           <button id="wf-board-btn" class="icon-btn mini" title="Open workflow board">⊞</button>
+          <button id="wf-prs-btn" class="icon-btn mini" title="PR dashboard — every workflow item with a pull request, across all projects">⇄</button>
           <button id="wf-skills-btn" class="icon-btn mini" title="Skills — view the agent skills clash ships"></button>
           <button id="refresh-wf-btn" class="icon-btn mini" title="Refresh workflows"></button>
           <button id="new-wf-btn" class="icon-btn mini" title="New workflow item">+</button>
@@ -103,6 +104,19 @@
             <option value="all">Update all</option>
             <option value="untouched">Update untouched only</option>
             <option value="keep">Keep as is</option>
+          </select>
+        </label>
+        <label class="setting-row">Slack webhook
+          <input id="set-wf-slack-webhook" type="text" placeholder="https://hooks.slack.com/services/…" autocomplete="off" spellcheck="false" title="Slack incoming-webhook URL for workflow sharing and notifications. Nothing is ever posted without an explicit Share action or the notify opt-in below. Empty disables Slack." />
+        </label>
+        <label class="setting-row">Discord webhook
+          <input id="set-wf-discord-webhook" type="text" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" spellcheck="false" title="Discord webhook URL for workflow sharing and notifications. Nothing is ever posted without an explicit Share action or the notify opt-in below. Empty disables Discord." />
+        </label>
+        <label class="setting-row inline">Notify decisions
+          <select id="set-wf-notify-webhook" title="Announce workflow items parking at a decision state (plan review, diff review, PR draft) on the configured webhook. Only agent-driven transitions post — never your own clicks.">
+            <option value="off">Off</option>
+            <option value="slack">Slack</option>
+            <option value="discord">Discord</option>
           </select>
         </label>
 
@@ -204,6 +218,7 @@
         <label class="setting-row inline">Terminal for TUI
           <select id="set-tui-terminal"></select>
         </label>
+        <button id="tour-guide-btn" class="update-big" title="Replay the guided tour of the window">▶ Show the tour</button>
         <button id="update-btn" class="update-big" title="Download and install the latest clash version">⟳ Update clash</button>
         </div>
         <div class="footer-row">
@@ -276,6 +291,9 @@
   <script src="wf-pipeline.js"></script>
   <script src="wf-review.js"></script>
   <script src="wf-timeline.js"></script>
+  <script src="wf-share.js"></script>
+  <script src="wf-prs.js"></script>
+  <script src="tour.js"></script>
   <script src="ws-ownership.js"></script>
   <script src="app.js"></script>
 </body>

@@ -441,13 +441,21 @@ pub fn count_unanswered_review_comments(json: &str) -> Result<u64, GhError> {
 
 /// Unanswered review-comment count for PR `number`, via
 /// `gh api repos/{owner}/{repo}/pulls/<n>/comments`. The placeholders resolve
-/// from `dir`'s remotes, same as every other call here. One page of 100 —
+/// from `dir`'s remotes; an explicit `repo` (`owner/repo`) replaces them —
+/// a linked PR's repository is not the one `dir` points at. One page of 100 —
 /// the count is advisory (a button label), not an audit.
-pub fn pr_unanswered_review_comments(dir: &Path, number: u64) -> Result<u64, GhError> {
-    let path = format!(
-        "repos/{{owner}}/{{repo}}/pulls/{}/comments?per_page=100",
-        number
-    );
+pub fn pr_unanswered_review_comments(
+    dir: &Path,
+    number: u64,
+    repo: Option<&str>,
+) -> Result<u64, GhError> {
+    let path = match repo {
+        Some(slug) => format!("repos/{}/pulls/{}/comments?per_page=100", slug, number),
+        None => format!(
+            "repos/{{owner}}/{{repo}}/pulls/{}/comments?per_page=100",
+            number
+        ),
+    };
     let output = run(dir, &["api", &path])?;
     if output.status.success() {
         count_unanswered_review_comments(&String::from_utf8_lossy(&output.stdout))

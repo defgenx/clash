@@ -216,6 +216,15 @@ pub struct Workflows {
     /// Forge override for PR features: `auto` (detect from the origin
     /// remote), `github`, or `none`.
     pub forge: String,
+    /// Slack incoming-webhook URL for sharing and notifications. Empty
+    /// disables the destination.
+    pub slack_webhook: String,
+    /// Discord webhook URL for sharing and notifications. Empty disables
+    /// the destination.
+    pub discord_webhook: String,
+    /// Where decision-state transitions are announced: `off` | `slack` |
+    /// `discord`.
+    pub notify_webhook: String,
 }
 
 impl Default for Workflows {
@@ -223,6 +232,9 @@ impl Default for Workflows {
         Self {
             pr_skill: default_str("workflows.pr_skill"),
             forge: default_str("workflows.forge"),
+            slack_webhook: default_str("workflows.slack_webhook"),
+            discord_webhook: default_str("workflows.discord_webhook"),
+            notify_webhook: default_str("workflows.notify_webhook"),
         }
     }
 }

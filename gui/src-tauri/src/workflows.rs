@@ -105,28 +105,66 @@ pub(crate) async fn list_workflow_items(
                     review,
                 },
             );
+            let what = if ev.from == WorkflowStatus::Reviewing {
+                "review round finished — read the findings"
+            } else {
+                match ev.status {
+                    WorkflowStatus::PlanReview => "plan ready for review",
+                    WorkflowStatus::DiffReview => "changes ready for review",
+                    WorkflowStatus::PrDraft => "draft PR awaiting validation",
+                    WorkflowStatus::PrReady => "PR ready — merge or keep iterating",
+                    _ => "needs your decision",
+                }
+            };
+            let title = if ev.title.is_empty() {
+                ev.slug.clone()
+            } else {
+                ev.title.clone()
+            };
             if !focused
                 && state
                     .notify_enabled
                     .load(std::sync::atomic::Ordering::Relaxed)
             {
-                let what = if ev.from == WorkflowStatus::Reviewing {
-                    "review round finished — read the findings"
-                } else {
-                    match ev.status {
-                        WorkflowStatus::PlanReview => "plan ready for review",
-                        WorkflowStatus::DiffReview => "changes ready for review",
-                        WorkflowStatus::PrDraft => "draft PR awaiting validation",
-                        WorkflowStatus::PrReady => "PR ready — merge or keep iterating",
-                        _ => "needs your decision",
-                    }
-                };
-                let title = if ev.title.is_empty() {
-                    ev.slug.clone()
-                } else {
-                    ev.title.clone()
-                };
                 native_notify(&format!("clash · {}", title), what);
+            }
+            // Webhook announcement — the `workflows.notify_webhook` opt-in.
+            // Deliberately NOT gated on window focus: a channel ping is team
+            // visibility, and "posted only when your window was blurred"
+            // makes the channel's record unexplainable. The ledger already
+            // limits events to agent-driven transitions, never own clicks.
+            {
+                use clash::infrastructure::webhook::{self, WebhookKind};
+                let cfg = state.config.get();
+                if let Some(kind) = WebhookKind::parse(&cfg.workflows.notify_webhook) {
+                    let url = match kind {
+                        WebhookKind::Slack => cfg.workflows.slack_webhook.clone(),
+                        WebhookKind::Discord => cfg.workflows.discord_webhook.clone(),
+                    };
+                    if !url.trim().is_empty() {
+                        let pr_url = items
+                            .iter()
+                            .find(|i| i.project == ev.project && i.slug == ev.slug)
+                            .and_then(|i| i.meta.pr.as_ref())
+                            .map(|p| p.url.clone())
+                            .filter(|u| !u.is_empty());
+                        let text = format!(
+                            "⧉ {} — {} · {}/{}{}",
+                            title,
+                            what,
+                            ev.project,
+                            ev.slug,
+                            pr_url.map(|u| format!("\n{}", u)).unwrap_or_default()
+                        );
+                        // Fire-and-forget: a slow or dead webhook must never
+                        // stall the session-list refresh it piggybacks on.
+                        tauri::async_runtime::spawn_blocking(move || {
+                            if let Err(e) = webhook::send(kind, &url, &text) {
+                                tracing::warn!("notify webhook failed: {}", e);
+                            }
+                        });
+                    }
+                }
             }
         }
     }
@@ -1625,10 +1663,12 @@ pub(crate) async fn workflow_create_pr(
     Ok(meta)
 }
 
-/// Refresh the recorded PR state from `gh pr view`. Throttled in-memory
-/// (30s unless `force`); meta is written only when something changed, so
-/// polling never feeds the FS watcher. A PR observed as MERGED moves the
-/// item to `done`.
+/// Refresh the recorded PR state from `gh pr view` — the primary *and* every
+/// linked PR. Throttled in-memory (30s unless `force`); meta is written only
+/// when something changed, so polling never feeds the FS watcher. Only the
+/// **primary** PR observed as MERGED moves the item to `done` — linked PRs
+/// are tracked, never drivers. A linked PR that fails to refresh keeps its
+/// previous state (best-effort, like the unanswered count).
 #[tauri::command]
 pub(crate) async fn refresh_workflow_pr(
     state: State<'_, GuiState>,
@@ -1640,9 +1680,10 @@ pub(crate) async fn refresh_workflow_pr(
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
-    let Some(pr) = meta.pr.clone() else {
+    let primary = meta.pr.clone().filter(|p| !p.url.is_empty());
+    if primary.is_none() && meta.linked_prs.is_empty() {
         return Err("No PR recorded for this item".to_string());
-    };
+    }
 
     // In-memory throttle: several viewports polling the same item collapse
     // into one gh call per window.
@@ -1660,40 +1701,87 @@ pub(crate) async fn refresh_workflow_pr(
     // Prefer the number (from the record, or derived from the URL), then the
     // branch — a URL-only record must still be refreshable, it is the state
     // the agent contract deliberately produces.
-    let number = recorded_pr_number(&pr);
-    let selector = if number > 0 {
-        number.to_string()
-    } else {
-        meta.branch.clone()
-    };
+    let primary_selector = primary.as_ref().map(|pr| {
+        let number = recorded_pr_number(pr);
+        if number > 0 {
+            number.to_string()
+        } else {
+            meta.branch.clone()
+        }
+    });
+    // A linked PR lives in another repository, so every call about it is
+    // scoped by the `owner/repo` its URL names; an unparseable URL is skipped
+    // (nothing to ask gh about).
+    let linked_ids: Vec<(usize, String, u64)> = meta
+        .linked_prs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            clash::infrastructure::gh::parse_pr_url(&p.url).map(|(repo, n)| (i, repo, n))
+        })
+        .collect();
+
+    type LinkedRefresh = (usize, clash::domain::forge::ChangeView, Option<u64>);
     let forge = state.forge_for_dir(&dir);
-    let (view, unanswered) = tauri::async_runtime::spawn_blocking(move || {
-        let view = forge.view(Path::new(&dir), &selector, None)?;
-        // Best-effort: a failed count keeps the previous value rather than
-        // failing the refresh — the count is a button label, not PR state.
-        let unanswered = (view.number > 0)
-            .then(|| {
-                forge
-                    .unanswered_review_comments(Path::new(&dir), view.number)
-                    .ok()
+    let dir_owned = dir.clone();
+    let (primary_result, linked_results) = tauri::async_runtime::spawn_blocking(move || {
+        let d = Path::new(&dir_owned);
+        let primary = primary_selector.map(|selector| {
+            forge.view(d, &selector, None).map(|view| {
+                // Best-effort: a failed count keeps the previous value rather
+                // than failing the refresh — a button label, not PR state.
+                let unanswered = (view.number > 0)
+                    .then(|| forge.unanswered_review_comments(d, view.number, None).ok())
+                    .flatten();
+                (view, unanswered)
             })
-            .flatten();
-        Ok::<_, clash::domain::forge::ForgeError>((view, unanswered))
+        });
+        let linked: Vec<LinkedRefresh> = linked_ids
+            .into_iter()
+            .filter_map(|(i, repo, n)| {
+                let view = forge.view(d, &n.to_string(), Some(&repo)).ok()?;
+                let unanswered = forge.unanswered_review_comments(d, n, Some(&repo)).ok();
+                Some((i, view, unanswered))
+            })
+            .collect();
+        (primary, linked)
     })
     .await
-    .map_err(|e| e.to_string())?
-    .map_err(forge_err)?;
+    .map_err(|e| e.to_string())?;
 
-    let mut changed = merge_pr_view(&mut meta, &view);
-    if let (Some(n), Some(pr)) = (unanswered, meta.pr.as_mut()) {
-        if pr.unanswered_comments != Some(n) {
-            pr.unanswered_comments = Some(n);
+    let mut changed = false;
+    let mut primary_merged = false;
+    if let Some(result) = primary_result {
+        let (view, unanswered) = result.map_err(forge_err)?;
+        changed |= merge_pr_view(&mut meta, &view);
+        if let (Some(n), Some(pr)) = (unanswered, meta.pr.as_mut()) {
+            if pr.unanswered_comments != Some(n) {
+                pr.unanswered_comments = Some(n);
+                changed = true;
+            }
+        }
+        primary_merged = view.state == clash::domain::forge::ChangeState::Merged;
+    }
+    for (i, view, unanswered) in linked_results {
+        let Some(pr) = meta.linked_prs.get_mut(i) else {
+            continue;
+        };
+        let state_str = view.state.as_str();
+        if pr.number != view.number || pr.draft != view.draft || pr.state != state_str {
+            pr.number = view.number;
+            pr.draft = view.draft;
+            pr.state = state_str.to_string();
+            pr.last_checked_at = now_ms();
             changed = true;
         }
+        if let Some(n) = unanswered {
+            if pr.unanswered_comments != Some(n) {
+                pr.unanswered_comments = Some(n);
+                changed = true;
+            }
+        }
     }
-    if view.state == clash::domain::forge::ChangeState::Merged
-        && meta.status.can_transition_to(WorkflowStatus::Done)
-    {
+    if primary_merged && meta.status.can_transition_to(WorkflowStatus::Done) {
         meta.status = WorkflowStatus::Done;
         changed = true;
     }
@@ -1861,6 +1949,322 @@ pub(crate) async fn attach_workflow_pr(
         }
     }
     Ok(meta)
+}
+
+/// Link a PR from *another* repository to this item (a backend/frontend/
+/// contract split lands as several PRs; the item tracks all of them). The
+/// linked list never drives the item's status — that stays the primary PR's
+/// job, which is also why this command, unlike `attach_workflow_pr`, touches
+/// no status at all.
+#[tauri::command]
+pub(crate) async fn attach_workflow_linked_pr(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    url: String,
+) -> Result<clash::domain::workflow::WorkflowMeta, String> {
+    let url = url.trim().to_string();
+    let (repo, number) = clash::infrastructure::gh::parse_pr_url(&url)
+        .ok_or_else(|| format!("Not a GitHub PR URL: {}", url))?;
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    // Identity is `owner/repo#number` (two URL spellings of one PR must not
+    // create two rows) — refuse duplicates of the primary or of the list.
+    let same = |u: &str| {
+        clash::infrastructure::gh::parse_pr_url(u).is_some_and(|(r, n)| r == repo && n == number)
+    };
+    if meta.pr.as_ref().is_some_and(|p| same(&p.url)) {
+        return Err("That PR is already this item's primary PR".to_string());
+    }
+    if meta.linked_prs.iter().any(|p| same(&p.url)) {
+        return Err("That PR is already linked to this item".to_string());
+    }
+    meta.linked_prs.push(clash::domain::workflow::WorkflowPr {
+        url: url.clone(),
+        number,
+        ..Default::default()
+    });
+    state
+        .backend
+        .write_workflow_meta(&project, &slug, &meta)
+        .map_err(e2s)?;
+    seed_local(&state, &project, &slug, meta.status);
+
+    // Best-effort detail fill (state, draft) — ignored when gh is
+    // unavailable; the next refresh heals it, same as the primary attach.
+    if let Ok(dir) = pr_dir(&meta) {
+        let forge = state.forge_for_dir(&dir);
+        let selector = number.to_string();
+        let scope = repo.clone();
+        if let Ok(Ok(view)) = tauri::async_runtime::spawn_blocking(move || {
+            forge.view(Path::new(&dir), &selector, Some(&scope))
+        })
+        .await
+        {
+            if let Some(pr) = meta.linked_prs.iter_mut().find(|p| p.url == url) {
+                pr.number = view.number;
+                pr.draft = view.draft;
+                pr.state = view.state.as_str().to_string();
+                pr.last_checked_at = now_ms();
+                state
+                    .backend
+                    .write_workflow_meta(&project, &slug, &meta)
+                    .map_err(e2s)?;
+            }
+        }
+    }
+    Ok(meta)
+}
+
+/// Unlink a linked PR (by its recorded URL). The PR itself is untouched —
+/// this only stops clash from tracking it on this item.
+#[tauri::command]
+pub(crate) fn remove_workflow_linked_pr(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    url: String,
+) -> Result<clash::domain::workflow::WorkflowMeta, String> {
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    let before = meta.linked_prs.len();
+    meta.linked_prs.retain(|p| p.url != url);
+    if meta.linked_prs.len() == before {
+        return Err(format!("No linked PR with URL {}", url));
+    }
+    state
+        .backend
+        .write_workflow_meta(&project, &slug, &meta)
+        .map_err(e2s)?;
+    seed_local(&state, &project, &slug, meta.status);
+    Ok(meta)
+}
+
+// ── Share & export ──────────────────────────────────────────────────────
+
+/// The three share/notify settings, as one row for the Settings panel.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ShareSettings {
+    slack_webhook: String,
+    discord_webhook: String,
+    notify_webhook: String,
+}
+
+fn share_settings(state: &GuiState) -> ShareSettings {
+    let cfg = state.config.get();
+    ShareSettings {
+        slack_webhook: cfg.workflows.slack_webhook.trim().to_string(),
+        discord_webhook: cfg.workflows.discord_webhook.trim().to_string(),
+        notify_webhook: cfg.workflows.notify_webhook.trim().to_string(),
+    }
+}
+
+#[tauri::command]
+pub(crate) fn get_workflow_share_settings(state: State<'_, GuiState>) -> ShareSettings {
+    share_settings(&state)
+}
+
+/// Patch the share/notify settings (the Settings panel's Workflows group).
+/// Every field is optional — `Some` sets, `None` leaves the current value —
+/// one command for the group, like `set_workflow_item_settings`. Values equal
+/// to the schema default are reset (the key leaves config.toml) rather than
+/// written out.
+#[tauri::command]
+pub(crate) fn set_workflow_share_settings(
+    state: State<'_, GuiState>,
+    slack_webhook: Option<String>,
+    discord_webhook: Option<String>,
+    notify_webhook: Option<String>,
+) -> Result<ShareSettings, String> {
+    let mut sets: Vec<(&str, serde_json::Value)> = Vec::new();
+    let mut resets: Vec<&str> = Vec::new();
+    let mut url_setting = |key: &'static str, value: Option<String>| -> Result<(), String> {
+        let Some(value) = value else { return Ok(()) };
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            resets.push(key);
+        } else if !clash::infrastructure::webhook::valid_url(&value) {
+            return Err(format!("Not an http(s) webhook URL: {}", value));
+        } else {
+            sets.push((key, serde_json::Value::String(value)));
+        }
+        Ok(())
+    };
+    url_setting("workflows.slack_webhook", slack_webhook)?;
+    url_setting("workflows.discord_webhook", discord_webhook)?;
+    if let Some(notify) = notify_webhook {
+        let notify = notify.trim().to_ascii_lowercase();
+        if !["off", "slack", "discord"].contains(&notify.as_str()) {
+            return Err(format!("Unknown notify destination '{}'", notify));
+        }
+        if notify == "off" {
+            resets.push("workflows.notify_webhook");
+        } else {
+            sets.push((
+                "workflows.notify_webhook",
+                serde_json::Value::String(notify),
+            ));
+        }
+    }
+    if !sets.is_empty() {
+        state.config.set_json(&sets).map_err(|e| e.to_string())?;
+    }
+    if !resets.is_empty() {
+        state
+            .config
+            .reset_values(&resets)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(share_settings(&state))
+}
+
+/// Compose the share document for an item — the exact markdown every
+/// destination sends, built by the pure core builder so the dialog's preview
+/// *is* the payload. The diff is only read when the caller asked for it.
+#[tauri::command]
+pub(crate) async fn build_workflow_share(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    sections: clash::application::workflow_share::ShareSections,
+) -> Result<String, String> {
+    let meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    let read = |doc: &str| {
+        state
+            .backend
+            .read_workflow_doc(&project, &slug, doc)
+            .unwrap_or_default()
+    };
+    let plan = if sections.plan {
+        read(clash::infrastructure::fs::workflows::PLAN_FILE)
+    } else {
+        String::new()
+    };
+    let review_md = if sections.timeline {
+        read(clash::infrastructure::fs::workflows::REVIEW_FILE)
+    } else {
+        String::new()
+    };
+    let agent_md = if sections.reviews {
+        read(clash::infrastructure::fs::workflows::AGENT_REVIEW_FILE)
+    } else {
+        String::new()
+    };
+    let annotations = if sections.annotations {
+        state
+            .backend
+            .load_workflow_annotations(&project, &slug)
+            .map(|f| f.annotations)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let diff = if sections.diff {
+        workflow_diff_text(&state, &project, &slug, None)
+            .await
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    Ok(clash::application::workflow_share::build_share_markdown(
+        &clash::application::workflow_share::ShareInput {
+            meta: &meta,
+            project: &project,
+            slug: &slug,
+            plan: &plan,
+            review_md: &review_md,
+            agent_review_md: &agent_md,
+            annotations: &annotations,
+            diff: &diff,
+        },
+        &sections,
+    ))
+}
+
+/// POST a share document to the configured Slack/Discord webhook. Returns
+/// whether the message was truncated to the service's size limit. Only ever
+/// called from the share dialog's explicit send — never automatically.
+#[tauri::command]
+pub(crate) async fn share_workflow_webhook(
+    state: State<'_, GuiState>,
+    kind: String,
+    text: String,
+) -> Result<bool, String> {
+    use clash::infrastructure::webhook::{self, WebhookKind};
+    let kind = WebhookKind::parse(&kind).ok_or_else(|| format!("Unknown webhook '{}'", kind))?;
+    let cfg = state.config.get();
+    let url = match kind {
+        WebhookKind::Slack => cfg.workflows.slack_webhook.clone(),
+        WebhookKind::Discord => cfg.workflows.discord_webhook.clone(),
+    };
+    if url.trim().is_empty() {
+        return Err(format!(
+            "no {} webhook configured — set it in Settings → Workflows",
+            kind.as_str()
+        ));
+    }
+    tauri::async_runtime::spawn_blocking(move || webhook::send(kind, &url, &text))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Write an export (`.md` / `.html`) to `dir` (the folder the user picked;
+/// their Downloads folder when omitted). The filename is clash-derived —
+/// never caller-supplied, so this stays an export command rather than a
+/// generic write-any-file hole. An existing file gets `-2`, `-3`, … instead
+/// of being overwritten. Returns the written path.
+#[tauri::command]
+pub(crate) fn export_workflow_share(
+    project: String,
+    slug: String,
+    format: String,
+    content: String,
+    dir: Option<String>,
+) -> Result<String, String> {
+    let ext = match format.as_str() {
+        "md" | "html" => format.as_str(),
+        other => return Err(format!("Unknown export format '{}'", other)),
+    };
+    let dir = match dir.map(|d| d.trim().to_string()).filter(|d| !d.is_empty()) {
+        Some(d) => crate::expand_tilde(&d),
+        None => dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .ok_or_else(|| "Cannot resolve a folder to export into".to_string())?,
+    };
+    if !dir.is_dir() {
+        return Err(format!("Not a directory: {}", dir.display()));
+    }
+    // project/slug come from the item listing (directory names), but stay
+    // defensive: a path separator in the filename would escape `dir`.
+    let clean = |s: &str| {
+        s.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+    };
+    let base = format!("clash-{}-{}", clean(&project), clean(&slug));
+    let mut path = dir.join(format!("{}.{}", base, ext));
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{}-{}.{}", base, n, ext));
+        n += 1;
+    }
+    std::fs::write(&path, content)
+        .map_err(|e| format!("Cannot write {}: {}", path.display(), e))?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 // ── Skills (visualize the Claude Code skills clash ships/uses) ──────────

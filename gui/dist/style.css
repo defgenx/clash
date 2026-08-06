@@ -2130,3 +2130,131 @@ button.busy:disabled { opacity: 1; }
 .wf-review-opt-text { display: flex; flex-direction: column; gap: 2px; }
 .wf-review-opt-label { font-size: 13px; }
 .wf-review-opt-detail { font-size: 12px; color: var(--fg-dim, #8a8a8a); }
+
+/* ── Share dialog ─────────────────────────────────────────────── */
+/* Sections on the left, live preview on the right: the preview IS the
+   payload, so it gets the room. */
+.dialog-box.wf-share-box { width: min(920px, 92vw); }
+.wf-share-layout {
+  display: grid;
+  grid-template-columns: 250px 1fr;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+.wf-share-side { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.wf-share-preset { font-size: 12px; display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.wf-share-preset select { flex: 1; }
+.wf-share-section {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.wf-share-section:hover { background: var(--bg-hover); }
+.wf-share-section.disabled { opacity: 0.5; cursor: default; }
+.wf-share-section input[type="checkbox"] { margin-top: 2px; }
+.wf-share-section > span { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.wf-share-section-label { font-size: 13px; }
+.wf-share-section .dim { font-size: 11px; }
+.wf-share-preview {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  padding: 10px 14px;
+  overflow: auto;
+  max-height: min(58vh, 560px);
+  min-height: 220px;
+}
+.wf-share-actions { flex-wrap: wrap; }
+
+/* ── PR dashboard ─────────────────────────────────────────────── */
+.wf-prs { padding: 14px 18px; max-width: 980px; display: flex; flex-direction: column; gap: 6px; }
+.wf-prs-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+.wf-prs-head h4 { font-size: 12px; letter-spacing: 0.06em; }
+.wf-prs-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-sidebar);
+}
+.wf-prs-row.settled { opacity: 0.6; }
+.wf-prs-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+  cursor: pointer;
+}
+.wf-prs-title { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wf-prs-item .dim { font-size: 11px; white-space: nowrap; }
+.wf-prs-chips { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.wf-prs-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+.wf-prs-chip:hover { border-color: var(--accent); }
+.wf-prs-chip.pr-merged { opacity: 0.65; text-decoration: line-through; }
+.wf-prs-chip.pr-closed { opacity: 0.65; }
+.wf-prs-chip.pr-draft { border-style: dashed; }
+/* Linked-PR buttons in the item header read slightly quieter than the primary. */
+.wf-linked-pr { opacity: 0.85; }
+
+/* ── Guided tour ──────────────────────────────────────────────── */
+.tour-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 400; /* above dialogs — a tour over a dialog makes no sense, but under would be worse */
+  /* Transparent: the scrim comes from the ring's punched-out box-shadow, so
+     the spotlighted element keeps its full brightness. */
+  background: transparent;
+}
+.tour-ring {
+  position: absolute;
+  border: 2px solid var(--accent);
+  border-radius: 8px;
+  /* The spotlight: everything but the ring darkens; the ring stays punched out. */
+  box-shadow: 0 0 0 9999px var(--scrim);
+  pointer-events: none;
+  transition: left 0.18s ease, top 0.18s ease, width 0.18s ease, height 0.18s ease;
+}
+.tour-tip {
+  position: absolute;
+  width: 320px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  box-shadow: var(--shadow-2, 0 8px 30px rgba(0, 0, 0, 0.35));
+}
+.tour-tip-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.tour-tip-body { font-size: 12.5px; line-height: 1.5; color: var(--fg); opacity: 0.9; }
+.tour-tip-nav { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.tour-tip-nav .dim { font-size: 11px; }
+.tour-tip-nav button {
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+.tour-tip-nav button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent, #1a1a1a);
+}

@@ -32,13 +32,13 @@
 - **Repo config discovery** — auto-detects MCP servers, custom commands, agent definitions, and setup scripts from the project directory
 - **Teams & tasks** — create, rename, configure, and delete teams; manage members (agent type, model, prompt, rename) and see at a glance who's running; full task management (create, cycle status, assign owner, delete); per-agent inboxes. In the GUI, jump straight from a running member to its live session.
 - **Scratches** — keep free-form text notes inside clash (`:scratch`), organized in an IntelliJ-style **"Scratches and Consoles"** tree: create notes and nested folders, rename, delete, and reorganize (move via a folder picker in the TUI, drag-and-drop in the GUI). Each note is a plain file under `~/.claude/clash/scratch/` by default — set `scratch_dir` in `config.toml` (or the GUI **Scratch directory** setting) to store them anywhere. Opening a scratch shows an editor picker: terminal editors (vim/emacs/nano…) open in a tab/pane, GUI editors (VS Code/Cursor/Zed…) launch alongside, like opening a project
-- **Workflows (GUI)** — manage a full plan → plan-review → implement → diff-review → (optional) PR pipeline per feature: launch a planning agent, read the plan, approve or request changes, **annotate the diff with line-level comments** the agent addresses on the next round, then approve straight to done or — if you use PRs — track the draft PR and **mark it ready** once validated — with a full **revision timeline** (every round's note, plan diff, frozen plan and code diff), decision notifications, and a kanban board. Start end-to-end, **from a plan you already have**, or **review-only from an existing PR or branch**. See [Workflows](#workflows-gui)
+- **Workflows (GUI)** — manage a full plan → plan-review → implement → diff-review → (optional) PR pipeline per feature: launch a planning agent, read the plan, approve or request changes, **annotate the diff with line-level comments** the agent addresses on the next round, then approve straight to done or — if you use PRs — track the draft PR and **mark it ready** once validated — with a full **revision timeline** (every round's note, plan diff, frozen plan and code diff), decision notifications, and a kanban board. Multi-repo work is first-class: **link the PRs from the other repos** to one item and open/track them all together, with a **PR dashboard** across every project. Any item can be **shared or exported** (clipboard, `.md`/`.html` file, Slack/Discord webhook) with a preview of exactly what leaves the machine. Start end-to-end, **from a plan you already have**, or **review-only from an existing PR or branch**. See [Workflows](#workflows-gui)
 - **Subagent tracking** — view subagent trees per session, expand/collapse in the sessions table
 - **Open in IDE** — press `e` to open a session's project in your editor (auto-detects Cursor, VS Code, Zed, JetBrains, nvim, vim; configurable)
 - **Keyboard-driven** — vim-style navigation, command mode (`:`), fuzzy filter (`/`), context help (`?`)
 - **UI state persistence** — restores navigation, selection, filters, and expanded sessions on restart
 - **Multi-instance** — run several clash apps (TUI and/or GUI) side by side; each owns its own sessions via a per-instance daemon socket
-- **Guided tour** — first-launch walkthrough, replay anytime with `:tour`
+- **Guided tour** — first-launch walkthrough in both frontends: `:tour` replays it in the TUI, *Settings → clash → Show the tour* in the GUI
 - **Debug mode** — `clash --debug` enables verbose logging with a header indicator
 - **Self-updating** — `:update` in the TUI or `clash update` from the CLI
 
@@ -370,6 +370,13 @@ tui_terminal = ""          # TUI launcher target; empty = auto-detect
 [notifications]
 enabled = true
 title_attention = true     # "clash (2!)" in the window title
+
+[workflows]
+pr_skill = "hivebrite-engineering:github-pr"  # skill the PR phase opens PRs with; "none" disables
+forge = "auto"             # code forge for PR features: auto | github | none
+slack_webhook = ""         # Slack incoming webhook for sharing + notifications
+discord_webhook = ""       # Discord webhook for sharing + notifications
+notify_webhook = "off"     # announce decision states: off | slack | discord
 
 [[ides]]                   # extra editors offered when opening a project or note
 name = "VS Code"
@@ -723,6 +730,34 @@ through that skill — your org's titles, templates and ticket links — instead
 of a raw `gh pr create`. Empty means the agent follows the repo's own
 conventions.
 
+**Multi-repo work — linked PRs**: one piece of work often lands as several
+PRs (backend + frontend + contracts). **🔗 Link a PR…** on an item attaches
+PRs from *other* repositories: they show as chips in the item header (state,
+draft, merged), refresh with the same poll as the primary, and **Open PRs (n)**
+opens all of them at once. Linked PRs never drive the item's status — only the
+primary PR does; right-click a linked chip to unlink it. The executor agent may
+record them too (`meta.linkedPrs` in the file contract).
+
+**PR dashboard**: the ⇄ button on the WORKFLOWS section opens one list of
+every item holding a PR across all projects — state chips per PR, unanswered
+review-comment counts, last-touched age — decisions first, merged/closed last.
+Click a row to open the item, a chip to open the PR.
+
+**Share & export**: **↗ Share…** on any item (also in its right-click menu)
+composes a share document from the item's files — summary, plan, change
+rounds, agent-review verdicts, open comments, diff — with three presets
+(*Summary*, *Review packet*, *Full dossier*) and per-section checkboxes. The
+live preview **is** the payload: what you see is exactly what goes to the
+clipboard, a saved `.md`/`.html` file (the HTML is self-contained, diagrams
+included — a colleague without clash can open it), or a **Slack / Discord
+webhook** (configure the URLs in *Settings → Workflows*; messages are
+truncated to the service limit with an explicit marker, never silently).
+
+**Decision notifications on Slack/Discord**: set *Settings → Workflows →
+Notify decisions* and every item an *agent* parks at a decision state
+(plan review, diff review, PR draft) is announced on the configured webhook —
+your own clicks never post, and `off` (the default) sends nothing, ever.
+
 Workflows are GUI-only for now; the TUI will grow a read-only view.
 
 ## GUI (primary mode)
@@ -733,8 +768,14 @@ feature exists in both). A cmux-style desktop client lives in `gui/` — a
 Tauri 2 app sharing the same core as the TUI (session pipeline, in-process
 PTY daemon, protocol). Sidebar
 with session sections and status rings; embedded xterm.js terminals
-(GPU-accelerated WebGL rendering, with automatic fallback to the DOM
-renderer on context loss) attach to the same sessions the TUI manages.
+(GPU-accelerated WebGL rendering; a lost GL context is reacquired
+automatically, falling back to the DOM renderer only after repeated losses —
+and saying so in clash.log) attach to the same sessions the TUI manages.
+
+First launch opens a **guided tour** — a spotlight walkthrough of the window
+(workspaces, sessions, workflows, scratches, tabs & panes, settings). Skip or
+finish it and it never auto-runs again; replay it anytime from *Settings →
+clash → Show the tour*.
 
 GUI features: fuzzy search (`/` or `⌘F`), inline rename (double-click),
 new session via the sidebar's `＋ New session` button (`⌘T`) with preset

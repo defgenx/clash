@@ -157,8 +157,15 @@ pub trait Forge: Send + Sync {
     /// Post one top-level comment.
     fn comment(&self, dir: &Path, number: u64, body: &str) -> Result<(), ForgeError>;
 
-    /// Count review-comment threads nobody has replied to.
-    fn unanswered_review_comments(&self, dir: &Path, number: u64) -> Result<u64, ForgeError>;
+    /// Count review-comment threads nobody has replied to. `repo` scopes the
+    /// lookup to an explicit `owner/repo` — required for a linked PR, whose
+    /// repository is not the one `dir`'s remotes point at.
+    fn unanswered_review_comments(
+        &self,
+        dir: &Path,
+        number: u64,
+        repo: Option<&str>,
+    ) -> Result<u64, ForgeError>;
 }
 
 #[cfg(test)]
