@@ -80,6 +80,9 @@ test("the change-request composer opens without throwing", async () => {
       return "";
     },
     changeRequestTemplate: () => "",
+    composerIntro: () => "",
+    noteCaption: () => "Note",
+    submitLabel: () => "Record round",
     annotationsMarkdown: () => "",
     canSubmitChangeRequest: () => ({ ok: true }),
     agentReviewRounds: () => [],

@@ -44,6 +44,36 @@
     ].join("\n");
   }
 
+  /// The dialog's opening line — the answer to "what do I write here, and
+  /// must I write anything?", adapting to what the round already carries.
+  /// The plumbing (review.md, iteration N) lives on a dim second line:
+  /// humans decide with purpose, not file names.
+  function composerIntro(target, openCount) {
+    if (target === "plan") {
+      return "Describe what should change in the plan. This becomes the agent's instructions for the next revision round.";
+    }
+    if (openCount === 1) {
+      return "Your diff comment below is the work order for the next agent round — you can send it as is. Add a note only if it needs framing: priorities, context, what's out of scope.";
+    }
+    if (openCount > 1) {
+      return `Your ${openCount} diff comments below are the work order for the next agent round — you can send them as is. Add a note only if they need framing: priorities, what ties them together, what's out of scope.`;
+    }
+    return "Describe what should change and why. This becomes the agent's instructions for the next round.";
+  }
+
+  /// Caption over the note field — it says "optional" out loud when the
+  /// comments already carry the work, which is the answer to the blank
+  /// intimidating textarea.
+  function noteCaption(target, openCount) {
+    return target !== "plan" && openCount > 0 ? "Note — optional" : "Note";
+  }
+
+  /// The submit button names its consequence and tracks the After-recording
+  /// choice — the moment of commitment is where the outcome must be visible.
+  function submitLabel(launchNow) {
+    return launchNow ? "Record & launch agent" : "Record round";
+  }
+
   /// Placeholder shown in an empty composer — the shape of a good request,
   /// without occupying the field.
   function composerPlaceholder(target, openCount) {
@@ -165,6 +195,9 @@
 
   const api = {
     changeRequestTemplate,
+    composerIntro,
+    noteCaption,
+    submitLabel,
     composerPlaceholder,
     annotationsMarkdown,
     canSubmitChangeRequest,

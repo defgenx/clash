@@ -5238,24 +5238,27 @@ function wfComposeChangeRequest({ item, target, annotations, onJump }) {
 
     const hint = document.createElement("p");
     hint.className = "dialog-detail";
-    hint.textContent =
-      `Markdown. Appended to review.md as iteration ${(item.meta.iteration || 0) + 1} and ` +
-      "read by the agent as its instructions for the next round.";
+    hint.textContent = composerIntro(target, live.length);
     box.appendChild(hint);
+    const plumbing = document.createElement("p");
+    plumbing.className = "wf-compose-plumbing";
+    plumbing.textContent = `Recorded as iteration ${(item.meta.iteration || 0) + 1} — the first thing the agent reads next round. Markdown, ⌘↵ to send.`;
+    box.appendChild(plumbing);
 
     // Toolbar: template + preview. Both are opt-in so the one-sentence path
     // stays a one-sentence path.
     const tools = document.createElement("div");
     tools.className = "wf-compose-tools";
-    const noteCaption = document.createElement("span");
-    noteCaption.className = "wf-compose-caption";
-    noteCaption.textContent = "Note";
-    tools.appendChild(noteCaption);
+    const noteCap = document.createElement("span");
+    noteCap.className = "wf-compose-caption";
+    noteCap.textContent = noteCaption(target, live.length);
+    tools.appendChild(noteCap);
     const tmplBtn = document.createElement("button");
     tmplBtn.type = "button";
     tmplBtn.className = "icon-btn wide";
-    tmplBtn.textContent = "Insert template";
-    tmplBtn.title = "What to change / Why / Out of scope";
+    tmplBtn.textContent = "What / Why / Out of scope";
+    tmplBtn.title =
+      "Insert the three-section scaffold for a thorough request — most rounds are fine as one sentence";
     tools.appendChild(tmplBtn);
     const previewBtn = document.createElement("button");
     previewBtn.type = "button";
@@ -5278,6 +5281,20 @@ function wfComposeChangeRequest({ item, target, annotations, onJump }) {
     }
     box.appendChild(tools);
 
+    let suggest = null;
+    if (item.lastAgentReview && !(wfDrafts.get(key) || "").trim()) {
+      suggest = document.createElement("p");
+      suggest.className = "wf-compose-suggest";
+      const stext = document.createElement("span");
+      stext.textContent = `Review round ${item.lastAgentReview.round} left findings — `;
+      const slink = document.createElement("button");
+      slink.type = "button";
+      slink.className = "wf-compose-suggest-link";
+      slink.textContent = "insert them as your starting point";
+      suggest.append(stext, slink);
+      box.appendChild(suggest);
+    }
+
     const field = document.createElement("textarea");
     field.className = "wf-compose-input";
     field.rows = 14;
@@ -5285,6 +5302,16 @@ function wfComposeChangeRequest({ item, target, annotations, onJump }) {
     field.value = wfDrafts.get(key) || "";
     field.placeholder = composerPlaceholder(target, live.length);
     box.appendChild(field);
+    if (suggest) {
+      const slink = suggest.querySelector("button");
+      slink.onclick = () => {
+        if (findingsBtn) findingsBtn.onclick();
+        suggest.remove();
+      };
+      field.addEventListener("input", () => {
+        if (field.value.trim()) suggest.remove();
+      });
+    }
 
     // Rendered preview of exactly what will land in review.md.
     const preview = document.createElement("div");
@@ -5487,6 +5514,7 @@ function wfComposeChangeRequest({ item, target, annotations, onJump }) {
     next.appendChild(launchRow);
     const syncLaunchRow = () => {
       launchRow.hidden = !launchNow.checked;
+      send.textContent = submitLabel(launchNow.checked);
     };
     recordOnly.onchange = syncLaunchRow;
     launchNow.onchange = syncLaunchRow;
@@ -5504,7 +5532,7 @@ function wfComposeChangeRequest({ item, target, annotations, onJump }) {
     actions.appendChild(cancel);
     const send = document.createElement("button");
     send.className = "primary";
-    send.textContent = "Request changes";
+    send.textContent = submitLabel(false);
     actions.appendChild(send);
     box.appendChild(actions);
 

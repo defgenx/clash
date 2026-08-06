@@ -7,6 +7,9 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   changeRequestTemplate,
+  composerIntro,
+  noteCaption,
+  submitLabel,
   composerPlaceholder,
   annotationsMarkdown,
   canSubmitChangeRequest,
@@ -30,6 +33,32 @@ test("the plan template asks about the plan, not the code", () => {
   const plan = changeRequestTemplate("plan");
   assert.match(plan, /^## What to change in the plan$/m);
   assert.doesNotMatch(plan, /^## What to change$/m);
+});
+
+test("the intro answers 'what do I write, and must I?', per scenario", () => {
+  // Comments already queued: they ARE the work order, the note is optional —
+  // and the dialog must say so instead of presenting a blank required-looking
+  // field.
+  const withComments = composerIntro("diff", 3);
+  assert.match(withComments, /3 diff comments below are the work order/);
+  assert.match(withComments, /send them as is/);
+  assert.match(composerIntro("diff", 1), /send it as is/);
+  // No comments: the note is the round.
+  assert.match(composerIntro("diff", 0), /Describe what should change and why/);
+  // A plan round is always prose.
+  assert.match(composerIntro("plan", 5), /change in the plan/);
+});
+
+test("the note caption says 'optional' exactly when comments carry the work", () => {
+  assert.equal(noteCaption("diff", 2), "Note — optional");
+  assert.equal(noteCaption("diff", 0), "Note");
+  // Plan rounds require a note whatever the diff comments say.
+  assert.equal(noteCaption("plan", 5), "Note");
+});
+
+test("the submit button names its consequence", () => {
+  assert.equal(submitLabel(false), "Record round");
+  assert.equal(submitLabel(true), "Record & launch agent");
 });
 
 test("the placeholder tells you it is markdown and where it goes", () => {
@@ -182,6 +211,9 @@ test("the browser branch publishes every name app.js calls", () => {
   const app = fs.readFileSync(path.join(__dirname, "..", "dist", "app.js"), "utf8");
   const used = [
     "changeRequestTemplate",
+    "composerIntro",
+    "noteCaption",
+    "submitLabel",
     "composerPlaceholder",
     "annotationsMarkdown",
     "canSubmitChangeRequest",
