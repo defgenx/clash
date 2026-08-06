@@ -113,6 +113,9 @@ pub struct General {
     pub claude_bin: String,
     /// Filesystem-watcher debounce.
     pub debounce_ms: u64,
+    /// What a startup does when a clash upgrade shipped changed skills:
+    /// `ask` | `all` | `untouched` | `keep`.
+    pub skills_update: String,
 }
 
 impl Default for General {
@@ -120,6 +123,7 @@ impl Default for General {
         Self {
             claude_bin: default_str("general.claude_bin"),
             debounce_ms: default_int("general.debounce_ms") as u64,
+            skills_update: default_str("general.skills_update"),
         }
     }
 }

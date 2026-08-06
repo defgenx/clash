@@ -218,6 +218,15 @@ pub const PROPS: &[Prop] = &[
         "Filesystem-watcher debounce in milliseconds. Higher means fewer, larger refresh batches.",
     )
     .restart(),
+    Prop::new(
+        "general.skills_update",
+        Kind::Enum(&["ask", "all", "untouched", "keep"]),
+        Val::Str("ask"),
+        "What to do when a clash upgrade ships changed agent skills: `ask` shows a popup at \
+         startup; `all` overwrites every managed skill (local edits included); `untouched` \
+         updates only skills you never edited; `keep` leaves everything as is. Missing skills \
+         always install.",
+    ),
     // ── [paths] ─────────────────────────────────────────────────────
     Prop::new(
         "paths.claude_dir",

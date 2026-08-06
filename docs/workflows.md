@@ -479,22 +479,28 @@ session as `--model`. An unrecognized phase falls back to the implementation
 model: a phase name that isn't listed is assumed to do work, and
 under-powering real work is the worse failure.
 
-## Embedded skills — install, versioning, retirement
+## Embedded skills — install as a decision
 
-The three skills (`clash-workflow`, `clash-plan-review`, `clash-code-review`)
-are compiled into both binaries and installed under `<claude_dir>/skills/` at
-every startup, compare-then-write. The embedded copy is the source of truth:
-local edits are overwritten (copy under a different name for a custom
-variant). Two mechanisms make that visible instead of silent:
+The four skills (`clash-workflow`, `clash-plan-review`, `clash-code-review`,
+`clash-explain`) are compiled into both binaries. Installing them under
+`<claude_dir>/skills/` is a **decision, not a side effect**:
 
-- A manifest, `<claude_dir>/skills/.clash-skills.json`, records the clash
-  version and a per-skill content hash of what was last installed. It gates
-  nothing — it is how the installer can tell "this file changed because clash
-  upgraded" from "the user edited it since we last wrote it".
-- `install_skills` returns a report (updated / retired-and-removed /
-  locally-edited-and-overwritten). The GUI toasts a non-noop report at boot
-  and shows the installing version in the Skills tab; the TUI logs it.
-
-Skills clash used to ship live in `RETIRED_SKILLS` and are deleted from the
-install dir at startup — a retired `clash-review` left behind would keep
-matching kickoff prompts its replacements now own.
+- **Missing skills always install** at startup — there is nothing to
+  protect, and workflow agents break without them.
+- Everything else goes through plan → decide → apply. `plan_install`
+  categorizes each skill (outdated = changed upstream, untouched locally;
+  locally-edited = changed upstream AND hand-edited since clash last wrote
+  it) plus retired dirs still present. When something needs deciding, the
+  GUI shows a startup popup: **Update all** (overwrite local edits) /
+  **Update untouched only** / **Keep everything as is** — or applies the
+  `general.skills_update` setting silently when it is not `ask` (Settings →
+  Workflows → *Skill updates*). Esc defers: asked again next launch.
+- `apply_decision` performs the choice, removes `RETIRED_SKILLS` dirs (never
+  on `keep`), and stamps the manifest's `resolvedFingerprint` — a hash of the
+  embedded set, so the question returns only when the skills actually change
+  again (fingerprint, not version: dev builds change content without a bump).
+- The manifest (`.clash-skills.json`) records the per-skill hash **as last
+  written by clash** — the "was it hand-edited since?" oracle. Kept local
+  edits keep their old hash, so they stay detectable as edits forever.
+- The TUI has no popup: it installs missing skills, honors a non-`ask`
+  setting, and otherwise logs a pointer to the GUI.

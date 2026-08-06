@@ -4498,7 +4498,7 @@ async function buildSkillsView(el, selectName) {
   let skillsVersion = "";
   try {
     skills = await invoke("list_skills");
-    skillsVersion = (await invoke("get_skills_report").catch(() => null))?.version || "";
+    skillsVersion = (await invoke("get_skills_plan").catch(() => null))?.version || "";
   } catch (e) {
     el.innerHTML = `<h4>SKILLS</h4><p class='hint'>failed: ${escapeHtml(e)}</p>`;
     return;
@@ -4540,8 +4540,8 @@ async function buildSkillsView(el, selectName) {
       note.className = "skills-managed-note";
       const v = skillsVersion ? ` (v${skillsVersion})` : "";
       note.textContent = skill.upToDate
-        ? `managed by clash${v} — auto-updated at startup, local edits are overwritten`
-        : `managed by clash${v} — differs from the embedded version (refreshes on next launch)`;
+        ? `managed by clash${v} — updates are offered at startup (see Settings → Workflows → Skill updates)`
+        : `managed by clash${v} — differs from the embedded version; the startup popup (or your Skill-updates policy) decides what happens`;
       tools.appendChild(note);
     }
     const open = document.createElement("button");
@@ -9088,6 +9088,19 @@ $("set-wf-forge").addEventListener("change", async () => {
   }
 });
 
+/// Startup policy for changed skills: ask (popup) or one of the silent modes.
+$("set-skills-update").addEventListener("change", async () => {
+  const el = $("set-skills-update");
+  try {
+    el.value = await invoke("set_skills_update_mode", { mode: el.value });
+  } catch (e) {
+    uiAlert(`Skill updates: ${e}`);
+    try {
+      el.value = await invoke("get_skills_update_mode");
+    } catch (_) {}
+  }
+});
+
 /// Native pickers for every path setting — a folder picker for the directory
 /// rows, a file picker for the ones naming an executable. Each fills the field
 /// and then fires the same `change` handler typing would, so config-backed rows
@@ -9318,20 +9331,56 @@ function restartSessionPoll() {
   invoke("get_workflow_forge")
     .then((f) => ($("set-wf-forge").value = f || "auto"))
     .catch(() => {});
-  // A clash upgrade that rewrote/retired skills must be visible, not silent:
-  // the backend kept the startup install report for exactly this toast.
-  invoke("get_skills_report")
-    .then((r) => {
-      if (!r || (!r.updated.length && !r.removed.length && !r.locallyEdited.length)) return;
-      const bits = [];
-      if (r.updated.length) bits.push(`updated: ${r.updated.join(", ")}`);
-      if (r.removed.length) bits.push(`retired: ${r.removed.join(", ")}`);
-      if (r.locallyEdited.length)
-        bits.push(`local edits overwritten: ${r.locallyEdited.join(", ")}`);
-      flashToast(`Skills refreshed for clash v${r.version} — ${bits.join(" · ")}`);
-      dlog(`skills report: ${JSON.stringify(r)}`);
-    })
+  invoke("get_skills_update_mode")
+    .then((m) => ($("set-skills-update").value = m || "ask"))
     .catch(() => {});
+  // A clash upgrade that shipped changed skills is a DECISION, not a side
+  // effect: ask (default), or apply the Settings policy silently. Missing
+  // skills were already installed by the backend — nothing to protect there.
+  (async () => {
+    try {
+      const plan = await invoke("get_skills_plan");
+      if (!plan || !plan.needsDecision) return;
+      const apply = async (mode) => {
+        const r = await invoke("apply_skills_decision", { mode });
+        const bits = [];
+        if (r.updated.length) bits.push(`updated: ${r.updated.join(", ")}`);
+        if (r.locallyEdited.length)
+          bits.push(`local edits overwritten: ${r.locallyEdited.join(", ")}`);
+        if (r.kept.length) bits.push(`kept as-is: ${r.kept.join(", ")}`);
+        if (r.removed.length) bits.push(`retired: ${r.removed.join(", ")}`);
+        flashToast(`Skills — ${bits.join(" · ") || "nothing to change"}`);
+        dlog(`skills decision applied: ${JSON.stringify(r)}`);
+      };
+      const policy = await invoke("get_skills_update_mode").catch(() => "ask");
+      if (policy && policy !== "ask") {
+        await apply(policy);
+        return;
+      }
+      const parts = [];
+      if (plan.outdated.length)
+        parts.push(`updated upstream: ${plan.outdated.join(", ")}`);
+      if (plan.locallyEdited.length)
+        parts.push(`with your local edits: ${plan.locallyEdited.join(", ")}`);
+      if (plan.retiredPresent.length)
+        parts.push(`retired: ${plan.retiredPresent.join(", ")}`);
+      const how = await uiChoice({
+        message: `clash v${plan.version} ships changed agent skills — update them?`,
+        detail:
+          parts.join(" · ") +
+          ". Choosing here settles it until the next upgrade; automate it in Settings → Workflows → Skill updates.",
+        choices: [
+          { label: "Update all (overwrite local edits)", value: "all", primary: true },
+          { label: "Update untouched only", value: "untouched" },
+          { label: "Keep everything as is", value: "keep" },
+        ],
+      });
+      // Esc = decide later: asked again next launch.
+      if (how) await apply(how);
+    } catch (e) {
+      dlog(`skills plan failed: ${e}`);
+    }
+  })();
   if (!state.settings.notifications) {
     invoke("set_notifications_enabled", { enabled: false }).catch(console.error);
   }

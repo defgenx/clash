@@ -373,13 +373,60 @@ pub(crate) fn set_workflow_item_settings(
     Ok(meta)
 }
 
-/// What the startup skill install changed — the frontend toasts a non-noop
-/// report so a clash upgrade that rewrote skills is visible, not silent.
+/// What a skills upgrade would touch, computed fresh from disk. The frontend
+/// asks at boot: `needsDecision` drives the popup (or the automatic
+/// application when `general.skills_update` is not `ask`).
 #[tauri::command]
-pub(crate) fn get_skills_report(
+pub(crate) fn get_skills_plan(
     state: State<'_, GuiState>,
-) -> clash::infrastructure::skills::SkillsReport {
-    state.skills_report.clone()
+) -> clash::infrastructure::skills::SkillsPlan {
+    clash::infrastructure::skills::plan_install(state.backend.base_dir())
+}
+
+/// Apply a skills-update decision (`all` | `untouched` | `keep`) and stamp
+/// it, so the question only returns on the next actual upgrade.
+#[tauri::command]
+pub(crate) fn apply_skills_decision(
+    state: State<'_, GuiState>,
+    mode: String,
+) -> Result<clash::infrastructure::skills::SkillsReport, String> {
+    let mode = clash::infrastructure::skills::ApplyMode::parse(&mode)
+        .ok_or_else(|| format!("Unknown skills-update mode '{}'", mode))?;
+    Ok(clash::infrastructure::skills::apply_decision(
+        state.backend.base_dir(),
+        mode,
+    ))
+}
+
+/// The startup policy for changed skills, for the Settings field.
+#[tauri::command]
+pub(crate) fn get_skills_update_mode(state: State<'_, GuiState>) -> String {
+    state.config.get().general.skills_update
+}
+
+/// Set the startup policy: `ask` shows the popup, the other three apply
+/// silently. `ask` resets to the default.
+#[tauri::command]
+pub(crate) fn set_skills_update_mode(
+    state: State<'_, GuiState>,
+    mode: String,
+) -> Result<String, String> {
+    let value = mode.trim().to_ascii_lowercase();
+    if !["ask", "all", "untouched", "keep"].contains(&value.as_str()) {
+        return Err(format!("Unknown skills-update mode '{}'", mode));
+    }
+    if value == "ask" {
+        state
+            .config
+            .reset_values(&["general.skills_update"])
+            .map_err(|e| e.to_string())?;
+    } else {
+        state
+            .config
+            .set_json(&[("general.skills_update", serde_json::Value::String(value))])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(state.config.get().general.skills_update)
 }
 
 // ── Write path ──────────────────────────────────────────────────────────

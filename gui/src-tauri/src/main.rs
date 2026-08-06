@@ -71,11 +71,6 @@ struct GuiState {
     /// — keeps concurrent viewports from stacking gh subprocesses, without
     /// persisting a timestamp on every poll (which would churn the watcher).
     pr_checked: Mutex<HashMap<(String, String), i64>>,
-    /// What the startup skill install changed (set once at boot, before
-    /// `manage`). The frontend reads it via `get_skills_report` and toasts a
-    /// non-noop install — skills silently rewritten by an upgrade were
-    /// invisible before this.
-    skills_report: clash::infrastructure::skills::SkillsReport,
     /// Detected forge per repo directory. Detection is one local `git
     /// remote get-url` subprocess; the PR poll resolves a forge every 30s per
     /// visible item, so the answer is cached (a repo's origin host does not
@@ -2855,7 +2850,7 @@ fn main() {
 
     let (wild_processes_tx, wild_processes_rx) = tokio::sync::watch::channel(Vec::new());
 
-    let mut state = GuiState {
+    let state = GuiState {
         backend: FsBackend::new(data_dir)
             .with_scratch_dir(settings.paths.scratch_dir.clone())
             .with_workflows_dir(settings.paths.workflows_dir.clone()),
@@ -2870,16 +2865,16 @@ fn main() {
         watcher: Mutex::new(None),
         attention: Mutex::new(clash::application::workflow::AttentionLedger::default()),
         pr_checked: Mutex::new(HashMap::new()),
-        skills_report: clash::infrastructure::skills::SkillsReport::default(),
         forge_cache: Mutex::new(HashMap::new()),
     };
 
-    // Ship/refresh the embedded skills so the agent side of Workflows is
-    // always present and up-to-date, even when only the GUI is ever launched.
-    // The report is kept for the frontend: a non-noop install (a clash upgrade
-    // rewrote skills, retired one, or overwrote local edits) gets a toast
-    // instead of happening silently.
-    state.skills_report = clash::infrastructure::skills::install_skills(state.backend.base_dir());
+    // Skills: only the missing ones install at startup — anything beyond that
+    // is a decision the frontend drives at boot (get_skills_plan →
+    // popup/setting → apply_skills_decision), never a silent overwrite.
+    let missing = clash::infrastructure::skills::install_missing(state.backend.base_dir());
+    if !missing.is_empty() {
+        tracing::info!("installed missing skills: {:?}", missing);
+    }
     // Re-key registry entries whose conversation moved through resume forks
     // (claude --resume writes a NEW transcript while hooks keep reporting
     // the old id) so the session list, persisted pane ids, and the first
@@ -3110,7 +3105,10 @@ fn main() {
             workflows::get_workflow_forge,
             workflows::set_workflow_forge,
             workflows::set_workflow_item_settings,
-            workflows::get_skills_report,
+            workflows::get_skills_plan,
+            workflows::apply_skills_decision,
+            workflows::get_skills_update_mode,
+            workflows::set_skills_update_mode,
             workflows::list_skills,
             workflows::get_skill
         ])
