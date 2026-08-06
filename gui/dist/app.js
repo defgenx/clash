@@ -471,7 +471,31 @@ function workspacesJson() {
     // WKWebView's localStorage, which is not HOME-isolated — quietly overwrite
     // a hand-edited config.toml on the next boot (plan Finding 5).
     settings: guiLocalSettings(),
+    // Sidebar geometry + which sections are open. Duplicated from
+    // localStorage ("clash-panel-sizes") because the bare WKWebView loses
+    // localStorage — gui-state.json is the durable copy, seeded back at boot.
+    sidebar: sidebarPersistState(),
   });
+}
+
+/// What the sidebar looks like right now, for persistence: open/collapsed per
+/// section plus every panel size (widths + section heights).
+function sidebarPersistState() {
+  let sizes = {};
+  try {
+    sizes = JSON.parse(localStorage.getItem("clash-panel-sizes") || "{}");
+  } catch (e) {
+    void e;
+  }
+  return {
+    open: {
+      teams: !!state.teamsOpen,
+      notes: !!state.notesOpen,
+      wf: !!state.wfOpen,
+      settings: !$("settings-body").classList.contains("hidden"),
+    },
+    sizes,
+  };
 }
 
 /// The settings blob minus everything that now lives in config.toml.
@@ -544,9 +568,15 @@ let settingsResolved = false;
 /// Setting keys that live in config.toml rather than gui-state.json. Filled
 /// from the backend (the schema is the source of truth), so this never drifts.
 let sharedSettingKeys = new Set();
+/// Sidebar geometry + open sections from the persisted blob, applied at boot.
+let savedSidebar = null;
 
 function applyWorkspacesData(data, { migratable = false } = {}) {
   if (!data) return false;
+  // Same first-source-wins rule as settings: disk before localStorage.
+  if (data.sidebar && typeof data.sidebar === "object" && !savedSidebar) {
+    savedSidebar = data.sidebar;
+  }
   // Settings ride along with the workspaces blob but load independently — a
   // fresh install with no workspaces yet still gets its saved settings. First
   // source wins: loadWorkspaces tries disk before the localStorage fallback,
@@ -3182,6 +3212,7 @@ function renderDiff(text) {
 
 async function toggleTeams() {
   state.teamsOpen = !state.teamsOpen;
+  saveWorkspaces();
   $("teams-caret").textContent = state.teamsOpen ? "▾" : "▸";
   $("teams-list").classList.toggle("hidden", !state.teamsOpen);
   applySectionHeight("teams-section", "teams-resizer", state.teamsOpen, "teamsHeight");
@@ -3301,6 +3332,7 @@ async function deleteTeamConfirm(name) {
 
 async function toggleNotes() {
   state.notesOpen = !state.notesOpen;
+  saveWorkspaces();
   $("notes-caret").textContent = state.notesOpen ? "▾" : "▸";
   $("notes-list").classList.toggle("hidden", !state.notesOpen);
   applySectionHeight("notes-section", "notes-resizer", state.notesOpen, "notesHeight");
@@ -4039,6 +4071,7 @@ function wfGroup(item) {
 
 async function toggleWorkflows() {
   state.wfOpen = !state.wfOpen;
+  saveWorkspaces();
   $("wf-caret").textContent = state.wfOpen ? "▾" : "▸";
   $("wf-list").classList.toggle("hidden", !state.wfOpen);
   applySectionHeight("wf-section", "wf-resizer", state.wfOpen, "wfHeight");
@@ -7514,6 +7547,7 @@ $("teams-toggle").onclick = toggleTeams;
 function toggleSettings(open) {
   const want = open ?? $("settings-body").classList.contains("hidden");
   $("settings-body").classList.toggle("hidden", !want);
+  saveWorkspaces();
   $("settings-caret").textContent = want ? "▾" : "▸";
   // Reopen shows the whole list — a leftover filter would look like the
   // settings had vanished.
@@ -8525,6 +8559,9 @@ function savePanelSize(key, px) {
   } catch (e) {
     console.error("savePanelSize failed:", e);
   }
+  // Mirror into the durable blob — localStorage alone does not survive the
+  // bare WKWebView reliably.
+  saveWorkspaces();
 }
 
 /// Horizontal drag-to-resize. `compute(clientX)` returns the new width.
@@ -8557,6 +8594,29 @@ function initResizer(handleId, panelId, storageKey, min, max, compute) {
 initResizer("sidebar-resizer", "sidebar", "sidebar", 180, 480, (x) => x);
 initResizer("details-resizer", "details", "details", 240, 640, (x) => window.innerWidth - x);
 loadPanelSizes();
+
+/// Re-open the sections and re-apply the geometry saved in gui-state.json.
+/// localStorage is only a same-session cache the bare WKWebView loses, so the
+/// disk copy seeds it back before anything measures.
+async function restoreSidebarState() {
+  if (!savedSidebar) return;
+  if (savedSidebar.sizes && typeof savedSidebar.sizes === "object") {
+    try {
+      localStorage.setItem("clash-panel-sizes", JSON.stringify(savedSidebar.sizes));
+    } catch (e) {
+      void e;
+    }
+    loadPanelSizes();
+  }
+  const open = savedSidebar.open || {};
+  const jobs = [];
+  if (open.wf && !state.wfOpen) jobs.push(toggleWorkflows());
+  if (open.notes && !state.notesOpen) jobs.push(toggleNotes());
+  if (open.teams && !state.teamsOpen) jobs.push(toggleTeams());
+  if (open.settings) toggleSettings(true);
+  await Promise.all(jobs).catch(() => {});
+  reapplySectionHeights();
+}
 
 // ── Sidebar section heights (TEAMS / SCRATCHES) ─────────────────
 // The collapsible lower sidebar sections get a draggable divider on top so
@@ -9387,6 +9447,7 @@ function restartSessionPoll() {
   state.homeDir = await invoke("get_home_dir").catch(() => "");
   if (state.homeDir) $("default-cwd").placeholder = state.homeDir;
   renderAll();
+  await restoreSidebarState();
   setVersionLabel();
   refreshTuiIndicator();
   setInterval(refreshTuiIndicator, 5000);
