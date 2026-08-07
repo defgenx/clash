@@ -1384,6 +1384,7 @@ pub(crate) async fn start_workflow_review_agent(
     publish: ReviewPublish,
     interactive: Option<bool>,
     target: Option<ReviewTarget>,
+    pr_url: Option<String>,
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
@@ -1400,9 +1401,24 @@ pub(crate) async fn start_workflow_review_agent(
             meta.status
         ));
     }
+    // The PR the round talks to: the primary by default, or a specific one
+    // the launcher picked (multi-repo items answer reviewers per PR). A pick
+    // must be one of the item's recorded PRs — anything else is a typo, not
+    // a target.
+    let pr_url = pr_url
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty());
+    if let Some(u) = &pr_url {
+        let known = meta.pr.as_ref().is_some_and(|p| &p.url == u)
+            || meta.linked_prs.iter().any(|p| &p.url == u);
+        if !known {
+            return Err(format!("This item does not track the PR {}", u));
+        }
+    }
     // Fail before spawning rather than letting the agent discover it: a round
-    // that talks to the forge needs a PR to talk to.
-    if publish.needs_pr() && meta.pr.as_ref().is_none_or(|p| p.url.is_empty()) {
+    // that talks to the forge needs a PR to talk to. An explicit pick IS that
+    // PR, even when the item has no primary (linked-only items).
+    if publish.needs_pr() && pr_url.is_none() && meta.pr.as_ref().is_none_or(|p| p.url.is_empty()) {
         return Err("no-pr: this item has no pull request yet".to_string());
     }
     // Plan/diff stay DERIVED from the launch status (a plan review at
@@ -1430,6 +1446,7 @@ pub(crate) async fn start_workflow_review_agent(
         return_status: meta.status,
         round: meta.review_round.saturating_add(1),
         interactive,
+        pr_url: pr_url.unwrap_or_default(),
         started_at: now_ms(),
         ..Default::default()
     };

@@ -5195,11 +5195,34 @@ async function launchWfReview(item, root) {
 /// rest into the item's comment queue. Its own action, not a publish mode
 /// buried two dialogs deep — answering reviewers is a different job from
 /// producing a fresh review, and a job you can't see is a job you don't have.
+/// Multi-repo items answer reviewers per PR, so several PRs means picking one
+/// — the choice rides the kickoff (`PR: <url>`) and `meta.review.prUrl`.
 async function launchWfReviewRespond(item, root) {
-  const prName = item.meta.pr && item.meta.pr.number ? `#${item.meta.pr.number}` : "the PR";
-  const count = item.meta.pr ? item.meta.pr.unansweredComments : null;
-  if (!(await uiConfirm(answerCommentsConfirm(prName, count), "Launch"))) return;
-  await spawnWfReview(item, root, "standard", "respond-pr-comments");
+  const prs = itemPrs(item.meta);
+  if (!prs.length) return;
+  let pr = prs[0];
+  if (prs.length > 1) {
+    const picked = await uiListChoice({
+      message: "Answer review comments on which PR?",
+      items: prs.map((p) => ({
+        label: `${prChipLabel(p)}${p.primary ? " (primary)" : ""}`,
+        detail:
+          p.unanswered != null
+            ? `${p.url} · ${p.unanswered} unanswered`
+            : p.url,
+        value: p.url,
+      })),
+    });
+    if (picked === null) return;
+    pr = prs.find((p) => p.url === picked);
+  }
+  const prName = pr.primary
+    ? pr.number
+      ? `#${pr.number}`
+      : "the PR"
+    : prChipLabel(pr);
+  if (!(await uiConfirm(answerCommentsConfirm(prName, pr.unanswered), "Launch"))) return;
+  await spawnWfReview(item, root, "standard", "respond-pr-comments", null, null, pr.url);
 }
 
 /// Mirror of the backend's `workflow_session_name`: the item title (shortened,
@@ -5247,7 +5270,9 @@ async function wfPrRecovery(item, err, retry) {
 /// comments" action, and the "Explain changes" structure round), so the
 /// session is registered, named and refreshed identically wherever it starts.
 /// `target` is only ever "structure" — plan/diff stay derived by the backend.
-async function spawnWfReview(item, root, depth, publish, interactive = null, target = null) {
+/// `prUrl` pins the round to one of the item's PRs (respond rounds on
+/// multi-PR items); null means the primary.
+async function spawnWfReview(item, root, depth, publish, interactive = null, target = null, prUrl = null) {
   try {
     const sid = await invoke("start_workflow_review_agent", {
       project: item.project,
@@ -5256,6 +5281,7 @@ async function spawnWfReview(item, root, depth, publish, interactive = null, tar
       publish,
       interactive,
       target,
+      prUrl,
       cols: 120,
       rows: 40,
     });
@@ -5284,10 +5310,10 @@ async function spawnWfReview(item, root, depth, publish, interactive = null, tar
       });
       if (how === "attach") {
         await wfPrRecovery(item, e, (fresh) =>
-          spawnWfReview(fresh, root, depth, publish, interactive, target)
+          spawnWfReview(fresh, root, depth, publish, interactive, target, prUrl)
         );
       } else if (how === "local") {
-        await spawnWfReview(item, root, depth, "local", interactive, target);
+        await spawnWfReview(item, root, depth, "local", interactive, target, null);
       }
       return;
     }
@@ -6230,9 +6256,17 @@ function renderWfActions(bar, root, item) {
   // from the last PR refresh when it's known, so the button doubles as the
   // signal that a respond round has work waiting.
   const answerCommentsButton = () => {
-    if (!wfCanReview(item) || !wfHasPr(item)) return;
-    const count = item.meta.pr.unansweredComments;
-    const prName = item.meta.pr.number ? `#${item.meta.pr.number}` : "the PR";
+    // Any PR will do — a linked-only item still has reviewers to answer.
+    const prs = itemPrs(item.meta);
+    if (!wfCanReview(item) || !prs.length) return;
+    const known = prs.filter((p) => p.unanswered != null);
+    const count = known.length ? known.reduce((n, p) => n + p.unanswered, 0) : null;
+    const prName =
+      prs.length > 1
+        ? `${prs.length} PRs (you pick one)`
+        : prs[0].number
+          ? `#${prs[0].number}`
+          : "the PR";
     add(
       `⇄ ${answerCommentsLabel(count)}`,
       "",

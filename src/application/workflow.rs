@@ -725,6 +725,14 @@ pub fn build_review_prompt(
     mode: WorkflowMode,
 ) -> String {
     let engine = review_engine_for(review.target);
+    // The PR the round talks to, when the launcher picked one (a linked PR
+    // lives in another repository, so the reviewer must know before reading
+    // anything). Absent means the primary `meta.pr`.
+    let pr = if review.pr_url.is_empty() {
+        String::new()
+    } else {
+        format!(" PR: {}.", review.pr_url)
+    };
     let interactive = match review.interactive {
         Some(true) => " Interactive: yes.",
         Some(false) => " Interactive: no.",
@@ -732,7 +740,7 @@ pub fn build_review_prompt(
     };
     format!(
         "Use the {} skill. Workflow item directory: {}. \
-         Target: {}. Depth: {}. Publish: {}. Round: {}. Return to: {}. Mode: {}.{}",
+         Target: {}. Depth: {}. Publish: {}. Round: {}. Return to: {}. Mode: {}.{}{}",
         engine,
         item_dir,
         review.target,
@@ -741,6 +749,7 @@ pub fn build_review_prompt(
         review.round.max(1),
         review.return_status,
         mode,
+        pr,
         interactive
     )
 }
@@ -1337,6 +1346,25 @@ Tighten the API.\n\n\
         // The repeatability contract has to be in the prompt, not just on disk.
         assert!(p.contains("Return to: pr-draft."));
         assert!(p.contains("Mode: full."));
+        // No PR field unless the launcher picked one.
+        assert!(!p.contains("PR:"));
+    }
+
+    #[test]
+    fn review_prompt_names_the_picked_pr() {
+        use crate::domain::workflow::{ReviewPublish, WorkflowReview};
+        let p = build_review_prompt(
+            "/x/i",
+            &WorkflowReview {
+                publish: ReviewPublish::RespondPrComments,
+                pr_url: "https://github.com/o/other/pull/7".into(),
+                ..WorkflowReview::default()
+            },
+            WorkflowMode::Full,
+        );
+        // The reviewer must know which PR before reading anything — a linked
+        // PR lives in another repository.
+        assert!(p.contains("PR: https://github.com/o/other/pull/7."));
     }
 
     #[test]

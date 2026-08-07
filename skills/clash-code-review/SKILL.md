@@ -25,6 +25,13 @@ The kickoff prompt gives you:
 - **Round** — the 1-based round number; use it as your section heading
 - **Return to** — the status to restore when you finish. **This is a contract.**
 - **Mode** — `full` | `from-plan` | `review-only`
+- **PR** — optional; the URL of the PR this round talks to (also in
+  `meta.review.prUrl`). Absent means the item's primary `meta.pr.url`. When
+  it names a **linked** PR, that PR lives in a *different repository* than
+  your cwd: scope every `gh` call with `--repo <owner/repo>` parsed from the
+  URL, and fetch any file context you need through `gh api` — the checkout
+  around you is the item's repo, not that one, so never "fix" anything
+  locally for a linked PR; mirror it as an annotation instead.
 - **Interactive** — optional; see the opening question below.
 
 Your shell cwd is the item's worktree when it has one, otherwise the repo. The
@@ -203,9 +210,10 @@ instead.
   **one** review per round. Never `--approve` and never `--request-changes` —
   approval is the human's call, not yours. Findings you already published in an
   earlier round must not be posted twice.
-- **`respond-pr-comments`** — read the PR's review comments
-  (`gh api /repos/{owner}/{repo}/pulls/<n>/comments` and
-  `gh pr view <n> --json reviews,comments`), and for each one still unanswered:
+- **`respond-pr-comments`** — read the review comments of **the round's PR**
+  (the kickoff's `PR:` field, else the primary `meta.pr.url`) via
+  `gh api /repos/{owner}/{repo}/pulls/<n>/comments` and
+  `gh pr view <n> --json reviews,comments`, and for each one still unanswered:
   address it if it is a trivial fix under the rule above, otherwise mirror it
   into `annotations.json` as an `author: "agent"` annotation so it enters the
   human's triage queue. Interactive rounds walk the human through each comment

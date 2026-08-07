@@ -176,6 +176,7 @@ pr-draft / pr-ready likewise
 | `depth` | `standard` \| `deep` | `deep` reads the surrounding implementation and checks the artifact against it |
 | `publish` | `local` \| `pr-comments` \| `respond-pr-comments` | what the round does beyond the item |
 | `interactive` | absent \| `true` \| `false` | absent = the skill asks in-session; the composer's launch-time answer otherwise |
+| `prUrl` | absent \| a PR URL | the PR the round talks to when the launcher picked one (respond rounds on multi-PR items); absent = the primary |
 | `returnStatus` | any status | where the round puts the item back — the repeatability contract |
 
 Publish rules that earned their place:
@@ -225,9 +226,12 @@ Every value is also in `meta.json.review`; repeating it in the prompt lets the
 reviewer refuse impossible work before reading anything (a `plan` target with no
 plan, a publish mode needing a PR that does not exist) and makes `Return to:`
 impossible to miss. The reviewer's last act is always to restore that status.
-One optional trailing field: `Interactive: yes|no` — **absent means the skill
-asks in-session** before starting (the GUI composer's "ask me when it starts"
-default omits the field).
+Two optional trailing fields: `PR: <url>` — the PR the round talks to, when
+the launcher picked one of several (multi-repo items answer reviewers per PR;
+absent means the primary `meta.pr.url`, and a linked PR's calls must be
+repo-scoped since it lives in another repository) — and `Interactive: yes|no`
+— **absent means the skill asks in-session** before starting (the GUI
+composer's "ask me when it starts" default omits the field).
 
 Plan review and code review are **two separate, self-contained skills** — each
 owns the whole job for its target: the judgement, the file contract

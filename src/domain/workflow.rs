@@ -371,6 +371,10 @@ pub struct WorkflowReview {
     /// chose neither at launch, so the skill asks in-session before starting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interactive: Option<bool>,
+    /// The PR this round talks to, when the launcher picked one — multi-repo
+    /// items answer reviewers per PR. Empty means the primary `meta.pr`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pr_url: String,
     #[serde(default)]
     pub started_at: i64,
     #[serde(flatten)]
