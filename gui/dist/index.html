@@ -119,6 +119,15 @@
             <option value="discord">Discord</option>
           </select>
         </label>
+        <label class="setting-row">Jira site URL
+          <input id="set-wf-jira-url" type="text" placeholder="https://yourorg.atlassian.net" autocomplete="off" spellcheck="false" title="Jira site URL for the share dialog's Post-to-Jira destination. Nothing is ever posted without an explicit Share action. Empty disables Jira." />
+        </label>
+        <label class="setting-row">Jira email
+          <input id="set-wf-jira-email" type="text" placeholder="you@yourorg.com" autocomplete="off" spellcheck="false" title="Jira account email paired with the API token." />
+        </label>
+        <label class="setting-row">Jira API token
+          <input id="set-wf-jira-token" type="password" placeholder="API token" autocomplete="off" spellcheck="false" title="Jira API token (id.atlassian.com → Security → API tokens). Stored in config.toml like the webhook URLs." />
+        </label>
 
         <div class="settings-group">Terminal · text</div>
         <label class="setting-row">Font family

@@ -377,6 +377,9 @@ forge = "auto"             # code forge for PR features: auto | github | none
 slack_webhook = ""         # Slack incoming webhook for sharing + notifications
 discord_webhook = ""       # Discord webhook for sharing + notifications
 notify_webhook = "off"     # announce decision states: off | slack | discord
+jira_base_url = ""         # Jira site URL for share → Post to Jira; empty disables
+jira_email = ""            # Jira account email (API-token auth)
+jira_api_token = ""        # Jira API token (id.atlassian.com → Security)
 
 [[ides]]                   # extra editors offered when opening a project or note
 name = "VS Code"
@@ -752,9 +755,15 @@ rounds, agent-review verdicts, open comments, diff — with three presets
 (*Summary*, *Review packet*, *Full dossier*) and per-section checkboxes. The
 live preview **is** the payload: what you see is exactly what goes to the
 clipboard, a saved `.md`/`.html` file (the HTML is self-contained, diagrams
-included — a colleague without clash can open it), or a **Slack / Discord
+included — a colleague without clash can open it), a **Slack / Discord
 webhook** (configure the URLs in *Settings → Workflows*; messages are
-truncated to the service limit with an explicit marker, never silently).
+truncated to the service limit with an explicit marker, never silently), or a
+**Jira ticket** — *Post to Jira…* asks for the ticket key (pre-filled from
+the item's title/branch when one is mentioned, like `PS-1234`) and posts the
+document as one comment, converted to Jira's wiki markup. Configure the Jira
+site URL, account email and API token in *Settings → Workflows*; the
+destination is hidden until all three are set. Share the plan to its ticket
+the moment it's ready — same preview, same one-click send.
 
 **Decision notifications on Slack/Discord**: set *Settings → Workflows →
 Notify decisions* and every item an *agent* parks at a decision state

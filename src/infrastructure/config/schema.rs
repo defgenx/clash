@@ -343,6 +343,27 @@ pub const PROPS: &[Prop] = &[
          draft) on the configured webhook. Only agent-driven transitions post — never your own \
          clicks.",
     ),
+    Prop::new(
+        "workflows.jira_base_url",
+        Kind::Str,
+        Val::Str(""),
+        "Jira site URL (e.g. https://yourorg.atlassian.net) used by the workflow share \
+         dialog's \"Post to Jira\" destination. Empty disables it. Nothing is ever posted \
+         without an explicit share action.",
+    ),
+    Prop::new(
+        "workflows.jira_email",
+        Kind::Str,
+        Val::Str(""),
+        "Jira account email paired with the API token for the \"Post to Jira\" destination.",
+    ),
+    Prop::new(
+        "workflows.jira_api_token",
+        Kind::Str,
+        Val::Str(""),
+        "Jira API token (id.atlassian.com → Security → API tokens) for the \"Post to Jira\" \
+         destination. Stored in config.toml like the webhook URLs.",
+    ),
     // ── [appearance] — GUI-local ────────────────────────────────────
     Prop::new(
         "appearance.theme",

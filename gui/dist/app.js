@@ -5282,6 +5282,7 @@ async function wfShareDialog(item) {
     hasPlan: wfHasPlanPhase(item),
     slackConfigured: !!settings.slackWebhook,
     discordConfigured: !!settings.discordWebhook,
+    jiraConfigured: !!(settings.jiraBaseUrl && settings.jiraEmail && settings.jiraApiToken),
     preset: "packet",
   });
 
@@ -5424,6 +5425,21 @@ async function wfShareDialog(item) {
               dir,
             });
             flashToast(`Saved ${path}`);
+          } else if (d.id === "jira") {
+            // One comment on a ticket; the key is pre-filled from wherever
+            // the item mentions one (title, branch, slug).
+            const ticket = await uiPrompt(
+              "Post to Jira — ticket key",
+              detectTicketKey(item.meta.title, item.meta.branch, item.slug)
+            );
+            if (!ticket || !ticket.trim()) return;
+            const truncated = await invoke("share_workflow_jira", {
+              ticket: ticket.trim(),
+              text: current,
+            });
+            flashToast(
+              `Posted to ${ticket.trim().toUpperCase()}${truncated ? " (truncated to fit)" : ""}`
+            );
           } else {
             // slack / discord — the backend truncates to the service limit
             // and says so, rather than letting the tail vanish silently.
@@ -8873,6 +8889,12 @@ function restoreBrowserTabs() {
 /// every layout change (fitAll). A browser tab's webview is shown iff
 /// the tab sits in a visible pane of the active workspace.
 function syncBrowserWebviews() {
+  // A modal dialog is up: native webviews paint over all DOM, so leave them
+  // hidden. Matters for *nested* dialogs (the Jira ticket prompt over the
+  // share dialog): the inner one's close calls fitAll() while the outer is
+  // still open. Whichever dialog closes last runs fitAll() with no backdrop
+  // left, and that call restores the webviews.
+  if (document.querySelector(".dialog-backdrop")) return;
   const w = ws();
   const visible = new Set(
     (w.zoomed ? [w.panes[w.focused]] : w.panes).filter(
@@ -9622,6 +9644,9 @@ function bindShareWebhookSetting(id, sendKey, readKey) {
 bindShareWebhookSetting("set-wf-slack-webhook", "slackWebhook", "slackWebhook");
 bindShareWebhookSetting("set-wf-discord-webhook", "discordWebhook", "discordWebhook");
 bindShareWebhookSetting("set-wf-notify-webhook", "notifyWebhook", "notifyWebhook");
+bindShareWebhookSetting("set-wf-jira-url", "jiraBaseUrl", "jiraBaseUrl");
+bindShareWebhookSetting("set-wf-jira-email", "jiraEmail", "jiraEmail");
+bindShareWebhookSetting("set-wf-jira-token", "jiraApiToken", "jiraApiToken");
 
 /// Startup policy for changed skills: ask (popup) or one of the silent modes.
 $("set-skills-update").addEventListener("change", async () => {
@@ -10005,6 +10030,9 @@ function restartSessionPoll() {
       $("set-wf-slack-webhook").value = s.slackWebhook || "";
       $("set-wf-discord-webhook").value = s.discordWebhook || "";
       $("set-wf-notify-webhook").value = s.notifyWebhook || "off";
+      $("set-wf-jira-url").value = s.jiraBaseUrl || "";
+      $("set-wf-jira-email").value = s.jiraEmail || "";
+      $("set-wf-jira-token").value = s.jiraApiToken || "";
     })
     .catch(() => {});
   // A clash upgrade that shipped changed skills is a DECISION, not a side

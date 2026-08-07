@@ -2046,13 +2046,16 @@ pub(crate) fn remove_workflow_linked_pr(
 
 // ── Share & export ──────────────────────────────────────────────────────
 
-/// The three share/notify settings, as one row for the Settings panel.
+/// The share/notify settings, as one row for the Settings panel.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ShareSettings {
     slack_webhook: String,
     discord_webhook: String,
     notify_webhook: String,
+    jira_base_url: String,
+    jira_email: String,
+    jira_api_token: String,
 }
 
 fn share_settings(state: &GuiState) -> ShareSettings {
@@ -2061,6 +2064,9 @@ fn share_settings(state: &GuiState) -> ShareSettings {
         slack_webhook: cfg.workflows.slack_webhook.trim().to_string(),
         discord_webhook: cfg.workflows.discord_webhook.trim().to_string(),
         notify_webhook: cfg.workflows.notify_webhook.trim().to_string(),
+        jira_base_url: cfg.workflows.jira_base_url.trim().to_string(),
+        jira_email: cfg.workflows.jira_email.trim().to_string(),
+        jira_api_token: cfg.workflows.jira_api_token.trim().to_string(),
     }
 }
 
@@ -2080,6 +2086,9 @@ pub(crate) fn set_workflow_share_settings(
     slack_webhook: Option<String>,
     discord_webhook: Option<String>,
     notify_webhook: Option<String>,
+    jira_base_url: Option<String>,
+    jira_email: Option<String>,
+    jira_api_token: Option<String>,
 ) -> Result<ShareSettings, String> {
     let mut sets: Vec<(&str, serde_json::Value)> = Vec::new();
     let mut resets: Vec<&str> = Vec::new();
@@ -2089,7 +2098,7 @@ pub(crate) fn set_workflow_share_settings(
         if value.is_empty() {
             resets.push(key);
         } else if !clash::infrastructure::webhook::valid_url(&value) {
-            return Err(format!("Not an http(s) webhook URL: {}", value));
+            return Err(format!("Not an http(s) URL: {}", value));
         } else {
             sets.push((key, serde_json::Value::String(value)));
         }
@@ -2097,6 +2106,18 @@ pub(crate) fn set_workflow_share_settings(
     };
     url_setting("workflows.slack_webhook", slack_webhook)?;
     url_setting("workflows.discord_webhook", discord_webhook)?;
+    url_setting("workflows.jira_base_url", jira_base_url)?;
+    let mut text_setting = |key: &'static str, value: Option<String>| {
+        let Some(value) = value else { return };
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            resets.push(key);
+        } else {
+            sets.push((key, serde_json::Value::String(value)));
+        }
+    };
+    text_setting("workflows.jira_email", jira_email);
+    text_setting("workflows.jira_api_token", jira_api_token);
     if let Some(notify) = notify_webhook {
         let notify = notify.trim().to_ascii_lowercase();
         if !["off", "slack", "discord"].contains(&notify.as_str()) {
@@ -2214,6 +2235,36 @@ pub(crate) async fn share_workflow_webhook(
     tauri::async_runtime::spawn_blocking(move || webhook::send(kind, &url, &text))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// POST a share document as one comment on a Jira ticket. The markdown is
+/// converted to Jira wiki markup and truncated to the comment limit; returns
+/// whether it was truncated. Only ever called from the share dialog's
+/// explicit send — never automatically.
+#[tauri::command]
+pub(crate) async fn share_workflow_jira(
+    state: State<'_, GuiState>,
+    ticket: String,
+    text: String,
+) -> Result<bool, String> {
+    let cfg = state.config.get();
+    let (base, email, token) = (
+        cfg.workflows.jira_base_url.clone(),
+        cfg.workflows.jira_email.clone(),
+        cfg.workflows.jira_api_token.clone(),
+    );
+    if base.trim().is_empty() || email.trim().is_empty() || token.trim().is_empty() {
+        return Err(
+            "Jira is not configured — set the site URL, email and API token in Settings → \
+             Workflows"
+                .to_string(),
+        );
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        clash::infrastructure::jira::post_comment(&base, &email, &token, &ticket, &text)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Write an export (`.md` / `.html`) to `dir` (the folder the user picked;

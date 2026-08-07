@@ -3106,6 +3106,7 @@ fn main() {
             workflows::set_workflow_share_settings,
             workflows::build_workflow_share,
             workflows::share_workflow_webhook,
+            workflows::share_workflow_jira,
             workflows::export_workflow_share,
             workflows::get_workflow_pr_skill,
             workflows::set_workflow_pr_skill,

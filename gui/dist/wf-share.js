@@ -56,6 +56,7 @@
     hasPlan = true,
     slackConfigured = false,
     discordConfigured = false,
+    jiraConfigured = false,
     preset = "packet",
   } = {}) {
     const checked = presetSections(preset);
@@ -84,8 +85,27 @@
           enabled: discordConfigured,
           hint: discordConfigured ? "" : "Set the Discord webhook in Settings → Workflows first",
         },
+        {
+          id: "jira",
+          label: "Post to Jira…",
+          enabled: jiraConfigured,
+          hint: jiraConfigured
+            ? ""
+            : "Set the Jira site URL, email and API token in Settings → Workflows first",
+        },
       ],
     };
+  }
+
+  /// The first Jira ticket key found in any of `texts` (PROJ-123, any case —
+  /// branch names carry `ps-1234`), uppercased. Pre-fills the Jira ticket
+  /// prompt from the item's title/branch/slug; the backend re-validates.
+  function detectTicketKey(...texts) {
+    for (const t of texts) {
+      const m = /(?:^|[^A-Za-z0-9])([A-Za-z]{2,}[A-Za-z0-9]*-\d+)(?![A-Za-z0-9])/.exec(t || "");
+      if (m) return m[1].toUpperCase();
+    }
+    return "";
   }
 
   /// The `sections` object from the dialog's live checkbox state.
@@ -142,6 +162,7 @@ ${bodyHtml}
     shareModel,
     sectionsFromChecks,
     shareHtmlDocument,
+    detectTicketKey,
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;

@@ -225,6 +225,13 @@ pub struct Workflows {
     /// Where decision-state transitions are announced: `off` | `slack` |
     /// `discord`.
     pub notify_webhook: String,
+    /// Jira site URL for the share dialog's "Post to Jira" destination.
+    /// Empty disables the destination.
+    pub jira_base_url: String,
+    /// Jira account email paired with the API token.
+    pub jira_email: String,
+    /// Jira API token; stored here like the webhook URLs.
+    pub jira_api_token: String,
 }
 
 impl Default for Workflows {
@@ -235,6 +242,9 @@ impl Default for Workflows {
             slack_webhook: default_str("workflows.slack_webhook"),
             discord_webhook: default_str("workflows.discord_webhook"),
             notify_webhook: default_str("workflows.notify_webhook"),
+            jira_base_url: default_str("workflows.jira_base_url"),
+            jira_email: default_str("workflows.jira_email"),
+            jira_api_token: default_str("workflows.jira_api_token"),
         }
     }
 }

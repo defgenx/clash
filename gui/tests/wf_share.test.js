@@ -15,6 +15,7 @@ const {
   shareModel,
   sectionsFromChecks,
   shareHtmlDocument,
+  detectTicketKey,
 } = require("../dist/wf-share.js");
 
 test("presets are honest sizes: summary ⊂ packet ⊂ dossier", () => {
@@ -50,13 +51,29 @@ test("webhook destinations exist only once configured, with a pointer to Setting
   const slack = off.destinations.find((d) => d.id === "slack");
   assert.equal(slack.enabled, false);
   assert.match(slack.hint, /Settings → Workflows/);
-  const on = shareModel({ slackConfigured: true, discordConfigured: true });
+  const on = shareModel({ slackConfigured: true, discordConfigured: true, jiraConfigured: true });
   assert.equal(on.destinations.find((d) => d.id === "slack").enabled, true);
   assert.equal(on.destinations.find((d) => d.id === "discord").enabled, true);
+  assert.equal(on.destinations.find((d) => d.id === "jira").enabled, true);
+  // Jira needs full config (URL + email + token) — partial reads as absent.
+  const jiraOff = off.destinations.find((d) => d.id === "jira");
+  assert.equal(jiraOff.enabled, false);
+  assert.match(jiraOff.hint, /Settings → Workflows/);
   // Local destinations never need configuration.
   for (const id of ["clipboard", "md", "html"]) {
     assert.equal(off.destinations.find((d) => d.id === id).enabled, true, id);
   }
+});
+
+test("detectTicketKey finds keys across title/branch/slug, uppercased, first hit wins", () => {
+  assert.equal(detectTicketKey("Fix login PS-1234"), "PS-1234");
+  assert.equal(detectTicketKey("", "fix/ps-987-login"), "PS-987");
+  assert.equal(detectTicketKey(null, undefined, "dop-12-cleanup"), "DOP-12");
+  assert.equal(detectTicketKey("no ticket", "nope", "still-nothing"), "");
+  // Single-letter fragments are not tickets; "utf-8"-style false positives
+  // are accepted — this only pre-fills an editable prompt.
+  assert.equal(detectTicketKey("v-2 of the api"), "");
+  assert.equal(detectTicketKey("utf-8 handling"), "UTF-8");
 });
 
 test("sectionsFromChecks normalizes to booleans over the full section list", () => {
@@ -90,6 +107,7 @@ test("browser branch publishes every global app.js reads", () => {
     "shareModel",
     "sectionsFromChecks",
     "shareHtmlDocument",
+    "detectTicketKey",
   ]) {
     assert.ok(name in sandbox.window, `${name} must be published to window`);
   }

@@ -449,8 +449,11 @@ file knows they exist and what they read. The GUI's share dialog composes one
 markdown document from the item's files (summary, `plan.md`, `review.md`
 iteration notes, `agent-review.md` verdicts, open annotations, the current
 diff — each section optional) and sends **exactly the previewed text** to a
-clipboard, a `.md`/`.html` export, or a Slack/Discord webhook configured in
-`config.toml` (`workflows.slack_webhook` / `workflows.discord_webhook`).
+clipboard, a `.md`/`.html` export, a Slack/Discord webhook configured in
+`config.toml` (`workflows.slack_webhook` / `workflows.discord_webhook`), or a
+Jira ticket as one comment (`workflows.jira_base_url` / `jira_email` /
+`jira_api_token`; the markdown is converted to Jira wiki markup and the
+ticket key is prompted per send, pre-filled from the item's title/branch).
 Nothing is ever posted without an explicit human action, with one opt-in
 exception: `workflows.notify_webhook` (`off` by default) announces items that
 an **agent** parks at a decision state — the same events as the desktop

@@ -18,6 +18,10 @@ pub mod gh;
 pub mod git;
 pub mod hooks;
 pub mod ide;
+/// Jira transport is consumed only through the lib crate (the GUI share
+/// command) — same dead-code allowance as `gh`/`forge`.
+#[allow(dead_code)]
+pub mod jira;
 pub mod logging;
 pub mod process_scan;
 pub mod session_refresh;
