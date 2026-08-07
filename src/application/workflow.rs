@@ -612,6 +612,18 @@ pub fn effective_pr_skill(item_value: &str, global: Option<&str>) -> Option<Stri
         .map(str::to_string)
 }
 
+/// Pure: should a **linked-only** item auto-close? True when the item has no
+/// primary PR (nothing else can drive its status) and every linked PR — at
+/// least one — is merged. Items *with* a primary keep the invariant that
+/// linked PRs never drive status: their auto-close rides the primary's merge
+/// alone, so a merged primary with pending siblings still closes.
+pub fn linked_only_all_merged(meta: &crate::domain::workflow::WorkflowMeta) -> bool {
+    let has_primary = meta.pr.as_ref().is_some_and(|p| !p.url.trim().is_empty());
+    !has_primary
+        && !meta.linked_prs.is_empty()
+        && meta.linked_prs.iter().all(|p| p.state == "MERGED")
+}
+
 /// Map an item's `interactionDefault` setting to the kickoff tri-state:
 /// `interactive`/`autonomous` pre-answer the skill's opening question,
 /// anything else leaves it to be asked in-session.
@@ -1270,6 +1282,31 @@ Tighten the API.\n\n\
         assert!(ledger
             .observe(&[item("p", "a", WorkflowStatus::Planning)])
             .is_empty());
+    }
+
+    // ── linked_only_all_merged ──────────────────────────────────────
+
+    #[test]
+    fn linked_only_items_close_when_every_linked_pr_merged() {
+        use crate::domain::workflow::WorkflowMeta;
+        let meta = |json: &str| -> WorkflowMeta { serde_json::from_str(json).unwrap() };
+        // No PRs at all: nothing to close on.
+        assert!(!linked_only_all_merged(&meta(r#"{"title":"x"}"#)));
+        // Linked-only, all merged → closes.
+        assert!(linked_only_all_merged(&meta(
+            r#"{"title":"x","linkedPrs":[{"url":"https://github.com/o/a/pull/1","state":"MERGED"},
+                {"url":"https://github.com/o/b/pull/2","state":"MERGED"}]}"#
+        )));
+        // One still open → stays.
+        assert!(!linked_only_all_merged(&meta(
+            r#"{"title":"x","linkedPrs":[{"url":"https://github.com/o/a/pull/1","state":"MERGED"},
+                {"url":"https://github.com/o/b/pull/2","state":"OPEN"}]}"#
+        )));
+        // A primary exists → linked PRs never drive status, merged or not.
+        assert!(!linked_only_all_merged(&meta(
+            r#"{"title":"x","pr":{"url":"https://github.com/o/c/pull/3"},
+                "linkedPrs":[{"url":"https://github.com/o/a/pull/1","state":"MERGED"}]}"#
+        )));
     }
 
     // ── build_agent_prompt ──────────────────────────────────────────

@@ -567,7 +567,8 @@ comments to the `review.md` audit trail, and hands back to the agent, which
 must address every open comment → *Approve → done* closes the item, or
 *Create draft PR* (via `gh`) first if you want the PR stages, in which case
 *Mark PR ready* flips the draft once you've validated everything. A merged PR
-moves the item to done automatically. *Request changes* stays available at
+moves the item to done automatically (an item with *only linked* PRs closes
+once all of them merge — it has no primary PR to drive it). *Request changes* stays available at
 `pr-draft` and `pr-ready` — review feedback keeps arriving once a PR is up,
 and a fix round on an item with a PR pushes its commits so the PR follows.
 The **Timeline** tab is the item's whole revision record in one newest-first

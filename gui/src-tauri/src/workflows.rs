@@ -1665,10 +1665,12 @@ pub(crate) async fn workflow_create_pr(
 
 /// Refresh the recorded PR state from `gh pr view` — the primary *and* every
 /// linked PR. Throttled in-memory (30s unless `force`); meta is written only
-/// when something changed, so polling never feeds the FS watcher. Only the
+/// when something changed, so polling never feeds the FS watcher. The
 /// **primary** PR observed as MERGED moves the item to `done` — linked PRs
-/// are tracked, never drivers. A linked PR that fails to refresh keeps its
-/// previous state (best-effort, like the unanswered count).
+/// are tracked, never drivers, with one exception: an item that has *only*
+/// linked PRs has no primary to drive it, so all of them merging closes it
+/// (see `linked_only_all_merged`). A linked PR that fails to refresh keeps
+/// its previous state (best-effort, like the unanswered count).
 #[tauri::command]
 pub(crate) async fn refresh_workflow_pr(
     state: State<'_, GuiState>,
@@ -1781,7 +1783,9 @@ pub(crate) async fn refresh_workflow_pr(
             }
         }
     }
-    if primary_merged && meta.status.can_transition_to(WorkflowStatus::Done) {
+    let all_linked_merged = clash::application::workflow::linked_only_all_merged(&meta);
+    if (primary_merged || all_linked_merged) && meta.status.can_transition_to(WorkflowStatus::Done)
+    {
         meta.status = WorkflowStatus::Done;
         changed = true;
     }

@@ -428,9 +428,13 @@ One piece of work often lands as several PRs (backend + frontend + contracts).
 `meta.json.linkedPrs` is an array of the same PR-block shape as `meta.pr`, for
 change requests in **other** repositories that belong to this item. Rules:
 
-- **They never drive the item's status.** Only the primary `pr` moves the item
-  (`MERGED → done`, the `pr-*` stages); linked PRs are tracked, refreshed and
-  opened alongside it, nothing more.
+- **They never drive the item's status** while a primary exists. Only the
+  primary `pr` moves the item (`MERGED → done`, the `pr-*` stages); linked PRs
+  are tracked, refreshed and opened alongside it, nothing more. The one
+  carve-out is the **linked-only** item — no primary, so nothing else can
+  close it: all of its linked PRs observed merged (at least one) moves it to
+  `done`, the same auto-close the primary's merge gives PR-flow items (the
+  pure `linked_only_all_merged`).
 - The entry's `url` is the identity (`owner/repo#number` after parsing — two
   spellings of one PR are one PR); every refresh call about a linked PR is
   scoped to the `owner/repo` its URL names, since the item's checkout points
