@@ -5440,20 +5440,30 @@ async function wfShareDialog(item) {
             });
             flashToast(`Saved ${path}`);
           } else if (d.id === "jira") {
-            // One comment on a ticket; the key is pre-filled from wherever
-            // the item mentions one (title, branch, slug).
+            // One comment on a ticket; the key is pre-filled from the item's
+            // remembered ticket, else detected from title/branch/slug — and
+            // remembered after a successful post so the next share is
+            // one confirmation away.
             const ticket = await uiPrompt(
               "Post to Jira — ticket key",
-              detectTicketKey(item.meta.title, item.meta.branch, item.slug)
+              item.meta.jiraTicket ||
+                detectTicketKey(item.meta.title, item.meta.branch, item.slug)
             );
             if (!ticket || !ticket.trim()) return;
+            const key = ticket.trim().toUpperCase();
             const truncated = await invoke("share_workflow_jira", {
-              ticket: ticket.trim(),
+              ticket: key,
               text: current,
             });
-            flashToast(
-              `Posted to ${ticket.trim().toUpperCase()}${truncated ? " (truncated to fit)" : ""}`
-            );
+            flashToast(`Posted to ${key}${truncated ? " (truncated to fit)" : ""}`);
+            if (key !== (item.meta.jiraTicket || "")) {
+              item.meta.jiraTicket = key; // this dialog's own pre-fill
+              invoke("set_workflow_item_settings", {
+                project: item.project,
+                slug: item.slug,
+                jiraTicket: key,
+              }).catch(() => {}); // remembering is best-effort, never the send
+            }
           } else {
             // slack / discord — the backend truncates to the service limit
             // and says so, rather than letting the tail vanish silently.
@@ -7074,6 +7084,28 @@ async function renderWfSubView(body, root, item, ts) {
     prRow.appendChild(prInput);
     agents.appendChild(prRow);
     wrap.appendChild(agents);
+
+    const sharing = document.createElement("fieldset");
+    sharing.className = "wf-settings-group";
+    const slg = document.createElement("legend");
+    slg.textContent = "Sharing";
+    sharing.appendChild(slg);
+    const jiraRow = document.createElement("label");
+    jiraRow.className = "wf-settings-row";
+    jiraRow.appendChild(document.createTextNode("Jira ticket "));
+    const jiraInput = document.createElement("input");
+    jiraInput.type = "text";
+    jiraInput.spellcheck = false;
+    jiraInput.placeholder =
+      detectTicketKey(item.meta.title, item.meta.branch, item.slug) || "PROJ-123";
+    jiraInput.value = item.meta.jiraTicket || "";
+    jiraInput.title =
+      "The ticket the share dialog's Post-to-Jira posts to. Remembered automatically after a successful post; empty falls back to detecting one in the title/branch.";
+    jiraInput.onchange = () =>
+      save({ jiraTicket: jiraInput.value.trim() }, () => (jiraInput.value = item.meta.jiraTicket || ""));
+    jiraRow.appendChild(jiraInput);
+    sharing.appendChild(jiraRow);
+    wrap.appendChild(sharing);
 
     const facts = document.createElement("fieldset");
     facts.className = "wf-settings-group";

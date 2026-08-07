@@ -470,6 +470,12 @@ pub struct WorkflowMeta {
     /// launches that offer no interaction choice of their own.
     #[serde(default)]
     pub interaction_default: String,
+    /// Jira ticket this item belongs to (`PROJ-123`). Pre-fills the share
+    /// dialog's Post-to-Jira prompt and is remembered after the first post;
+    /// also editable in the item Settings tab. Empty means "detect from
+    /// title/branch".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub jira_ticket: String,
     /// Review iteration, starting at 1. Bumped only by clash on
     /// request-changes (never by the agent).
     #[serde(default)]

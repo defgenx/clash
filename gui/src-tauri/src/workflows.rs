@@ -373,6 +373,8 @@ pub(crate) fn set_workflow_forge(
 ///   setting, `none` disables for this item.
 /// - `interaction_default`: `""`/`ask` | `interactive` | `autonomous` — how
 ///   this item's agent rounds run unless chosen at launch.
+/// - `jira_ticket`: the item's Jira ticket (`PROJ-123`); pre-fills and is
+///   remembered by the share dialog's Post-to-Jira. Empty clears it.
 #[tauri::command]
 pub(crate) fn set_workflow_item_settings(
     state: State<'_, GuiState>,
@@ -381,6 +383,7 @@ pub(crate) fn set_workflow_item_settings(
     bare_session_names: Option<bool>,
     pr_skill: Option<String>,
     interaction_default: Option<String>,
+    jira_ticket: Option<String>,
 ) -> Result<clash::domain::workflow::WorkflowMeta, String> {
     let mut meta = state
         .backend
@@ -402,6 +405,13 @@ pub(crate) fn set_workflow_item_settings(
             return Err(format!("Unknown interaction mode '{}'", mode));
         }
         meta.interaction_default = if mode == "ask" { String::new() } else { mode };
+    }
+    if let Some(ticket) = jira_ticket {
+        let ticket = ticket.trim().to_ascii_uppercase();
+        if !ticket.is_empty() && !clash::infrastructure::jira::valid_ticket_key(&ticket) {
+            return Err(format!("Not a Jira ticket key: '{}'", ticket));
+        }
+        meta.jira_ticket = ticket;
     }
     state
         .backend

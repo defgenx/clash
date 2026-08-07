@@ -765,8 +765,10 @@ included — a colleague without clash can open it), a **Slack / Discord
 webhook** (configure the URLs in *Settings → Workflows*; messages are
 truncated to the service limit with an explicit marker, never silently), or a
 **Jira ticket** — *Post to Jira…* asks for the ticket key (pre-filled from
-the item's title/branch when one is mentioned, like `PS-1234`) and posts the
-document as one comment, converted to Jira's wiki markup. Configure the Jira
+the item's remembered ticket, else detected in the title/branch, like
+`PS-1234`) and posts the document as one comment, converted to Jira's wiki
+markup. A successful post remembers the ticket on the item (also editable in
+its ⚙ Settings tab), so the next share is one confirmation away. Configure the Jira
 site URL, account email and API token in *Settings → Workflows*; the
 destination is hidden until all three are set. Share the plan to its ticket
 the moment it's ready — same preview, same one-click send.
