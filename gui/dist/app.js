@@ -5095,13 +5095,27 @@ async function buildWorkflowView(el, project, slug) {
 
 /// Open ALL of the item's PRs — the primary and every linked one (multi-repo
 /// work lands as several PRs; opening one of three is a stale review waiting
-/// to happen) — in the embedded browser (split pane), falling back to the
-/// system browser when the embedded panel is unavailable.
+/// to happen). The first PR takes a split pane; the rest land as background
+/// tabs — one split per PR would shred the layout into slivers. Already-open
+/// PRs are left where they are, not duplicated (background mode never
+/// dedupes: for its other caller, in-page window.open, a fresh tab is the
+/// correct browser semantics). Falls back to the system browser when the
+/// embedded panel is unavailable.
 function openWorkflowPr(item) {
-  for (const pr of itemPrs(item.meta)) {
-    if (typeof openBrowserTab === "function") openBrowserTab(pr.url, "split");
-    else invoke("open_external", { url: pr.url });
+  if (typeof openBrowserTab !== "function") {
+    for (const pr of itemPrs(item.meta)) invoke("open_external", { url: pr.url });
+    return;
   }
+  const w = ws();
+  const openUrls = new Set(
+    [...state.open.entries()]
+      .filter(([id, e]) => e.kind === "browser" && w.sessions.includes(id))
+      .map(([, e]) => e.url)
+  );
+  itemPrs(item.meta).forEach((pr, i) => {
+    if (i === 0) openBrowserTab(pr.url, "split"); // split-mode dedupes itself
+    else if (!openUrls.has(pr.url)) openBrowserTab(pr.url, "background");
+  });
 }
 
 /// Label for the open-PR action: says how many tabs the click opens.
@@ -6249,6 +6263,21 @@ function renderWfActions(bar, root, item) {
     );
   };
 
+  // The item's PRs are one set: multi-repo work means the primary is just one
+  // of them — or absent entirely (this repo merges without a PR while the
+  // linked ones exist). Offered wherever the item HAS PRs; gating it on
+  // `meta.pr` stranded linked-only items with no way to open anything.
+  const openPrsButton = (style = "") => {
+    if (!itemPrs(item.meta).length) return;
+    add(
+      wfOpenPrLabel(item),
+      style,
+      () => openWorkflowPr(item),
+      "Open this item's pull request(s) — the primary and every linked one — in the browser panel",
+      "step"
+    );
+  };
+
   // Multi-repo work lands as several PRs (backend + frontend + contracts);
   // linking the others makes the item track/refresh/open all of them. The
   // linked list never drives status — that stays the primary PR's job.
@@ -6366,6 +6395,9 @@ function renderWfActions(bar, root, item) {
         () => launchWfAgent(item, "revise", root),
         "Spend tokens: launch the agent to apply the requested changes — it reads your latest note and every open annotation"
       );
+      // Multi-repo items keep their PRs relevant mid-round (the fix round
+      // pushes to them) — keep them one click away while composing.
+      openPrsButton();
       abandon();
       break;
 
@@ -6413,7 +6445,6 @@ function renderWfActions(bar, root, item) {
           );
         }
         approveDone();
-        add(wfOpenPrLabel(item), "", () => openWorkflowPr(item), "Open this item's pull request(s) — the primary and every linked one — in the browser panel", "step");
       } else {
         approveDone();
         // Two ways to open the PR, because the description has two honest price
@@ -6455,6 +6486,7 @@ function renderWfActions(bar, root, item) {
           }
         }, "Open a draft PR for this branch — from the plan (free, instant) or written by Claude Code (reads the real diff, spends tokens); you pick next");
       }
+      openPrsButton();
       add(
         "✎ Request changes…",
         "",
@@ -6506,7 +6538,6 @@ function renderWfActions(bar, root, item) {
           },
           `Flip PR #${item.meta.pr.number || ""} from draft to ready-for-review on GitHub — the validation step`
         );
-        add(wfOpenPrLabel(item), "", () => openWorkflowPr(item), "Open this item's pull request(s) — the primary and every linked one — in the browser panel", "step");
       } else {
         add(
           "Attach PR by URL…",
@@ -6529,6 +6560,7 @@ function renderWfActions(bar, root, item) {
           "Link an existing GitHub pull request to this item — clash then tracks its state and comments"
         );
       }
+      openPrsButton();
       // Review feedback keeps arriving once a PR exists (agent rounds, GitHub
       // review comments) — without this the findings were a dead end here.
       add(
@@ -6555,14 +6587,7 @@ function renderWfActions(bar, root, item) {
     }
 
     case "pr-ready":
-      if (item.meta.pr && item.meta.pr.url)
-        add(
-          wfOpenPrLabel(item),
-          "primary",
-          () => openWorkflowPr(item),
-          "Open this item's pull request(s) in the browser panel — merging happens there",
-          "step"
-        );
+      openPrsButton("primary");
       add(
         "✓ Mark done",
         "",
@@ -6590,8 +6615,7 @@ function renderWfActions(bar, root, item) {
 
     case "done":
     case "abandoned":
-      if (item.meta.pr && item.meta.pr.url)
-        add(wfOpenPrLabel(item), "", () => openWorkflowPr(item), "Open this item's pull request(s) — the primary and every linked one — in the browser panel", "step");
+      openPrsButton();
       add(
         "Reopen",
         "",

@@ -740,7 +740,12 @@ conventions.
 PRs (backend + frontend + contracts). **🔗 Link a PR…** on an item attaches
 PRs from *other* repositories: they show as chips in the item header (state,
 draft, merged), refresh with the same poll as the primary, and **Open PRs (n)**
-opens all of them at once. Linked PRs never drive the item's status — only the
+opens all of them at once — the first in a split pane, the rest as browser
+tabs (already-open ones are surfaced, never duplicated). The action follows
+the item's *whole PR set*: it appears at every decision state whenever the
+item has any PR, including items with only linked PRs and no primary (a repo
+that merges to its default branch while the sibling repos go through PRs).
+Linked PRs never drive the item's status — only the
 primary PR does; right-click a linked chip to unlink it. The executor agent may
 record them too (`meta.linkedPrs` in the file contract).
 
