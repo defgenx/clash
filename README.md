@@ -633,8 +633,11 @@ trivial fix and before anything is posted to the PR. Dropped findings are
 recorded in the round report (so later rounds don't re-raise them) but never
 become annotations. An autonomous round asks nothing and reports everything at
 the end. The executor phases open with the same question: interactive planning
-proposes approaches before writing `plan.md`, an interactive implement round
-confirms plan deviations and `wontfix` calls instead of deciding alone.
+starts with a requirements discussion — the agent restates what it thinks it
+is building and asks about everything unclear (or for the feature itself when
+the title says too little), writing nothing until you confirm — then proposes
+approaches before writing `plan.md`; an interactive implement round confirms
+plan deviations and `wontfix` calls instead of deciding alone.
 
 **Understanding a change** has its own agent and its own tab: **◫ Explain
 changes** (wherever a diff is parked on a decision) launches the

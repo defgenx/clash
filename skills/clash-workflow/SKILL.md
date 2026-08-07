@@ -38,8 +38,10 @@ Before doing anything else, settle how this run goes:
      end instead of asked.
 
 What "interactive" means per phase:
-- `plan` — before writing `plan.md`, present the 2–3 viable approaches with a
-  recommendation and ask which to plan around.
+- `plan` — first hold the requirements discussion (phase step 1: restate the
+  task, ask about everything unclear, proceed only on the human's
+  confirmation), then — before writing `plan.md` — present the 2–3 viable
+  approaches with a recommendation and ask which to plan around.
 - `revise` — when the change-request note is ambiguous or conflicts with an
   earlier decision in `review.md`, ask instead of guessing.
 - `implement` — ask before deviating from the plan, before marking any
@@ -136,11 +138,31 @@ findings into `agent-review.md` and `annotations.json` and never touch
 Never runs in `review-only` mode. If you are somehow asked for it there, stop
 and say so instead of writing a plan.
 
-1. Explore the repo as needed to ground the plan in real code.
-2. Write/overwrite `plan.md`: a concrete implementation plan — context, the
+1. **Settle what is being built before anything else.** The item often gives
+   you only a title; the actual intent lives in the human's head. In
+   interactive runs this discussion is mandatory, not a courtesy:
+   - Read what intent exists (title, any seeded `plan.md`, `review.md`), then
+     restate the task in your own words — what is being built, for whom, and
+     what you believe is out of scope.
+   - Ask about everything you are not sure of (`AskUserQuestion`, as many
+     rounds as it takes): expected behavior, scope boundaries, edge cases,
+     constraints, what "done" looks like. If the title alone doesn't tell you
+     what the feature *is*, say so and ask the human to describe it before
+     anything else.
+   - Do not explore the repo and do not write a line of `plan.md` until the
+     human confirms your restated understanding — their answer is the
+     confirmation, not your own confidence.
+   - Open `plan.md` with the agreed understanding (goal, confirmed decisions,
+     explicit non-goals) so reviewers and later rounds see what was agreed,
+     not just what was planned.
+   In autonomous runs nobody can answer: take the most conservative reading
+   and open `plan.md` with an **Assumptions** section listing every call you
+   made in place of a question.
+2. Explore the repo as needed to ground the plan in real code.
+3. Write/overwrite `plan.md`: a concrete implementation plan — context, the
    approach, files to touch, ordered steps, testing strategy, risks. Plain
    markdown; the GUI renders it.
-3. Finish: set `meta.json.status = "plan-review"`. Stop — the human reviews.
+4. Finish: set `meta.json.status = "plan-review"`. Stop — the human reviews.
 
 ## Phase: revise
 

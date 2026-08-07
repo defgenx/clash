@@ -328,16 +328,23 @@ with two optional trailing fields: `PR skill: <name>.` (from the
 The mode is repeated in the prompt (it is also in `meta.json`) so a
 `review-only` run knows before reading anything that it must not write a plan.
 Like the reviewers, every executor phase opens by settling interactive vs
-autonomous — what "interactive" means per phase (approach options before
-writing a plan, confirmation before a `wontfix` or a plan deviation, title/body
-preview before a PR) is defined in the skill.
+autonomous — what "interactive" means per phase (a requirements discussion
+before the plan — restate the task, ask until it is unambiguous, plan only on
+the human's confirmation — then approach options before writing `plan.md`;
+confirmation before a `wontfix` or a plan deviation; title/body preview before
+a PR) is defined in the skill.
 
 On every run, the agent first reads: `meta.json`, `plan.md`, `review.md`
 (top-to-bottom — it is the accumulated decision history), the `open`
 annotations in `annotations.json`, and the latest `history/<NNN>/diff.patch`
 for context.
 
-- **Phase `plan`**: write/overwrite `plan.md`; finish by setting
+- **Phase `plan`**: in interactive runs, first settle what is being built —
+  the item may carry only a title, so the agent restates the task, asks about
+  everything unclear (or for the feature itself when the title says too
+  little) and writes nothing until the human confirms; the agreed
+  understanding opens `plan.md`, and autonomous runs record an **Assumptions**
+  section instead. Then write/overwrite `plan.md`; finish by setting
   `meta.json.status = "plan-review"`.
 - **Phase `revise`**: if the review round was about the plan, revise
   `plan.md` and finish with `"plan-review"`. If it was about code, behave
