@@ -383,6 +383,20 @@ function uiChoice({ message, detail = null, choices }) {
     // drop them while it's up; fitAll() (in done) brings them back.
     if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
     document.body.appendChild(backdrop);
+    // The dialog box is fixed-width and buttons never shrink below their
+    // label, so wordy or numerous choices overflow the row (the skills-update
+    // popup's three labeled options did). Once mounted, measure; on overflow
+    // stack the buttons full-width, choices first, Cancel last. Summed widths,
+    // not scrollWidth: flex-end rows overflow past the *left* edge, which
+    // scrollWidth does not count.
+    const needed = [...actions.children].reduce(
+      (w, b) => w + b.offsetWidth + 8,
+      -8
+    );
+    if (needed > actions.clientWidth) {
+      actions.classList.add("stacked");
+      actions.appendChild(cancel);
+    }
     backdrop.onclick = (e) => {
       if (e.target === backdrop) done(null);
     };

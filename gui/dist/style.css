@@ -1747,6 +1747,8 @@ button.busy:disabled { opacity: 1; }
 }
 #new-session-modal label.check input { width: auto; margin: 0; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+/* uiChoice switches to this when its buttons overflow the fixed-width box. */
+.modal-actions.stacked { flex-direction: column; align-items: stretch; }
 .modal-actions button {
   background: var(--bg);
   border: 1px solid var(--border);
@@ -1785,7 +1787,8 @@ button.busy:disabled { opacity: 1; }
   border: 1px solid var(--border);
   border-radius: 5px;
   padding: 6px 8px;
-  word-break: break-all;
+  /* Breaks long tokens (URLs) only when needed; prose keeps whole words. */
+  overflow-wrap: anywhere;
   font-family: var(--mono, "SF Mono", Menlo, monospace);
 }
 /* Text fields fill the dialog — but a checkbox is not a text field. The
