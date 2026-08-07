@@ -467,6 +467,24 @@ pub fn pr_unanswered_review_comments(
 }
 
 /// `gh pr ready <number>` in `dir` — flips a draft PR to ready-for-review.
+/// The PR's unified diff as GitHub serves it (`gh pr diff`). Repo-scoped for
+/// linked PRs, whose repository is not the one `dir`'s remotes point at.
+pub fn pr_diff(dir: &Path, number: u64, repo: Option<&str>) -> Result<String, GhError> {
+    let number = number.to_string();
+    let mut args = vec!["pr", "diff", number.as_str()];
+    if let Some(repo) = repo {
+        args.extend(["--repo", repo]);
+    }
+    let output = run(dir, &args)?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(GhError::Command(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
+}
+
 pub fn pr_ready(dir: &Path, number: u64, repo: Option<&str>) -> Result<(), GhError> {
     let number = number.to_string();
     let mut args = vec!["pr", "ready", number.as_str()];

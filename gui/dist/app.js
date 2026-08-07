@@ -7243,24 +7243,34 @@ async function renderWfSubView(body, root, item, ts) {
 const WF_FILE_COLLAPSE_LINES = 1500;
 const WF_DIFF_COLLAPSE_TOTAL = 20000;
 
-/// Diff sub-view: iteration switcher + per-file hunks with line numbers.
-/// Annotation threads/composer hook in via the delegated listener (next
-/// commit); this render is already annotation-aware in its data fetch.
+/// Diff sub-view: source/iteration switcher + per-file hunks with line
+/// numbers. Sources are the item's own diff (live or a history iteration,
+/// annotatable) and — multi-repo work — any linked PR's diff, fetched from
+/// the forge and **view-only**: annotations anchor to the item's diff, never
+/// to a repository clash has no checkout of.
 async function renderWfDiffView(body, root, item, ts) {
   const { project, slug } = item;
+  const linkedPrs = itemPrs(item.meta).filter((p) => !p.primary);
+  // A restored tab can point at a PR that has since been unlinked.
+  if (ts.diffSource && !linkedPrs.some((p) => p.url === ts.diffSource)) ts.diffSource = null;
+  const linkedView = !!ts.diffSource;
   body.innerHTML = "<p class='hint'>loading diff…</p>";
   let text = "";
   let anchored = [];
   try {
-    text = await invoke("get_workflow_diff", { project, slug, iteration: ts.iteration });
-    anchored = await invoke("get_anchored_annotations", { project, slug, iteration: ts.iteration });
+    if (linkedView) {
+      text = await invoke("get_linked_pr_diff", { project, slug, url: ts.diffSource });
+    } else {
+      text = await invoke("get_workflow_diff", { project, slug, iteration: ts.iteration });
+      anchored = await invoke("get_anchored_annotations", { project, slug, iteration: ts.iteration });
+    }
   } catch (e) {
     body.innerHTML = `<p class='hint'>diff failed: ${escapeHtml(e)}</p>`;
     return;
   }
   body.innerHTML = "";
 
-  // Header controls: iteration switcher + unresolved count.
+  // Header controls: source/iteration switcher + unresolved count.
   const head = document.createElement("div");
   head.className = "wf-diff-head";
   const sel = document.createElement("select");
@@ -7274,9 +7284,21 @@ async function renderWfDiffView(body, root, item, ts) {
     o.textContent = `iteration ${it}`;
     sel.appendChild(o);
   }
-  sel.value = ts.iteration === null ? "" : String(ts.iteration);
+  for (const p of linkedPrs) {
+    const o = document.createElement("option");
+    o.value = `pr:${p.url}`;
+    const state = prStateLabel(p);
+    o.textContent = `PR ${prChipLabel(p)}${state ? ` · ${state}` : ""} (linked)`;
+    sel.appendChild(o);
+  }
+  sel.value = linkedView ? `pr:${ts.diffSource}` : ts.iteration === null ? "" : String(ts.iteration);
   sel.onchange = () => {
-    ts.iteration = sel.value === "" ? null : parseInt(sel.value, 10);
+    if (sel.value.startsWith("pr:")) {
+      ts.diffSource = sel.value.slice(3);
+    } else {
+      ts.diffSource = null;
+      ts.iteration = sel.value === "" ? null : parseInt(sel.value, 10);
+    }
     buildWorkflowView(root, project, slug);
   };
   head.appendChild(sel);
@@ -7312,9 +7334,17 @@ async function renderWfDiffView(body, root, item, ts) {
 
   // Phase lock (review A2): the agent owns annotations.json while it works;
   // editing re-opens when the item returns to a review state. The backend
-  // enforces the same rule — this banner just explains it.
-  const locked = wfAnnotationsLocked(item);
-  if (locked) {
+  // enforces the same rule — this banner just explains it. Linked-PR diffs
+  // are always read-only: their repo has no local checkout, so a comment
+  // could never become a fix round here.
+  const locked = wfAnnotationsLocked(item) || linkedView;
+  if (linkedView) {
+    const banner = document.createElement("div");
+    banner.className = "wf-lock-banner";
+    banner.textContent =
+      "linked PR — view only; comments belong on the item's own diff, or on the PR (⇄ Answer PR comments reads them)";
+    body.appendChild(banner);
+  } else if (locked) {
     const banner = document.createElement("div");
     banner.className = "wf-lock-banner";
     banner.textContent = "agent is working — comments are locked until it finishes";
@@ -7325,7 +7355,11 @@ async function renderWfDiffView(body, root, item, ts) {
   if (!files.length) {
     body.appendChild(Object.assign(document.createElement("p"), {
       className: "hint",
-      textContent: ts.iteration === null ? "no changes yet" : "empty snapshot",
+      textContent: linkedView
+        ? "the PR's diff is empty (or gh could not serve it)"
+        : ts.iteration === null
+          ? "no changes yet"
+          : "empty snapshot",
     }));
     return;
   }

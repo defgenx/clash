@@ -253,6 +253,36 @@ pub(crate) async fn get_workflow_diff(
     workflow_diff_text(&state, &project, &slug, iteration).await
 }
 
+/// Raw unified diff of one of the item's **linked** PRs, fetched from the
+/// forge (`gh pr diff --repo …`) — the linked repo has no local checkout, so
+/// the forge is the only source. View-only by design: annotations anchor to
+/// the item's own diff, never to a linked one.
+#[tauri::command]
+pub(crate) async fn get_linked_pr_diff(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    url: String,
+) -> Result<String, String> {
+    let meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    if !meta.linked_prs.iter().any(|p| p.url == url) {
+        return Err(format!("This item does not track the linked PR {}", url));
+    }
+    let (repo, number) = clash::infrastructure::gh::parse_pr_url(&url)
+        .ok_or_else(|| format!("Not a GitHub PR URL: {}", url))?;
+    let dir = pr_dir(&meta)?;
+    let forge = state.forge_for_dir(&dir);
+    tauri::async_runtime::spawn_blocking(move || {
+        forge.change_diff(Path::new(&dir), number, Some(&repo))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(forge_err)
+}
+
 /// Annotations resolved against the current (or a snapshotted) diff — the
 /// single anchor implementation lives in the core; the GUI just renders
 /// `currentLine` / `orphaned`.

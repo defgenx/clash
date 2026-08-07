@@ -454,6 +454,10 @@ change requests in **other** repositories that belong to this item. Rules:
   repositories — a URL-only entry is enough (clash fills state/draft on the
   next refresh, exactly like the primary's contract). The agent must never
   remove or reorder entries; unlinking is the human's (GUI) action.
+- The GUI's Diff tab can render a linked PR's diff (fetched via the forge —
+  there is no local checkout of that repo), strictly **view-only**:
+  annotations always anchor to the item's own diff. Respond rounds serve a
+  chosen PR via the kickoff's `PR:` field (see the review contract).
 
 ### Sharing, export and webhook notifications (clash-side, informative)
 

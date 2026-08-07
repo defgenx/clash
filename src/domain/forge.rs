@@ -1,9 +1,10 @@
 //! The forge port — clash's window onto the code host that owns an item's
 //! change request.
 //!
-//! Everything the Workflows feature asks of a forge fits seven operations
-//! (view, create-draft, mark-ready, comment, count unanswered review
-//! comments, parse a change URL, capabilities). GitHub via the `gh` CLI is
+//! Everything the Workflows feature asks of a forge fits eight operations
+//! (view, create-draft, mark-ready, comment, fetch a change's diff, count
+//! unanswered review comments, parse a change URL, capabilities). GitHub via
+//! the `gh` CLI is
 //! the only implementation today; the port exists so a GitLab `glab`
 //! implementation — or a forge-less repo — is a configuration, not a rewrite.
 //! Implementations live in `infrastructure::forge`.
@@ -158,6 +159,16 @@ pub trait Forge: Send + Sync {
 
     /// Post one top-level comment.
     fn comment(&self, dir: &Path, number: u64, body: &str) -> Result<(), ForgeError>;
+
+    /// The change request's unified diff, as the forge serves it. `repo`
+    /// scopes the call to an explicit `owner/repo` — required for a linked
+    /// PR, whose repository is not the one `dir`'s remotes point at.
+    fn change_diff(
+        &self,
+        dir: &Path,
+        number: u64,
+        repo: Option<&str>,
+    ) -> Result<String, ForgeError>;
 
     /// Count review-comment threads nobody has replied to. `repo` scopes the
     /// lookup to an explicit `owner/repo` — required for a linked PR, whose

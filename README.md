@@ -752,8 +752,12 @@ the item's *whole PR set*: it appears at every decision state whenever the
 item has any PR, including items with only linked PRs and no primary (a repo
 that merges to its default branch while the sibling repos go through PRs).
 Linked PRs never drive the item's status — only the
-primary PR does; right-click a linked chip to unlink it. The executor agent may
-record them too (`meta.linkedPrs` in the file contract).
+primary PR does (with one exception: an item with *only* linked PRs closes when
+all of them merge); right-click a linked chip to unlink it. The executor agent
+may record them too (`meta.linkedPrs` in the file contract). The **Diff tab's
+source picker** also lists every linked PR: pick one to read its diff fetched
+from GitHub (`gh pr diff`), view-only — comments stay on the item's own diff,
+and **⇄ Answer PR comments** asks which PR to serve when the item has several.
 
 **PR dashboard**: the ⇄ button on the WORKFLOWS section opens one list of
 every item holding a PR across all projects — state chips per PR, unanswered

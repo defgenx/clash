@@ -3076,6 +3076,7 @@ fn main() {
             workflows::get_workflow_doc,
             workflows::get_workflow_annotations,
             workflows::get_workflow_diff,
+            workflows::get_linked_pr_diff,
             workflows::get_anchored_annotations,
             workflows::get_workflows_dir,
             workflows::set_workflows_dir,
