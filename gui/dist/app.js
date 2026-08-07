@@ -6537,20 +6537,52 @@ function renderWfActions(bar, root, item) {
               item.openAnnotations > 0
                 ? ` ${item.openAnnotations} comment${item.openAnnotations > 1 ? "s are" : " is"} still open —`
                 : "";
-            if (
+            // Multi-repo validation is one moment: when linked drafts exist,
+            // offer to flip them with the primary instead of a per-repo tour
+            // of GitHub. Their flips are best-effort; failures are reported.
+            const linkedDrafts = (item.meta.linkedPrs || []).filter(
+              (p) => p.draft && p.state !== "MERGED" && p.state !== "CLOSED"
+            ).length;
+            let includeLinked = false;
+            if (linkedDrafts) {
+              const how = await uiChoice({
+                message: `This is the validation step:${warn} flip PR #${item.meta.pr.number || "?"} to ready-for-review?`,
+                detail: `This item also tracks ${linkedDrafts} linked draft PR${linkedDrafts > 1 ? "s" : ""} in other repositories.`,
+                choices: [
+                  {
+                    label: `Primary + ${linkedDrafts} linked draft${linkedDrafts > 1 ? "s" : ""}`,
+                    value: "all",
+                    primary: true,
+                  },
+                  { label: "Primary only", value: "primary" },
+                ],
+              });
+              if (!how) return;
+              includeLinked = how === "all";
+            } else if (
               !(await uiConfirm(
                 `This is the validation step:${warn} flip PR #${item.meta.pr.number || "?"} to ready-for-review?`,
                 "Mark ready"
               ))
-            )
+            ) {
               return;
+            }
             const markReady = async (target) => {
               try {
-                const meta = await invoke("mark_workflow_pr_ready", {
+                const r = await invoke("mark_workflow_pr_ready", {
                   project: target.project,
                   slug: target.slug,
+                  includeLinked,
                 });
-                flashToast(`PR ready: ${meta.pr ? meta.pr.url : ""}`);
+                const flipped = r.linkedFlipped.length
+                  ? ` · ${r.linkedFlipped.length} linked flipped`
+                  : "";
+                flashToast(`PR ready: ${r.meta.pr ? r.meta.pr.url : ""}${flipped}`);
+                if (r.linkedFailed.length) {
+                  uiAlert(
+                    `Some linked drafts could not be flipped:\n${r.linkedFailed.join("\n")}`
+                  );
+                }
                 await refreshWorkflows();
                 buildWorkflowView(root, target.project, target.slug);
               } catch (e) {
@@ -6561,7 +6593,7 @@ function renderWfActions(bar, root, item) {
             };
             await markReady(item);
           },
-          `Flip PR #${item.meta.pr.number || ""} from draft to ready-for-review on GitHub — the validation step`
+          `Flip PR #${item.meta.pr.number || ""} from draft to ready-for-review on GitHub — the validation step (offers the linked drafts too when the item tracks any)`
         );
       } else {
         add(

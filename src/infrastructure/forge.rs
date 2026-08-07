@@ -94,8 +94,8 @@ impl Forge for GithubForge {
             .map_err(err_from_gh)
     }
 
-    fn mark_ready(&self, dir: &Path, number: u64) -> Result<(), ForgeError> {
-        gh::pr_ready(dir, number).map_err(err_from_gh)
+    fn mark_ready(&self, dir: &Path, number: u64, repo: Option<&str>) -> Result<(), ForgeError> {
+        gh::pr_ready(dir, number, repo).map_err(err_from_gh)
     }
 
     fn comment(&self, dir: &Path, number: u64, body: &str) -> Result<(), ForgeError> {
@@ -151,7 +151,7 @@ impl Forge for NoForge {
         Err(unsupported())
     }
 
-    fn mark_ready(&self, _: &Path, _: u64) -> Result<(), ForgeError> {
+    fn mark_ready(&self, _: &Path, _: u64, _: Option<&str>) -> Result<(), ForgeError> {
         Err(unsupported())
     }
 

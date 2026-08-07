@@ -442,6 +442,10 @@ change requests in **other** repositories that belong to this item. Rules:
   at a different repository.
 - The refresh is best-effort per entry: a linked PR that fails to resolve
   keeps its previous recorded state rather than failing the primary's refresh.
+  *Mark PR ready* follows the same discipline when the human opts to flip the
+  linked drafts alongside the primary: each flip is repo-scoped and
+  best-effort, failures are reported, and only the primary's failure fails
+  the action.
 - The **agent may append to `linkedPrs`** when its work opened PRs in other
   repositories — a URL-only entry is enough (clash fills state/draft on the
   next refresh, exactly like the primary's contract). The agent must never

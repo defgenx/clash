@@ -1884,7 +1884,8 @@ pub(crate) async fn mark_workflow_pr_ready(
     state: State<'_, GuiState>,
     project: String,
     slug: String,
-) -> Result<clash::domain::workflow::WorkflowMeta, String> {
+    include_linked: Option<bool>,
+) -> Result<MarkReadyOutcome, String> {
     let mut meta = state
         .backend
         .load_workflow_meta(&project, &slug)
@@ -1903,16 +1904,64 @@ pub(crate) async fn mark_workflow_pr_ready(
         ));
     }
     let dir = pr_dir(&meta)?;
+    // Multi-repo validation: the linked drafts to flip alongside the primary,
+    // each repo-scoped by its URL. Only the primary's failure fails the
+    // command — linked flips are best-effort with the outcomes reported.
+    let linked_targets: Vec<(usize, String, u64)> = if include_linked.unwrap_or(false) {
+        meta.linked_prs
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.draft && p.state != "MERGED" && p.state != "CLOSED")
+            .filter_map(|(i, p)| {
+                clash::infrastructure::gh::parse_pr_url(&p.url).map(|(repo, n)| (i, repo, n))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let forge = state.forge_for_dir(&dir);
-    tauri::async_runtime::spawn_blocking(move || forge.mark_ready(Path::new(&dir), number))
+    let dir_owned = dir.clone();
+    type LinkedFlip = (usize, Result<(), String>);
+    let (primary_result, linked_results): (Result<(), _>, Vec<LinkedFlip>) =
+        tauri::async_runtime::spawn_blocking(move || {
+            let d = Path::new(&dir_owned);
+            let primary = forge.mark_ready(d, number, None);
+            let linked = linked_targets
+                .into_iter()
+                .map(|(i, repo, n)| {
+                    (
+                        i,
+                        forge
+                            .mark_ready(d, n, Some(&repo))
+                            .map_err(|e| e.to_string()),
+                    )
+                })
+                .collect();
+            (primary, linked)
+        })
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(forge_err)?;
+        .map_err(|e| e.to_string())?;
+    primary_result.map_err(forge_err)?;
 
     if let Some(pr) = meta.pr.as_mut() {
         pr.number = number; // heal a URL-only record while we're writing anyway
         pr.draft = false;
         pr.last_checked_at = now_ms();
+    }
+    let mut linked_flipped = Vec::new();
+    let mut linked_failed = Vec::new();
+    for (i, result) in linked_results {
+        let Some(pr) = meta.linked_prs.get_mut(i) else {
+            continue;
+        };
+        match result {
+            Ok(()) => {
+                pr.draft = false;
+                pr.last_checked_at = now_ms();
+                linked_flipped.push(pr.url.clone());
+            }
+            Err(e) => linked_failed.push(format!("{}: {}", pr.url, e)),
+        }
     }
     if meta.status.can_transition_to(WorkflowStatus::PrReady) {
         meta.status = WorkflowStatus::PrReady;
@@ -1922,7 +1971,22 @@ pub(crate) async fn mark_workflow_pr_ready(
         .write_workflow_meta(&project, &slug, &meta)
         .map_err(e2s)?;
     seed_local(&state, &project, &slug, meta.status);
-    Ok(meta)
+    Ok(MarkReadyOutcome {
+        meta,
+        linked_flipped,
+        linked_failed,
+    })
+}
+
+/// What `mark_workflow_pr_ready` did: the updated meta plus, when linked
+/// drafts were included, which flipped and which failed (best-effort — a
+/// failed linked flip never rolls back the primary's).
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MarkReadyOutcome {
+    meta: clash::domain::workflow::WorkflowMeta,
+    linked_flipped: Vec<String>,
+    linked_failed: Vec<String>,
 }
 
 /// Attach an existing PR by URL (e.g. one the agent created, sniffed from

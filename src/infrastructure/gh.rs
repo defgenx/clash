@@ -467,9 +467,13 @@ pub fn pr_unanswered_review_comments(
 }
 
 /// `gh pr ready <number>` in `dir` — flips a draft PR to ready-for-review.
-pub fn pr_ready(dir: &Path, number: u64) -> Result<(), GhError> {
+pub fn pr_ready(dir: &Path, number: u64, repo: Option<&str>) -> Result<(), GhError> {
     let number = number.to_string();
-    let output = run(dir, &["pr", "ready", &number])?;
+    let mut args = vec!["pr", "ready", number.as_str()];
+    if let Some(repo) = repo {
+        args.extend(["--repo", repo]);
+    }
+    let output = run(dir, &args)?;
     if output.status.success() {
         Ok(())
     } else {
