@@ -375,7 +375,10 @@ pub(crate) fn set_workflow_forge(
 ///   this item's agent rounds run unless chosen at launch.
 /// - `jira_ticket`: the item's Jira ticket (`PROJ-123`); pre-fills and is
 ///   remembered by the share dialog's Post-to-Jira. Empty clears it.
+/// - `description`: the item's free-form intent — the planning agent's
+///   primary source. Editable so it can be refined before launching a plan.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn set_workflow_item_settings(
     state: State<'_, GuiState>,
     project: String,
@@ -384,6 +387,7 @@ pub(crate) fn set_workflow_item_settings(
     pr_skill: Option<String>,
     interaction_default: Option<String>,
     jira_ticket: Option<String>,
+    description: Option<String>,
 ) -> Result<clash::domain::workflow::WorkflowMeta, String> {
     let mut meta = state
         .backend
@@ -412,6 +416,9 @@ pub(crate) fn set_workflow_item_settings(
             return Err(format!("Not a Jira ticket key: '{}'", ticket));
         }
         meta.jira_ticket = ticket;
+    }
+    if let Some(desc) = description {
+        meta.description = desc.trim().to_string();
     }
     state
         .backend
@@ -517,6 +524,9 @@ fn ensure_annotations_unlocked(meta: &clash::domain::workflow::WorkflowMeta) -> 
 /// work (the frontend passes the note's absolute path); `plan` carries pasted
 /// text. Review-only items go through [`create_workflow_review`], which has git
 /// work to do first.
+// Tauri command parameters map 1:1 onto the frontend's named invoke args —
+// same reasoning as `start_workflow_agent`.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub(crate) fn create_workflow_item(
     state: State<'_, GuiState>,
@@ -526,6 +536,7 @@ pub(crate) fn create_workflow_item(
     mode: Option<WorkflowMode>,
     plan: Option<String>,
     plan_file: Option<String>,
+    description: Option<String>,
 ) -> Result<WorkflowItem, String> {
     let mode = mode.unwrap_or_default();
     if mode.is_review_only() {
@@ -543,6 +554,7 @@ pub(crate) fn create_workflow_item(
             repo_path,
             mode,
             plan,
+            description: description.unwrap_or_default(),
             ..Default::default()
         })
         .map_err(e2s)?;

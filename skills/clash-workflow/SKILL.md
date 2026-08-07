@@ -70,8 +70,9 @@ point they may answer "continue autonomously" — from then on, stop asking.
 
 ## Step 0 — always read first (fresh, every run)
 
-1. `meta.json` — mode, status, iteration, branch/base, PR info. Parse
-   leniently.
+1. `meta.json` — mode, status, iteration, branch/base, PR info, and
+   `description` (the human's own statement of what this item is about —
+   when present, it outranks the title as the intent). Parse leniently.
 2. `plan.md` — the current plan.
 3. `review.md` — **top to bottom**: it is the accumulated decision history
    (`## Iteration N` sections with the human's notes + the open annotations
@@ -138,12 +139,13 @@ findings into `agent-review.md` and `annotations.json` and never touch
 Never runs in `review-only` mode. If you are somehow asked for it there, stop
 and say so instead of writing a plan.
 
-1. **Settle what is being built before anything else.** The item often gives
-   you only a title; the actual intent lives in the human's head. In
-   interactive runs this discussion is mandatory, not a courtesy:
-   - Read what intent exists (title, any seeded `plan.md`, `review.md`), then
-     restate the task in your own words — what is being built, for whom, and
-     what you believe is out of scope.
+1. **Settle what is being built before anything else.** In interactive runs
+   this discussion is mandatory, not a courtesy:
+   - Read what intent exists — `meta.json.description` (the human's own
+     statement of goal/scope, the primary source when present), the title,
+     any seeded `plan.md`, `review.md` — then restate the task in your own
+     words: what is being built, for whom, and what you believe is out of
+     scope.
    - Ask about everything you are not sure of (`AskUserQuestion`, as many
      rounds as it takes): expected behavior, scope boundaries, edge cases,
      constraints, what "done" looks like. If the title alone doesn't tell you

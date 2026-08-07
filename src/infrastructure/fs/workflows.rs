@@ -212,6 +212,7 @@ pub fn create_item(root: &Path, req: &NewWorkflowItem) -> Result<WorkflowItem> {
     let now = now_ms();
     let meta = WorkflowMeta {
         title: req.title.trim().to_string(),
+        description: req.description.trim().to_string(),
         status: req.mode.initial_status(),
         mode: req.mode,
         repo_path: req.repo_path.clone(),

@@ -412,6 +412,11 @@ pub struct WorkflowPr {
 pub struct WorkflowMeta {
     #[serde(default)]
     pub title: String,
+    /// Free-form intent from the human: what is being built and why. The
+    /// planning agent reads it as the primary source before opening its
+    /// requirements discussion; empty means the title is all there is.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
     #[serde(default)]
     pub status: WorkflowStatus,
     /// Entry mode, fixed at creation. Missing on pre-mode items → `full`.
@@ -498,6 +503,10 @@ pub struct NewWorkflowItem {
     pub project: String,
     /// Human title; the slug is derived from it.
     pub title: String,
+    /// Free-form intent: what is being built and why, in the human's words.
+    /// The planning agent reads it before anything else — a title alone
+    /// forces the requirements discussion to start from nothing.
+    pub description: String,
     /// Absolute path of the repo checkout the item works on.
     pub repo_path: String,
     pub mode: WorkflowMode,

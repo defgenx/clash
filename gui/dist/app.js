@@ -4515,6 +4515,20 @@ async function newWorkflowFlow() {
   const title = await uiPrompt("Workflow item — title");
   if (!title || !title.trim()) return;
 
+  // The intent in the human's words — the planning agent's primary source
+  // (a bare title forces its requirements discussion to start from zero).
+  // Optional, and skipped for from-plan items: there the plan IS the intent.
+  let description = "";
+  if (mode !== "from-plan") {
+    const d = await uiTextPrompt(
+      "What is this about? Goal, scope, constraints — the planning agent reads this first (optional)",
+      "",
+      "Continue"
+    );
+    if (d === null) return;
+    description = (d || "").trim();
+  }
+
   let seed = { plan: null, planFile: null };
   if (mode === "from-plan") {
     const picked = await pickWorkflowPlan();
@@ -4530,6 +4544,7 @@ async function newWorkflowFlow() {
       mode,
       plan: seed.plan,
       planFile: seed.planFile,
+      description,
     });
     await refreshWorkflows();
     openWorkflowTab(item);
@@ -7016,6 +7031,24 @@ async function renderWfSubView(body, root, item, ts) {
         uiAlert(`Save failed: ${e}`);
       }
     };
+
+    const intent = document.createElement("fieldset");
+    intent.className = "wf-settings-group";
+    const ilg = document.createElement("legend");
+    ilg.textContent = "Intent";
+    intent.appendChild(ilg);
+    const desc = document.createElement("textarea");
+    desc.className = "wf-settings-desc";
+    desc.rows = 4;
+    desc.spellcheck = false;
+    desc.placeholder = "What is being built and why — the planning agent reads this first.";
+    desc.value = item.meta.description || "";
+    desc.title =
+      "The item's free-form intent, in your words. The planning agent reads it before its requirements discussion; refine it any time before launching a plan round.";
+    desc.onchange = () =>
+      save({ description: desc.value.trim() }, () => (desc.value = item.meta.description || ""));
+    intent.appendChild(desc);
+    wrap.appendChild(intent);
 
     const sessions = document.createElement("fieldset");
     sessions.className = "wf-settings-group";

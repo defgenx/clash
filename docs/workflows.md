@@ -340,12 +340,13 @@ annotations in `annotations.json`, and the latest `history/<NNN>/diff.patch`
 for context.
 
 - **Phase `plan`**: in interactive runs, first settle what is being built —
-  the item may carry only a title, so the agent restates the task, asks about
-  everything unclear (or for the feature itself when the title says too
-  little) and writes nothing until the human confirms; the agreed
-  understanding opens `plan.md`, and autonomous runs record an **Assumptions**
-  section instead. Then write/overwrite `plan.md`; finish by setting
-  `meta.json.status = "plan-review"`.
+  the agent reads `meta.json.description` (the human's own goal/scope
+  statement, the primary intent when present) and the title, restates the
+  task, asks about everything unclear (or for the feature itself when
+  neither says enough) and writes nothing until the human confirms; the
+  agreed understanding opens `plan.md`, and autonomous runs record an
+  **Assumptions** section instead. Then write/overwrite `plan.md`; finish by
+  setting `meta.json.status = "plan-review"`.
 - **Phase `revise`**: if the review round was about the plan, revise
   `plan.md` and finish with `"plan-review"`. If it was about code, behave
   like `implement`. In `review-only` mode there is no plan, so `revise` is

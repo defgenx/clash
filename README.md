@@ -556,7 +556,10 @@ The repo is picked from your open sessions and existing workflow projects, or
 via **Browse…** / the 📁 button on the path prompt — the same native folder
 picker as the new-session modal.
 
-**The loop** (full mode): create an item (title + project + repo) → *Start planning*
+**The loop** (full mode): create an item (title + a free-form **description**
+of the goal/scope — the planning agent's primary source, optional but it
+spares you half the requirements questions; editable later in the ⚙ Settings
+tab + project + repo) → *Start planning*
 spawns a Claude Code session in a dedicated git worktree, driven by the
 `clash-workflow` skill → read the rendered plan, *Approve* or *Request
 changes* → during **diff review**, hover any line of the diff

@@ -1421,6 +1421,19 @@ button.busy:disabled { opacity: 1; }
   min-width: 240px;
   font-size: 12px;
 }
+.wf-settings-desc {
+  width: 100%;
+  margin-top: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 8px;
+  resize: vertical;
+}
+.wf-settings-desc:focus { border-color: var(--accent); outline: none; }
 
 /* Mermaid diagrams (structure.md and any other doc): scroll wide graphs
    inside their own box rather than the whole tab. */
