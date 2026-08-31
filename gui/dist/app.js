@@ -10215,7 +10215,9 @@ function restartSessionPoll() {
     .then((f) => ($("set-wf-forge").value = f || "auto"))
     .catch(() => {});
   invoke("get_skills_update_mode")
-    .then((m) => ($("set-skills-update").value = m || "ask"))
+    // `untouched` predates the split and now says exactly what `keep` says:
+    // untouched skills are refreshed without asking either way.
+    .then((m) => ($("set-skills-update").value = m === "untouched" ? "keep" : m || "ask"))
     .catch(() => {});
   invoke("get_workflow_share_settings")
     .then((s) => {
@@ -10227,9 +10229,11 @@ function restartSessionPoll() {
       $("set-wf-jira-token").value = s.jiraApiToken || "";
     })
     .catch(() => {});
-  // A clash upgrade that shipped changed skills is a DECISION, not a side
-  // effect: ask (default), or apply the Settings policy silently. Missing
-  // skills were already installed by the backend — nothing to protect there.
+  // Everything clash itself wrote (missing skills, untouched ones a new
+  // release changed, retired dirs) was already synced by the backend — no
+  // question there, nothing of the user's is at stake. What can reach here is
+  // the real diff: skills edited by hand that an update would overwrite. Ask
+  // (default), or apply the Settings policy silently.
   (async () => {
     try {
       const plan = await invoke("get_skills_plan");
@@ -10251,21 +10255,20 @@ function restartSessionPoll() {
         return;
       }
       const parts = [];
-      if (plan.outdated.length)
-        parts.push(`updated upstream: ${plan.outdated.join(", ")}`);
       if (plan.locallyEdited.length)
-        parts.push(`with your local edits: ${plan.locallyEdited.join(", ")}`);
-      if (plan.retiredPresent.length)
-        parts.push(`retired: ${plan.retiredPresent.join(", ")}`);
+        parts.push(`your edits: ${plan.locallyEdited.join(", ")}`);
+      if (plan.retiredEdited.length)
+        parts.push(`retired but edited: ${plan.retiredEdited.join(", ")}`);
       const how = await uiChoice({
-        message: `clash v${plan.version} ships changed agent skills — update them?`,
+        message: `clash v${plan.version} ships agent skills you have edited by hand — overwrite your edits?`,
         detail:
           parts.join(" · ") +
-          ". Choosing here settles it until the next upgrade; automate it in Settings → Workflows → Skill updates.",
+          ". Skills you never touched are already up to date. Choosing here settles it until the next upgrade; automate it in Settings → Workflows → Skill updates.",
         choices: [
-          { label: "Update all (overwrite local edits)", value: "all", primary: true },
-          { label: "Update untouched only", value: "untouched" },
-          { label: "Keep everything as is", value: "keep" },
+          // Keeping is focused: the only reason this popup exists is that the
+          // other answer destroys something.
+          { label: "Keep my edits", value: "keep", primary: true },
+          { label: "Overwrite with the new skills", value: "all" },
         ],
       });
       // Esc = decide later: asked again next launch.

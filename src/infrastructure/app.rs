@@ -79,16 +79,21 @@ impl App {
         if let Err(e) = crate::infrastructure::hooks::install_hooks(&data_dir) {
             tracing::warn!("Failed to install hooks: {}", e);
         }
-        // Skills: missing ones always install (nothing to protect, and the
-        // workflow agents break without them); anything beyond that is a
-        // *decision* — honored automatically when `general.skills_update` is
-        // not `ask`, otherwise left for the GUI's startup popup (the TUI has
-        // no dialog surface for it).
+        // Skills: everything clash itself wrote is brought up to date at
+        // startup — missing installs, refreshes of untouched files, retired
+        // dirs. None of that can lose work, so none of it asks. A skill
+        // hand-edited since clash wrote it *is* a decision: honored
+        // automatically when `general.skills_update` is not `ask`, otherwise
+        // left for the GUI's startup popup (the TUI has no dialog surface).
         {
             use crate::infrastructure::skills;
-            let missing = skills::install_missing(&data_dir);
-            if !missing.is_empty() {
-                tracing::info!("installed missing skills: {:?}", missing);
+            let synced = skills::sync_unattended(&data_dir);
+            if !synced.updated.is_empty() || !synced.removed.is_empty() {
+                tracing::info!(
+                    "skills synced (updated: {:?}, removed: {:?})",
+                    synced.updated,
+                    synced.removed
+                );
             }
             let plan = skills::plan_install(&data_dir);
             if plan.needs_decision {
@@ -103,11 +108,12 @@ impl App {
                         );
                     }
                     None => tracing::info!(
-                        "clash v{} ships changed skills (outdated: {:?}, locally edited: {:?}) — \
-                         decide in the clash GUI popup, or set general.skills_update",
+                        "clash v{} ships skills over your own edits (locally edited: {:?}, \
+                         retired: {:?}) — decide in the clash GUI popup, or set \
+                         general.skills_update",
                         plan.version,
-                        plan.outdated,
-                        plan.locally_edited
+                        plan.locally_edited,
+                        plan.retired_edited
                     ),
                 }
             }

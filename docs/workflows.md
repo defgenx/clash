@@ -546,24 +546,31 @@ under-powering real work is the worse failure.
 
 The four skills (`clash-workflow`, `clash-plan-review`, `clash-code-review`,
 `clash-explain`) are compiled into both binaries. Installing them under
-`<claude_dir>/skills/` is a **decision, not a side effect**:
+`<claude_dir>/skills/` becomes a **decision only where it could lose work**:
 
-- **Missing skills always install** at startup — there is nothing to
-  protect, and workflow agents break without them.
-- Everything else goes through plan → decide → apply. `plan_install`
-  categorizes each skill (outdated = changed upstream, untouched locally;
-  locally-edited = changed upstream AND hand-edited since clash last wrote
-  it) plus retired dirs still present. When something needs deciding, the
-  GUI shows a startup popup: **Update all** (overwrite local edits) /
-  **Update untouched only** / **Keep everything as is** — or applies the
-  `general.skills_update` setting silently when it is not `ask` (Settings →
-  Workflows → *Skill updates*). Esc defers: asked again next launch.
-- `apply_decision` performs the choice, removes `RETIRED_SKILLS` dirs (never
-  on `keep`), and stamps the manifest's `resolvedFingerprint` — a hash of the
-  embedded set, so the question returns only when the skills actually change
-  again (fingerprint, not version: dev builds change content without a bump).
+- `sync_unattended` runs at every startup and needs no permission: it
+  installs **missing** skills, refreshes every skill whose file is still
+  exactly what clash last wrote, and removes retired dirs clash wrote. A new
+  release shipping new skill text is not a question — nothing of the user's
+  is at stake, and asking anyway trained people to dismiss the popup.
+- What survives that is the real diff, and the only thing that asks:
+  `plan_install`'s **locally-edited** skills (changed upstream AND
+  hand-edited since clash last wrote them) and **retired-edited** dirs. The
+  GUI shows a startup popup — **Keep my edits** / **Overwrite with the new
+  skills** — or applies the `general.skills_update` setting silently when it
+  is not `ask` (Settings → Workflows → *Skill updates*). Esc defers: asked
+  again next launch.
+- `apply_decision` performs the choice and stamps the manifest's
+  `resolvedFingerprint` — a hash of the embedded set, so the question returns
+  only when the skills actually change again (fingerprint, not version: dev
+  builds change content without a bump). `sync_unattended` stamps **only when
+  nothing is left to ask**, so it can never swallow a pending decision.
+  `all` removes every retired dir; `untouched` (and the unattended sync)
+  spares a hand-edited one for the same reason it spares a hand-edited
+  current skill; `keep` removes none.
 - The manifest (`.clash-skills.json`) records the per-skill hash **as last
-  written by clash** — the "was it hand-edited since?" oracle. Kept local
+  written by clash** — the "was it hand-edited since?" oracle, and now also
+  what tells an abandoned retired dir from someone's fork of one. Kept local
   edits keep their old hash, so they stay detectable as edits forever.
-- The TUI has no popup: it installs missing skills, honors a non-`ask`
+- The TUI has no popup: it runs the same unattended sync, honors a non-`ask`
   setting, and otherwise logs a pointer to the GUI.

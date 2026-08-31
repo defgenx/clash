@@ -720,11 +720,13 @@ ones land in an orphan tray). The file contract for agents is documented in
 plans, implements, addresses comments, opens PRs), `clash-plan-review` (the
 interactive plan reviewer), `clash-code-review` (the code/diff reviewer) and
 `clash-explain` (the explainer — see the Structure tab below) — all embedded
-in the clash binary. Missing skills install themselves at startup (no setup
-needed); **updates are your decision**: when an upgrade ships changed skills,
-a startup popup asks — *Update all* (overwrite local edits), *Update
-untouched only*, or *Keep everything as is* — once per upgrade. Prefer it
-silent? *Settings → Workflows → Skill updates* pins one of those answers. The separations
+in the clash binary. Startup keeps them current by itself — missing ones
+install, and ones you never edited are refreshed to the version this clash
+ships (no setup, no popup: nothing of yours is at stake). **clash asks only
+when it detects a diff of your own**: a skill you edited by hand that an
+upgrade would overwrite. Then a startup popup asks once — *Keep my edits* or
+*Overwrite with the new skills*. Prefer it silent? *Settings → Workflows →
+Skill updates* pins one of those answers. The separations
 are deliberate, twice over: executor vs reviewer because reviewing and
 implementing are different jobs, and plan review vs code review because one
 skill doing both describes neither sharply (the old combined `clash-review`
@@ -868,7 +870,7 @@ open terminals, no restart:
 |---|---|
 | **Appearance** | **Theme** — 12 built-in palettes, 8 dark and 4 light (see below) |
 | **Paths** | Default directory for new sessions · scratch directory · workflows directory (each with a 📁 folder picker) · `claude` binary — a name resolved on PATH or an absolute path, validated on entry, used by the next session you start (📄 file picker) |
-| **Workflows** | PR skill — the skill workflow agents open pull requests with (**default `hivebrite-engineering:github-pr`**; `none` disables and falls back to each repo's own conventions via `gh`; agents also fall back automatically when the skill isn't installed) · Forge — auto-detect (from the repo's origin remote) / GitHub / none · Skill updates — what to do when an upgrade ships changed agent skills: ask at startup (default) / update all / update untouched only / keep as is. PR skill is also overridable per item in its ⚙ Settings tab |
+| **Workflows** | PR skill — the skill workflow agents open pull requests with (**default `hivebrite-engineering:github-pr`**; `none` disables and falls back to each repo's own conventions via `gh`; agents also fall back automatically when the skill isn't installed) · Forge — auto-detect (from the repo's origin remote) / GitHub / none · Skill updates — what to do when an upgrade ships a skill you edited by hand (untouched ones are always refreshed): ask at startup (default) / overwrite my edits / keep my edits. PR skill is also overridable per item in its ⚙ Settings tab |
 | **Terminal · text** | Font family (opens a **searchable font picker** — see below) · font size · font weight · bold weight · line height · letter spacing |
 | **Terminal · cursor** | Style (block/bar/underline) · unfocused-pane style (outline/block/bar/underline/hidden) · bar width · blink |
 | **Terminal · colors** | Minimum contrast ratio (1 = off, 4.5 = WCAG AA) · bold text in bright colors |

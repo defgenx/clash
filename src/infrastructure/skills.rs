@@ -4,18 +4,21 @@
 //! two reviewers, the explainer) are compiled in via `include_str!` from the
 //! repo's `skills/` directory and installed under `<claude_dir>/skills/`.
 //!
-//! Installation is a **decision, not a side effect**. At startup clash only
-//! installs skills that are *missing* (nothing to protect there — and a
-//! missing skill breaks workflow agents outright). Everything else goes
-//! through plan → decide → apply:
+//! Installation only becomes a **decision when it could lose work**. At every
+//! startup [`sync_unattended`] installs what is missing and refreshes every
+//! skill whose file on disk is still exactly what clash last wrote. A new
+//! clash shipping new skill text is not a question — there is nothing of the
+//! user's to weigh, and asking anyway trained people to dismiss the popup.
+//! What is left over is the real diff: a skill (or a retired directory)
+//! hand-edited since clash wrote it, which an update would overwrite.
 //!
 //! - [`plan_install`] compares embedded ↔ installed ↔ manifest and
 //!   categorizes each skill: missing, outdated (changed upstream, untouched
 //!   locally) or locally-edited (changed upstream AND touched since clash
-//!   last wrote it), plus any retired skill still present.
+//!   last wrote it), plus any retired skill still present — flagging which of
+//!   those clash did not write. Only the hand-edited ones ask.
 //! - The human (GUI popup, or the `general.skills_update` setting when it is
-//!   not `ask`) picks an [`ApplyMode`]: overwrite everything, update only the
-//!   untouched ones, or keep everything as is.
+//!   not `ask`) picks an [`ApplyMode`]: overwrite those edits, or keep them.
 //! - [`apply_decision`] performs exactly that and stamps the manifest's
 //!   `resolvedFingerprint`, so the question comes back only when the embedded
 //!   set actually changes again (fingerprint, not version — dev builds change
@@ -77,7 +80,8 @@ const MANIFEST_FILE: &str = ".clash-skills.json";
 pub enum ApplyMode {
     /// Overwrite every managed skill, local edits included.
     All,
-    /// Update only skills untouched since clash last wrote them.
+    /// Update only skills untouched since clash last wrote them, and remove
+    /// only retired directories clash itself wrote. The unattended default.
     Untouched,
     /// Touch nothing (missing skills are still installed at startup).
     Keep,
@@ -107,6 +111,7 @@ pub struct SkillsPlan {
     /// nothing to protect, and workflow agents break without them.
     pub missing: Vec<String>,
     /// Changed upstream, untouched locally since clash last wrote them.
+    /// Refreshed by `sync_unattended` at startup — never a question.
     pub outdated: Vec<String>,
     /// Changed upstream AND hand-edited locally (or predating the manifest,
     /// which is indistinguishable — treated as edited so nothing is clobbered
@@ -114,11 +119,16 @@ pub struct SkillsPlan {
     pub locally_edited: Vec<String>,
     /// Retired skills whose directories still exist.
     pub retired_present: Vec<String>,
+    /// Subset of `retired_present` whose `SKILL.md` is not what clash last
+    /// wrote — removing one would eat someone's edits, so it asks. The rest
+    /// go with `sync_unattended`.
+    pub retired_edited: Vec<String>,
     /// True when this exact embedded set was already decided on (manifest's
     /// `resolvedFingerprint`) — the popup must not return until the next
     /// upgrade.
     pub resolved: bool,
-    /// The one bit the frontend actually branches on.
+    /// The one bit the frontend actually branches on: something diverges from
+    /// what clash itself wrote, so only the human can settle it.
     pub needs_decision: bool,
 }
 
@@ -247,42 +257,42 @@ pub fn plan_install(claude_dir: &Path) -> SkillsPlan {
         }
     }
     for name in RETIRED_SKILLS {
-        if claude_dir.join("skills").join(name).is_dir() {
-            plan.retired_present.push(name.to_string());
+        let dir = claude_dir.join("skills").join(name);
+        if !dir.is_dir() {
+            continue;
+        }
+        plan.retired_present.push(name.to_string());
+        let clash_wrote = match std::fs::read_to_string(dir.join("SKILL.md")) {
+            // No SKILL.md left: nothing of anyone's in the file to protect.
+            Err(_) => true,
+            Ok(disk) => manifest
+                .as_ref()
+                .and_then(|m| m.skills.get(*name))
+                .is_some_and(|last| last == &content_hash(&disk)),
+        };
+        if !clash_wrote {
+            plan.retired_edited.push(name.to_string());
         }
     }
-    plan.needs_decision = !plan.resolved
-        && (!plan.outdated.is_empty()
-            || !plan.locally_edited.is_empty()
-            || !plan.retired_present.is_empty());
+    // An upstream-only change is not a decision: `sync_unattended` refreshes
+    // what clash itself wrote. Only a divergence from that — a hand-edited
+    // skill or retired dir an update would overwrite — needs the human.
+    plan.needs_decision =
+        !plan.resolved && (!plan.locally_edited.is_empty() || !plan.retired_edited.is_empty());
     plan
 }
 
-/// Install only the skills that are absent. Safe to run unconditionally at
-/// every startup: nothing existing is touched and no decision is consumed.
-/// Returns the names it installed.
-pub fn install_missing(claude_dir: &Path) -> Vec<String> {
-    let plan = plan_install(claude_dir);
-    if plan.missing.is_empty() {
-        return Vec::new();
-    }
-    let mut manifest = read_manifest(claude_dir).unwrap_or_default();
-    let mut installed = Vec::new();
-    for skill in SKILLS {
-        if !plan.missing.iter().any(|m| m == skill.name) {
-            continue;
-        }
-        if write_skill(claude_dir, skill) {
-            manifest
-                .skills
-                .insert(skill.name.to_string(), content_hash(skill.content));
-            installed.push(skill.name.to_string());
-        }
-    }
-    if !installed.is_empty() {
-        write_manifest(claude_dir, &manifest);
-    }
-    installed
+/// The unattended half, run unconditionally at every startup by both
+/// binaries: install what is missing, refresh every skill still holding
+/// exactly what clash last wrote, and drop retired directories clash wrote.
+/// None of that can lose work, so none of it is worth asking about — what
+/// survives it is what [`plan_install`] then reports as a real decision.
+///
+/// The embedded set is stamped as resolved only when nothing is left to ask,
+/// so a pending local-edit decision still reaches the human.
+pub fn sync_unattended(claude_dir: &Path) -> SkillsReport {
+    let stamp = !plan_install(claude_dir).needs_decision;
+    apply(claude_dir, ApplyMode::Untouched, stamp)
 }
 
 /// Apply an update decision and stamp it, so the question only returns when
@@ -290,6 +300,12 @@ pub fn install_missing(claude_dir: &Path) -> Vec<String> {
 /// and removes nothing; `untouched` skips hand-edited skills; `all` restores
 /// every managed skill to the embedded copy.
 pub fn apply_decision(claude_dir: &Path, mode: ApplyMode) -> SkillsReport {
+    apply(claude_dir, mode, true)
+}
+
+/// `stamp` records the embedded set as decided on; only `sync_unattended`
+/// withholds it, to leave a pending decision visible.
+fn apply(claude_dir: &Path, mode: ApplyMode, stamp: bool) -> SkillsReport {
     let plan = plan_install(claude_dir);
     let mut manifest = read_manifest(claude_dir).unwrap_or_default();
     let mut report = SkillsReport {
@@ -327,6 +343,12 @@ pub fn apply_decision(claude_dir: &Path, mode: ApplyMode) -> SkillsReport {
 
     if mode != ApplyMode::Keep {
         for name in &plan.retired_present {
+            // `untouched` spares a hand-edited retired skill for the same
+            // reason it spares a hand-edited current one.
+            if mode == ApplyMode::Untouched && plan.retired_edited.contains(name) {
+                report.kept.push(name.clone());
+                continue;
+            }
             let dir = claude_dir.join("skills").join(name);
             match std::fs::remove_dir_all(&dir) {
                 Ok(()) => {
@@ -339,7 +361,9 @@ pub fn apply_decision(claude_dir: &Path, mode: ApplyMode) -> SkillsReport {
     }
 
     manifest.clash_version = plan.version;
-    manifest.resolved_fingerprint = plan.fingerprint;
+    if stamp {
+        manifest.resolved_fingerprint = plan.fingerprint;
+    }
     write_manifest(claude_dir, &manifest);
     report
 }
@@ -357,14 +381,14 @@ mod tests {
         // A fresh install is not a decision — nothing pre-existing to protect.
         assert!(!plan.needs_decision, "{:?}", plan);
 
-        let installed = install_missing(dir.path());
-        assert_eq!(installed.len(), SKILLS.len());
+        let report = sync_unattended(dir.path());
+        assert_eq!(report.updated.len(), SKILLS.len());
         for skill in SKILLS {
             let path = dir.path().join("skills").join(skill.name).join("SKILL.md");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), skill.content);
         }
         // Idempotent, and now fully clean.
-        assert!(install_missing(dir.path()).is_empty());
+        assert!(sync_unattended(dir.path()).updated.is_empty());
         let plan = plan_install(dir.path());
         assert!(plan.missing.is_empty() && !plan.needs_decision);
     }
@@ -383,10 +407,20 @@ mod tests {
         write_manifest(dir, &manifest);
     }
 
+    /// Simulate "a new clash binary": the fingerprint stamped on disk is the
+    /// one a *previous* release resolved, so this embedded set is new. Without
+    /// it the plan is already resolved and nothing is a decision — which is
+    /// itself the "don't nag me about my own edit" property, pinned below.
+    fn simulate_upgrade(dir: &Path) {
+        let mut manifest = read_manifest(dir).unwrap_or_default();
+        manifest.resolved_fingerprint = "a previous release".to_string();
+        write_manifest(dir, &manifest);
+    }
+
     #[test]
     fn outdated_vs_locally_edited_is_the_manifest_oracle() {
         let dir = TempDir::new().unwrap();
-        install_missing(dir.path());
+        sync_unattended(dir.path());
         let a = SKILLS[0].name;
         let b = SKILLS[1].name;
         // a: disk == what clash last wrote (old version) != embedded → outdated.
@@ -403,17 +437,99 @@ mod tests {
             "user's own variant",
             &content_hash("what clash wrote"),
         );
-
+        simulate_upgrade(dir.path());
         let plan = plan_install(dir.path());
         assert_eq!(plan.outdated, vec![a.to_string()]);
+        assert_eq!(plan.locally_edited, vec![b.to_string()]);
+        // The edit is what asks — the outdated one would have gone silently.
+        assert!(plan.needs_decision);
+    }
+
+    #[test]
+    fn an_upstream_only_change_never_asks() {
+        // The whole point: a new clash shipping new skill text is applied at
+        // startup. Asking there was a popup with nothing at stake in it.
+        let dir = TempDir::new().unwrap();
+        sync_unattended(dir.path());
+        let a = SKILLS[0].name;
+        simulate(
+            dir.path(),
+            a,
+            "old shipped content",
+            &content_hash("old shipped content"),
+        );
+        simulate_upgrade(dir.path());
+        let plan = plan_install(dir.path());
+        assert_eq!(plan.outdated, vec![a.to_string()]);
+        assert!(!plan.needs_decision, "{:?}", plan);
+
+        let report = sync_unattended(dir.path());
+        assert_eq!(report.updated, vec![a.to_string()]);
+        let path = dir.path().join("skills").join(a).join("SKILL.md");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), SKILLS[0].content);
+        // Nothing was left to ask, so the set is stamped and stays quiet.
+        let plan = plan_install(dir.path());
+        assert!(plan.resolved && plan.outdated.is_empty());
+    }
+
+    #[test]
+    fn the_unattended_sync_does_not_swallow_a_pending_decision() {
+        // It updates the untouched skill and leaves the edited one *and* the
+        // question: stamping here would silently drop the human's call.
+        let dir = TempDir::new().unwrap();
+        sync_unattended(dir.path());
+        let a = SKILLS[0].name;
+        let b = SKILLS[1].name;
+        simulate(
+            dir.path(),
+            a,
+            "old shipped content",
+            &content_hash("old shipped content"),
+        );
+        simulate(
+            dir.path(),
+            b,
+            "user's own variant",
+            &content_hash("what clash wrote"),
+        );
+        simulate_upgrade(dir.path());
+        let report = sync_unattended(dir.path());
+        assert_eq!(report.updated, vec![a.to_string()]);
+        assert_eq!(report.kept, vec![b.to_string()]);
+        let plan = plan_install(dir.path());
+        assert!(!plan.resolved, "a pending edit must not be stamped");
         assert_eq!(plan.locally_edited, vec![b.to_string()]);
         assert!(plan.needs_decision);
     }
 
     #[test]
+    fn an_edit_with_nothing_new_shipped_is_left_alone_and_never_asks() {
+        // The user's own copy of the *current* skill: clash has nothing to
+        // offer, so asking "undo your edit?" every launch is pure nagging —
+        // and the unattended sync must not overwrite it either.
+        let dir = TempDir::new().unwrap();
+        sync_unattended(dir.path());
+        let a = SKILLS[0].name;
+        simulate(
+            dir.path(),
+            a,
+            "my own variant",
+            &content_hash("what clash wrote"),
+        );
+
+        let plan = plan_install(dir.path());
+        assert_eq!(plan.locally_edited, vec![a.to_string()]);
+        assert!(plan.resolved && !plan.needs_decision, "{:?}", plan);
+
+        sync_unattended(dir.path());
+        let path = dir.path().join("skills").join(a).join("SKILL.md");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "my own variant");
+    }
+
+    #[test]
     fn untouched_mode_updates_outdated_and_keeps_edits() {
         let dir = TempDir::new().unwrap();
-        install_missing(dir.path());
+        sync_unattended(dir.path());
         let a = SKILLS[0].name;
         let b = SKILLS[1].name;
         simulate(
@@ -449,7 +565,7 @@ mod tests {
     #[test]
     fn all_mode_overwrites_and_reports_the_edits_it_ate() {
         let dir = TempDir::new().unwrap();
-        install_missing(dir.path());
+        sync_unattended(dir.path());
         let b = SKILLS[1].name;
         simulate(
             dir.path(),
@@ -469,7 +585,7 @@ mod tests {
     #[test]
     fn keep_mode_touches_nothing_but_still_resolves() {
         let dir = TempDir::new().unwrap();
-        install_missing(dir.path());
+        sync_unattended(dir.path());
         let a = SKILLS[0].name;
         simulate(
             dir.path(),
@@ -498,18 +614,55 @@ mod tests {
     }
 
     #[test]
-    fn retired_dirs_trigger_the_decision_and_go_on_update() {
+    fn a_retired_dir_clash_wrote_goes_without_asking() {
         let dir = TempDir::new().unwrap();
-        install_missing(dir.path());
+        sync_unattended(dir.path());
+        // Exactly what clash shipped when the skill still existed.
+        simulate(
+            dir.path(),
+            "clash-review",
+            "old harness",
+            &content_hash("old harness"),
+        );
+        simulate_upgrade(dir.path());
         let retired = dir.path().join("skills").join("clash-review");
-        std::fs::create_dir_all(&retired).unwrap();
-        std::fs::write(retired.join("SKILL.md"), "old harness").unwrap();
 
         let plan = plan_install(dir.path());
         assert_eq!(plan.retired_present, vec!["clash-review".to_string()]);
+        assert!(plan.retired_edited.is_empty());
+        assert!(!plan.needs_decision, "{:?}", plan);
+
+        let report = sync_unattended(dir.path());
+        assert_eq!(report.removed, vec!["clash-review".to_string()]);
+        assert!(!retired.exists());
+    }
+
+    #[test]
+    fn a_hand_edited_retired_dir_asks_and_survives_untouched() {
+        let dir = TempDir::new().unwrap();
+        sync_unattended(dir.path());
+        let retired = dir.path().join("skills").join("clash-review");
+        std::fs::create_dir_all(&retired).unwrap();
+        std::fs::write(retired.join("SKILL.md"), "my own harness").unwrap();
+        simulate_upgrade(dir.path());
+        let plan = plan_install(dir.path());
+        assert_eq!(plan.retired_edited, vec!["clash-review".to_string()]);
         assert!(plan.needs_decision);
 
+        // The unattended sync must not delete someone's file, and must not
+        // stamp the question away either.
+        let report = sync_unattended(dir.path());
+        assert!(report.removed.is_empty());
+        assert!(retired.exists());
+        assert!(plan_install(dir.path()).needs_decision);
+
+        // `untouched` spares it too; only `all` takes it.
         let report = apply_decision(dir.path(), ApplyMode::Untouched);
+        assert!(report.removed.is_empty());
+        assert_eq!(report.kept, vec!["clash-review".to_string()]);
+        assert!(retired.exists());
+
+        let report = apply_decision(dir.path(), ApplyMode::All);
         assert_eq!(report.removed, vec!["clash-review".to_string()]);
         assert!(!retired.exists());
     }

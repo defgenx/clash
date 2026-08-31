@@ -222,10 +222,11 @@ pub const PROPS: &[Prop] = &[
         "general.skills_update",
         Kind::Enum(&["ask", "all", "untouched", "keep"]),
         Val::Str("ask"),
-        "What to do when a clash upgrade ships changed agent skills: `ask` shows a popup at \
-         startup; `all` overwrites every managed skill (local edits included); `untouched` \
-         updates only skills you never edited; `keep` leaves everything as is. Missing skills \
-         always install.",
+        "What to do when a clash upgrade ships agent skills over ones you edited by hand: \
+         `ask` shows a popup at startup; `all` overwrites your edits; `keep` (and its older \
+         synonym `untouched`) keeps them. Skills you never edited are always refreshed, \
+         missing ones always install, and retired ones are removed unless you edited them — \
+         none of that asks.",
     ),
     // ── [paths] ─────────────────────────────────────────────────────
     Prop::new(

@@ -2868,12 +2868,18 @@ fn main() {
         forge_cache: Mutex::new(HashMap::new()),
     };
 
-    // Skills: only the missing ones install at startup — anything beyond that
-    // is a decision the frontend drives at boot (get_skills_plan →
-    // popup/setting → apply_skills_decision), never a silent overwrite.
-    let missing = clash::infrastructure::skills::install_missing(state.backend.base_dir());
-    if !missing.is_empty() {
-        tracing::info!("installed missing skills: {:?}", missing);
+    // Skills: everything clash itself wrote is synced at startup (missing
+    // installs, refreshes, retired dirs) — nothing there can lose work, so
+    // nothing there is worth a popup. Only a file hand-edited since clash
+    // wrote it is a decision, and the frontend drives that at boot
+    // (get_skills_plan → popup/setting → apply_skills_decision).
+    let synced = clash::infrastructure::skills::sync_unattended(state.backend.base_dir());
+    if !synced.updated.is_empty() || !synced.removed.is_empty() {
+        tracing::info!(
+            "skills synced (updated: {:?}, removed: {:?})",
+            synced.updated,
+            synced.removed
+        );
     }
     // Re-key registry entries whose conversation moved through resume forks
     // (claude --resume writes a NEW transcript while hooks keep reporting
