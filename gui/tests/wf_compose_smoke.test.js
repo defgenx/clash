@@ -101,6 +101,9 @@ test("the change-request composer opens without throwing", async () => {
     CSS: { escape: (s) => s },
   };
   vm.createContext(sandbox);
+  // The scrim-dismissal helper is shared by every dialog builder: run the real
+  // one rather than stubbing it, so a rename there still fails here.
+  vm.runInContext(extractFunction(APP, "wireBackdropDismiss"), sandbox);
   vm.runInContext(`opened = ${src}`, sandbox);
 
   // The open path must not throw for any target / annotation mix — a

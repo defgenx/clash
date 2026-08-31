@@ -167,3 +167,20 @@ test("a dismissed composer keeps the draft", () => {
   // Submitting clears the draft and resolves the composer's result object.
   assert.match(APP, /wfDrafts\.delete\(key\);\s*done\(\{\s*note,/);
 });
+
+test("no dialog dismisses on a bare backdrop click", () => {
+  // `click` fires on the nearest common ancestor of the mousedown and mouseup
+  // targets, so drag-selecting text in a dialog field and releasing past the
+  // box edge targets the backdrop — a bare `e.target === backdrop` handler read
+  // that as an outside click and cancelled the dialog mid-edit (renaming a
+  // session, selecting the old name). Every scrim goes through the helper,
+  // which requires the press and the release to both land on the scrim.
+  assert.match(APP, /function wireBackdropDismiss\(backdrop, dismiss, hits =/);
+  assert.doesNotMatch(APP, /e\.target === backdrop/);
+  assert.doesNotMatch(APP, /e\.target === \$\("modal-backdrop"\)/);
+  // One wiring per dialog builder (plus the new-session modal and the tour
+  // scrim, whose backdrops are not `.dialog-backdrop`).
+  const backdrops = (APP.match(/className = "dialog-backdrop"/g) || []).length;
+  const wired = (APP.match(/^\s*(?:if \(cancelable\) )?wireBackdropDismiss\(/gm) || []).length;
+  assert.equal(wired, backdrops + 2, "every backdrop needs one wireBackdropDismiss");
+});

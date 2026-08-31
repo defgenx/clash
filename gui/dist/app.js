@@ -168,6 +168,26 @@ function applyStaticIcons() {
 // wry's WKWebView does not implement native alert/confirm/prompt —
 // they silently return undefined — so modal equivalents are built in-page.
 
+/// Click-outside dismissal for a modal, wired so that releasing a
+/// text-selection drag over the scrim does not count as clicking it.
+/// `click` fires on the nearest common ancestor of the mousedown and mouseup
+/// targets, so drag-selecting inside a field and releasing past the box edge
+/// targets the backdrop itself — indistinguishable from a real outside click,
+/// which cancelled the dialog mid-edit. Press *and* release must both land on
+/// the backdrop, which mousedown/mouseup can tell apart and click cannot.
+/// `hits` widens what counts as the scrim (the tour also treats its ring).
+function wireBackdropDismiss(backdrop, dismiss, hits = (t) => t === backdrop) {
+  let pressedScrim = false;
+  backdrop.addEventListener("mousedown", (e) => {
+    pressedScrim = hits(e.target);
+  });
+  backdrop.addEventListener("mouseup", (e) => {
+    const outside = pressedScrim && hits(e.target);
+    pressedScrim = false;
+    if (outside) dismiss();
+  });
+}
+
 function uiDialog({
   message,
   input = null,
@@ -247,9 +267,7 @@ function uiDialog({
       if (typeof fitAll === "function") fitAll();
     };
     ok.onclick = () => done(input !== null ? field.value : true);
-    backdrop.onclick = (e) => {
-      if (e.target === backdrop && cancelable) done(cancelValue);
-    };
+    if (cancelable) wireBackdropDismiss(backdrop, () => done(cancelValue));
     backdrop.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key === "Enter" && (!multiline || e.metaKey || e.ctrlKey))
@@ -327,9 +345,7 @@ function uiListChoice({ message, items }) {
     backdrop.appendChild(box);
     if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
     document.body.appendChild(backdrop);
-    backdrop.onclick = (e) => {
-      if (e.target === backdrop) done(null);
-    };
+    wireBackdropDismiss(backdrop, () => done(null));
     backdrop.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key === "Escape") done(null);
@@ -397,9 +413,7 @@ function uiChoice({ message, detail = null, choices }) {
       actions.classList.add("stacked");
       actions.appendChild(cancel);
     }
-    backdrop.onclick = (e) => {
-      if (e.target === backdrop) done(null);
-    };
+    wireBackdropDismiss(backdrop, () => done(null));
     backdrop.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key === "Escape") done(null);
@@ -5525,9 +5539,7 @@ async function wfShareDialog(item) {
   backdrop.appendChild(box);
   if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
   document.body.appendChild(backdrop);
-  backdrop.onclick = (e) => {
-    if (e.target === backdrop) done();
-  };
+  wireBackdropDismiss(backdrop, () => done());
   backdrop.addEventListener("keydown", (e) => {
     e.stopPropagation();
     if (e.key === "Escape") done();
@@ -5631,9 +5643,7 @@ function wfComposeReviewRound(item) {
     // drop them while it's up; fitAll() (in done) brings them back.
     if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
     document.body.appendChild(backdrop);
-    backdrop.onclick = (e) => {
-      if (e.target === backdrop) done(null);
-    };
+    wireBackdropDismiss(backdrop, () => done(null));
     backdrop.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key === "Escape") done(null);
@@ -6091,9 +6101,7 @@ function wfComposeChangeRequest({ item, target, annotations, onJump }) {
 
     cancel.onclick = dismiss;
     send.onclick = submit;
-    backdrop.onclick = (e) => {
-      if (e.target === backdrop) dismiss();
-    };
+    wireBackdropDismiss(backdrop, dismiss);
     backdrop.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key === "Escape") dismiss();
@@ -8048,9 +8056,7 @@ $("ns-create").onclick = createSession;
   $("empty-state").addEventListener("click", quickStart);
   $("empty-state").addEventListener("contextmenu", quickStart);
 }
-$("modal-backdrop").addEventListener("click", (e) => {
-  if (e.target === $("modal-backdrop")) hideNewSessionModal();
-});
+wireBackdropDismiss($("modal-backdrop"), hideNewSessionModal);
 // Enter submits from ANY field in the modal (name, working directory, preset,
 // or the worktree checkbox) — not just the working-directory input, which was
 // the only field that used to react. Escape is handled by the global keydown
@@ -8419,9 +8425,7 @@ function pickFontFamily(current) {
     backdrop.appendChild(box);
     if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
     document.body.appendChild(backdrop);
-    backdrop.onclick = (e) => {
-      if (e.target === backdrop) done(null);
-    };
+    wireBackdropDismiss(backdrop, () => done(null));
     backdrop.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key === "Escape") done(null);
@@ -10166,12 +10170,11 @@ function startGuiTour() {
   document.body.appendChild(backdrop);
   // Click on the scrim advances (the tooltip's own buttons stop propagation
   // by being children of `tip`); Esc / Skip end it.
-  backdrop.onclick = (e) => {
-    if (e.target === backdrop || e.target === ring) {
-      if (i === steps.length - 1) done();
-      else move(1);
-    }
-  };
+  wireBackdropDismiss(
+    backdrop,
+    () => (i === steps.length - 1 ? done() : move(1)),
+    (t) => t === backdrop || t === ring
+  );
   document.addEventListener("keydown", onKey, true);
   window.addEventListener("resize", show);
   show();
