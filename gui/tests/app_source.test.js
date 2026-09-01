@@ -236,3 +236,37 @@ test("the queued-follow-up UI mirrors the backend rather than guessing", () => {
   // single-line field cannot hold a prompt with a list in it.
   assert.match(APP, /await uiTextPrompt\(\s*`Follow-up for/);
 });
+
+test("applying a review round goes through the change-round flow", () => {
+  // A path that revised the plan without recording a round would leave the
+  // revision untraceable and unversioned — which is exactly what the
+  // snapshotting flow exists to prevent. So "Apply review" must compose a note
+  // and call the same command the composer does, never a shortcut of its own.
+  assert.match(APP, /const applyReview = async \(\) => \{/);
+  assert.match(APP, /applyReviewNote\(round, findings, target\)/);
+  const apply = APP.slice(
+    APP.indexOf("const applyReview = async () => {"),
+    APP.indexOf("const applyReviewButton = ")
+  );
+  assert.match(apply, /invoke\("workflow_request_changes"/);
+  assert.match(apply, /launchWfAgent\(fresh, "revise"/);
+  // And the second way out is the composer, pre-filled with the same note.
+  assert.match(apply, /requestChanges\(target, note\)/);
+  assert.match(APP, /function wfComposeChangeRequest\(\{ item, target, annotations, onJump, prefill = "" \}\)/);
+  // A kept draft outranks the prefill: one is the human's unfinished sentence.
+  assert.match(APP, /const seeded = \(wfDrafts\.get\(key\) \|\| ""\)\.trim\(\) \? "" : prefill;/);
+});
+
+test("the plan has one version reader, not three views", () => {
+  // The Timeline's drill-downs and the Plan tab used to render the same data
+  // three ways; two of them are retired and the diff colouring lives once.
+  assert.match(APP, /async function renderWfPlanView\(/);
+  assert.match(APP, /function renderUnifiedDiff\(container, text\)/);
+  assert.doesNotMatch(APP, /ts\.subView === "planAt"\)? \{/);
+  assert.doesNotMatch(APP, /if \(ts\.subView === "planDiff"\)/);
+  // A tab persisted before the consolidation still lands on the plan.
+  assert.match(APP, /if \(ts\.subView === "planAt" \|\| ts\.subView === "planDiff"\)/);
+  // One `pd-` renderer: the class assignments appear in exactly one function.
+  const hunks = APP.match(/span\.className = "pd-hunk"/g) || [];
+  assert.equal(hunks.length, 1, "the unified-diff colouring must exist once");
+});

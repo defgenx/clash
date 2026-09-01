@@ -101,8 +101,8 @@ findings into `agent-review.md` and `annotations.json` and never touch
 
 ## Hard rules (violating these corrupts the pipeline)
 
-- **Never** touch `history/` and **never** change `iteration` or `reviewRound` in
-  meta.json — clash owns all three.
+- **Never** touch `history/` and **never** change `iteration`, `reviewRound` or
+  `appliedReviewRound` in meta.json — clash owns all four.
 - Write `annotations.json` **only while** `meta.json.status` is
   `changes-requested` or `implementing`. During review phases the file
   belongs to the human's GUI.
@@ -174,6 +174,14 @@ Read the **latest** `## Iteration` section of `review.md` first.
   this section.
 - If the requested changes concern the **plan**: update `plan.md`
   accordingly and finish with `status = "plan-review"`.
+  - **Edit it in place.** clash froze the previous plan as a version before
+    launching you and shows the human a diff of what you changed, so keep every
+    section the round did not challenge — wording included. A wholesale rewrite
+    is indistinguishable from "everything changed" and makes that diff useless.
+  - When the note reads `Apply agent review round N`, round N of
+    `agent-review.md` **is** the work: address each of its findings, and where
+    you disagree with one, say so in your summary rather than dropping it in
+    silence.
 - If they concern the **code** (there are open annotations, or the note
   references the diff): behave exactly like phase `implement`.
 

@@ -754,6 +754,61 @@ pub fn build_review_prompt(
     )
 }
 
+/// Pure: the Plan tab's version list, newest last.
+///
+/// `snapshots` are the iterations whose `history/` dir carries a frozen
+/// `plan.md` (the change rounds that happened while the item had a plan);
+/// `notes` is `parse_review_iterations(review.md)`, which supplies each
+/// version's heading and the first line of the note that caused the round.
+/// The live file is appended as the head, marked `current`, so the switcher
+/// covers "what the plan was" and "what the plan is" in one list.
+///
+/// `lines` per snapshot is supplied by the caller (it has the text; this
+/// function must not read files).
+pub fn plan_version_list(
+    snapshots: &[(u32, usize)],
+    current_iteration: u32,
+    current_lines: usize,
+    notes: &[crate::domain::workflow::ReviewIterationNote],
+) -> Vec<crate::domain::workflow::PlanVersion> {
+    let first_line = |n: &crate::domain::workflow::ReviewIterationNote| {
+        n.note
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty() && !l.starts_with('#'))
+            .unwrap_or("")
+            .to_string()
+    };
+    let mut out: Vec<crate::domain::workflow::PlanVersion> = snapshots
+        .iter()
+        .map(|&(iteration, lines)| {
+            let note = notes.iter().find(|n| n.iteration == iteration);
+            crate::domain::workflow::PlanVersion {
+                iteration,
+                current: false,
+                lines,
+                heading: note.map(|n| n.heading.clone()).unwrap_or_default(),
+                note: note.map(first_line).unwrap_or_default(),
+            }
+        })
+        .collect();
+    out.sort_by_key(|v| v.iteration);
+    // The head's iteration is the item's current one. A snapshot can share it
+    // only if the meta write that bumps it never landed (a crashed round) — in
+    // which case the frozen copy is the same text as the file, and showing one
+    // entry is the truthful answer.
+    let head = current_iteration.max(1);
+    out.retain(|v| v.iteration < head);
+    out.push(crate::domain::workflow::PlanVersion {
+        iteration: head,
+        current: true,
+        lines: current_lines,
+        heading: String::new(),
+        note: String::new(),
+    });
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1567,5 +1622,80 @@ Tighten the API.\n\n\
             },
         );
         assert!(p.ends_with("Interactive: no."));
+    }
+
+    // ── plan_version_list ────────────────────────────────────────────
+
+    fn note(
+        iteration: u32,
+        heading: &str,
+        body: &str,
+    ) -> crate::domain::workflow::ReviewIterationNote {
+        crate::domain::workflow::ReviewIterationNote {
+            iteration,
+            heading: heading.to_string(),
+            note: body.to_string(),
+            annotations: vec![],
+        }
+    }
+
+    #[test]
+    fn plan_versions_end_with_the_live_file() {
+        let notes = vec![
+            note(
+                1,
+                "2026-09-01 10:00",
+                "## What to change\nTighten the migration step",
+            ),
+            note(2, "2026-09-01 11:00", "Apply agent review round 1"),
+        ];
+        let vs = plan_version_list(&[(1, 40), (2, 52)], 3, 61, &notes);
+        assert_eq!(vs.len(), 3);
+        assert_eq!(
+            vs.iter()
+                .map(|v| (v.iteration, v.current))
+                .collect::<Vec<_>>(),
+            [(1, false), (2, false), (3, true)]
+        );
+        // The note's first *prose* line labels the version — a markdown heading
+        // from the composer's template says nothing about the round.
+        assert_eq!(vs[0].note, "Tighten the migration step");
+        assert_eq!(vs[1].note, "Apply agent review round 1");
+        assert_eq!(vs[0].heading, "2026-09-01 10:00");
+        assert_eq!(vs[2].lines, 61);
+        assert_eq!(vs[2].note, "");
+    }
+
+    #[test]
+    fn a_snapshot_at_the_head_iteration_is_not_listed_twice() {
+        // A round that froze the plan but died before its meta write leaves a
+        // snapshot at the current iteration; its text and the live file are the
+        // same, so the head is the only truthful entry.
+        let vs = plan_version_list(&[(1, 10), (2, 20)], 2, 20, &[]);
+        assert_eq!(
+            vs.iter()
+                .map(|v| (v.iteration, v.current))
+                .collect::<Vec<_>>(),
+            [(1, false), (2, true)]
+        );
+    }
+
+    #[test]
+    fn an_unrevised_plan_has_exactly_one_version() {
+        let vs = plan_version_list(&[], 1, 30, &[]);
+        assert_eq!(vs.len(), 1);
+        assert!(vs[0].current);
+        assert_eq!(vs[0].iteration, 1);
+        // A zero iteration (pre-iteration items) still reads as v1, never v0.
+        assert_eq!(plan_version_list(&[], 0, 5, &[])[0].iteration, 1);
+    }
+
+    #[test]
+    fn versions_are_ordered_by_iteration_whatever_the_input_order() {
+        let vs = plan_version_list(&[(3, 1), (1, 2), (2, 3)], 9, 4, &[]);
+        assert_eq!(
+            vs.iter().map(|v| v.iteration).collect::<Vec<_>>(),
+            [1, 2, 3, 9]
+        );
     }
 }

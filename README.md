@@ -580,10 +580,34 @@ merged PR moves the item to done automatically (an item with *only linked*
 PRs closes once all of them merge — it has no primary PR to drive it). *Request changes* stays available at
 `pr-draft` and `pr-ready` — review feedback keeps arriving once a PR is up,
 and a fix round on an item with a PR pushes its commits so the PR follows.
+**Applying a review round.** A review round judges and records; it never edits
+`plan.md` or the code — a reviewer that rewrites what it reviews has reviewed
+nothing. Turning its findings into work is one click: **↻ Apply review rN**
+(offered at every decision state while a round is waiting) composes the note
+from that round's own findings, records it as the next change round — which
+freezes the current plan as a version first — and launches the agent to carry
+it out. The same dialog offers *Edit the note first…*, which opens the
+change-request composer pre-filled, for when you want to narrow it down
+("apply 1a and 3b") or add something of your own. Until a round has been
+applied the item header says **not applied yet** and the stage's own *Approve*
+is demoted, so a review can no longer look like it evaporated. *Request
+changes* remains the path for feedback that is yours rather than the
+reviewer's.
+
+The **Plan** tab is version-aware, because the plan loop is *review → apply →
+revise → review again* and re-reading a whole plan every round to find three
+edited paragraphs does not scale. Every change round freezes `plan.md`, so the
+tab offers `v1 v2 … current` chips, says what each version is (which iteration
+froze it, how big it is, and the note of the round that caused it), and **⇄
+Changes** shows the diff that produced it — against the previous version by
+default, or any earlier one you pick. The live plan is the only editable
+version; the frozen ones are the record of what was reviewed.
+
 The **Timeline** tab is the item's whole revision record in one newest-first
 feed: every change round as a card carrying the note you wrote (the *why*),
 the *plan diff* of that revision, the full **plan as it stood** at that
-iteration, and the *code diff* you reviewed — interleaved with every agent
+iteration (both open the Plan tab at that version), and the *code diff* you
+reviewed — interleaved with every agent
 review round (its verdict and what it published) and the item's creation. So
 "what did that revision actually change in the plan", "why did round 3
 happen" and "what did the second review conclude" all have an answer without

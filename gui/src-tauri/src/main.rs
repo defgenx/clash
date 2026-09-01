@@ -3231,6 +3231,7 @@ fn main() {
             workflows::mark_workflow_pr_ready,
             workflows::publish_workflow_review,
             workflows::get_workflow_plan_diff,
+            workflows::list_workflow_plan_versions,
             workflows::get_workflow_timeline,
             workflows::get_workflow_history_plan,
             workflows::attach_workflow_pr,

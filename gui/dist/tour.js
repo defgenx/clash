@@ -53,8 +53,9 @@
       title: "Workflows",
       body:
         "A plan → review → implement → PR pipeline per work item, driven by agents and " +
-        "gated by your decisions. ⊞ opens the board, ⇄ the PR dashboard across all " +
-        "projects, and every item can be shared or exported from its tab.",
+        "gated by your decisions. An agent review is applied in one click — it becomes " +
+        "the next round and the plan is versioned, so you can diff what changed. ⊞ opens " +
+        "the board, ⇄ the PR dashboard across all projects.",
     },
     {
       id: "scratches",

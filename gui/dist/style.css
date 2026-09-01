@@ -2353,3 +2353,41 @@ button.busy:disabled { opacity: 1; }
   flex-shrink: 0;
 }
 .queued-chip:hover { background: var(--bg-active); }
+
+/* ── Plan versions ───────────────────────────────────────────────
+   Every change round freezes plan.md, so the Plan tab is a version reader:
+   which version, what it came from, and what changed to produce it. */
+.wf-plan-versions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px 16px 4px;
+}
+.wf-plan-vcaption { font-size: 10px; letter-spacing: 0.06em; color: var(--fg-dim); text-transform: uppercase; }
+.wf-plan-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.wf-plan-chip:hover { color: var(--fg); border-color: var(--accent); }
+.wf-plan-chip.on { background: var(--bg-active); color: var(--fg); border-color: var(--accent); }
+.wf-plan-base { font-size: 11px; }
+.wf-plan-caption { padding: 0 16px 6px; font-size: 11px; margin: 0; }
+
+/* Whether the last review round has been acted on — the state the strip
+   used to leave the reader to infer. */
+.wf-review-strip.pending { border-left: 3px solid var(--accent); }
+.wf-review-strip-flag {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--on-accent, #1a1a1a);
+}
+.wf-review-strip-flag.done { background: none; color: var(--fg-dim); font-weight: 600; }

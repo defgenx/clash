@@ -5200,6 +5200,14 @@ async function buildWorkflowView(el, project, slug) {
     ts.subView = "diff";
   // And for Structure, which only exists once an explain round wrote it.
   if (ts.subView === "structure" && !item.hasStructure) ts.subView = "diff";
+  // The plan drill-downs are now versions of the Plan tab; a tab persisted
+  // before that lands there instead of falling through to the diff.
+  if (ts.subView === "planAt" || ts.subView === "planDiff") {
+    ts.planVersion = ts.subView === "planAt" ? ts.iteration : null;
+    ts.planCompare = ts.subView === "planDiff";
+    ts.planBase = ts.subView === "planDiff" ? ts.iteration : null;
+    ts.subView = wfHasPlanPhase(item) ? "plan" : "diff";
+  }
 
   el.innerHTML = "";
   const info = wfStatusInfo(item.meta.status);
@@ -5361,15 +5369,19 @@ async function buildWorkflowView(el, project, slug) {
   ];
   for (const [id, label] of subViews) {
     const b = document.createElement("button");
-    // planDiff / planAt are drill-downs of the Timeline, not tabs of their own.
-    const active =
-      ts.subView === id ||
-      ((ts.subView === "planDiff" || ts.subView === "planAt") && id === "history");
+    const active = ts.subView === id;
     b.className = "wf-subtab" + (active ? " active" : "") + (id === "settings" ? " wf-subtab-end" : "");
     b.textContent = label;
     b.onclick = () => {
       ts.subView = id;
       if (id !== "diff") ts.iteration = null;
+      // Clicking the Plan tab means "show me the plan", not "show me the
+      // comparison I was looking at ten minutes ago".
+      if (id === "plan") {
+        ts.planVersion = null;
+        ts.planCompare = false;
+        ts.planBase = null;
+      }
       buildWorkflowView(el, project, slug);
     };
     bar.appendChild(b);
@@ -5386,10 +5398,23 @@ async function buildWorkflowView(el, project, slug) {
     const posted = (r.published || []).length
       ? `Published: ${r.published.join(" · ")}`
       : "Nothing published — findings are local to this item";
+    // Whether anything has been done with it yet is the state the strip was
+    // missing: a round that reads as finished but was never applied is exactly
+    // the case where the review looks like it evaporated. Silent for a round
+    // that was never applyable (an explainer, or a round about the artifact of
+    // another stage) — see reviewAppliedState.
+    const applied = reviewAppliedState(item);
+    if (applied === "pending") strip.classList.add("pending");
+    const flag =
+      applied === "pending"
+        ? ' <span class="wf-review-strip-flag">not applied yet</span>'
+        : applied === "applied"
+          ? ' <span class="wf-review-strip-flag done">applied</span>'
+          : "";
     strip.innerHTML =
       `<span class="wf-review-strip-round">⌕ Round ${r.round}${
         r.heading ? ` · ${escapeHtml(r.heading)}` : ""
-      }</span>` +
+      }${flag}</span>` +
       `<span class="wf-review-strip-verdict">${escapeHtml(wfShort(r.verdict, 180))}</span>` +
       `<span class="wf-review-strip-published">${escapeHtml(wfShort(posted, 140))}</span>`;
     strip.title = `${r.verdict}\n\n${posted}\n\nClick to open the full report`;
@@ -6033,7 +6058,7 @@ const wfDrafts = new Map();
 /// for "record only" or `{ interactive, skill }` when the fix round should
 /// start right away. `onJump(annId)` closes the composer (keeping the draft)
 /// and navigates to a comment in the diff.
-function wfComposeChangeRequest({ item, target, annotations, onJump }) {
+function wfComposeChangeRequest({ item, target, annotations, onJump, prefill = "" }) {
   return new Promise((resolve) => {
     const key = draftKey(item.project, item.slug);
     // Live copies: rows can be deleted and un/checked while the dialog is up.
@@ -6096,8 +6121,11 @@ function wfComposeChangeRequest({ item, target, annotations, onJump }) {
     }
     box.appendChild(tools);
 
+    // A kept draft always wins over a prefill: the prefill is clash's
+    // suggestion, the draft is the human's unfinished sentence.
+    const seeded = (wfDrafts.get(key) || "").trim() ? "" : prefill;
     let suggest = null;
-    if (item.lastAgentReview && !(wfDrafts.get(key) || "").trim()) {
+    if (!seeded && item.lastAgentReview && !(wfDrafts.get(key) || "").trim()) {
       suggest = document.createElement("p");
       suggest.className = "wf-compose-suggest";
       const stext = document.createElement("span");
@@ -6114,7 +6142,7 @@ function wfComposeChangeRequest({ item, target, annotations, onJump }) {
     field.className = "wf-compose-input";
     field.rows = 14;
     field.spellcheck = false;
-    field.value = wfDrafts.get(key) || "";
+    field.value = wfDrafts.get(key) || seeded || "";
     field.placeholder = composerPlaceholder(target, live.length);
     box.appendChild(field);
     if (suggest) {
@@ -6454,6 +6482,11 @@ function wfGhHint(e) {
 function renderWfActions(bar, root, item) {
   bar.innerHTML = "";
   const st = item.meta.status;
+  // A finished review round nobody has acted on yet. While one is waiting,
+  // *applying* it is the default action and the stage's own approve is
+  // demoted — approving over the top of an unread review should take a
+  // deliberate click.
+  const reviewPending = !!pendingReviewRound(item);
   // Three labeled zones instead of one undifferentiated row: actions ON the
   // current step's artifact (reviews, explain, open things — nothing moves),
   // the decisions that ADVANCE the pipeline, and item-lifecycle actions.
@@ -6510,12 +6543,13 @@ function renderWfActions(bar, root, item) {
   // changed. The composer decides the round's whole shape: which comments
   // ride along (unchecked ones are parked), and whether the fix round
   // launches immediately (with interaction mode + optional skill override).
-  const requestChanges = async (target = "diff") => {
+  const requestChanges = async (target = "diff", prefill = "") => {
     const annotations = target === "plan" ? [] : await wfOpenAnnotations(item);
     const req = await wfComposeChangeRequest({
       item,
       target,
       annotations,
+      prefill,
       onJump: (annId) => wfJumpToAnnotation(root, item.project, item.slug, annId),
     });
     if (!req) return;
@@ -6536,6 +6570,86 @@ function renderWfActions(bar, root, item) {
     } catch (e) {
       uiAlert(`Request changes failed: ${e}`);
     }
+  };
+
+  // Apply a finished review round in one click.
+  //
+  // The mechanism is deliberately the same one "Request changes" uses — record
+  // a change round (which freezes the current plan as a version and appends
+  // the note to review.md), then launch the agent to carry it out. What
+  // changes is who writes the note: the round's own findings do. A review that
+  // only takes effect once the human retypes it reads as a review that
+  // evaporated, which is exactly how this felt before the button existed.
+  //
+  // Both ways out stay available in one dialog: apply as it stands, or open
+  // the composer pre-filled and say something of your own first.
+  const applyReview = async () => {
+    const round = pendingReviewRound(item);
+    if (!round) return;
+    const isPlan = item.meta.status === "plan-review";
+    const target = isPlan ? "plan" : "diff";
+    let md = "";
+    try {
+      md = await invoke("get_workflow_doc", {
+        project: item.project,
+        slug: item.slug,
+        doc: "agent-review.md",
+      });
+    } catch (e) {
+      console.error("get_workflow_doc(agent-review.md) failed:", e);
+    }
+    const findings = roundFindings(md, round.round);
+    const note = applyReviewNote(round, findings, target);
+    const what = isPlan ? "the plan" : "the code";
+    const pick = await uiChoice({
+      message: `Apply agent review round ${round.round} to ${what}?`,
+      detail:
+        `The round's findings become iteration ${(item.meta.iteration || 0) + 1}'s instructions, ` +
+        `and an agent session applies them (spends tokens). ` +
+        (isPlan
+          ? "The current plan is frozen as a version first, so the Plan tab can show exactly what the round changed. "
+          : "The current diff is frozen first, so the Timeline keeps what you reviewed. ") +
+        `The item comes back to ${isPlan ? "plan review" : "diff review"} when it is done.`,
+      choices: [
+        { label: "Apply now", value: "go", primary: true },
+        { label: "Edit the note first…", value: "edit" },
+      ],
+    });
+    if (!pick) return;
+    if (pick === "edit") return requestChanges(target, note);
+    try {
+      await invoke("workflow_request_changes", {
+        project: item.project,
+        slug: item.slug,
+        note,
+        park: null,
+      });
+      await refreshWorkflows();
+      const fresh = wfItem(item.project, item.slug) || item;
+      await launchWfAgent(fresh, "revise", root, null, {
+        interactive: interactiveParam(item.meta.interactionDefault),
+      });
+    } catch (e) {
+      uiAlert(`Apply review failed: ${e}`);
+    }
+  };
+
+  // Offered at every decision state while a round is waiting to be acted on.
+  // Primary there, and the pipeline's own "approve" is demoted while it is:
+  // you asked for a review, it came back with findings, so acting on them is
+  // the default — approving over the top of an unread review should be a
+  // deliberate click, not the one your hand is already on.
+  const applyReviewButton = () => {
+    const round = pendingReviewRound(item);
+    if (!round || !WF_REVIEWABLE.has(item.meta.status)) return;
+    const isPlan = item.meta.status === "plan-review";
+    add(
+      `↻ Apply review r${round.round} → ${isPlan ? "revise plan" : "fix round"}`,
+      "primary",
+      applyReview,
+      `Turn round ${round.round}'s findings into the next round's instructions and launch the agent — ` +
+        `${isPlan ? "the plan is versioned" : "the diff is frozen"} first, and you can edit the note before it goes`
+    );
   };
 
   // Offered wherever a PR and a finished round coexist: sharing an existing
@@ -6719,9 +6833,10 @@ function renderWfActions(bar, root, item) {
       break;
 
     case "plan-review":
+      applyReviewButton();
       add(
         "✓ Approve plan → implement",
-        "primary",
+        reviewPending ? "" : "primary",
         async () => {
           if (!(await uiConfirm("Approve this plan and move to implementation?", "Approve")))
             return;
@@ -6739,7 +6854,7 @@ function renderWfActions(bar, root, item) {
         "✎ Request changes…",
         "",
         () => requestChanges("plan"),
-        "Open the change-request composer — your note becomes the next round's instructions, and this plan revision is frozen into history first"
+        "Say what should change in your own words — your note becomes the next round's instructions, and the current plan is frozen as a version first"
       );
       reviewButton();
       abandon();
@@ -6775,10 +6890,12 @@ function renderWfActions(bar, root, item) {
           : "";
       const hasPr = !!(item.meta.pr && item.meta.pr.url);
 
+      applyReviewButton();
+
       const approveDone = () =>
         add(
           "✓ Approve → done",
-          hasPr ? "" : "primary",
+          hasPr || reviewPending ? "" : "primary",
           async () => {
             if (
               !(await uiConfirm(`Approve this diff and close the item?${openWarning()}`, "Approve"))
@@ -6795,7 +6912,7 @@ function renderWfActions(bar, root, item) {
         if (!wfIsReviewOnly(item)) {
           add(
             "✓ Approve → PR draft",
-            "primary",
+            reviewPending ? "" : "primary",
             async () => {
               if (!(await uiConfirm(`Approve these changes?${openWarning()}`, "Approve"))) return;
               wfTransition(item, root, "pr-draft");
@@ -6862,10 +6979,11 @@ function renderWfActions(bar, root, item) {
     }
 
     case "pr-draft": {
+      applyReviewButton();
       if (item.meta.pr && item.meta.pr.url) {
         add(
           "✓ Mark PR ready",
-          "primary",
+          reviewPending ? "" : "primary",
           async () => {
             const warn =
               item.openAnnotations > 0
@@ -6978,7 +7096,8 @@ function renderWfActions(bar, root, item) {
     }
 
     case "pr-ready":
-      openPrsButton("primary");
+      applyReviewButton();
+      openPrsButton(reviewPending ? "" : "primary");
       add(
         "✓ Mark done",
         "",
@@ -7033,6 +7152,209 @@ function renderWfActions(bar, root, item) {
   }
 }
 
+/// Render a unified diff as coloured lines. Plans are prose, so this is the
+/// plain reader — the code-diff view's annotation machinery would add nothing.
+function renderUnifiedDiff(container, text) {
+  const pre = document.createElement("pre");
+  pre.className = "wf-plan-diff";
+  for (const line of String(text || "").split("\n")) {
+    const span = document.createElement("span");
+    span.textContent = line + "\n";
+    if (line.startsWith("+++") || line.startsWith("---")) span.className = "pd-file";
+    else if (line.startsWith("@@")) span.className = "pd-hunk";
+    else if (line.startsWith("+")) span.className = "pd-add";
+    else if (line.startsWith("-")) span.className = "pd-del";
+    pre.appendChild(span);
+  }
+  container.appendChild(pre);
+}
+
+/// The Plan tab: the live plan, every frozen version of it, and the diff
+/// between any two.
+///
+/// Versions are not a nicety here — the pipeline's whole plan loop is "review
+/// → apply → revise → review again", and without a way to see what a round
+/// changed, the human is re-reading a whole plan every round to find three
+/// edited paragraphs. Each change round freezes `plan.md` into
+/// `history/<NNN>/`, so version N *is* the plan as reviewed at iteration N.
+async function renderWfPlanView(body, root, item, ts) {
+  const { project, slug } = item;
+  body.innerHTML = "<p class='hint'>loading plan…</p>";
+  let versions = [];
+  try {
+    versions = await invoke("list_workflow_plan_versions", { project, slug });
+  } catch (e) {
+    console.error("list_workflow_plan_versions failed:", e);
+  }
+  if (!versions.length) {
+    versions = [{ iteration: item.meta.iteration || 1, current: true, lines: 0, heading: "", note: "" }];
+  }
+  const head = versions.find((v) => v.current) || versions[versions.length - 1];
+
+  // A restored tab can point at a version this item no longer has (an older
+  // clash, a deleted history dir) — fall back to the live plan rather than
+  // rendering an error where the plan should be.
+  if (ts.planVersion != null && !versions.some((v) => v.iteration === ts.planVersion))
+    ts.planVersion = null;
+  const selIter = ts.planVersion == null ? head.iteration : ts.planVersion;
+  const sel = versions.find((v) => v.iteration === selIter) || head;
+  if (ts.planCompare && !planCanCompare(versions, selIter)) ts.planCompare = false;
+  if (
+    ts.planBase != null &&
+    !versions.some((v) => v.iteration === ts.planBase && v.iteration < selIter)
+  )
+    ts.planBase = null;
+  const base = ts.planBase != null ? ts.planBase : planDiffBase(versions, selIter);
+
+  const rerender = () => renderWfPlanView(body, root, item, ts);
+
+  body.innerHTML = "";
+
+  // ── Version bar ──
+  const bar = document.createElement("div");
+  bar.className = "wf-plan-versions";
+  if (versions.length > 1) {
+    const caption = document.createElement("span");
+    caption.className = "wf-plan-vcaption";
+    caption.textContent = "Version";
+    bar.appendChild(caption);
+    for (const v of versions) {
+      const chip = document.createElement("button");
+      chip.className = "wf-plan-chip" + (v.iteration === selIter ? " on" : "");
+      chip.textContent = planVersionLabel(v);
+      chip.title = planVersionCaption(v);
+      chip.onclick = () => {
+        ts.planVersion = v.current ? null : v.iteration;
+        ts.planBase = null;
+        rerender();
+      };
+      bar.appendChild(chip);
+    }
+  }
+  if (planCanCompare(versions, selIter)) {
+    const cmp = document.createElement("button");
+    cmp.className = "icon-btn wide" + (ts.planCompare ? " on" : "");
+    cmp.textContent = ts.planCompare ? "◫ Full text" : "⇄ Changes";
+    cmp.title = ts.planCompare
+      ? "Show this version's full text"
+      : "Show what changed to produce this version";
+    cmp.onclick = () => {
+      ts.planCompare = !ts.planCompare;
+      rerender();
+    };
+    bar.appendChild(cmp);
+  }
+  if (ts.planCompare) {
+    const vs = document.createElement("span");
+    vs.className = "dim";
+    vs.textContent = "vs";
+    bar.appendChild(vs);
+    const pick = document.createElement("select");
+    pick.className = "wf-plan-base";
+    pick.title = "Compare against any earlier version, not just the previous one";
+    for (const v of versions.filter((v) => v.iteration < selIter)) {
+      const o = document.createElement("option");
+      o.value = String(v.iteration);
+      o.textContent = planVersionLabel(v);
+      pick.appendChild(o);
+    }
+    pick.value = String(base);
+    pick.onchange = () => {
+      ts.planBase = Number(pick.value);
+      rerender();
+    };
+    bar.appendChild(pick);
+  }
+  bar.appendChild(Object.assign(document.createElement("span"), { className: "spacer" }));
+  // Editing is only meaningful on the live file; a frozen version is the
+  // record of what was reviewed and must stay what it was.
+  if (sel.current) {
+    const edit = document.createElement("button");
+    edit.className = "icon-btn wide";
+    edit.innerHTML = `${svgIcon("pencil", 12)}<span>Edit plan.md</span>`;
+    edit.onclick = (ev) =>
+      openScratchInEditor(
+        { path: `${item.path}/plan.md`, title: `${slug} plan.md` },
+        ev.clientX,
+        ev.clientY
+      );
+    bar.appendChild(edit);
+  }
+  body.appendChild(bar);
+
+  // ── What am I looking at ──
+  const cap = document.createElement("p");
+  cap.className = "wf-plan-caption dim";
+  cap.textContent = ts.planCompare
+    ? `changes from ${planVersionLabel(
+        versions.find((v) => v.iteration === base)
+      )} to ${planVersionLabel(sel)} — ${planVersionCaption(sel)}`
+    : `${planVersionLabel(sel)} — ${planVersionCaption(sel)}`;
+  body.appendChild(cap);
+
+  // ── Content ──
+  if (ts.planCompare) {
+    let text = "";
+    try {
+      text = await invoke("get_workflow_plan_diff", {
+        project,
+        slug,
+        from: base,
+        to: planDiffTo(versions, selIter),
+      });
+    } catch (e) {
+      body.appendChild(
+        Object.assign(document.createElement("p"), {
+          className: "hint",
+          textContent: `plan diff failed: ${e}`,
+        })
+      );
+      return;
+    }
+    if (!text.trim()) {
+      body.appendChild(
+        Object.assign(document.createElement("p"), {
+          className: "hint",
+          textContent:
+            "no difference between these two versions (or the older one predates plan history)",
+        })
+      );
+      return;
+    }
+    renderUnifiedDiff(body, text);
+    return;
+  }
+
+  let text = "";
+  try {
+    text = sel.current
+      ? await invoke("get_workflow_doc", { project, slug, doc: "plan.md" })
+      : (await invoke("get_workflow_history_plan", { project, slug, iteration: sel.iteration })) ||
+        "";
+  } catch (e) {
+    body.appendChild(
+      Object.assign(document.createElement("p"), {
+        className: "hint",
+        textContent: `failed: ${e}`,
+      })
+    );
+    return;
+  }
+  const md = document.createElement("div");
+  md.className = "wf-md";
+  if (text.trim()) {
+    renderMarkdown(md, text);
+    renderMermaidIn(md);
+  } else {
+    md.innerHTML = `<p class="hint">${
+      sel.current
+        ? "no plan yet — Start planning launches an agent that writes it"
+        : "no plan copy in this snapshot (it may predate plan history)"
+    }</p>`;
+  }
+  body.appendChild(md);
+}
+
 async function renderWfSubView(body, root, item, ts) {
   const { project, slug } = item;
   if (
@@ -7079,13 +7401,11 @@ async function renderWfSubView(body, root, item, ts) {
       renderMermaidIn(md);
     } else
       md.innerHTML = `<p class="hint">${
-        ts.subView === "plan"
-          ? "no plan yet — Start planning launches an agent that writes it"
-          : ts.subView === "review"
-            ? "no review notes yet — they accumulate when you request changes"
-            : ts.subView === "structure"
-              ? "no structure document yet — ◫ Explain changes writes it"
-              : "no agent reviews yet — each round appends its findings here"
+        ts.subView === "review"
+          ? "no review notes yet — they accumulate when you request changes"
+          : ts.subView === "structure"
+            ? "no structure document yet — ◫ Explain changes writes it"
+            : "no agent reviews yet — each round appends its findings here"
       }</p>`;
 
     // Structure reads as a document, not a dump: dedicated typography plus
@@ -7172,6 +7492,34 @@ async function renderWfSubView(body, root, item, ts) {
       };
       links.appendChild(a);
     };
+    // A plan link opens the Plan tab at one version, in text or diff mode.
+    // The diff of round N is "what turned version N into the next one", so it
+    // selects the *following* version and compares back to N — which is
+    // exactly what the version bar would do by hand.
+    const planDrill = (links, label, iteration, compare, title) => {
+      const a = document.createElement("span");
+      a.className = "wf-history-link";
+      a.textContent = label;
+      if (title) a.title = title;
+      a.onclick = () => {
+        ts.subView = "plan";
+        ts.iteration = null;
+        if (compare) {
+          // The target version is unknown here (the next snapshot may not
+          // exist); leaving planVersion null selects the live plan and the
+          // base pins the comparison to this round.
+          ts.planVersion = null;
+          ts.planCompare = true;
+          ts.planBase = iteration;
+        } else {
+          ts.planVersion = iteration;
+          ts.planCompare = false;
+          ts.planBase = null;
+        }
+        buildWorkflowView(root, project, slug);
+      };
+      links.appendChild(a);
+    };
     for (const ev of events) {
       const card = document.createElement("div");
       card.className = `wf-tl-card ${ev.kind}`;
@@ -7213,14 +7561,23 @@ async function renderWfSubView(body, root, item, ts) {
         }
         const links = document.createElement("div");
         links.className = "wf-tl-links";
+        // Both plan links land on the Plan tab, selected at this version —
+        // one reader for the plan, versions and all, instead of two
+        // look-alike drill-downs that could drift apart.
         if (ev.hasPlanDiff)
-          drill(links, "plan diff →", "planDiff", ev.iteration, "What this round changed in the plan");
+          planDrill(
+            links,
+            "plan diff →",
+            ev.iteration,
+            true,
+            "What this round changed in the plan"
+          );
         if (ev.hasPlanSnapshot)
-          drill(
+          planDrill(
             links,
             `plan @ it.${ev.iteration} →`,
-            "planAt",
             ev.iteration,
+            false,
             "The full plan text as it stood at this iteration"
           );
         if (ev.hasCodeDiff)
@@ -7273,109 +7630,6 @@ async function renderWfSubView(body, root, item, ts) {
       feed.appendChild(card);
     }
     body.appendChild(feed);
-    return;
-  }
-
-  // The full plan text as frozen at one iteration — the Timeline's
-  // "plan @ it.N" drill-down. Read-only; the live plan stays on the Plan tab.
-  if (ts.subView === "planAt") {
-    body.innerHTML = "<p class='hint'>loading plan snapshot…</p>";
-    let text = "";
-    try {
-      text = await invoke("get_workflow_history_plan", {
-        project,
-        slug,
-        iteration: ts.iteration || 1,
-      });
-    } catch (e) {
-      body.innerHTML = `<p class='hint'>plan snapshot failed: ${escapeHtml(e)}</p>`;
-      return;
-    }
-    body.innerHTML = "";
-    const head = document.createElement("div");
-    head.className = "wf-diff-head";
-    const back = document.createElement("button");
-    back.className = "icon-btn wide";
-    back.textContent = "← timeline";
-    back.onclick = () => {
-      ts.subView = "history";
-      ts.iteration = null;
-      buildWorkflowView(root, project, slug);
-    };
-    head.appendChild(back);
-    head.appendChild(
-      Object.assign(document.createElement("span"), {
-        className: "dim",
-        textContent: `plan as frozen at iteration ${ts.iteration || 1} (read-only)`,
-      })
-    );
-    body.appendChild(head);
-    const md = document.createElement("div");
-    md.className = "wf-md";
-    if (text.trim()) renderMarkdown(md, text);
-    else
-      md.innerHTML =
-        "<p class='hint'>no plan copy in this snapshot (it may predate plan history)</p>";
-    body.appendChild(md);
-    return;
-  }
-
-  // What one change round did to the plan: snapshot it.N against it.N+1 (or
-  // the current plan). Read-only, rendered as a plain unified diff — plans
-  // are prose, so the annotation machinery of the code-diff view would add
-  // nothing here.
-  if (ts.subView === "planDiff") {
-    body.innerHTML = "<p class='hint'>loading plan diff…</p>";
-    let text = "";
-    try {
-      text = await invoke("get_workflow_plan_diff", {
-        project,
-        slug,
-        iteration: ts.iteration || 1,
-      });
-    } catch (e) {
-      body.innerHTML = `<p class='hint'>plan diff failed: ${escapeHtml(e)}</p>`;
-      return;
-    }
-    body.innerHTML = "";
-    const head = document.createElement("div");
-    head.className = "wf-diff-head";
-    const back = document.createElement("button");
-    back.className = "icon-btn wide";
-    back.textContent = "← timeline";
-    back.onclick = () => {
-      ts.subView = "history";
-      ts.iteration = null;
-      buildWorkflowView(root, project, slug);
-    };
-    head.appendChild(back);
-    const label = document.createElement("span");
-    label.className = "dim";
-    label.textContent = `plan changes of iteration ${ts.iteration || 1}`;
-    head.appendChild(label);
-    body.appendChild(head);
-    if (!text.trim()) {
-      body.appendChild(
-        Object.assign(document.createElement("p"), {
-          className: "hint",
-          textContent:
-            "no plan changes recorded for this iteration (the snapshot may predate plan history)",
-        })
-      );
-      return;
-    }
-    const pre = document.createElement("pre");
-    pre.className = "wf-plan-diff";
-    for (const line of text.split("\n")) {
-      const span = document.createElement("span");
-      span.textContent = line + "\n";
-      if (line.startsWith("+++") || line.startsWith("---")) span.className = "pd-file";
-      else if (line.startsWith("@@")) span.className = "pd-hunk";
-      else if (line.startsWith("+")) span.className = "pd-add";
-      else if (line.startsWith("-")) span.className = "pd-del";
-      pre.appendChild(span);
-    }
-    body.appendChild(pre);
     return;
   }
 

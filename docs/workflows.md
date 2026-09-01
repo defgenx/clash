@@ -15,7 +15,7 @@ workflows are a structured store.
 
 ```
 <root>/<project>/<slug>/
-├── meta.json          # status, PR info, session, iteration, review round, timestamps
+├── meta.json          # status, PR info, session, iteration, review round(s), timestamps
 ├── plan.md            # the plan (freely editable markdown)
 ├── review.md          # append-only iteration audit trail (clash writes, agent reads)
 ├── agent-review.md    # append-only agent review rounds (agent writes, clash renders)
@@ -115,12 +115,17 @@ number — the stale section is replaced, never duplicated), and a failed
 `git diff` aborts the round instead of freezing an empty `diff.patch` (except
 at `plan-review`, where the plan — snapshotted anyway — is the artifact).
 
-The plan copy is what makes a revision visible after the fact: the GUI's
-**Timeline** renders one card per change round — the note that caused it, the
-plan diff of snapshot N against N+1 (via the pure
-`application::diff::unified_diff`), the full frozen plan text, and the code
-diff — interleaved with the agent review rounds parsed from
-`agent-review.md`. Before this, a plan revision left no trace.
+The plan copy is what makes a revision visible after the fact, and it is what
+the **Plan tab** reads as a version list: snapshot N *is* the plan as the human
+reviewed it at iteration N, and the live file is the head. The tab's version
+chips, the "what changed to produce this version" diff (any pair, not just
+consecutive ones, through `get_workflow_plan_diff(from, to?)`) and the
+**Timeline**'s per-round `plan diff →` / `plan @ it.N →` links are one reader
+over that data — the version list itself is the pure
+`application::workflow::plan_version_list`. The Timeline additionally renders
+the note that caused each round and the code diff, interleaved with the agent
+review rounds parsed from `agent-review.md`. Before the snapshots existed, a
+plan revision left no trace at all.
 
 ## Agent review rounds
 
@@ -151,6 +156,21 @@ pr-draft / pr-ready likewise
   hand-back changes `status` and nothing else; clearing would need a second
   writer). Anything that wants "is a round running?" must gate on the status,
   not on the block's presence.
+- **A round is applied by a change round, and clash records which one.** A
+  reviewer never edits `plan.md` or the code, so its findings only become work
+  when the item takes its next change round — where the executor reads the
+  latest `agent-review.md` round as input. `↻ Apply review rN` does exactly
+  that in one click: it composes the note from the round's own findings (the
+  pure `applyReviewNote`, fed by `roundFindings`), calls the same
+  `workflow_request_changes` the composer uses, and launches the executor.
+  There is deliberately no second mechanism — a path that revised the plan
+  without recording a round would leave the revision untraceable and
+  unversioned, which is the bug the snapshotting flow above exists to prevent.
+  `meta.json.appliedReviewRound` (clash-owned, like `reviewRound`) is set to
+  `reviewRound` on every request-changes, so `reviewRound >
+  appliedReviewRound` means "a review landed and nothing has been done with
+  it" — the state the item header now shows as *not applied yet*, and the
+  reason the stage's own approve button is demoted while it holds.
 - Round *outcomes* are read from `agent-review.md`, not from meta: the pure
   `application::workflow::latest_agent_review` parses the last `## Review <n>`
   section (verdict + `### Published` lines) into
@@ -373,7 +393,8 @@ for context.
   commit follows the same rule — the branch is published, and a fix round that
   only commits locally leaves the PR silently stale. An unpublished branch
   (`full`/`from-plan`, no PR) is still never pushed.
-- Never touch `history/` and never change `iteration` or `reviewRound` — clash
+- Never touch `history/` and never change `iteration`, `reviewRound` or
+  `appliedReviewRound` — clash
   owns all three (the first two are written atomically by the request-changes
   flow, the third by the review launcher).
 - Write `annotations.json` **only** while status is `changes-requested` or

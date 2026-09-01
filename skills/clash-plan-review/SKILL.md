@@ -139,8 +139,11 @@ name in their change request.
 
 A decision here authorizes nothing in this round: you still change no code and
 never edit `plan.md`. The point of asking is the **record** — each issue carries
-the human's call, so their next *Request changes* can say `apply 1a and 3b`
-instead of re-litigating the round.
+the human's call, and clash offers them *Apply review* on the item, which turns
+this round's findings into the next round's instructions verbatim and launches an
+executor to revise the plan. So write the findings as work an executor can act on
+without you in the room; when the human wants to narrow it down, their
+*Request changes* note can still say `apply 1a and 3b`.
 
 ## Finish — in this order, every run
 

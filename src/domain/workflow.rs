@@ -485,6 +485,15 @@ pub struct WorkflowMeta {
     /// title/branch".
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub jira_ticket: String,
+    /// The highest agent review round whose findings have been handed to the
+    /// executor. Every change round does that — the executor's contract has it
+    /// read the latest `agent-review.md` round as input — so clash records it
+    /// on request-changes. `review_round > applied_review_round` is therefore
+    /// "a review has landed and nothing has been done with it yet", which is
+    /// what the plan-review UI needs to stop looking like the review
+    /// evaporated. Never written by the agent.
+    #[serde(default)]
+    pub applied_review_round: u32,
     /// Review iteration, starting at 1. Bumped only by clash on
     /// request-changes (never by the agent).
     #[serde(default)]
@@ -526,6 +535,30 @@ pub struct NewWorkflowItem {
     pub worktree: Option<String>,
     /// PR being reviewed (review-only, when the source was a PR).
     pub pr: Option<WorkflowPr>,
+}
+
+/// One version of `plan.md`, for the Plan tab's version switcher — a runtime
+/// DTO built from the `history/` snapshots plus the live file, never persisted.
+///
+/// A version exists because a change round froze the plan before the agent
+/// revised it, so version N *is* "the plan the human reviewed at iteration N",
+/// and the head is the live file. `note` is the first line of that round's
+/// change-request note: numbered versions are unreadable, "v2 — apply review
+/// round 1" is not.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanVersion {
+    /// Iteration this version was frozen at; for the head, the item's current
+    /// iteration.
+    pub iteration: u32,
+    /// True for the live `plan.md` — the one the agent will revise next.
+    pub current: bool,
+    /// Line count, so the switcher can show growth without loading the text.
+    pub lines: usize,
+    /// The `## Iteration N` heading tail from `review.md` (normally a stamp).
+    pub heading: String,
+    /// First line of the round's change-request note; empty when there is none.
+    pub note: String,
 }
 
 /// One `## Iteration N` section of `review.md`, parsed at read time — a

@@ -12,56 +12,9 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const { extractFunction, stubEl } = require("./extract-fn.js");
 
 const APP = fs.readFileSync(path.join(__dirname, "..", "dist", "app.js"), "utf8");
-
-/// Extract a top-level `function name(...) {...}` by brace matching, starting
-/// at the BODY brace (the parameter list may hold a destructuring `{…}` of
-/// its own, which a count-from-first-brace would mistake for the body).
-function extractFunction(source, name) {
-  const start = source.indexOf(`function ${name}(`);
-  assert.ok(start >= 0, `${name} must exist in app.js`);
-  const body = /\)\s*\{/.exec(source.slice(start));
-  assert.ok(body, `${name} must have a body`);
-  let i = start + body.index + body[0].length - 1;
-  let depth = 0;
-  for (; i < source.length; i++) {
-    if (source[i] === "{") depth++;
-    else if (source[i] === "}" && --depth === 0) break;
-  }
-  return source.slice(start, i + 1);
-}
-
-/// A DOM-element stand-in that absorbs any property set, hands out child
-/// stubs, and no-ops the methods the dialog builders call.
-function stubEl() {
-  const target = {};
-  return new Proxy(target, {
-    get(t, p) {
-      if (p === "classList") return { add() {}, remove() {}, toggle() {} };
-      if (p === "style" || p === "dataset") return t[p] || (t[p] = {});
-      if (
-        [
-          "appendChild",
-          "append",
-          "remove",
-          "focus",
-          "setSelectionRange",
-          "addEventListener",
-          "dispatchEvent",
-        ].includes(p)
-      )
-        return () => {};
-      if (p === "querySelector") return () => stubEl();
-      if (p === "querySelectorAll") return () => [];
-      return t[p];
-    },
-    set(t, p, v) {
-      t[p] = v;
-      return true;
-    },
-  });
-}
 
 test("the change-request composer opens without throwing", async () => {
   const src = extractFunction(APP, "wfComposeChangeRequest");

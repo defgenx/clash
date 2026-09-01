@@ -990,6 +990,12 @@ pub(crate) async fn workflow_request_changes(
         .map_err(e2s)?;
 
     meta.iteration = snapped + 1;
+    // Every change round hands the latest review round to the executor — its
+    // contract has it read `agent-review.md` as input — so the round is now
+    // applied, whether the note repeated its findings or not. Recording it is
+    // what lets the plan-review UI stop offering "apply this review" once it
+    // has been applied, instead of nagging forever.
+    meta.applied_review_round = meta.review_round;
     meta.status = WorkflowStatus::ChangesRequested;
     state
         .backend
@@ -999,46 +1005,116 @@ pub(crate) async fn workflow_request_changes(
     Ok(meta)
 }
 
-/// The plan change of one iteration: snapshot `it` against snapshot `it+1`
-/// when one exists, else against the current `plan.md`. Empty string when the
-/// plan did not change (or the snapshot predates plan snapshotting).
+/// The plan text of one version: a frozen `history/<from>/plan.md`, or the
+/// live file when `iteration` is `None`.
+fn plan_version_text(
+    state: &State<'_, GuiState>,
+    project: &str,
+    slug: &str,
+    iteration: Option<u32>,
+) -> Result<Option<String>, String> {
+    match iteration {
+        Some(it) => state
+            .backend
+            .read_workflow_history_plan(project, slug, it)
+            .map_err(e2s),
+        None => state
+            .backend
+            .read_workflow_doc(
+                project,
+                slug,
+                clash::infrastructure::fs::workflows::PLAN_FILE,
+            )
+            .map(Some)
+            .map_err(e2s),
+    }
+}
+
+/// Every version of `plan.md`: one per change round that froze a copy, then
+/// the live file. The list is what the Plan tab's version switcher renders,
+/// and any two entries can be diffed with `get_workflow_plan_diff`.
+#[tauri::command]
+pub(crate) fn list_workflow_plan_versions(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+) -> Result<Vec<clash::domain::workflow::PlanVersion>, String> {
+    let meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    let mut snapshots: Vec<(u32, usize)> = Vec::new();
+    for it in state
+        .backend
+        .list_workflow_history(&project, &slug)
+        .map_err(e2s)?
+    {
+        if let Some(text) = state
+            .backend
+            .read_workflow_history_plan(&project, &slug, it)
+            .map_err(e2s)?
+        {
+            snapshots.push((it, text.lines().count()));
+        }
+    }
+    let current = state
+        .backend
+        .read_workflow_doc(
+            &project,
+            &slug,
+            clash::infrastructure::fs::workflows::PLAN_FILE,
+        )
+        .unwrap_or_default();
+    let notes = clash::application::workflow::parse_review_iterations(
+        &state
+            .backend
+            .read_workflow_doc(
+                &project,
+                &slug,
+                clash::infrastructure::fs::workflows::REVIEW_FILE,
+            )
+            .unwrap_or_default(),
+    );
+    Ok(clash::application::workflow::plan_version_list(
+        &snapshots,
+        meta.iteration,
+        current.lines().count(),
+        &notes,
+    ))
+}
+
+/// Unified diff between two plan versions. `from`/`to` are iteration numbers
+/// of frozen snapshots; a `None` `to` means the live `plan.md`. Empty string
+/// when the requested version has no frozen copy (a snapshot predating plan
+/// history) — the caller renders that as "nothing recorded", not an error.
+///
+/// One command for both jobs on purpose: the Timeline's "what did round N
+/// change" is `from = N, to = N+1 or live`, and the Plan tab's comparison is
+/// any pair the human picks. Two commands would have been two answers to the
+/// same question.
 #[tauri::command]
 pub(crate) fn get_workflow_plan_diff(
     state: State<'_, GuiState>,
     project: String,
     slug: String,
-    iteration: u32,
+    from: u32,
+    to: Option<u32>,
 ) -> Result<String, String> {
-    let old = state
-        .backend
-        .read_workflow_history_plan(&project, &slug, iteration)
-        .map_err(e2s)?;
-    let Some(old) = old else {
+    let Some(old) = plan_version_text(&state, &project, &slug, Some(from))? else {
         return Ok(String::new());
     };
-    let (new, new_label) = match state
-        .backend
-        .read_workflow_history_plan(&project, &slug, iteration + 1)
-        .map_err(e2s)?
-    {
-        Some(next) => (next, format!("plan.md (it.{})", iteration + 1)),
-        None => (
-            state
-                .backend
-                .read_workflow_doc(
-                    &project,
-                    &slug,
-                    clash::infrastructure::fs::workflows::PLAN_FILE,
-                )
-                .map_err(e2s)?,
-            "plan.md (current)".to_string(),
-        ),
+    let Some(new) = plan_version_text(&state, &project, &slug, to)? else {
+        return Ok(String::new());
+    };
+    let label = |it: Option<u32>| match it {
+        Some(n) => format!("plan.md (it.{})", n),
+        None => "plan.md (current)".to_string(),
     };
     Ok(clash::application::diff::unified_diff(
         &old,
         &new,
-        &format!("plan.md (it.{})", iteration),
-        &new_label,
+        &label(Some(from)),
+        &label(to),
     ))
 }
 
