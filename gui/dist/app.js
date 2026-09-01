@@ -1887,6 +1887,11 @@ function renderPanes() {
   // rows follow — 2 → 2x1, 3-4 → 2x2, 5-6 → 3x2, 7-9 → 3x3, …
   const cols = Math.ceil(Math.sqrt(visible.length));
   const rows = Math.ceil(visible.length / cols);
+  // When the grid has more cells than panes the shortfall is always confined
+  // to the last row (leftover < cols by construction), so the last pane spans
+  // the unused cells instead of leaving dead space — 3 panes → the third
+  // takes the whole bottom row.
+  const leftover = cols * rows - visible.length;
   // Resizable grid tracks: per-workspace column/row fractions, reset to equal
   // whenever the grid shape changes (pane added/removed) or a single cell is
   // shown (zoom / one pane). Draggable gutters between tracks edit these.
@@ -1919,6 +1924,8 @@ function renderPanes() {
     const i = w.zoomed ? w.focused : vi;
     const pane = document.createElement("div");
     pane.className = "pane" + (i === w.focused ? " focused" : "");
+    if (leftover && vi === visible.length - 1)
+      pane.style.gridColumn = `span ${leftover + 1}`;
     pane.onclick = () => {
       w.focused = i;
       syncActiveToFocused();
