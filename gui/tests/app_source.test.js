@@ -184,3 +184,40 @@ test("no dialog dismisses on a bare backdrop click", () => {
   const wired = (APP.match(/^\s*(?:if \(cancelable\) )?wireBackdropDismiss\(/gm) || []).length;
   assert.equal(wired, backdrops + 2, "every backdrop needs one wireBackdropDismiss");
 });
+
+test("a click inside the already-focused pane repaints nothing", () => {
+  // renderPanes detaches every pane element before re-appending it, and
+  // detaching an ancestor of the focused node blurs it. A pane-level click
+  // handler that repaints unconditionally therefore drops the caret on every
+  // click, which makes a text field in a view tab (the workflow ⚙ Settings
+  // knobs) impossible to type into — it looks like a broken input, not a
+  // layout repaint.
+  assert.match(APP, /pane\.onclick = \(\) => \{\s*if \(w\.focused === i\) \{/);
+  // And the repaints that do happen hand focus back, scoped to the pane that
+  // still holds it so a pane switch doesn't drag focus to the pane we left.
+  assert.match(APP, /const wasFocused = document\.activeElement;/);
+  assert.match(APP, /focusedEl\?\.contains\(wasFocused\)/);
+});
+
+test("a workflow tab rebuild never lands on a field being edited", () => {
+  // The watcher fires on every meta write, including clash's own. A rebuild
+  // replaces the tab's DOM, so it must defer while anything on the tab is
+  // being typed into — not just the comment composer, which was the only
+  // protected surface while ⚙ Settings shipped its first text fields.
+  const guard = APP.slice(APP.indexOf("function rebuildOpenWorkflowTabs()"));
+  assert.match(guard, /active\.tagName === "TEXTAREA"/);
+  assert.match(guard, /composer\.contains\(active\)/);
+  // Our own save echoing back is not "changed on disk".
+  assert.match(guard, /wfSelfWriteAt < 3000/);
+
+  // And the per-item settings save does not rebuild the view at all: nothing
+  // on that tab is derived from the values being edited, and the rebuild
+  // landed after `change` had already moved focus to the next field.
+  const settings = APP.slice(
+    APP.indexOf('if (ts.subView === "settings") {'),
+    APP.indexOf('// diff sub-view')
+  );
+  assert.ok(settings.length > 0, "the settings sub-view must exist");
+  assert.doesNotMatch(settings, /buildWorkflowView\(/);
+  assert.match(settings, /Object\.assign\(committed, patch\)/);
+});

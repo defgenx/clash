@@ -1908,7 +1908,12 @@ function renderPanes() {
     host.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
   }
 
-  // Detach term elements first so re-appending doesn't destroy them
+  // Detach term elements first so re-appending doesn't destroy them.
+  // Detaching an ancestor of the focused node blurs it, so remember what had
+  // focus and give it back below — otherwise any repaint landing while a text
+  // field in a view tab is being edited (a label sync, a gutter drag, a zoom)
+  // silently drops the caret.
+  const wasFocused = document.activeElement;
   for (const entry of state.open.values()) entry.el.remove();
   host.querySelectorAll(".pane, .pane-gutter").forEach((p) => p.remove());
 
@@ -1926,7 +1931,16 @@ function renderPanes() {
     pane.className = "pane" + (i === w.focused ? " focused" : "");
     if (leftover && vi === visible.length - 1)
       pane.style.gridColumn = `span ${leftover + 1}`;
+    // Focus-follows-click, but a click that changes nothing must render
+    // nothing: renderPanes detaches every pane element before re-appending it
+    // (see the loop above), and detaching an ancestor of the focused node
+    // blurs it. Clicking a text field in a view tab — the workflow ⚙ Settings
+    // knobs — would otherwise drop the caret on every single click.
     pane.onclick = () => {
+      if (w.focused === i) {
+        if (w.panes[i]) focusTerm(w.panes[i]);
+        return;
+      }
       w.focused = i;
       syncActiveToFocused();
       if (w.panes[i]) focusTerm(w.panes[i]);
@@ -1975,6 +1989,14 @@ function renderPanes() {
   });
 
   if (resizable) addPaneGutters(host, w, cols, rows);
+
+  // Give focus back to what the detach above blurred — but only when it lives
+  // in the pane that still holds focus, so a repaint caused by a pane switch
+  // doesn't drag focus back to the pane we just left.
+  const focusedEl = state.open.get(w.panes[w.focused])?.el;
+  if (wasFocused && wasFocused !== document.body && focusedEl?.contains(wasFocused)) {
+    wasFocused.focus({ preventScroll: true });
+  }
 
   fitAll();
 }
@@ -7101,12 +7123,28 @@ async function renderWfSubView(body, root, item, ts) {
     const wrap = document.createElement("div");
     wrap.className = "wf-settings";
 
-    // One patch command serves every knob on this tab.
+    // One patch command serves every knob on this tab. It deliberately does
+    // NOT rebuild the view: nothing here is derived from the values being
+    // edited (the session-name hint shows both cases), and a rebuild lands
+    // after `change` has already moved focus to the next field — which would
+    // then be torn out from under the caret. `committed` is what a failed save
+    // reverts to; the `item.meta` this tab was built from goes stale the
+    // moment any other knob saves.
+    const committed = {
+      description: item.meta.description || "",
+      bareSessionNames: !!item.meta.bareSessionNames,
+      interactionDefault: ["interactive", "autonomous"].includes(item.meta.interactionDefault)
+        ? item.meta.interactionDefault
+        : "",
+      prSkill: item.meta.prSkill || "",
+      jiraTicket: item.meta.jiraTicket || "",
+    };
     const save = async (patch, revert) => {
       try {
         await invoke("set_workflow_item_settings", { project, slug, ...patch });
+        wfSelfWriteAt = Date.now();
+        Object.assign(committed, patch);
         await refreshWorkflows();
-        buildWorkflowView(root, project, slug);
       } catch (e) {
         if (revert) revert();
         uiAlert(`Save failed: ${e}`);
@@ -7127,7 +7165,7 @@ async function renderWfSubView(body, root, item, ts) {
     desc.title =
       "The item's free-form intent, in your words. The planning agent reads it before its requirements discussion; refine it any time before launching a plan round.";
     desc.onchange = () =>
-      save({ description: desc.value.trim() }, () => (desc.value = item.meta.description || ""));
+      save({ description: desc.value.trim() }, () => (desc.value = committed.description));
     intent.appendChild(desc);
     wrap.appendChild(intent);
 
@@ -7142,7 +7180,7 @@ async function renderWfSubView(body, root, item, ts) {
     cb.type = "checkbox";
     cb.checked = !item.meta.bareSessionNames;
     cb.onchange = () =>
-      save({ bareSessionNames: !cb.checked }, () => (cb.checked = !cb.checked));
+      save({ bareSessionNames: !cb.checked }, () => (cb.checked = !committed.bareSessionNames));
     row.appendChild(cb);
     row.appendChild(document.createTextNode(" Prefix agent sessions with the item title"));
     sessions.appendChild(row);
@@ -7175,9 +7213,8 @@ async function renderWfSubView(body, root, item, ts) {
     modeSel.value = ["interactive", "autonomous"].includes(item.meta.interactionDefault)
       ? item.meta.interactionDefault
       : "";
-    const prevMode = modeSel.value;
     modeSel.onchange = () =>
-      save({ interactionDefault: modeSel.value }, () => (modeSel.value = prevMode));
+      save({ interactionDefault: modeSel.value }, () => (modeSel.value = committed.interactionDefault));
     modeSel.title =
       "How this item's agent rounds run unless chosen at launch: the review composer pre-selects it, and one-click launches (revise, explain, answer PR comments) apply it directly.";
     modeRow.appendChild(modeSel);
@@ -7194,7 +7231,7 @@ async function renderWfSubView(body, root, item, ts) {
     prInput.title =
       "Per-item override of Settings → Workflows → PR skill. Empty inherits the global value; “none” disables the skill for this item.";
     prInput.onchange = () =>
-      save({ prSkill: prInput.value.trim() }, () => (prInput.value = item.meta.prSkill || ""));
+      save({ prSkill: prInput.value.trim() }, () => (prInput.value = committed.prSkill));
     prRow.appendChild(prInput);
     agents.appendChild(prRow);
     wrap.appendChild(agents);
@@ -7216,7 +7253,7 @@ async function renderWfSubView(body, root, item, ts) {
     jiraInput.title =
       "The ticket the share dialog's Post-to-Jira posts to. Remembered automatically after a successful post; empty falls back to detecting one in the title/branch.";
     jiraInput.onchange = () =>
-      save({ jiraTicket: jiraInput.value.trim() }, () => (jiraInput.value = item.meta.jiraTicket || ""));
+      save({ jiraTicket: jiraInput.value.trim() }, () => (jiraInput.value = committed.jiraTicket));
     jiraRow.appendChild(jiraInput);
     sharing.appendChild(jiraRow);
     wrap.appendChild(sharing);
@@ -8727,9 +8764,15 @@ listen("workflows-changed", async () => {
   rebuildOpenWorkflowTabs();
 });
 
+/// When clash itself last wrote an item's meta. The watcher can't tell our
+/// own write from an agent's, and a skipped rebuild must not claim "changed on
+/// disk" about a value the user just typed.
+let wfSelfWriteAt = 0;
+
 /// Rebuild every open workflow tab in place, preserving sub-view + scroll.
-/// Skipped while a comment composer has focus — a rebuild would eat the
-/// user's draft; a banner offers a manual refresh instead.
+/// Skipped while any of the tab's own text fields has focus — a rebuild
+/// replaces the DOM, which eats an unsent composer draft and a ⚙ Settings
+/// value that only commits on blur; a banner offers a manual refresh instead.
 function rebuildOpenWorkflowTabs() {
   const board = state.open.get("view:wfboard");
   if (board) renderWorkflowBoard(board.el);
@@ -8743,8 +8786,19 @@ function rebuildOpenWorkflowTabs() {
     const project = rest.slice(0, slash);
     const slug = rest.slice(slash + 1);
     const el = entry.el;
+    const active = document.activeElement;
     const composer = el.querySelector(".wf-composer");
-    if (composer && composer.contains(document.activeElement)) {
+    // Anywhere in an open comment composer (its buttons included — the draft
+    // lives in the textarea either way), or any focused text field on the tab.
+    const editing =
+      !!active &&
+      ((composer && composer.contains(active)) ||
+        (el.contains(active) &&
+          (active.tagName === "INPUT" ||
+            active.tagName === "TEXTAREA" ||
+            active.isContentEditable)));
+    if (editing) {
+      if (Date.now() - wfSelfWriteAt < 3000) continue; // our own save echoing back
       if (!el.querySelector(".wf-stale-banner")) {
         const banner = document.createElement("div");
         banner.className = "wf-stale-banner";
