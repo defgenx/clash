@@ -162,10 +162,19 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
         input.previous_sessions,
     );
 
-    // Phase 5: Add registry-only sessions (no disk file, no daemon) as stashed.
-    // These are sessions that were registered but Claude hadn't written JSONL
-    // yet (e.g., immediately quit after creation), or whose files were cleaned up.
-    add_registry_only_sessions(&mut sessions, &input.registry, &input.hook_statuses);
+    // Phase 5: Add registry-only sessions (no disk file, no daemon) as
+    // stashed — but only while something vouches for them: a live claude, or
+    // an entry young enough that Claude may not have written its transcript
+    // yet. "Whose files were cleaned up" is exactly the case that must NOT
+    // produce a row: Claude Code prunes transcripts after 30 days, and such
+    // an entry names a conversation that no longer exists.
+    add_registry_only_sessions(
+        &mut sessions,
+        &input.registry,
+        &input.hook_statuses,
+        &input.wild_processes,
+        SystemTime::now(),
+    );
 
     // Phase 5.5: Admit wild-only disk sessions — claude processes the
     // user started outside clash (e.g. `claude --resume <id>` in some
@@ -542,7 +551,7 @@ fn overlay_daemon_sessions(
         Some(infos) if !infos.is_empty() => infos,
         None => {
             // Daemon unreachable — always preserve running daemon-only sessions.
-            preserve_daemon_only_sessions(sessions, previous_sessions);
+            preserve_daemon_only_sessions(sessions, previous_sessions, hook_statuses);
             return;
         }
         Some(_) => {
@@ -554,7 +563,7 @@ fn overlay_daemon_sessions(
                 .iter()
                 .any(|s| s.is_running && !current_ids.contains(&s.id))
             {
-                preserve_daemon_only_sessions(sessions, previous_sessions);
+                preserve_daemon_only_sessions(sessions, previous_sessions, hook_statuses);
             }
             return;
         }
@@ -686,12 +695,41 @@ fn overlay_daemon_sessions(
 /// Preserve daemon-only running sessions from the previous cycle when the
 /// daemon is unreachable. A session is "daemon-only" if it was running in the
 /// previous cycle but doesn't appear in the current disk-loaded list.
-fn preserve_daemon_only_sessions(sessions: &mut Vec<Session>, previous: &[Session]) {
+///
+/// Two kinds of row are deliberately *not* preserved, because preserving one
+/// is permanent: it lands back in `previous` as running, which satisfies this
+/// condition again on the next cycle, forever.
+fn preserve_daemon_only_sessions(
+    sessions: &mut Vec<Session>,
+    previous: &[Session],
+    hook_statuses: &HashMap<String, (SessionStatus, Option<SystemTime>)>,
+) {
+    use crate::domain::entities::SessionSource;
+
     let current_ids: HashSet<String> = sessions.iter().map(|s| s.id.clone()).collect();
     for old in previous {
-        if old.is_running && !current_ids.contains(&old.id) {
-            sessions.push(old.clone());
+        if !old.is_running || current_ids.contains(&old.id) {
+            continue;
         }
+        // A wild row is not the daemon's to preserve. Phases 5.5/7.5 re-admit
+        // it from the live scan on every cycle, so a row the scan no longer
+        // vouches for has no process left behind it — and preserving it also
+        // strips its Wild badge (Phase 7 finds no pid), moving a dead
+        // terminal claude into the ACTIVE section as a session clash cannot
+        // attach to, kill, or ever get rid of.
+        if matches!(old.source, SessionSource::Wild) || old.is_synthetic_wild() {
+            continue;
+        }
+        // SessionEnd fired: the session is over. Preserving it would freeze
+        // that stale status too — Phase 3's hook overlay has already run by
+        // the time this row is pushed.
+        if matches!(
+            hook_statuses.get(&old.id),
+            Some((SessionStatus::Stashed, _))
+        ) {
+            continue;
+        }
+        sessions.push(old.clone());
     }
 }
 
@@ -731,19 +769,82 @@ fn enrich_from_disk(session: &mut Session, disk: &Session) {
 
 // ── Phase 5: Registry-only sessions ──────────────────────────────
 
+/// How long a registry entry with no transcript, no daemon PTY and no live
+/// process is still listed. Covers spawn-in-flight and a session created
+/// seconds ago; past it, a row with nothing behind it is not a session.
+pub const REGISTRY_ONLY_GRACE_SECS: i64 = 300;
+
+/// Does anything besides the registry itself vouch for a transcript-less
+/// entry?
+///
+/// Claude writes a conversation's transcript on the first message, so an
+/// entry with no transcript **anywhere** on disk (Phase 1 matches by id, not
+/// by path, so a worktree or a moved cwd does not hide one) has never been
+/// messaged. It is therefore either brand new, or a session that died empty
+/// — and the registry keeps the entry either way, since that is what makes a
+/// session resumable. Only external evidence separates the two: a live
+/// `claude` the daemon does not own, or the entry's own age.
+///
+/// Without this the row was permanent, and Claude Code's 30-day transcript
+/// cleanup turns *every* older entry into one: a STASHED row (UNASSIGNED
+/// too, since no workspace claims it) for a conversation that no longer
+/// exists, which resumes into a blank session instead of the work it names.
+fn registry_only_is_vouched_for(
+    key: &str,
+    entry: &ClashSession,
+    wild: &[crate::infrastructure::process_scan::WildProcess],
+    now: SystemTime,
+) -> bool {
+    // A live claude the daemon does not own: clash restarted under it, or
+    // the user resumed it in a terminal. Exact id first, then the cwd — a
+    // bare `claude` carries no id in argv.
+    let cwd = entry.cwd.trim_end_matches('/');
+    let vouched = wild.iter().any(|w| {
+        w.session_ids()
+            .any(|id| id == key || id == entry.claude_session_id)
+            || (!cwd.is_empty()
+                && w.cwd
+                    .as_deref()
+                    .is_some_and(|c| c.trim_end_matches('/') == cwd))
+    });
+    if vouched {
+        return true;
+    }
+    // Freshly registered: the spawn may still be in flight, and Claude
+    // writes nothing until the first message lands.
+    let Ok(created) = chrono::DateTime::parse_from_rfc3339(&entry.created_at) else {
+        // No parseable creation time (hand-edited, or predating the field):
+        // nothing behind the row and no age to defend it.
+        return false;
+    };
+    let now_secs = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // Negative age (clock skew) counts as fresh — never hide a session that
+    // claims to have just been created.
+    now_secs - created.timestamp() < REGISTRY_ONLY_GRACE_SECS
+}
+
 /// Add sessions that exist in the registry but have no disk or daemon
-/// presence. These are stashed sessions whose JSONL files don't exist
-/// (e.g., session was created and quit before Claude wrote anything).
+/// presence — a session created and quit before Claude wrote anything, or
+/// one whose claude is alive outside the daemon. Entries nothing vouches for
+/// are skipped: see [`registry_only_is_vouched_for`].
 fn add_registry_only_sessions(
     sessions: &mut Vec<Session>,
     registry: &HashMap<String, ClashSession>,
     hook_statuses: &HashMap<String, (SessionStatus, Option<std::time::SystemTime>)>,
+    wild: &[crate::infrastructure::process_scan::WildProcess],
+    now: SystemTime,
 ) {
     let existing_ids: std::collections::HashSet<String> =
         sessions.iter().map(|s| s.id.clone()).collect();
 
     for (id, entry) in registry {
         if existing_ids.contains(id.as_str()) {
+            continue;
+        }
+        if !registry_only_is_vouched_for(id, entry, wild, now) {
             continue;
         }
 
@@ -1785,6 +1886,137 @@ mod tests {
         // No daemon-only running sessions to preserve — list unchanged
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, "s1");
+    }
+
+    // ── Phase 5: transcript-less registry entries ────────────────
+
+    /// A registry entry `created_at` seconds ago, RFC3339 like the real one.
+    fn aged_entry(id: &str, cwd: &str, age_secs: i64) -> ClashSession {
+        let mut e = make_registry_entry(id, id, cwd);
+        e.created_at = (chrono::Utc::now() - chrono::Duration::seconds(age_secs)).to_rfc3339();
+        e
+    }
+
+    #[test]
+    fn a_registry_entry_whose_transcript_is_gone_is_not_a_session() {
+        // Claude Code prunes transcripts after 30 days while the registry
+        // entry lives forever, so every older session used to degrade into a
+        // permanent STASHED row (UNASSIGNED too — no workspace claims it)
+        // naming a conversation that no longer exists. Nothing vouches for
+        // it: no transcript, no daemon PTY, no live process.
+        let mut input = empty_input(&[]);
+        input.registry = HashMap::from([(
+            "old".to_string(),
+            aged_entry("old", "/repo", 40 * 24 * 3600),
+        )]);
+        assert!(build_session_list(&input).is_empty());
+    }
+
+    #[test]
+    fn a_freshly_registered_entry_is_listed_before_its_transcript_exists() {
+        // Phase 5's original job: a session clash just created is visible
+        // even though Claude writes nothing until the first message.
+        let mut input = empty_input(&[]);
+        input.registry = HashMap::from([("new".to_string(), aged_entry("new", "/repo", 5))]);
+        let out = build_session_list(&input);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "new");
+        assert_eq!(out[0].status, SessionStatus::Stashed);
+    }
+
+    #[test]
+    fn a_live_claude_keeps_its_transcript_less_entry_visible() {
+        // Clash restarted under a session it spawned: no daemon PTY, no
+        // transcript (never messaged), but the process is alive and the scan
+        // sees it. Age must not hide a running session.
+        let entry = aged_entry("sid", "/repo", 40 * 24 * 3600);
+        // By id (argv `--resume sid`)…
+        let mut input = empty_input(&[]);
+        input.registry = HashMap::from([("sid".to_string(), entry.clone())]);
+        input.wild_processes = vec![wild_with_argv(42, "sid")];
+        assert_eq!(build_session_list(&input).len(), 1);
+
+        // …and by cwd, which is all a bare `claude` gives us (trailing
+        // slash tolerated; Phase 7.5 may add its own synthetic row for the
+        // same process, which is not what this asserts).
+        let mut input = empty_input(&[]);
+        input.registry = HashMap::from([("sid".to_string(), entry)]);
+        input.wild_processes = vec![wild_bare(42, "/repo/")];
+        let out = build_session_list(&input);
+        assert!(out.iter().any(|s| s.id == "sid"), "{:?}", out);
+    }
+
+    #[test]
+    fn an_entry_with_a_transcript_is_untouched_by_the_age_rule() {
+        // The rule only ever governs Phase 5. A registered session with a
+        // conversation on disk is admitted by Phase 1 whatever its age.
+        let (disk, mut entry) = registered_session("sid", "/repo");
+        entry.created_at = (chrono::Utc::now() - chrono::Duration::days(400)).to_rfc3339();
+        let mut input = empty_input(&[]);
+        input.disk_sessions = vec![disk];
+        input.registry = HashMap::from([("sid".to_string(), entry)]);
+        let out = build_session_list(&input);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "sid");
+    }
+
+    // ── Preservation must not resurrect the dead ─────────────────
+
+    #[test]
+    fn a_dead_wild_claude_is_not_preserved_as_a_managed_session() {
+        // The scan is the only authority on a wild row's liveness: it
+        // re-admits one every cycle while the process lives. Preserving a
+        // row it no longer vouches for made a *terminal* claude the user
+        // quit reappear as an ACTIVE clash session — Phase 7 finds no pid,
+        // so it even loses the Wild badge — and, once back in `previous`,
+        // forever.
+        let mut wild = make_session("wild-sid", SessionStatus::Running, true);
+        wild.source = crate::domain::entities::SessionSource::Wild;
+        let synthetic = {
+            let mut s = make_session("wild-pid-4242", SessionStatus::Running, true);
+            s.source = crate::domain::entities::SessionSource::Wild;
+            s.wild_pid = Some(4242);
+            s
+        };
+        let previous = vec![wild, synthetic];
+
+        // Daemon reachable and empty (nothing spawned) — the branch that
+        // used to preserve, and the common state while browsing wild rows.
+        let mut input = empty_input(&previous);
+        input.daemon_infos = Some(Vec::new());
+        assert!(build_session_list(&input).is_empty());
+
+        // Same when the daemon is unreachable: no process, no row.
+        let mut input = empty_input(&previous);
+        input.daemon_infos = None;
+        assert!(build_session_list(&input).is_empty());
+    }
+
+    #[test]
+    fn a_session_the_hooks_report_ended_is_not_preserved() {
+        // SessionEnd fired, so the session is over. Preserving it would also
+        // freeze its stale status: Phase 3's hook overlay has already run by
+        // the time a preserved row is pushed, so it would never go STASHED.
+        let previous = vec![make_session("s1", SessionStatus::Waiting, true)];
+        let mut input = empty_input(&previous);
+        input.daemon_infos = None; // unreachable
+        input.hook_statuses = HashMap::from([(
+            "s1".to_string(),
+            (SessionStatus::Stashed, Some(SystemTime::now())),
+        )]);
+        assert!(build_session_list(&input).is_empty());
+    }
+
+    #[test]
+    fn a_daemon_only_session_still_survives_an_unreachable_daemon() {
+        // The case preservation exists for, unchanged: clash spawned it, the
+        // daemon hiccuped, no hook has said otherwise.
+        let previous = vec![make_session("s1", SessionStatus::Waiting, true)];
+        let mut input = empty_input(&previous);
+        input.daemon_infos = None;
+        let out = build_session_list(&input);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].is_running);
     }
 
     // ── Multi-cycle stability with empty daemon ─────────────────
