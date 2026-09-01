@@ -30,7 +30,8 @@ pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
         | InputMode::NewMemberModel
         | InputMode::NewScratchTitle
         | InputMode::NewScratchDir
-        | InputMode::RenameScratch => handle_input_mode(key),
+        | InputMode::RenameScratch
+        | InputMode::QueuePrompt => handle_input_mode(key),
         InputMode::Confirm => handle_confirm_mode(key, state),
         InputMode::Picker => handle_picker_mode(key),
         InputMode::Attached => Action::Noop,
@@ -133,6 +134,8 @@ fn handle_normal_mode(key: KeyEvent, state: &AppState) -> Action {
                 handle_new_session(state)
             }
         }
+        KeyCode::Char('f') => handle_queue_prompt(state),
+        KeyCode::Char('F') => handle_cancel_queued_prompts(state),
         KeyCode::Char('e') => handle_open_in_ide(state),
         KeyCode::Char('o') => handle_attach_new_window(state),
         KeyCode::Char('O') => handle_attach_all_new_windows(state),
@@ -600,6 +603,26 @@ fn handle_open_in_ide(state: &AppState) -> Action {
         return Action::Agent(AgentAction::OpenInIde { session_id });
     }
     Action::Ui(UiAction::Toast("No session selected".to_string()))
+}
+
+/// `f` — compose a follow-up prompt for the selected session, delivered when
+/// that session is next idle at its input prompt.
+fn handle_queue_prompt(state: &AppState) -> Action {
+    if resolve_session_id(state).is_none() {
+        return Action::Ui(UiAction::Toast("No session selected".to_string()));
+    }
+    Action::Ui(UiAction::EnterQueuePromptMode)
+}
+
+/// `F` — drop every follow-up queued for the selected session. Its own key
+/// rather than a mode of `f`: "queue" and "unqueue" are opposite intents, and
+/// an empty submit meaning "cancel everything" is the kind of overload that
+/// gets triggered by accident.
+fn handle_cancel_queued_prompts(state: &AppState) -> Action {
+    if resolve_session_id(state).is_none() {
+        return Action::Ui(UiAction::Toast("No session selected".to_string()));
+    }
+    Action::Ui(UiAction::EnterCancelFollowUpMode)
 }
 
 fn handle_attach_new_window(state: &AppState) -> Action {
@@ -1199,6 +1222,38 @@ mod tests {
             Action::Ui(UiAction::Toast(_)) => {}
             other => panic!("Expected Toast on synthetic wild row, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_f_key_opens_the_follow_up_composer() {
+        let mut state = AppState::new();
+        state.store.sessions = vec![crate::domain::entities::Session {
+            id: "s1".to_string(),
+            is_running: true,
+            ..Default::default()
+        }];
+        state.table_state.selected = 0;
+        let f = KeyEvent::new(KeyCode::Char('f'), crossterm::event::KeyModifiers::NONE);
+        assert!(matches!(
+            handle_key(f, &state),
+            Action::Ui(UiAction::EnterQueuePromptMode)
+        ));
+        // Shift+F is the opposite intent, not a mode of the same key.
+        let big_f = KeyEvent::new(KeyCode::Char('F'), crossterm::event::KeyModifiers::SHIFT);
+        assert!(matches!(
+            handle_key(big_f, &state),
+            Action::Ui(UiAction::EnterCancelFollowUpMode)
+        ));
+    }
+
+    #[test]
+    fn test_f_key_without_a_session_toasts() {
+        let state = AppState::new();
+        let f = KeyEvent::new(KeyCode::Char('f'), crossterm::event::KeyModifiers::NONE);
+        assert!(matches!(
+            handle_key(f, &state),
+            Action::Ui(UiAction::Toast(_))
+        ));
     }
 
     #[test]

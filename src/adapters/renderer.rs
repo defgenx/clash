@@ -299,7 +299,8 @@ fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
         | crate::application::state::InputMode::NewMemberModel
         | crate::application::state::InputMode::NewScratchTitle
         | crate::application::state::InputMode::NewScratchDir
-        | crate::application::state::InputMode::RenameScratch => {
+        | crate::application::state::InputMode::RenameScratch
+        | crate::application::state::InputMode::QueuePrompt => {
             input_bar::render_input_bar(
                 &state.input_mode,
                 state.input.value(),

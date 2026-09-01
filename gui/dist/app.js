@@ -27,6 +27,9 @@ const state = {
   wfDoneOpen: false, // DONE/ABANDONED sidebar group expanded
   renaming: null, // session id with an open inline-rename input
   prevStatuses: new Map(), // session id -> status (attention transitions)
+  // Follow-up prompts queued per session id (backend-owned; mirrored here for
+  // the row badges). Refreshed with the session list and after every change.
+  queued: {},
   unread: new Set(), // session ids with unseen attention events
   missingStreak: new Map(), // session id -> consecutive refreshes absent (ownership prune)
   // Persisted with workspaces in gui-state.json. optionMeta: ⌥ sends
@@ -134,6 +137,8 @@ const ICONS = {
     '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>',
   chevron: '<polyline points="9 18 15 12 9 6"/>',
+  inbox:
+    '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
 };
 
 function svgIcon(name, size = 15) {
@@ -162,6 +167,7 @@ function applyStaticIcons() {
   // Labeled launcher, not a bare glyph — it must read as "click to get
   // the TUI" next to the GUI badge, not as a mystery toolbar icon.
   $("tui-btn").innerHTML = `${svgIcon("terminal", 12)}<span>TUI</span>`;
+  renderInboxBadge();
 }
 
 // ── In-app dialogs ──────────────────────────────────────────────
@@ -1226,6 +1232,23 @@ function sessionItem(s) {
   stLabel.className = `status-label ${st.cls}`;
   stLabel.textContent = `${st.icon} ${st.label}`;
   sub.appendChild(stLabel);
+  // Queued follow-ups: the whole point is to be visible while the session is
+  // busy, which is exactly when you are looking at this list and not at the
+  // terminal.
+  const queuedCount = (state.queued[s.id] || []).length;
+  if (queuedCount) {
+    const chip = document.createElement("span");
+    chip.className = "queued-chip";
+    chip.textContent = `⧖${queuedCount}`;
+    chip.title = `${queuedCount} follow-up${
+      queuedCount === 1 ? "" : "s"
+    } queued — delivered when this session is next idle. Click to review.`;
+    chip.onclick = (ev) => {
+      ev.stopPropagation();
+      reviewFollowUps(s);
+    };
+    sub.appendChild(chip);
+  }
   const owner = sessionWorkspace(s.id);
   if (owner >= 0 && owner !== state.activeWs) {
     const wsBadge = document.createElement("span");
@@ -1331,6 +1354,24 @@ function sessionMenu(s, x, y) {
     ...(s.is_running
       ? [
           {
+            label: "Queue follow-up…",
+            icon: "pencil",
+            action: () => queueFollowUp(s),
+          },
+        ]
+      : []),
+    ...((state.queued[s.id] || []).length
+      ? [
+          {
+            label: `Cancel a queued follow-up… (${(state.queued[s.id] || []).length})`,
+            icon: "x",
+            action: () => reviewFollowUps(s),
+          },
+        ]
+      : []),
+    ...(s.is_running
+      ? [
+          {
             label: "Stash (stop, keep resumable)",
             icon: "pause",
             action: async () => {
@@ -1355,6 +1396,80 @@ function sessionMenu(s, x, y) {
   ]);
 }
 
+// ── Queued follow-up prompts ────────────────────────────────────
+// Type the next instruction while the agent is still working; the backend
+// delivers it to the PTY the moment that session is idle at its input prompt
+// (`clash::application::prompt_queue` owns the decision and the safety rules).
+// The queue lives in the backend — this is a mirror for the row badges, so a
+// delivery by the backend can never leave the UI claiming something is still
+// pending.
+
+/// Pull the whole queue map. `repaint` is false on the session-poll path,
+/// where the caller repaints everything a moment later anyway.
+async function refreshQueuedPrompts({ repaint = true } = {}) {
+  try {
+    state.queued = await invoke("list_queued_prompts");
+  } catch (e) {
+    console.error("list_queued_prompts failed:", e);
+    return;
+  }
+  if (repaint) {
+    renderSidebar();
+    syncInbox();
+  }
+}
+
+/// Compose a follow-up for one session. Multi-line by construction: this text
+/// becomes a message to Claude, and a single-line field would make a prompt
+/// with a list in it impossible to write (the change-request composer learned
+/// the same lesson).
+async function queueFollowUp(s) {
+  const pending = (state.queued[s.id] || []).length;
+  const text = await uiTextPrompt(
+    `Follow-up for “${displayName(s)}” — delivered when this session is next idle` +
+      (pending ? ` (${pending} already queued)` : ""),
+    "",
+    "Queue"
+  );
+  if (text === null) return;
+  try {
+    const n = await invoke("queue_prompt", { sessionId: s.id, text });
+    flashToast(`Follow-up queued (${n}) — delivers when the session goes idle`);
+  } catch (e) {
+    uiAlert(`Queue failed: ${e}`);
+  }
+  await refreshQueuedPrompts();
+}
+
+/// Review what is queued for a session and drop one entry. Cancelling by
+/// position is why the list is worth showing at all: with three queued you
+/// want to remove the second, not start over.
+async function reviewFollowUps(s) {
+  const pending = state.queued[s.id] || [];
+  if (!pending.length) {
+    flashToast("No follow-ups queued for this session");
+    return;
+  }
+  const picked = await uiListChoice({
+    message: `Cancel which follow-up for “${displayName(s)}”?`,
+    items: pending.map((text, i) => ({
+      label: `${i + 1}. ${text.split("\n")[0].slice(0, 80)}`,
+      detail: text.includes("\n") ? `${text.split("\n").length} lines` : "",
+      value: i,
+    })),
+  });
+  if (picked === null) return;
+  try {
+    await invoke("cancel_queued_prompt", { sessionId: s.id, index: picked });
+    flashToast("Follow-up cancelled");
+  } catch (e) {
+    // A delivery can land between rendering the list and the click; that is an
+    // ordinary outcome, so say what happened rather than raising an alert.
+    flashToast(String(e));
+  }
+  await refreshQueuedPrompts();
+}
+
 function startRename(id) {
   state.renaming = id;
   renderSidebar();
@@ -1374,6 +1489,7 @@ async function refreshSessions() {
     document.title =
       attention > 0 && state.settings.titleAttention ? `clash (${attention}!)` : "clash";
     state.sessions = sessions;
+    await refreshQueuedPrompts({ repaint: false });
 
     // Prune workspace ownership of sessions gone from the list for 3
     // consecutive refreshes (killed/removed) — tolerates transient
@@ -1435,6 +1551,7 @@ async function refreshSessions() {
     // the next tick after Enter/Escape repaints with fresh data.
     if (!state.renaming) renderSidebar();
     renderTabs();
+    syncInbox();
     if (state.detailsFor) renderDetails();
 
     // Teams change on disk when Claude spawns/retires agents, and members go
@@ -4190,6 +4307,8 @@ function updateWfBadge() {
 
 function renderWorkflows() {
   updateWfBadge();
+  // Half the inbox is workflow items, so a list refresh repaints it too.
+  syncInbox();
   const list = $("wf-list");
   list.innerHTML = "";
   if (state.workflows.length === 0) {
@@ -4611,6 +4730,10 @@ function restoreWorkflowTab(key, saved) {
     openSkillsTab();
     return;
   }
+  if (key === "view:inbox") {
+    openInboxTab();
+    return;
+  }
   const rest = key.slice("view:workflow:".length);
   const slash = rest.indexOf("/");
   if (slash < 0) return;
@@ -4879,6 +5002,146 @@ function renderWorkflowPrDashboard(el) {
     wrap.appendChild(row);
   }
   el.appendChild(wrap);
+}
+
+// ── Attention inbox ─────────────────────────────────────────────
+// The one surface that answers "what is waiting on me". Everything it shows
+// is already signalled somewhere — a sidebar ring, a badge, a toast, the
+// board — which is exactly the problem it solves: with a dozen agents in
+// flight those signals live in five places and none of them is a list. The
+// ordering model is `attention.js`; this is the view.
+
+/// Open (or focus) the inbox. Singleton tab, like the board and the PR list.
+function openInboxTab() {
+  openViewTab("view:inbox", "◎ Inbox", async (el) => {
+    el.classList.add("wf-board-wrap");
+    el.innerHTML = "<p class='hint'>loading…</p>";
+    // Workflow items load lazily when the sidebar section is first opened.
+    // The inbox is global, so it must not silently omit them just because
+    // that section was never expanded.
+    if (!state.workflows.length) await refreshWorkflows();
+    renderInbox(el);
+  });
+}
+
+/// The rows, from live frontend state. Called on every session refresh and
+/// every workflow change while the tab is open — cheap (a fold over two
+/// arrays already in memory) and it has no text inputs to blur.
+function inboxRows() {
+  return attentionRows({
+    sessions: state.sessions,
+    workflows: state.workflows,
+    unread: state.unread,
+    wfUnread: state.wfUnread,
+  });
+}
+
+function renderInbox(el) {
+  const rows = inboxRows();
+  const { total, blocking } = attentionSummary(rows);
+  el.innerHTML = "";
+  const wrap = document.createElement("div");
+  wrap.className = "inbox";
+
+  const head = document.createElement("div");
+  head.className = "wf-prs-head";
+  head.innerHTML =
+    `<h4>INBOX</h4><span class="dim">${
+      total
+        ? `${total} waiting on you${blocking ? ` · ${blocking} blocked` : ""}`
+        : "all clear"
+    }</span>`;
+  wrap.appendChild(head);
+
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent =
+      "nothing is waiting on you — every session has been answered and no workflow item is parked on a decision";
+    wrap.appendChild(empty);
+    el.appendChild(wrap);
+    return;
+  }
+
+  for (const r of rows) {
+    const row = document.createElement("div");
+    row.className = `inbox-row band-${r.band}`;
+    const info =
+      r.kind === "session"
+        ? statusInfo(state.sessions.find((x) => x.id === r.sessionId) || { status: r.status })
+        : wfStatusInfo(r.status);
+    const ringCls = r.kind === "session" ? "status-ring" : "status-ring wf-ring";
+    row.innerHTML =
+      `<span class="${ringCls} ${info.cls}" title="${info.label}"></span>` +
+      `<span class="inbox-main">` +
+      `<span class="inbox-title">${escapeHtml(r.title)}${
+        r.unread ? '<span class="unread-dot"></span>' : ""
+      }</span>` +
+      `<span class="inbox-sub">` +
+      `<span class="status-label ${info.cls}">${info.label}</span>` +
+      `<span class="dim">${escapeHtml(r.context)}</span>` +
+      `</span>` +
+      `<span class="inbox-why">${escapeHtml(r.reasons.join(" · "))}</span>` +
+      `</span>` +
+      `<span class="inbox-age dim">${escapeHtml(wfAgo(r.since))}</span>`;
+    if (r.kind === "session") {
+      const sess = state.sessions.find((x) => x.id === r.sessionId);
+      if (sess && sess.is_running) {
+        const q = document.createElement("button");
+        q.className = "inbox-action";
+        q.textContent = "Queue follow-up…";
+        q.title = "Type the next instruction now — delivered when this session is idle";
+        q.onclick = (ev) => {
+          ev.stopPropagation();
+          queueFollowUp(sess);
+        };
+        row.appendChild(q);
+      }
+    }
+    row.title =
+      r.kind === "session"
+        ? "Open this session"
+        : "Open this workflow item";
+    row.onclick = () => {
+      if (r.kind === "session") {
+        openSession(r.sessionId, r.title);
+      } else {
+        const item = wfItem(r.project, r.slug);
+        if (item) openWorkflowTab(item);
+      }
+      // Jumping to a row is how you acknowledge it: the unread dot and the
+      // badge must drop on this click, not on the next poll tick.
+      renderInboxBadge();
+      renderInbox(el);
+    };
+    wrap.appendChild(row);
+  }
+  el.appendChild(wrap);
+}
+
+/// The sidebar-header button: icon plus a count pill, `hot` when something is
+/// actually blocked. Blocked and total are separate numbers because a long
+/// tail of finished-turn sessions would otherwise keep one number permanently
+/// high — a badge that never drops is a badge nobody reads.
+function renderInboxBadge() {
+  const btn = $("inbox-btn");
+  if (!btn) return;
+  const { total, blocking } = attentionSummary(inboxRows());
+  btn.innerHTML =
+    svgIcon("inbox", 13) +
+    (total ? `<span class="inbox-pill${blocking ? " hot" : ""}">${total}</span>` : "");
+  btn.classList.toggle("has-attention", total > 0);
+  btn.title = total
+    ? `Inbox (⌘I) — ${total} waiting on you${blocking ? `, ${blocking} blocked` : ""}`
+    : "Inbox (⌘I) — nothing waiting on you";
+}
+
+/// Repaint the badge, and the tab when it is open. One call after anything
+/// that can change what the inbox holds.
+function syncInbox() {
+  renderInboxBadge();
+  const entry = state.open.get("view:inbox");
+  if (entry) renderInbox(entry.el);
 }
 
 // Per-tab UI state (active sub-view, viewed iteration) — survives rebuilds
@@ -8053,6 +8316,20 @@ listen("session-attention", (event) => {
   }
 });
 
+// A queued follow-up just went to a session's PTY (or failed to). The toast is
+// the whole feedback loop for a delivery that happens while you are looking at
+// something else — the badge dropping on its own is not an answer to "did it
+// send?".
+listen("prompt-delivered", (event) => {
+  const { name, remaining, error } = event.payload;
+  if (error) flashToast(`Follow-up to ${name} failed: ${error}`);
+  else
+    flashToast(
+      `Follow-up delivered to ${name}${remaining ? ` (${remaining} still queued)` : ""}`
+    );
+  refreshQueuedPrompts();
+});
+
 listen("pty-exited", (event) => {
   const { session_id, exit_code } = event.payload;
   if (isShellTerm(session_id)) {
@@ -8702,6 +8979,11 @@ document.addEventListener("keydown", (e) => {
     $("search").focus();
     return;
   }
+  if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === "i") {
+    e.preventDefault();
+    openInboxTab();
+    return;
+  }
   if (e.metaKey && !e.shiftKey && e.key === "k") {
     e.preventDefault();
     const entry = state.activeTab && state.open.get(state.activeTab);
@@ -8737,6 +9019,10 @@ $("refresh-wf-btn").onclick = (e) => {
     if (!state.wfOpen) await toggleWorkflows(); // opening already refreshes
     else await refreshWorkflows();
   });
+};
+$("inbox-btn").onclick = (e) => {
+  e.stopPropagation();
+  openInboxTab();
 };
 $("new-wf-btn").onclick = (e) => {
   e.stopPropagation();
@@ -8869,7 +9155,8 @@ setInterval(() => {
     const visible =
       state.wfOpen ||
       state.open.has(`view:workflow:${key}`) ||
-      state.open.has("view:wfprs");
+      state.open.has("view:wfprs") ||
+      state.open.has("view:inbox");
     if (!visible) continue;
     invoke("refresh_workflow_pr", {
       project: item.project,

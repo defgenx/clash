@@ -301,7 +301,15 @@ pub fn render_sessions_table(
         } else {
             source_glyph(session.source)
         };
-        let name_text = format!("{}{}", glyph, name_display);
+        // Queued follow-ups ride the name cell: the prompt exists because the
+        // session is busy, so it has to be visible from the list you watch
+        // while it is busy.
+        let queued = state.prompt_queue.count(&session.id);
+        let name_text = if queued > 0 {
+            format!("{}{} \u{29d6}{}", glyph, name_display, queued)
+        } else {
+            format!("{}{}", glyph, name_display)
+        };
         let name_style = if !glyph.is_empty() {
             Style::default()
                 .fg(theme::TEXT_DIM)
@@ -471,6 +479,8 @@ impl TableView for SessionsTable {
                 "Attach (Daemon) / Take over (Wild/External — one confirm)",
             ),
             Keybinding::new("e", "Open in IDE"),
+            Keybinding::new("f", "Queue follow-up prompt (delivered when idle)"),
+            Keybinding::new("F", "Cancel a queued follow-up (picker if several)"),
             Keybinding::new("o", "Open in new tab"),
             Keybinding::new("O", "Open ALL in new tabs"),
             Keybinding::new("c/n", "New session (prompts for dir, then name)"),

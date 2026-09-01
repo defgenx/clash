@@ -221,3 +221,18 @@ test("a workflow tab rebuild never lands on a field being edited", () => {
   assert.doesNotMatch(settings, /buildWorkflowView\(/);
   assert.match(settings, /Object\.assign\(committed, patch\)/);
 });
+
+test("the queued-follow-up UI mirrors the backend rather than guessing", () => {
+  // The queue lives in the backend, which delivers on its own schedule. If the
+  // frontend tracked it locally, a delivery would leave the row claiming a
+  // prompt is still pending — so every change re-reads the whole map.
+  assert.match(APP, /async function refreshQueuedPrompts\(/);
+  assert.match(APP, /state\.queued = await invoke\("list_queued_prompts"\)/);
+  // Queued, cancelled, delivered: all three paths end in a re-read.
+  const reads = APP.match(/refreshQueuedPrompts\(/g) || [];
+  assert.ok(reads.length >= 5, `expected ≥5 refreshQueuedPrompts sites, got ${reads.length}`);
+  assert.match(APP, /listen\("prompt-delivered"/);
+  // The composer is multi-line: the text is a message to Claude, and a
+  // single-line field cannot hold a prompt with a list in it.
+  assert.match(APP, /await uiTextPrompt\(\s*`Follow-up for/);
+});

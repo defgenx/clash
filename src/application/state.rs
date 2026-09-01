@@ -163,6 +163,9 @@ pub enum InputMode {
     Attached,
     /// Picker dialog is open — j/k navigate, Enter selects, Esc cancels.
     Picker,
+    /// Composing a follow-up prompt to deliver when the selected session next
+    /// goes idle (session id in `prompt_queue_target`).
+    QueuePrompt,
 }
 
 /// A generic picker dialog — list of items with a callback action.
@@ -204,6 +207,10 @@ pub enum PickerAction {
     /// Copy the picked path to the clipboard (item value = the text to copy;
     /// item label = which format, e.g. "Absolute path", for the toast).
     CopyToClipboard,
+    /// Cancel one queued follow-up (item value = its index, or `"all"`).
+    CancelQueuedPrompt {
+        session_id: String,
+    },
     /// Assign the picked member (item value = member name; `""` = unassigned)
     /// as the owner of a task.
     AssignTaskOwner {
@@ -353,6 +360,12 @@ pub struct AppState {
     /// `NewScratchTitle`/`NewScratchDir`, or the target entry id for
     /// `RenameScratch`. Consumed when the prompt is submitted or cancelled.
     pub scratch_op_target: Option<String>,
+    /// Follow-up prompts waiting for their session to go idle. Application
+    /// state, not IO: the reducer fills it, the refresh loop delivers from it.
+    pub prompt_queue: crate::application::prompt_queue::PromptQueue,
+    /// Session the active `InputMode::QueuePrompt` is composing for. Consumed
+    /// when the prompt is submitted or cancelled.
+    pub prompt_queue_target: Option<String>,
 }
 
 /// Pending team-member creation state — filled step by step through the
@@ -409,6 +422,8 @@ impl AppState {
             pending_member: None,
             expanded_scratch_dirs: HashSet::new(),
             scratch_op_target: None,
+            prompt_queue: crate::application::prompt_queue::PromptQueue::default(),
+            prompt_queue_target: None,
         }
     }
 

@@ -64,4 +64,20 @@ pub enum AgentAction {
     TakeoverWild {
         session_id: String,
     },
+    /// Queue a follow-up prompt, delivered to the session's PTY the next time
+    /// it is idle at its input prompt. Pure state — the refresh loop delivers.
+    QueuePrompt {
+        session_id: String,
+        text: String,
+    },
+    /// Drop every follow-up queued for a session.
+    CancelQueuedPrompts {
+        session_id: String,
+    },
+    /// Drop one queued follow-up by position. A stale index is an ordinary
+    /// outcome — a delivery can land between listing the queue and picking.
+    CancelQueuedPromptAt {
+        session_id: String,
+        index: usize,
+    },
 }

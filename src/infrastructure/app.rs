@@ -1236,6 +1236,45 @@ impl App {
             .refresh_changed_subagents(&self.backend, &previous_for_subagents);
         self.state.store.rebuild_all_members();
 
+        // Deliver follow-up prompts that came due. The decision is pure
+        // (`prompt_queue::due` — idle at its input prompt, and already idle at
+        // the previous refresh); this only performs the write. The entry is
+        // dropped either way: a delivery that failed once will fail again next
+        // tick, and a queue that retries forever is a queue nobody can see the
+        // end of.
+        {
+            use crate::application::prompt_queue;
+            let prev_status: HashMap<&str, crate::domain::entities::SessionStatus> =
+                previous_for_subagents
+                    .iter()
+                    .map(|s| (s.id.as_str(), s.status))
+                    .collect();
+            let due = self.state.prompt_queue.due(
+                |id| prev_status.get(id).copied(),
+                &self.state.store.sessions,
+            );
+            for id in due {
+                let Some(text) = self.state.prompt_queue.pending(&id).first().cloned() else {
+                    continue;
+                };
+                let outcome = self
+                    .daemon
+                    .send_input(&id, &prompt_queue::pty_paste(&text))
+                    .await;
+                self.state.prompt_queue.take_next(&id);
+                let left = self.state.prompt_queue.count(&id);
+                self.state.toast = Some(match outcome {
+                    Ok(()) if left > 0 => format!("Follow-up delivered ({left} still queued)"),
+                    Ok(()) => "Follow-up delivered".to_string(),
+                    Err(e) => {
+                        tracing::warn!("follow-up delivery failed for {}: {}", id, e);
+                        format!("Follow-up delivery failed: {e}")
+                    }
+                });
+                self.needs_redraw = true;
+            }
+        }
+
         // Only redraw if sessions actually changed (PartialEq comparison)
         if session_refresh::sessions_changed(&previous_for_subagents, &self.state.store.sessions) {
             self.needs_redraw = true;

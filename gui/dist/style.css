@@ -2274,3 +2274,82 @@ button.busy:disabled { opacity: 1; }
   border-color: var(--accent);
   color: var(--on-accent, #1a1a1a);
 }
+
+/* ── Attention inbox ─────────────────────────────────────────────
+   The sidebar-header button carries a count pill, so it sizes to its
+   content instead of the square icon-button box. `hot` means something is
+   actually blocked (a pending approval, a wedged agent, an error) — the
+   plain pill is a count of things merely finished and waiting. */
+#inbox-btn { width: auto; min-width: 30px; padding: 0 6px; }
+#inbox-btn.has-attention { color: var(--fg); }
+.inbox-pill {
+  background: var(--bg-active);
+  color: var(--fg);
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 5px;
+  line-height: 14px;
+}
+.inbox-pill.hot { background: var(--red); color: var(--on-accent, #fff); }
+
+.inbox { padding: 14px 18px; max-width: 980px; display: flex; flex-direction: column; gap: 6px; }
+.inbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-left-color: var(--border);
+  border-radius: 6px;
+  background: var(--bg-sidebar);
+  cursor: pointer;
+}
+.inbox-row:hover { background: var(--bg-hover); }
+/* Urgency, as a left edge: blocked work reads as red before any text is. */
+.inbox-row.band-0 { border-left-color: var(--st-prompting); }
+.inbox-row.band-1,
+.inbox-row.band-2 { border-left-color: var(--st-error); }
+.inbox-row.band-3,
+.inbox-row.band-4 { border-left-color: var(--accent); }
+.inbox-row.band-5 { border-left-color: var(--st-waiting); }
+.inbox-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.inbox-title {
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.inbox-sub { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.inbox-sub .dim { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-why { font-size: 11.5px; color: var(--fg); opacity: 0.85; }
+.inbox-age { font-size: 11px; white-space: nowrap; }
+.inbox-action {
+  font-size: 11px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.inbox-action:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Queued follow-up prompts: a count chip on the session row, clickable to
+   review what is pending. */
+.queued-chip {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  padding: 0 4px;
+  line-height: 13px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.queued-chip:hover { background: var(--bg-active); }

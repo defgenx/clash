@@ -90,6 +90,18 @@ pub const TOUR_STEPS: &[TourStep] = &[
         ],
     },
     TourStep {
+        title: "Queued Follow-ups",
+        body: &[
+            "You don't have to wait for an agent to finish to tell it what comes next. Press  f  on a session and type the follow-up: clash delivers it to that session the moment it is idle at its input prompt.",
+            "",
+            "The row shows  \u{29d6}n  while prompts are pending, and a queued prompt is never delivered to a tool-approval question \u{2014} only to the free-form input prompt.",
+        ],
+        keys: &[
+            ("f", "Queue a follow-up for the selected session"),
+            ("F", "Cancel one queued follow-up (or all of them)"),
+        ],
+    },
+    TourStep {
         title: "Creating Sessions",
         body: &[
             "Press  c  or  n  to create a new Claude session.",

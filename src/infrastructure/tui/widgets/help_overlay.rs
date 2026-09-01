@@ -112,6 +112,10 @@ pub fn render_help_overlay(
         ),
         ("\u{229f}", "Session in a git worktree (shows project/name)"),
         ("\u{25b6} / \u{25bc}", "Collapsed / expanded subagents"),
+        (
+            "\u{29d6}n",
+            "n follow-up prompts queued for this session — delivered to it when it is next idle at its input prompt, never to a tool-approval question (`f` to queue, `F` to cancel one)",
+        ),
     ] {
         lines.push(Line::from(vec![
             Span::styled(format!("  {:<16}", symbol), theme::help_key_style()),

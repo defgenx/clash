@@ -29,6 +29,11 @@ pub enum UiAction {
     EnterNewScratchDirMode,
     /// Prompt for a new name to rename the selected scratch entry (Scratch view).
     EnterRenameScratchMode,
+    /// Open the follow-up composer for the selected session.
+    EnterQueuePromptMode,
+    /// Cancel a follow-up queued for the selected session: straight through
+    /// when only one is pending, otherwise a picker over the queue.
+    EnterCancelFollowUpMode,
     /// Open a folder picker to move the selected scratch entry into another
     /// folder (Scratch view). The selected entry, its descendants, and its
     /// current parent are excluded from the destination list.

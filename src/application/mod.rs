@@ -2,6 +2,7 @@ pub mod actions;
 pub mod diff;
 pub mod effects;
 pub mod nav;
+pub mod prompt_queue;
 pub mod reducer;
 pub mod state;
 pub mod store;

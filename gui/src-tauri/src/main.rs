@@ -77,6 +77,10 @@ struct GuiState {
     /// change mid-session; repointing `workflows.forge` bypasses the cache
     /// entirely since overrides never consult it).
     forge_cache: Mutex<HashMap<String, clash::domain::forge::ForgeKind>>,
+    /// Follow-up prompts waiting for their session to go idle. In-memory and
+    /// per instance, like the TUI's: the queue belongs to the same process as
+    /// the daemon holding the PTY it will be written to.
+    prompt_queue: Mutex<clash::application::prompt_queue::PromptQueue>,
 }
 
 impl GuiState {
@@ -164,6 +168,19 @@ fn native_notify(title: &str, body: &str) {
     }
 }
 
+/// Payload for `prompt-delivered` events: a queued follow-up just went to a
+/// session's PTY (or failed to). The frontend toasts it and repaints the
+/// per-row queue counts.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PromptDelivered {
+    session_id: String,
+    name: String,
+    text: String,
+    remaining: usize,
+    error: Option<String>,
+}
+
 /// Payload for `session-attention` events (sidebar unread badges).
 #[derive(Clone, serde::Serialize)]
 struct SessionAttention {
@@ -202,6 +219,59 @@ async fn list_sessions(
             sessions.retain(|s| !removed.contains_key(&s.id));
             removed.values_mut().for_each(|v| *v = v.saturating_add(1));
             removed.retain(|_, age| *age <= RECENTLY_REMOVED_TTL);
+        }
+    }
+
+    // Deliver follow-up prompts that came due. Reads `prev_statuses` while it
+    // still holds the *previous* cycle (the attention block below overwrites
+    // it), and drops each entry whether or not the write succeeded — a delivery
+    // that failed once fails again next tick, and a queue that retries forever
+    // is one nobody can see the end of.
+    {
+        use clash::application::prompt_queue;
+        let due = {
+            let prev = state.prev_statuses.lock().unwrap();
+            let q = state.prompt_queue.lock().unwrap();
+            q.due(|id| prev.get(id).copied(), &sessions)
+        };
+        if !due.is_empty() {
+            let mut control = state.control.lock().await;
+            ensure_connected(&mut control).await;
+            for id in due {
+                let next = state
+                    .prompt_queue
+                    .lock()
+                    .unwrap()
+                    .pending(&id)
+                    .first()
+                    .cloned();
+                let Some(text) = next else { continue };
+                let outcome = control
+                    .send_input(&id, &prompt_queue::pty_paste(&text))
+                    .await;
+                let remaining = {
+                    let mut q = state.prompt_queue.lock().unwrap();
+                    q.take_next(&id);
+                    q.count(&id)
+                };
+                if let Err(ref e) = outcome {
+                    tracing::warn!("follow-up delivery failed for {}: {}", id, e);
+                }
+                let _ = app.emit(
+                    "prompt-delivered",
+                    PromptDelivered {
+                        session_id: id.clone(),
+                        name: sessions
+                            .iter()
+                            .find(|s| s.id == id)
+                            .and_then(|s| s.name.clone())
+                            .unwrap_or_else(|| id.chars().take(8).collect()),
+                        text,
+                        remaining,
+                        error: outcome.err().map(|e| e.to_string()),
+                    },
+                );
+            }
         }
     }
 
@@ -488,6 +558,58 @@ async fn send_input(
         .send_input(&session_id, text.as_bytes())
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Queue a follow-up prompt for a session, delivered when it is next idle at
+/// its input prompt (`clash::application::prompt_queue`). Returns how many are
+/// now pending for that session.
+#[tauri::command]
+fn queue_prompt(
+    state: State<'_, GuiState>,
+    session_id: String,
+    text: String,
+) -> Result<usize, String> {
+    use clash::application::prompt_queue::EnqueueError;
+    let mut q = state.prompt_queue.lock().unwrap();
+    match q.enqueue(&session_id, &text) {
+        Ok(()) => Ok(q.count(&session_id)),
+        Err(EnqueueError::Empty) => Err("nothing to queue".to_string()),
+        Err(EnqueueError::Full) => Err(format!(
+            "queue full ({} follow-ups) — deliver or cancel some first",
+            clash::application::prompt_queue::MAX_QUEUED
+        )),
+    }
+}
+
+/// Every pending follow-up, keyed by session id — one call per refresh tick
+/// instead of one per row.
+#[tauri::command]
+fn list_queued_prompts(
+    state: State<'_, GuiState>,
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    state.prompt_queue.lock().unwrap().snapshot()
+}
+
+/// Drop one queued follow-up by position. The index comes from a list the
+/// caller rendered earlier, so a stale one is an ordinary outcome, not an
+/// error: a delivery may have landed in between.
+#[tauri::command]
+fn cancel_queued_prompt(
+    state: State<'_, GuiState>,
+    session_id: String,
+    index: usize,
+) -> Result<usize, String> {
+    let mut q = state.prompt_queue.lock().unwrap();
+    if !q.remove_at(&session_id, index) {
+        return Err("that follow-up is no longer queued".to_string());
+    }
+    Ok(q.count(&session_id))
+}
+
+/// Drop every follow-up queued for a session; returns how many were dropped.
+#[tauri::command]
+fn clear_queued_prompts(state: State<'_, GuiState>, session_id: String) -> usize {
+    state.prompt_queue.lock().unwrap().clear(&session_id)
 }
 
 #[tauri::command]
@@ -2866,6 +2988,7 @@ fn main() {
         attention: Mutex::new(clash::application::workflow::AttentionLedger::default()),
         pr_checked: Mutex::new(HashMap::new()),
         forge_cache: Mutex::new(HashMap::new()),
+        prompt_queue: Mutex::new(clash::application::prompt_queue::PromptQueue::default()),
     };
 
     // Skills: everything clash itself wrote is synced at startup (missing
@@ -2994,6 +3117,10 @@ fn main() {
             resolve_session_ids,
             open_session,
             send_input,
+            queue_prompt,
+            list_queued_prompts,
+            cancel_queued_prompt,
+            clear_queued_prompts,
             resize_session,
             close_session,
             stash_session,

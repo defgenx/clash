@@ -39,6 +39,15 @@
         "elsewhere show up as “wild” — one click adopts them.",
     },
     {
+      id: "inbox",
+      target: "inbox-btn",
+      title: "Inbox",
+      body:
+        "One list of everything waiting on you (⌘I) — sessions asking for approval or a " +
+        "next message, workflow items parked on a decision, PRs with unanswered comments. " +
+        "Blocked work first, oldest first. The count turns red when something is blocked.",
+    },
+    {
       id: "workflows",
       target: "wf-section",
       title: "Workflows",

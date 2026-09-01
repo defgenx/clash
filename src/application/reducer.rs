@@ -920,6 +920,58 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 }
             }
         }
+        AgentAction::QueuePrompt { session_id, text } => {
+            use crate::application::prompt_queue::EnqueueError;
+            let Some(session) = state.store.find_session(&session_id).cloned() else {
+                state.toast = Some("Session not found".to_string());
+                return vec![];
+            };
+            match state.prompt_queue.enqueue(&session_id, &text) {
+                Ok(()) => {
+                    let n = state.prompt_queue.count(&session_id);
+                    // Say when it will land, not just that it was accepted:
+                    // a follow-up on a session that will never be idle again
+                    // would otherwise look delivered.
+                    let when = if session.is_running {
+                        "delivers when the session is next idle"
+                    } else {
+                        "session is not running — delivers if it resumes"
+                    };
+                    state.toast = Some(format!("Follow-up queued ({n}) — {when}"));
+                }
+                Err(EnqueueError::Empty) => {
+                    state.toast = Some("Nothing to queue".to_string());
+                }
+                Err(EnqueueError::Full) => {
+                    state.toast = Some(format!(
+                        "Queue full ({} follow-ups) — deliver or clear some first",
+                        crate::application::prompt_queue::MAX_QUEUED
+                    ));
+                }
+            }
+            vec![]
+        }
+        AgentAction::CancelQueuedPrompts { session_id } => {
+            let dropped = state.prompt_queue.clear(&session_id);
+            state.toast = Some(match dropped {
+                0 => "No follow-ups queued for this session".to_string(),
+                1 => "Follow-up cancelled".to_string(),
+                n => format!("{n} follow-ups cancelled"),
+            });
+            vec![]
+        }
+        AgentAction::CancelQueuedPromptAt { session_id, index } => {
+            if state.prompt_queue.remove_at(&session_id, index) {
+                let left = state.prompt_queue.count(&session_id);
+                state.toast = Some(match left {
+                    0 => "Follow-up cancelled".to_string(),
+                    n => format!("Follow-up cancelled ({n} still queued)"),
+                });
+            } else {
+                state.toast = Some("That follow-up is no longer queued".to_string());
+            }
+            vec![]
+        }
         AgentAction::OpenInIde { session_id } => {
             // Resolve session ID: use the explicit ID, or fall back to nav context
             let resolved_id = if session_id.is_empty() {
@@ -1214,6 +1266,85 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
             }
             vec![]
         }
+        UiAction::EnterQueuePromptMode => {
+            let target = state
+                .filtered_sessions()
+                .get(state.table_state.selected)
+                .map(|s| s.id.clone());
+            match target {
+                Some(id) => {
+                    state.prompt_queue_target = Some(id);
+                    state.input_mode = InputMode::QueuePrompt;
+                    state.input = tui_input::Input::default();
+                }
+                None => state.toast = Some("No session selected".to_string()),
+            }
+            vec![]
+        }
+        UiAction::EnterCancelFollowUpMode => {
+            let Some(session_id) = state
+                .filtered_sessions()
+                .get(state.table_state.selected)
+                .map(|s| s.id.clone())
+            else {
+                state.toast = Some("No session selected".to_string());
+                return vec![];
+            };
+            let pending: Vec<String> = state.prompt_queue.pending(&session_id).to_vec();
+            match pending.len() {
+                0 => {
+                    state.toast = Some("No follow-ups queued for this session".to_string());
+                    vec![]
+                }
+                // A picker over one row is friction, not a choice.
+                1 => reduce(
+                    state,
+                    Action::Agent(AgentAction::CancelQueuedPrompts { session_id }),
+                ),
+                n => {
+                    let mut items: Vec<crate::application::state::PickerItem> = pending
+                        .iter()
+                        .enumerate()
+                        .map(|(i, text)| {
+                            let first = text.lines().next().unwrap_or("");
+                            let extra = text.lines().count().saturating_sub(1);
+                            // Local truncation: `adapters::format::truncate` is
+                            // an outer layer, and the reducer never reaches out.
+                            let head = if first.chars().count() > 60 {
+                                format!("{}\u{2026}", first.chars().take(59).collect::<String>())
+                            } else {
+                                first.to_string()
+                            };
+                            crate::application::state::PickerItem {
+                                label: format!("{}. {}", i + 1, head),
+                                description: if extra > 0 {
+                                    format!("+{extra} more lines")
+                                } else {
+                                    String::new()
+                                },
+                                value: i.to_string(),
+                            }
+                        })
+                        .collect();
+                    items.push(crate::application::state::PickerItem {
+                        label: format!("Cancel all {n}"),
+                        description: String::new(),
+                        value: "all".to_string(),
+                    });
+                    state.picker_dialog = Some(crate::application::state::PickerDialog {
+                        title: "Cancel which follow-up?".to_string(),
+                        items,
+                        selected: 0,
+                        on_select_action:
+                            crate::application::state::PickerAction::CancelQueuedPrompt {
+                                session_id,
+                            },
+                    });
+                    state.input_mode = InputMode::Picker;
+                    vec![]
+                }
+            }
+        }
         UiAction::EnterMoveScratchMode => {
             let Some(note) = selected_scratch_note(state).cloned() else {
                 state.toast = Some("Nothing selected".to_string());
@@ -1487,6 +1618,18 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                         }),
                     )
                 }
+                InputMode::QueuePrompt => {
+                    let Some(session_id) = state.prompt_queue_target.take() else {
+                        return vec![];
+                    };
+                    reduce(
+                        state,
+                        Action::Agent(AgentAction::QueuePrompt {
+                            session_id,
+                            text: input,
+                        }),
+                    )
+                }
                 InputMode::RenameScratch => {
                     let Some(id) = state.scratch_op_target.take() else {
                         return vec![];
@@ -1719,6 +1862,27 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                             }),
                         );
                     }
+                    // Follow-up cancellation re-enters the reducer; the picked
+                    // value is a queue position, or "all".
+                    if let crate::application::state::PickerAction::CancelQueuedPrompt {
+                        ref session_id,
+                    } = picker.on_select_action
+                    {
+                        let session_id = session_id.clone();
+                        return match item.value.parse::<usize>() {
+                            Ok(index) => reduce(
+                                state,
+                                Action::Agent(AgentAction::CancelQueuedPromptAt {
+                                    session_id,
+                                    index,
+                                }),
+                            ),
+                            Err(_) => reduce(
+                                state,
+                                Action::Agent(AgentAction::CancelQueuedPrompts { session_id }),
+                            ),
+                        };
+                    }
                     // Copy-path emits a clipboard effect; toast names the format
                     // (item label) rather than the generic "Opening in …".
                     if matches!(
@@ -1938,13 +2102,15 @@ fn emit_picker_effect(
                 terminal,
             }]
         }
-        // SelectPreset, RemoveTeamMember, MoveScratch, and CopyToClipboard are
-        // handled directly in PickerSelect before calling this function
+        // Every other picker action is handled directly in PickerSelect,
+        // before this function is reached — they need state access, which an
+        // effect-only emitter does not have.
         crate::application::state::PickerAction::SelectPreset { .. } => vec![],
         crate::application::state::PickerAction::RemoveTeamMember { .. } => vec![],
         crate::application::state::PickerAction::MoveScratch { .. } => vec![],
         crate::application::state::PickerAction::CopyToClipboard => vec![],
         crate::application::state::PickerAction::AssignTaskOwner { .. } => vec![],
+        crate::application::state::PickerAction::CancelQueuedPrompt { .. } => vec![],
     }
 }
 
@@ -2226,6 +2392,123 @@ mod tests {
         assert_eq!(default_session_name("", id), "clash-019ed532");
         // Short id must not panic on the [..8] slice.
         assert_eq!(default_session_name("", "abc"), "clash-abc");
+    }
+
+    // ── Queued follow-up prompts ─────────────────────────────────────
+
+    fn state_with_running_session(id: &str) -> AppState {
+        let mut state = test_state();
+        state.store.sessions = vec![Session {
+            id: id.to_string(),
+            is_running: true,
+            ..Default::default()
+        }];
+        state
+    }
+
+    #[test]
+    fn queueing_a_follow_up_is_pure_state_and_says_when_it_lands() {
+        let mut state = state_with_running_session("s1");
+        let effects = reduce(
+            &mut state,
+            Action::Agent(AgentAction::QueuePrompt {
+                session_id: "s1".to_string(),
+                text: "now run the tests".to_string(),
+            }),
+        );
+        // No effect: the refresh loop delivers, so nothing here touches IO.
+        assert!(effects.is_empty());
+        assert_eq!(state.prompt_queue.pending("s1"), ["now run the tests"]);
+        let toast = state.toast.clone().unwrap();
+        assert!(toast.contains("next idle"), "toast says when: {toast}");
+    }
+
+    #[test]
+    fn queueing_on_a_stopped_session_warns_instead_of_pretending() {
+        // A stashed session resumes as a NEW conversation id, so a follow-up
+        // parked on the old one may never be delivered. Accept it, but say so.
+        let mut state = state_with_running_session("s1");
+        state.store.sessions[0].is_running = false;
+        reduce(
+            &mut state,
+            Action::Agent(AgentAction::QueuePrompt {
+                session_id: "s1".to_string(),
+                text: "later".to_string(),
+            }),
+        );
+        assert!(state.toast.clone().unwrap().contains("not running"));
+        assert_eq!(state.prompt_queue.count("s1"), 1);
+    }
+
+    #[test]
+    fn queueing_for_an_unknown_session_is_refused() {
+        let mut state = test_state();
+        reduce(
+            &mut state,
+            Action::Agent(AgentAction::QueuePrompt {
+                session_id: "ghost".to_string(),
+                text: "hello".to_string(),
+            }),
+        );
+        assert_eq!(state.prompt_queue.count("ghost"), 0);
+        assert_eq!(state.toast.as_deref(), Some("Session not found"));
+    }
+
+    #[test]
+    fn cancelling_reports_what_it_dropped() {
+        let mut state = state_with_running_session("s1");
+        reduce(
+            &mut state,
+            Action::Agent(AgentAction::CancelQueuedPrompts {
+                session_id: "s1".to_string(),
+            }),
+        );
+        assert_eq!(
+            state.toast.as_deref(),
+            Some("No follow-ups queued for this session")
+        );
+        state.prompt_queue.enqueue("s1", "a").unwrap();
+        state.prompt_queue.enqueue("s1", "b").unwrap();
+        reduce(
+            &mut state,
+            Action::Agent(AgentAction::CancelQueuedPrompts {
+                session_id: "s1".to_string(),
+            }),
+        );
+        assert_eq!(state.prompt_queue.count("s1"), 0);
+        assert_eq!(state.toast.as_deref(), Some("2 follow-ups cancelled"));
+    }
+
+    #[test]
+    fn the_composer_targets_the_selected_session_and_submits_to_it() {
+        let mut state = state_with_running_session("s1");
+        state.store.sessions.push(Session {
+            id: "s2".to_string(),
+            is_running: true,
+            ..Default::default()
+        });
+        state.table_state.selected = 1;
+        reduce(&mut state, Action::Ui(UiAction::EnterQueuePromptMode));
+        assert_eq!(state.input_mode, InputMode::QueuePrompt);
+        assert_eq!(state.prompt_queue_target.as_deref(), Some("s2"));
+
+        state.input = tui_input::Input::new("second session".to_string());
+        reduce(
+            &mut state,
+            Action::Ui(UiAction::SubmitInput("second session".to_string())),
+        );
+        assert_eq!(state.prompt_queue.pending("s2"), ["second session"]);
+        assert_eq!(state.prompt_queue.count("s1"), 0);
+        // The target is consumed, so a stray later submit cannot re-fire it.
+        assert!(state.prompt_queue_target.is_none());
+    }
+
+    #[test]
+    fn the_composer_needs_a_selection() {
+        let mut state = test_state();
+        reduce(&mut state, Action::Ui(UiAction::EnterQueuePromptMode));
+        assert_eq!(state.input_mode, InputMode::Normal);
+        assert_eq!(state.toast.as_deref(), Some("No session selected"));
     }
 
     #[test]

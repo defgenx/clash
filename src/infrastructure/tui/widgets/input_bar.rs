@@ -42,6 +42,10 @@ pub fn render_input_bar(
             Style::default().fg(theme::PROMPT_COLOR),
         ),
         InputMode::RenameScratch => ("Rename to: ", Style::default().fg(theme::PROMPT_COLOR)),
+        InputMode::QueuePrompt => (
+            "Follow-up (delivered when idle): ",
+            Style::default().fg(theme::PROMPT_COLOR),
+        ),
         _ => return,
     };
 

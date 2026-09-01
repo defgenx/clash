@@ -33,6 +33,8 @@
 - **Teams & tasks** — create, rename, configure, and delete teams; manage members (agent type, model, prompt, rename) and see at a glance who's running; full task management (create, cycle status, assign owner, delete); per-agent inboxes. In the GUI, jump straight from a running member to its live session.
 - **Scratches** — keep free-form text notes inside clash (`:scratch`), organized in an IntelliJ-style **"Scratches and Consoles"** tree: create notes and nested folders, rename, delete, and reorganize (move via a folder picker in the TUI, drag-and-drop in the GUI). Each note is a plain file under `~/.claude/clash/scratch/` by default — set `scratch_dir` in `config.toml` (or the GUI **Scratch directory** setting) to store them anywhere. Opening a scratch shows an editor picker: terminal editors (vim/emacs/nano…) open in a tab/pane, GUI editors (VS Code/Cursor/Zed…) launch alongside, like opening a project
 - **Workflows (GUI)** — manage a full plan → plan-review → implement → diff-review → (optional) PR pipeline per feature: launch a planning agent, read the plan, approve or request changes, **annotate the diff with line-level comments** the agent addresses on the next round, then approve straight to done or — if you use PRs — track the draft PR and **mark it ready** once validated — with a full **revision timeline** (every round's note, plan diff, frozen plan and code diff), decision notifications, and a kanban board. Multi-repo work is first-class: **link the PRs from the other repos** to one item and open/track them all together, with a **PR dashboard** across every project. Any item can be **shared or exported** (clipboard, `.md`/`.html` file, Slack/Discord webhook) with a preview of exactly what leaves the machine. Start end-to-end, **from a plan you already have**, or **review-only from an existing PR or branch**. See [Workflows](#workflows-gui)
+- **Queued follow-ups** — type the next instruction while an agent is still working (`f` in the TUI, *Queue follow-up…* in the GUI) and clash delivers it to that session the moment it is idle at its input prompt. The row shows `⧖n` while prompts are pending. A queued prompt is never delivered to a tool-approval question — only to the free-form input prompt
+- **Attention inbox (GUI)** — one ordered list (⌘I) of everything waiting on you across every workspace and project: sessions asking for approval or a next message, workflow items parked on a decision, PRs with unanswered review comments, agents that died mid-round. Blocked work first, longest-waiting first
 - **Subagent tracking** — view subagent trees per session, expand/collapse in the sessions table
 - **Open in IDE** — press `e` to open a session's project in your editor (auto-detects Cursor, VS Code, Zed, JetBrains, nvim, vim; configurable)
 - **Keyboard-driven** — vim-style navigation, command mode (`:`), fuzzy filter (`/`), context help (`?`)
@@ -153,6 +155,8 @@ The Wild detection runs in the background every ~2s. clash surfaces every wild c
 | `a` | Attach (inline terminal); on a 🌿 wild row: take over and attach (one confirm) |
 | `p` | View git diff |
 | `e` | Open project in IDE (auto-detect + picker) |
+| `f` | Queue a follow-up prompt — delivered when the session is next idle |
+| `F` | Cancel a queued follow-up (picker when several are pending) |
 | `o` | Open in new pane / tab / window |
 | `O` | Open ALL running sessions (smart layout) |
 | `c` / `n` | New session (two-step: directory, then name) |
@@ -807,6 +811,46 @@ First launch opens a **guided tour** — a spotlight walkthrough of the window
 (workspaces, sessions, workflows, scratches, tabs & panes, settings). Skip or
 finish it and it never auto-runs again; replay it anytime from *Settings →
 clash → Show the tour*.
+
+### Inbox
+
+With a dozen agents in flight, "what needs me?" is spread across a status
+ring, a sidebar badge, a toast and the workflow board. The **inbox** (the
+sidebar-header tray icon, or `⌘I`) is that question answered as one ordered
+list, across every workspace and project:
+
+- sessions holding a tool-approval prompt (`PROMPTING`), and sessions whose
+  turn has ended and want your next message (`WAITING`);
+- sessions that errored;
+- workflow items parked on a decision (plan review, diff review, draft PR);
+- workflow items whose agent session died mid-round;
+- PRs with review comments nobody has answered.
+
+Blocked work comes first — a held tool call outranks a finished turn no matter
+which happened first — and within a band the longest-waiting row leads, because
+that is the one you forgot about. The header button carries a count that turns
+red when something is actually blocked, so it drops back to a quiet number
+instead of a permanently-high one. Clicking a row jumps to the session or item;
+a session row also offers **Queue follow-up…** inline.
+
+### Queued follow-ups
+
+You don't have to sit and wait for an agent to finish before telling it what
+comes next. **Queue follow-up…** (the session row's `⋯` menu, or the inbox) or
+`f` in the TUI takes a multi-line prompt and delivers it to that session the
+moment it is idle at its input prompt. The row shows `⧖n` while prompts are
+pending — click the chip to review or cancel one; `F` in the TUI does the same (straight through when only one is queued, a picker when several are).
+
+Two rules make it safe to leave running. A queued prompt is delivered only to
+the free-form input prompt, never while Claude is holding a tool-approval
+question (where Enter would accept whatever is highlighted), and only after two
+consecutive refreshes agree the session is idle — the daemon's screen detector
+guesses "idle" after eight silent seconds, so one sample of it can land
+mid-turn. The text goes over as a bracketed paste followed by a single Enter, so
+a prompt with newlines in it arrives as one message instead of one message per
+line. The queue is in-memory and per instance (the clash whose daemon owns the
+PTY): a restart clears it, and delivery is announced by a toast whether it
+succeeded or failed.
 
 GUI features: fuzzy search (`/` or `⌘F`), inline rename (double-click),
 new session via the sidebar's `＋ New session` button (`⌘T`) with preset
