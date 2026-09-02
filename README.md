@@ -829,15 +829,29 @@ truncated to the service limit with an explicit marker, never silently), or a
 the item's remembered ticket, else detected in the title/branch, like
 `PS-1234`) and posts the document as one comment, converted to Jira's wiki
 markup. A successful post remembers the ticket on the item (also editable in
-its ⚙ Settings tab), so the next share is one confirmation away. Configure the Jira
-site URL, account email and API token in *Settings → Workflows*; the
-destination is hidden until all three are set. Share the plan to its ticket
-the moment it's ready — same preview, same one-click send.
+its ⚙ Settings tab), so the next share is one confirmation away. Share the
+plan to its ticket the moment it's ready — same preview, same one-click send.
+
+**Two transports, and you choose per destination.** clash can post a share
+itself — a webhook URL, a Jira site + email + API token, all in *Settings →
+Workflows* — or it can hand the document to a **skill** in a Claude Code
+session, which is how it reaches anything your own skills and MCP servers can
+reach. Name a skill in *Jira skill* or *Chat skill* and it takes over that
+destination: clash writes the document under `~/.claude/clash/share/`, launches
+a session with the skill named, the destination stated and the ticket (for
+Jira), and opens the tab so you can watch it land. No credentials pass through
+clash on that route, and the payload is still exactly the markdown you
+previewed — the kickoff says so in as many words: post it as written, adapt
+only the formatting the destination needs, and if you can't post it, say so
+rather than posting something else. The destination button names the route it
+will take, so a share never leaves by a path you didn't expect.
 
 **Decision notifications on Slack/Discord**: set *Settings → Workflows →
 Notify decisions* and every item an *agent* parks at a decision state
 (plan review, diff review, PR draft) is announced on the configured webhook —
-your own clicks never post, and `off` (the default) sends nothing, ever.
+your own clicks never post, and `off` (the default) sends nothing, ever. This
+one always uses the webhook, never a skill: it fires with nobody watching, and
+a notification you'd have to go read in a session isn't a notification.
 
 Workflows are GUI-only for now; the TUI will grow a read-only view.
 

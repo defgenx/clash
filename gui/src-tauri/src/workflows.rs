@@ -2240,9 +2240,16 @@ pub(crate) struct ShareSettings {
     slack_webhook: String,
     discord_webhook: String,
     notify_webhook: String,
+    /// Skill transports. Non-empty means "post through a session", and the
+    /// share dialog says so instead of silently choosing for the human.
+    jira_skill: String,
+    chat_skill: String,
     jira_base_url: String,
     jira_email: String,
-    jira_api_token: String,
+    /// Never sent to the frontend: the dialog only needs to know whether Jira
+    /// is usable, and a token that reaches the webview is a token in a
+    /// devtools inspector.
+    jira_token_set: bool,
 }
 
 fn share_settings(state: &GuiState) -> ShareSettings {
@@ -2251,9 +2258,11 @@ fn share_settings(state: &GuiState) -> ShareSettings {
         slack_webhook: cfg.workflows.slack_webhook.trim().to_string(),
         discord_webhook: cfg.workflows.discord_webhook.trim().to_string(),
         notify_webhook: cfg.workflows.notify_webhook.trim().to_string(),
+        jira_skill: cfg.workflows.jira_skill.trim().to_string(),
+        chat_skill: cfg.workflows.chat_skill.trim().to_string(),
         jira_base_url: cfg.workflows.jira_base_url.trim().to_string(),
         jira_email: cfg.workflows.jira_email.trim().to_string(),
-        jira_api_token: cfg.workflows.jira_api_token.trim().to_string(),
+        jira_token_set: !cfg.workflows.jira_api_token.trim().is_empty(),
     }
 }
 
@@ -2267,12 +2276,18 @@ pub(crate) fn get_workflow_share_settings(state: State<'_, GuiState>) -> ShareSe
 /// one command for the group, like `set_workflow_item_settings`. Values equal
 /// to the schema default are reset (the key leaves config.toml) rather than
 /// written out.
+// Tauri command parameters map 1:1 onto the frontend's named invoke args, so
+// grouping them into a struct would change the call shape — same reasoning as
+// `start_workflow_review_agent`.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub(crate) fn set_workflow_share_settings(
     state: State<'_, GuiState>,
     slack_webhook: Option<String>,
     discord_webhook: Option<String>,
     notify_webhook: Option<String>,
+    jira_skill: Option<String>,
+    chat_skill: Option<String>,
     jira_base_url: Option<String>,
     jira_email: Option<String>,
     jira_api_token: Option<String>,
@@ -2305,6 +2320,8 @@ pub(crate) fn set_workflow_share_settings(
     };
     text_setting("workflows.jira_email", jira_email);
     text_setting("workflows.jira_api_token", jira_api_token);
+    text_setting("workflows.jira_skill", jira_skill);
+    text_setting("workflows.chat_skill", chat_skill);
     if let Some(notify) = notify_webhook {
         let notify = notify.trim().to_ascii_lowercase();
         if !["off", "slack", "discord"].contains(&notify.as_str()) {
@@ -2452,6 +2469,105 @@ pub(crate) async fn share_workflow_jira(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Hand a share document to a skill, in a Claude Code session.
+///
+/// The third transport, next to the webhook and the Jira API token, and the
+/// only one that can reach a destination clash has no client for: whatever the
+/// session's own skills and MCP servers can post to. clash's part is
+/// deliberately small — write the document where the session can read it,
+/// launch the session with the skill named and the destination stated, and get
+/// out of the way. No credentials pass through clash, and the payload is still
+/// exactly the markdown the dialog previewed.
+///
+/// The document is written under the clash data dir, not the item directory:
+/// the item's files are an agent-facing contract, and a share payload is not
+/// part of it. Returns the session id so the caller can open the tab.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub(crate) async fn share_workflow_via_skill(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    destination: String,
+    skill: String,
+    text: String,
+    ticket: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<String, String> {
+    let skill = skill.trim().to_string();
+    if skill.is_empty() {
+        return Err("no share skill configured — set it in Settings → Workflows".to_string());
+    }
+    // The destination is named in the prompt, so it must be one clash means:
+    // an arbitrary string here would be an instruction the human never gave.
+    let destination = match destination.as_str() {
+        "jira" | "slack" | "discord" => destination,
+        other => return Err(format!("Unknown share destination '{}'", other)),
+    };
+    if text.trim().is_empty() {
+        return Err("nothing to share".to_string());
+    }
+    let meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+
+    // One file per send, named by item and stamp: a session that outlives the
+    // click can still read what it was given, and two sends never collide.
+    let dir = clash::infrastructure::config::Config::clash_data_dir().join("share");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot write the share payload: {}", e))?;
+    // `load_workflow_meta` above resolved the item, which means the core
+    // already rejected separators and `..` in both parts — they are safe as
+    // one filename component here without a second sanitizer.
+    let path = dir.join(format!("{}-{}-{}.md", project, slug, now_ms()));
+    clash::infrastructure::fs::atomic::write_atomic(&path, text.as_bytes())
+        .map_err(|e| format!("cannot write the share payload: {}", e))?;
+
+    let ticket = ticket
+        .map(|t| t.trim().to_uppercase())
+        .filter(|t| !t.is_empty());
+    let session_id = uuid::Uuid::now_v7().to_string();
+    let job = format!("share to {}", destination);
+    let cwd = meta
+        .worktree
+        .clone()
+        .filter(|w| !w.is_empty())
+        .unwrap_or_else(|| meta.repo_path.clone());
+    let name = clash::application::workflow::workflow_session_name(&meta, &slug, &job);
+    let payload = path.to_string_lossy().into_owned();
+    let title = if meta.title.trim().is_empty() {
+        slug.clone()
+    } else {
+        meta.title.clone()
+    };
+    spawn_item_session(
+        &state,
+        ItemSessionSpawn {
+            project: &project,
+            slug: &slug,
+            session_id: &session_id,
+            name: &name,
+            meta: &meta,
+            cwd: &cwd,
+            model: clash::application::workflow::model_for_phase("share"),
+            cols,
+            rows,
+        },
+        |_item_dir| {
+            clash::application::workflow_share::skill_share_prompt(
+                &skill,
+                &destination,
+                &payload,
+                &title,
+                ticket.as_deref(),
+            )
+        },
+    )
+    .await?;
+    Ok(session_id)
 }
 
 /// Write an export (`.md` / `.html`) to `dir` (the folder the user picked;

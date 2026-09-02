@@ -57,6 +57,12 @@
     slackConfigured = false,
     discordConfigured = false,
     jiraConfigured = false,
+    // Skill transports: a named skill posts through a Claude Code session
+    // (its own MCP servers and tooling), instead of clash's webhook/API
+    // client. Non-empty wins, and the label says so — a share going out
+    // through a different route than you expect is worse than either route.
+    jiraSkill = "",
+    chatSkill = "",
     preset = "packet",
   } = {}) {
     const checked = presetSections(preset);
@@ -76,22 +82,35 @@
         {
           id: "slack",
           label: "Send to Slack",
-          enabled: slackConfigured,
-          hint: slackConfigured ? "" : "Set the Slack webhook in Settings → Workflows first",
+          enabled: !!chatSkill || slackConfigured,
+          skill: chatSkill || "",
+          hint: chatSkill
+            ? `via the ${chatSkill} skill, in a Claude session`
+            : slackConfigured
+              ? ""
+              : "Set the Slack webhook — or a chat skill — in Settings → Workflows first",
         },
         {
           id: "discord",
           label: "Send to Discord",
-          enabled: discordConfigured,
-          hint: discordConfigured ? "" : "Set the Discord webhook in Settings → Workflows first",
+          enabled: !!chatSkill || discordConfigured,
+          skill: chatSkill || "",
+          hint: chatSkill
+            ? `via the ${chatSkill} skill, in a Claude session`
+            : discordConfigured
+              ? ""
+              : "Set the Discord webhook — or a chat skill — in Settings → Workflows first",
         },
         {
           id: "jira",
           label: "Post to Jira…",
-          enabled: jiraConfigured,
-          hint: jiraConfigured
-            ? ""
-            : "Set the Jira site URL, email and API token in Settings → Workflows first",
+          enabled: !!jiraSkill || jiraConfigured,
+          skill: jiraSkill || "",
+          hint: jiraSkill
+            ? `via the ${jiraSkill} skill, in a Claude session`
+            : jiraConfigured
+              ? ""
+              : "Set the Jira credentials — or a Jira skill — in Settings → Workflows first",
         },
       ],
     };

@@ -88,12 +88,13 @@
           </span>
         </label>
 
-        <div class="settings-group">Workflows</div>
+        <div class="settings-group">Workflows · agents</div>
+        <p class="settings-note">How the agents clash launches for a workflow item behave.</p>
         <label class="setting-row">PR skill
-          <input id="set-wf-pr-skill" type="text" placeholder="hivebrite-engineering:github-pr (default)" autocomplete="off" spellcheck="false" title="Skill workflow agents open pull requests with. Empty resets to the default (hivebrite-engineering:github-pr); type 'none' to disable and follow each repo's own PR conventions with gh. Items can override this in their ⚙ Settings tab." />
+          <input id="set-wf-pr-skill" type="text" placeholder="myorg:github-pr" autocomplete="off" spellcheck="false" title="Skill workflow agents open pull requests with, so your org's PR conventions come along. Empty resets to the shipped default; 'none' disables it and the agent follows the repo's own conventions with gh. An item can override this in its ⚙ Settings tab." />
         </label>
         <label class="setting-row inline">Forge
-          <select id="set-wf-forge" title="Code forge for workflow PR features. Auto detects from the repo's origin remote (unknown hosts count as GitHub, so GitHub Enterprise keeps working); None disables change-request features.">
+          <select id="set-wf-forge" title="Where this repo's pull requests live. Auto reads the origin remote (unknown hosts count as GitHub, so GitHub Enterprise keeps working); None hides every PR feature for repos that don't use one.">
             <option value="auto">Auto-detect</option>
             <option value="github">GitHub</option>
             <option value="none">None</option>
@@ -106,27 +107,51 @@
             <option value="keep">Keep my edits</option>
           </select>
         </label>
+
+        <div class="settings-group">Workflows · sharing</div>
+        <p class="settings-note">
+          Where an item's <b>↗ Share…</b> can send its document. Two kinds of
+          transport: clash posts it itself (a webhook, a Jira token), or it hands
+          it to a <b>skill</b> in a Claude session — which is how it reaches
+          anything your own skills and MCP servers can reach. Name a skill and it
+          wins over the credentials below. Nothing is ever sent without you
+          pressing a destination.
+        </p>
+        <label class="setting-row">Jira skill
+          <input id="set-wf-jira-skill" type="text" placeholder="myorg:jira-post" autocomplete="off" spellcheck="false" title="Skill that posts the share document to Jira, in a Claude session — use this to go through your own MCP tooling instead of an API token. clash writes the document, names the ticket, and opens the session so you can watch. Empty uses the site URL + email + token below." />
+        </label>
+        <label class="setting-row">Chat skill
+          <input id="set-wf-chat-skill" type="text" placeholder="myorg:slack-post" autocomplete="off" spellcheck="false" title="Same, for the Slack and Discord destinations: a skill posts the document in a Claude session instead of clash calling a webhook. Empty uses the webhook URLs below." />
+        </label>
         <label class="setting-row">Slack webhook
-          <input id="set-wf-slack-webhook" type="text" placeholder="https://hooks.slack.com/services/…" autocomplete="off" spellcheck="false" title="Slack incoming-webhook URL for workflow sharing and notifications. Nothing is ever posted without an explicit Share action or the notify opt-in below. Empty disables Slack." />
+          <input id="set-wf-slack-webhook" type="text" placeholder="https://hooks.slack.com/services/…" autocomplete="off" spellcheck="false" title="Slack incoming-webhook URL. Used by Share… when no chat skill is set, and by decision notifications either way. Empty disables the Slack destination." />
         </label>
         <label class="setting-row">Discord webhook
-          <input id="set-wf-discord-webhook" type="text" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" spellcheck="false" title="Discord webhook URL for workflow sharing and notifications. Nothing is ever posted without an explicit Share action or the notify opt-in below. Empty disables Discord." />
+          <input id="set-wf-discord-webhook" type="text" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" spellcheck="false" title="Discord webhook URL. Used by Share… when no chat skill is set, and by decision notifications either way. Empty disables the Discord destination." />
         </label>
+        <label class="setting-row">Jira site URL
+          <input id="set-wf-jira-url" type="text" placeholder="https://yourorg.atlassian.net" autocomplete="off" spellcheck="false" title="Jira site for the API-token transport. Only needed when no Jira skill is set." />
+        </label>
+        <label class="setting-row">Jira email
+          <input id="set-wf-jira-email" type="text" placeholder="you@yourorg.com" autocomplete="off" spellcheck="false" title="Jira account email paired with the API token below." />
+        </label>
+        <label class="setting-row">Jira API token
+          <input id="set-wf-jira-token" type="password" placeholder="API token" autocomplete="off" spellcheck="false" title="Jira API token, stored in config.toml like the webhook URLs. It never reaches this window again once saved — the field shows whether one is set, not its value." />
+        </label>
+
+        <div class="settings-group">Workflows · notifications</div>
+        <p class="settings-note">
+          Announce items that park waiting for you. Only <i>agent-driven</i>
+          transitions post — never your own clicks — and this always uses a
+          webhook: it fires with nobody watching, so a skill session would be a
+          notification you'd have to go read.
+        </p>
         <label class="setting-row inline">Notify decisions
-          <select id="set-wf-notify-webhook" title="Announce workflow items parking at a decision state (plan review, diff review, PR draft) on the configured webhook. Only agent-driven transitions post — never your own clicks.">
+          <select id="set-wf-notify-webhook" title="Post to the configured webhook when an item parks at a decision state (plan review, diff review, PR draft).">
             <option value="off">Off</option>
             <option value="slack">Slack</option>
             <option value="discord">Discord</option>
           </select>
-        </label>
-        <label class="setting-row">Jira site URL
-          <input id="set-wf-jira-url" type="text" placeholder="https://yourorg.atlassian.net" autocomplete="off" spellcheck="false" title="Jira site URL for the share dialog's Post-to-Jira destination. Nothing is ever posted without an explicit Share action. Empty disables Jira." />
-        </label>
-        <label class="setting-row">Jira email
-          <input id="set-wf-jira-email" type="text" placeholder="you@yourorg.com" autocomplete="off" spellcheck="false" title="Jira account email paired with the API token." />
-        </label>
-        <label class="setting-row">Jira API token
-          <input id="set-wf-jira-token" type="password" placeholder="API token" autocomplete="off" spellcheck="false" title="Jira API token (id.atlassian.com → Security → API tokens). Stored in config.toml like the webhook URLs." />
         </label>
 
         <div class="settings-group">Terminal · text</div>

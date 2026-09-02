@@ -112,3 +112,35 @@ test("browser branch publishes every global app.js reads", () => {
     assert.ok(name in sandbox.window, `${name} must be published to window`);
   }
 });
+
+test("a named skill takes over a destination, and says so", () => {
+  // The point of the skill transport: reach destinations clash has no client
+  // for, through whatever the session's own tooling can reach. It has to be
+  // visible on the button — a share leaving by a different route than you
+  // expect is worse than either route.
+  const withSkills = shareModel({ jiraSkill: "myorg:jira-post", chatSkill: "myorg:chat" });
+  const by = (id) => withSkills.destinations.find((d) => d.id === id);
+  for (const id of ["jira", "slack", "discord"]) {
+    assert.equal(by(id).enabled, true, `${id} is available through its skill`);
+    assert.match(by(id).hint, /in a Claude session/);
+  }
+  assert.equal(by("jira").skill, "myorg:jira-post");
+  assert.equal(by("slack").skill, "myorg:chat");
+
+  // Unconfigured either way: disabled, and the hint names both transports so
+  // neither route looks like the only one.
+  const bare = shareModel({});
+  const bareBy = (id) => bare.destinations.find((d) => d.id === id);
+  for (const id of ["jira", "slack", "discord"]) {
+    assert.equal(bareBy(id).enabled, false);
+    assert.equal(bareBy(id).skill, "");
+    assert.match(bareBy(id).hint, /Settings → Workflows/);
+    assert.match(bareBy(id).hint, /skill/);
+  }
+
+  // Credentials alone still work, with no skill claim in the hint.
+  const creds = shareModel({ slackConfigured: true, jiraConfigured: true });
+  assert.equal(creds.destinations.find((d) => d.id === "slack").enabled, true);
+  assert.equal(creds.destinations.find((d) => d.id === "slack").hint, "");
+  assert.equal(creds.destinations.find((d) => d.id === "discord").enabled, false);
+});

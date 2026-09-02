@@ -516,7 +516,17 @@ clipboard, a `.md`/`.html` export, a Slack/Discord webhook configured in
 Jira ticket as one comment (`workflows.jira_base_url` / `jira_email` /
 `jira_api_token`; the markdown is converted to Jira wiki markup and the
 ticket key is prompted per send, pre-filled from the item's title/branch).
-Nothing is ever posted without an explicit human action, with one opt-in
+
+A destination can also be served by a **skill** instead of clash's own client:
+`workflows.jira_skill` / `workflows.chat_skill` name a skill, and the share is
+handed to a Claude Code session — the document written under
+`<clash data>/share/`, the skill and destination stated in the kickoff
+(`workflow_share::skill_share_prompt`) — which is how a share reaches whatever
+that session's tooling can reach. Relevant to a skill author only in one way:
+if a skill of yours is named there, it will be invoked with a file path, a
+destination and an instruction that the document is the message, to be posted
+as written. Nothing is ever posted without an explicit human action, with one
+opt-in
 exception: `workflows.notify_webhook` (`off` by default) announces items that
 an **agent** parks at a decision state — the same events as the desktop
 notification, suppressed for clash's own writes by the attention ledger.

@@ -330,3 +330,17 @@ test("a pre-authorized round applies itself through the same one mechanism", () 
   assert.match(APP, /autoApply: picked\.autoApply,/);
   assert.match(APP, /autoApply,\n\s+cols: 120,/);
 });
+
+test("a skill share hands off without leaking credentials or the payload's shape", () => {
+  // The third transport exists to reach destinations clash has no client for.
+  // Two properties matter: it goes through a session (so clash holds no
+  // credentials for that route), and the human can watch it.
+  assert.match(APP, /invoke\("share_workflow_via_skill", \{/);
+  const send = APP.slice(APP.indexOf("} else if (d.skill) {"), APP.indexOf('} else if (d.id === "jira") {'));
+  assert.match(send, /destination: d\.id/);
+  assert.match(send, /skill: d\.skill/);
+  assert.match(send, /await openSession\(sid/, "the session opens so the post can be checked");
+  // The Jira API token is write-only: nothing reads it back into the webview.
+  assert.doesNotMatch(APP, /\.value = s\.jiraApiToken/);
+  assert.match(APP, /s\.jiraTokenSet \? "•••••• \(stored\)" : "API token"/);
+});

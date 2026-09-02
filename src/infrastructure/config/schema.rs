@@ -345,6 +345,26 @@ pub const PROPS: &[Prop] = &[
          clicks.",
     ),
     Prop::new(
+        "workflows.jira_skill",
+        Kind::Str,
+        Val::Str(""),
+        "Skill that posts the share document to Jira, instead of clash's own API-token \
+         transport. Any skill installed in your Claude Code sessions qualifies, including one \
+         that works through an MCP server — clash launches a session, hands it the document and \
+         the ticket, and stays out of the way. Empty uses `jira_base_url` + `jira_email` + \
+         `jira_api_token` instead.",
+    ),
+    Prop::new(
+        "workflows.chat_skill",
+        Kind::Str,
+        Val::Str(""),
+        "Skill that posts the share document to Slack or Discord, instead of the webhook \
+         transport. Same shape as `jira_skill`: clash launches a session with the document and \
+         the destination. Empty uses `slack_webhook` / `discord_webhook`. Decision \
+         notifications (`notify_webhook`) always use the webhook — they fire without a human \
+         present, and launching an agent per notification is not a notification.",
+    ),
+    Prop::new(
         "workflows.jira_base_url",
         Kind::Str,
         Val::Str(""),

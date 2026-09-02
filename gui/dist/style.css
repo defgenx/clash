@@ -629,6 +629,16 @@ html, body, #app {
   margin-top: 4px;
 }
 .settings-group:first-of-type { margin-top: 0; }
+/* A group's one-paragraph "what is this for". Tooltips answer "what does
+   this field do"; nothing answered "why is this group here", which is what
+   made the workflow settings a wall of unrelated rows. */
+.settings-note {
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--fg-dim);
+  margin: 4px 0 2px;
+}
+.settings-note b { color: var(--fg); font-weight: 600; }
 /* Path rows: input + folder-picker button on one line. */
 .setting-row .input-with-btn { display: flex; gap: 6px; align-items: center; }
 .setting-row .input-with-btn input { flex: 1; min-width: 0; }

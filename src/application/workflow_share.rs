@@ -228,6 +228,38 @@ pub fn build_share_markdown(input: &ShareInput, sections: &ShareSections) -> Str
     out.trim_end().to_string() + "\n"
 }
 
+/// The kickoff for a share handed to a skill.
+///
+/// Pure and tested because it is the whole instruction: clash is delegating an
+/// outward-facing post to a session it will not supervise, so the prompt has
+/// to name the skill, the destination and the payload, and say plainly that
+/// the document is the message. "Summarize this for Slack" is how a share
+/// stops being the thing the human previewed.
+pub fn skill_share_prompt(
+    skill: &str,
+    destination: &str,
+    payload_path: &str,
+    title: &str,
+    ticket: Option<&str>,
+) -> String {
+    let where_to = match destination {
+        "jira" => match ticket {
+            Some(key) => format!("Jira ticket {}", key),
+            None => "Jira".to_string(),
+        },
+        other => other.to_string(),
+    };
+    format!(
+        "Use the {skill} skill. Post the document at {payload_path} to {where_to}. \
+         It is the shared record of the clash workflow item \"{title}\". \
+         The document IS the message: post it as written — do not summarize it, \
+         re-order it, or add commentary of your own. Adapt only the formatting the \
+         destination requires. If you cannot post it, say so and stop rather than \
+         posting something else. When you are done, report exactly where it landed \
+         (a URL if there is one)."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,5 +452,34 @@ mod tests {
         assert!(md.contains("open one"));
         assert!(!md.contains("parked one"));
         assert!(!md.contains("done one"));
+    }
+
+    // ── skill_share_prompt ───────────────────────────────────────────
+
+    #[test]
+    fn the_skill_prompt_names_the_skill_destination_and_payload() {
+        let p = skill_share_prompt(
+            "myorg:jira-post",
+            "jira",
+            "/data/share/p-item-1.md",
+            "Auth refactor",
+            Some("PROJ-12"),
+        );
+        assert!(p.starts_with("Use the myorg:jira-post skill."));
+        assert!(p.contains("/data/share/p-item-1.md"));
+        assert!(p.contains("Jira ticket PROJ-12"));
+        assert!(p.contains("Auth refactor"));
+        // The instruction that keeps a share the thing the human previewed.
+        assert!(p.contains("do not summarize"));
+    }
+
+    #[test]
+    fn a_chat_destination_needs_no_ticket() {
+        let p = skill_share_prompt("myorg:chat", "slack", "/tmp/x.md", "Item", None);
+        assert!(p.contains("to slack."));
+        assert!(!p.contains("ticket"));
+        // Jira without a key still says Jira rather than inventing one.
+        let j = skill_share_prompt("s", "jira", "/tmp/x.md", "Item", None);
+        assert!(j.contains("to Jira."));
     }
 }

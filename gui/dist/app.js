@@ -5767,7 +5767,9 @@ async function wfShareDialog(item) {
     hasPlan: wfHasPlanPhase(item),
     slackConfigured: !!settings.slackWebhook,
     discordConfigured: !!settings.discordWebhook,
-    jiraConfigured: !!(settings.jiraBaseUrl && settings.jiraEmail && settings.jiraApiToken),
+    jiraConfigured: !!(settings.jiraBaseUrl && settings.jiraEmail && settings.jiraTokenSet),
+    jiraSkill: settings.jiraSkill || "",
+    chatSkill: settings.chatSkill || "",
     preset: "packet",
   });
 
@@ -5910,6 +5912,43 @@ async function wfShareDialog(item) {
               dir,
             });
             flashToast(`Saved ${path}`);
+          } else if (d.skill) {
+            // A skill transport: clash hands the document to a Claude session
+            // and stops there. Jira still needs a ticket, because the skill
+            // cannot guess which one — everything else the prompt carries.
+            let ticket = null;
+            if (d.id === "jira") {
+              const asked = await uiPrompt(
+                `Post to Jira with the ${d.skill} skill — ticket key`,
+                item.meta.jiraTicket ||
+                  detectTicketKey(item.meta.title, item.meta.branch, item.slug)
+              );
+              if (!asked || !asked.trim()) return;
+              ticket = asked.trim().toUpperCase();
+            }
+            const sid = await invoke("share_workflow_via_skill", {
+              project: item.project,
+              slug: item.slug,
+              destination: d.id,
+              skill: d.skill,
+              text: current,
+              ticket,
+              cols: 120,
+              rows: 40,
+            });
+            await refreshSessions();
+            // Open it: the session is doing something outward-facing on your
+            // behalf, and a post you cannot watch is a post you cannot check.
+            await openSession(sid, wfSessionName(item, `share to ${d.id}`));
+            flashToast(`Handed the share to ${d.skill} — watch the session`);
+            if (ticket && ticket !== (item.meta.jiraTicket || "")) {
+              item.meta.jiraTicket = ticket;
+              invoke("set_workflow_item_settings", {
+                project: item.project,
+                slug: item.slug,
+                jiraTicket: ticket,
+              }).catch(() => {});
+            }
           } else if (d.id === "jira") {
             // One comment on a ticket; the key is pre-filled from the item's
             // remembered ticket, else detected from title/branch/slug — and
@@ -10613,7 +10652,22 @@ bindShareWebhookSetting("set-wf-discord-webhook", "discordWebhook", "discordWebh
 bindShareWebhookSetting("set-wf-notify-webhook", "notifyWebhook", "notifyWebhook");
 bindShareWebhookSetting("set-wf-jira-url", "jiraBaseUrl", "jiraBaseUrl");
 bindShareWebhookSetting("set-wf-jira-email", "jiraEmail", "jiraEmail");
-bindShareWebhookSetting("set-wf-jira-token", "jiraApiToken", "jiraApiToken");
+// The token is write-only: the backend never sends it back, so the field
+// clears on save and the placeholder carries the only state worth showing.
+$("set-wf-jira-token").addEventListener("change", async () => {
+  const el = $("set-wf-jira-token");
+  try {
+    const s = await invoke("set_workflow_share_settings", { jiraApiToken: el.value });
+    el.value = "";
+    el.placeholder = s.jiraTokenSet ? "•••••• (stored)" : "API token";
+  } catch (e) {
+    uiAlert(`Jira token: ${e}`);
+  }
+});
+// Skill transports: same patch command, but a skill name is not a URL, so the
+// backend's URL validator must not see it.
+bindShareWebhookSetting("set-wf-jira-skill", "jiraSkill", "jiraSkill");
+bindShareWebhookSetting("set-wf-chat-skill", "chatSkill", "chatSkill");
 
 /// Startup policy for changed skills: ask (popup) or one of the silent modes.
 $("set-skills-update").addEventListener("change", async () => {
@@ -11000,7 +11054,12 @@ function restartSessionPoll() {
       $("set-wf-notify-webhook").value = s.notifyWebhook || "off";
       $("set-wf-jira-url").value = s.jiraBaseUrl || "";
       $("set-wf-jira-email").value = s.jiraEmail || "";
-      $("set-wf-jira-token").value = s.jiraApiToken || "";
+      $("set-wf-jira-skill").value = s.jiraSkill || "";
+      $("set-wf-chat-skill").value = s.chatSkill || "";
+      // The token itself never comes back — only whether one is stored. Show
+      // a placeholder for "set" rather than echoing a secret into the webview.
+      $("set-wf-jira-token").value = "";
+      $("set-wf-jira-token").placeholder = s.jiraTokenSet ? "•••••• (stored)" : "API token";
     })
     .catch(() => {});
   // Everything clash itself wrote (missing skills, untouched ones a new
