@@ -19,9 +19,23 @@ const APP = fs.readFileSync(path.join(__dirname, "..", "dist", "app.js"), "utf8"
 const WF_PLAN = fs.readFileSync(path.join(__dirname, "..", "dist", "wf-plan.js"), "utf8");
 
 const VERSIONS = [
-  { n: 1, current: false, lines: 40, savedAt: 1_000, iteration: 1, reason: "first plan" },
-  { n: 2, current: false, lines: 52, savedAt: 2_000, iteration: 2, reason: "revision requested" },
-  { n: 3, current: true, lines: 61, savedAt: 3_000, iteration: 2, reason: "changed on disk" },
+  { n: 1, current: false, lines: 40, savedAt: 1_000, iteration: 1, reason: "the first plan" },
+  {
+    n: 2,
+    current: false,
+    lines: 52,
+    savedAt: 2_000,
+    iteration: 2,
+    reason: "after the changes requested at iteration 1",
+  },
+  {
+    n: 3,
+    current: true,
+    lines: 61,
+    savedAt: 3_000,
+    iteration: 3,
+    reason: "after the changes requested at iteration 2",
+  },
 ];
 
 function sandboxFor({ versions = VERSIONS, diff = "@@ -1 +1 @@\n-old\n+new\n", plan = "# Plan" }) {
@@ -73,7 +87,7 @@ test("the revisions tab lists every recorded revision, newest first", async () =
   // Newest first: the list is read from the top.
   assert.equal(rows.length, 3);
   assert.match(rows[0].innerHTML, /v3 · current/);
-  assert.match(rows[2].innerHTML, /first plan/);
+  assert.match(rows[2].innerHTML, /the first plan/);
   // Exactly one row is selected, and it is the newest.
   const on = rows.filter((r) => (r.className || "").includes(" on"));
   assert.equal(on.length, 1);
@@ -81,14 +95,16 @@ test("the revisions tab lists every recorded revision, newest first", async () =
   // The caption says what you are looking at, not just which number.
   const cap = all.find((e) => (e.className || "").includes("wf-plan-caption"));
   assert.match(cap.textContent, /^the live plan/);
-  assert.match(cap.textContent, /changed on disk$/);
+  assert.match(cap.textContent, /after the changes requested at iteration 2$/);
   // The live plan is fetched as a doc, not as a snapshot.
   assert.ok(sandbox.__calls.some(([c, a]) => c === "get_workflow_doc" && a.doc === "plan.md"));
   assert.ok(all.some((e) => e.rendered === "# Plan"));
 });
 
 test("a single-version plan shows no version bar and no compare", async () => {
-  const only = [{ n: 1, current: true, lines: 12, savedAt: 1_000, iteration: 1, reason: "first plan" }];
+  const only = [
+    { n: 1, current: true, lines: 12, savedAt: 1_000, iteration: 1, reason: "the first plan" },
+  ];
   const sandbox = sandboxFor({ versions: only });
   const body = stubEl();
   await sandbox.renderWfRevisionsView(body, stubEl(), { ...item, meta: { iteration: 1 } }, {
@@ -172,7 +188,9 @@ test("the Plan tab always renders the live plan, with a way into the history", a
 });
 
 test("a single-revision plan offers no way into the history", async () => {
-  const only = [{ n: 1, current: true, lines: 12, savedAt: 1_000, iteration: 1, reason: "first plan" }];
+  const only = [
+    { n: 1, current: true, lines: 12, savedAt: 1_000, iteration: 1, reason: "the first plan" },
+  ];
   const sandbox = sandboxFor({ versions: only });
   const body = stubEl();
   await sandbox.renderWfPlanView(body, stubEl(), item, { subView: "plan" });

@@ -7412,15 +7412,15 @@ async function renderWfPlanView(body, root, item, ts) {
   body.appendChild(md);
 }
 
-/// The Revisions tab: every recorded version of `plan.md`, and the diff
+/// The Revisions tab: one version per applied review round, and the diff
 /// between any two.
 ///
 /// The plan loop is review → apply → revise → review again, so "what did that
 /// round change" is asked every round; re-reading a whole plan to find three
-/// edited paragraphs is how people stop reading it. Revisions are recorded
-/// continuously — the planning agent's first draft, every revise round, a
-/// hand-edit — so this is the plan's own history, not a list of the rounds
-/// that happened to freeze a copy.
+/// edited paragraphs is how people stop reading it. One version per round is
+/// the unit that answers it: an agent saving the plan twice while revising is
+/// the same version still being written, and listing both would number the
+/// history by accidents of when the file was saved.
 async function renderWfRevisionsView(body, root, item, ts) {
   const { project, slug } = item;
   body.innerHTML = "<p class='hint'>loading revisions…</p>";
@@ -7434,7 +7434,7 @@ async function renderWfRevisionsView(body, root, item, ts) {
   body.innerHTML = "";
   if (!versions.length) {
     body.innerHTML =
-      "<p class='hint'>no plan recorded yet — a revision is kept every time the plan changes, starting with the first one an agent writes</p>";
+      "<p class='hint'>no plan recorded yet — one version is kept per applied review round, starting with the first plan an agent writes</p>";
     return;
   }
   const head = versions.find((v) => v.current) || versions[versions.length - 1];

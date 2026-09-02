@@ -15,17 +15,33 @@ const {
 } = require("../dist/wf-plan.js");
 
 const NOW = new Date(2026, 8, 2, 12, 0).getTime();
+// One version per applied review round, so the numbers and the iterations
+// advance together — that is the property the store guarantees.
 const versions = [
-  { n: 1, current: false, lines: 40, savedAt: NOW - 7200_000, iteration: 1, reason: "first plan" },
+  {
+    n: 1,
+    current: false,
+    lines: 40,
+    savedAt: NOW - 7200_000,
+    iteration: 1,
+    reason: "the first plan",
+  },
   {
     n: 2,
     current: false,
     lines: 52,
     savedAt: NOW - 600_000,
     iteration: 2,
-    reason: "revision requested at iteration 1",
+    reason: "after the changes requested at iteration 1",
   },
-  { n: 3, current: true, lines: 61, savedAt: NOW - 30_000, iteration: 2, reason: "changed on disk" },
+  {
+    n: 3,
+    current: true,
+    lines: 61,
+    savedAt: NOW - 30_000,
+    iteration: 3,
+    reason: "after the changes requested at iteration 2",
+  },
 ];
 
 test("a revision is labelled by number, and the newest also by role", () => {
@@ -39,11 +55,11 @@ test("a revision is labelled by number, and the newest also by role", () => {
 test("a revision's caption says when, why and how big", () => {
   assert.equal(
     planVersionCaption(versions[0], NOW),
-    "2h ago · 40 lines — first plan"
+    "2h ago · 40 lines — the first plan"
   );
   assert.equal(
     planVersionCaption(versions[2], NOW),
-    "the live plan · just now · 61 lines — changed on disk"
+    "the live plan · just now · 61 lines — after the changes requested at iteration 2"
   );
   // No stamp and no reason recorded: still says what it is.
   assert.equal(planVersionCaption({ n: 4, lines: 1 }, NOW), "1 line");
@@ -67,12 +83,13 @@ test("the newest revision diffs against the live file", () => {
   assert.equal(planDiffTo(versions, 2), 2);
 });
 
-test("an iteration maps to the revision it ended with", () => {
-  // A round records twice — the plan it was requested against, then the
-  // agent's rewrite — and "the plan at iteration 2" means the latter.
-  assert.equal(planVersionForIteration(versions, 2), 3);
+test("an iteration maps to its one version", () => {
+  // One per round, so this is a lookup rather than a pick among several.
   assert.equal(planVersionForIteration(versions, 1), 1);
-  // An iteration that recorded nothing falls back to the newest before it.
+  assert.equal(planVersionForIteration(versions, 2), 2);
+  assert.equal(planVersionForIteration(versions, 3), 3);
+  // An iteration that recorded nothing — a round that asked for changes and
+  // got none — falls back to the newest before it.
   assert.equal(planVersionForIteration(versions, 9), 3);
   // Nothing at or before it: no answer rather than a wrong one.
   assert.equal(planVersionForIteration([{ n: 5, iteration: 4 }], 2), null);

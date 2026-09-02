@@ -611,19 +611,20 @@ The **Plan** tab always shows the current plan — reading it is the common case
 and a tab that reopens on last week's comparison is not that. Its history lives
 one click away in **◫ Revisions**.
 
-**Plan revisions.** The plan is versioned *continuously*, not per round: clash
-records a revision whenever the file's content changes, whoever wrote it — the
-planning agent's first draft, every revise round, a hand-edit through *Edit
-plan.md*. (Tying versions to change rounds lost every plan written between
-them, which is most of them.) The Revisions tab lists them newest first with
-when and **why** each was recorded ("first plan", "revision requested at
-iteration 2", "changed on disk"), shows any revision's full text, and **⇄
-Changes** diffs it against the previous one — or against any earlier revision
-you pick. Nothing is deduplicated away and nothing is lost: identical content
-is simply not a new revision, so whitespace churn never buries the real ones.
-Items created before this store adopt whatever their round snapshots preserved
-on first open, so upgrading does not present a multi-round item as having no
-history.
+**Plan revisions — one per applied review.** `v1` is the first plan an agent
+wrote; every applied review round adds exactly one more. Whoever writes the
+plan and however many times they save it, the version for the round in flight
+is *replaced* rather than added to: an agent saving twice while revising is the
+same version still being written, and listing both would number the history by
+accidents of when the file hit disk. The Revisions tab lists them newest first
+with when each was recorded and which round it came from ("the first plan",
+"after the changes requested at iteration 2"), shows any version's full text,
+and **⇄ Changes** diffs it against the previous one — or against any earlier
+version you pick. A round that asked for changes and got none adds nothing, and
+identical content is never a new version, so whitespace churn can't bury the
+real ones. Items created before this store adopt whatever their round snapshots
+preserved on first open, so upgrading doesn't present a multi-round item as
+having no history.
 
 The **Timeline** tab is the item's whole revision record in one newest-first
 feed: every change round as a card carrying the note you wrote (the *why*),

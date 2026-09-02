@@ -79,11 +79,12 @@
   }
 
   /// The revision to open when the Timeline asks for "the plan at iteration
-  /// N": the last one recorded while the item was at that iteration. A round
-  /// can record several (the request, then the agent's rewrite), and the one
-  /// that iteration is remembered for is the one it ended with.
+  /// N". There is at most one per iteration — the store replaces a version in
+  /// place while its round is still being written — so this is a lookup, with
+  /// a fallback to the newest revision *before* N for an iteration that
+  /// changed nothing (a round asked for changes and none landed).
   ///
-  /// Falls back to the newest revision at or before N, then to null.
+  /// Null when nothing was recorded at or before N.
   function planVersionForIteration(versions, iteration) {
     const list = (versions || []).filter((v) => v.iteration === iteration);
     if (list.length) return list[list.length - 1].n;

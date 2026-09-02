@@ -954,14 +954,11 @@ pub(crate) async fn workflow_request_changes(
         .backend
         .snapshot_workflow_iteration(&project, &slug, &diff)
         .map_err(e2s)?;
-    // The plan as it stands *now* is what the round was requested against, so
-    // record it before the executor rewrites it — with the round's own reason,
-    // which is what makes the version list readable later.
-    let _ = state.backend.record_workflow_plan_version(
-        &project,
-        &slug,
-        &format!("reviewed at iteration {}", snapped),
-    );
+    // Close this iteration's version before the bump: the plan as it stands
+    // now is what the round was requested against, and the executor's rewrite
+    // will land in the *next* iteration's version. Without this, a round whose
+    // plan clash never happened to read would leave no "before".
+    let _ = state.backend.record_workflow_plan_version(&project, &slug);
 
     let open: Vec<clash::domain::workflow::Annotation> = state
         .backend
@@ -1034,9 +1031,7 @@ pub(crate) fn list_workflow_plan_versions(
     project: String,
     slug: String,
 ) -> Result<Vec<clash::domain::workflow::PlanVersion>, String> {
-    let _ = state
-        .backend
-        .record_workflow_plan_version(&project, &slug, "changed on disk");
+    let _ = state.backend.record_workflow_plan_version(&project, &slug);
     let revisions = state
         .backend
         .list_workflow_plan_versions(&project, &slug)

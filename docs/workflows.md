@@ -120,11 +120,13 @@ history is a separate, continuous store — `plan-history/index.json` plus
 `plan-history/NNNN.md` — because tying versions to rounds loses every plan
 written between them: the planning agent's first draft, an agent's rewrite
 mid-round, a human's edit through *Edit plan.md*.
-`fs::workflows::record_plan_version` appends a revision whenever the file's
-trimmed-content hash differs from the newest recorded one, which makes it safe
-to call from anything that might have seen a change — the FS watcher, the read
-path, and `workflow_request_changes` (recording the pre-revision plan with the
-round's reason). Agents never write this directory; clash owns it like
+`fs::workflows::record_plan_version` keeps **one version per applied review
+round**: it keys on `meta.iteration` (bumped only by request-changes) and
+replaces that iteration's version in place while the round is still being
+written, so an agent saving `plan.md` twice does not produce two entries. Being
+idempotent on content makes it safe to call from anything that might have seen
+a change — the FS watcher, the read path, and `workflow_request_changes`, which
+closes the current version before the bump. Agents never write this directory; clash owns it like
 `history/`. Items created before it adopt their round snapshots on first touch.
 
 The GUI reads it in two tabs: **Plan** is the live document, **◫ Revisions** is

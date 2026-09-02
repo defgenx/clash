@@ -1356,11 +1356,7 @@ fn rebuild_watcher(app: &tauri::AppHandle) {
                         &state.backend.workflows_dir(),
                         &paths,
                     ) {
-                        let _ = state.backend.record_workflow_plan_version(
-                            &project,
-                            &slug,
-                            "changed on disk",
-                        );
+                        let _ = state.backend.record_workflow_plan_version(&project, &slug);
                     }
                     let _ = handle.emit("workflows-changed", ());
                 }

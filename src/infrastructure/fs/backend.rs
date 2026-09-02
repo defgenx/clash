@@ -1572,9 +1572,8 @@ impl crate::domain::ports::WorkflowRepository for FsBackend {
         &self,
         project: &str,
         slug: &str,
-        reason: &str,
     ) -> Result<Option<crate::domain::workflow::PlanRevision>> {
-        super::workflows::record_plan_version(&self.workflows_dir(), project, slug, reason)
+        super::workflows::record_plan_version(&self.workflows_dir(), project, slug)
     }
 
     fn list_workflow_plan_versions(

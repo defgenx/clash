@@ -173,14 +173,14 @@ pub trait WorkflowRepository: Send + Sync {
         Ok(String::new())
     }
 
-    /// Record the current `plan.md` as a new revision unless it is unchanged.
-    /// `Ok(None)` when there was nothing to record — the plan is empty, or its
-    /// content already is the newest revision.
+    /// Record the current `plan.md` as this iteration's version — one per
+    /// applied review, replaced in place while that iteration is still being
+    /// written. `Ok(None)` when there was nothing to record: the plan is
+    /// empty, or its content already is what this iteration holds.
     fn record_workflow_plan_version(
         &self,
         _project: &str,
         _slug: &str,
-        _reason: &str,
     ) -> Result<Option<crate::domain::workflow::PlanRevision>> {
         Ok(None)
     }

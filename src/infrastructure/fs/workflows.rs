@@ -477,19 +477,22 @@ pub fn read_plan_version(root: &Path, project: &str, slug: &str, n: u32) -> Resu
     }
 }
 
-/// Record the current `plan.md` as a new revision, unless its content is
-/// already the newest one recorded. Returns the new revision, or `None` when
-/// there was nothing to record.
+/// Record the current `plan.md` as this iteration's version.
 ///
-/// Idempotent by content hash, which is what makes it safe to call from every
-/// path that might have seen a change — the watcher, a plan read, a change
-/// round — instead of trying to enumerate the writers.
-pub fn record_plan_version(
-    root: &Path,
-    project: &str,
-    slug: &str,
-    reason: &str,
-) -> Result<Option<PlanRevision>> {
+/// **One version per iteration**, which is one per applied review: `iteration`
+/// is bumped only by request-changes, so it counts exactly the rounds that
+/// have been applied to the plan. A second write inside the same iteration
+/// *replaces* that version instead of appending one — an agent that saves the
+/// plan twice while revising it, or a hand-edit between rounds, is not a new
+/// revision of the plan, it is the same revision still being written. Keying
+/// on content instead produced a stream of near-identical entries whose
+/// numbers meant nothing.
+///
+/// Returns the recorded version when something changed, `None` when the
+/// content already is what this iteration holds. That idempotence is what
+/// makes it safe to call from every path that might have seen a change — the
+/// watcher, a plan read, a change round — instead of enumerating the writers.
+pub fn record_plan_version(root: &Path, project: &str, slug: &str) -> Result<Option<PlanRevision>> {
     let dir = existing_item_dir(root, project, slug)?;
     let Ok(plan) = std::fs::read_to_string(dir.join(PLAN_FILE)) else {
         return Ok(None);
@@ -505,24 +508,56 @@ pub fn record_plan_version(
         import_round_snapshots(&dir, &mut history)?;
     }
     let hash = crate::application::workflow::line_hash(&plan);
-    if history.versions.last().is_some_and(|v| v.hash == hash) {
-        return Ok(None);
-    }
     let iteration = read_meta(root, project, slug)
         .map(|m| m.iteration.max(1))
         .unwrap_or(1);
+
+    // Same iteration → update it in place. The version number and the file it
+    // lives in stay put, so a link to `v2` keeps meaning "the plan of round 2"
+    // however many times that round saved it.
+    if let Some(last) = history.versions.last_mut() {
+        if last.iteration == iteration {
+            if last.hash == hash {
+                return Ok(None);
+            }
+            last.hash = hash;
+            last.saved_at = now_ms();
+            last.reason = plan_version_reason(iteration);
+            let rev = last.clone();
+            write_plan_version(&dir, rev.n, &plan)?;
+            write_plan_history(&dir, &history)?;
+            return Ok(Some(rev));
+        }
+        // A later iteration whose content is unchanged is not a version: the
+        // round asked for changes and none were made yet.
+        if last.hash == hash {
+            return Ok(None);
+        }
+    }
+
     let rev = PlanRevision {
         n: history.versions.last().map_or(1, |v| v.n + 1),
         saved_at: now_ms(),
         iteration,
         hash,
-        reason: reason.trim().to_string(),
+        reason: plan_version_reason(iteration),
         ..Default::default()
     };
     write_plan_version(&dir, rev.n, &plan)?;
     history.versions.push(rev.clone());
     write_plan_history(&dir, &history)?;
     Ok(Some(rev))
+}
+
+/// What a version is, in one phrase. Derived from the iteration rather than
+/// passed in by the caller: every writer would otherwise supply its own wording
+/// for the same thing, and the one that happened to write last would win.
+fn plan_version_reason(iteration: u32) -> String {
+    if iteration <= 1 {
+        "the first plan".to_string()
+    } else {
+        format!("after the changes requested at iteration {}", iteration - 1)
+    }
 }
 
 fn plan_version_path(dir: &Path, n: u32) -> PathBuf {
@@ -589,7 +624,7 @@ fn import_round_snapshots(dir: &Path, history: &mut PlanHistory) -> Result<()> {
                 .unwrap_or_default(),
             iteration: iter,
             hash,
-            reason: format!("reviewed at iteration {}", iter),
+            reason: plan_version_reason(iter),
             ..Default::default()
         });
     }
@@ -767,44 +802,69 @@ mod tests {
 
     // ── Plan revision history ────────────────────────────────────────
 
+    /// Bump the item's iteration, the way request-changes does.
+    fn bump_iteration(root: &Path, project: &str, slug: &str) {
+        let mut meta = read_meta(root, project, slug).unwrap();
+        meta.iteration = meta.iteration.max(1) + 1;
+        write_meta(root, project, slug, &meta).unwrap();
+    }
+
     #[test]
-    fn a_plan_is_recorded_once_per_distinct_content() {
+    fn one_version_per_iteration_replaced_while_that_round_is_written() {
         let (_g, root) = root();
         create_item(&root, &req("p", "item", "")).unwrap();
-        // No plan yet: nothing to record, and no empty revision either.
-        assert!(record_plan_version(&root, "p", "item", "first plan")
-            .unwrap()
-            .is_none());
-        write_doc(&root, "p", "item", PLAN_FILE, "# v1\n").unwrap();
-        let first = record_plan_version(&root, "p", "item", "first plan")
-            .unwrap()
-            .unwrap();
-        assert_eq!(first.n, 1);
-        assert_eq!(first.reason, "first plan");
-        // Called again with the same content — every read path calls this, so
+        // No plan yet: nothing to record, and no empty version either.
+        assert!(record_plan_version(&root, "p", "item").unwrap().is_none());
+
+        write_doc(&root, "p", "item", PLAN_FILE, "# draft\n").unwrap();
+        let first = record_plan_version(&root, "p", "item").unwrap().unwrap();
+        assert_eq!((first.n, first.iteration), (1, 1));
+        assert_eq!(first.reason, "the first plan");
+
+        // Same content, called again — every read path calls this, so
         // idempotence is what stops the store growing on every glance.
-        assert!(record_plan_version(&root, "p", "item", "changed on disk")
-            .unwrap()
-            .is_none());
-        write_doc(&root, "p", "item", PLAN_FILE, "# v2\n").unwrap();
+        assert!(record_plan_version(&root, "p", "item").unwrap().is_none());
+
+        // Changed content *within the same iteration* replaces the version:
+        // an agent saving the plan twice while writing it is one revision
+        // still being written, not two revisions.
+        write_doc(&root, "p", "item", PLAN_FILE, "# draft, fixed\n").unwrap();
+        let again = record_plan_version(&root, "p", "item").unwrap().unwrap();
+        assert_eq!((again.n, again.iteration), (1, 1), "same version, updated");
+        assert_eq!(list_plan_versions(&root, "p", "item").unwrap().len(), 1);
         assert_eq!(
-            record_plan_version(&root, "p", "item", "changed on disk")
-                .unwrap()
-                .unwrap()
-                .n,
-            2
+            read_plan_version(&root, "p", "item", 1).unwrap().unwrap(),
+            "# draft, fixed\n"
         );
+
+        // A new iteration — one applied review — is what makes a new version.
+        bump_iteration(&root, "p", "item");
+        write_doc(&root, "p", "item", PLAN_FILE, "# revised\n").unwrap();
+        let second = record_plan_version(&root, "p", "item").unwrap().unwrap();
+        assert_eq!((second.n, second.iteration), (2, 2));
+        assert_eq!(second.reason, "after the changes requested at iteration 1");
         let vs = list_plan_versions(&root, "p", "item").unwrap();
         assert_eq!(vs.iter().map(|v| v.n).collect::<Vec<_>>(), [1, 2]);
         assert_eq!(
             read_plan_version(&root, "p", "item", 1).unwrap().unwrap(),
-            "# v1\n"
-        );
-        assert_eq!(
-            read_plan_version(&root, "p", "item", 2).unwrap().unwrap(),
-            "# v2\n"
+            "# draft, fixed\n",
+            "the earlier round's plan is untouched by the new one"
         );
         assert!(read_plan_version(&root, "p", "item", 9).unwrap().is_none());
+    }
+
+    #[test]
+    fn an_iteration_that_changed_nothing_is_not_a_version() {
+        // Request-changes bumps the iteration before the agent has written
+        // anything. Recording then would create a version identical to the
+        // previous one — a round that "changed the plan" without changing it.
+        let (_g, root) = root();
+        create_item(&root, &req("p", "item", "")).unwrap();
+        write_doc(&root, "p", "item", PLAN_FILE, "# v1\n").unwrap();
+        record_plan_version(&root, "p", "item").unwrap();
+        bump_iteration(&root, "p", "item");
+        assert!(record_plan_version(&root, "p", "item").unwrap().is_none());
+        assert_eq!(list_plan_versions(&root, "p", "item").unwrap().len(), 1);
     }
 
     #[test]
@@ -815,11 +875,9 @@ mod tests {
         let (_g, root) = root();
         create_item(&root, &req("p", "item", "")).unwrap();
         write_doc(&root, "p", "item", PLAN_FILE, "# v1").unwrap();
-        record_plan_version(&root, "p", "item", "first plan").unwrap();
+        record_plan_version(&root, "p", "item").unwrap();
         write_doc(&root, "p", "item", PLAN_FILE, "# v1\n\n").unwrap();
-        assert!(record_plan_version(&root, "p", "item", "changed on disk")
-            .unwrap()
-            .is_none());
+        assert!(record_plan_version(&root, "p", "item").unwrap().is_none());
     }
 
     #[test]
@@ -831,30 +889,45 @@ mod tests {
         create_item(&root, &req("p", "item", "")).unwrap();
         write_doc(&root, "p", "item", PLAN_FILE, "# round one plan\n").unwrap();
         snapshot_iteration(&root, "p", "item", "diff-1").unwrap();
-        let mut meta = read_meta(&root, "p", "item").unwrap();
-        meta.iteration = 2;
-        write_meta(&root, "p", "item", &meta).unwrap();
+        bump_iteration(&root, "p", "item");
         write_doc(&root, "p", "item", PLAN_FILE, "# round two plan\n").unwrap();
         snapshot_iteration(&root, "p", "item", "diff-2").unwrap();
+        bump_iteration(&root, "p", "item");
         write_doc(&root, "p", "item", PLAN_FILE, "# live plan\n").unwrap();
 
-        let rec = record_plan_version(&root, "p", "item", "changed on disk")
-            .unwrap()
-            .unwrap();
+        let rec = record_plan_version(&root, "p", "item").unwrap().unwrap();
         let vs = list_plan_versions(&root, "p", "item").unwrap();
         assert_eq!(vs.len(), 3, "two imported round plans plus the live one");
-        assert_eq!(rec.n, 3);
+        assert_eq!((rec.n, rec.iteration), (3, 3));
         assert_eq!(
             read_plan_version(&root, "p", "item", 1).unwrap().unwrap(),
             "# round one plan\n"
         );
-        assert!(vs[0].reason.contains("iteration 1"));
-        assert_eq!(vs[2].reason, "changed on disk");
+        assert_eq!(vs[0].reason, "the first plan");
+        assert_eq!(vs[1].reason, "after the changes requested at iteration 1");
         // The import runs once: a second call adds nothing.
-        assert!(record_plan_version(&root, "p", "item", "again")
-            .unwrap()
-            .is_none());
+        assert!(record_plan_version(&root, "p", "item").unwrap().is_none());
         assert_eq!(list_plan_versions(&root, "p", "item").unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_corrupt_index_starts_over_instead_of_failing() {
+        // The version files are still on disk and the live plan is the source
+        // of truth, so the Plan tab must render either way.
+        let (_g, root) = root();
+        create_item(&root, &req("p", "item", "")).unwrap();
+        write_doc(&root, "p", "item", PLAN_FILE, "# v1\n").unwrap();
+        record_plan_version(&root, "p", "item").unwrap();
+        let idx = root
+            .join("p")
+            .join("item")
+            .join(PLAN_HISTORY_DIR)
+            .join(PLAN_HISTORY_INDEX);
+        std::fs::write(&idx, "{ not json").unwrap();
+        assert!(list_plan_versions(&root, "p", "item").unwrap().is_empty());
+        // And recording again rebuilds a usable index.
+        assert!(record_plan_version(&root, "p", "item").unwrap().is_some());
+        assert_eq!(list_plan_versions(&root, "p", "item").unwrap().len(), 1);
     }
 
     #[test]
@@ -904,28 +977,6 @@ mod tests {
             changed_plan_items(&link, &[resolved]),
             vec![("proj".to_string(), "item".to_string())]
         );
-    }
-
-    #[test]
-    fn a_corrupt_index_starts_over_instead_of_failing() {
-        // The version files are still on disk and the live plan is the source
-        // of truth, so the Plan tab must render either way.
-        let (_g, root) = root();
-        create_item(&root, &req("p", "item", "")).unwrap();
-        write_doc(&root, "p", "item", PLAN_FILE, "# v1\n").unwrap();
-        record_plan_version(&root, "p", "item", "first plan").unwrap();
-        let idx = root
-            .join("p")
-            .join("item")
-            .join(PLAN_HISTORY_DIR)
-            .join(PLAN_HISTORY_INDEX);
-        std::fs::write(&idx, "{ not json").unwrap();
-        assert!(list_plan_versions(&root, "p", "item").unwrap().is_empty());
-        // And recording again rebuilds a usable index.
-        assert!(record_plan_version(&root, "p", "item", "after corruption")
-            .unwrap()
-            .is_some());
-        assert_eq!(list_plan_versions(&root, "p", "item").unwrap().len(), 1);
     }
 
     #[test]
