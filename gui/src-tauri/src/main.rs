@@ -606,12 +606,6 @@ fn cancel_queued_prompt(
     Ok(q.count(&session_id))
 }
 
-/// Drop every follow-up queued for a session; returns how many were dropped.
-#[tauri::command]
-fn clear_queued_prompts(state: State<'_, GuiState>, session_id: String) -> usize {
-    state.prompt_queue.lock().unwrap().clear(&session_id)
-}
-
 #[tauri::command]
 async fn resize_session(
     state: State<'_, GuiState>,
@@ -1586,27 +1580,6 @@ fn config_set(
 }
 
 /// Reset one shared setting to its default by removing it from the user layer.
-#[tauri::command]
-fn config_reset(state: State<'_, GuiState>, key: String) -> Result<serde_json::Value, String> {
-    use clash::infrastructure::config::schema;
-
-    let prop = schema::prop_by_gui_key(&key).ok_or_else(|| format!("no such setting: {}", key))?;
-    state
-        .config
-        .reset_values(&[prop.path])
-        .map_err(|e| e.to_string())?;
-    Ok(shared_settings_json(&state.config))
-}
-
-/// The JSON Schema — the same document `clash config --schema` prints.
-///
-/// Carries the frontend hints (`x-term-option`, `x-refit`,
-/// `x-restart-required`) a generated settings panel needs.
-#[tauri::command]
-fn config_schema() -> serde_json::Value {
-    clash::infrastructure::config::schema::json_schema()
-}
-
 /// One-shot migration of the legacy `gui-state.json` settings blob.
 ///
 /// The single Rust entry point for settings validation: the 7 cross-frontend
@@ -3120,7 +3093,6 @@ fn main() {
             queue_prompt,
             list_queued_prompts,
             cancel_queued_prompt,
-            clear_queued_prompts,
             resize_session,
             close_session,
             stash_session,
@@ -3160,8 +3132,6 @@ fn main() {
             set_claude_bin,
             config_get,
             config_set,
-            config_reset,
-            config_schema,
             config_migrate_gui_blob,
             list_font_families,
             list_presets,
@@ -3217,7 +3187,6 @@ fn main() {
             workflows::create_workflow_review,
             workflows::list_repo_branches,
             workflows::update_workflow_status,
-            workflows::save_workflow_doc,
             workflows::save_workflow_annotation,
             workflows::set_workflow_annotation_status,
             workflows::delete_workflow_annotation,

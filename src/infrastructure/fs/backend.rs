@@ -1568,16 +1568,6 @@ impl crate::domain::ports::WorkflowRepository for FsBackend {
         super::workflows::read_doc(&self.workflows_dir(), project, slug, doc)
     }
 
-    fn write_workflow_doc(
-        &self,
-        project: &str,
-        slug: &str,
-        doc: &str,
-        content: &str,
-    ) -> Result<()> {
-        super::workflows::write_doc(&self.workflows_dir(), project, slug, doc, content)
-    }
-
     fn append_workflow_review_iteration(
         &self,
         project: &str,

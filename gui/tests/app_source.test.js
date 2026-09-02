@@ -243,13 +243,15 @@ test("applying a review round goes through the change-round flow", () => {
   // snapshotting flow exists to prevent. So "Apply review" must compose a note
   // and call the same command the composer does, never a shortcut of its own.
   assert.match(APP, /const applyReview = async \(\) => \{/);
-  assert.match(APP, /applyReviewNote\(round, findings, target\)/);
+  assert.match(APP, /applyReviewNote\(round, roundFindings\(md, round\.round\), target\)/);
   const apply = APP.slice(
     APP.indexOf("const applyReview = async () => {"),
     APP.indexOf("const applyReviewButton = ")
   );
-  assert.match(apply, /invoke\("workflow_request_changes"/);
-  assert.match(apply, /launchWfAgent\(fresh, "revise"/);
+  // The note and the recording both come from the shared helpers, so the click
+  // path and the pre-authorized path cannot diverge.
+  assert.match(apply, /await wfApplyReviewNoteFor\(item, round, target\)/);
+  assert.match(apply, /await wfRecordAndRevise\(item, root, note\)/);
   // And the second way out is the composer, pre-filled with the same note.
   assert.match(apply, /requestChanges\(target, note\)/);
   assert.match(APP, /function wfComposeChangeRequest\(\{ item, target, annotations, onJump, prefill = "" \}\)/);
@@ -269,4 +271,28 @@ test("the plan has one version reader, not three views", () => {
   // One `pd-` renderer: the class assignments appear in exactly one function.
   const hunks = APP.match(/span\.className = "pd-hunk"/g) || [];
   assert.equal(hunks.length, 1, "the unified-diff colouring must exist once");
+});
+
+test("a pre-authorized round applies itself through the same one mechanism", () => {
+  // Two entry points — the button and the hand-back — must not become two
+  // implementations, or one of them ends up skipping the snapshot that
+  // versions the plan.
+  assert.match(APP, /async function wfRecordAndRevise\(item, root, note\)/);
+  const mech = APP.slice(
+    APP.indexOf("async function wfRecordAndRevise("),
+    APP.indexOf("// Items whose auto-apply is in flight")
+  );
+  assert.match(mech, /invoke\("workflow_request_changes"/);
+  assert.match(mech, /launchWfAgent\(fresh, "revise"/);
+  // Exactly one caller composes the note, and both paths use it.
+  assert.match(APP, /async function wfApplyReviewNoteFor\(item, round, target\)/);
+  assert.equal((APP.match(/wfRecordAndRevise\(/g) || []).length, 3); // def + 2 callers
+  // The auto path is guarded against a doubled hand-back event, and gated by
+  // the pure rule rather than an inline condition.
+  assert.match(APP, /const wfAutoApplying = new Set\(\)/);
+  assert.match(APP, /if \(!item \|\| !shouldAutoApply\(item, review\)\) return;/);
+  assert.match(APP, /wfMaybeAutoApplyReview\(project, slug, review\);/);
+  // And the launch surface passes the checkbox through.
+  assert.match(APP, /autoApply: picked\.autoApply,/);
+  assert.match(APP, /autoApply,\n\s+cols: 120,/);
 });

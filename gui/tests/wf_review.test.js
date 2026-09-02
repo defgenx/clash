@@ -154,3 +154,19 @@ test("the browser branch publishes every name app.js calls", () => {
     "wf-review.js must be loaded before app.js"
   );
 });
+
+test("the round composer offers to apply the findings when it finishes", () => {
+  // The half of the loop the human owns: pre-authorization. It is a checkbox,
+  // not a fourth radio group, because the round's own report is what decides
+  // whether anything is actually worth applying.
+  const plan = reviewRoundModel({ target: "plan" });
+  assert.equal(plan.autoApply.default, false);
+  assert.match(plan.autoApply.label, /Apply the findings to the plan/);
+  assert.match(plan.autoApply.detail, /frozen as a version/);
+  // The diff wording says fix round, not plan.
+  const diff = reviewRoundModel({ target: "diff" });
+  assert.match(diff.autoApply.label, /fix round/);
+  assert.match(diff.autoApply.detail, /diff is frozen/);
+  // The item's last answer pre-selects, so a hands-off user stays hands-off.
+  assert.equal(reviewRoundModel({ autoApplyDefault: true }).autoApply.default, true);
+});

@@ -130,6 +130,31 @@
     return "";
   }
 
+  /// May clash turn this finished round into a change round with no further
+  /// clicks? Both signals have to agree, and they answer different questions:
+  ///
+  /// - `meta.review.autoApply` is the human's pre-authorization, given in the
+  ///   composer when the round was launched;
+  /// - the round's own `**Apply:** yes` is the reviewer's judgement that there
+  ///   is something worth applying.
+  ///
+  /// An undeclared or negative call never fires. A reviewer that found nothing
+  /// material must not spend tokens on an executor to apply nothing, and a
+  /// round from before the declaration contract existed has said nothing at
+  /// all — silence is not consent in either direction.
+  ///
+  /// `review` is the summary from the hand-back event when there is one (it
+  /// arrives before the item list refreshes), else the item's own.
+  function shouldAutoApply(item, review) {
+    const meta = (item && item.meta) || {};
+    if (!(meta.review && meta.review.autoApply)) return false;
+    const r = review || (item && item.lastAgentReview);
+    if (!r || r.apply !== true) return false;
+    // Stage/target agreement and "not already applied" are exactly the
+    // pending-round rules, so ask the one function that owns them.
+    return !!pendingReviewRound({ ...item, lastAgentReview: r });
+  }
+
   const api = {
     planVersionLabel,
     planVersionCaption,
@@ -139,6 +164,7 @@
     applyReviewNote,
     pendingReviewRound,
     reviewAppliedState,
+    shouldAutoApply,
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;

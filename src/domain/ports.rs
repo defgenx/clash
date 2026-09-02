@@ -173,17 +173,6 @@ pub trait WorkflowRepository: Send + Sync {
         Ok(String::new())
     }
 
-    /// Write `plan.md` or `review.md` (whitelisted), atomically.
-    fn write_workflow_doc(
-        &self,
-        _project: &str,
-        _slug: &str,
-        _doc: &str,
-        _content: &str,
-    ) -> Result<()> {
-        Ok(())
-    }
-
     /// Append an iteration section (note + open-annotation digest) to the
     /// `review.md` audit trail.
     fn append_workflow_review_iteration(

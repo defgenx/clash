@@ -145,6 +145,48 @@ executor to revise the plan. So write the findings as work an executor can act o
 without you in the room; when the human wants to narrow it down, their
 *Request changes* note can still say `apply 1a and 3b`.
 
+## Decide whether this round should be applied
+
+Every round ends with one more call: **should these findings become a plan
+revision now?** You are not applying anything — clash records a change round
+and launches an executor to revise `plan.md`. You are saying whether that is
+worth doing.
+
+The kickoff's **`Auto-apply:`** field says what your answer does:
+
+- `Auto-apply: yes` → a `yes` from you starts that revision round immediately,
+  with no further human action. Say so when you ask.
+- `Auto-apply: no` → your answer is a recommendation on a button the human
+  presses. Never tell them it will happen by itself.
+
+**Interactive rounds: ask.** One `AskUserQuestion` after triage, carrying your
+own recommendation and the reason for it:
+
+1. **Apply now** — revise the plan with the accepted findings.
+2. **Not yet** — leave the plan as it is; they will decide later.
+
+**Autonomous rounds: judge it yourself**, on what you actually found:
+
+- **Apply** when an accepted finding changes *what gets built or how* — a
+  missing step, a wrong ordering, an unhandled failure mode, a step grounded in
+  code that does not work the way the plan assumes, a scope gap the
+  implementation would hit. Anything an implementer following this plan would
+  get wrong.
+- **Do not apply** when everything accepted is cosmetic or editorial — wording,
+  ordering of prose, a clarification that changes no decision — or when the
+  plan is simply sound. A revision round costs tokens, rewrites the artifact
+  and asks the human for another review; churning it to reword a sentence
+  spends all three for nothing.
+- **Do not apply** when the findings are *ambiguous enough to need the human* —
+  two accepted options that contradict each other, a finding whose fix depends
+  on a product decision, or anything you would have asked about had you been
+  interactive. An executor cannot ask; it will pick one and move on.
+- When nothing was accepted (every issue dismissed, or none found), the answer
+  is **no**. There is nothing to apply.
+
+Judge by *materiality*, never by count: one missing migration step is worth a
+round, six wording nits are not.
+
 ## Finish — in this order, every run
 
 1. **Append** your round to `agent-review.md`. Never rewrite earlier rounds;
@@ -155,6 +197,8 @@ without you in the room; when the human wants to narrow it down, their
 
 **Verdict:** <one line — safe to implement as written / safe with the accepted
 changes / needs rework before implementation>
+
+**Apply:** yes|no — <one line: why this is or is not worth a revision round>
 
 ### Architecture
 1. <issue> — options a/b/c, recommended <x>.
@@ -192,6 +236,13 @@ changes / needs rework before implementation>
    `### Published` is **mandatory in every round** — clash parses it, and a
    missing section reads as "silently did nothing". A plan round is normally
    local: say so. If the round did post to a PR, list exactly what.
+
+   **`**Apply:**` is mandatory too**, and must be exactly `yes` or `no`
+   followed by the reason — it is the decision from the section above, and
+   clash reads it to know whether to start the revision round (or, when
+   auto-apply is off, to mark the action as recommended). Anything it cannot
+   read as yes/no leaves the call to the human, which wastes the judgement you
+   just made. Do not hedge it; the reason line is where nuance goes.
 
 2. Read-modify-write `meta.json`: set `status` to the prompt's **`Return to:`**
    value. Change nothing else.

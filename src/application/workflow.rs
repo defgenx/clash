@@ -375,11 +375,57 @@ fn parse_round(lines: &[&str], start: usize, end: usize, round: u32) -> AgentRev
         })
         .unwrap_or_default();
 
+    // Apply: the round's call on whether its findings should become a change
+    // round now — `**Apply:** yes|no — <reason>`. Parsed like the verdict (one
+    // marker, one paragraph) but reduced to a tri-state: anything that is not
+    // recognizably yes or no leaves it undeclared rather than guessing, because
+    // clash launches an agent off a `yes`.
+    let (apply, apply_reason) = section
+        .iter()
+        .position(|l| l.trim_start().starts_with("**Apply:**"))
+        .map(|i| {
+            let mut parts: Vec<&str> = Vec::new();
+            parts.push(
+                section[i]
+                    .trim_start()
+                    .trim_start_matches("**Apply:**")
+                    .trim(),
+            );
+            for l in &section[i + 1..] {
+                if l.trim().is_empty() || l.starts_with('#') {
+                    break;
+                }
+                parts.push(l.trim());
+            }
+            let text = parts.join(" ").trim().to_string();
+            let head = text
+                .split(['—', '-', '.', ',', ':'])
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            let decided = match head.as_str() {
+                "yes" | "y" | "true" | "apply" => Some(true),
+                "no" | "n" | "false" | "hold" => Some(false),
+                _ => None,
+            };
+            // The reason is whatever follows the verdict word; when the round
+            // wrote only "yes", there is no reason and saying so is honest.
+            let reason = text[head.len().min(text.len())..]
+                .trim_start_matches(|c: char| "—-:., \t".contains(c))
+                .trim()
+                .to_string();
+            (decided, if decided.is_some() { reason } else { text })
+        })
+        .unwrap_or((None, String::new()));
+
     AgentReviewSummary {
         round,
         heading,
         verdict,
         published,
+        apply,
+        apply_reason,
     }
 }
 
@@ -738,9 +784,17 @@ pub fn build_review_prompt(
         Some(false) => " Interactive: no.",
         None => "",
     };
+    // The skill must know whether its own `**Apply:** yes` will actually fire:
+    // in an interactive round it is about to tell the human what happens next,
+    // and "I'll apply it" is a lie when clash is only going to recommend it.
+    let auto_apply = if review.auto_apply {
+        " Auto-apply: yes."
+    } else {
+        " Auto-apply: no."
+    };
     format!(
         "Use the {} skill. Workflow item directory: {}. \
-         Target: {}. Depth: {}. Publish: {}. Round: {}. Return to: {}. Mode: {}.{}{}",
+         Target: {}. Depth: {}. Publish: {}. Round: {}. Return to: {}. Mode: {}.{}{}{}",
         engine,
         item_dir,
         review.target,
@@ -750,7 +804,8 @@ pub fn build_review_prompt(
         review.return_status,
         mode,
         pr,
-        interactive
+        interactive,
+        auto_apply
     )
 }
 
@@ -915,13 +970,29 @@ mod tests {
             interactive: Some(true),
             ..Default::default()
         };
-        assert!(build_review_prompt("/x", &yes, WorkflowMode::Full).ends_with("Interactive: yes."));
+        assert!(build_review_prompt("/x", &yes, WorkflowMode::Full).contains("Interactive: yes."));
 
         let no = WorkflowReview {
             interactive: Some(false),
             ..Default::default()
         };
-        assert!(build_review_prompt("/x", &no, WorkflowMode::Full).ends_with("Interactive: no."));
+        assert!(build_review_prompt("/x", &no, WorkflowMode::Full).contains("Interactive: no."));
+    }
+
+    #[test]
+    fn review_prompt_always_states_whether_applying_is_pre_authorized() {
+        use crate::domain::workflow::WorkflowReview;
+        // Never omitted, unlike `Interactive:`: an interactive round is about
+        // to tell the human what happens after they answer, and "I'll apply
+        // it" is a lie when clash is only going to recommend it. Silence would
+        // leave the skill guessing.
+        let off = WorkflowReview::default();
+        assert!(build_review_prompt("/x", &off, WorkflowMode::Full).ends_with("Auto-apply: no."));
+        let on = WorkflowReview {
+            auto_apply: true,
+            ..Default::default()
+        };
+        assert!(build_review_prompt("/x", &on, WorkflowMode::Full).ends_with("Auto-apply: yes."));
     }
 
     #[test]
@@ -1622,6 +1693,77 @@ Tighten the API.\n\n\
             },
         );
         assert!(p.ends_with("Interactive: no."));
+    }
+
+    // ── Apply declaration ────────────────────────────────────────────
+
+    #[test]
+    fn a_round_declares_whether_its_findings_should_be_applied() {
+        let md = "\
+## Review 1 — plan · standard · 2026-09-02 10:00
+
+**Verdict:** Two real problems.
+
+**Apply:** yes — both findings change the migration step.
+
+### Findings
+1. No migration step.
+";
+        let r = latest_agent_review(md).unwrap();
+        assert_eq!(r.apply, Some(true));
+        assert_eq!(r.apply_reason, "both findings change the migration step.");
+    }
+
+    #[test]
+    fn a_round_can_decline_to_be_applied() {
+        let md = "## Review 2 — x\n\n**Apply:** no — wording only, not worth a round.\n";
+        let r = latest_agent_review(md).unwrap();
+        assert_eq!(r.apply, Some(false));
+        assert_eq!(r.apply_reason, "wording only, not worth a round.");
+    }
+
+    #[test]
+    fn an_undeclared_or_unreadable_apply_line_stays_undecided() {
+        // clash launches an agent off a `yes`, so anything it cannot read as a
+        // decision must not become one. A round from before this contract, or
+        // one that hedged, leaves the call to the human.
+        assert_eq!(
+            latest_agent_review("## Review 1 — x\n\n**Verdict:** ok\n")
+                .unwrap()
+                .apply,
+            None
+        );
+        let hedged =
+            latest_agent_review("## Review 1 — x\n\n**Apply:** maybe, if you like\n").unwrap();
+        assert_eq!(hedged.apply, None);
+        // The text survives so the human can read what the round actually said.
+        assert_eq!(hedged.apply_reason, "maybe, if you like");
+    }
+
+    #[test]
+    fn a_bare_yes_needs_no_reason() {
+        let r = latest_agent_review("## Review 3 — x\n\n**Apply:** yes\n").unwrap();
+        assert_eq!(r.apply, Some(true));
+        assert_eq!(r.apply_reason, "");
+    }
+
+    #[test]
+    fn each_round_keeps_its_own_apply_call() {
+        let md = "\
+## Review 1 — a
+
+**Apply:** yes — do it.
+
+## Review 2 — b
+
+**Apply:** no — nothing material.
+";
+        let all = all_agent_reviews(md);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].apply, Some(true));
+        assert_eq!(all[1].apply, Some(false));
+        // And the latest is the one clash acts on.
+        assert_eq!(latest_agent_review(md).unwrap().apply, Some(false));
     }
 
     // ── plan_version_list ────────────────────────────────────────────

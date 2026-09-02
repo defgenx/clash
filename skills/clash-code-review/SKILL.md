@@ -237,6 +237,42 @@ If `gh` is missing or unauthenticated, do the local half of the work, then say
 clearly in your final message that publishing was skipped and why. Never fail
 the whole round over it.
 
+## Decide whether this round should be applied
+
+Every round ends with one more call: **should these findings become a fix round
+now?** You are not fixing anything beyond the one-file allowance — clash
+records a change round and launches an executor that addresses the open
+annotations. You are saying whether that is worth doing now.
+
+The kickoff's **`Auto-apply:`** field says what your answer does:
+
+- `Auto-apply: yes` → a `yes` from you starts that fix round immediately, with
+  no further human action. Say so when you ask.
+- `Auto-apply: no` → your answer is a recommendation on a button the human
+  presses. Never tell them it will happen by itself.
+
+**Interactive rounds: ask**, once, after triage, carrying your recommendation
+and its reason: **Start the fix round now** or **Not yet**.
+
+**Autonomous rounds: judge it yourself**, on what survived triage:
+
+- **Apply** when a blocker or a real risk is open — anything that is wrong,
+  unsafe, or breaks under an input the code will actually see. Those are worth
+  a round on their own.
+- **Do not apply** when everything open is a nit, or when the diff is clean.
+  A fix round costs tokens, rewrites the branch and asks for another review;
+  spending that on formatting is a bad trade the human did not ask for.
+- **Do not apply** when a finding needs a decision you could not make — two
+  valid designs, an intentional trade-off you cannot confirm, a fix that would
+  change behaviour the human may want. An executor cannot ask; it will pick.
+- **Do not apply** when the item is at `pr-ready`: the branch is published and
+  under human review, so pushing new commits mid-review is the human's call.
+  Recommend it in the report instead.
+- When nothing is open, the answer is **no**.
+
+Judge by *severity*, never by count: one timing-attack blocker is worth a
+round, nine nits are not.
+
 ## Finish — in this order, every run
 
 1. **Append** your round to `agent-review.md`. Never rewrite earlier rounds;
@@ -246,6 +282,8 @@ the whole round over it.
 ## Review <round> — diff · <depth> · <YYYY-MM-DD HH:MM>
 
 **Verdict:** <one line — ship it / N blockers / needs a decision on X>
+
+**Apply:** yes|no — <one line: why this is or is not worth a fix round>
 
 ### Blockers
 1. `src/auth.rs:42` — token compared with `==`, so response timing leaks the
@@ -284,6 +322,13 @@ nothing did and why:
   `- Publish was respond-pr-comments, but the PR had no unanswered review
   comments at 17:25 — nothing posted. Findings are in annotations.json.`
 - `gh` failed → `- Publishing skipped: gh not authenticated.`
+
+**`**Apply:**` is mandatory too**, and must be exactly `yes` or `no` followed
+by the reason — it is the decision from the section above, and clash reads it
+to know whether to start the fix round (or, when auto-apply is off, to mark the
+action as recommended). Anything it cannot read as yes/no leaves the call to
+the human, wasting the judgement you just made. Do not hedge it; the reason
+line is where nuance goes.
 
 2. Read-modify-write `meta.json`: set `status` to the prompt's **`Return to:`**
    value. Change nothing else.

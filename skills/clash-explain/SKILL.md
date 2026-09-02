@@ -131,6 +131,12 @@ list — a forced diagram is noise.
 - Nothing — wrote structure.md (rendered in the Structure tab).
 ```
 
+   The reviewers' `**Apply:**` line has no place here: it declares whether a
+   round's findings are worth a change round, and an explanation is not
+   findings. Write no such line — clash never offers to "apply" an explainer,
+   and claiming otherwise would put a button on the item that does the wrong
+   thing.
+
 3. Read-modify-write `meta.json`: set `status` to the prompt's **`Return
    to:`** value. Change nothing else.
 4. Final chat message: two sentences — what the change does and how many

@@ -159,8 +159,6 @@
   }
 
   const api = {
-    WF_DECISION_STATUSES,
-    SESSION_ATTENTION,
     BAND,
     parseStamp,
     unansweredCount,

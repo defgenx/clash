@@ -10,6 +10,7 @@ const {
   applyReviewNote,
   pendingReviewRound,
   reviewAppliedState,
+  shouldAutoApply,
 } = require("../dist/wf-plan.js");
 
 const versions = [
@@ -159,6 +160,59 @@ test("the header says applied only once a change round carried the round", () =>
   assert.equal(reviewAppliedState({ meta: {} }), "");
 });
 
+test("auto-apply needs the human's authorization AND the round's yes", () => {
+  const base = (over = {}) => ({
+    lastAgentReview: { round: 2, apply: true },
+    meta: {
+      status: "plan-review",
+      appliedReviewRound: 0,
+      review: { target: "plan", autoApply: true },
+      ...(over.meta || {}),
+    },
+    ...over,
+  });
+  assert.equal(shouldAutoApply(base()), true);
+  // The human did not pre-authorize: the round's yes is a recommendation.
+  assert.equal(
+    shouldAutoApply(base({ meta: { review: { target: "plan", autoApply: false } } })),
+    false
+  );
+  // Pre-authorized, but the round found nothing worth a round — spending
+  // tokens to apply nothing is exactly what the reviewer just advised against.
+  assert.equal(shouldAutoApply(base({ lastAgentReview: { round: 2, apply: false } })), false);
+  // A round that declared nothing (older report, or a hedge) never fires.
+  assert.equal(shouldAutoApply(base({ lastAgentReview: { round: 2 } })), false);
+  // Already applied.
+  assert.equal(
+    shouldAutoApply(
+      base({
+        meta: {
+          appliedReviewRound: 2,
+          review: { target: "plan", autoApply: true },
+        },
+      })
+    ),
+    false
+  );
+  // An explainer round is not applyable however it was launched.
+  assert.equal(
+    shouldAutoApply(base({ meta: { review: { target: "structure", autoApply: true } } })),
+    false
+  );
+  assert.equal(shouldAutoApply(null), false);
+});
+
+test("the hand-back's own summary outranks the item's stale one", () => {
+  // The attention event arrives before the item list refreshes, so the round
+  // passed in is the fresher of the two.
+  const item = {
+    lastAgentReview: { round: 1, apply: false },
+    meta: { status: "plan-review", review: { target: "plan", autoApply: true } },
+  };
+  assert.equal(shouldAutoApply(item), false);
+  assert.equal(shouldAutoApply(item, { round: 2, apply: true }), true);
+});
+
 test("the browser branch publishes every name app.js calls", () => {
   const fs = require("node:fs");
   const path = require("node:path");
@@ -176,6 +230,7 @@ test("the browser branch publishes every name app.js calls", () => {
     "applyReviewNote",
     "pendingReviewRound",
     "reviewAppliedState",
+    "shouldAutoApply",
   ]) {
     assert.equal(typeof win[name], "function", `${name} must be on window`);
     assert.ok(app.includes(name), `app.js is expected to use ${name}`);

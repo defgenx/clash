@@ -3210,10 +3210,6 @@ async function renderMermaidIn(el) {
   }
 }
 
-function detailsStatusText(s) {
-  return s.is_running ? s.status + " (running)" : s.status;
-}
-
 function renderDetails() {
   const body = $("details-body");
   const s = state.sessions.find((x) => x.id === state.detailsFor);
@@ -5407,7 +5403,9 @@ async function buildWorkflowView(el, project, slug) {
     if (applied === "pending") strip.classList.add("pending");
     const flag =
       applied === "pending"
-        ? ' <span class="wf-review-strip-flag">not applied yet</span>'
+        ? r.apply === false
+          ? ' <span class="wf-review-strip-flag done">nothing to apply</span>'
+          : ' <span class="wf-review-strip-flag">not applied yet</span>'
         : applied === "applied"
           ? ' <span class="wf-review-strip-flag done">applied</span>'
           : "";
@@ -5417,7 +5415,15 @@ async function buildWorkflowView(el, project, slug) {
       }${flag}</span>` +
       `<span class="wf-review-strip-verdict">${escapeHtml(wfShort(r.verdict, 180))}</span>` +
       `<span class="wf-review-strip-published">${escapeHtml(wfShort(posted, 140))}</span>`;
-    strip.title = `${r.verdict}\n\n${posted}\n\nClick to open the full report`;
+    const says =
+      r.apply === true
+        ? `\n\nThe round recommends applying its findings${r.applyReason ? `: ${r.applyReason}` : "."}`
+        : r.apply === false
+          ? `\n\nThe round says its findings are not worth a change round${
+              r.applyReason ? `: ${r.applyReason}` : "."
+            }`
+          : "";
+    strip.title = `${r.verdict}\n\n${posted}${says}\n\nClick to open the full report`;
     strip.onclick = () => {
       ts.subView = "agentReview";
       buildWorkflowView(el, project, slug);
@@ -5518,7 +5524,10 @@ async function launchWfAgent(item, phase, root, branch = null, opts = {}) {
 async function launchWfReview(item, root) {
   const picked = await wfComposeReviewRound(item);
   if (!picked) return;
-  await spawnWfReview(item, root, picked.depth, picked.publish, picked.interactive);
+  await spawnWfReview(item, root, picked.depth, picked.publish, {
+    interactive: picked.interactive,
+    autoApply: picked.autoApply,
+  });
 }
 
 /// Launch a respond round: the agent reads the PR's review comments, fixes
@@ -5553,7 +5562,7 @@ async function launchWfReviewRespond(item, root) {
       : "the PR"
     : prChipLabel(pr);
   if (!(await uiConfirm(answerCommentsConfirm(prName, pr.unanswered), "Launch"))) return;
-  await spawnWfReview(item, root, "standard", "respond-pr-comments", null, null, pr.url);
+  await spawnWfReview(item, root, "standard", "respond-pr-comments", { prUrl: pr.url });
 }
 
 /// Mirror of the backend's `workflow_session_name`: the item title (shortened,
@@ -5603,7 +5612,11 @@ async function wfPrRecovery(item, err, retry) {
 /// `target` is only ever "structure" — plan/diff stay derived by the backend.
 /// `prUrl` pins the round to one of the item's PRs (respond rounds on
 /// multi-PR items); null means the primary.
-async function spawnWfReview(item, root, depth, publish, interactive = null, target = null, prUrl = null) {
+/// Launch a review round. Everything past `publish` rides an options bag:
+/// `interactive`, `target`, `prUrl`, `autoApply` — six positional arguments
+/// with three nulls in the middle told the reader nothing at the call site.
+async function spawnWfReview(item, root, depth, publish, opts = {}) {
+  const { interactive = null, target = null, prUrl = null, autoApply = false } = opts;
   try {
     const sid = await invoke("start_workflow_review_agent", {
       project: item.project,
@@ -5613,6 +5626,7 @@ async function spawnWfReview(item, root, depth, publish, interactive = null, tar
       interactive,
       target,
       prUrl,
+      autoApply,
       cols: 120,
       rows: 40,
     });
@@ -5641,14 +5655,89 @@ async function spawnWfReview(item, root, depth, publish, interactive = null, tar
       });
       if (how === "attach") {
         await wfPrRecovery(item, e, (fresh) =>
-          spawnWfReview(fresh, root, depth, publish, interactive, target, prUrl)
+          spawnWfReview(fresh, root, depth, publish, opts)
         );
       } else if (how === "local") {
-        await spawnWfReview(item, root, depth, "local", interactive, target, null);
+        // Downgraded to a local round: the PR pick goes with the publish mode
+        // it belonged to.
+        await spawnWfReview(item, root, depth, "local", { ...opts, prUrl: null });
       }
       return;
     }
     uiAlert(`Review launch failed: ${e}`);
+  }
+}
+
+/// The note that applies one review round, composed from the round's own
+/// findings. Reads `agent-review.md` because the summary carries the verdict,
+/// not the findings — those are the work.
+async function wfApplyReviewNoteFor(item, round, target) {
+  let md = "";
+  try {
+    md = await invoke("get_workflow_doc", {
+      project: item.project,
+      slug: item.slug,
+      doc: "agent-review.md",
+    });
+  } catch (e) {
+    console.error("get_workflow_doc(agent-review.md) failed:", e);
+  }
+  return applyReviewNote(round, roundFindings(md, round.round), target);
+}
+
+/// Record a change round with `note` and launch the executor on it. The one
+/// mechanism behind both ways of applying a review — the button and the
+/// pre-authorized hand-back — so neither can drift into skipping the snapshot
+/// that versions the plan.
+async function wfRecordAndRevise(item, root, note) {
+  await invoke("workflow_request_changes", {
+    project: item.project,
+    slug: item.slug,
+    note,
+    park: null,
+  });
+  await refreshWorkflows();
+  const fresh = wfItem(item.project, item.slug) || item;
+  await launchWfAgent(fresh, "revise", root, null, {
+    interactive: interactiveParam(item.meta.interactionDefault),
+  });
+}
+
+// Items whose auto-apply is in flight. The hand-back event can arrive twice
+// for one transition (a refresh racing the watcher), and two executors on one
+// item is two agents editing the same plan.
+const wfAutoApplying = new Set();
+
+/// A round that declared `**Apply:** yes` on an item whose launch
+/// pre-authorized it becomes the next change round with no further clicks —
+/// see `shouldAutoApply` for why both signals are required. Loud on purpose:
+/// it spends tokens and moves the item, so it toasts and the executor's
+/// session opens.
+async function wfMaybeAutoApplyReview(project, slug, review) {
+  const key = wfKey(project, slug);
+  if (wfAutoApplying.has(key)) return;
+  await refreshWorkflows();
+  const item = wfItem(project, slug);
+  if (!item || !shouldAutoApply(item, review)) return;
+  const round = pendingReviewRound({ ...item, lastAgentReview: review });
+  if (!round) return;
+  wfAutoApplying.add(key);
+  try {
+    const target = item.meta.status === "plan-review" ? "plan" : "diff";
+    flashToast(
+      `${item.meta.title || slug}: round ${round.round} says apply — ${
+        target === "plan" ? "revising the plan" : "starting a fix round"
+      } now`
+    );
+    const note = await wfApplyReviewNoteFor(item, round, target);
+    const root = state.open.get(`view:workflow:${key}`)?.el || null;
+    await wfRecordAndRevise(item, root, note);
+  } catch (e) {
+    // Never silent: the round declared work and clash failed to start it, so
+    // the human has to know the button is theirs again.
+    uiAlert(`Auto-apply of round ${round.round} failed: ${e}`);
+  } finally {
+    wfAutoApplying.delete(key);
   }
 }
 
@@ -5878,6 +5967,10 @@ function wfComposeReviewRound(item) {
       hasPr: wfHasPr(item),
       prNumber: item.meta.pr ? item.meta.pr.number : 0,
       interactionDefault: item.meta.interactionDefault || "",
+      // Remember the last round's answer for this item: someone who wants the
+      // loop hands-off wants it every round, and someone who reads findings
+      // first always does.
+      autoApplyDefault: !!(item.meta.review && item.meta.review.autoApply),
     });
 
     const backdrop = document.createElement("div");
@@ -5933,6 +6026,26 @@ function wfComposeReviewRound(item) {
       return el ? el.value : fallback;
     };
 
+    // One checkbox rather than a fourth radio group: it is a yes/no
+    // pre-authorization, and the round's report is what decides whether
+    // anything actually gets applied.
+    const applyRow = document.createElement("label");
+    applyRow.className = "wf-review-opt wf-review-apply";
+    const applyBox = document.createElement("input");
+    applyBox.type = "checkbox";
+    applyBox.checked = !!model.autoApply.default;
+    const applyText = document.createElement("span");
+    applyText.className = "wf-review-opt-text";
+    const applyLabel = document.createElement("span");
+    applyLabel.className = "wf-review-opt-label";
+    applyLabel.textContent = model.autoApply.label;
+    const applyDetail = document.createElement("span");
+    applyDetail.className = "wf-review-opt-detail";
+    applyDetail.textContent = model.autoApply.detail;
+    applyText.append(applyLabel, applyDetail);
+    applyRow.append(applyBox, applyText);
+    box.appendChild(applyRow);
+
     const done = (val) => {
       backdrop.remove();
       resolve(val);
@@ -5951,6 +6064,7 @@ function wfComposeReviewRound(item) {
         depth: picked(depthGroup, "standard"),
         publish: picked(publishGroup, "local"),
         interactive: interactiveParam(picked(interactionGroup, "ask")),
+        autoApply: applyBox.checked,
       });
     actions.appendChild(cancel);
     actions.appendChild(launch);
@@ -6486,7 +6600,10 @@ function renderWfActions(bar, root, item) {
   // *applying* it is the default action and the stage's own approve is
   // demoted — approving over the top of an unread review should take a
   // deliberate click.
-  const reviewPending = !!pendingReviewRound(item);
+  // A round that judged its own findings not worth applying is not a reason to
+  // demote the stage's approve — there is nothing waiting to be done.
+  const pendingRound = pendingReviewRound(item);
+  const reviewPending = !!pendingRound && pendingRound.apply !== false;
   // Three labeled zones instead of one undifferentiated row: actions ON the
   // current step's artifact (reviews, explain, open things — nothing moves),
   // the decisions that ADVANCE the pipeline, and item-lifecycle actions.
@@ -6588,18 +6705,7 @@ function renderWfActions(bar, root, item) {
     if (!round) return;
     const isPlan = item.meta.status === "plan-review";
     const target = isPlan ? "plan" : "diff";
-    let md = "";
-    try {
-      md = await invoke("get_workflow_doc", {
-        project: item.project,
-        slug: item.slug,
-        doc: "agent-review.md",
-      });
-    } catch (e) {
-      console.error("get_workflow_doc(agent-review.md) failed:", e);
-    }
-    const findings = roundFindings(md, round.round);
-    const note = applyReviewNote(round, findings, target);
+    const note = await wfApplyReviewNoteFor(item, round, target);
     const what = isPlan ? "the plan" : "the code";
     const pick = await uiChoice({
       message: `Apply agent review round ${round.round} to ${what}?`,
@@ -6618,17 +6724,7 @@ function renderWfActions(bar, root, item) {
     if (!pick) return;
     if (pick === "edit") return requestChanges(target, note);
     try {
-      await invoke("workflow_request_changes", {
-        project: item.project,
-        slug: item.slug,
-        note,
-        park: null,
-      });
-      await refreshWorkflows();
-      const fresh = wfItem(item.project, item.slug) || item;
-      await launchWfAgent(fresh, "revise", root, null, {
-        interactive: interactiveParam(item.meta.interactionDefault),
-      });
+      await wfRecordAndRevise(item, root, note);
     } catch (e) {
       uiAlert(`Apply review failed: ${e}`);
     }
@@ -6643,11 +6739,23 @@ function renderWfActions(bar, root, item) {
     const round = pendingReviewRound(item);
     if (!round || !WF_REVIEWABLE.has(item.meta.status)) return;
     const isPlan = item.meta.status === "plan-review";
+    // The round's own call rides the label: it either found work worth a round
+    // or it didn't, and that is the single most useful thing to know before
+    // spending tokens on one.
+    const says =
+      round.apply === true ? " · recommended" : round.apply === false ? " · not needed" : "";
     add(
-      `↻ Apply review r${round.round} → ${isPlan ? "revise plan" : "fix round"}`,
-      "primary",
+      `↻ Apply review r${round.round} → ${isPlan ? "revise plan" : "fix round"}${says}`,
+      round.apply === false ? "" : "primary",
       applyReview,
-      `Turn round ${round.round}'s findings into the next round's instructions and launch the agent — ` +
+      (round.apply === true
+        ? `Round ${round.round} recommends applying${round.applyReason ? `: ${round.applyReason}` : ""}. `
+        : round.apply === false
+          ? `Round ${round.round} says this is not worth a round${
+              round.applyReason ? `: ${round.applyReason}` : ""
+            }. You can still apply it. `
+          : "") +
+        `Turns the findings into the next round's instructions and launches the agent — ` +
         `${isPlan ? "the plan is versioned" : "the diff is frozen"} first, and you can edit the note before it goes`
     );
   };
@@ -6708,7 +6816,7 @@ function renderWfActions(bar, root, item) {
           ))
         )
           return;
-        await spawnWfReview(item, root, "standard", "local", null, "structure");
+        await spawnWfReview(item, root, "standard", "local", { target: "structure" });
       },
       "Generate the Structure tab: an in-depth explanation of what this change does (functional parts + mermaid diagrams). Spends tokens; regenerates on each run.",
       "step"
@@ -9383,6 +9491,7 @@ listen("workflow-attention", (event) => {
     flashToast(
       `${title || slug}: review round ${review.round} finished — ${wfShort(review.verdict, 120)}. ${wfShort(posted, 160)}`
     );
+    wfMaybeAutoApplyReview(project, slug, review);
   } else {
     flashToast(`${title || slug}: ${wfStatusInfo(status).label} — decision needed`);
   }

@@ -22,6 +22,7 @@
     hasPr = false,
     prNumber = 0,
     interactionDefault = "",
+    autoApplyDefault = false,
   } = {}) {
     const prName = prNumber ? `#${prNumber}` : "the PR";
     return {
@@ -95,6 +96,23 @@
             detail: "No questions — the reviewer decides alone and reports at the end.",
           },
         ],
+      },
+      // The round's own findings can become the next change round without a
+      // second trip through the UI. Pre-authorization, not automation: the
+      // reviewer still declares whether anything is worth applying, and a
+      // round that answers "no" applies nothing however this is set.
+      autoApply: {
+        label:
+          target === "plan"
+            ? "Apply the findings to the plan when the round finishes"
+            : "Start a fix round when this one finishes",
+        detail:
+          "The round decides whether its findings are worth it — cosmetic ones are reported, not applied. " +
+          (target === "plan"
+            ? "The current plan is frozen as a version first, so you can diff what the round changed."
+            : "The current diff is frozen first, so the Timeline keeps what you reviewed.") +
+          " Leave it off to read the findings and decide yourself.",
+        default: autoApplyDefault,
       },
     };
   }

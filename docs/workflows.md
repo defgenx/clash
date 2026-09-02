@@ -171,6 +171,23 @@ pr-draft / pr-ready likewise
   appliedReviewRound` means "a review landed and nothing has been done with
   it" — the state the item header now shows as *not applied yet*, and the
   reason the stage's own approve button is demoted while it holds.
+- **Every round declares whether it should be applied**, as
+  `**Apply:** yes|no — <reason>` next to its `**Verdict:**`. The reviewers'
+  skills own the judgement (interactive rounds ask the human; autonomous ones
+  weigh materiality, and both refuse when the findings need a decision an
+  executor cannot make); `parse_round` reduces the line to a tri-state on
+  `AgentReviewSummary.apply` — anything not recognizably yes/no stays `None`,
+  because clash launches an agent off a `yes` and silence is not consent. The
+  explainer writes no such line: an explanation is not findings.
+- **Auto-apply needs two signatures.** `meta.review.autoApply` is the human's
+  pre-authorization from the round composer, carried into the kickoff as
+  `Auto-apply: yes|no` so the skill knows whether its own `yes` fires (an
+  interactive round is about to tell the human what happens next, and "I'll
+  apply it" is a lie when clash is only going to recommend it). The pure
+  `shouldAutoApply` requires the flag *and* `apply == true` *and* the
+  pending-round rules (stage/target agreement, not already applied); the
+  hand-back listener then runs the same `wfRecordAndRevise` the button does,
+  guarded against a doubled event. Neither signal alone spawns anything.
 - Round *outcomes* are read from `agent-review.md`, not from meta: the pure
   `application::workflow::latest_agent_review` parses the last `## Review <n>`
   section (verdict + `### Published` lines) into

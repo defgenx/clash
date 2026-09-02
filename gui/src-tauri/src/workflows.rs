@@ -772,21 +772,6 @@ pub(crate) fn update_workflow_status(
     Ok(meta)
 }
 
-/// Write `plan.md` or `review.md`.
-#[tauri::command]
-pub(crate) fn save_workflow_doc(
-    state: State<'_, GuiState>,
-    project: String,
-    slug: String,
-    doc: String,
-    content: String,
-) -> Result<(), String> {
-    state
-        .backend
-        .write_workflow_doc(&project, &slug, &doc, &content)
-        .map_err(e2s)
-}
-
 /// Upsert an annotation (by id; empty id = new). The backend owns hashing:
 /// `line_content_hash` is always recomputed from `line_content` here, so
 /// there is exactly one hash implementation (FNV-1a in the core).
@@ -1491,6 +1476,7 @@ pub(crate) async fn start_workflow_review_agent(
     interactive: Option<bool>,
     target: Option<ReviewTarget>,
     pr_url: Option<String>,
+    auto_apply: Option<bool>,
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
@@ -1545,6 +1531,9 @@ pub(crate) async fn start_workflow_review_agent(
     // explicit; the one-click actions don't ask).
     let interactive = interactive
         .or_else(|| clash::application::workflow::interaction_param(&meta.interaction_default));
+    // An explainer round writes no findings, so there is nothing to apply and
+    // pre-authorizing it would be meaningless.
+    let auto_apply = auto_apply.unwrap_or(false) && target != ReviewTarget::Structure;
     let review = WorkflowReview {
         target,
         depth,
@@ -1552,6 +1541,7 @@ pub(crate) async fn start_workflow_review_agent(
         return_status: meta.status,
         round: meta.review_round.saturating_add(1),
         interactive,
+        auto_apply,
         pr_url: pr_url.unwrap_or_default(),
         started_at: now_ms(),
         ..Default::default()

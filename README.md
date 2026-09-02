@@ -582,7 +582,20 @@ PRs closes once all of them merge — it has no primary PR to drive it). *Reques
 and a fix round on an item with a PR pushes its commits so the PR follows.
 **Applying a review round.** A review round judges and records; it never edits
 `plan.md` or the code — a reviewer that rewrites what it reviews has reviewed
-nothing. Turning its findings into work is one click: **↻ Apply review rN**
+nothing. **Every round ends by declaring whether its findings are worth
+applying** (`**Apply:** yes|no — reason` in its report): interactive rounds ask
+you, autonomous ones judge it on materiality — a missing step or a wrong
+ordering is worth a revision round, six wording nits are not. clash shows that
+call on the action (*recommended* / *not needed*) and in the item header.
+
+The round composer's **“Apply the findings when the round finishes”** checkbox
+pre-authorizes acting on it: tick it and a round that answers `yes` starts the
+revision round by itself, with no second trip through the UI — a round that
+answers `no` still applies nothing, because spending tokens to apply nothing is
+exactly what it just advised against. Leave it unticked to read the findings
+and decide yourself.
+
+Turning findings into work by hand is one click: **↻ Apply review rN**
 (offered at every decision state while a round is waiting) composes the note
 from that round's own findings, records it as the next change round — which
 freezes the current plan as a version first — and launches the agent to carry

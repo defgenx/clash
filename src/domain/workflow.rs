@@ -371,6 +371,16 @@ pub struct WorkflowReview {
     /// chose neither at launch, so the skill asks in-session before starting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interactive: Option<bool>,
+    /// Whether clash may act on the round's own `**Apply:** yes` without a
+    /// second click: the composer's "apply the findings when the round
+    /// finishes" checkbox. Pre-authorization, not automation — the reviewer
+    /// still decides whether there is anything worth applying, and a round
+    /// that answers `no` applies nothing however this is set.
+    ///
+    /// Defaults to false so an older round, or one launched by a surface that
+    /// never asked, can never spawn an executor nobody authorized.
+    #[serde(default)]
+    pub auto_apply: bool,
     /// The PR this round talks to, when the launcher picked one — multi-repo
     /// items answer reviewers per PR. Empty means the primary `meta.pr`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -595,6 +605,18 @@ pub struct AgentReviewSummary {
     pub verdict: String,
     /// The `### Published` bullet lines; empty when the round declared nothing.
     pub published: Vec<String>,
+    /// The round's own call on whether its findings should be applied to the
+    /// artifact now (`**Apply:** yes|no`). `None` when the round declared
+    /// nothing — every round before this contract existed, and any round whose
+    /// report is malformed. It is a *recommendation*: applying is still a
+    /// change round clash runs, never something the reviewer did itself.
+    #[serde(default)]
+    pub apply: Option<bool>,
+    /// The one-line reason the round gave for that call. Shown next to the
+    /// action, because "the reviewer says apply this" is only useful with the
+    /// because.
+    #[serde(default)]
+    pub apply_reason: String,
 }
 
 /// A workflow item as listed to the frontends — a runtime DTO like
