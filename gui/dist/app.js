@@ -5768,6 +5768,8 @@ async function wfShareDialog(item) {
     slackConfigured: !!settings.slackWebhook,
     discordConfigured: !!settings.discordWebhook,
     jiraConfigured: !!(settings.jiraBaseUrl && settings.jiraEmail && settings.jiraTokenSet),
+    jiraTransport: settings.jiraTransport || "agent",
+    chatTransport: settings.chatTransport || "agent",
     jiraSkill: settings.jiraSkill || "",
     chatSkill: settings.chatSkill || "",
     preset: "packet",
@@ -5912,7 +5914,7 @@ async function wfShareDialog(item) {
               dir,
             });
             flashToast(`Saved ${path}`);
-          } else if (d.route === "skill" || d.route === "agent") {
+          } else if (d.route === "agent") {
             // clash hands the document to a Claude session and stops there —
             // through the named skill when there is one, otherwise through
             // whatever the session has connected. Jira still needs a ticket:
@@ -5930,13 +5932,17 @@ async function wfShareDialog(item) {
               if (!asked || !asked.trim()) return;
               ticket = asked.trim().toUpperCase();
             }
-            // The agent route spends tokens and posts something outward-facing
-            // with no credentials of clash's behind it, so it asks first.
+            // It spends tokens and posts something outward-facing with none of
+            // clash's credentials behind it, so it asks first — once, naming
+            // what will actually do the posting.
+            const target = d.label.replace(/^(Send to|Post to) /, "").replace("…", "");
             if (
-              d.route === "agent" &&
               !(await uiConfirm(
-                `Send this to ${d.label.replace(/^(Send to|Post to) /, "").replace("…", "")} from a Claude session? ` +
-                  "It will use the tools that session has connected — an MCP server for it, say. Spends tokens.",
+                `Send this to ${target} from a Claude session? ` +
+                  (d.skill
+                    ? `It will use the ${d.skill} skill, falling back to the tools that session has connected.`
+                    : "It will use the tools that session has connected — an MCP server for it, say.") +
+                  " Spends tokens.",
                 "Send"
               ))
             )
@@ -10683,10 +10689,32 @@ $("set-wf-jira-token").addEventListener("change", async () => {
     uiAlert(`Jira token: ${e}`);
   }
 });
-// Skill transports: same patch command, but a skill name is not a URL, so the
-// backend's URL validator must not see it.
+// Skill names go through the same patch command, but a skill name is not a
+// URL, so the backend's URL validator must not see it.
 bindShareWebhookSetting("set-wf-jira-skill", "jiraSkill", "jiraSkill");
 bindShareWebhookSetting("set-wf-chat-skill", "chatSkill", "chatSkill");
+bindShareWebhookSetting("set-wf-jira-transport", "jiraTransport", "jiraTransport");
+bindShareWebhookSetting("set-wf-chat-transport", "chatTransport", "chatTransport");
+
+/// Dim the rows the current transports don't use.
+///
+/// The complaint this group earned was that it was unreadable: a Jira token
+/// and a Jira skill sat side by side with nothing saying that only one of them
+/// was in play. Rows carry `data-transport="<family>:<value>"` and go inert
+/// when their family is set to the other value — still visible (so switching
+/// back is discoverable) but visibly not participating.
+function syncShareTransportRows() {
+  const chosen = {
+    jira: $("set-wf-jira-transport").value || "agent",
+    chat: $("set-wf-chat-transport").value || "agent",
+  };
+  for (const row of document.querySelectorAll("[data-transport]")) {
+    const [family, value] = row.dataset.transport.split(":");
+    row.classList.toggle("setting-inactive", chosen[family] !== value);
+  }
+}
+$("set-wf-jira-transport").addEventListener("change", syncShareTransportRows);
+$("set-wf-chat-transport").addEventListener("change", syncShareTransportRows);
 
 /// Startup policy for changed skills: ask (popup) or one of the silent modes.
 $("set-skills-update").addEventListener("change", async () => {
@@ -11075,6 +11103,9 @@ function restartSessionPoll() {
       $("set-wf-jira-email").value = s.jiraEmail || "";
       $("set-wf-jira-skill").value = s.jiraSkill || "";
       $("set-wf-chat-skill").value = s.chatSkill || "";
+      $("set-wf-jira-transport").value = s.jiraTransport || "agent";
+      $("set-wf-chat-transport").value = s.chatTransport || "agent";
+      syncShareTransportRows();
       // The token itself never comes back — only whether one is stored. Show
       // a placeholder for "set" rather than echoing a secret into the webview.
       $("set-wf-jira-token").value = "";

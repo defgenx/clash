@@ -345,26 +345,42 @@ pub const PROPS: &[Prop] = &[
          clicks.",
     ),
     Prop::new(
+        "workflows.jira_transport",
+        Kind::Enum(&["agent", "clash"]),
+        Val::Str("agent"),
+        "Who posts a share to Jira. `agent` (the default) launches a Claude Code session — \
+         through `jira_skill` when one is named, otherwise using whatever tooling that session \
+         has connected (an MCP server for Jira, say). `clash` makes clash post the comment \
+         itself over HTTPS with `jira_base_url` + `jira_email` + `jira_api_token`. Deliberately \
+         a choice rather than a fallback: which system talks to your tracker is not something \
+         to infer from whether a token happens to be filled in.",
+    ),
+    Prop::new(
+        "workflows.chat_transport",
+        Kind::Enum(&["agent", "clash"]),
+        Val::Str("agent"),
+        "Who posts a share to Slack or Discord — same two values as `jira_transport`, with \
+         `chat_skill` and the webhook URLs as their respective settings. Decision \
+         notifications are not affected: they always use the webhook, because they fire \
+         without a human present and a notification you have to go read in a session is not a \
+         notification.",
+    ),
+    Prop::new(
         "workflows.jira_skill",
         Kind::Str,
         Val::Str(""),
-        "Skill that posts the share document to Jira in a Claude Code session, instead of \
-         clash's own API-token transport. Empty does not disable the session route — it only \
-         means no skill is named, and the session is told to use whatever tooling it has \
-         connected (an MCP server for Jira, say). clash's own transport is used when the \
-         credentials are set and no skill is named. A named skill that is not installed in the \
-         session falls back to that same tooling.",
+        "Skill the `agent` Jira transport routes through. Empty is not \"no session route\" — \
+         it means no skill is named, and the session uses whatever tooling it has connected. A \
+         named skill that is not installed in that session falls back to the same tooling \
+         rather than dead-ending. Ignored when `jira_transport` is `clash`.",
     ),
     Prop::new(
         "workflows.chat_skill",
         Kind::Str,
         Val::Str(""),
-        "Skill that posts the share document to Slack or Discord in a Claude Code session, \
-         instead of the webhook transport. Same shape as `jira_skill`, including the fallback: \
-         empty means no skill is named, not that the destination is unavailable — with no \
-         webhook either, a session posts it with whatever it has connected. Decision \
-         notifications (`notify_webhook`) always use the webhook: they fire without a human \
-         present, and a notification you have to go read in a session is not a notification.",
+        "Skill the `agent` chat transport routes through, for the Slack and Discord \
+         destinations. Same shape as `jira_skill`, including the fallback to the session's own \
+         tooling. Ignored when `chat_transport` is `clash`.",
     ),
     Prop::new(
         "workflows.jira_base_url",

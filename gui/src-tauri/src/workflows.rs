@@ -2240,8 +2240,12 @@ pub(crate) struct ShareSettings {
     slack_webhook: String,
     discord_webhook: String,
     notify_webhook: String,
-    /// Skill transports. Non-empty means "post through a session", and the
-    /// share dialog says so instead of silently choosing for the human.
+    /// Who posts each family of destination: `agent` | `clash`. The dialog
+    /// renders the choice rather than inferring one from what happens to be
+    /// filled in.
+    jira_transport: String,
+    chat_transport: String,
+    /// Skill the `agent` transport routes through, when one is named.
     jira_skill: String,
     chat_skill: String,
     jira_base_url: String,
@@ -2258,6 +2262,8 @@ fn share_settings(state: &GuiState) -> ShareSettings {
         slack_webhook: cfg.workflows.slack_webhook.trim().to_string(),
         discord_webhook: cfg.workflows.discord_webhook.trim().to_string(),
         notify_webhook: cfg.workflows.notify_webhook.trim().to_string(),
+        jira_transport: cfg.workflows.jira_transport.trim().to_string(),
+        chat_transport: cfg.workflows.chat_transport.trim().to_string(),
         jira_skill: cfg.workflows.jira_skill.trim().to_string(),
         chat_skill: cfg.workflows.chat_skill.trim().to_string(),
         jira_base_url: cfg.workflows.jira_base_url.trim().to_string(),
@@ -2286,6 +2292,8 @@ pub(crate) fn set_workflow_share_settings(
     slack_webhook: Option<String>,
     discord_webhook: Option<String>,
     notify_webhook: Option<String>,
+    jira_transport: Option<String>,
+    chat_transport: Option<String>,
     jira_skill: Option<String>,
     chat_skill: Option<String>,
     jira_base_url: Option<String>,
@@ -2322,6 +2330,20 @@ pub(crate) fn set_workflow_share_settings(
     text_setting("workflows.jira_api_token", jira_api_token);
     text_setting("workflows.jira_skill", jira_skill);
     text_setting("workflows.chat_skill", chat_skill);
+    let mut transport_setting = |key: &'static str, value: Option<String>| -> Result<(), String> {
+        let Some(value) = value else { return Ok(()) };
+        let value = value.trim().to_ascii_lowercase();
+        match value.as_str() {
+            // The default leaves config.toml rather than being written out —
+            // same rule as every other setting in this group.
+            "agent" => resets.push(key),
+            "clash" => sets.push((key, serde_json::Value::String(value))),
+            other => return Err(format!("Unknown transport '{}'", other)),
+        }
+        Ok(())
+    };
+    transport_setting("workflows.jira_transport", jira_transport)?;
+    transport_setting("workflows.chat_transport", chat_transport)?;
     if let Some(notify) = notify_webhook {
         let notify = notify.trim().to_ascii_lowercase();
         if !["off", "slack", "discord"].contains(&notify.as_str()) {

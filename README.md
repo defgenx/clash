@@ -832,24 +832,33 @@ markup. A successful post remembers the ticket on the item (also editable in
 its ⚙ Settings tab), so the next share is one confirmation away. Share the
 plan to its ticket the moment it's ready — same preview, same one-click send.
 
-**Three routes, in this order, per destination.** A **skill** you name in
-*Settings → Workflows* (*Jira skill* / *Chat skill*) posts the document in a
-Claude Code session. Failing that, clash posts it itself with the credentials
-you configured — a webhook URL, or a Jira site + email + API token. Failing
-that, a Claude Code session posts it with **whatever tooling it has connected**:
-an MCP server for the destination, or the CLI it would normally use.
+**Who posts it is a setting, not a guess.** Per destination family you choose
+one of two, in *Settings → Workflows · sharing*:
 
-So a destination is never unavailable — it just costs tokens and takes a little
-longer when clash has nothing configured for it, and the button says so before
-you press it. On either session route clash writes the document under
-`~/.claude/clash/share/`, launches the session with the destination stated and
-the ticket carried (for Jira), and opens the tab so you can watch it land. No
-credentials pass through clash there, and the payload is still exactly the
-markdown you previewed — the kickoff says so in as many words: post it as
-written, adapt only the formatting the destination needs, and if nothing in
-that session can reach the destination, say so rather than posting something
-else. A named skill that isn't installed in the session falls back to the
-session's own tooling instead of dead-ending.
+- **A Claude session** (the default) — through a skill you name (*Jira skill* /
+  *Chat skill*), or, with none named, using whatever tooling that session has
+  connected: an MCP server for the destination, the CLI it would normally use.
+  A named skill that isn't installed in that session falls back to the same
+  tooling rather than dead-ending. This route needs no configuration in clash
+  and spends tokens.
+- **clash itself** — clash posts it over HTTPS with the webhook URL or the Jira
+  site + email + API token. Fast, free, and limited to services clash has a
+  client for.
+
+Neither is a fallback for the other. Pick *clash itself* and leave its
+credentials empty and the destination says so — it will not quietly launch a
+session instead, because which system talks to your tracker isn't something to
+infer from whether a token happens to be filled in. Each button names the route
+it will take, and the fields the other route uses are dimmed so the group reads
+as one decision instead of seven unrelated boxes.
+
+On the session route clash writes the document under `~/.claude/clash/share/`,
+launches the session with the destination stated and the ticket carried (for
+Jira), and opens the tab so you can watch it land. No credentials pass through
+clash there, and the payload is still exactly the markdown you previewed — the
+kickoff says so in as many words: post it as written, adapt only the formatting
+the destination needs, and if nothing in that session can reach the destination,
+say so rather than posting something else.
 
 **Decision notifications on Slack/Discord**: set *Settings → Workflows →
 Notify decisions* and every item an *agent* parks at a decision state

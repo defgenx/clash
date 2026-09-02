@@ -225,12 +225,16 @@ pub struct Workflows {
     /// Where decision-state transitions are announced: `off` | `slack` |
     /// `discord`.
     pub notify_webhook: String,
-    /// Skill that posts a share to Jira instead of clash's API-token
-    /// transport — including one that works through an MCP server. Empty uses
-    /// the credentials below.
+    /// Who posts a share to Jira: `agent` (a Claude Code session) or `clash`
+    /// (clash's own HTTPS call with the credentials below). A choice, not a
+    /// fallback.
+    pub jira_transport: String,
+    /// Same for the Slack/Discord destinations.
+    pub chat_transport: String,
+    /// Skill the `agent` Jira transport routes through. Empty means the
+    /// session uses whatever tooling it has connected.
     pub jira_skill: String,
-    /// Skill that posts a share to Slack/Discord instead of the webhooks.
-    /// Empty uses the webhook URLs.
+    /// Skill the `agent` chat transport routes through.
     pub chat_skill: String,
     /// Jira site URL for the share dialog's "Post to Jira" destination.
     /// Empty disables the destination.
@@ -249,6 +253,8 @@ impl Default for Workflows {
             slack_webhook: default_str("workflows.slack_webhook"),
             discord_webhook: default_str("workflows.discord_webhook"),
             notify_webhook: default_str("workflows.notify_webhook"),
+            jira_transport: default_str("workflows.jira_transport"),
+            chat_transport: default_str("workflows.chat_transport"),
             jira_skill: default_str("workflows.jira_skill"),
             chat_skill: default_str("workflows.chat_skill"),
             jira_base_url: default_str("workflows.jira_base_url"),

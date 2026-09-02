@@ -47,22 +47,76 @@ test("a planless item gets a disabled, unchecked plan row — not a missing one"
   assert.equal(m.sections.find((s) => s.id === "summary").checked, true);
 });
 
-test("configuration picks a destination's route, it never removes the destination", () => {
-  // This used to disable an unconfigured destination and point at Settings.
-  // It was wrong in one direction that mattered: a session with an MCP server
-  // for Slack can post to Slack whether or not clash holds a webhook, so
-  // "unconfigured" is a route, not an absence.
-  const off = shareModel({});
-  const on = shareModel({ slackConfigured: true, discordConfigured: true, jiraConfigured: true });
-  for (const id of ["slack", "discord", "jira"]) {
-    assert.equal(off.destinations.find((d) => d.id === id).enabled, true, id);
-    assert.equal(off.destinations.find((d) => d.id === id).route, "agent", id);
-    assert.equal(on.destinations.find((d) => d.id === id).route, "client", id);
+test("the transport is a choice, and a skill only refines the session route", () => {
+  // The correction that produced this shape: a skill is not a route of its own,
+  // and clash posting directly is not a fallback. One setting picks who posts;
+  // the skill only says how the session does it.
+  const session = shareDestination("jira", "Post to Jira…", { transport: "agent" });
+  assert.equal(session.route, "agent");
+  assert.equal(session.enabled, true, "a session route needs no configuration");
+  assert.match(session.hint, /tools it has connected/);
+
+  const withSkill = shareDestination("jira", "l", { transport: "agent", skill: "myorg:jira-post" });
+  assert.equal(withSkill.route, "agent", "a skill refines the route, it is not one");
+  assert.equal(withSkill.skill, "myorg:jira-post");
+  assert.match(withSkill.hint, /via the myorg:jira-post skill/);
+
+  // Credentials present or not, the session route is unaffected: nothing about
+  // this choice is inferred from what happens to be filled in.
+  assert.equal(
+    shareDestination("jira", "l", { transport: "agent", clientConfigured: true }).route,
+    "agent"
+  );
+});
+
+test("clash's own route fails loudly rather than falling back", () => {
+  // Choosing "clash itself" and leaving the credentials empty must not quietly
+  // launch a session instead — that would be clash deciding which system talks
+  // to your tracker, which is the decision the setting exists to make.
+  const ready = shareDestination("slack", "Send to Slack", {
+    transport: "clash",
+    clientConfigured: true,
+  });
+  assert.equal(ready.route, "clash");
+  assert.equal(ready.enabled, true);
+  assert.equal(ready.hint, "clash posts it directly");
+
+  const unconfigured = shareDestination("slack", "Send to Slack", { transport: "clash" });
+  assert.equal(unconfigured.route, "clash", "still the chosen route, not a silent swap");
+  assert.equal(unconfigured.enabled, false);
+  assert.match(unconfigured.hint, /credentials are missing/);
+  assert.match(unconfigured.hint, /switch this destination to a Claude session/);
+  // A skill is irrelevant on this route and must not leak into it.
+  assert.equal(
+    shareDestination("slack", "l", { transport: "clash", skill: "myorg:x", clientConfigured: true })
+      .skill,
+    ""
+  );
+});
+
+test("the model renders the transports it is given, per family", () => {
+  const m = shareModel({
+    jiraTransport: "clash",
+    jiraConfigured: true,
+    chatTransport: "agent",
+    chatSkill: "myorg:chat",
+  });
+  const by = (id) => m.destinations.find((d) => d.id === id);
+  assert.equal(by("jira").route, "clash");
+  // Slack and Discord share one family, so one setting covers both.
+  assert.equal(by("slack").route, "agent");
+  assert.equal(by("discord").route, "agent");
+  assert.equal(by("slack").skill, "myorg:chat");
+  assert.equal(by("discord").skill, "myorg:chat");
+  // The default is the session route, so a fresh install can share at once.
+  const fresh = shareModel({});
+  for (const id of ["jira", "slack", "discord"]) {
+    assert.equal(fresh.destinations.find((d) => d.id === id).route, "agent", id);
+    assert.equal(fresh.destinations.find((d) => d.id === id).enabled, true, id);
   }
-  // Local destinations never need configuration and take no route at all.
+  // Local destinations take no route at all.
   for (const id of ["clipboard", "md", "html"]) {
-    assert.equal(off.destinations.find((d) => d.id === id).enabled, true, id);
-    assert.equal(off.destinations.find((d) => d.id === id).route, "local", id);
+    assert.equal(fresh.destinations.find((d) => d.id === id).route, "local", id);
   }
 });
 
@@ -112,51 +166,4 @@ test("browser branch publishes every global app.js reads", () => {
   ]) {
     assert.ok(name in sandbox.window, `${name} must be published to window`);
   }
-});
-
-test("a destination with nothing configured falls to a Claude session", () => {
-  // The route that made the others optional: MCP access already in the
-  // session, and no skill wrapping it. "clash has no credentials for this" is
-  // not "this cannot be reached", so nothing is disabled.
-  const bare = shareModel({});
-  for (const id of ["jira", "slack", "discord"]) {
-    const d = bare.destinations.find((x) => x.id === id);
-    assert.equal(d.enabled, true, `${id} is still reachable`);
-    assert.equal(d.route, "agent");
-    assert.equal(d.skill, "");
-    assert.match(d.hint, /tools it has connected/);
-    // The cost of that route is on the label, not discovered afterwards.
-    assert.match(d.hint, /spends tokens/);
-  }
-});
-
-test("routes take precedence: skill, then clash's own client, then the session", () => {
-  assert.equal(shareDestination("jira", "l", "myorg:x", true).route, "skill");
-  assert.equal(shareDestination("jira", "l", "", true).route, "client");
-  assert.equal(shareDestination("jira", "l", "", false).route, "agent");
-  // The client route is the quiet one: nothing to explain, clash just posts.
-  assert.equal(shareDestination("slack", "l", "", true).hint, "");
-});
-
-test("a named skill takes over a destination, and says so", () => {
-  // The point of the skill transport: reach destinations clash has no client
-  // for, through whatever the session's own tooling can reach. It has to be
-  // visible on the button — a share leaving by a different route than you
-  // expect is worse than either route.
-  const withSkills = shareModel({ jiraSkill: "myorg:jira-post", chatSkill: "myorg:chat" });
-  const by = (id) => withSkills.destinations.find((d) => d.id === id);
-  for (const id of ["jira", "slack", "discord"]) {
-    assert.equal(by(id).enabled, true, `${id} is available through its skill`);
-    assert.match(by(id).hint, /in a Claude session/);
-  }
-  assert.equal(by("jira").skill, "myorg:jira-post");
-  assert.equal(by("slack").skill, "myorg:chat");
-
-  // Credentials alone still work, and take the client route with nothing to
-  // explain — clash just posts it.
-  const creds = shareModel({ slackConfigured: true, jiraConfigured: true });
-  assert.equal(creds.destinations.find((d) => d.id === "slack").route, "client");
-  assert.equal(creds.destinations.find((d) => d.id === "slack").hint, "");
-  // Discord has neither, so it falls to the session rather than vanishing.
-  assert.equal(creds.destinations.find((d) => d.id === "discord").route, "agent");
 });

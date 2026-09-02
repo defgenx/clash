@@ -110,35 +110,46 @@
 
         <div class="settings-group">Workflows · sharing</div>
         <p class="settings-note">
-          Where an item's <b>↗ Share…</b> can send its document, and how it gets
-          there. Three routes, in this order: a <b>skill</b> you name below posts
-          it in a Claude session; failing that, clash posts it itself with the
-          credentials below; failing that, a Claude session posts it with
-          whatever it has connected — an MCP server for the destination, say.
-          So a destination is never unavailable, only slower and token-spending
-          when clash has nothing configured for it. Each button names the route
-          it will take, and nothing is ever sent without you pressing one.
+          Where an item's <b>↗ Share…</b> can send its document, and <b>who does
+          the posting</b>. Per destination you pick one of two: a <b>Claude
+          session</b> — through a skill you name, or with whatever tooling that
+          session has connected, an MCP server for instance — or <b>clash
+          itself</b>, over HTTPS with the credentials below. Neither falls back
+          to the other: each button names the route it will take, and nothing is
+          ever sent without you pressing one.
         </p>
-        <label class="setting-row">Jira skill
-          <input id="set-wf-jira-skill" type="text" placeholder="myorg:jira-post" autocomplete="off" spellcheck="false" title="Skill that posts the share document to Jira, in a Claude session. Leave it empty and the session still handles Jira — it just uses whatever tooling it has connected (an MCP server, say) instead of a named skill; the credentials below are only for clash posting it directly. A named skill that isn't installed in the session falls back to that same tooling." />
+        <label class="setting-row inline">Jira posted by
+          <select id="set-wf-jira-transport" title="Who posts a share to Jira. A Claude session uses the skill below when you name one, otherwise whatever tooling it has connected. clash itself posts the comment over HTTPS with the site URL, email and token below.">
+            <option value="agent">A Claude session</option>
+            <option value="clash">clash itself</option>
+          </select>
         </label>
-        <label class="setting-row">Chat skill
-          <input id="set-wf-chat-skill" type="text" placeholder="myorg:slack-post" autocomplete="off" spellcheck="false" title="Same, for the Slack and Discord destinations. Empty means: use the webhook below if it is set, otherwise let a Claude session post it with the tools it has connected." />
+        <label class="setting-row" data-transport="jira:agent">Jira skill
+          <input id="set-wf-jira-skill" type="text" placeholder="myorg:jira-post" autocomplete="off" spellcheck="false" title="Skill the session routes the Jira post through. Empty is fine: the session then uses whatever tooling it has connected. A named skill that isn't installed in that session falls back to the same tooling rather than dead-ending." />
         </label>
-        <label class="setting-row">Slack webhook
-          <input id="set-wf-slack-webhook" type="text" placeholder="https://hooks.slack.com/services/…" autocomplete="off" spellcheck="false" title="Slack incoming-webhook URL — the route clash uses itself when no chat skill is named. Also the only route decision notifications ever take. Empty leaves Share… to a Claude session and disables notifications." />
+        <label class="setting-row" data-transport="jira:clash">Jira site URL
+          <input id="set-wf-jira-url" type="text" placeholder="https://yourorg.atlassian.net" autocomplete="off" spellcheck="false" title="Jira site clash posts the comment to. Only used when Jira is posted by clash itself." />
         </label>
-        <label class="setting-row">Discord webhook
-          <input id="set-wf-discord-webhook" type="text" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" spellcheck="false" title="Discord webhook URL — the route clash uses itself when no chat skill is named. Also the only route decision notifications ever take. Empty leaves Share… to a Claude session and disables notifications." />
-        </label>
-        <label class="setting-row">Jira site URL
-          <input id="set-wf-jira-url" type="text" placeholder="https://yourorg.atlassian.net" autocomplete="off" spellcheck="false" title="Jira site for the route where clash posts the comment itself. Only needed if you want that route rather than a Claude session." />
-        </label>
-        <label class="setting-row">Jira email
+        <label class="setting-row" data-transport="jira:clash">Jira email
           <input id="set-wf-jira-email" type="text" placeholder="you@yourorg.com" autocomplete="off" spellcheck="false" title="Jira account email paired with the API token below." />
         </label>
-        <label class="setting-row">Jira API token
-          <input id="set-wf-jira-token" type="password" placeholder="API token" autocomplete="off" spellcheck="false" title="Jira API token, stored in config.toml like the webhook URLs. It never reaches this window again once saved — the field shows whether one is set, not its value." />
+        <label class="setting-row" data-transport="jira:clash">Jira API token
+          <input id="set-wf-jira-token" type="password" placeholder="API token" autocomplete="off" spellcheck="false" title="Jira API token, stored in config.toml like the webhook URLs. It never comes back to this window once saved — the placeholder says whether one is stored, not its value." />
+        </label>
+        <label class="setting-row inline">Slack / Discord posted by
+          <select id="set-wf-chat-transport" title="Who posts a share to Slack or Discord. Decision notifications below are not affected — they always use the webhook.">
+            <option value="agent">A Claude session</option>
+            <option value="clash">clash itself</option>
+          </select>
+        </label>
+        <label class="setting-row" data-transport="chat:agent">Chat skill
+          <input id="set-wf-chat-skill" type="text" placeholder="myorg:slack-post" autocomplete="off" spellcheck="false" title="Skill the session routes the Slack/Discord post through. Empty is fine — the session uses whatever tooling it has connected." />
+        </label>
+        <label class="setting-row" data-transport="chat:clash">Slack webhook
+          <input id="set-wf-slack-webhook" type="text" placeholder="https://hooks.slack.com/services/…" autocomplete="off" spellcheck="false" title="Slack incoming-webhook URL. Used when Slack is posted by clash itself — and always, independently, by decision notifications below." />
+        </label>
+        <label class="setting-row" data-transport="chat:clash">Discord webhook
+          <input id="set-wf-discord-webhook" type="text" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" spellcheck="false" title="Discord webhook URL. Used when Discord is posted by clash itself — and always, independently, by decision notifications below." />
         </label>
 
         <div class="settings-group">Workflows · notifications</div>

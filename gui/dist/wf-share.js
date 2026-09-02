@@ -57,10 +57,11 @@
     slackConfigured = false,
     discordConfigured = false,
     jiraConfigured = false,
-    // Skill transports: a named skill posts through a Claude Code session
-    // (its own MCP servers and tooling), instead of clash's webhook/API
-    // client. Non-empty wins, and the label says so — a share going out
-    // through a different route than you expect is worse than either route.
+    // Who posts each family of destination, and the skill the session route
+    // uses when one is named. Both come straight from Settings: this model
+    // renders the human's choice, it does not make one.
+    jiraTransport = "agent",
+    chatTransport = "agent",
     jiraSkill = "",
     chatSkill = "",
     preset = "packet",
@@ -79,37 +80,69 @@
         { id: "clipboard", label: "Copy markdown", enabled: true, route: "local" },
         { id: "md", label: "Save .md…", enabled: true, route: "local" },
         { id: "html", label: "Save .html…", enabled: true, route: "local" },
-        shareDestination("slack", "Send to Slack", chatSkill, slackConfigured),
-        shareDestination("discord", "Send to Discord", chatSkill, discordConfigured),
-        shareDestination("jira", "Post to Jira…", jiraSkill, jiraConfigured),
+        shareDestination("slack", "Send to Slack", {
+          transport: chatTransport,
+          skill: chatSkill,
+          clientConfigured: slackConfigured,
+        }),
+        shareDestination("discord", "Send to Discord", {
+          transport: chatTransport,
+          skill: chatSkill,
+          clientConfigured: discordConfigured,
+        }),
+        shareDestination("jira", "Post to Jira…", {
+          transport: jiraTransport,
+          skill: jiraSkill,
+          clientConfigured: jiraConfigured,
+        }),
       ],
     };
   }
 
   /// One outward destination, with the route it will actually take.
   ///
-  /// Three routes, in precedence order — explicit configuration first, and the
-  /// session last because it is the one that spends tokens:
+  /// **Two routes, and the human picks which** — `transport` is a setting, not
+  /// something inferred from what happens to be filled in:
   ///
-  /// - `skill` — a skill named in Settings posts it in a Claude session;
-  /// - `client` — clash posts it itself (webhook URL, Jira API token);
-  /// - `agent` — a Claude session with no skill named, using whatever tooling
-  ///   it has connected (an MCP server for the destination, say).
+  /// - `agent` (the default) — a Claude Code session posts it: through the
+  ///   named `skill` when there is one, otherwise with whatever tooling that
+  ///   session has connected (an MCP server for the destination, say). A skill
+  ///   *refines* this route; it is not a route of its own, and its absence
+  ///   never means "unavailable".
+  /// - `clash` — clash posts it itself over HTTPS with the configured webhook
+  ///   or API token.
   ///
-  /// The `agent` route is why no destination is ever disabled: "clash has no
-  /// credentials for this" is not the same as "this cannot be reached", and
-  /// disabling the button on that basis hid a route the session already had.
-  /// The route is on the label because a share leaving by a path you did not
+  /// Neither is a fallback for the other. When `clash` is chosen and its
+  /// credentials are missing, the destination is disabled and says so: silently
+  /// launching a session instead would be clash deciding which system talks to
+  /// your tracker, which is exactly the decision the setting exists to make.
+  /// The route is always on the label — a share leaving by a path you did not
   /// expect is worse than either path.
-  function shareDestination(id, label, skill, clientConfigured) {
-    const route = skill ? "skill" : clientConfigured ? "client" : "agent";
-    const hint =
-      route === "skill"
-        ? `via the ${skill} skill, in a Claude session`
-        : route === "client"
-          ? ""
-          : "in a Claude session, using the tools it has connected — spends tokens";
-    return { id, label, enabled: true, route, skill: skill || "", hint };
+  function shareDestination(id, label, { transport = "agent", skill = "", clientConfigured = false } = {}) {
+    const viaClash = transport === "clash";
+    const named = (skill || "").trim();
+    if (viaClash) {
+      return {
+        id,
+        label,
+        route: "clash",
+        skill: "",
+        enabled: clientConfigured,
+        hint: clientConfigured
+          ? "clash posts it directly"
+          : "clash posts this one directly, but its credentials are missing — fill them in, or switch this destination to a Claude session in Settings → Workflows",
+      };
+    }
+    return {
+      id,
+      label,
+      route: "agent",
+      skill: named,
+      enabled: true,
+      hint: named
+        ? `in a Claude session, via the ${named} skill — spends tokens`
+        : "in a Claude session, using the tools it has connected — spends tokens",
+    };
   }
 
   /// The first Jira ticket key found in any of `texts` (PROJ-123, any case —

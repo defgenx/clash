@@ -2422,3 +2422,10 @@ button.busy:disabled { opacity: 1; }
 .wf-rev-why { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-rev-meta { font-size: 11px; white-space: nowrap; }
 .wf-rev-pane { border-top: 1px solid var(--border); min-width: 0; }
+
+/* A settings row the current choice doesn't use. Dimmed rather than hidden:
+   switching back has to stay discoverable, and a field that vanishes reads as
+   a feature that vanished. */
+.setting-row.setting-inactive { opacity: 0.45; }
+.setting-row.setting-inactive input,
+.setting-row.setting-inactive select { color: var(--fg-dim); }

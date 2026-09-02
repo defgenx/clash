@@ -517,18 +517,20 @@ Jira ticket as one comment (`workflows.jira_base_url` / `jira_email` /
 `jira_api_token`; the markdown is converted to Jira wiki markup and the
 ticket key is prompted per send, pre-filled from the item's title/branch).
 
-A destination can also be served by a **Claude Code session** instead of
-clash's own client: the document is written under `<clash data>/share/` and the
-session is launched with the destination stated in the kickoff
-(`workflow_share::share_prompt`). `workflows.jira_skill` /
-`workflows.chat_skill` name a skill to route it through; with none named the
-session is told to use whatever tooling it has connected (an MCP server for the
-destination, say), which is how a share reaches services clash has no client
-for. Relevant to a skill author in one way: if a skill of yours is named there,
-it will be invoked with a file path, a destination and an instruction that the
-document is the message, to be posted as written — and if it is not installed
-in that session, the same prompt tells the session to fall back to its own
-tooling rather than stop. Nothing is ever posted without an explicit human action, with one
+Who posts each destination is a setting, not a fallback chain:
+`workflows.jira_transport` / `workflows.chat_transport` are `agent` (the
+default) or `clash`. On `agent` the document is written under
+`<clash data>/share/` and a Claude Code session is launched with the
+destination stated in the kickoff (`workflow_share::share_prompt`) — routed
+through `workflows.jira_skill` / `workflows.chat_skill` when one is named,
+otherwise using whatever tooling that session has connected (an MCP server for
+the destination, say), which is how a share reaches services clash has no
+client for. On `clash` the webhook/token transport above is used and nothing is
+launched. Relevant to a skill author in one way: if a skill of yours is named
+there, it will be invoked with a file path, a destination and an instruction
+that the document is the message, to be posted as written — and if it is not
+installed in that session, the same prompt tells the session to fall back to
+its own tooling rather than stop. Nothing is ever posted without an explicit human action, with one
 opt-in
 exception: `workflows.notify_webhook` (`off` by default) announces items that
 an **agent** parks at a decision state — the same events as the desktop

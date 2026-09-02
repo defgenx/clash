@@ -340,13 +340,16 @@ test("a session share hands off without leaking credentials or the payload's sha
   // watch it.
   assert.match(APP, /invoke\("share_workflow_via_agent", \{/);
   const send = APP.slice(
-    APP.indexOf('} else if (d.route === "skill" || d.route === "agent") {'),
+    APP.indexOf('} else if (d.route === "agent") {'),
     APP.indexOf('} else if (d.id === "jira") {')
   );
   assert.match(send, /destination: d\.id/);
   assert.match(send, /skill: d\.skill \|\| null/);
-  // The token-spending route asks first; the configured ones do not.
-  assert.match(send, /d\.route === "agent" &&\s*!\(await uiConfirm\(/);
+  // It spends tokens and carries none of clash's credentials, so it asks —
+  // naming whichever of the two will do the posting.
+  assert.match(send, /await uiConfirm\(/);
+  assert.match(send, /It will use the \$\{d\.skill\} skill/);
+  assert.match(send, /tools that session has connected/);
   assert.match(send, /await openSession\(sid/, "the session opens so the post can be checked");
   // The Jira API token is write-only: nothing reads it back into the webview.
   assert.doesNotMatch(APP, /\.value = s\.jiraApiToken/);
