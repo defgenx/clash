@@ -2471,36 +2471,40 @@ pub(crate) async fn share_workflow_jira(
     .map_err(|e| e.to_string())?
 }
 
-/// Hand a share document to a skill, in a Claude Code session.
+/// Hand a share document to a Claude Code session.
 ///
 /// The third transport, next to the webhook and the Jira API token, and the
 /// only one that can reach a destination clash has no client for: whatever the
 /// session's own skills and MCP servers can post to. clash's part is
 /// deliberately small — write the document where the session can read it,
-/// launch the session with the skill named and the destination stated, and get
-/// out of the way. No credentials pass through clash, and the payload is still
-/// exactly the markdown the dialog previewed.
+/// launch the session with the destination stated, and get out of the way. No
+/// credentials pass through clash, and the payload is still exactly the
+/// markdown the dialog previewed.
+///
+/// `skill` is optional. Naming one routes the post through it; with none, the
+/// session is told to use whatever it has connected. Requiring a skill made
+/// "I already have MCP access to this destination" the one case this transport
+/// could not serve, which is most of the reason to want it.
 ///
 /// The document is written under the clash data dir, not the item directory:
 /// the item's files are an agent-facing contract, and a share payload is not
 /// part of it. Returns the session id so the caller can open the tab.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
-pub(crate) async fn share_workflow_via_skill(
+pub(crate) async fn share_workflow_via_agent(
     state: State<'_, GuiState>,
     project: String,
     slug: String,
     destination: String,
-    skill: String,
+    skill: Option<String>,
     text: String,
     ticket: Option<String>,
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
-    let skill = skill.trim().to_string();
-    if skill.is_empty() {
-        return Err("no share skill configured — set it in Settings → Workflows".to_string());
-    }
+    let skill = skill
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     // The destination is named in the prompt, so it must be one clash means:
     // an arbitrary string here would be an instruction the human never gave.
     let destination = match destination.as_str() {
@@ -2557,8 +2561,8 @@ pub(crate) async fn share_workflow_via_skill(
             rows,
         },
         |_item_dir| {
-            clash::application::workflow_share::skill_share_prompt(
-                &skill,
+            clash::application::workflow_share::share_prompt(
+                skill.as_deref(),
                 &destination,
                 &payload,
                 &title,

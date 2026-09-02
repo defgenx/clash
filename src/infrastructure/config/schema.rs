@@ -348,21 +348,23 @@ pub const PROPS: &[Prop] = &[
         "workflows.jira_skill",
         Kind::Str,
         Val::Str(""),
-        "Skill that posts the share document to Jira, instead of clash's own API-token \
-         transport. Any skill installed in your Claude Code sessions qualifies, including one \
-         that works through an MCP server — clash launches a session, hands it the document and \
-         the ticket, and stays out of the way. Empty uses `jira_base_url` + `jira_email` + \
-         `jira_api_token` instead.",
+        "Skill that posts the share document to Jira in a Claude Code session, instead of \
+         clash's own API-token transport. Empty does not disable the session route — it only \
+         means no skill is named, and the session is told to use whatever tooling it has \
+         connected (an MCP server for Jira, say). clash's own transport is used when the \
+         credentials are set and no skill is named. A named skill that is not installed in the \
+         session falls back to that same tooling.",
     ),
     Prop::new(
         "workflows.chat_skill",
         Kind::Str,
         Val::Str(""),
-        "Skill that posts the share document to Slack or Discord, instead of the webhook \
-         transport. Same shape as `jira_skill`: clash launches a session with the document and \
-         the destination. Empty uses `slack_webhook` / `discord_webhook`. Decision \
-         notifications (`notify_webhook`) always use the webhook — they fire without a human \
-         present, and launching an agent per notification is not a notification.",
+        "Skill that posts the share document to Slack or Discord in a Claude Code session, \
+         instead of the webhook transport. Same shape as `jira_skill`, including the fallback: \
+         empty means no skill is named, not that the destination is unavailable — with no \
+         webhook either, a session posts it with whatever it has connected. Decision \
+         notifications (`notify_webhook`) always use the webhook: they fire without a human \
+         present, and a notification you have to go read in a session is not a notification.",
     ),
     Prop::new(
         "workflows.jira_base_url",

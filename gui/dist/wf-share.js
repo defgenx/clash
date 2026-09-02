@@ -76,44 +76,40 @@
         detail: s.id === "plan" && !hasPlan ? "This item has no plan phase" : s.detail,
       })),
       destinations: [
-        { id: "clipboard", label: "Copy markdown", enabled: true },
-        { id: "md", label: "Save .md…", enabled: true },
-        { id: "html", label: "Save .html…", enabled: true },
-        {
-          id: "slack",
-          label: "Send to Slack",
-          enabled: !!chatSkill || slackConfigured,
-          skill: chatSkill || "",
-          hint: chatSkill
-            ? `via the ${chatSkill} skill, in a Claude session`
-            : slackConfigured
-              ? ""
-              : "Set the Slack webhook — or a chat skill — in Settings → Workflows first",
-        },
-        {
-          id: "discord",
-          label: "Send to Discord",
-          enabled: !!chatSkill || discordConfigured,
-          skill: chatSkill || "",
-          hint: chatSkill
-            ? `via the ${chatSkill} skill, in a Claude session`
-            : discordConfigured
-              ? ""
-              : "Set the Discord webhook — or a chat skill — in Settings → Workflows first",
-        },
-        {
-          id: "jira",
-          label: "Post to Jira…",
-          enabled: !!jiraSkill || jiraConfigured,
-          skill: jiraSkill || "",
-          hint: jiraSkill
-            ? `via the ${jiraSkill} skill, in a Claude session`
-            : jiraConfigured
-              ? ""
-              : "Set the Jira credentials — or a Jira skill — in Settings → Workflows first",
-        },
+        { id: "clipboard", label: "Copy markdown", enabled: true, route: "local" },
+        { id: "md", label: "Save .md…", enabled: true, route: "local" },
+        { id: "html", label: "Save .html…", enabled: true, route: "local" },
+        shareDestination("slack", "Send to Slack", chatSkill, slackConfigured),
+        shareDestination("discord", "Send to Discord", chatSkill, discordConfigured),
+        shareDestination("jira", "Post to Jira…", jiraSkill, jiraConfigured),
       ],
     };
+  }
+
+  /// One outward destination, with the route it will actually take.
+  ///
+  /// Three routes, in precedence order — explicit configuration first, and the
+  /// session last because it is the one that spends tokens:
+  ///
+  /// - `skill` — a skill named in Settings posts it in a Claude session;
+  /// - `client` — clash posts it itself (webhook URL, Jira API token);
+  /// - `agent` — a Claude session with no skill named, using whatever tooling
+  ///   it has connected (an MCP server for the destination, say).
+  ///
+  /// The `agent` route is why no destination is ever disabled: "clash has no
+  /// credentials for this" is not the same as "this cannot be reached", and
+  /// disabling the button on that basis hid a route the session already had.
+  /// The route is on the label because a share leaving by a path you did not
+  /// expect is worse than either path.
+  function shareDestination(id, label, skill, clientConfigured) {
+    const route = skill ? "skill" : clientConfigured ? "client" : "agent";
+    const hint =
+      route === "skill"
+        ? `via the ${skill} skill, in a Claude session`
+        : route === "client"
+          ? ""
+          : "in a Claude session, using the tools it has connected — spends tokens";
+    return { id, label, enabled: true, route, skill: skill || "", hint };
   }
 
   /// The first Jira ticket key found in any of `texts` (PROJ-123, any case —
@@ -175,6 +171,7 @@ ${bodyHtml}
   }
 
   const api = {
+    shareDestination,
     SHARE_SECTIONS,
     SHARE_PRESETS,
     presetSections,

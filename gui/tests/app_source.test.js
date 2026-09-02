@@ -331,14 +331,22 @@ test("a pre-authorized round applies itself through the same one mechanism", () 
   assert.match(APP, /autoApply,\n\s+cols: 120,/);
 });
 
-test("a skill share hands off without leaking credentials or the payload's shape", () => {
-  // The third transport exists to reach destinations clash has no client for.
-  // Two properties matter: it goes through a session (so clash holds no
-  // credentials for that route), and the human can watch it.
-  assert.match(APP, /invoke\("share_workflow_via_skill", \{/);
-  const send = APP.slice(APP.indexOf("} else if (d.skill) {"), APP.indexOf('} else if (d.id === "jira") {'));
+test("a session share hands off without leaking credentials or the payload's shape", () => {
+  // The third route exists to reach destinations clash has no client for —
+  // with a named skill, or with whatever the session has connected. Three
+  // properties matter: it goes through a session (so clash holds no
+  // credentials for that route), an unnamed skill is sent as null rather than
+  // an empty string the backend would have to interpret, and the human can
+  // watch it.
+  assert.match(APP, /invoke\("share_workflow_via_agent", \{/);
+  const send = APP.slice(
+    APP.indexOf('} else if (d.route === "skill" || d.route === "agent") {'),
+    APP.indexOf('} else if (d.id === "jira") {')
+  );
   assert.match(send, /destination: d\.id/);
-  assert.match(send, /skill: d\.skill/);
+  assert.match(send, /skill: d\.skill \|\| null/);
+  // The token-spending route asks first; the configured ones do not.
+  assert.match(send, /d\.route === "agent" &&\s*!\(await uiConfirm\(/);
   assert.match(send, /await openSession\(sid/, "the session opens so the post can be checked");
   // The Jira API token is write-only: nothing reads it back into the webview.
   assert.doesNotMatch(APP, /\.value = s\.jiraApiToken/);

@@ -228,15 +228,22 @@ pub fn build_share_markdown(input: &ShareInput, sections: &ShareSections) -> Str
     out.trim_end().to_string() + "\n"
 }
 
-/// The kickoff for a share handed to a skill.
+/// The kickoff for a share handed to a Claude Code session.
 ///
 /// Pure and tested because it is the whole instruction: clash is delegating an
 /// outward-facing post to a session it will not supervise, so the prompt has
-/// to name the skill, the destination and the payload, and say plainly that
-/// the document is the message. "Summarize this for Slack" is how a share
-/// stops being the thing the human previewed.
-pub fn skill_share_prompt(
-    skill: &str,
+/// to name the destination and the payload, and say plainly that the document
+/// is the message. "Summarize this for Slack" is how a share stops being the
+/// thing the human previewed.
+///
+/// A skill is **optional**, and the fallback is the point: with one named the
+/// prompt routes through it and still allows the session's own tooling if that
+/// skill is not installed here; with none, the session is told to use whatever
+/// it has connected — an MCP server for the destination, or the CLI it would
+/// normally reach for. Requiring a skill would have made "I already have MCP
+/// access to this" the one case clash could not serve.
+pub fn share_prompt(
+    skill: Option<&str>,
     destination: &str,
     payload_path: &str,
     title: &str,
@@ -249,14 +256,26 @@ pub fn skill_share_prompt(
         },
         other => other.to_string(),
     };
+    let tools = format!(
+        "use whatever tooling you have connected that can reach {destination} — an MCP \
+         server for it, or the CLI you would normally use"
+    );
+    let how = match skill.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(skill) => format!(
+            "Use the {skill} skill to post it. If that skill is not available in this \
+             session, {tools}, and say which route you took."
+        ),
+        None => format!("To post it, {tools}."),
+    };
     format!(
-        "Use the {skill} skill. Post the document at {payload_path} to {where_to}. \
+        "Post the document at {payload_path} to {where_to}. \
          It is the shared record of the clash workflow item \"{title}\". \
+         {how} \
          The document IS the message: post it as written — do not summarize it, \
          re-order it, or add commentary of your own. Adapt only the formatting the \
-         destination requires. If you cannot post it, say so and stop rather than \
-         posting something else. When you are done, report exactly where it landed \
-         (a URL if there is one)."
+         destination requires. If nothing here can reach {where_to}, say so and stop \
+         rather than posting something else. When you are done, report exactly where \
+         it landed (a URL if there is one)."
     )
 }
 
@@ -454,32 +473,56 @@ mod tests {
         assert!(!md.contains("done one"));
     }
 
-    // ── skill_share_prompt ───────────────────────────────────────────
+    // ── share_prompt ─────────────────────────────────────────────────
 
     #[test]
-    fn the_skill_prompt_names_the_skill_destination_and_payload() {
-        let p = skill_share_prompt(
-            "myorg:jira-post",
+    fn the_prompt_names_the_destination_and_the_payload() {
+        let p = share_prompt(
+            Some("myorg:jira-post"),
             "jira",
             "/data/share/p-item-1.md",
             "Auth refactor",
             Some("PROJ-12"),
         );
-        assert!(p.starts_with("Use the myorg:jira-post skill."));
         assert!(p.contains("/data/share/p-item-1.md"));
         assert!(p.contains("Jira ticket PROJ-12"));
         assert!(p.contains("Auth refactor"));
+        assert!(p.contains("Use the myorg:jira-post skill"));
         // The instruction that keeps a share the thing the human previewed.
         assert!(p.contains("do not summarize"));
     }
 
     #[test]
-    fn a_chat_destination_needs_no_ticket() {
-        let p = skill_share_prompt("myorg:chat", "slack", "/tmp/x.md", "Item", None);
+    fn without_a_skill_the_session_uses_what_it_has_connected() {
+        // The case clash could not serve while a skill was mandatory: MCP
+        // access already in the session and no skill wrapping it.
+        let p = share_prompt(None, "slack", "/tmp/x.md", "Item", None);
+        assert!(!p.contains("skill"));
+        assert!(p.contains("To post it, use whatever tooling you have connected"));
+        assert!(p.contains("an MCP server for it"));
         assert!(p.contains("to slack."));
+        // An empty skill name is the same as none, not a skill called "".
+        assert_eq!(
+            p,
+            share_prompt(Some("  "), "slack", "/tmp/x.md", "Item", None)
+        );
+    }
+
+    #[test]
+    fn a_named_skill_still_allows_the_sessions_own_tooling() {
+        // A skill named in Settings but not installed in this session must not
+        // dead-end the share — same fallback the PR skill has.
+        let p = share_prompt(Some("myorg:chat"), "discord", "/tmp/x.md", "Item", None);
+        assert!(p.contains("If that skill is not available in this session"));
+        assert!(p.contains("say which route you took"));
+    }
+
+    #[test]
+    fn a_chat_destination_needs_no_ticket() {
+        let p = share_prompt(Some("s"), "slack", "/tmp/x.md", "Item", None);
         assert!(!p.contains("ticket"));
         // Jira without a key still says Jira rather than inventing one.
-        let j = skill_share_prompt("s", "jira", "/tmp/x.md", "Item", None);
+        let j = share_prompt(None, "jira", "/tmp/x.md", "Item", None);
         assert!(j.contains("to Jira."));
     }
 }

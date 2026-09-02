@@ -3229,7 +3229,7 @@ fn main() {
             workflows::build_workflow_share,
             workflows::share_workflow_webhook,
             workflows::share_workflow_jira,
-            workflows::share_workflow_via_skill,
+            workflows::share_workflow_via_agent,
             workflows::export_workflow_share,
             workflows::get_workflow_pr_skill,
             workflows::set_workflow_pr_skill,

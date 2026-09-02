@@ -13,6 +13,7 @@ const {
   SHARE_PRESETS,
   presetSections,
   shareModel,
+  shareDestination,
   sectionsFromChecks,
   shareHtmlDocument,
   detectTicketKey,
@@ -46,22 +47,22 @@ test("a planless item gets a disabled, unchecked plan row — not a missing one"
   assert.equal(m.sections.find((s) => s.id === "summary").checked, true);
 });
 
-test("webhook destinations exist only once configured, with a pointer to Settings", () => {
+test("configuration picks a destination's route, it never removes the destination", () => {
+  // This used to disable an unconfigured destination and point at Settings.
+  // It was wrong in one direction that mattered: a session with an MCP server
+  // for Slack can post to Slack whether or not clash holds a webhook, so
+  // "unconfigured" is a route, not an absence.
   const off = shareModel({});
-  const slack = off.destinations.find((d) => d.id === "slack");
-  assert.equal(slack.enabled, false);
-  assert.match(slack.hint, /Settings → Workflows/);
   const on = shareModel({ slackConfigured: true, discordConfigured: true, jiraConfigured: true });
-  assert.equal(on.destinations.find((d) => d.id === "slack").enabled, true);
-  assert.equal(on.destinations.find((d) => d.id === "discord").enabled, true);
-  assert.equal(on.destinations.find((d) => d.id === "jira").enabled, true);
-  // Jira needs full config (URL + email + token) — partial reads as absent.
-  const jiraOff = off.destinations.find((d) => d.id === "jira");
-  assert.equal(jiraOff.enabled, false);
-  assert.match(jiraOff.hint, /Settings → Workflows/);
-  // Local destinations never need configuration.
+  for (const id of ["slack", "discord", "jira"]) {
+    assert.equal(off.destinations.find((d) => d.id === id).enabled, true, id);
+    assert.equal(off.destinations.find((d) => d.id === id).route, "agent", id);
+    assert.equal(on.destinations.find((d) => d.id === id).route, "client", id);
+  }
+  // Local destinations never need configuration and take no route at all.
   for (const id of ["clipboard", "md", "html"]) {
     assert.equal(off.destinations.find((d) => d.id === id).enabled, true, id);
+    assert.equal(off.destinations.find((d) => d.id === id).route, "local", id);
   }
 });
 
@@ -113,6 +114,30 @@ test("browser branch publishes every global app.js reads", () => {
   }
 });
 
+test("a destination with nothing configured falls to a Claude session", () => {
+  // The route that made the others optional: MCP access already in the
+  // session, and no skill wrapping it. "clash has no credentials for this" is
+  // not "this cannot be reached", so nothing is disabled.
+  const bare = shareModel({});
+  for (const id of ["jira", "slack", "discord"]) {
+    const d = bare.destinations.find((x) => x.id === id);
+    assert.equal(d.enabled, true, `${id} is still reachable`);
+    assert.equal(d.route, "agent");
+    assert.equal(d.skill, "");
+    assert.match(d.hint, /tools it has connected/);
+    // The cost of that route is on the label, not discovered afterwards.
+    assert.match(d.hint, /spends tokens/);
+  }
+});
+
+test("routes take precedence: skill, then clash's own client, then the session", () => {
+  assert.equal(shareDestination("jira", "l", "myorg:x", true).route, "skill");
+  assert.equal(shareDestination("jira", "l", "", true).route, "client");
+  assert.equal(shareDestination("jira", "l", "", false).route, "agent");
+  // The client route is the quiet one: nothing to explain, clash just posts.
+  assert.equal(shareDestination("slack", "l", "", true).hint, "");
+});
+
 test("a named skill takes over a destination, and says so", () => {
   // The point of the skill transport: reach destinations clash has no client
   // for, through whatever the session's own tooling can reach. It has to be
@@ -127,20 +152,11 @@ test("a named skill takes over a destination, and says so", () => {
   assert.equal(by("jira").skill, "myorg:jira-post");
   assert.equal(by("slack").skill, "myorg:chat");
 
-  // Unconfigured either way: disabled, and the hint names both transports so
-  // neither route looks like the only one.
-  const bare = shareModel({});
-  const bareBy = (id) => bare.destinations.find((d) => d.id === id);
-  for (const id of ["jira", "slack", "discord"]) {
-    assert.equal(bareBy(id).enabled, false);
-    assert.equal(bareBy(id).skill, "");
-    assert.match(bareBy(id).hint, /Settings → Workflows/);
-    assert.match(bareBy(id).hint, /skill/);
-  }
-
-  // Credentials alone still work, with no skill claim in the hint.
+  // Credentials alone still work, and take the client route with nothing to
+  // explain — clash just posts it.
   const creds = shareModel({ slackConfigured: true, jiraConfigured: true });
-  assert.equal(creds.destinations.find((d) => d.id === "slack").enabled, true);
+  assert.equal(creds.destinations.find((d) => d.id === "slack").route, "client");
   assert.equal(creds.destinations.find((d) => d.id === "slack").hint, "");
-  assert.equal(creds.destinations.find((d) => d.id === "discord").enabled, false);
+  // Discord has neither, so it falls to the session rather than vanishing.
+  assert.equal(creds.destinations.find((d) => d.id === "discord").route, "agent");
 });

@@ -5912,25 +5912,40 @@ async function wfShareDialog(item) {
               dir,
             });
             flashToast(`Saved ${path}`);
-          } else if (d.skill) {
-            // A skill transport: clash hands the document to a Claude session
-            // and stops there. Jira still needs a ticket, because the skill
-            // cannot guess which one — everything else the prompt carries.
+          } else if (d.route === "skill" || d.route === "agent") {
+            // clash hands the document to a Claude session and stops there —
+            // through the named skill when there is one, otherwise through
+            // whatever the session has connected. Jira still needs a ticket:
+            // nothing else can guess which one, and the prompt carries the
+            // rest.
             let ticket = null;
             if (d.id === "jira") {
               const asked = await uiPrompt(
-                `Post to Jira with the ${d.skill} skill — ticket key`,
+                d.skill
+                  ? `Post to Jira with the ${d.skill} skill — ticket key`
+                  : "Post to Jira from a Claude session — ticket key",
                 item.meta.jiraTicket ||
                   detectTicketKey(item.meta.title, item.meta.branch, item.slug)
               );
               if (!asked || !asked.trim()) return;
               ticket = asked.trim().toUpperCase();
             }
-            const sid = await invoke("share_workflow_via_skill", {
+            // The agent route spends tokens and posts something outward-facing
+            // with no credentials of clash's behind it, so it asks first.
+            if (
+              d.route === "agent" &&
+              !(await uiConfirm(
+                `Send this to ${d.label.replace(/^(Send to|Post to) /, "").replace("…", "")} from a Claude session? ` +
+                  "It will use the tools that session has connected — an MCP server for it, say. Spends tokens.",
+                "Send"
+              ))
+            )
+              return;
+            const sid = await invoke("share_workflow_via_agent", {
               project: item.project,
               slug: item.slug,
               destination: d.id,
-              skill: d.skill,
+              skill: d.skill || null,
               text: current,
               ticket,
               cols: 120,
@@ -5940,7 +5955,11 @@ async function wfShareDialog(item) {
             // Open it: the session is doing something outward-facing on your
             // behalf, and a post you cannot watch is a post you cannot check.
             await openSession(sid, wfSessionName(item, `share to ${d.id}`));
-            flashToast(`Handed the share to ${d.skill} — watch the session`);
+            flashToast(
+              d.skill
+                ? `Handed the share to ${d.skill} — watch the session`
+                : "Handed the share to a Claude session — watch it post"
+            );
             if (ticket && ticket !== (item.meta.jiraTicket || "")) {
               item.meta.jiraTicket = ticket;
               invoke("set_workflow_item_settings", {
