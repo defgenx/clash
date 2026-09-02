@@ -607,20 +607,29 @@ is demoted, so a review can no longer look like it evaporated. *Request
 changes* remains the path for feedback that is yours rather than the
 reviewer's.
 
-The **Plan** tab is version-aware, because the plan loop is *review → apply →
-revise → review again* and re-reading a whole plan every round to find three
-edited paragraphs does not scale. Every change round freezes `plan.md`, so the
-tab offers `v1 v2 … current` chips, says what each version is (which iteration
-froze it, how big it is, and the note of the round that caused it), and **⇄
-Changes** shows the diff that produced it — against the previous version by
-default, or any earlier one you pick. The live plan is the only editable
-version; the frozen ones are the record of what was reviewed.
+The **Plan** tab always shows the current plan — reading it is the common case,
+and a tab that reopens on last week's comparison is not that. Its history lives
+one click away in **◫ Revisions**.
+
+**Plan revisions.** The plan is versioned *continuously*, not per round: clash
+records a revision whenever the file's content changes, whoever wrote it — the
+planning agent's first draft, every revise round, a hand-edit through *Edit
+plan.md*. (Tying versions to change rounds lost every plan written between
+them, which is most of them.) The Revisions tab lists them newest first with
+when and **why** each was recorded ("first plan", "revision requested at
+iteration 2", "changed on disk"), shows any revision's full text, and **⇄
+Changes** diffs it against the previous one — or against any earlier revision
+you pick. Nothing is deduplicated away and nothing is lost: identical content
+is simply not a new revision, so whitespace churn never buries the real ones.
+Items created before this store adopt whatever their round snapshots preserved
+on first open, so upgrading does not present a multi-round item as having no
+history.
 
 The **Timeline** tab is the item's whole revision record in one newest-first
 feed: every change round as a card carrying the note you wrote (the *why*),
 the *plan diff* of that revision, the full **plan as it stood** at that
-iteration (both open the Plan tab at that version), and the *code diff* you
-reviewed — interleaved with every agent
+iteration (both open the Revisions tab at that revision), and the *code diff*
+you reviewed — interleaved with every agent
 review round (its verdict and what it published) and the item's creation. So
 "what did that revision actually change in the plan", "why did round 3
 happen" and "what did the second review conclude" all have an answer without

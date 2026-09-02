@@ -809,58 +809,34 @@ pub fn build_review_prompt(
     )
 }
 
-/// Pure: the Plan tab's version list, newest last.
+/// Pure: the Plan tab's version list from the item's recorded plan revisions,
+/// oldest first, with the newest flagged `current`.
 ///
-/// `snapshots` are the iterations whose `history/` dir carries a frozen
-/// `plan.md` (the change rounds that happened while the item had a plan);
-/// `notes` is `parse_review_iterations(review.md)`, which supplies each
-/// version's heading and the first line of the note that caused the round.
-/// The live file is appended as the head, marked `current`, so the switcher
-/// covers "what the plan was" and "what the plan is" in one list.
+/// The newest revision *is* the live `plan.md` — every caller records the
+/// current file before listing, so there is no separate head to synthesize.
+/// Flagging it instead of appending one is what keeps "current" from
+/// appearing twice with identical content.
 ///
-/// `lines` per snapshot is supplied by the caller (it has the text; this
+/// `lines` per revision is supplied by the caller (it has the text; this
 /// function must not read files).
 pub fn plan_version_list(
-    snapshots: &[(u32, usize)],
-    current_iteration: u32,
-    current_lines: usize,
-    notes: &[crate::domain::workflow::ReviewIterationNote],
+    revisions: &[(crate::domain::workflow::PlanRevision, usize)],
 ) -> Vec<crate::domain::workflow::PlanVersion> {
-    let first_line = |n: &crate::domain::workflow::ReviewIterationNote| {
-        n.note
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty() && !l.starts_with('#'))
-            .unwrap_or("")
-            .to_string()
-    };
-    let mut out: Vec<crate::domain::workflow::PlanVersion> = snapshots
+    let mut out: Vec<crate::domain::workflow::PlanVersion> = revisions
         .iter()
-        .map(|&(iteration, lines)| {
-            let note = notes.iter().find(|n| n.iteration == iteration);
-            crate::domain::workflow::PlanVersion {
-                iteration,
-                current: false,
-                lines,
-                heading: note.map(|n| n.heading.clone()).unwrap_or_default(),
-                note: note.map(first_line).unwrap_or_default(),
-            }
+        .map(|(r, lines)| crate::domain::workflow::PlanVersion {
+            n: r.n,
+            current: false,
+            lines: *lines,
+            saved_at: r.saved_at,
+            iteration: r.iteration,
+            reason: r.reason.clone(),
         })
         .collect();
-    out.sort_by_key(|v| v.iteration);
-    // The head's iteration is the item's current one. A snapshot can share it
-    // only if the meta write that bumps it never landed (a crashed round) — in
-    // which case the frozen copy is the same text as the file, and showing one
-    // entry is the truthful answer.
-    let head = current_iteration.max(1);
-    out.retain(|v| v.iteration < head);
-    out.push(crate::domain::workflow::PlanVersion {
-        iteration: head,
-        current: true,
-        lines: current_lines,
-        heading: String::new(),
-        note: String::new(),
-    });
+    out.sort_by_key(|v| v.n);
+    if let Some(last) = out.last_mut() {
+        last.current = true;
+    }
     out
 }
 
@@ -1768,76 +1744,53 @@ Tighten the API.\n\n\
 
     // ── plan_version_list ────────────────────────────────────────────
 
-    fn note(
-        iteration: u32,
-        heading: &str,
-        body: &str,
-    ) -> crate::domain::workflow::ReviewIterationNote {
-        crate::domain::workflow::ReviewIterationNote {
+    fn rev(n: u32, iteration: u32, reason: &str) -> crate::domain::workflow::PlanRevision {
+        crate::domain::workflow::PlanRevision {
+            n,
+            saved_at: 1_000 * n as i64,
             iteration,
-            heading: heading.to_string(),
-            note: body.to_string(),
-            annotations: vec![],
+            hash: format!("h{n}"),
+            reason: reason.to_string(),
+            ..Default::default()
         }
     }
 
     #[test]
-    fn plan_versions_end_with_the_live_file() {
-        let notes = vec![
-            note(
-                1,
-                "2026-09-01 10:00",
-                "## What to change\nTighten the migration step",
-            ),
-            note(2, "2026-09-01 11:00", "Apply agent review round 1"),
-        ];
-        let vs = plan_version_list(&[(1, 40), (2, 52)], 3, 61, &notes);
-        assert_eq!(vs.len(), 3);
+    fn the_newest_revision_is_the_current_plan() {
+        // Not a synthesized head: the caller records the live file before
+        // listing, so the newest revision already *is* it. Appending one
+        // instead would show the same content twice.
+        let vs = plan_version_list(&[
+            (rev(1, 1, "first plan"), 40),
+            (rev(2, 2, "revision requested at iteration 1"), 52),
+            (rev(3, 2, "changed on disk"), 61),
+        ]);
         assert_eq!(
-            vs.iter()
-                .map(|v| (v.iteration, v.current))
-                .collect::<Vec<_>>(),
+            vs.iter().map(|v| (v.n, v.current)).collect::<Vec<_>>(),
             [(1, false), (2, false), (3, true)]
         );
-        // The note's first *prose* line labels the version — a markdown heading
-        // from the composer's template says nothing about the round.
-        assert_eq!(vs[0].note, "Tighten the migration step");
-        assert_eq!(vs[1].note, "Apply agent review round 1");
-        assert_eq!(vs[0].heading, "2026-09-01 10:00");
+        assert_eq!(vs[1].reason, "revision requested at iteration 1");
         assert_eq!(vs[2].lines, 61);
-        assert_eq!(vs[2].note, "");
+        assert_eq!(vs[0].saved_at, 1_000);
     }
 
     #[test]
-    fn a_snapshot_at_the_head_iteration_is_not_listed_twice() {
-        // A round that froze the plan but died before its meta write leaves a
-        // snapshot at the current iteration; its text and the live file are the
-        // same, so the head is the only truthful entry.
-        let vs = plan_version_list(&[(1, 10), (2, 20)], 2, 20, &[]);
-        assert_eq!(
-            vs.iter()
-                .map(|v| (v.iteration, v.current))
-                .collect::<Vec<_>>(),
-            [(1, false), (2, true)]
-        );
-    }
-
-    #[test]
-    fn an_unrevised_plan_has_exactly_one_version() {
-        let vs = plan_version_list(&[], 1, 30, &[]);
+    fn one_revision_is_the_current_one() {
+        let vs = plan_version_list(&[(rev(1, 1, "first plan"), 12)]);
         assert_eq!(vs.len(), 1);
         assert!(vs[0].current);
-        assert_eq!(vs[0].iteration, 1);
-        // A zero iteration (pre-iteration items) still reads as v1, never v0.
-        assert_eq!(plan_version_list(&[], 0, 5, &[])[0].iteration, 1);
+        assert_eq!(plan_version_list(&[]), vec![]);
     }
 
     #[test]
-    fn versions_are_ordered_by_iteration_whatever_the_input_order() {
-        let vs = plan_version_list(&[(3, 1), (1, 2), (2, 3)], 9, 4, &[]);
-        assert_eq!(
-            vs.iter().map(|v| v.iteration).collect::<Vec<_>>(),
-            [1, 2, 3, 9]
-        );
+    fn versions_are_ordered_by_number_whatever_the_input_order() {
+        let vs = plan_version_list(&[
+            (rev(3, 2, "c"), 1),
+            (rev(1, 1, "a"), 2),
+            (rev(2, 1, "b"), 3),
+        ]);
+        assert_eq!(vs.iter().map(|v| v.n).collect::<Vec<_>>(), [1, 2, 3]);
+        // And the flag follows the ordering, not the input.
+        assert!(vs[2].current && !vs[0].current);
     }
 }

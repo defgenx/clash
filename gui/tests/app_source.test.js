@@ -259,12 +259,46 @@ test("applying a review round goes through the change-round flow", () => {
   assert.match(APP, /const seeded = \(wfDrafts\.get\(key\) \|\| ""\)\.trim\(\) \? "" : prefill;/);
 });
 
+test("every workflow sub-view renderer is actually reachable", () => {
+  // This is the test that was missing: `renderWfPlanView` shipped defined but
+  // never called, so the Plan tab still rendered the plain document and the
+  // whole version reader was dead code — while a test asserting the function
+  // *existed* passed, and a smoke test calling it directly passed too.
+  // Existence is not reachability.
+  const defined = [...APP.matchAll(/^async function (renderWf\w*View)\(/gm)].map((m) => m[1]);
+  assert.ok(defined.length >= 4, `expected several sub-view renderers, got ${defined}`);
+  for (const name of defined) {
+    const calls = (APP.match(new RegExp(`${name}\\(`, "g")) || []).length;
+    // Definition + at least one call that is not its own recursion.
+    assert.ok(calls >= 2, `${name} is defined but never called`);
+    const dispatch = new RegExp(`return ${name}\\(|${name}\\(body`);
+    assert.match(APP, dispatch, `${name} is never dispatched from a sub-view router`);
+  }
+  // And the two plan readers are wired to their own sub-views.
+  assert.match(APP, /if \(ts\.subView === "plan"\) return renderWfPlanView\(/);
+  assert.match(APP, /if \(ts\.subView === "revisions"\) return renderWfRevisionsView\(/);
+  // The generic doc branch must not claim the plan any more, or it would win.
+  const generic = APP.slice(APP.indexOf('ts.subView === "review" ||'));
+  assert.doesNotMatch(generic.slice(0, 400), /ts\.subView === "plan"/);
+  // The tab exists, so the view is reachable by a human and not just by code.
+  assert.match(APP, /\["revisions", "◫ Revisions"\]/);
+});
+
 test("the plan has one version reader, not three views", () => {
   // The Timeline's drill-downs and the Plan tab used to render the same data
   // three ways; two of them are retired and the diff colouring lives once.
   assert.match(APP, /async function renderWfPlanView\(/);
   assert.match(APP, /function renderUnifiedDiff\(container, text\)/);
   assert.doesNotMatch(APP, /ts\.subView === "planAt"\)? \{/);
+  // The plan is versioned continuously, so the reader asks the revision store
+  // rather than the round snapshots — a plan written between rounds, or edited
+  // by hand, has no round to be found under.
+  assert.match(APP, /invoke\("list_workflow_plan_versions"/);
+  assert.match(APP, /invoke\("get_workflow_plan_version", \{ project, slug, n: sel\.n \}\)/);
+  assert.doesNotMatch(APP, /get_workflow_history_plan/);
+  // A Timeline plan link resolves iteration → revision when clicked, because
+  // the answer changes while the card is on screen.
+  assert.match(APP, /planVersionForIteration\(versions, iteration\)/);
   assert.doesNotMatch(APP, /if \(ts\.subView === "planDiff"\)/);
   // A tab persisted before the consolidation still lands on the plan.
   assert.match(APP, /if \(ts\.subView === "planAt" \|\| ts\.subView === "planDiff"\)/);

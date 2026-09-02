@@ -1568,6 +1568,32 @@ impl crate::domain::ports::WorkflowRepository for FsBackend {
         super::workflows::read_doc(&self.workflows_dir(), project, slug, doc)
     }
 
+    fn record_workflow_plan_version(
+        &self,
+        project: &str,
+        slug: &str,
+        reason: &str,
+    ) -> Result<Option<crate::domain::workflow::PlanRevision>> {
+        super::workflows::record_plan_version(&self.workflows_dir(), project, slug, reason)
+    }
+
+    fn list_workflow_plan_versions(
+        &self,
+        project: &str,
+        slug: &str,
+    ) -> Result<Vec<crate::domain::workflow::PlanRevision>> {
+        super::workflows::list_plan_versions(&self.workflows_dir(), project, slug)
+    }
+
+    fn read_workflow_plan_version(
+        &self,
+        project: &str,
+        slug: &str,
+        n: u32,
+    ) -> Result<Option<String>> {
+        super::workflows::read_plan_version(&self.workflows_dir(), project, slug, n)
+    }
+
     fn append_workflow_review_iteration(
         &self,
         project: &str,

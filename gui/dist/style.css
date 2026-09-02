@@ -2378,3 +2378,37 @@ button.busy:disabled { opacity: 1; }
   color: var(--on-accent, #1a1a1a);
 }
 .wf-review-strip-flag.done { background: none; color: var(--fg-dim); font-weight: 600; }
+
+/* ── Plan revisions ──────────────────────────────────────────────
+   A list, not chips: revisions accumulate for the life of an item, and
+   chips stop being readable around eight of them. */
+.wf-revisions { display: flex; flex-direction: column; min-height: 0; }
+.wf-rev-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 16px 4px;
+  max-height: 34%;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.wf-rev-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.wf-rev-row:hover { background: var(--bg-hover); }
+.wf-rev-row.on { background: var(--bg-active); border-color: var(--accent); }
+.wf-rev-n { color: var(--accent); font-weight: 600; white-space: nowrap; }
+.wf-rev-why { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-rev-meta { font-size: 11px; white-space: nowrap; }
+.wf-rev-pane { border-top: 1px solid var(--border); min-width: 0; }

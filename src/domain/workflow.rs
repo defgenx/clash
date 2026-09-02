@@ -547,28 +547,69 @@ pub struct NewWorkflowItem {
     pub pr: Option<WorkflowPr>,
 }
 
-/// One version of `plan.md`, for the Plan tab's version switcher — a runtime
-/// DTO built from the `history/` snapshots plus the live file, never persisted.
+/// One recorded revision of `plan.md`, as stored in the item's
+/// `plan-history/` index.
 ///
-/// A version exists because a change round froze the plan before the agent
-/// revised it, so version N *is* "the plan the human reviewed at iteration N",
-/// and the head is the live file. `note` is the first line of that round's
-/// change-request note: numbered versions are unreadable, "v2 — apply review
-/// round 1" is not.
+/// The plan is versioned **continuously**, not per change round: clash records
+/// a revision whenever it sees the file's content differ from the newest one it
+/// holds, whoever wrote it — the planning agent's first draft, a revise round,
+/// a hand-edit through the Edit button. Tying versions to change rounds lost
+/// every plan written between them, which is most of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanRevision {
+    /// 1-based revision number and file name (`plan-history/0003.md`). The
+    /// identity: iterations repeat and timestamps collide.
+    #[serde(default)]
+    pub n: u32,
+    /// When clash recorded it (epoch ms) — not when it was written, which no
+    /// writer tells us.
+    #[serde(default)]
+    pub saved_at: i64,
+    /// The item's iteration at record time, so a revision can be tied back to
+    /// the round it belongs to.
+    #[serde(default)]
+    pub iteration: u32,
+    /// FNV-1a of the trimmed content — how "unchanged" is decided.
+    #[serde(default)]
+    pub hash: String,
+    /// Why it was recorded, in one phrase ("first plan", "revision requested
+    /// at iteration 2", "changed on disk"). Numbered versions are unreadable
+    /// on their own.
+    #[serde(default)]
+    pub reason: String,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// The `plan-history/index.json` file: every recorded revision, oldest first.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanHistory {
+    #[serde(default)]
+    pub versions: Vec<PlanRevision>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// One entry of the Plan tab's version switcher — a `PlanRevision` plus what
+/// the view needs to label and order it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanVersion {
-    /// Iteration this version was frozen at; for the head, the item's current
-    /// iteration.
-    pub iteration: u32,
-    /// True for the live `plan.md` — the one the agent will revise next.
+    /// Revision number (`v3`).
+    pub n: u32,
+    /// True for the newest revision — the live `plan.md`. Always exactly one,
+    /// because clash records the current file before listing.
     pub current: bool,
     /// Line count, so the switcher can show growth without loading the text.
     pub lines: usize,
-    /// The `## Iteration N` heading tail from `review.md` (normally a stamp).
-    pub heading: String,
-    /// First line of the round's change-request note; empty when there is none.
-    pub note: String,
+    /// Epoch ms this revision was recorded.
+    pub saved_at: i64,
+    /// The item's iteration when it was recorded.
+    pub iteration: u32,
+    /// Why it was recorded.
+    pub reason: String,
 }
 
 /// One `## Iteration N` section of `review.md`, parsed at read time — a

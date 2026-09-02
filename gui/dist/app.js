@@ -5196,13 +5196,15 @@ async function buildWorkflowView(el, project, slug) {
     ts.subView = "diff";
   // And for Structure, which only exists once an explain round wrote it.
   if (ts.subView === "structure" && !item.hasStructure) ts.subView = "diff";
+  // An item with no plan phase has no plan history either.
+  if (ts.subView === "revisions" && !wfHasPlanPhase(item)) ts.subView = "diff";
   // The plan drill-downs are now versions of the Plan tab; a tab persisted
   // before that lands there instead of falling through to the diff.
   if (ts.subView === "planAt" || ts.subView === "planDiff") {
     ts.planVersion = ts.subView === "planAt" ? ts.iteration : null;
     ts.planCompare = ts.subView === "planDiff";
     ts.planBase = ts.subView === "planDiff" ? ts.iteration : null;
-    ts.subView = wfHasPlanPhase(item) ? "plan" : "diff";
+    ts.subView = wfHasPlanPhase(item) ? "revisions" : "diff";
   }
 
   el.innerHTML = "";
@@ -5342,7 +5344,15 @@ async function buildWorkflowView(el, project, slug) {
   // Review-only items have no plan at all — an always-empty Plan tab would
   // read as a missing step rather than an absent phase.
   const subViews = [
-    ...(wfHasPlanPhase(item) ? [["plan", `Plan${item.hasPlan ? "" : " ·empty"}`]] : []),
+    ...(wfHasPlanPhase(item)
+      ? [
+          ["plan", `Plan${item.hasPlan ? "" : " ·empty"}`],
+          // Its own tab rather than a switcher inside Plan: reading the plan
+          // and studying how it got here are different jobs, and the reading
+          // one must always open on the current text.
+          ["revisions", "◫ Revisions"],
+        ]
+      : []),
     ["review", `Review${item.hasReview ? "" : " ·empty"}`],
     // Agent review rounds accumulate, so the tab counts them — that count is
     // the item's review history and the reason a round is worth repeating.
@@ -5371,9 +5381,9 @@ async function buildWorkflowView(el, project, slug) {
     b.onclick = () => {
       ts.subView = id;
       if (id !== "diff") ts.iteration = null;
-      // Clicking the Plan tab means "show me the plan", not "show me the
+      // Clicking either plan tab means "show me the plan", not "show me the
       // comparison I was looking at ten minutes ago".
-      if (id === "plan") {
+      if (id === "plan" || id === "revisions") {
         ts.planVersion = null;
         ts.planCompare = false;
         ts.planBase = null;
@@ -7277,130 +7287,188 @@ function renderUnifiedDiff(container, text) {
   container.appendChild(pre);
 }
 
-/// The Plan tab: the live plan, every frozen version of it, and the diff
-/// between any two.
+/// The Plan tab: the live plan, and a way into its history.
 ///
-/// Versions are not a nicety here — the pipeline's whole plan loop is "review
-/// → apply → revise → review again", and without a way to see what a round
-/// changed, the human is re-reading a whole plan every round to find three
-/// edited paragraphs. Each change round freezes `plan.md` into
-/// `history/<NNN>/`, so version N *is* the plan as reviewed at iteration N.
+/// Deliberately not a version switcher — that is the Revisions tab. What you
+/// want nine times out of ten is to read the current plan, and a tab that
+/// reopens on the comparison you were studying last week is not that.
 async function renderWfPlanView(body, root, item, ts) {
   const { project, slug } = item;
   body.innerHTML = "<p class='hint'>loading plan…</p>";
+  let text = "";
+  let versions = [];
+  try {
+    // Listing records the live file as a revision when it has changed, so
+    // opening the Plan tab is itself a checkpoint.
+    versions = await invoke("list_workflow_plan_versions", { project, slug });
+    text = await invoke("get_workflow_doc", { project, slug, doc: "plan.md" });
+  } catch (e) {
+    body.innerHTML = `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
+    return;
+  }
+  body.innerHTML = "";
+
+  const tools = document.createElement("div");
+  tools.className = "wf-doc-tools";
+  const edit = document.createElement("button");
+  edit.className = "icon-btn wide";
+  edit.innerHTML = `${svgIcon("pencil", 12)}<span>Edit plan.md</span>`;
+  edit.onclick = (ev) =>
+    openScratchInEditor(
+      { path: `${item.path}/plan.md`, title: `${slug} plan.md` },
+      ev.clientX,
+      ev.clientY
+    );
+  tools.appendChild(edit);
+  if (versions.length > 1) {
+    const link = document.createElement("button");
+    link.className = "icon-btn wide";
+    link.textContent = `◫ ${versions.length} revisions →`;
+    link.title = "Every recorded version of this plan, with a diff between any two";
+    link.onclick = () => {
+      ts.subView = "revisions";
+      ts.planVersion = null;
+      ts.planCompare = false;
+      ts.planBase = null;
+      buildWorkflowView(root, project, slug);
+    };
+    tools.appendChild(link);
+  }
+  body.appendChild(tools);
+
+  const md = document.createElement("div");
+  md.className = "wf-md";
+  if (text.trim()) {
+    renderMarkdown(md, text);
+    renderMermaidIn(md);
+  } else {
+    md.innerHTML =
+      '<p class="hint">no plan yet — Start planning launches an agent that writes it</p>';
+  }
+  body.appendChild(md);
+}
+
+/// The Revisions tab: every recorded version of `plan.md`, and the diff
+/// between any two.
+///
+/// The plan loop is review → apply → revise → review again, so "what did that
+/// round change" is asked every round; re-reading a whole plan to find three
+/// edited paragraphs is how people stop reading it. Revisions are recorded
+/// continuously — the planning agent's first draft, every revise round, a
+/// hand-edit — so this is the plan's own history, not a list of the rounds
+/// that happened to freeze a copy.
+async function renderWfRevisionsView(body, root, item, ts) {
+  const { project, slug } = item;
+  body.innerHTML = "<p class='hint'>loading revisions…</p>";
   let versions = [];
   try {
     versions = await invoke("list_workflow_plan_versions", { project, slug });
   } catch (e) {
-    console.error("list_workflow_plan_versions failed:", e);
+    body.innerHTML = `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
+    return;
   }
+  body.innerHTML = "";
   if (!versions.length) {
-    versions = [{ iteration: item.meta.iteration || 1, current: true, lines: 0, heading: "", note: "" }];
+    body.innerHTML =
+      "<p class='hint'>no plan recorded yet — a revision is kept every time the plan changes, starting with the first one an agent writes</p>";
+    return;
   }
   const head = versions.find((v) => v.current) || versions[versions.length - 1];
 
-  // A restored tab can point at a version this item no longer has (an older
-  // clash, a deleted history dir) — fall back to the live plan rather than
+  // A restored tab can name a revision this item no longer has (a deleted
+  // plan-history dir, an older clash) — fall back to the live plan rather than
   // rendering an error where the plan should be.
-  if (ts.planVersion != null && !versions.some((v) => v.iteration === ts.planVersion))
+  if (ts.planVersion != null && !versions.some((v) => v.n === ts.planVersion))
     ts.planVersion = null;
-  const selIter = ts.planVersion == null ? head.iteration : ts.planVersion;
-  const sel = versions.find((v) => v.iteration === selIter) || head;
-  if (ts.planCompare && !planCanCompare(versions, selIter)) ts.planCompare = false;
-  if (
-    ts.planBase != null &&
-    !versions.some((v) => v.iteration === ts.planBase && v.iteration < selIter)
-  )
+  const selN = ts.planVersion == null ? head.n : ts.planVersion;
+  const sel = versions.find((v) => v.n === selN) || head;
+  if (ts.planCompare && !planCanCompare(versions, selN)) ts.planCompare = false;
+  if (ts.planBase != null && !versions.some((v) => v.n === ts.planBase && v.n < selN))
     ts.planBase = null;
-  const base = ts.planBase != null ? ts.planBase : planDiffBase(versions, selIter);
+  const base = ts.planBase != null ? ts.planBase : planDiffBase(versions, selN);
+  const rerender = () => renderWfRevisionsView(body, root, item, ts);
 
-  const rerender = () => renderWfPlanView(body, root, item, ts);
+  const wrap = document.createElement("div");
+  wrap.className = "wf-revisions";
 
-  body.innerHTML = "";
+  // ── The list: newest first, because that is where you look ──
+  const list = document.createElement("div");
+  list.className = "wf-rev-list";
+  for (const v of [...versions].reverse()) {
+    const row = document.createElement("button");
+    row.className = "wf-rev-row" + (v.n === selN ? " on" : "");
+    row.innerHTML =
+      `<span class="wf-rev-n">${planVersionLabel(v)}</span>` +
+      `<span class="wf-rev-why">${escapeHtml(v.reason || "changed")}</span>` +
+      `<span class="wf-rev-meta dim">${escapeHtml(planVersionCaption(v))}</span>`;
+    row.onclick = () => {
+      // Picking the newest means "follow the live plan", so it clears the pin
+      // rather than freezing on today's number.
+      ts.planVersion = v.current ? null : v.n;
+      ts.planBase = null;
+      rerender();
+    };
+    list.appendChild(row);
+  }
+  wrap.appendChild(list);
 
-  // ── Version bar ──
+  // ── The pane: one revision's text, or the diff that produced it ──
+  const pane = document.createElement("div");
+  pane.className = "wf-rev-pane";
   const bar = document.createElement("div");
   bar.className = "wf-plan-versions";
-  if (versions.length > 1) {
-    const caption = document.createElement("span");
-    caption.className = "wf-plan-vcaption";
-    caption.textContent = "Version";
-    bar.appendChild(caption);
-    for (const v of versions) {
-      const chip = document.createElement("button");
-      chip.className = "wf-plan-chip" + (v.iteration === selIter ? " on" : "");
-      chip.textContent = planVersionLabel(v);
-      chip.title = planVersionCaption(v);
-      chip.onclick = () => {
-        ts.planVersion = v.current ? null : v.iteration;
-        ts.planBase = null;
-        rerender();
-      };
-      bar.appendChild(chip);
-    }
-  }
-  if (planCanCompare(versions, selIter)) {
+  bar.appendChild(
+    Object.assign(document.createElement("span"), {
+      className: "wf-plan-vcaption",
+      textContent: planVersionLabel(sel),
+    })
+  );
+  if (planCanCompare(versions, selN)) {
     const cmp = document.createElement("button");
     cmp.className = "icon-btn wide" + (ts.planCompare ? " on" : "");
     cmp.textContent = ts.planCompare ? "◫ Full text" : "⇄ Changes";
     cmp.title = ts.planCompare
-      ? "Show this version's full text"
-      : "Show what changed to produce this version";
+      ? "Show this revision's full text"
+      : "Show what changed to produce this revision";
     cmp.onclick = () => {
       ts.planCompare = !ts.planCompare;
       rerender();
     };
     bar.appendChild(cmp);
-  }
-  if (ts.planCompare) {
-    const vs = document.createElement("span");
-    vs.className = "dim";
-    vs.textContent = "vs";
-    bar.appendChild(vs);
-    const pick = document.createElement("select");
-    pick.className = "wf-plan-base";
-    pick.title = "Compare against any earlier version, not just the previous one";
-    for (const v of versions.filter((v) => v.iteration < selIter)) {
-      const o = document.createElement("option");
-      o.value = String(v.iteration);
-      o.textContent = planVersionLabel(v);
-      pick.appendChild(o);
+    if (ts.planCompare) {
+      bar.appendChild(
+        Object.assign(document.createElement("span"), { className: "dim", textContent: "vs" })
+      );
+      const pick = document.createElement("select");
+      pick.className = "wf-plan-base";
+      pick.title = "Compare against any earlier revision, not just the previous one";
+      for (const v of versions.filter((v) => v.n < selN)) {
+        const o = document.createElement("option");
+        o.value = String(v.n);
+        o.textContent = planVersionLabel(v);
+        pick.appendChild(o);
+      }
+      pick.value = String(base);
+      pick.onchange = () => {
+        ts.planBase = Number(pick.value);
+        rerender();
+      };
+      bar.appendChild(pick);
     }
-    pick.value = String(base);
-    pick.onchange = () => {
-      ts.planBase = Number(pick.value);
-      rerender();
-    };
-    bar.appendChild(pick);
   }
   bar.appendChild(Object.assign(document.createElement("span"), { className: "spacer" }));
-  // Editing is only meaningful on the live file; a frozen version is the
-  // record of what was reviewed and must stay what it was.
-  if (sel.current) {
-    const edit = document.createElement("button");
-    edit.className = "icon-btn wide";
-    edit.innerHTML = `${svgIcon("pencil", 12)}<span>Edit plan.md</span>`;
-    edit.onclick = (ev) =>
-      openScratchInEditor(
-        { path: `${item.path}/plan.md`, title: `${slug} plan.md` },
-        ev.clientX,
-        ev.clientY
-      );
-    bar.appendChild(edit);
-  }
-  body.appendChild(bar);
-
-  // ── What am I looking at ──
+  pane.appendChild(bar);
   const cap = document.createElement("p");
   cap.className = "wf-plan-caption dim";
   cap.textContent = ts.planCompare
-    ? `changes from ${planVersionLabel(
-        versions.find((v) => v.iteration === base)
-      )} to ${planVersionLabel(sel)} — ${planVersionCaption(sel)}`
-    : `${planVersionLabel(sel)} — ${planVersionCaption(sel)}`;
-  body.appendChild(cap);
+    ? `changes from ${planVersionLabel(versions.find((v) => v.n === base))} to ${planVersionLabel(
+        sel
+      )}`
+    : planVersionCaption(sel);
+  pane.appendChild(cap);
+  wrap.appendChild(pane);
+  body.appendChild(wrap);
 
-  // ── Content ──
   if (ts.planCompare) {
     let text = "";
     try {
@@ -7408,10 +7476,10 @@ async function renderWfPlanView(body, root, item, ts) {
         project,
         slug,
         from: base,
-        to: planDiffTo(versions, selIter),
+        to: planDiffTo(versions, selN),
       });
     } catch (e) {
-      body.appendChild(
+      pane.appendChild(
         Object.assign(document.createElement("p"), {
           className: "hint",
           textContent: `plan diff failed: ${e}`,
@@ -7420,16 +7488,15 @@ async function renderWfPlanView(body, root, item, ts) {
       return;
     }
     if (!text.trim()) {
-      body.appendChild(
+      pane.appendChild(
         Object.assign(document.createElement("p"), {
           className: "hint",
-          textContent:
-            "no difference between these two versions (or the older one predates plan history)",
+          textContent: "no difference between these two revisions",
         })
       );
       return;
     }
-    renderUnifiedDiff(body, text);
+    renderUnifiedDiff(pane, text);
     return;
   }
 
@@ -7437,10 +7504,9 @@ async function renderWfPlanView(body, root, item, ts) {
   try {
     text = sel.current
       ? await invoke("get_workflow_doc", { project, slug, doc: "plan.md" })
-      : (await invoke("get_workflow_history_plan", { project, slug, iteration: sel.iteration })) ||
-        "";
+      : (await invoke("get_workflow_plan_version", { project, slug, n: sel.n })) || "";
   } catch (e) {
-    body.appendChild(
+    pane.appendChild(
       Object.assign(document.createElement("p"), {
         className: "hint",
         textContent: `failed: ${e}`,
@@ -7454,31 +7520,28 @@ async function renderWfPlanView(body, root, item, ts) {
     renderMarkdown(md, text);
     renderMermaidIn(md);
   } else {
-    md.innerHTML = `<p class="hint">${
-      sel.current
-        ? "no plan yet — Start planning launches an agent that writes it"
-        : "no plan copy in this snapshot (it may predate plan history)"
-    }</p>`;
+    md.innerHTML = "<p class=\"hint\">this revision's text is missing from plan-history/</p>";
   }
-  body.appendChild(md);
+  pane.appendChild(md);
 }
 
 async function renderWfSubView(body, root, item, ts) {
   const { project, slug } = item;
+  // The plan is the one doc with versions, so it gets two readers of its own:
+  // the live document, and its history.
+  if (ts.subView === "plan") return renderWfPlanView(body, root, item, ts);
+  if (ts.subView === "revisions") return renderWfRevisionsView(body, root, item, ts);
   if (
-    ts.subView === "plan" ||
     ts.subView === "review" ||
     ts.subView === "agentReview" ||
     ts.subView === "structure"
   ) {
     const doc =
-      ts.subView === "plan"
-        ? "plan.md"
-        : ts.subView === "review"
-          ? "review.md"
-          : ts.subView === "structure"
-            ? "structure.md"
-            : "agent-review.md";
+      ts.subView === "review"
+        ? "review.md"
+        : ts.subView === "structure"
+          ? "structure.md"
+          : "agent-review.md";
     body.innerHTML = "<p class='hint'>loading…</p>";
     let text = "";
     try {
@@ -7600,30 +7663,30 @@ async function renderWfSubView(body, root, item, ts) {
       };
       links.appendChild(a);
     };
-    // A plan link opens the Plan tab at one version, in text or diff mode.
-    // The diff of round N is "what turned version N into the next one", so it
-    // selects the *following* version and compares back to N — which is
-    // exactly what the version bar would do by hand.
+    // A plan link opens the Plan tab at the revision that iteration ended
+    // with. The mapping is resolved on click, not now: revisions are recorded
+    // continuously, so the answer changes while this card is on screen, and
+    // rendering it into every link would go stale.
     const planDrill = (links, label, iteration, compare, title) => {
       const a = document.createElement("span");
       a.className = "wf-history-link";
       a.textContent = label;
       if (title) a.title = title;
-      a.onclick = () => {
-        ts.subView = "plan";
-        ts.iteration = null;
-        if (compare) {
-          // The target version is unknown here (the next snapshot may not
-          // exist); leaving planVersion null selects the live plan and the
-          // base pins the comparison to this round.
-          ts.planVersion = null;
-          ts.planCompare = true;
-          ts.planBase = iteration;
-        } else {
-          ts.planVersion = iteration;
-          ts.planCompare = false;
-          ts.planBase = null;
+      a.onclick = async () => {
+        let n = null;
+        try {
+          const versions = await invoke("list_workflow_plan_versions", { project, slug });
+          n = planVersionForIteration(versions, iteration);
+        } catch (e) {
+          console.error("list_workflow_plan_versions failed:", e);
         }
+        // Nothing recorded for that iteration: land on the live plan rather
+        // than on an empty comparison.
+        ts.subView = n == null ? "plan" : "revisions";
+        ts.iteration = null;
+        ts.planVersion = compare ? null : n;
+        ts.planCompare = compare && n != null;
+        ts.planBase = compare ? n : null;
         buildWorkflowView(root, project, slug);
       };
       links.appendChild(a);

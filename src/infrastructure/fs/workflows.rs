@@ -22,7 +22,8 @@ use std::path::{Path, PathBuf};
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::workflow::{
-    Annotation, AnnotationStatus, AnnotationsFile, NewWorkflowItem, WorkflowItem, WorkflowMeta,
+    Annotation, AnnotationStatus, AnnotationsFile, NewWorkflowItem, PlanHistory, PlanRevision,
+    WorkflowItem, WorkflowMeta,
 };
 use crate::infrastructure::fs::atomic::write_atomic;
 use crate::infrastructure::fs::backend::sanitize_component;
@@ -40,6 +41,9 @@ pub const AGENT_REVIEW_FILE: &str = "agent-review.md";
 pub const STRUCTURE_FILE: &str = "structure.md";
 pub const ANNOTATIONS_FILE: &str = "annotations.json";
 pub const HISTORY_DIR: &str = "history";
+/// Per-item plan revision store: `plan-history/index.json` + `NNNN.md`.
+pub const PLAN_HISTORY_DIR: &str = "plan-history";
+pub const PLAN_HISTORY_INDEX: &str = "index.json";
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -407,6 +411,194 @@ pub fn snapshot_iteration(root: &Path, project: &str, slug: &str, diff: &str) ->
     Ok(iter)
 }
 
+// ── Plan revision history ───────────────────────────────────────────────
+//
+// `plan-history/index.json` + `plan-history/NNNN.md`: every distinct version
+// of `plan.md` clash has seen, oldest first. Separate from `history/<NNN>/`
+// on purpose — that directory freezes *a round's whole artifact set* (diff,
+// annotations, plan) and only exists where a round happened, so a plan the
+// planning agent wrote, or one the human hand-edited between rounds, left no
+// trace at all. This store follows the file instead of the pipeline.
+
+/// `(project, slug)` for every `plan.md` in a watcher batch, deduplicated in
+/// first-seen order.
+///
+/// Pure path logic on purpose: it decides which items a filesystem event
+/// touched, and getting it wrong makes the plan silently stop being versioned
+/// with nothing in the log. `notify` reports the path the OS *resolved*, so a
+/// root reached through a symlink never prefix-matches the configured
+/// spelling — both are tried, the same reason `RoutedWatcher` watches both.
+pub fn changed_plan_items(root: &Path, paths: &[PathBuf]) -> Vec<(String, String)> {
+    let canonical = std::fs::canonicalize(root).ok();
+    let mut out: Vec<(String, String)> = Vec::new();
+    for path in paths {
+        if path.file_name().and_then(|n| n.to_str()) != Some(PLAN_FILE) {
+            continue;
+        }
+        let Some(rel) = [Some(root), canonical.as_deref()]
+            .into_iter()
+            .flatten()
+            .find_map(|base| path.strip_prefix(base).ok())
+        else {
+            continue;
+        };
+        let parts: Vec<&str> = rel
+            .components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .collect();
+        // Exactly `<project>/<slug>/plan.md` — a plan.md nested anywhere else
+        // (a history snapshot, a stray copy) is not an item's live plan.
+        if parts.len() != 3 {
+            continue;
+        }
+        let pair = (parts[0].to_string(), parts[1].to_string());
+        if !out.contains(&pair) {
+            out.push(pair);
+        }
+    }
+    out
+}
+
+/// Recorded revisions of `plan.md`, oldest first. Empty when nothing has been
+/// recorded yet (including for items that predate this store).
+pub fn list_plan_versions(root: &Path, project: &str, slug: &str) -> Result<Vec<PlanRevision>> {
+    let dir = existing_item_dir(root, project, slug)?;
+    Ok(read_plan_history(&dir).versions)
+}
+
+/// Read one recorded revision's text. `Ok(None)` when there is no such
+/// revision (a stale link, a hand-deleted file).
+pub fn read_plan_version(root: &Path, project: &str, slug: &str, n: u32) -> Result<Option<String>> {
+    let dir = existing_item_dir(root, project, slug)?;
+    match std::fs::read_to_string(plan_version_path(&dir, n)) {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Record the current `plan.md` as a new revision, unless its content is
+/// already the newest one recorded. Returns the new revision, or `None` when
+/// there was nothing to record.
+///
+/// Idempotent by content hash, which is what makes it safe to call from every
+/// path that might have seen a change — the watcher, a plan read, a change
+/// round — instead of trying to enumerate the writers.
+pub fn record_plan_version(
+    root: &Path,
+    project: &str,
+    slug: &str,
+    reason: &str,
+) -> Result<Option<PlanRevision>> {
+    let dir = existing_item_dir(root, project, slug)?;
+    let Ok(plan) = std::fs::read_to_string(dir.join(PLAN_FILE)) else {
+        return Ok(None);
+    };
+    if plan.trim().is_empty() {
+        return Ok(None);
+    }
+    let mut history = read_plan_history(&dir);
+    // First touch on an item that predates this store: adopt whatever the
+    // round snapshots preserved, so its early plans are not lost to the
+    // upgrade.
+    if history.versions.is_empty() {
+        import_round_snapshots(&dir, &mut history)?;
+    }
+    let hash = crate::application::workflow::line_hash(&plan);
+    if history.versions.last().is_some_and(|v| v.hash == hash) {
+        return Ok(None);
+    }
+    let iteration = read_meta(root, project, slug)
+        .map(|m| m.iteration.max(1))
+        .unwrap_or(1);
+    let rev = PlanRevision {
+        n: history.versions.last().map_or(1, |v| v.n + 1),
+        saved_at: now_ms(),
+        iteration,
+        hash,
+        reason: reason.trim().to_string(),
+        ..Default::default()
+    };
+    write_plan_version(&dir, rev.n, &plan)?;
+    history.versions.push(rev.clone());
+    write_plan_history(&dir, &history)?;
+    Ok(Some(rev))
+}
+
+fn plan_version_path(dir: &Path, n: u32) -> PathBuf {
+    dir.join(PLAN_HISTORY_DIR).join(format!("{:04}.md", n))
+}
+
+/// Lenient by design: a corrupt or half-written index must not make the Plan
+/// tab fail, only start over — the version files are still on disk and the
+/// live plan is the source of truth.
+fn read_plan_history(dir: &Path) -> PlanHistory {
+    std::fs::read_to_string(dir.join(PLAN_HISTORY_DIR).join(PLAN_HISTORY_INDEX))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<PlanHistory>(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn write_plan_history(dir: &Path, history: &PlanHistory) -> Result<()> {
+    let hist_dir = dir.join(PLAN_HISTORY_DIR);
+    std::fs::create_dir_all(&hist_dir)?;
+    write_atomic(
+        &hist_dir.join(PLAN_HISTORY_INDEX),
+        serde_json::to_string_pretty(history)?.as_bytes(),
+    )?;
+    Ok(())
+}
+
+fn write_plan_version(dir: &Path, n: u32, text: &str) -> Result<()> {
+    let hist_dir = dir.join(PLAN_HISTORY_DIR);
+    std::fs::create_dir_all(&hist_dir)?;
+    write_atomic(&plan_version_path(dir, n), text.as_bytes())?;
+    Ok(())
+}
+
+/// Seed the store from `history/<NNN>/plan.md` — the only plan history items
+/// created before this store have. Distinct consecutive contents only: a round
+/// that changed nothing in the plan is not a revision.
+fn import_round_snapshots(dir: &Path, history: &mut PlanHistory) -> Result<()> {
+    for iter in list_history(dir) {
+        let path = dir
+            .join(HISTORY_DIR)
+            .join(format!("{:03}", iter))
+            .join(PLAN_FILE);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+        let hash = crate::application::workflow::line_hash(&text);
+        if history.versions.last().is_some_and(|v| v.hash == hash) {
+            continue;
+        }
+        let n = history.versions.last().map_or(1, |v| v.n + 1);
+        write_plan_version(dir, n, &text)?;
+        history.versions.push(PlanRevision {
+            n,
+            saved_at: std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .map(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default(),
+            iteration: iter,
+            hash,
+            reason: format!("reviewed at iteration {}", iter),
+            ..Default::default()
+        });
+    }
+    if !history.versions.is_empty() {
+        write_plan_history(dir, history)?;
+    }
+    Ok(())
+}
+
 /// List snapshotted iterations (detail views need this even for terminal
 /// items, whose listing DTO skips it).
 pub fn history_iterations(root: &Path, project: &str, slug: &str) -> Result<Vec<u32>> {
@@ -571,6 +763,169 @@ mod tests {
             create_item(&root, &req("p", "Same", "")).unwrap().slug,
             "same-3"
         );
+    }
+
+    // ── Plan revision history ────────────────────────────────────────
+
+    #[test]
+    fn a_plan_is_recorded_once_per_distinct_content() {
+        let (_g, root) = root();
+        create_item(&root, &req("p", "item", "")).unwrap();
+        // No plan yet: nothing to record, and no empty revision either.
+        assert!(record_plan_version(&root, "p", "item", "first plan")
+            .unwrap()
+            .is_none());
+        write_doc(&root, "p", "item", PLAN_FILE, "# v1\n").unwrap();
+        let first = record_plan_version(&root, "p", "item", "first plan")
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.n, 1);
+        assert_eq!(first.reason, "first plan");
+        // Called again with the same content — every read path calls this, so
+        // idempotence is what stops the store growing on every glance.
+        assert!(record_plan_version(&root, "p", "item", "changed on disk")
+            .unwrap()
+            .is_none());
+        write_doc(&root, "p", "item", PLAN_FILE, "# v2\n").unwrap();
+        assert_eq!(
+            record_plan_version(&root, "p", "item", "changed on disk")
+                .unwrap()
+                .unwrap()
+                .n,
+            2
+        );
+        let vs = list_plan_versions(&root, "p", "item").unwrap();
+        assert_eq!(vs.iter().map(|v| v.n).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(
+            read_plan_version(&root, "p", "item", 1).unwrap().unwrap(),
+            "# v1\n"
+        );
+        assert_eq!(
+            read_plan_version(&root, "p", "item", 2).unwrap().unwrap(),
+            "# v2\n"
+        );
+        assert!(read_plan_version(&root, "p", "item", 9).unwrap().is_none());
+    }
+
+    #[test]
+    fn whitespace_only_changes_are_not_revisions() {
+        // The hash is over trimmed content: an editor adding a trailing
+        // newline is not a plan revision, and recording it would bury the real
+        // ones in noise.
+        let (_g, root) = root();
+        create_item(&root, &req("p", "item", "")).unwrap();
+        write_doc(&root, "p", "item", PLAN_FILE, "# v1").unwrap();
+        record_plan_version(&root, "p", "item", "first plan").unwrap();
+        write_doc(&root, "p", "item", PLAN_FILE, "# v1\n\n").unwrap();
+        assert!(record_plan_version(&root, "p", "item", "changed on disk")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn an_older_item_adopts_the_plans_its_rounds_froze() {
+        // Items created before this store have plan copies only under
+        // `history/<NNN>/`. First touch imports them, so upgrading does not
+        // present a multi-round item as having no history.
+        let (_g, root) = root();
+        create_item(&root, &req("p", "item", "")).unwrap();
+        write_doc(&root, "p", "item", PLAN_FILE, "# round one plan\n").unwrap();
+        snapshot_iteration(&root, "p", "item", "diff-1").unwrap();
+        let mut meta = read_meta(&root, "p", "item").unwrap();
+        meta.iteration = 2;
+        write_meta(&root, "p", "item", &meta).unwrap();
+        write_doc(&root, "p", "item", PLAN_FILE, "# round two plan\n").unwrap();
+        snapshot_iteration(&root, "p", "item", "diff-2").unwrap();
+        write_doc(&root, "p", "item", PLAN_FILE, "# live plan\n").unwrap();
+
+        let rec = record_plan_version(&root, "p", "item", "changed on disk")
+            .unwrap()
+            .unwrap();
+        let vs = list_plan_versions(&root, "p", "item").unwrap();
+        assert_eq!(vs.len(), 3, "two imported round plans plus the live one");
+        assert_eq!(rec.n, 3);
+        assert_eq!(
+            read_plan_version(&root, "p", "item", 1).unwrap().unwrap(),
+            "# round one plan\n"
+        );
+        assert!(vs[0].reason.contains("iteration 1"));
+        assert_eq!(vs[2].reason, "changed on disk");
+        // The import runs once: a second call adds nothing.
+        assert!(record_plan_version(&root, "p", "item", "again")
+            .unwrap()
+            .is_none());
+        assert_eq!(list_plan_versions(&root, "p", "item").unwrap().len(), 3);
+    }
+
+    #[test]
+    fn only_an_items_own_plan_counts_as_a_plan_change() {
+        let (_g, root) = root();
+        let plan = |p: &str| root.join(p);
+        let paths = vec![
+            plan("proj/item/plan.md"),
+            plan("proj/item/plan.md"), // duplicate event in one batch
+            plan("proj/other/plan.md"),
+            plan("proj/item/review.md"),                   // another doc
+            plan("proj/item/history/001/plan.md"),         // a frozen copy
+            plan("proj/item/plan-history/0001.md"),        // our own write
+            plan("plan.md"),                               // root-level stray
+            PathBuf::from("/elsewhere/proj/item/plan.md"), // outside the root
+        ];
+        assert_eq!(
+            changed_plan_items(&root, &paths),
+            vec![
+                ("proj".to_string(), "item".to_string()),
+                ("proj".to_string(), "other".to_string())
+            ]
+        );
+        assert!(changed_plan_items(&root, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_symlinked_root_still_matches_its_own_events() {
+        // notify reports the resolved path; on macOS a /tmp root resolves to
+        // /private/tmp. Matching only the configured spelling is how live
+        // versioning would quietly stop under an isolated HOME.
+        let (_g, root) = root();
+        // The root has to exist for a symlink to it to resolve — `root()`
+        // hands back a path the item-creating helpers make on demand.
+        std::fs::create_dir_all(&root).unwrap();
+        let link = root.parent().unwrap().join("link-root");
+        if std::os::unix::fs::symlink(&root, &link).is_err() {
+            return; // no symlink support: nothing to assert
+        }
+        // The configured root is the link; the event carries the resolved
+        // path, which shares no prefix with it.
+        let resolved = std::fs::canonicalize(&link)
+            .unwrap()
+            .join("proj/item/plan.md");
+        assert!(!resolved.starts_with(&link));
+        assert_eq!(
+            changed_plan_items(&link, &[resolved]),
+            vec![("proj".to_string(), "item".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_corrupt_index_starts_over_instead_of_failing() {
+        // The version files are still on disk and the live plan is the source
+        // of truth, so the Plan tab must render either way.
+        let (_g, root) = root();
+        create_item(&root, &req("p", "item", "")).unwrap();
+        write_doc(&root, "p", "item", PLAN_FILE, "# v1\n").unwrap();
+        record_plan_version(&root, "p", "item", "first plan").unwrap();
+        let idx = root
+            .join("p")
+            .join("item")
+            .join(PLAN_HISTORY_DIR)
+            .join(PLAN_HISTORY_INDEX);
+        std::fs::write(&idx, "{ not json").unwrap();
+        assert!(list_plan_versions(&root, "p", "item").unwrap().is_empty());
+        // And recording again rebuilds a usable index.
+        assert!(record_plan_version(&root, "p", "item", "after corruption")
+            .unwrap()
+            .is_some());
+        assert_eq!(list_plan_versions(&root, "p", "item").unwrap().len(), 1);
     }
 
     #[test]

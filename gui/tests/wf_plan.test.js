@@ -11,51 +11,72 @@ const {
   pendingReviewRound,
   reviewAppliedState,
   shouldAutoApply,
+  planVersionForIteration,
 } = require("../dist/wf-plan.js");
 
+const NOW = new Date(2026, 8, 2, 12, 0).getTime();
 const versions = [
-  { iteration: 1, current: false, lines: 40, heading: "2026-09-01 10:00", note: "First pass" },
-  { iteration: 2, current: false, lines: 52, heading: "2026-09-01 11:00", note: "Apply review r1" },
-  { iteration: 3, current: true, lines: 61, heading: "", note: "" },
+  { n: 1, current: false, lines: 40, savedAt: NOW - 7200_000, iteration: 1, reason: "first plan" },
+  {
+    n: 2,
+    current: false,
+    lines: 52,
+    savedAt: NOW - 600_000,
+    iteration: 2,
+    reason: "revision requested at iteration 1",
+  },
+  { n: 3, current: true, lines: 61, savedAt: NOW - 30_000, iteration: 2, reason: "changed on disk" },
 ];
 
-test("the head is labelled by role, older versions by number", () => {
-  // Its iteration changes under it the moment a round starts, so a number
-  // would go stale in the UI while the file did not change.
+test("a revision is labelled by number, and the newest also by role", () => {
+  // The number is how a revision is referred to; the role is how the live one
+  // is found. The newest needs both.
   assert.equal(planVersionLabel(versions[0]), "v1");
-  assert.equal(planVersionLabel(versions[2]), "current");
+  assert.equal(planVersionLabel(versions[2]), "v3 · current");
   assert.equal(planVersionLabel(null), "v1");
 });
 
-test("a version's caption says where it came from and why", () => {
+test("a revision's caption says when, why and how big", () => {
   assert.equal(
-    planVersionCaption(versions[0]),
-    "frozen at iteration 1 · 40 lines · 2026-09-01 10:00 — First pass"
+    planVersionCaption(versions[0], NOW),
+    "2h ago · 40 lines — first plan"
   );
-  assert.match(planVersionCaption(versions[2]), /the live plan — 61 lines/);
-  // A version with no recorded note still says what it is.
   assert.equal(
-    planVersionCaption({ iteration: 4, lines: 1, heading: "", note: "" }),
-    "frozen at iteration 4 · 1 line"
+    planVersionCaption(versions[2], NOW),
+    "the live plan · just now · 61 lines — changed on disk"
   );
+  // No stamp and no reason recorded: still says what it is.
+  assert.equal(planVersionCaption({ n: 4, lines: 1 }, NOW), "1 line");
 });
 
-test("the default comparison is against the previous version", () => {
+test("the default comparison is against the previous revision", () => {
   assert.equal(planDiffBase(versions, 3), 2);
   assert.equal(planDiffBase(versions, 2), 1);
-  // Nothing precedes the first version, so it cannot be compared.
+  // Nothing precedes the first revision, so it cannot be compared.
   assert.equal(planDiffBase(versions, 1), null);
   assert.equal(planCanCompare(versions, 1), false);
   assert.equal(planCanCompare(versions, 3), true);
-  // An unknown iteration is not comparable rather than a crash.
+  // An unknown revision is not comparable rather than a crash.
   assert.equal(planDiffBase(versions, 99), null);
 });
 
-test("the head diffs against the live file, not a snapshot number", () => {
-  // `to: null` is what tells the backend to read plan.md; passing the head's
-  // iteration would look for a frozen copy that does not exist yet.
+test("the newest revision diffs against the live file", () => {
+  // `to: null` tells the backend to read plan.md, so a write that landed since
+  // the list was built still shows up.
   assert.equal(planDiffTo(versions, 3), null);
   assert.equal(planDiffTo(versions, 2), 2);
+});
+
+test("an iteration maps to the revision it ended with", () => {
+  // A round records twice — the plan it was requested against, then the
+  // agent's rewrite — and "the plan at iteration 2" means the latter.
+  assert.equal(planVersionForIteration(versions, 2), 3);
+  assert.equal(planVersionForIteration(versions, 1), 1);
+  // An iteration that recorded nothing falls back to the newest before it.
+  assert.equal(planVersionForIteration(versions, 9), 3);
+  // Nothing at or before it: no answer rather than a wrong one.
+  assert.equal(planVersionForIteration([{ n: 5, iteration: 4 }], 2), null);
+  assert.equal(planVersionForIteration([], 1), null);
 });
 
 test("the apply note carries the findings, not a pointer to them", () => {
@@ -231,6 +252,7 @@ test("the browser branch publishes every name app.js calls", () => {
     "pendingReviewRound",
     "reviewAppliedState",
     "shouldAutoApply",
+    "planVersionForIteration",
   ]) {
     assert.equal(typeof win[name], "function", `${name} must be on window`);
     assert.ok(app.includes(name), `app.js is expected to use ${name}`);

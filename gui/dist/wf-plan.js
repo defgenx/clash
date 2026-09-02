@@ -18,49 +18,77 @@
 (function () {
   "use strict";
 
-  /// Chip label for a version: `v1`… by iteration, `current` for the head.
-  /// The head is labelled by role, not by number, because its number changes
-  /// under it the moment a round starts.
+  /// Chip label for a revision: `v3`, and `v3 · current` for the newest — the
+  /// newest revision *is* the live plan, so it needs both its number (to be
+  /// referred to) and its role (to be found).
   function planVersionLabel(v) {
-    return v && v.current ? "current" : `v${(v && v.iteration) || 1}`;
+    if (!v) return "v1";
+    return v.current ? `v${v.n} · current` : `v${v.n}`;
   }
 
-  /// One-line description of what a version is, for the header line: where it
-  /// came from and how big it is. The round note is the useful part — "frozen
-  /// at iteration 2" says when, "Tighten the migration step" says why.
-  function planVersionCaption(v) {
+  /// One-line description of a revision for the header: when clash recorded
+  /// it, why, and how big it is. The reason is the useful part — "v2" says
+  /// nothing, "revision requested at iteration 1" says everything.
+  function planVersionCaption(v, now) {
     if (!v) return "";
     const size = `${v.lines || 0} line${v.lines === 1 ? "" : "s"}`;
-    if (v.current) return `the live plan — ${size}, the one the agent revises next`;
-    const bits = [`frozen at iteration ${v.iteration}`, size];
-    if (v.heading) bits.push(v.heading);
-    const why = (v.note || "").trim();
+    const bits = [];
+    if (v.current) bits.push("the live plan");
+    const when = planWhen(v.savedAt, now);
+    if (when) bits.push(when);
+    bits.push(size);
+    const why = (v.reason || "").trim();
     return bits.join(" · ") + (why ? ` — ${why}` : "");
   }
 
-  /// Which version to compare against by default: the one immediately before
-  /// `iteration` in the list. Comparing a version with its predecessor is "what
-  /// this round changed", the question the Timeline asks; picking any other
-  /// base is the Plan tab's extra.
+  /// Compact "how long ago" for a revision stamp. Its own function because the
+  /// captions are asserted in tests and "just now" must not drift with the
+  /// clock; `now` is injectable for exactly that reason.
+  function planWhen(savedAt, now) {
+    if (!savedAt) return "";
+    const s = Math.max(0, ((now || Date.now()) - savedAt) / 1000);
+    if (s < 90) return "just now";
+    if (s < 5400) return `${Math.round(s / 60)}m ago`;
+    if (s < 129600) return `${Math.round(s / 3600)}h ago`;
+    return `${Math.round(s / 86400)}d ago`;
+  }
+
+  /// Which revision to compare against by default: the one immediately before
+  /// `n`. A revision against its predecessor is "what this change did", which
+  /// is the question asked every round; any other base is the extra.
   ///
-  /// Returns an iteration number, or null when there is nothing earlier.
-  function planDiffBase(versions, iteration) {
-    const list = (versions || []).map((v) => v.iteration);
-    const i = list.indexOf(iteration);
+  /// Returns a revision number, or null when there is nothing earlier.
+  function planDiffBase(versions, n) {
+    const list = (versions || []).map((v) => v.n);
+    const i = list.indexOf(n);
     if (i <= 0) return null;
     return list[i - 1];
   }
 
-  /// Can this version be compared at all? Only if something precedes it.
-  function planCanCompare(versions, iteration) {
-    return planDiffBase(versions, iteration) !== null;
+  /// Can this revision be compared at all? Only if something precedes it.
+  function planCanCompare(versions, n) {
+    return planDiffBase(versions, n) !== null;
   }
 
-  /// The `to` argument for `get_workflow_plan_diff` given a target version:
-  /// null for the head (the backend reads the live file), else its iteration.
-  function planDiffTo(versions, iteration) {
-    const v = (versions || []).find((x) => x.iteration === iteration);
-    return v && v.current ? null : iteration;
+  /// The `to` argument for `get_workflow_plan_diff`: null for the newest
+  /// revision, so the backend diffs against the live file itself and a write
+  /// that landed since the list was built still shows up.
+  function planDiffTo(versions, n) {
+    const v = (versions || []).find((x) => x.n === n);
+    return v && v.current ? null : n;
+  }
+
+  /// The revision to open when the Timeline asks for "the plan at iteration
+  /// N": the last one recorded while the item was at that iteration. A round
+  /// can record several (the request, then the agent's rewrite), and the one
+  /// that iteration is remembered for is the one it ended with.
+  ///
+  /// Falls back to the newest revision at or before N, then to null.
+  function planVersionForIteration(versions, iteration) {
+    const list = (versions || []).filter((v) => v.iteration === iteration);
+    if (list.length) return list[list.length - 1].n;
+    const earlier = (versions || []).filter((v) => v.iteration < iteration);
+    return earlier.length ? earlier[earlier.length - 1].n : null;
   }
 
   /// The note recorded when a review round is applied as-is.
@@ -156,6 +184,7 @@
   }
 
   const api = {
+    planVersionForIteration,
     planVersionLabel,
     planVersionCaption,
     planDiffBase,

@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use clash::domain::entities::Session;
+use clash::domain::ports::WorkflowRepository;
 use clash::infrastructure::config::{Config, ConfigHandle};
 use clash::infrastructure::daemon::client::DaemonClient;
 use clash::infrastructure::daemon::protocol::Event;
@@ -1344,6 +1345,23 @@ fn rebuild_watcher(app: &tauri::AppHandle) {
                     let _ = handle.emit("scratch-changed", ());
                 }
                 WatchRoot::Workflows => {
+                    // Version the plan on every write, whoever made it. The
+                    // read path records too, but only what is current *when
+                    // you look*: an agent that revises the plan twice, or a
+                    // revision you never opened the tab for, would otherwise
+                    // collapse into one version. `record_plan_version` is
+                    // idempotent by content hash, so a duplicate event here
+                    // costs a read and nothing else.
+                    for (project, slug) in clash::infrastructure::fs::workflows::changed_plan_items(
+                        &state.backend.workflows_dir(),
+                        &paths,
+                    ) {
+                        let _ = state.backend.record_workflow_plan_version(
+                            &project,
+                            &slug,
+                            "changed on disk",
+                        );
+                    }
                     let _ = handle.emit("workflows-changed", ());
                 }
                 WatchRoot::Config => {
@@ -3202,7 +3220,7 @@ fn main() {
             workflows::get_workflow_plan_diff,
             workflows::list_workflow_plan_versions,
             workflows::get_workflow_timeline,
-            workflows::get_workflow_history_plan,
+            workflows::get_workflow_plan_version,
             workflows::attach_workflow_pr,
             workflows::attach_workflow_linked_pr,
             workflows::remove_workflow_linked_pr,

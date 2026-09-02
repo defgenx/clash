@@ -954,6 +954,14 @@ pub(crate) async fn workflow_request_changes(
         .backend
         .snapshot_workflow_iteration(&project, &slug, &diff)
         .map_err(e2s)?;
+    // The plan as it stands *now* is what the round was requested against, so
+    // record it before the executor rewrites it — with the round's own reason,
+    // which is what makes the version list readable later.
+    let _ = state.backend.record_workflow_plan_version(
+        &project,
+        &slug,
+        &format!("reviewed at iteration {}", snapped),
+    );
 
     let open: Vec<clash::domain::workflow::Annotation> = state
         .backend
@@ -990,18 +998,17 @@ pub(crate) async fn workflow_request_changes(
     Ok(meta)
 }
 
-/// The plan text of one version: a frozen `history/<from>/plan.md`, or the
-/// live file when `iteration` is `None`.
+/// The text of one plan revision, or the live file when `n` is `None`.
 fn plan_version_text(
     state: &State<'_, GuiState>,
     project: &str,
     slug: &str,
-    iteration: Option<u32>,
+    n: Option<u32>,
 ) -> Result<Option<String>, String> {
-    match iteration {
-        Some(it) => state
+    match n {
+        Some(n) => state
             .backend
-            .read_workflow_history_plan(project, slug, it)
+            .read_workflow_plan_version(project, slug, n)
             .map_err(e2s),
         None => state
             .backend
@@ -1015,68 +1022,45 @@ fn plan_version_text(
     }
 }
 
-/// Every version of `plan.md`: one per change round that froze a copy, then
-/// the live file. The list is what the Plan tab's version switcher renders,
-/// and any two entries can be diffed with `get_workflow_plan_diff`.
+/// Every recorded revision of `plan.md`, newest flagged `current`.
+///
+/// Records the live file first: this is the read path the Plan tab uses, so
+/// anything written since the last look — an agent's revision, a hand-edit
+/// through the Edit button — becomes a revision here rather than silently
+/// replacing the newest one.
 #[tauri::command]
 pub(crate) fn list_workflow_plan_versions(
     state: State<'_, GuiState>,
     project: String,
     slug: String,
 ) -> Result<Vec<clash::domain::workflow::PlanVersion>, String> {
-    let meta = state
+    let _ = state
         .backend
-        .load_workflow_meta(&project, &slug)
+        .record_workflow_plan_version(&project, &slug, "changed on disk");
+    let revisions = state
+        .backend
+        .list_workflow_plan_versions(&project, &slug)
         .map_err(e2s)?;
-    let mut snapshots: Vec<(u32, usize)> = Vec::new();
-    for it in state
-        .backend
-        .list_workflow_history(&project, &slug)
-        .map_err(e2s)?
-    {
-        if let Some(text) = state
+    let mut sized: Vec<(clash::domain::workflow::PlanRevision, usize)> = Vec::new();
+    for r in revisions {
+        let lines = state
             .backend
-            .read_workflow_history_plan(&project, &slug, it)
+            .read_workflow_plan_version(&project, &slug, r.n)
             .map_err(e2s)?
-        {
-            snapshots.push((it, text.lines().count()));
-        }
+            .map_or(0, |t| t.lines().count());
+        sized.push((r, lines));
     }
-    let current = state
-        .backend
-        .read_workflow_doc(
-            &project,
-            &slug,
-            clash::infrastructure::fs::workflows::PLAN_FILE,
-        )
-        .unwrap_or_default();
-    let notes = clash::application::workflow::parse_review_iterations(
-        &state
-            .backend
-            .read_workflow_doc(
-                &project,
-                &slug,
-                clash::infrastructure::fs::workflows::REVIEW_FILE,
-            )
-            .unwrap_or_default(),
-    );
-    Ok(clash::application::workflow::plan_version_list(
-        &snapshots,
-        meta.iteration,
-        current.lines().count(),
-        &notes,
-    ))
+    Ok(clash::application::workflow::plan_version_list(&sized))
 }
 
-/// Unified diff between two plan versions. `from`/`to` are iteration numbers
-/// of frozen snapshots; a `None` `to` means the live `plan.md`. Empty string
-/// when the requested version has no frozen copy (a snapshot predating plan
-/// history) — the caller renders that as "nothing recorded", not an error.
+/// Unified diff between two plan revisions. `from`/`to` are revision numbers;
+/// a `None` `to` means the live `plan.md`. Empty string when a requested
+/// revision is missing — the caller renders that as "nothing recorded", not an
+/// error.
 ///
-/// One command for both jobs on purpose: the Timeline's "what did round N
-/// change" is `from = N, to = N+1 or live`, and the Plan tab's comparison is
-/// any pair the human picks. Two commands would have been two answers to the
-/// same question.
+/// One command for every plan comparison on purpose: "what did this round
+/// change" and "what changed between v1 and v4" are the same question with
+/// different arguments, and two commands would have been two answers.
 #[tauri::command]
 pub(crate) fn get_workflow_plan_diff(
     state: State<'_, GuiState>,
@@ -1091,8 +1075,8 @@ pub(crate) fn get_workflow_plan_diff(
     let Some(new) = plan_version_text(&state, &project, &slug, to)? else {
         return Ok(String::new());
     };
-    let label = |it: Option<u32>| match it {
-        Some(n) => format!("plan.md (it.{})", n),
+    let label = |n: Option<u32>| match n {
+        Some(n) => format!("plan.md (v{})", n),
         None => "plan.md (current)".to_string(),
     };
     Ok(clash::application::diff::unified_diff(
@@ -1164,19 +1148,19 @@ pub(crate) fn get_workflow_timeline(
 }
 
 /// Full text of the plan as frozen at `iteration` — the Timeline's
-/// "plan @ it.N" viewer. Empty when the snapshot has no plan copy.
+/// One recorded plan revision's text, for the Plan tab's version reader.
 #[tauri::command]
-pub(crate) fn get_workflow_history_plan(
+pub(crate) fn get_workflow_plan_version(
     state: State<'_, GuiState>,
     project: String,
     slug: String,
-    iteration: u32,
+    n: u32,
 ) -> Result<String, String> {
-    state
+    Ok(state
         .backend
-        .read_workflow_history_plan(&project, &slug, iteration)
-        .map(Option::unwrap_or_default)
-        .map_err(e2s)
+        .read_workflow_plan_version(&project, &slug, n)
+        .map_err(e2s)?
+        .unwrap_or_default())
 }
 
 /// Delete a whole workflow item (used by Abandon → Delete).

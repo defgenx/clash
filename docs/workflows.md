@@ -115,17 +115,24 @@ number — the stale section is replaced, never duplicated), and a failed
 `git diff` aborts the round instead of freezing an empty `diff.patch` (except
 at `plan-review`, where the plan — snapshotted anyway — is the artifact).
 
-The plan copy is what makes a revision visible after the fact, and it is what
-the **Plan tab** reads as a version list: snapshot N *is* the plan as the human
-reviewed it at iteration N, and the live file is the head. The tab's version
-chips, the "what changed to produce this version" diff (any pair, not just
-consecutive ones, through `get_workflow_plan_diff(from, to?)`) and the
-**Timeline**'s per-round `plan diff →` / `plan @ it.N →` links are one reader
-over that data — the version list itself is the pure
-`application::workflow::plan_version_list`. The Timeline additionally renders
-the note that caused each round and the code diff, interleaved with the agent
-review rounds parsed from `agent-review.md`. Before the snapshots existed, a
-plan revision left no trace at all.
+The plan copy under `history/` is a round's frozen artifact. The plan's *own*
+history is a separate, continuous store — `plan-history/index.json` plus
+`plan-history/NNNN.md` — because tying versions to rounds loses every plan
+written between them: the planning agent's first draft, an agent's rewrite
+mid-round, a human's edit through *Edit plan.md*.
+`fs::workflows::record_plan_version` appends a revision whenever the file's
+trimmed-content hash differs from the newest recorded one, which makes it safe
+to call from anything that might have seen a change — the FS watcher, the read
+path, and `workflow_request_changes` (recording the pre-revision plan with the
+round's reason). Agents never write this directory; clash owns it like
+`history/`. Items created before it adopt their round snapshots on first touch.
+
+The GUI reads it in two tabs: **Plan** is the live document, **◫ Revisions** is
+the browser (list + full text + `⇄ Changes` between any two revisions, through
+`get_workflow_plan_diff(from, to?)` on revision numbers). The **Timeline**
+additionally renders the note that caused each round and the code diff,
+interleaved with the agent review rounds parsed from `agent-review.md`, and its
+plan links resolve an iteration to a revision on click.
 
 ## Agent review rounds
 
@@ -410,9 +417,9 @@ for context.
   commit follows the same rule — the branch is published, and a fix round that
   only commits locally leaves the PR silently stale. An unpublished branch
   (`full`/`from-plan`, no PR) is still never pushed.
-- Never touch `history/` and never change `iteration`, `reviewRound` or
-  `appliedReviewRound` — clash
-  owns all three (the first two are written atomically by the request-changes
+- Never touch `history/` or `plan-history/`, and never change `iteration`,
+  `reviewRound` or `appliedReviewRound` — clash
+  owns all five (the first two are written atomically by the request-changes
   flow, the third by the review launcher).
 - Write `annotations.json` **only** while status is `changes-requested` or
   `implementing` — during review phases the GUI owns the file (this phase

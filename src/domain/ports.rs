@@ -173,6 +173,38 @@ pub trait WorkflowRepository: Send + Sync {
         Ok(String::new())
     }
 
+    /// Record the current `plan.md` as a new revision unless it is unchanged.
+    /// `Ok(None)` when there was nothing to record — the plan is empty, or its
+    /// content already is the newest revision.
+    fn record_workflow_plan_version(
+        &self,
+        _project: &str,
+        _slug: &str,
+        _reason: &str,
+    ) -> Result<Option<crate::domain::workflow::PlanRevision>> {
+        Ok(None)
+    }
+
+    /// Every recorded revision of `plan.md`, oldest first.
+    fn list_workflow_plan_versions(
+        &self,
+        _project: &str,
+        _slug: &str,
+    ) -> Result<Vec<crate::domain::workflow::PlanRevision>> {
+        Ok(Vec::new())
+    }
+
+    /// One recorded revision's text; `Ok(None)` when there is no such
+    /// revision.
+    fn read_workflow_plan_version(
+        &self,
+        _project: &str,
+        _slug: &str,
+        _n: u32,
+    ) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// Append an iteration section (note + open-annotation digest) to the
     /// `review.md` audit trail.
     fn append_workflow_review_iteration(
