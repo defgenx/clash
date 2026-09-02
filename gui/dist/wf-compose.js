@@ -130,16 +130,34 @@
     return `${project}/${slug}`;
   }
 
-  /// Every `## Review <n>` round of agent-review.md, in file order —
-  /// `{ round, heading }` per entry. Drives the composer's round picker, so a
-  /// change request can pull findings from ANY round, not just the latest.
+  /// Every `## Review <n>` round of agent-review.md, in file order:
+  /// `{ index, round, target, heading }`. Drives the composer's round picker,
+  /// so a change request can pull findings from ANY round, not just the latest.
+  ///
+  /// `index` is the identity used for lookups, not `round`: round numbers
+  /// restart per target, so "Review 1" appears once for the plan and once for
+  /// the diff, and a by-number lookup would silently take the wrong one.
   function agentReviewRounds(md) {
     const out = [];
     for (const line of String(md || "").split("\n")) {
       const m = /^## Review (\d+)\b\s*[—-]?\s*(.*)$/.exec(line);
-      if (m) out.push({ round: Number(m[1]), heading: m[2].trim() });
+      if (!m) continue;
+      const heading = m[2].trim();
+      const target = (heading.split(/[·\s]+/)[0] || "").toLowerCase();
+      out.push({ index: out.length, round: Number(m[1]), target, heading });
     }
     return out;
+  }
+
+  /// Human label for one round: the phase it belongs to and its number within
+  /// that phase. "Round 1" on its own is ambiguous now that numbers restart.
+  function roundLabel(r) {
+    const n = (r && r.round) || 1;
+    const t = (r && r.target) || "";
+    if (t === "plan") return `Plan review ${n}`;
+    if (t === "structure") return `Explainer ${n}`;
+    if (t === "diff") return `Code review ${n}`;
+    return `Review ${n}`;
   }
 
   /// One round of agent-review.md, reshaped as change-request material — what
@@ -154,12 +172,17 @@
   /// Returns `{ round, text }`, or null when the round doesn't exist or has
   /// nothing usable. When several sections share the number (should not
   /// happen), the last one wins — same rule as the latest-round parser.
-  function roundFindings(md, round) {
+  function roundFindingsAt(md, index) {
     const lines = String(md || "").split("\n");
     let start = -1;
+    let seen = -1;
     for (let i = 0; i < lines.length; i++) {
-      const m = /^## Review (\d+)\b/.exec(lines[i]);
-      if (m && Number(m[1]) === round) start = i;
+      if (!/^## Review (\d+)\b/.test(lines[i])) continue;
+      seen += 1;
+      if (seen === index) {
+        start = i;
+        break;
+      }
     }
     if (start < 0) return null;
     let end = lines.length;
@@ -181,16 +204,17 @@
       if (!skipping) out.push(line);
     }
     const text = out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-    return text ? { round, text } : null;
+    const meta = agentReviewRounds(md)[index] || {};
+    return text ? { index, round: meta.round || 0, target: meta.target || "", text } : null;
   }
 
-  /// The latest round's findings — `roundFindings` over the last entry of
-  /// `agentReviewRounds`. Kept as its own name because "insert the latest"
-  /// is the common path.
+  /// The latest round's findings — the last section of the file. Kept as its
+  /// own name because "insert the latest" is the common path, and because the
+  /// round being applied is always this one.
   function latestAgentRoundFindings(md) {
     const rounds = agentReviewRounds(md);
     if (!rounds.length) return null;
-    return roundFindings(md, rounds[rounds.length - 1].round);
+    return roundFindingsAt(md, rounds.length - 1);
   }
 
   const api = {
@@ -203,7 +227,8 @@
     canSubmitChangeRequest,
     draftKey,
     agentReviewRounds,
-    roundFindings,
+    roundLabel,
+    roundFindingsAt,
     latestAgentRoundFindings,
   };
 

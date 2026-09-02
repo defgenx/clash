@@ -495,15 +495,20 @@ pub struct WorkflowMeta {
     /// title/branch".
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub jira_ticket: String,
-    /// The highest agent review round whose findings have been handed to the
-    /// executor. Every change round does that — the executor's contract has it
-    /// read the latest `agent-review.md` round as input — so clash records it
-    /// on request-changes. `review_round > applied_review_round` is therefore
-    /// "a review has landed and nothing has been done with it yet", which is
-    /// what the plan-review UI needs to stop looking like the review
-    /// evaporated. Never written by the agent.
-    #[serde(default)]
-    pub applied_review_round: u32,
+    /// The review round whose findings have been handed to the executor, as
+    /// `"<target>:<round>"`. Every change round does that — the executor's
+    /// contract has it read the latest `agent-review.md` round as input — so
+    /// clash records it on request-changes. When it does not match the latest
+    /// round, that round is "landed and nothing done with it yet", which is
+    /// what stops a review from looking like it evaporated.
+    ///
+    /// A key rather than a number because round numbers restart per target: 3
+    /// plan rounds followed by code round 1 would compare as already applied.
+    /// Empty (an older item, or nothing applied yet) reads as *not* applied —
+    /// offering the action once more is recoverable; hiding it is not. Never
+    /// written by the agent.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub applied_review_key: String,
     /// Review iteration, starting at 1. Bumped only by clash on
     /// request-changes (never by the agent).
     #[serde(default)]
@@ -638,8 +643,18 @@ pub struct ReviewIterationNote {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentReviewSummary {
-    /// 1-based round number from the `## Review <n>` heading.
+    /// Round number from the `## Review <n>` heading. Counted **per target**,
+    /// so plan reviews and code reviews each start at 1 — the number of plan
+    /// rounds an item went through says nothing about how many times its code
+    /// has been reviewed, and one shared counter made the first code review of
+    /// a well-planned item read as "round 7".
+    ///
+    /// Consequence: the number alone is not an identity. `(target, round)` is.
     pub round: u32,
+    /// `plan` | `diff` | `structure`, read from the heading — the round's
+    /// number is only meaningful alongside it.
+    #[serde(default)]
+    pub target: String,
     /// Heading tail after the round number, e.g. `diff · deep · 2026-08-04 17:27`.
     pub heading: String,
     /// The `**Verdict:**` paragraph, whitespace-collapsed to one line.
@@ -694,6 +709,11 @@ pub struct WorkflowItem {
     /// Latest round parsed from `agent-review.md`, when one exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_agent_review: Option<AgentReviewSummary>,
+    /// How many rounds each target has had, from the same parse — the GUI
+    /// labels the next round with it ("Code review 1" on an item with three
+    /// plan rounds behind it). A `BTreeMap` so the JSON is stable.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub review_rounds: std::collections::BTreeMap<String, u32>,
 }
 
 /// Resolution state of a diff annotation.

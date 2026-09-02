@@ -115,9 +115,11 @@
   }
 
   /// Is there a review round that landed, is about *this* stage's artifact, and
-  /// has not been handed to the executor yet? `appliedReviewRound` is bumped by
-  /// every change round (the executor reads the latest round as input), so the
-  /// counter answers "has anything been done with it".
+  /// has not been handed to the executor yet? `appliedReviewKey` is stamped by
+  /// every change round (the executor reads the latest round as input), so
+  /// comparing it against this round's identity answers "has anything been
+  /// done with it". Absent — an older item, or nothing applied — reads as not
+  /// applied: offering the action once more is recoverable, hiding it is not.
   ///
   /// Two rounds are deliberately not applyable, and both would otherwise offer
   /// a button that makes no sense:
@@ -135,7 +137,9 @@
     if (!r || !r.round) return null;
     const meta = (item && item.meta) || {};
     if (meta.status === "reviewing") return null; // still running
-    if ((meta.appliedReviewRound || 0) >= r.round) return null;
+    // Identity, not order: round numbers restart per target, so "3 plan rounds
+    // applied" must not read as "code round 1 applied".
+    if (meta.appliedReviewKey && meta.appliedReviewKey === reviewRoundKey(r)) return null;
     // Absent on items reviewed before the block was recorded — those predate
     // structure rounds too, so "no target" means "the stage's own artifact".
     const target = meta.review && meta.review.target;
@@ -154,9 +158,26 @@
   function reviewAppliedState(item) {
     if (pendingReviewRound(item)) return "pending";
     const r = item && item.lastAgentReview;
-    const applied = (item && item.meta && item.meta.appliedReviewRound) || 0;
-    if (r && r.round && applied >= r.round) return "applied";
+    const applied = (item && item.meta && item.meta.appliedReviewKey) || "";
+    if (r && r.round && applied && applied === reviewRoundKey(r)) return "applied";
     return "";
+  }
+
+  /// A round's identity: `<target>:<round>`. Mirrors
+  /// `application::workflow::review_round_key` — the number restarts per
+  /// target, so neither half identifies a round on its own.
+  function reviewRoundKey(r) {
+    return `${((r && r.target) || "").toLowerCase()}:${(r && r.round) || 0}`;
+  }
+
+  /// The number the next round against `target` will carry — the count of
+  /// rounds that target already has, plus one. Read from the item's own tally
+  /// (`review_rounds`, parsed from agent-review.md at list time) rather than
+  /// from a global counter, which is what made the first code review of a
+  /// well-planned item read as "round 7".
+  function wfNextReviewRound(item, target) {
+    const tally = (item && item.reviewRounds) || {};
+    return (tally[target] || 0) + 1;
   }
 
   /// May clash turn this finished round into a change round with no further
@@ -194,6 +215,7 @@
     applyReviewNote,
     pendingReviewRound,
     reviewAppliedState,
+    wfNextReviewRound,
     shouldAutoApply,
   };
 

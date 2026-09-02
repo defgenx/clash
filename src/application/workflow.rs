@@ -419,14 +419,45 @@ fn parse_round(lines: &[&str], start: usize, end: usize, round: u32) -> AgentRev
         })
         .unwrap_or((None, String::new()));
 
+    // The target is the heading's first word (`## Review 2 — diff · deep · …`).
+    // Round numbers restart per target, so the pair is the round's identity and
+    // neither half is optional.
+    let target = heading
+        .split(['·', ' '])
+        .find(|t| !t.trim().is_empty())
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+
     AgentReviewSummary {
         round,
+        target,
         heading,
         verdict,
         published,
         apply,
         apply_reason,
     }
+}
+
+/// Pure: the number the next round against `target` should carry.
+///
+/// Counted from `agent-review.md` itself rather than from a stored counter:
+/// the file is the record of rounds, so the count cannot drift from it, and
+/// per-target numbering needs no migration for items whose rounds predate it.
+pub fn next_review_round(agent_review_md: &str, target: &str) -> u32 {
+    let target = target.trim().to_ascii_lowercase();
+    all_agent_reviews(agent_review_md)
+        .iter()
+        .filter(|r| r.target == target)
+        .count() as u32
+        + 1
+}
+
+/// Pure: the identity of a round, for `meta.applied_review_key`. Numbers
+/// restart per target, so neither half identifies a round on its own.
+pub fn review_round_key(target: &str, round: u32) -> String {
+    format!("{}:{}", target.trim().to_ascii_lowercase(), round)
 }
 
 /// Line span (start inclusive, end exclusive) and round number of the last
@@ -1672,6 +1703,48 @@ Tighten the API.\n\n\
     }
 
     // ── Apply declaration ────────────────────────────────────────────
+
+    #[test]
+    fn round_numbers_restart_per_target() {
+        // The whole point: a well-planned item's first code review is round 1,
+        // not round 7. Counted from the report, so it cannot drift from it.
+        let md = "\
+## Review 1 — plan · standard · d
+
+**Verdict:** ok
+
+## Review 2 — plan · standard · d
+
+**Verdict:** ok
+
+## Review 1 — diff · deep · d
+
+**Verdict:** ok
+";
+        assert_eq!(next_review_round(md, "plan"), 3);
+        assert_eq!(next_review_round(md, "diff"), 2);
+        // An explainer round has its own count and never inflates a review's.
+        assert_eq!(next_review_round(md, "structure"), 1);
+        assert_eq!(next_review_round("", "plan"), 1);
+        // Case and padding in the target don't create a second series.
+        assert_eq!(next_review_round(md, " Plan "), 3);
+    }
+
+    #[test]
+    fn a_rounds_identity_is_its_target_and_number_together() {
+        // Numbers restart, so the number alone identifies nothing — comparing
+        // "3 plan rounds applied" against "code round 1" would read as already
+        // applied and hide the action.
+        let md = "## Review 1 — diff · deep · d\n\n**Verdict:** ok\n";
+        let r = latest_agent_review(md).unwrap();
+        assert_eq!(r.round, 1);
+        assert_eq!(r.target, "diff");
+        assert_eq!(review_round_key(&r.target, r.round), "diff:1");
+        assert_ne!(review_round_key("plan", 1), review_round_key("diff", 1));
+        // A heading with no recognizable target still parses, with no target.
+        let bare = latest_agent_review("## Review 4\n\n**Verdict:** ok\n").unwrap();
+        assert_eq!((bare.round, bare.target.as_str()), (4, ""));
+    }
 
     #[test]
     fn a_round_declares_whether_its_findings_should_be_applied() {

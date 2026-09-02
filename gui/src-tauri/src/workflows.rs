@@ -981,11 +981,24 @@ pub(crate) async fn workflow_request_changes(
 
     meta.iteration = snapped + 1;
     // Every change round hands the latest review round to the executor — its
-    // contract has it read `agent-review.md` as input — so the round is now
-    // applied, whether the note repeated its findings or not. Recording it is
-    // what lets the plan-review UI stop offering "apply this review" once it
-    // has been applied, instead of nagging forever.
-    meta.applied_review_round = meta.review_round;
+    // contract has it read `agent-review.md` as input — so that round is now
+    // applied, whether the note repeated its findings or not. Recording its
+    // identity is what lets the UI stop offering "apply this review" once it
+    // has been applied, instead of nagging forever. Read from the file rather
+    // than from a counter: the file is what the executor will read.
+    if let Some(latest) = clash::application::workflow::latest_agent_review(
+        &state
+            .backend
+            .read_workflow_doc(
+                &project,
+                &slug,
+                clash::infrastructure::fs::workflows::AGENT_REVIEW_FILE,
+            )
+            .unwrap_or_default(),
+    ) {
+        meta.applied_review_key =
+            clash::application::workflow::review_round_key(&latest.target, latest.round);
+    }
     meta.status = WorkflowStatus::ChangesRequested;
     state
         .backend
@@ -1513,12 +1526,25 @@ pub(crate) async fn start_workflow_review_agent(
     // An explainer round writes no findings, so there is nothing to apply and
     // pre-authorizing it would be meaningless.
     let auto_apply = auto_apply.unwrap_or(false) && target != ReviewTarget::Structure;
+    // Per-target numbering, counted from the report itself: a well-planned
+    // item's first code review is round 1, not round 7.
+    let round = clash::application::workflow::next_review_round(
+        &state
+            .backend
+            .read_workflow_doc(
+                &project,
+                &slug,
+                clash::infrastructure::fs::workflows::AGENT_REVIEW_FILE,
+            )
+            .unwrap_or_default(),
+        target.as_str(),
+    );
     let review = WorkflowReview {
         target,
         depth,
         publish,
         return_status: meta.status,
-        round: meta.review_round.saturating_add(1),
+        round,
         interactive,
         auto_apply,
         pr_url: pr_url.unwrap_or_default(),
@@ -1542,7 +1568,9 @@ pub(crate) async fn start_workflow_review_agent(
     // annotations unlocked, cancel refusing) has no recovery path.
     let rollback = meta.clone();
     meta.session_id = Some(session_id.clone());
-    meta.review_round = review.round;
+    // The item-wide total keeps climbing — it is what "Agent reviews (n)" and
+    // the share summary count. The round's own number is per target.
+    meta.review_round = meta.review_round.saturating_add(1);
     meta.review = Some(review.clone());
     if meta.status.can_transition_to(WorkflowStatus::Reviewing) {
         meta.status = WorkflowStatus::Reviewing;

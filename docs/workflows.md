@@ -159,7 +159,15 @@ pr-draft / pr-ready likewise
   abandon stays available, so a dead reviewer can never wedge an item.
 - `meta.json.review` records the round: `target`, `depth`, `publish`,
   `returnStatus`, `round`, `startedAt`. `meta.json.reviewRound` is the
-  clash-owned counter (like `iteration` — the agent never writes it).
+  clash-owned *total* (like `iteration` — the agent never writes it).
+- **Round numbers restart per target.** `## Review 1 — plan` and
+  `## Review 1 — diff` are two different rounds: how many times a plan was
+  reviewed says nothing about how many times the code has been, and one shared
+  counter made the first code review of a well-planned item read as "round 7".
+  The number is counted from this file (`next_review_round`), so it cannot
+  drift from it, and `(target, round)` — not the number — is a round's
+  identity. Every heading must therefore carry its target as the first word of
+  the tail, which the skills' templates already do.
 - `meta.review` is **never cleared** — it describes the round in flight while
   `status == reviewing`, and the *most recent* round afterwards (the reviewer's
   hand-back changes `status` and nothing else; clearing would need a second
@@ -175,11 +183,13 @@ pr-draft / pr-ready likewise
   There is deliberately no second mechanism — a path that revised the plan
   without recording a round would leave the revision untraceable and
   unversioned, which is the bug the snapshotting flow above exists to prevent.
-  `meta.json.appliedReviewRound` (clash-owned, like `reviewRound`) is set to
-  `reviewRound` on every request-changes, so `reviewRound >
-  appliedReviewRound` means "a review landed and nothing has been done with
-  it" — the state the item header now shows as *not applied yet*, and the
-  reason the stage's own approve button is demoted while it holds.
+  `meta.json.appliedReviewKey` (clash-owned, like `reviewRound`) is stamped
+  with the applied round's `"<target>:<round>"` on every request-changes, so a
+  latest round whose key does not match means "a review landed and nothing has
+  been done with it" — the state the item header shows as *not applied yet*,
+  and the reason the stage's own approve button is demoted while it holds. A
+  key rather than a number because numbers restart per target: three applied
+  plan rounds would otherwise read as having covered code round 1.
 - **Every round declares whether it should be applied**, as
   `**Apply:** yes|no — <reason>` next to its `**Verdict:**`. The reviewers'
   skills own the judgement (interactive rounds ask the human; autonomous ones
@@ -420,7 +430,7 @@ for context.
   only commits locally leaves the PR silently stale. An unpublished branch
   (`full`/`from-plan`, no PR) is still never pushed.
 - Never touch `history/` or `plan-history/`, and never change `iteration`,
-  `reviewRound` or `appliedReviewRound` — clash
+  `reviewRound` or `appliedReviewKey` — clash
   owns all five (the first two are written atomically by the request-changes
   flow, the third by the review launcher).
 - Write `annotations.json` **only** while status is `changes-requested` or

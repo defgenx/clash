@@ -101,8 +101,8 @@ findings into `agent-review.md` and `annotations.json` and never touch
 
 ## Hard rules (violating these corrupts the pipeline)
 
-- **Never** touch `history/` and **never** change `iteration`, `reviewRound` or
-  `appliedReviewRound` in meta.json — clash owns all four.
+- **Never** touch `history/`, `plan-history/`, or `iteration`, `reviewRound`
+  and `appliedReviewKey` in meta.json — clash owns all five.
 - Write `annotations.json` **only while** `meta.json.status` is
   `changes-requested` or `implementing`. During review phases the file
   belongs to the human's GUI.

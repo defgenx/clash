@@ -15,7 +15,8 @@ const {
   canSubmitChangeRequest,
   draftKey,
   agentReviewRounds,
-  roundFindings,
+  roundFindingsAt,
+  roundLabel,
   latestAgentRoundFindings,
 } = require("../dist/wf-compose.js");
 
@@ -183,15 +184,54 @@ test("every round is listed and individually insertable, not just the latest", (
     "1. `src/auth.rs:42` — timing leak",
   ].join("\n");
   assert.deepEqual(agentReviewRounds(md), [
-    { round: 1, heading: "plan · deep · 2026-08-01" },
-    { round: 2, heading: "diff · deep · 2026-08-05" },
+    { index: 0, round: 1, target: "plan", heading: "plan · deep · 2026-08-01" },
+    { index: 1, round: 2, target: "diff", heading: "diff · deep · 2026-08-05" },
   ]);
-  // Round 2 landing does not orphan round 1's findings.
-  assert.match(roundFindings(md, 1).text, /split the module/);
-  assert.doesNotMatch(roundFindings(md, 1).text, /timing leak/);
-  assert.match(roundFindings(md, 2).text, /timing leak/);
-  assert.equal(roundFindings(md, 7), null);
+  // A later round landing does not orphan the earlier one's findings.
+  assert.match(roundFindingsAt(md, 0).text, /split the module/);
+  assert.doesNotMatch(roundFindingsAt(md, 0).text, /timing leak/);
+  assert.match(roundFindingsAt(md, 1).text, /timing leak/);
+  assert.equal(roundFindingsAt(md, 7), null);
   assert.deepEqual(agentReviewRounds(""), []);
+});
+
+test("a round is looked up by position, because its number is not unique", () => {
+  // Numbers restart per phase, so "Review 1" names a plan round *and* a code
+  // round in the same file. A by-number lookup silently took the last match.
+  const md = [
+    "## Review 1 — plan · standard · d",
+    "",
+    "1. plan finding",
+    "",
+    "## Review 1 — diff · deep · d",
+    "",
+    "1. code finding",
+  ].join("\n");
+  const rounds = agentReviewRounds(md);
+  assert.deepEqual(
+    rounds.map((r) => [r.index, r.round, r.target]),
+    [
+      [0, 1, "plan"],
+      [1, 1, "diff"],
+    ]
+  );
+  assert.match(roundFindingsAt(md, 0).text, /plan finding/);
+  assert.match(roundFindingsAt(md, 1).text, /code finding/);
+  // Each result carries what it is, so a caller never has to re-derive it.
+  assert.equal(roundFindingsAt(md, 1).target, "diff");
+  assert.equal(roundFindingsAt(md, 1).round, 1);
+  // The latest is the last section, which needs no number at all.
+  assert.match(latestAgentRoundFindings(md).text, /code finding/);
+});
+
+test("a round's label names its phase, since the number alone cannot", () => {
+  assert.equal(roundLabel({ round: 2, target: "plan" }), "Plan review 2");
+  assert.equal(roundLabel({ round: 1, target: "diff" }), "Code review 1");
+  assert.equal(roundLabel({ round: 3, target: "structure" }), "Explainer 3");
+  // An unlabelled round (a report predating the target in its heading) still
+  // reads sensibly rather than claiming a phase it never named.
+  assert.equal(roundLabel({ round: 4, target: "" }), "Review 4");
+  assert.equal(roundLabel(null), "Review 1");
 });
 
 test("the browser branch publishes every name app.js calls", () => {
@@ -219,7 +259,8 @@ test("the browser branch publishes every name app.js calls", () => {
     "canSubmitChangeRequest",
     "draftKey",
     "agentReviewRounds",
-    "roundFindings",
+    "roundFindingsAt",
+    "roundLabel",
   ];
   for (const name of used) {
     assert.equal(typeof win[name], "function", `${name} must be on window`);

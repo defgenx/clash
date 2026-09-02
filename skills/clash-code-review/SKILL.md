@@ -210,6 +210,16 @@ instead.
   **one** review per round. Never `--approve` and never `--request-changes` —
   approval is the human's call, not yours. Findings you already published in an
   earlier round must not be posted twice.
+
+  **A draft PR cannot take a review.** GitHub rejects `gh pr review` on a draft
+  ("Draft pull requests cannot be reviewed"), so check first —
+  `gh pr view <n> --json isDraft` — and when it is a draft, post the summary as
+  an ordinary PR comment (`gh pr comment <n> --body-file <file>`) instead. Line
+  comments through the pulls API are unaffected either way. Say which form you
+  used in `### Published`. Reviewing a draft is the normal case, not an edge
+  one: a draft is exactly what a change is in while it is being reviewed, and
+  the local half of the round — findings as annotations — never depended on the
+  PR's state at all.
 - **`respond-pr-comments`** — read the review comments of **the round's PR**
   (the kickoff's `PR:` field, else the primary `meta.pr.url`) via
   `gh api /repos/{owner}/{repo}/pulls/<n>/comments` and
@@ -308,6 +318,12 @@ round, nine nits are not.
 - Posted 3 line comments to PR #41
 ```
 
+   The heading's shape is contractual: clash reads the round number and,
+   from the first word of the tail, its target. Numbers restart per target
+   — `diff` rounds are numbered among themselves — so `<round>` is the
+   number the kickoff gave you (`Round:`), and dropping the target would
+   make two different rounds indistinguishable.
+
 `### Dismissed in triage` records the human's calls from checkpoint 1 — it is
 what stops a later round from re-raising them. Omit the section only when
 nothing was dismissed (autonomous rounds usually omit it).
@@ -322,6 +338,8 @@ nothing did and why:
   `- Publish was respond-pr-comments, but the PR had no unanswered review
   comments at 17:25 — nothing posted. Findings are in annotations.json.`
 - `gh` failed → `- Publishing skipped: gh not authenticated.`
+- a draft PR → `- Posted 3 line comments and a summary comment to PR #41 (a
+  draft, so not as a review).`
 
 **`**Apply:**` is mandatory too**, and must be exactly `yes` or `no` followed
 by the reason — it is the decision from the section above, and clash reads it

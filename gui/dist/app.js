@@ -5420,7 +5420,7 @@ async function buildWorkflowView(el, project, slug) {
           ? ' <span class="wf-review-strip-flag done">applied</span>'
           : "";
     strip.innerHTML =
-      `<span class="wf-review-strip-round">⌕ Round ${r.round}${
+      `<span class="wf-review-strip-round">⌕ ${escapeHtml(roundLabel(r))}${
         r.heading ? ` · ${escapeHtml(r.heading)}` : ""
       }${flag}</span>` +
       `<span class="wf-review-strip-verdict">${escapeHtml(wfShort(r.verdict, 180))}</span>` +
@@ -5692,7 +5692,10 @@ async function wfApplyReviewNoteFor(item, round, target) {
   } catch (e) {
     console.error("get_workflow_doc(agent-review.md) failed:", e);
   }
-  return applyReviewNote(round, roundFindings(md, round.round), target);
+  // Always the latest section: the round being applied is the pending one, and
+  // "the latest" needs no number — which is what keeps this correct now that
+  // numbers restart per phase.
+  return applyReviewNote(round, latestAgentRoundFindings(md), target);
 }
 
 /// Record a change round with `note` and launch the executor on it. The one
@@ -6036,10 +6039,11 @@ async function wfShareDialog(item) {
 function wfComposeReviewRound(item) {
   return new Promise((resolve) => {
     const model = reviewRoundModel({
-      round: (item.meta.reviewRound || 0) + 1,
+      round: wfNextReviewRound(item, wfReviewTarget(item)),
       target: wfReviewTarget(item),
       hasPr: wfHasPr(item),
       prNumber: item.meta.pr ? item.meta.pr.number : 0,
+      prDraft: !!(item.meta.pr && item.meta.pr.draft),
       interactionDefault: item.meta.interactionDefault || "",
       // Remember the last round's answer for this item: someone who wants the
       // loop hands-off wants it every round, and someone who reads findings
@@ -6317,7 +6321,7 @@ function wfComposeChangeRequest({ item, target, annotations, onJump, prefill = "
       suggest = document.createElement("p");
       suggest.className = "wf-compose-suggest";
       const stext = document.createElement("span");
-      stext.textContent = `Review round ${item.lastAgentReview.round} left findings — `;
+      stext.textContent = `${roundLabel(item.lastAgentReview)} left findings — `;
       const slink = document.createElement("button");
       slink.type = "button";
       slink.className = "wf-compose-suggest-link";
@@ -6392,22 +6396,24 @@ function wfComposeChangeRequest({ item, target, annotations, onJump, prefill = "
           return;
         }
         // One round → insert it; several → pick (newest first, latest primary).
-        let round = rounds[rounds.length - 1].round;
+        // Picked by *index*, not by number: numbers restart per phase, so
+        // "Review 1" can name two different rounds in one file.
+        let index = rounds.length - 1;
         if (rounds.length > 1) {
           const picked = await uiChoice({
             message: "Insert which review round's findings?",
             choices: [...rounds].reverse().map((r, i) => ({
-              label: `Round ${r.round}${r.heading ? ` — ${r.heading}` : ""}`,
-              value: String(r.round),
+              label: `${roundLabel(r)}${r.heading ? ` — ${r.heading}` : ""}`,
+              value: String(r.index),
               primary: i === 0,
             })),
           });
           if (!picked) return;
-          round = Number(picked);
+          index = Number(picked);
         }
-        const found = roundFindings(md, round);
+        const found = roundFindingsAt(md, index);
         if (!found) {
-          flashToast(`Round ${round} has no findings to insert`);
+          flashToast(`${roundLabel(rounds[index])} has no findings to insert`);
           return;
         }
         // Append rather than replace — the note frames the findings, so what
@@ -6819,7 +6825,7 @@ function renderWfActions(bar, root, item) {
     const says =
       round.apply === true ? " · recommended" : round.apply === false ? " · not needed" : "";
     add(
-      `↻ Apply review r${round.round} → ${isPlan ? "revise plan" : "fix round"}${says}`,
+      `↻ Apply ${roundLabel(round).toLowerCase()} → ${isPlan ? "revise plan" : "fix round"}${says}`,
       round.apply === false ? "" : "primary",
       applyReview,
       (round.apply === true
@@ -6902,18 +6908,24 @@ function renderWfActions(bar, root, item) {
   // counts past rounds so it is obvious this is round N+1, not a one-shot.
   const reviewButton = () => {
     if (!wfCanReview(item)) return;
-    const n = item.meta.reviewRound || 0;
+    const total = item.meta.reviewRound || 0;
+    // The number counts rounds *of this phase*: how many times the plan was
+    // reviewed says nothing about the code, and one shared counter made the
+    // first code review of a well-planned item read as "round 7".
+    const target = wfReviewTarget(item);
+    const next = wfNextReviewRound(item, target);
+    const phase = target === "plan" ? "Plan review" : "Code review";
     // Label names the ACTOR (an agent, spending tokens); the sibling "↩ Back to
     // <stage> review" names a DESTINATION (a free status move). Keep them
     // distinguishable — the round number is a suffix, not the noun.
     add(
-      n ? `⌕ Agent review · round ${n + 1}` : "⌕ Agent review",
+      `⌕ ${phase}${next > 1 ? ` · round ${next}` : ""}`,
       "",
       () => launchWfReview(item, root),
       `Spend tokens: launch an agent session to review this item's ${
-        wfReviewTarget(item) === "plan" ? "plan" : "code"
+        target === "plan" ? "plan" : "code"
       } and report findings` +
-        (n ? ` (${n} round${n > 1 ? "s" : ""} so far)` : ""),
+        (total ? ` (${total} round${total > 1 ? "s" : ""} on this item so far)` : ""),
       "step"
     );
   };

@@ -135,13 +135,22 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
     let has_agent_review = has_content(&dir.join(AGENT_REVIEW_FILE));
     // The latest round's verdict/published lines, so the GUI can say what a
     // finished round concluded without the user opening the whole report.
-    let last_agent_review = if !terminal && has_agent_review {
-        std::fs::read_to_string(dir.join(AGENT_REVIEW_FILE))
-            .ok()
-            .as_deref()
-            .and_then(crate::application::workflow::latest_agent_review)
+    let (last_agent_review, review_rounds) = if !terminal && has_agent_review {
+        let md = std::fs::read_to_string(dir.join(AGENT_REVIEW_FILE)).unwrap_or_default();
+        let rounds = crate::application::workflow::all_agent_reviews(&md);
+        // Per-target tally from the same parse: round numbers restart per
+        // target, so the GUI needs the count of *this* target to label the
+        // next one.
+        let mut per_target: std::collections::BTreeMap<String, u32> = Default::default();
+        for r in &rounds {
+            if r.target.is_empty() {
+                continue;
+            }
+            *per_target.entry(r.target.clone()).or_insert(0) += 1;
+        }
+        (rounds.into_iter().next_back(), per_target)
     } else {
-        None
+        (None, Default::default())
     };
     Ok(WorkflowItem {
         project: project.to_string(),
@@ -155,6 +164,7 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         history_iterations,
         agent_alive: true, // cross-checked against live sessions by the GUI layer
         last_agent_review,
+        review_rounds,
         meta,
     })
 }

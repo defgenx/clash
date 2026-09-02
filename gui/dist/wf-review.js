@@ -21,6 +21,11 @@
     target = "diff",
     hasPr = false,
     prNumber = 0,
+    // A draft PR cannot take a *review* (GitHub rejects one), but it takes
+    // comments — and reviewing a draft is the normal case, not an edge one.
+    // The choice stays offered; only its wording changes, so nobody discovers
+    // the difference from a failure at the end of a round.
+    prDraft = false,
     interactionDefault = "",
     autoApplyDefault = false,
   } = {}) {
@@ -67,7 +72,9 @@
               {
                 value: "pr-comments",
                 label: `Also post to ${prName}`,
-                detail: `One review with line comments on ${prName}. Never approves or requests changes — that stays yours.`,
+                detail: prDraft
+                  ? `Line comments on ${prName} plus a summary comment — a draft cannot take a formal review, so the summary goes as a comment. Never approves or requests changes; that stays yours.`
+                  : `One review with line comments on ${prName}. Never approves or requests changes — that stays yours.`,
               },
             ],
           },

@@ -580,6 +580,20 @@ merged PR moves the item to done automatically (an item with *only linked*
 PRs closes once all of them merge — it has no primary PR to drive it). *Request changes* stays available at
 `pr-draft` and `pr-ready` — review feedback keeps arriving once a PR is up,
 and a fix round on an item with a PR pushes its commits so the PR follows.
+**Reviewing at any stage, draft PR included.** A review round is available
+wherever the item is parked on a decision — plan review, diff review, and both
+PR stages. A draft is exactly what a change is in while it is being reviewed,
+so nothing gates a round on the PR's state; the only difference is that GitHub
+won't accept a formal *review* on a draft, so when the findings are posted to
+the PR the summary goes as a comment instead (line comments are unaffected).
+The composer says which form it will use before you launch, and the local half
+— findings as line-anchored annotations — never depends on the PR at all.
+
+**Round numbers restart per phase.** Plan reviews are numbered among
+themselves and code reviews among themselves, so the first code review of a
+well-planned item is *Code review 1*, not "round 7". The labels name the phase
+for the same reason; the item's total is still on the *Agent reviews (n)* tab.
+
 **Applying a review round.** A review round judges and records; it never edits
 `plan.md` or the code — a reviewer that rewrites what it reviews has reviewed
 nothing. **Every round ends by declaring whether its findings are worth

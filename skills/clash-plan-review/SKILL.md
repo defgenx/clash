@@ -227,6 +227,12 @@ changes / needs rework before implementation>
 - Nothing — local round by request.
 ```
 
+   The heading's shape is contractual: clash reads the round number and,
+   from the first word of the tail, its target. Numbers restart per target
+   — `plan` rounds are numbered among themselves — so `<round>` is the
+   number the kickoff gave you (`Round:`), and dropping the target would
+   make two different rounds indistinguishable.
+
    Every issue carries a `**Decision:**` line. Dismissed issues stay in the
    report (that is what stops a future round from re-raising them) but never
    become annotations. The `### Accepted changes` list is how the review turns

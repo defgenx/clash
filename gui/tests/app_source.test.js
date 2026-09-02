@@ -243,7 +243,10 @@ test("applying a review round goes through the change-round flow", () => {
   // snapshotting flow exists to prevent. So "Apply review" must compose a note
   // and call the same command the composer does, never a shortcut of its own.
   assert.match(APP, /const applyReview = async \(\) => \{/);
-  assert.match(APP, /applyReviewNote\(round, roundFindings\(md, round\.round\), target\)/);
+  // Keyed on "the latest section", not on a round number: numbers restart per
+  // phase, so a by-number lookup can name two different rounds.
+  assert.match(APP, /applyReviewNote\(round, latestAgentRoundFindings\(md\), target\)/);
+  assert.doesNotMatch(APP, /roundFindings\(md, round\.round\)/);
   const apply = APP.slice(
     APP.indexOf("const applyReview = async () => {"),
     APP.indexOf("const applyReviewButton = ")

@@ -170,3 +170,21 @@ test("the round composer offers to apply the findings when it finishes", () => {
   // The item's last answer pre-selects, so a hands-off user stays hands-off.
   assert.equal(reviewRoundModel({ autoApplyDefault: true }).autoApply.default, true);
 });
+
+test("a draft PR keeps the publish choice, with wording that fits a draft", () => {
+  // GitHub rejects a *review* on a draft, but takes comments — and reviewing a
+  // draft is the normal case, not an edge one. Hiding the option (or leaving
+  // the wording alone) made the difference something you discovered from a
+  // failure at the end of a round.
+  const ready = reviewRoundModel({ target: "diff", hasPr: true, prNumber: 41 });
+  const draft = reviewRoundModel({ target: "diff", hasPr: true, prNumber: 41, prDraft: true });
+  const opt = (m) => m.publish.choices.find((c) => c.value === "pr-comments");
+  assert.ok(opt(ready) && opt(draft), "the choice exists either way");
+  assert.match(opt(ready).detail, /One review with line comments/);
+  assert.match(opt(draft).detail, /a draft cannot take a formal review/);
+  assert.match(opt(draft).detail, /summary goes as a comment/);
+  // Neither form ever claims approval rights.
+  for (const m of [ready, draft]) {
+    assert.match(opt(m).detail, /Never approves or requests changes/);
+  }
+});

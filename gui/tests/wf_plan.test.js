@@ -10,6 +10,7 @@ const {
   applyReviewNote,
   pendingReviewRound,
   reviewAppliedState,
+  wfNextReviewRound,
   shouldAutoApply,
   planVersionForIteration,
 } = require("../dist/wf-plan.js");
@@ -121,18 +122,18 @@ test("a findings-free round records its verdict instead of an empty note", () =>
 
 test("a round counts as pending until a change round hands it over", () => {
   const item = (over = {}) => ({
-    lastAgentReview: { round: 2, verdict: "v" },
-    meta: { status: "plan-review", appliedReviewRound: 0, ...(over.meta || {}) },
+    lastAgentReview: { round: 2, target: "plan", verdict: "v" },
+    meta: { status: "plan-review", appliedReviewKey: "", ...(over.meta || {}) },
     ...over,
   });
   assert.equal(pendingReviewRound(item()).round, 2);
-  // Applied — the executor already read it.
-  assert.equal(pendingReviewRound(item({ meta: { appliedReviewRound: 2 } })), null);
+  // Applied — the executor already read this exact round.
+  assert.equal(pendingReviewRound(item({ meta: { appliedReviewKey: "plan:2" } })), null);
   // A later round supersedes an older application.
   assert.equal(
     pendingReviewRound({
-      lastAgentReview: { round: 3 },
-      meta: { status: "plan-review", appliedReviewRound: 2 },
+      lastAgentReview: { round: 3, target: "plan" },
+      meta: { status: "plan-review", appliedReviewKey: "plan:2" },
     }).round,
     3
   );
@@ -142,13 +143,52 @@ test("a round counts as pending until a change round hands it over", () => {
   assert.equal(pendingReviewRound(null), null);
 });
 
+test("a restarted number does not read as already applied", () => {
+  // The bug per-phase numbering would have introduced with a numeric
+  // comparison: three applied plan rounds, then code review 1 lands and
+  // 3 >= 1 hides the action on a review nobody has acted on.
+  const item = {
+    lastAgentReview: { round: 1, target: "diff" },
+    meta: { status: "diff-review", appliedReviewKey: "plan:3", review: { target: "diff" } },
+  };
+  assert.equal(pendingReviewRound(item).round, 1);
+  assert.equal(reviewAppliedState(item), "pending");
+  // The same number under the same target *is* applied, so the comparison is
+  // an identity and not just "different target wins".
+  assert.equal(
+    reviewAppliedState({
+      lastAgentReview: { round: 1, target: "diff" },
+      meta: { status: "diff-review", appliedReviewKey: "diff:1", review: { target: "diff" } },
+    }),
+    "applied"
+  );
+  // Case in the stored target must not create a second identity.
+  assert.equal(
+    reviewAppliedState({
+      lastAgentReview: { round: 1, target: "Diff" },
+      meta: { status: "diff-review", appliedReviewKey: "diff:1", review: { target: "diff" } },
+    }),
+    "applied"
+  );
+});
+
+test("the next round's number counts only its own phase", () => {
+  const item = { reviewRounds: { plan: 3, diff: 1 } };
+  assert.equal(wfNextReviewRound(item, "plan"), 4);
+  assert.equal(wfNextReviewRound(item, "diff"), 2);
+  // An untouched phase starts at 1 however many rounds the other one had.
+  assert.equal(wfNextReviewRound({ reviewRounds: { plan: 6 } }, "diff"), 1);
+  assert.equal(wfNextReviewRound({}, "plan"), 1);
+  assert.equal(wfNextReviewRound(null, "plan"), 1);
+});
+
 test("an explainer round is never offered as work to apply", () => {
   // A structure round writes the Structure tab and judges nothing, so
   // "apply its findings" has no meaning — and it still bumps reviewRound and
   // shows up as the latest round, so it has to be excluded explicitly.
   const explained = {
     lastAgentReview: { round: 4, verdict: "n/a" },
-    meta: { status: "diff-review", appliedReviewRound: 3, review: { target: "structure" } },
+    meta: { status: "diff-review", appliedReviewKey: "", review: { target: "structure" } },
   };
   assert.equal(pendingReviewRound(explained), null);
   // And the header claims neither state for it.
@@ -161,7 +201,7 @@ test("a round about the other artifact is not applyable at this stage", () => {
   // the code" is not a thing.
   const stale = {
     lastAgentReview: { round: 1 },
-    meta: { status: "diff-review", appliedReviewRound: 0, review: { target: "plan" } },
+    meta: { status: "diff-review", appliedReviewKey: "", review: { target: "plan" } },
   };
   assert.equal(pendingReviewRound(stale), null);
   assert.equal(reviewAppliedState(stale), "");
@@ -188,13 +228,15 @@ test("a round about the other artifact is not applyable at this stage", () => {
   );
 });
 
-test("the header says applied only once a change round carried the round", () => {
+test("the header says applied only once a change round carried that round", () => {
   const item = (applied) => ({
-    lastAgentReview: { round: 2 },
-    meta: { status: "plan-review", appliedReviewRound: applied, review: { target: "plan" } },
+    lastAgentReview: { round: 2, target: "plan" },
+    meta: { status: "plan-review", appliedReviewKey: applied, review: { target: "plan" } },
   });
-  assert.equal(reviewAppliedState(item(0)), "pending");
-  assert.equal(reviewAppliedState(item(2)), "applied");
+  assert.equal(reviewAppliedState(item("")), "pending");
+  assert.equal(reviewAppliedState(item("plan:2")), "applied");
+  // An older round's key is not this round's.
+  assert.equal(reviewAppliedState(item("plan:1")), "pending");
   assert.equal(reviewAppliedState({ meta: {} }), "");
 });
 
@@ -203,7 +245,7 @@ test("auto-apply needs the human's authorization AND the round's yes", () => {
     lastAgentReview: { round: 2, apply: true },
     meta: {
       status: "plan-review",
-      appliedReviewRound: 0,
+      appliedReviewKey: "",
       review: { target: "plan", autoApply: true },
       ...(over.meta || {}),
     },
@@ -225,7 +267,7 @@ test("auto-apply needs the human's authorization AND the round's yes", () => {
     shouldAutoApply(
       base({
         meta: {
-          appliedReviewRound: 2,
+          appliedReviewKey: "plan:2",
           review: { target: "plan", autoApply: true },
         },
       })
@@ -268,6 +310,7 @@ test("the browser branch publishes every name app.js calls", () => {
     "applyReviewNote",
     "pendingReviewRound",
     "reviewAppliedState",
+    "wfNextReviewRound",
     "shouldAutoApply",
     "planVersionForIteration",
   ]) {
