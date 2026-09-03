@@ -1008,7 +1008,7 @@ open terminals, no restart:
 | **Terminal · cursor** | Style (block/bar/underline) · unfocused-pane style (outline/block/bar/underline/hidden) · bar width · blink |
 | **Terminal · colors** | Minimum contrast ratio (1 = off, 4.5 = WCAG AA) · bold text in bright colors |
 | **Terminal · scroll & input** | Scrollback lines · scroll speed · smooth-scroll duration · copy-on-select · right-click selects word · "⌥ sends Esc (Meta)" (off = Option always composes characters — international layouts) · toast on terminal bell |
-| **clash** | How terminal links open — ask each time (default), always in clash's embedded browser, or always the system browser · desktop notifications · attention count in the window title · confirm before killing a session (batch kills always ask) · session-list refresh interval · default shell for in-app terminals · terminal used by the TUI launcher |
+| **clash** | How links open — ask each time (default), always in clash's embedded browser, or always the system browser. Applies to *every* link clash opens: terminal hyperlinks, workflow PR buttons and the PR dashboard, session PR/repository rows, listening ports, and links inside a rendered plan or review. Opening an item's several PRs asks once, not once per PR · desktop notifications · attention count in the window title · confirm before killing a session (batch kills always ask) · session-list refresh interval · default shell for in-app terminals · terminal used by the TUI launcher |
 
 **Themes** recolor the chrome *and* the terminals in one move — the sidebar,
 tabs, dialogs, status colors and the xterm palette all come from the same table,

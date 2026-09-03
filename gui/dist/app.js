@@ -432,26 +432,68 @@ function uiChoice({ message, detail = null, choices }) {
 /// embedded browser panel, in the system browser, or (default) by asking each
 /// time. The per-open prompt is the requested behavior — a link could belong
 /// in either place, so let the user choose at click time.
-async function openLink(uri) {
-  const embed = () => openBrowserTab(uri, "split");
-  const external = () => invoke("open_external", { url: uri }).catch(() => {});
-  const isHttp = /^https?:\/\//.test(uri);
-  // Non-http(s) schemes (mailto:, tel:, file:, …) can't render in the panel —
-  // always hand them to the OS regardless of the setting.
-  if (!isHttp) return external();
+/// Where a link should open: the `linkOpen` setting, asking when it says
+/// `ask`. Returns "embedded" | "external", or null when the human dismissed
+/// the question.
+///
+/// Its own function because *every* link in the app has to route through this
+/// one decision. Half the URL-opening sites used to call `openBrowserTab`
+/// directly — the workflow PR buttons among them — so the setting worked for
+/// terminal links and was silently ignored everywhere else.
+async function resolveLinkMode(detail) {
   const mode = state.settings.linkOpen;
-  if (mode === "embedded") return embed();
-  if (mode === "external") return external();
-  const choice = await uiChoice({
+  if (mode === "embedded" || mode === "external") return mode;
+  return await uiChoice({
     message: "Open link",
-    detail: uri,
+    detail,
     choices: [
       { label: "In clash", value: "embedded", primary: true },
       { label: "System browser", value: "external" },
     ],
   });
-  if (choice === "embedded") embed();
-  else if (choice === "external") external();
+}
+
+const openExternal = (uri) => invoke("open_external", { url: uri }).catch(() => {});
+
+async function openLink(uri) {
+  // Non-http(s) schemes (mailto:, tel:, file:, …) can't render in the panel —
+  // always hand them to the OS regardless of the setting.
+  if (!/^https?:\/\//.test(uri)) return openExternal(uri);
+  const mode = await resolveLinkMode(uri);
+  if (mode === "embedded") openBrowserTab(uri, "split");
+  else if (mode === "external") openExternal(uri);
+}
+
+/// Open several links as one action — an item's pull requests, typically.
+///
+/// One decision for the batch: asking per URL would pop the same question
+/// three times for one click. Embedded keeps the layout rule that made the
+/// multi-PR open usable — the first takes a split pane, the rest land as
+/// background tabs, and PRs already open are left where they are rather than
+/// duplicated (background mode never dedupes, which is correct for its other
+/// caller, in-page `window.open`).
+async function openLinks(uris, detail) {
+  const list = [...new Set((uris || []).filter(Boolean))];
+  if (!list.length) return;
+  if (list.length === 1) return openLink(list[0]);
+  const mode = await resolveLinkMode(detail || `${list.length} links`);
+  if (!mode) return;
+  if (mode === "external") {
+    for (const uri of list) await openExternal(uri);
+    return;
+  }
+  const w = ws();
+  const alreadyOpen = new Set(
+    [...state.open.entries()]
+      .filter(([id, e]) => e.kind === "browser" && w.sessions.includes(id))
+      .map(([, e]) => e.url)
+  );
+  list.forEach((uri, i) => {
+    // A non-http link can't render in the panel whatever the mode says.
+    if (!/^https?:\/\//.test(uri)) openExternal(uri);
+    else if (i === 0) openBrowserTab(uri, "split"); // split-mode dedupes itself
+    else if (!alreadyOpen.has(uri)) openBrowserTab(uri, "background");
+  });
 }
 
 /// The active workspace.
@@ -1265,7 +1307,7 @@ function sessionItem(s) {
     chip.title = `${pr} — click to open in the browser panel`;
     chip.onclick = (ev) => {
       ev.stopPropagation();
-      openBrowserTab(pr, "split");
+      openLink(pr);
     };
     sub.appendChild(chip);
   }
@@ -1345,7 +1387,7 @@ function sessionMenu(s, x, y) {
         ]
       : []),
     ...(pr
-      ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openBrowserTab(pr, "split") }]
+      ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openLink(pr) }]
       : []),
     ...(s.source === "Wild" && !s.id.startsWith("wild-pid-")
       ? [{ label: "Take over wild claude", icon: "zap", action: () => adoptWild(s) }]
@@ -1856,7 +1898,7 @@ function tabContextMenu(ev, sid) {
       action: () => detachSession(sid),
     },
     ...(pr
-      ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openBrowserTab(pr, "split") }]
+      ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openLink(pr) }]
       : []),
     null,
     {
@@ -3159,7 +3201,9 @@ function renderMarkdown(el, md) {
     a.addEventListener("click", (ev) => {
       ev.preventDefault();
       const href = a.getAttribute("href") || "";
-      if (/^https?:/i.test(href)) invoke("open_external", { url: href });
+      // Same decision as every other link: the setting says where links go,
+      // and a plan's links are no different from a terminal's.
+      if (/^\w+:/.test(href)) openLink(href);
     });
   }
 }
@@ -3285,7 +3329,7 @@ function renderDetails() {
               .join("")
           : "<p class='hint'>no listening ports</p>");
       out.querySelectorAll(".row-item.port").forEach((row) => {
-        row.onclick = () => openBrowserTab(`http://localhost:${row.dataset.port}`, "split");
+        row.onclick = () => openLink(`http://localhost:${row.dataset.port}`);
       });
     } catch (e) {
       out.innerHTML = `<h4>LISTENING PORTS</h4><p class='hint'>failed: ${escapeHtml(e)}</p>`;
@@ -3338,7 +3382,7 @@ async function showBrowserOpenPicker(s) {
   // session branch against the default branch (pushed commits only).
   if (pr) {
     addRow("± Diff on GitHub", `PR #${pr.split("/").pop()} files`, () =>
-      openBrowserTab(`${pr}/files`, "split"),
+      openLink(`${pr}/files`)
     );
   } else if (repo && repo.includes("github.com") && s.git_branch) {
     const branch = s.git_branch;
@@ -3348,19 +3392,16 @@ async function showBrowserOpenPicker(s) {
         uiAlert(`Branch ${branch} is the default branch — nothing to compare on GitHub.`);
         return;
       }
-      openBrowserTab(
-        `${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(branch)}`,
-        "split",
-      );
+      openLink(`${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(branch)}`);
     });
   }
-  if (pr) addRow(`⇄ Pull request #${pr.split("/").pop()}`, pr, () => openBrowserTab(pr, "split"));
+  if (pr) addRow(`⇄ Pull request #${pr.split("/").pop()}`, pr, () => openLink(pr));
   if (repo) {
     const url =
       s.git_branch && repo.includes("github.com")
         ? `${repo}/tree/${encodeURIComponent(s.git_branch)}`
         : repo;
-    addRow("⌂ Repository", url, () => openBrowserTab(url, "split"));
+    addRow("⌂ Repository", url, () => openLink(url));
   }
 }
 
@@ -4989,8 +5030,7 @@ function renderWorkflowPrDashboard(el) {
       chip.title = pr.url + (pr.primary ? " (primary)" : " (linked)");
       chip.onclick = (ev) => {
         ev.stopPropagation();
-        if (typeof openBrowserTab === "function") openBrowserTab(pr.url, "split");
-        else invoke("open_external", { url: pr.url });
+        openLink(pr.url);
       };
       chips.appendChild(chip);
     }
@@ -5245,10 +5285,7 @@ async function buildWorkflowView(el, project, slug) {
       stateBit && stateBit !== "open" ? ` ${escapeHtml(stateBit)}` : ""
     }</span>`;
     prBtn.title = pr.primary ? pr.url : `${pr.url} — linked PR (right-click to unlink)`;
-    prBtn.onclick = () =>
-      typeof openBrowserTab === "function"
-        ? openBrowserTab(pr.url, "split")
-        : invoke("open_external", { url: pr.url });
+    prBtn.onclick = () => openLink(pr.url);
     if (!pr.primary) {
       prBtn.oncontextmenu = (ev) => {
         ev.preventDefault();
@@ -5464,20 +5501,11 @@ async function buildWorkflowView(el, project, slug) {
 /// correct browser semantics). Falls back to the system browser when the
 /// embedded panel is unavailable.
 function openWorkflowPr(item) {
-  if (typeof openBrowserTab !== "function") {
-    for (const pr of itemPrs(item.meta)) invoke("open_external", { url: pr.url });
-    return;
-  }
-  const w = ws();
-  const openUrls = new Set(
-    [...state.open.entries()]
-      .filter(([id, e]) => e.kind === "browser" && w.sessions.includes(id))
-      .map(([, e]) => e.url)
+  const prs = itemPrs(item.meta);
+  openLinks(
+    prs.map((pr) => pr.url),
+    prs.length > 1 ? `${prs.length} pull requests for this item` : (prs[0] || {}).url
   );
-  itemPrs(item.meta).forEach((pr, i) => {
-    if (i === 0) openBrowserTab(pr.url, "split"); // split-mode dedupes itself
-    else if (!openUrls.has(pr.url)) openBrowserTab(pr.url, "background");
-  });
 }
 
 /// Label for the open-PR action: says how many tabs the click opens.

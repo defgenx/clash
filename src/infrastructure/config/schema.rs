@@ -597,7 +597,11 @@ pub const PROPS: &[Prop] = &[
         "browser.link_open",
         Kind::Enum(&["ask", "embedded", "external"]),
         Val::Str("ask"),
-        "How terminal links open: ask each time, in clash's browser panel, or in the system browser.",
+        "How links open: ask each time, in clash's browser panel, or in the system browser. \
+         Applies to every link clash opens — terminal hyperlinks, workflow PR buttons, session \
+         PR/repository rows, listening ports, links inside a rendered plan — not just the \
+         terminal's. Non-http(s) schemes (mailto:, tel:, file:) always go to the OS, which has \
+         the handler for them.",
     )
     .gui("linkOpen")
     .local(),
