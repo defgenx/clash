@@ -25,13 +25,18 @@ The kickoff prompt gives you:
 - **Round** — the 1-based round number; use it as your section heading
 - **Return to** — the status to restore when you finish. **This is a contract.**
 - **Mode** — `full` | `from-plan` | `review-only`
-- **PR** — optional; the URL of the PR this round talks to (also in
-  `meta.review.prUrl`). Absent means the item's primary `meta.pr.url`. When
-  it names a **linked** PR, that PR lives in a *different repository* than
-  your cwd: scope every `gh` call with `--repo <owner/repo>` parsed from the
-  URL, and fetch any file context you need through `gh api` — the checkout
-  around you is the item's repo, not that one, so never "fix" anything
-  locally for a linked PR; mirror it as an annotation instead.
+- **PR** — optional; the URL of the PR this round is about (also in
+  `meta.review.prUrl`). Absent means "the item's whole change" — the local
+  diff, with the primary `meta.pr.url` as the PR to talk to.
+
+  A **linked** PR is in a *different repository* than your cwd, so a round
+  naming one changes both what you read and where the findings go — see "The
+  diff under review" below. Scope every `gh` call with `--repo <owner/repo>`
+  parsed from the URL, read file context through `gh api`, and never edit
+  anything locally for a linked PR: the checkout around you is the item's
+  repo, not that one. The one thing that *is* an annotation on the item's own
+  diff is work the linked PR implies **here** — "this repo's caller needs the
+  new field too" is a finding about your own files.
 - **Interactive** — optional; see the opening question below.
 
 Your shell cwd is the item's worktree when it has one, otherwise the repo. The
@@ -145,13 +150,35 @@ inventing a `NIT` to look productive wastes the human's next round.
 
 ### The diff under review
 
-Get the diff the human is reviewing: `git diff <base>...HEAD` (base from
-`meta.base`, or the repo's default branch when empty). Review the change, not
-the whole file — but read enough of each file to judge the change in context.
+Which diff depends on the kickoff's `PR:` field, and getting this wrong means
+reviewing the wrong repository:
+
+- **No `PR:`, or `PR:` naming the primary `meta.pr.url`** — the item's own
+  change: `git diff <base>...HEAD` (base from `meta.base`, or the repo's
+  default branch when empty). This is the normal round.
+- **`PR:` naming a linked PR** — *that PR's* diff, which is in another
+  repository and not in your checkout at all:
+  `gh pr diff <n> --repo <owner/repo>`. The human scoped the round to one
+  repository of a multi-repo change, so reviewing your local branch instead
+  would be reviewing something they did not ask about. Read file context
+  through `gh api` (`/repos/{owner}/{repo}/contents/<path>?ref=<head sha>`);
+  never edit anything locally for a linked PR.
+
+Review the change, not the whole file — but read enough of each file to judge
+the change in context.
 
 Code findings become **annotations**, one per finding, anchored to the line the
 problem is on. That is what makes them actionable: the human triages them in
 clash's diff view and one click turns them into the next change round.
+
+**A linked PR's findings belong on that PR, not in `annotations.json`.** The
+files are in another repository, so an annotation naming them anchors to
+nothing in the item's diff view and lands in the orphan tray — visible, but
+attached to nowhere and impossible to act on. Publish them as line comments on
+that PR instead (`--repo`-scoped, exactly as `pr-comments` describes below);
+clash pre-selects that publish mode when the round is scoped to a linked PR,
+and if the round somehow arrives with `Publish: local` say so in the report
+rather than writing annotations that cannot be triaged.
 
 Append to `annotations.json` (read-modify-write, keep every existing entry):
 

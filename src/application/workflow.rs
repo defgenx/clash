@@ -704,6 +704,76 @@ pub fn linked_only_all_merged(meta: &crate::domain::workflow::WorkflowMeta) -> b
         && meta.linked_prs.iter().all(|p| p.state == "MERGED")
 }
 
+// ── PR selection (which of an item's PRs an action acts on) ─────────────
+
+/// One of an item's PRs, resolved for an action to act on.
+///
+/// `index` locates the record for the write-back: `None` is the primary
+/// `meta.pr`, `Some(i)` indexes `meta.linked_prs`. `number` is the *recorded*
+/// number and is 0 on a URL-only record — healing it means parsing the URL,
+/// which is forge-specific and therefore the caller's job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedPr {
+    pub index: Option<usize>,
+    pub url: String,
+    pub number: u64,
+    pub primary: bool,
+}
+
+/// Resolve an action's PR selection against the PRs an item records.
+///
+/// Multi-repo work lands as several PRs, so every PR-shaped action carries a
+/// scope question — this one, or all of them — and only the human can answer
+/// it: flipping three repos' drafts to ready is a release, flipping one is a
+/// step. `None` means "the primary", which is what every action did before
+/// the scope existed, so an un-migrated caller keeps its old behaviour.
+///
+/// A URL the item does not track is rejected rather than acted on: it is a
+/// typo or a stale frontend, and the alternative is a `gh` call against a PR
+/// nobody linked to this item. Duplicates and blanks are dropped, and the
+/// caller's order is preserved — the picker lists the primary first.
+///
+/// The missing-primary error keeps the `no-pr:` machine prefix, which is what
+/// the GUI turns into "paste the PR URL" instead of a dead end.
+pub fn select_prs(
+    meta: &crate::domain::workflow::WorkflowMeta,
+    urls: Option<&[String]>,
+) -> Result<Vec<SelectedPr>, String> {
+    let mk = |index: Option<usize>, pr: &crate::domain::workflow::WorkflowPr| SelectedPr {
+        index,
+        url: pr.url.clone(),
+        number: pr.number,
+        primary: index.is_none(),
+    };
+    let primary = meta.pr.as_ref().filter(|p| !p.url.trim().is_empty());
+    let Some(urls) = urls else {
+        let p = primary
+            .ok_or_else(|| "no-pr: this item has no pull request recorded yet".to_string())?;
+        return Ok(vec![mk(None, p)]);
+    };
+    let mut out: Vec<SelectedPr> = Vec::new();
+    for want in urls {
+        let want = want.trim();
+        if want.is_empty() || out.iter().any(|s| s.url == want) {
+            continue;
+        }
+        let found = primary
+            .filter(|p| p.url == want)
+            .map(|p| mk(None, p))
+            .or_else(|| {
+                meta.linked_prs
+                    .iter()
+                    .position(|p| p.url == want)
+                    .map(|i| mk(Some(i), &meta.linked_prs[i]))
+            });
+        out.push(found.ok_or_else(|| format!("This item does not track the PR {}", want))?);
+    }
+    if out.is_empty() {
+        return Err("No pull request selected".to_string());
+    }
+    Ok(out)
+}
+
 /// Map an item's `interactionDefault` setting to the kickoff tri-state:
 /// `interactive`/`autonomous` pre-answer the skill's opening question,
 /// anything else leaves it to be asked in-session.
@@ -1462,6 +1532,80 @@ Tighten the API.\n\n\
             r#"{"title":"x","pr":{"url":"https://github.com/o/c/pull/3"},
                 "linkedPrs":[{"url":"https://github.com/o/a/pull/1","state":"MERGED"}]}"#
         )));
+    }
+
+    // ── select_prs ──────────────────────────────────────────────────
+
+    #[test]
+    fn pr_selection_defaults_to_the_primary_and_rejects_untracked_urls() {
+        use crate::domain::workflow::WorkflowMeta;
+        let meta: WorkflowMeta = serde_json::from_str(
+            r#"{"title":"x","pr":{"url":"https://github.com/o/c/pull/3","number":3},
+                "linkedPrs":[{"url":"https://github.com/o/a/pull/1","number":1},
+                             {"url":"https://github.com/o/b/pull/2"}]}"#,
+        )
+        .unwrap();
+
+        // No selection = the primary, exactly as every action behaved before
+        // the scope question existed.
+        let d = select_prs(&meta, None).unwrap();
+        assert_eq!(d.len(), 1);
+        assert!(d[0].primary && d[0].index.is_none() && d[0].number == 3);
+
+        // An explicit pick resolves to its record; a linked one carries the
+        // index the write-back needs, and a URL-only record reports number 0
+        // for the caller to heal.
+        let one = select_prs(&meta, Some(&["https://github.com/o/b/pull/2".to_string()])).unwrap();
+        assert_eq!(one.len(), 1);
+        assert!(!one[0].primary);
+        assert_eq!((one[0].index, one[0].number), (Some(1), 0));
+
+        // Order is the caller's, blanks and duplicates drop out.
+        let all = select_prs(
+            &meta,
+            Some(&[
+                "https://github.com/o/c/pull/3".to_string(),
+                "  ".to_string(),
+                "https://github.com/o/a/pull/1".to_string(),
+                "https://github.com/o/c/pull/3".to_string(),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all[0].primary && all[1].index == Some(0));
+
+        // A PR the item does not track is a typo, not a target: acting on it
+        // would run gh against someone else's PR.
+        assert!(select_prs(&meta, Some(&["https://github.com/o/z/pull/9".to_string()])).is_err());
+        // An empty pick is a UI bug, not a missing datum — no `no-pr:` prefix,
+        // so it never opens the paste-the-URL recovery.
+        let empty = select_prs(&meta, Some(&[])).unwrap_err();
+        assert!(!empty.starts_with("no-pr:"));
+    }
+
+    #[test]
+    fn pr_selection_without_a_primary_stays_recoverable() {
+        use crate::domain::workflow::WorkflowMeta;
+        // Linked-only item: the default selection has nothing to resolve to,
+        // and the error must keep the machine prefix the GUI recovers from.
+        let meta: WorkflowMeta = serde_json::from_str(
+            r#"{"title":"x","linkedPrs":[{"url":"https://github.com/o/a/pull/1"}]}"#,
+        )
+        .unwrap();
+        assert!(select_prs(&meta, None).unwrap_err().starts_with("no-pr:"));
+        // …while an explicit pick of the linked PR works: a linked-only item
+        // is fully actionable, it just cannot advance its own status.
+        let picked =
+            select_prs(&meta, Some(&["https://github.com/o/a/pull/1".to_string()])).unwrap();
+        assert_eq!(picked.len(), 1);
+        assert!(!picked[0].primary);
+
+        // A primary recorded as an empty-URL placeholder is not a PR.
+        let placeholder: WorkflowMeta =
+            serde_json::from_str(r#"{"title":"x","pr":{"url":""}}"#).unwrap();
+        assert!(select_prs(&placeholder, None)
+            .unwrap_err()
+            .starts_with("no-pr:"));
     }
 
     // ── build_agent_prompt ──────────────────────────────────────────

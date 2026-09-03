@@ -2142,7 +2142,21 @@ button.busy:disabled { opacity: 1; }
 
 /* Review-round composer: one dialog holding the round's whole shape (depth +
    findings destination) before anything launches. */
-.dialog-box.wf-review { width: min(520px, 92vw); }
+/* A column so the CHOICES are what grows, never the box: a multi-repo item's
+   scope group adds a row per PR, and a box that grows instead pushes the
+   launch button past the bottom of the window where nothing can reach it. */
+.dialog-box.wf-review {
+  width: min(520px, 92vw);
+  display: flex;
+  flex-direction: column;
+  max-height: 88vh;
+}
+.dialog-box.wf-review .wf-review-body {
+  overflow-y: auto;
+  /* The fieldsets' own border sits flush against the scroll edge otherwise. */
+  padding: 1px;
+  margin: 0 -1px;
+}
 .dialog-box.wf-review p.dialog-detail {
   word-break: normal;
   font-family: inherit;

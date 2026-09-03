@@ -1553,11 +1553,9 @@ pub(crate) async fn start_workflow_review_agent(
         .map(|u| u.trim().to_string())
         .filter(|u| !u.is_empty());
     if let Some(u) = &pr_url {
-        let known = meta.pr.as_ref().is_some_and(|p| &p.url == u)
-            || meta.linked_prs.iter().any(|p| &p.url == u);
-        if !known {
-            return Err(format!("This item does not track the PR {}", u));
-        }
+        // Same resolver every PR-scoped action uses, so "this item does not
+        // track that PR" is one rule with one wording.
+        clash::application::workflow::select_prs(&meta, Some(std::slice::from_ref(u)))?;
     }
     // Fail before spawning rather than letting the agent discover it: a round
     // that talks to the forge needs a PR to talk to. An explicit pick IS that
@@ -2013,22 +2011,23 @@ pub(crate) async fn refresh_workflow_pr(
 /// `respond-pr-comments` round that found nothing to answer. Publishing was
 /// previously only choosable at launch, so getting findings onto the PR
 /// afterwards meant burning a whole new review round.
+///
+/// `prs` is the scope pick: which of the item's PRs the round goes to. A
+/// multi-repo item's round covered the whole change, so posting it to every
+/// PR is legitimate — and so is posting it to the one repo it actually found
+/// something in. Omitting the pick means the primary.
 #[tauri::command]
 pub(crate) async fn publish_workflow_review(
     state: State<'_, GuiState>,
     project: String,
     slug: String,
-) -> Result<u32, String> {
+    prs: Option<Vec<String>>,
+) -> Result<PublishOutcome, String> {
     let meta = state
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
-    let number = meta
-        .pr
-        .as_ref()
-        .map(recorded_pr_number)
-        .filter(|&n| n > 0)
-        .ok_or_else(|| "no-pr: this item has no pull request yet".to_string())?;
+    let targets = clash::application::workflow::select_prs(&meta, prs.as_deref())?;
     let report = state
         .backend
         .read_workflow_doc(
@@ -2053,23 +2052,127 @@ pub(crate) async fn publish_workflow_review(
             })
             .unwrap_or(section)
     );
+    let (jobs, mut failed) = plan_pr_jobs(&targets)?;
     let dir = pr_dir(&meta)?;
     let forge = state.forge_for_dir(&dir);
-    tauri::async_runtime::spawn_blocking(move || forge.comment(Path::new(&dir), number, &body))
+    let dir_owned = dir.clone();
+    // Every target is attempted: one repository's `gh` failure must not
+    // decide whether the round reached the others.
+    let results: Vec<(String, Result<(), String>)> =
+        tauri::async_runtime::spawn_blocking(move || {
+            let d = Path::new(&dir_owned);
+            jobs.into_iter()
+                .map(|(_, url, number, repo)| {
+                    let r = forge
+                        .comment(d, number, repo.as_deref(), &body)
+                        .map_err(|e| e.to_string());
+                    (url, r)
+                })
+                .collect()
+        })
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(forge_err)?;
-    Ok(round)
+        .map_err(|e| e.to_string())?;
+    let mut posted = Vec::new();
+    for (url, r) in results {
+        match r {
+            Ok(()) => posted.push(url),
+            Err(e) => failed.push(format!("{}: {}", url, e)),
+        }
+    }
+    // Nothing posted: the round is still unpublished, so this is a failure
+    // rather than a partial success to report.
+    if posted.is_empty() {
+        return Err(failed
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "The review round could not be posted".to_string()));
+    }
+    Ok(PublishOutcome {
+        round,
+        posted,
+        failed,
+    })
 }
 
-/// Flip the draft PR to ready-for-review (`gh pr ready`) — the validation
-/// act. Moves the item to `pr-ready`.
+/// What `publish_workflow_review` did: the round it posted and, per PR,
+/// where it landed and where it didn't.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PublishOutcome {
+    round: u32,
+    posted: Vec<String>,
+    failed: Vec<String>,
+}
+
+/// One PR job: the record to write back afterwards (`None` = the primary),
+/// the PR's URL and number, and the `owner/repo` a linked PR's `gh` call must
+/// be scoped to.
+type PrJob = (Option<usize>, String, u64, Option<String>);
+/// The same job, with what the forge said about it.
+type PrJobResult = (Option<usize>, String, u64, Result<(), String>);
+
+/// Turn a scope selection into forge-callable jobs, plus the targets that
+/// could not be resolved at all.
+///
+/// Two rules live here so both PR-scoped commands share them. A URL-only
+/// record's number comes from parsing the URL — the one forge-specific step,
+/// which is why `select_prs` (pure, in the application layer) leaves it to
+/// the caller. And a **linked** PR is scoped by `--repo`, while the primary's
+/// repository is whatever the item's checkout points at.
+///
+/// A primary whose number cannot be told is the *recoverable* case: it errors
+/// with the machine prefix the GUI turns into "paste the PR URL", since
+/// re-attaching the primary is a thing the human can do. A linked one becomes
+/// a reported failure instead — the action still runs for the rest.
+fn plan_pr_jobs(
+    targets: &[clash::application::workflow::SelectedPr],
+) -> Result<(Vec<PrJob>, Vec<String>), String> {
+    let mut jobs = Vec::new();
+    let mut unresolved = Vec::new();
+    for t in targets {
+        let parsed = clash::infrastructure::gh::parse_pr_url(&t.url);
+        let number = if t.number > 0 {
+            t.number
+        } else {
+            parsed.as_ref().map(|(_, n)| *n).unwrap_or(0)
+        };
+        if number == 0 {
+            if t.primary {
+                return Err(format!(
+                    "pr-number-unknown: cannot tell the PR number from '{}'",
+                    t.url
+                ));
+            }
+            unresolved.push(format!("{}: cannot tell the PR number from the URL", t.url));
+            continue;
+        }
+        let repo = if t.primary {
+            None
+        } else {
+            parsed.map(|(r, _)| r)
+        };
+        jobs.push((t.index, t.url.clone(), number, repo));
+    }
+    Ok((jobs, unresolved))
+}
+
+/// Flip draft PRs to ready-for-review (`gh pr ready`) — the validation act.
+///
+/// `prs` is the human's scope pick (URLs of PRs this item tracks); omitting
+/// it means the primary alone. Multi-repo work is why the scope exists:
+/// "ready for review" is a statement about one repository's change, and
+/// flipping all three at once is a release, not a step — so which ones is a
+/// decision, never a default.
+///
+/// The status only advances when the **primary** flips: linked PRs never
+/// drive an item's status, so a linked-only flip records the new draft state
+/// and leaves the item where it is.
 #[tauri::command]
 pub(crate) async fn mark_workflow_pr_ready(
     state: State<'_, GuiState>,
     project: String,
     slug: String,
-    include_linked: Option<bool>,
+    prs: Option<Vec<String>>,
 ) -> Result<MarkReadyOutcome, String> {
     let mut meta = state
         .backend
@@ -2078,77 +2181,60 @@ pub(crate) async fn mark_workflow_pr_ready(
     // Identity-shaped failures carry machine prefixes (`no-pr:` /
     // `pr-number-unknown:`): the frontend turns them into "paste the PR URL"
     // prompts that attach and retry, so a data gap never dead-ends the user.
-    let Some(pr) = meta.pr.clone() else {
-        return Err("no-pr: this item has no pull request recorded yet".to_string());
-    };
-    let number = recorded_pr_number(&pr);
-    if number == 0 {
-        return Err(format!(
-            "pr-number-unknown: cannot tell the PR number from '{}'",
-            pr.url
-        ));
-    }
+    let targets = clash::application::workflow::select_prs(&meta, prs.as_deref())?;
+    let (flips, mut failed) = plan_pr_jobs(&targets)?;
     let dir = pr_dir(&meta)?;
-    // Multi-repo validation: the linked drafts to flip alongside the primary,
-    // each repo-scoped by its URL. Only the primary's failure fails the
-    // command — linked flips are best-effort with the outcomes reported.
-    let linked_targets: Vec<(usize, String, u64)> = if include_linked.unwrap_or(false) {
-        meta.linked_prs
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.draft && p.state != "MERGED" && p.state != "CLOSED")
-            .filter_map(|(i, p)| {
-                clash::infrastructure::gh::parse_pr_url(&p.url).map(|(repo, n)| (i, repo, n))
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
     let forge = state.forge_for_dir(&dir);
     let dir_owned = dir.clone();
-    type LinkedFlip = (usize, Result<(), String>);
-    let (primary_result, linked_results): (Result<(), _>, Vec<LinkedFlip>) =
-        tauri::async_runtime::spawn_blocking(move || {
-            let d = Path::new(&dir_owned);
-            let primary = forge.mark_ready(d, number, None);
-            let linked = linked_targets
-                .into_iter()
-                .map(|(i, repo, n)| {
-                    (
-                        i,
-                        forge
-                            .mark_ready(d, n, Some(&repo))
-                            .map_err(|e| e.to_string()),
-                    )
-                })
-                .collect();
-            (primary, linked)
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    primary_result.map_err(forge_err)?;
+    // Every flip is attempted: one repo's `gh` failure must not decide the
+    // other repos' outcome, and the report says which is which.
+    let results: Vec<PrJobResult> = tauri::async_runtime::spawn_blocking(move || {
+        let d = Path::new(&dir_owned);
+        flips
+            .into_iter()
+            .map(|(index, url, number, repo)| {
+                let r = forge
+                    .mark_ready(d, number, repo.as_deref())
+                    .map_err(|e| e.to_string());
+                (index, url, number, r)
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
-    if let Some(pr) = meta.pr.as_mut() {
-        pr.number = number; // heal a URL-only record while we're writing anyway
-        pr.draft = false;
-        pr.last_checked_at = now_ms();
-    }
-    let mut linked_flipped = Vec::new();
-    let mut linked_failed = Vec::new();
-    for (i, result) in linked_results {
-        let Some(pr) = meta.linked_prs.get_mut(i) else {
-            continue;
+    let mut flipped: Vec<String> = Vec::new();
+    let mut primary_flipped = false;
+    for (index, url, number, result) in results {
+        let record = match index {
+            None => meta.pr.as_mut(),
+            Some(i) => meta.linked_prs.get_mut(i),
         };
+        let Some(pr) = record else { continue };
         match result {
             Ok(()) => {
+                pr.number = number; // heal a URL-only record while we're writing anyway
                 pr.draft = false;
                 pr.last_checked_at = now_ms();
-                linked_flipped.push(pr.url.clone());
+                if index.is_none() {
+                    primary_flipped = true;
+                }
+                flipped.push(url);
             }
-            Err(e) => linked_failed.push(format!("{}: {}", pr.url, e)),
+            Err(e) => failed.push(format!("{}: {}", url, e)),
         }
     }
-    if meta.status.can_transition_to(WorkflowStatus::PrReady) {
+    // Nothing flipped: there is no state change to record and no partial
+    // outcome to report, so this is the forge's error, surfaced as one.
+    if flipped.is_empty() {
+        return Err(failed
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "No pull request could be marked ready".to_string()));
+    }
+    // Only the primary advances the item — the documented invariant that keeps
+    // a five-repo item from reaching `pr-ready` on its smallest change.
+    if primary_flipped && meta.status.can_transition_to(WorkflowStatus::PrReady) {
         meta.status = WorkflowStatus::PrReady;
     }
     state
@@ -2158,20 +2244,20 @@ pub(crate) async fn mark_workflow_pr_ready(
     seed_local(&state, &project, &slug, meta.status);
     Ok(MarkReadyOutcome {
         meta,
-        linked_flipped,
-        linked_failed,
+        flipped,
+        failed,
     })
 }
 
-/// What `mark_workflow_pr_ready` did: the updated meta plus, when linked
-/// drafts were included, which flipped and which failed (best-effort — a
-/// failed linked flip never rolls back the primary's).
+/// What `mark_workflow_pr_ready` did: the updated meta plus which PRs flipped
+/// and which failed. Best-effort per PR — one repository's `gh` failure never
+/// rolls back another's flip, so both lists are reported.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MarkReadyOutcome {
     meta: clash::domain::workflow::WorkflowMeta,
-    linked_flipped: Vec<String>,
-    linked_failed: Vec<String>,
+    flipped: Vec<String>,
+    failed: Vec<String>,
 }
 
 /// Attach an existing PR by URL (e.g. one the agent created, sniffed from

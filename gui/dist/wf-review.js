@@ -15,7 +15,12 @@
   /// Everything the review-round composer shows, derived from the item.
   /// `depth` is null for a plan (the plan-review engine has one depth —
   /// there are no hunks to read harder); `publish` is null without a PR
-  /// (there is nothing to talk to).
+  /// (there is nothing to talk to); `prScope` is null unless the item carries
+  /// several PRs, in which case *which change* is a real dimension of the
+  /// round and belongs on the same screen as the other three.
+  ///
+  /// `prs` is `itemPrs(meta)` — primary first. The rows are built here rather
+  /// than in the dialog so the whole shape of a round stays testable.
   function reviewRoundModel({
     round = 1,
     target = "diff",
@@ -28,9 +33,46 @@
     prDraft = false,
     interactionDefault = "",
     autoApplyDefault = false,
+    prs = [],
+    // A pre-picked scope (a launch that started from one PR's own menu) —
+    // pre-selects that row instead of "the whole change".
+    prUrl = null,
   } = {}) {
-    const prName = prNumber ? `#${prNumber}` : "the PR";
+    // A plan is one document however many repos implement it, so a plan round
+    // has no PR scope. A code round on a multi-repo item does: reviewing "the
+    // whole change" and reviewing the contracts repo's PR are different jobs
+    // with different diffs, and a round can only do one — it is one agent
+    // session, parked on one item.
+    const prScope =
+      target === "plan" || (prs || []).length < 2
+        ? null
+        : {
+            legend: "Which change?",
+            default: (prs || []).some((p) => p.url === prUrl) ? prUrl : "",
+            choices: [
+              {
+                value: "",
+                label: "The whole change",
+                detail:
+                  "The item's own diff across every file on the branch — findings land as diff comments you can triage here.",
+              },
+              ...prs.map((pr) => ({
+                value: pr.url,
+                label: prScopeRowLabel(pr),
+                detail: prScopeRowDetail(pr),
+                // A linked PR's files are in another repository, so its
+                // findings cannot be annotations on this item's diff — they
+                // belong on that PR.
+                linked: !pr.primary,
+              })),
+            ],
+          };
+    // With a scope choice on screen, naming the primary in the publish option
+    // is a lie for two of the three answers: it says where the findings go,
+    // which is whichever PR the round is about.
+    const prName = prScope ? "the PR under review" : prNumber ? `#${prNumber}` : "the PR";
     return {
+      prScope,
       title: `Agent review — round ${round}`,
       intro:
         (target === "plan"
@@ -124,6 +166,31 @@
     };
   }
 
+  /// Composer row for one PR: the chip name, marked when it is the primary —
+  /// the only PR whose state moves the item.
+  function prScopeRowLabel(pr) {
+    const chip =
+      typeof prChipLabel === "function"
+        ? prChipLabel(pr)
+        : `${String(pr.repo || "").split("/")[1] || ""}#${pr.number || "?"}`;
+    return pr.primary ? `Only ${chip} · primary` : `Only ${chip}`;
+  }
+
+  /// Composer detail for one PR: enough to tell two of an item's PRs apart,
+  /// plus what reviewing *that* PR means — its own diff, read from the forge.
+  function prScopeRowDetail(pr) {
+    const st =
+      typeof prStateLabel === "function"
+        ? prStateLabel(pr)
+        : pr.draft
+          ? "draft"
+          : String(pr.state || "").toLowerCase();
+    const bits = [];
+    if (st) bits.push(st);
+    bits.push(pr.primary ? "this repository's change" : "that repository's diff, read from GitHub");
+    return `${bits.join(" · ")} — ${pr.url}`;
+  }
+
   /// Map the composer's interaction choice to the backend's tri-state
   /// `interactive` parameter: null = unset (the skill asks in-session),
   /// true/false = the human already decided at launch.
@@ -192,6 +259,8 @@
 
   const api = {
     reviewRoundModel,
+    prScopeRowLabel,
+    prScopeRowDetail,
     interactiveParam,
     answerCommentsLabel,
     answerCommentsTitle,

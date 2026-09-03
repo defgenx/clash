@@ -865,24 +865,42 @@ conventions.
 **Multi-repo work — linked PRs**: one piece of work often lands as several
 PRs (backend + frontend + contracts). **🔗 Link a PR…** on an item attaches
 PRs from *other* repositories: they show as chips in the item header (state,
-draft, merged), refresh with the same poll as the primary, and **Open PRs (n)**
-opens all of them at once — the first in a split pane, the rest as browser
-tabs (already-open ones are surfaced, never duplicated). The action follows
-the item's *whole PR set*: it appears at every decision state whenever the
-item has any PR, including items with only linked PRs and no primary (a repo
-that merges to its default branch while the sibling repos go through PRs).
-Linked PRs never drive the item's status — only the
-primary PR does (with one exception: an item with *only* linked PRs closes when
-all of them merge); right-click a linked chip to unlink it. The executor agent
-may record them too (`meta.linkedPrs` in the file contract). The **Diff tab's
-source picker** also lists every linked PR: pick one to read its diff fetched
-from GitHub (`gh pr diff`), view-only — comments stay on the item's own diff,
-and **⇄ Answer PR comments** asks which PR to serve when the item has several.
+draft, merged) and refresh with the same poll as the primary. The PR actions
+follow the item's *whole PR set*: they appear at every decision state whenever
+the item has any PR, including items with only linked PRs and no primary (a
+repo that merges to its default branch while the sibling repos go through
+PRs). Linked PRs never drive the item's status — only the primary PR does
+(with one exception: an item with *only* linked PRs closes when all of them
+merge). The executor agent may record them too (`meta.linkedPrs` in the file
+contract). The **Diff tab's source picker** also lists every linked PR: pick
+one to read its diff fetched from GitHub (`gh pr diff`), view-only — comments
+stay on the item's own diff.
+
+**Which PR? — per-PR action scope**: once an item has more than one PR, every
+PR action asks which, because there is no honest default — "ready for review"
+is a statement about one repository's change, so flipping three at once is a
+release while flipping one is a step. A button whose click will ask carries
+the usual `…`:
+
+| Action | Choices |
+|---|---|
+| **Open PRs (n)…** | one of them, or all at once — the first in a split pane, the rest as browser tabs (already-open ones are surfaced, never duplicated) |
+| **✓ Mark PR ready…** | one draft, or all drafts. A merged or already-ready PR is never offered. Only the primary moves the item to PR READY; a linked-only flip says so |
+| **↗ Post round n to PR…** | one PR, or all of them |
+| **⌕ Code review** | the composer's *Which change?* row: the whole change (the item's own diff), or one PR — a round is one agent session, so never several. Picking a linked PR reviews **that PR's** diff, read from GitHub, and pre-selects posting the findings there (they cannot anchor to files this repo doesn't have) |
+| **⇄ Answer PR comments…** | one PR, for the same reason |
+
+Every PR chip also has its own right-click menu — in the item header *and* in
+the PR dashboard — with that PR's whole set of actions pre-scoped to it: open,
+copy URL, refresh state, mark ready, code review, answer comments, post the
+latest round, and unlink (linked PRs only). It is the same code as the buttons
+above, so the two can't disagree about what the primary does to the item.
 
 **PR dashboard**: the ⇄ button on the WORKFLOWS section opens one list of
 every item holding a PR across all projects — state chips per PR, unanswered
 review-comment counts, last-touched age — decisions first, merged/closed last.
-Click a row to open the item, a chip to open the PR.
+Click a row to open the item, a chip to open the PR, right-click a chip to act
+on just that one.
 
 **Share & export**: **↗ Share…** on any item (also in its right-click menu)
 composes a share document from the item's files — summary, plan, change

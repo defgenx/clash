@@ -98,8 +98,14 @@ impl Forge for GithubForge {
         gh::pr_ready(dir, number, repo).map_err(err_from_gh)
     }
 
-    fn comment(&self, dir: &Path, number: u64, body: &str) -> Result<(), ForgeError> {
-        gh::pr_comment(dir, number, body).map_err(err_from_gh)
+    fn comment(
+        &self,
+        dir: &Path,
+        number: u64,
+        repo: Option<&str>,
+        body: &str,
+    ) -> Result<(), ForgeError> {
+        gh::pr_comment(dir, number, repo, body).map_err(err_from_gh)
     }
 
     fn change_diff(
@@ -164,7 +170,7 @@ impl Forge for NoForge {
         Err(unsupported())
     }
 
-    fn comment(&self, _: &Path, _: u64, _: &str) -> Result<(), ForgeError> {
+    fn comment(&self, _: &Path, _: u64, _: Option<&str>, _: &str) -> Result<(), ForgeError> {
         Err(unsupported())
     }
 

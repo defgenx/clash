@@ -157,8 +157,16 @@ pub trait Forge: Send + Sync {
     /// not the one `dir`'s remotes point at.
     fn mark_ready(&self, dir: &Path, number: u64, repo: Option<&str>) -> Result<(), ForgeError>;
 
-    /// Post one top-level comment.
-    fn comment(&self, dir: &Path, number: u64, body: &str) -> Result<(), ForgeError>;
+    /// Post one top-level comment. `repo` scopes the call to an explicit
+    /// `owner/repo` — required for a linked PR, whose repository is not the
+    /// one `dir`'s remotes point at.
+    fn comment(
+        &self,
+        dir: &Path,
+        number: u64,
+        repo: Option<&str>,
+        body: &str,
+    ) -> Result<(), ForgeError>;
 
     /// The change request's unified diff, as the forge serves it. `repo`
     /// scopes the call to an explicit `owner/repo` — required for a linked

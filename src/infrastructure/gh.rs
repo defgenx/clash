@@ -392,7 +392,7 @@ pub fn pr_create_draft(
 /// comment on the PR. The body travels through a temp file: the hardened
 /// runner closes stdin (see `spawn_quiet`), and a full review round pasted
 /// into argv can exceed platform limits.
-pub fn pr_comment(dir: &Path, number: u64, body: &str) -> Result<(), GhError> {
+pub fn pr_comment(dir: &Path, number: u64, repo: Option<&str>, body: &str) -> Result<(), GhError> {
     let tmp = std::env::temp_dir().join(format!(
         "clash-pr-comment-{}-{}.md",
         std::process::id(),
@@ -401,7 +401,11 @@ pub fn pr_comment(dir: &Path, number: u64, body: &str) -> Result<(), GhError> {
     std::fs::write(&tmp, body).map_err(|e| GhError::Command(e.to_string()))?;
     let n = number.to_string();
     let tmp_arg = tmp.to_string_lossy().into_owned();
-    let result = run(dir, &["pr", "comment", &n, "--body-file", &tmp_arg]);
+    let mut args = vec!["pr", "comment", n.as_str(), "--body-file", tmp_arg.as_str()];
+    if let Some(repo) = repo {
+        args.extend(["--repo", repo]);
+    }
+    let result = run(dir, &args);
     let _ = std::fs::remove_file(&tmp);
     let output = result?;
     if output.status.success() {

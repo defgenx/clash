@@ -550,18 +550,51 @@ change requests in **other** repositories that belong to this item. Rules:
   at a different repository.
 - The refresh is best-effort per entry: a linked PR that fails to resolve
   keeps its previous recorded state rather than failing the primary's refresh.
-  *Mark PR ready* follows the same discipline when the human opts to flip the
-  linked drafts alongside the primary: each flip is repo-scoped and
-  best-effort, failures are reported, and only the primary's failure fails
-  the action.
+  Every action that changes or posts to several PRs follows the same
+  discipline (see *Per-PR action scope* below): each call is repo-scoped and
+  best-effort, per-PR failures are reported, and the action fails only when
+  nothing at all succeeded.
 - The **agent may append to `linkedPrs`** when its work opened PRs in other
   repositories — a URL-only entry is enough (clash fills state/draft on the
   next refresh, exactly like the primary's contract). The agent must never
   remove or reorder entries; unlinking is the human's (GUI) action.
 - The GUI's Diff tab can render a linked PR's diff (fetched via the forge —
   there is no local checkout of that repo), strictly **view-only**:
-  annotations always anchor to the item's own diff. Respond rounds serve a
-  chosen PR via the kickoff's `PR:` field (see the review contract).
+  annotations always anchor to the item's own diff. Rounds scoped to a chosen
+  PR carry it in the kickoff's `PR:` field (see the review contract).
+
+#### Per-PR action scope
+
+An item with several PRs makes every PR-shaped action ambiguous, and the
+ambiguity is not resolvable by a default: "ready for review" is a statement
+about *one* repository's change, so flipping three at once is a release while
+flipping one is a step. Each action therefore asks which PR — and the answer
+travels to the backend as **PR URLs**, resolved against the item's own records
+by the pure `select_prs` (a URL the item does not track is rejected rather
+than acted on, so a stale frontend cannot run `gh` against a PR nobody
+linked). Omitting the pick means the primary, which is what every action did
+before the scope existed.
+
+Which answers an action offers is a property of the action, not of the UI:
+
+| Action | Scope answers |
+|---|---|
+| Open PR | any one, or all (one split pane, the rest background tabs) |
+| Mark PR ready | any one **draft**, or all drafts — a merged or already-ready PR is never offered |
+| Post round to PR | any one, or all (one round covered the whole change) |
+| Code review | the item's whole local diff, **or** one PR — never several: a round is one agent session parked on one item |
+| Answer PR comments | one PR, for the same reason |
+
+Two consequences are contractual rather than cosmetic:
+
+- **Only the primary moves the item.** Marking a linked draft ready records
+  its new state and leaves the status alone; the GUI says so out loud, or a
+  linked-only flip reads as a stage transition that failed.
+- **A round scoped to a linked PR reviews that PR's diff**, fetched from the
+  forge, and its findings are published on that PR — not written as
+  annotations, which would anchor to files this repository does not have. The
+  reviewer skill states the same rule; clash pre-selects the matching publish
+  mode when the round is scoped that way.
 
 ### Sharing, export and webhook notifications (clash-side, informative)
 

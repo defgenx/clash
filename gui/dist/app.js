@@ -5035,10 +5035,21 @@ function renderWorkflowPrDashboard(el) {
       chip.innerHTML = `${svgIcon("pr", 11)}<span>${escapeHtml(prChipLabel(pr))}${
         stateBit && stateBit !== "open" ? ` · ${escapeHtml(stateBit)}` : ""
       }</span>`;
-      chip.title = pr.url + (pr.primary ? " (primary)" : " (linked)");
+      chip.title =
+        `${pr.url} (${pr.primary ? "primary" : "linked"})` +
+        " — right-click for this PR's own actions";
       chip.onclick = (ev) => {
         ev.stopPropagation();
         openLink(pr.url);
+      };
+      // Deciding per PR is most of what this dashboard is for: it is the one
+      // place every item's PRs are listed side by side, so "mark that one
+      // ready, review this one" must be reachable without opening each item.
+      chip.oncontextmenu = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const item = wfItem(r.project, r.slug);
+        if (item) showContextMenu(ev.clientX, ev.clientY, wfPrMenu(item, pr, null));
       };
       chips.appendChild(chip);
     }
@@ -5302,8 +5313,10 @@ async function buildWorkflowView(el, project, slug) {
     }${warn}</span>` +
     `<span class="spacer"></span>`;
   // One button per PR: the primary (numbers only — its repo is the item's),
-  // then each linked PR named by repo. Right-clicking a linked one offers
-  // unlink; the primary's lifecycle stays on the action bar.
+  // then each linked PR named by repo. Right-clicking ANY of them opens that
+  // PR's own action menu — on a multi-repo item the per-repo decisions have
+  // to live somewhere, and the PR itself is the only surface that identifies
+  // which repository they are about.
   for (const pr of itemPrs(item.meta)) {
     const prBtn = document.createElement("button");
     prBtn.className = "icon-btn wide" + (pr.primary ? "" : " wf-linked-pr");
@@ -5312,49 +5325,15 @@ async function buildWorkflowView(el, project, slug) {
     prBtn.innerHTML = `${svgIcon("pr", 12)}<span>${escapeHtml(label)}${
       stateBit && stateBit !== "open" ? ` ${escapeHtml(stateBit)}` : ""
     }</span>`;
-    prBtn.title = pr.primary ? pr.url : `${pr.url} — linked PR (right-click to unlink)`;
+    prBtn.title =
+      `${pr.url} — ${pr.primary ? "primary PR" : "linked PR"}` +
+      "; right-click for this PR's own actions";
     prBtn.onclick = () => openLink(pr.url);
-    if (!pr.primary) {
-      prBtn.oncontextmenu = (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        showContextMenu(ev.clientX, ev.clientY, [
-          {
-            label: "Copy URL",
-            icon: "copy",
-            action: async () => {
-              try {
-                await invoke("clipboard_write_text", { text: pr.url });
-                flashToast("PR URL copied");
-              } catch (e) {
-                uiAlert(`Copy failed: ${e}`);
-              }
-            },
-          },
-          null,
-          {
-            label: "Unlink…",
-            icon: "x",
-            danger: true,
-            action: async () => {
-              if (
-                !(await uiConfirm(
-                  `Stop tracking ${prChipLabel(pr)} on this item? The PR itself is untouched.`
-                ))
-              )
-                return;
-              try {
-                await invoke("remove_workflow_linked_pr", { project, slug, url: pr.url });
-                await refreshWorkflows();
-                buildWorkflowView(el, project, slug);
-              } catch (e) {
-                uiAlert(`Unlink failed: ${e}`);
-              }
-            },
-          },
-        ]);
-      };
-    }
+    prBtn.oncontextmenu = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      showContextMenu(ev.clientX, ev.clientY, wfPrMenu(item, pr, el));
+    };
     head.appendChild(prBtn);
   }
   if (!bigDrawing) el.appendChild(head);
@@ -5541,26 +5520,230 @@ async function buildWorkflowView(el, project, slug) {
   renderWfSubView(body, el, item, ts);
 }
 
-/// Open ALL of the item's PRs — the primary and every linked one (multi-repo
-/// work lands as several PRs; opening one of three is a stale review waiting
-/// to happen). The first PR takes a split pane; the rest land as background
+/// Ask which of the item's PRs an action applies to — the one scope question
+/// every PR-shaped action goes through.
+///
+/// Multi-repo items carry several PRs, and acting on all of them is a
+/// decision, not a default: three repos going up for review at once is a
+/// release. Nothing is asked when the action has a single candidate (or none
+/// — the caller is told why), so single-PR items behave exactly as before.
+///
+/// Resolves the pure model's selection `{ all, urls }`, or null when the user
+/// cancelled or the action has nothing to act on.
+async function pickPrScope(item, action, opts = {}) {
+  const prs = itemPrs(item.meta);
+  const model = prScopeModel(prs, action);
+  if (!model.candidates.length) {
+    if (opts.quiet !== true) uiAlert(model.empty);
+    return null;
+  }
+  if (!model.needed) return model.only;
+  const picked = await uiListChoice({ message: model.message, items: model.rows });
+  return picked || null;
+}
+
+/// The menu one PR of an item gets: everything a PR-shaped action can do,
+/// scoped to that PR alone.
+///
+/// The action bar answers "what happens to this item"; a multi-repo item also
+/// needs "what happens to *this* repository's PR", and that question has no
+/// home on a bar whose buttons are about the item. Right-clicking the PR is
+/// where it belongs — the PR is the thing on screen. Same list wherever a PR
+/// chip appears (the item header, the ⇄ PRs dashboard), so the answer never
+/// depends on which surface you happened to be looking at.
+///
+/// Every entry pre-picks the scope and then goes through the *same* action as
+/// the bar's button — a second implementation of "mark ready" is how the two
+/// end up disagreeing about what the primary does to the item's status.
+function wfPrMenu(item, pr, root) {
+  const scope = { all: false, urls: [pr.url] };
+  const name = prChipLabel(pr);
+  const entries = [
+    { label: "Open", icon: "file", action: () => openLink(pr.url) },
+    {
+      label: "Copy URL",
+      icon: "copy",
+      action: async () => {
+        try {
+          await invoke("clipboard_write_text", { text: pr.url });
+          flashToast("PR URL copied");
+        } catch (e) {
+          uiAlert(`Copy failed: ${e}`);
+        }
+      },
+    },
+    {
+      label: "Refresh state",
+      icon: "reload",
+      action: async () => {
+        try {
+          // Forced: the passive poll is throttled per item, and someone who
+          // asks for a refresh is asking about now.
+          await invoke("refresh_workflow_pr", {
+            project: item.project,
+            slug: item.slug,
+            force: true,
+          });
+          await refreshWorkflows();
+          if (root) buildWorkflowView(root, item.project, item.slug);
+          flashToast(`${name} refreshed`);
+        } catch (e) {
+          uiAlert(wfGhHint(e) || `Refresh failed: ${e}`);
+        }
+      },
+    },
+  ];
+  // Mark ready, only where it is a real act: a non-draft is already ready and
+  // a merged one cannot go back.
+  if (pr.draft && prLive(pr)) {
+    entries.push(null);
+    entries.push({
+      label: `Mark ${name} ready…`,
+      icon: "pr",
+      action: () => wfMarkPrReady(item, root, { scope }),
+    });
+  }
+  // A round is one agent session on one item, so these are launches, not
+  // batch actions — the menu pre-picks the PR and the composer confirms it.
+  if (wfCanReview(item)) {
+    entries.push(null);
+    entries.push({
+      label: `Code review ${name}…`,
+      icon: "search",
+      action: () => launchWfReview(item, root, { prUrl: pr.url }),
+    });
+    entries.push({
+      label: pr.unanswered
+        ? `Answer ${pr.unanswered} thread${pr.unanswered > 1 ? "s" : ""} on ${name}…`
+        : `Answer comments on ${name}…`,
+      icon: "inbox",
+      action: () => launchWfReviewRespond(item, root, { scope }),
+    });
+  }
+  if (item.lastAgentReview) {
+    entries.push({
+      label: `Post round ${item.lastAgentReview.round} to ${name}…`,
+      icon: "external-link",
+      action: () => publishWfReview(item, { scope }),
+    });
+  }
+  // Unlinking is a linked PR's own lifecycle — the primary's is the pipeline.
+  if (!pr.primary) {
+    entries.push(null);
+    entries.push({
+      label: "Unlink…",
+      icon: "x",
+      danger: true,
+      action: async () => {
+        if (
+          !(await uiConfirm(`Stop tracking ${name} on this item? The PR itself is untouched.`))
+        )
+          return;
+        try {
+          await invoke("remove_workflow_linked_pr", {
+            project: item.project,
+            slug: item.slug,
+            url: pr.url,
+          });
+          await refreshWorkflows();
+          if (root) buildWorkflowView(root, item.project, item.slug);
+        } catch (e) {
+          uiAlert(`Unlink failed: ${e}`);
+        }
+      },
+    });
+  }
+  return entries;
+}
+
+/// Flip drafts to ready-for-review — the validation step.
+///
+/// Which drafts is the human's call, and on a multi-repo item it is the whole
+/// question: "ready for review" is a statement about one repository's change,
+/// so a five-repo item announcing all five at once is a release while flipping
+/// one is a step. Only the primary advances the item to `pr-ready` (linked PRs
+/// never drive status), and flips are best-effort per repository — one repo's
+/// `gh` failure is reported, not allowed to decide the others' outcome.
+///
+/// `scope` lets a caller that already picked (the per-PR menu) skip the
+/// picker; the confirmation still runs, because that is what is being
+/// confirmed.
+async function wfMarkPrReady(item, root, { scope = null, confirmed = false } = {}) {
+  const prs = itemPrs(item.meta);
+  const picked = scope || (await pickPrScope(item, "markReady"));
+  if (!picked) return;
+  const warn =
+    item.openAnnotations > 0
+      ? ` ${item.openAnnotations} comment${item.openAnnotations > 1 ? "s are" : " is"} still open —`
+      : "";
+  const what = prScopeSummary(picked, prs);
+  if (
+    !confirmed &&
+    !(await uiConfirm(
+      `This is the validation step:${warn} flip ${what} to ready-for-review?`,
+      "Mark ready"
+    ))
+  )
+    return;
+  const run = async (target) => {
+    try {
+      const r = await invoke("mark_workflow_pr_ready", {
+        project: target.project,
+        slug: target.slug,
+        prs: picked.urls,
+      });
+      // The status only moves on the primary, so say when it didn't:
+      // otherwise a linked-only flip looks like a stage that failed. Keyed on
+      // whether the primary actually flipped, not on the resulting status —
+      // an item already at PR READY would otherwise claim it advanced again.
+      const primaryUrl = (prs.find((p) => p.primary) || {}).url;
+      const moved = !!primaryUrl && r.flipped.includes(primaryUrl);
+      flashToast(
+        `Ready for review: ${prScopeSummary({ urls: r.flipped }, prs)}` +
+          (moved ? "" : ` · item stays at ${wfStatusInfo(item.meta.status).label}`)
+      );
+      if (r.failed.length)
+        uiAlert(`Some drafts could not be flipped:\n${r.failed.join("\n")}`);
+      await refreshWorkflows();
+      if (root) buildWorkflowView(root, target.project, target.slug);
+    } catch (e) {
+      // PR-identity gaps recover in place: paste the URL, retry. The retry
+      // re-picks — recovery re-attached the PR, so the failed URL is no
+      // longer one the item tracks.
+      if (await wfPrRecovery(target, e, (fresh) => wfMarkPrReady(fresh, root, { confirmed: true })))
+        return;
+      uiAlert(wfGhHint(e) || `Mark ready failed: ${e}`);
+    }
+  };
+  await run(item);
+}
+
+/// Open the item's PRs — one, or all of them.
+///
+/// Opening all of a multi-repo item's PRs is one legitimate intent (reviewing
+/// three repos' halves of one change) and opening exactly one is another;
+/// this used to only do the first, so getting to a single PR meant closing
+/// two tabs. The first link takes a split pane; the rest land as background
 /// tabs — one split per PR would shred the layout into slivers. Already-open
 /// PRs are left where they are, not duplicated (background mode never
 /// dedupes: for its other caller, in-page window.open, a fresh tab is the
 /// correct browser semantics). Falls back to the system browser when the
 /// embedded panel is unavailable.
-function openWorkflowPr(item) {
-  const prs = itemPrs(item.meta);
+async function openWorkflowPr(item) {
+  const sel = await pickPrScope(item, "open");
+  if (!sel) return;
   openLinks(
-    prs.map((pr) => pr.url),
-    prs.length > 1 ? `${prs.length} pull requests for this item` : (prs[0] || {}).url
+    sel.urls,
+    sel.urls.length > 1 ? `${sel.urls.length} pull requests for this item` : sel.urls[0]
   );
 }
 
-/// Label for the open-PR action: says how many tabs the click opens.
+/// Label for the open-PR action: says how many PRs the item has, and — by the
+/// ellipsis, the convention the rest of the bar uses — that the click asks
+/// which of them rather than opening all.
 function wfOpenPrLabel(item) {
-  const n = itemPrs(item.meta).length;
-  return n > 1 ? `Open PRs (${n})` : "Open PR";
+  const prs = itemPrs(item.meta);
+  return prs.length > 1 ? `Open PRs (${prs.length})${prScopeSuffix(prs, "open")}` : "Open PR";
 }
 
 /// Launch (or relaunch) the workflow agent for a phase and open its session
@@ -5608,12 +5791,13 @@ async function launchWfAgent(item, phase, root, branch = null, opts = {}) {
 ///
 /// Rounds are unbounded by design: the reviewer returns the item to the status
 /// it started in, so this same button is available again the moment it finishes.
-async function launchWfReview(item, root) {
-  const picked = await wfComposeReviewRound(item);
+async function launchWfReview(item, root, opts = {}) {
+  const picked = await wfComposeReviewRound(item, opts);
   if (!picked) return;
   await spawnWfReview(item, root, picked.depth, picked.publish, {
     interactive: picked.interactive,
     autoApply: picked.autoApply,
+    prUrl: picked.prUrl,
   });
 }
 
@@ -5624,25 +5808,12 @@ async function launchWfReview(item, root) {
 /// producing a fresh review, and a job you can't see is a job you don't have.
 /// Multi-repo items answer reviewers per PR, so several PRs means picking one
 /// — the choice rides the kickoff (`PR: <url>`) and `meta.review.prUrl`.
-async function launchWfReviewRespond(item, root) {
+async function launchWfReviewRespond(item, root, { scope = null } = {}) {
   const prs = itemPrs(item.meta);
-  if (!prs.length) return;
-  let pr = prs[0];
-  if (prs.length > 1) {
-    const picked = await uiListChoice({
-      message: "Answer review comments on which PR?",
-      items: prs.map((p) => ({
-        label: `${prChipLabel(p)}${p.primary ? " (primary)" : ""}`,
-        detail:
-          p.unanswered != null
-            ? `${p.url} · ${p.unanswered} unanswered`
-            : p.url,
-        value: p.url,
-      })),
-    });
-    if (picked === null) return;
-    pr = prs.find((p) => p.url === picked);
-  }
+  const sel = scope || (await pickPrScope(item, "respond"));
+  if (!sel) return;
+  const pr = prs.find((p) => p.url === sel.urls[0]);
+  if (!pr) return;
   const prName = pr.primary
     ? pr.number
       ? `#${pr.number}`
@@ -6163,7 +6334,7 @@ async function wfShareDialog(item) {
 /// launches. Replaces two stacked uiChoice dialogs, which never showed the
 /// publish question and the depth question on the same screen. Pure model in
 /// wf-review.js. Resolves { depth, publish } or null on cancel.
-function wfComposeReviewRound(item) {
+function wfComposeReviewRound(item, { prUrl = null } = {}) {
   return new Promise((resolve) => {
     const model = reviewRoundModel({
       round: wfNextReviewRound(item, wfReviewTarget(item)),
@@ -6171,6 +6342,14 @@ function wfComposeReviewRound(item) {
       hasPr: wfHasPr(item),
       prNumber: item.meta.pr ? item.meta.pr.number : 0,
       prDraft: !!(item.meta.pr && item.meta.pr.draft),
+      // Which change the round reads is a dimension of the round on a
+      // multi-repo item, so it belongs in this dialog rather than in a second
+      // one nobody would find.
+      prs: itemPrs(item.meta),
+      // A launch that already named its PR (the per-PR menu) opens with that
+      // row selected — the dialog still shows the choice, so the scope of the
+      // round is never something the human has to remember having picked.
+      prUrl,
       interactionDefault: item.meta.interactionDefault || "",
       // Remember the last round's answer for this item: someone who wants the
       // loop hands-off wants it every round, and someone who reads findings
@@ -6189,6 +6368,12 @@ function wfComposeReviewRound(item) {
     intro.className = "dialog-detail";
     intro.textContent = model.intro;
     box.appendChild(intro);
+    // The choices scroll, the actions don't: a multi-repo item adds a scope
+    // group with a row per PR, and the fourth group was enough to push
+    // "Launch round" off the bottom of a short window.
+    const body = document.createElement("div");
+    body.className = "wf-review-body";
+    box.appendChild(body);
 
     const buildGroup = (group, name) => {
       const fs = document.createElement("fieldset");
@@ -6218,11 +6403,14 @@ function wfComposeReviewRound(item) {
         row.appendChild(text);
         fs.appendChild(row);
       }
-      box.appendChild(fs);
+      body.appendChild(fs);
       return fs;
     };
     // A null group means the dimension has one real answer — render nothing
     // and use the fallback, instead of offering a choice that isn't one.
+    // Scope goes first: it decides *what* is reviewed, and the rest of the
+    // dialog is how.
+    const scopeGroup = model.prScope ? buildGroup(model.prScope, "wf-review-scope") : null;
     const depthGroup = model.depth ? buildGroup(model.depth, "wf-review-depth") : null;
     const publishGroup = model.publish ? buildGroup(model.publish, "wf-review-publish") : null;
     const interactionGroup = buildGroup(model.interaction, "wf-review-interaction");
@@ -6230,6 +6418,21 @@ function wfComposeReviewRound(item) {
       const el = fs && fs.querySelector("input:checked");
       return el ? el.value : fallback;
     };
+    // Scoping a round to a *linked* PR moves the findings' only sane
+    // destination: that PR's files are in another repository, so they cannot
+    // be annotations on this item's diff. Pre-select "post to the PR" rather
+    // than let the round end with findings nobody can see — the human can
+    // still change it back.
+    if (scopeGroup && publishGroup) {
+      const linked = new Set(
+        model.prScope.choices.filter((c) => c.linked).map((c) => c.value)
+      );
+      scopeGroup.addEventListener("change", () => {
+        if (!linked.has(picked(scopeGroup, ""))) return;
+        const post = publishGroup.querySelector('input[value="pr-comments"]');
+        if (post) post.checked = true;
+      });
+    }
 
     // One checkbox rather than a fourth radio group: it is a yes/no
     // pre-authorization, and the round's report is what decides whether
@@ -6249,7 +6452,7 @@ function wfComposeReviewRound(item) {
     applyDetail.textContent = model.autoApply.detail;
     applyText.append(applyLabel, applyDetail);
     applyRow.append(applyBox, applyText);
-    box.appendChild(applyRow);
+    body.appendChild(applyRow);
 
     const done = (val) => {
       backdrop.remove();
@@ -6270,6 +6473,9 @@ function wfComposeReviewRound(item) {
         publish: picked(publishGroup, "local"),
         interactive: interactiveParam(picked(interactionGroup, "ask")),
         autoApply: applyBox.checked,
+        // "" = the item's whole diff (no PR scope); a URL pins the round to
+        // one of its PRs.
+        prUrl: picked(scopeGroup, "") || null,
       });
     actions.appendChild(cancel);
     actions.appendChild(launch);
@@ -6292,9 +6498,17 @@ function wfComposeReviewRound(item) {
 /// path for findings that stayed local: publish is otherwise only choosable
 /// when launching a round, so sharing an already-written round meant burning
 /// a whole new one.
-async function publishWfReview(item, confirmed = false) {
+async function publishWfReview(item, { scope = null, confirmed = false } = {}) {
   const r = item.lastAgentReview;
-  const n = item.meta.pr && item.meta.pr.number ? `#${item.meta.pr.number}` : "the PR";
+  const prs = itemPrs(item.meta);
+  // Which PRs, then the confirmation — a multi-repo round is legitimately
+  // posted to all of them or to the one repo it found something in, and
+  // "posted to the PR" was never true of an item with three. A caller that
+  // already picked (the per-PR menu) skips the picker, never the confirm:
+  // publishing on GitHub is the thing being confirmed, not the choice of PR.
+  const picked = scope || (await pickPrScope(item, "post"));
+  if (!picked) return;
+  const n = prScopeSummary(picked, prs);
   if (
     !confirmed &&
     !(await uiConfirm(
@@ -6304,14 +6518,19 @@ async function publishWfReview(item, confirmed = false) {
   )
     return;
   try {
-    const round = await invoke("publish_workflow_review", {
+    const out = await invoke("publish_workflow_review", {
       project: item.project,
       slug: item.slug,
+      prs: picked.urls,
     });
-    flashToast(`Review round ${round} posted to ${n}`);
+    flashToast(`Review round ${out.round} posted to ${prScopeSummary({ urls: out.posted }, prs)}`);
+    if (out.failed.length) uiAlert(`Some PRs did not take the comment:\n${out.failed.join("\n")}`);
   } catch (e) {
-    // PR-identity gaps recover in place (attach → retry, already confirmed).
-    if (await wfPrRecovery(item, e, (fresh) => publishWfReview(fresh, true))) return;
+    // PR-identity gaps recover in place. The retry re-picks rather than
+    // reusing the scope: recovery re-attaches the PR, so the URL that failed
+    // is no longer one the item tracks.
+    if (await wfPrRecovery(item, e, (fresh) => publishWfReview(fresh, { confirmed: true })))
+      return;
     uiAlert(wfGhHint(e) || `Post to PR failed: ${e}`);
   }
 }
@@ -6986,12 +7205,16 @@ function renderWfActions(bar, root, item) {
   // Offered wherever a PR and a finished round coexist: sharing an existing
   // round must never cost a new one.
   const postRoundButton = () => {
-    if (!item.lastAgentReview || !(item.meta.pr && item.meta.pr.url)) return;
+    // Any PR will do: a linked-only item's reviewers are reviewers.
+    const prs = itemPrs(item.meta);
+    if (!item.lastAgentReview || !prs.length) return;
     add(
-      `↗ Post round ${item.lastAgentReview.round} to PR`,
+      `↗ Post round ${item.lastAgentReview.round} to PR${prScopeSuffix(prs, "post")}`,
       "",
       () => publishWfReview(item),
-      "Post the latest agent review round to the pull request as one comment — no agent, no tokens",
+      prs.length > 1
+        ? `Post the latest agent review round as one comment — the click asks which of this item's ${prs.length} pull requests, or all of them. No agent, no tokens.`
+        : "Post the latest agent review round to the pull request as one comment — no agent, no tokens",
       "step"
     );
   };
@@ -7013,7 +7236,7 @@ function renderWfActions(bar, root, item) {
           ? `#${prs[0].number}`
           : "the PR";
     add(
-      `⇄ ${answerCommentsLabel(count)}`,
+      `⇄ ${answerCommentsLabel(count)}${prScopeSuffix(prs, "respond")}`,
       "",
       () => launchWfReviewRespond(item, root),
       answerCommentsTitle(count, prName),
@@ -7091,7 +7314,12 @@ function renderWfActions(bar, root, item) {
       `Spend tokens: launch an agent session to review this item's ${
         target === "plan" ? "plan" : "code"
       } and report findings` +
-        (total ? ` (${total} round${total > 1 ? "s" : ""} on this item so far)` : ""),
+        (total ? ` (${total} round${total > 1 ? "s" : ""} on this item so far)` : "") +
+        // Multi-repo items choose their round's subject in the composer: the
+        // whole change, or one repository's PR.
+        (target === "diff" && itemPrs(item.meta).length > 1
+          ? ". The composer asks which change: all of it, or one of this item's PRs"
+          : ""),
       "step"
     );
   };
@@ -7106,7 +7334,9 @@ function renderWfActions(bar, root, item) {
       wfOpenPrLabel(item),
       style,
       () => openWorkflowPr(item),
-      "Open this item's pull request(s) — the primary and every linked one — in the browser panel",
+      itemPrs(item.meta).length > 1
+        ? "Open this item's pull requests in the browser panel — the click asks which: one of them, or all at once"
+        : "Open this item's pull request in the browser panel",
       "step"
     );
   };
@@ -7339,77 +7569,24 @@ function renderWfActions(bar, root, item) {
 
     case "pr-draft": {
       applyReviewButton();
-      if (item.meta.pr && item.meta.pr.url) {
+      // Gated on having a *draft* to flip, not on having a primary: a
+      // linked-only item's drafts are just as flippable, they simply cannot
+      // move the item's status.
+      const drafts = prActionCandidates(itemPrs(item.meta), "markReady");
+      if (drafts.length) {
         add(
-          "✓ Mark PR ready",
+          `✓ Mark PR ready${prScopeSuffix(itemPrs(item.meta), "markReady")}`,
           reviewPending ? "" : "primary",
-          async () => {
-            const warn =
-              item.openAnnotations > 0
-                ? ` ${item.openAnnotations} comment${item.openAnnotations > 1 ? "s are" : " is"} still open —`
-                : "";
-            // Multi-repo validation is one moment: when linked drafts exist,
-            // offer to flip them with the primary instead of a per-repo tour
-            // of GitHub. Their flips are best-effort; failures are reported.
-            const linkedDrafts = (item.meta.linkedPrs || []).filter(
-              (p) => p.draft && p.state !== "MERGED" && p.state !== "CLOSED"
-            ).length;
-            let includeLinked = false;
-            if (linkedDrafts) {
-              const how = await uiChoice({
-                message: `This is the validation step:${warn} flip PR #${item.meta.pr.number || "?"} to ready-for-review?`,
-                detail: `This item also tracks ${linkedDrafts} linked draft PR${linkedDrafts > 1 ? "s" : ""} in other repositories.`,
-                choices: [
-                  {
-                    label: `Primary + ${linkedDrafts} linked draft${linkedDrafts > 1 ? "s" : ""}`,
-                    value: "all",
-                    primary: true,
-                  },
-                  { label: "Primary only", value: "primary" },
-                ],
-              });
-              if (!how) return;
-              includeLinked = how === "all";
-            } else if (
-              !(await uiConfirm(
-                `This is the validation step:${warn} flip PR #${item.meta.pr.number || "?"} to ready-for-review?`,
-                "Mark ready"
-              ))
-            ) {
-              return;
-            }
-            const markReady = async (target) => {
-              try {
-                const r = await invoke("mark_workflow_pr_ready", {
-                  project: target.project,
-                  slug: target.slug,
-                  includeLinked,
-                });
-                const flipped = r.linkedFlipped.length
-                  ? ` · ${r.linkedFlipped.length} linked flipped`
-                  : "";
-                flashToast(`PR ready: ${r.meta.pr ? r.meta.pr.url : ""}${flipped}`);
-                if (r.linkedFailed.length) {
-                  uiAlert(
-                    `Some linked drafts could not be flipped:\n${r.linkedFailed.join("\n")}`
-                  );
-                }
-                await refreshWorkflows();
-                buildWorkflowView(root, target.project, target.slug);
-              } catch (e) {
-                // PR-identity gaps recover in place: paste the URL, retry.
-                if (await wfPrRecovery(target, e, markReady)) return;
-                uiAlert(wfGhHint(e) || `Mark ready failed: ${e}`);
-              }
-            };
-            await markReady(item);
-          },
-          `Flip PR #${item.meta.pr.number || ""} from draft to ready-for-review on GitHub — the validation step (offers the linked drafts too when the item tracks any)`
+          () => wfMarkPrReady(item, root),
+          drafts.length > 1
+            ? `Flip a draft to ready-for-review on GitHub — the validation step. This item tracks ${drafts.length} drafts across repositories, so the click asks which: one repository, or all of them at once.`
+            : `Flip PR ${drafts[0].number ? `#${drafts[0].number}` : drafts[0].url} from draft to ready-for-review on GitHub — the validation step`
         );
-      } else {
+      }
+      if (!wfHasPr(item)) {
         add(
           "Attach PR by URL…",
-          "primary",
+          drafts.length ? "" : "primary",
           async () => {
             const url = await uiPrompt("GitHub PR URL");
             if (!url || !url.trim()) return;

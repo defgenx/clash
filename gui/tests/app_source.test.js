@@ -8,6 +8,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
+const { extractFunction } = require("./extract-fn.js");
+
 const APP_PATH = path.join(__dirname, "..", "dist", "app.js");
 const APP = fs.readFileSync(APP_PATH, "utf8");
 const APP_BYTES = fs.readFileSync(APP_PATH);
@@ -437,6 +439,61 @@ test("each workflow document says what it is", () => {
   assert.match(ex, /What this plan is going to do/);
   assert.match(ex, /What this change actually does/);
   assert.match(ex, /It judges nothing/);
+});
+
+test("every PR-scoped action asks which PR, through one picker", () => {
+  // Multi-repo items carry several PRs, and each of these actions used to act
+  // on a hardcoded set: Open opened all of them, Mark ready flipped the
+  // primary (plus, optionally, every linked draft), Post went to the primary
+  // alone. The scope question now has exactly one implementation — a second
+  // one is how two surfaces end up disagreeing about what "all" means.
+  assert.match(APP, /async function pickPrScope\(item, action/);
+  for (const fn of ["openWorkflowPr", "wfMarkPrReady", "publishWfReview", "launchWfReviewRespond"]) {
+    const src = extractFunction(APP, fn);
+    assert.ok(
+      /pickPrScope\(/.test(src),
+      `${fn} must resolve its PR scope through pickPrScope`
+    );
+  }
+  // The two mutating commands are invoked from their own action only: a
+  // direct invoke elsewhere would bypass the picker and the confirmation.
+  for (const cmd of ["mark_workflow_pr_ready", "publish_workflow_review"]) {
+    const calls = APP.split(`invoke("${cmd}"`).length - 1;
+    assert.equal(calls, 1, `${cmd} must have exactly one call site, found ${calls}`);
+  }
+  // Open no longer fans out on its own — the fan-out is a row in the picker.
+  assert.doesNotMatch(APP, /openLinks\(\s*prs\.map\(/);
+});
+
+test("a PR's own actions are one menu, shown wherever a PR chip is", () => {
+  // The action bar answers "what happens to this item"; the per-repo
+  // decisions of a multi-repo item have no home there, so they hang off the
+  // PR itself — and must be the same list on every surface that shows one.
+  assert.match(APP, /function wfPrMenu\(item, pr, root\)/);
+  const uses = APP.split("wfPrMenu(item, pr").length - 1;
+  assert.ok(uses >= 2, `expected wfPrMenu on ≥2 PR surfaces, found ${uses}`);
+  // Its entries reuse the bar's actions rather than reimplementing them.
+  const menu = extractFunction(APP, "wfPrMenu");
+  for (const call of ["wfMarkPrReady(item, root", "launchWfReview(item, root", "publishWfReview(item"]) {
+    assert.ok(menu.includes(call), `wfPrMenu must delegate to ${call}…)`);
+  }
+});
+
+test("a review round's PR scope is a row in the composer, not a second dialog", () => {
+  // The composer exists because the round's whole shape must be on one
+  // screen: the last thing hidden in a stacked second dialog ("answer PR
+  // comments") was invisible even to the person who asked for it.
+  const composer = extractFunction(APP, "wfComposeReviewRound");
+  assert.ok(composer.includes("model.prScope"), "the composer must render the scope group");
+  assert.ok(composer.includes("prs: itemPrs(item.meta)"), "the model needs the item's PRs");
+  assert.ok(composer.includes("prUrl:"), "the launch payload must carry the pick");
+  // Scoping to a linked PR moves the findings' only reachable destination to
+  // that PR — the composer pre-selects it rather than let a round end with
+  // findings nobody can see.
+  assert.ok(
+    /linked\.has\(picked\(scopeGroup/.test(composer),
+    "picking a linked PR must pre-select posting to it"
+  );
 });
 
 test("the two explanations are separate, and each has two forms", () => {
