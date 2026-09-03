@@ -19,9 +19,11 @@ workflows are a structured store.
 ├── plan.md            # the plan (freely editable markdown)
 ├── review.md          # append-only iteration audit trail (clash writes, agent reads)
 ├── agent-review.md    # append-only agent review rounds (agent writes, clash renders)
-├── structure.md       # the explain round's document (clash-explain overwrites, Structure tab renders)
+├── structure.md       # what the change DID (clash-explain overwrites, Structure tab renders)
+├── blueprint.md       # what the plan WILL DO, with diagrams (clash-explain overwrites, Blueprint tab)
 ├── annotations.json   # line-level diff comments
-└── history/<NNN>/     # per-iteration snapshots (diff.patch + plan.md + annotations.json)
+├── history/<NNN>/     # per-iteration snapshots (diff.patch + plan.md + annotations.json)
+└── plan-history/      # every recorded revision of plan.md (index.json + NNNN.md), clash-owned
 ```
 
 `review.md` and `agent-review.md` are deliberately two files: the first is
@@ -190,6 +192,20 @@ pr-draft / pr-ready likewise
   and the reason the stage's own approve button is demoted while it holds. A
   key rather than a number because numbers restart per target: three applied
   plan rounds would otherwise read as having covered code round 1.
+- **The explainer has two directions, and the forward one carries a decision.**
+  `Target: structure` reads the diff and writes `structure.md` (what the change
+  did); `Target: blueprint` reads `plan.md` and the code it will land in and
+  writes `blueprint.md` (what the implementation is going to do, with
+  diagrams), *before* any of it exists. Both run the `clash-explain` skill,
+  judge nothing, and write only their own document — never each other's, since
+  a blueprint round overwriting `structure.md` would erase what the change
+  actually did, and the reverse would erase what the human accepted. The
+  blueprint alone gets a verdict: `meta.json.blueprint` (`round`, `status` ∈
+  pending/accepted/rejected/stale, `decidedAt`) is **clash-owned** — the agent
+  writes the document, never the human's answer to it. A pending blueprint
+  demotes the plan stage's own approve, because reading it before authorizing
+  the implementation is the point; launching a new blueprint round resets it to
+  pending, since the document it described is about to be rewritten.
 - **Every round declares whether it should be applied**, as
   `**Apply:** yes|no — <reason>` next to its `**Verdict:**`. The reviewers'
   skills own the judgement (interactive rounds ask the human; autonomous ones
@@ -430,8 +446,8 @@ for context.
   only commits locally leaves the PR silently stale. An unpublished branch
   (`full`/`from-plan`, no PR) is still never pushed.
 - Never touch `history/` or `plan-history/`, and never change `iteration`,
-  `reviewRound` or `appliedReviewKey` — clash
-  owns all five (the first two are written atomically by the request-changes
+  `reviewRound`, `appliedReviewKey` or `blueprint` — clash
+  owns all six (the first two are written atomically by the request-changes
   flow, the third by the review launcher).
 - Write `annotations.json` **only** while status is `changes-requested` or
   `implementing` — during review phases the GUI owns the file (this phase

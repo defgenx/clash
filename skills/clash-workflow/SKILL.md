@@ -101,8 +101,10 @@ findings into `agent-review.md` and `annotations.json` and never touch
 
 ## Hard rules (violating these corrupts the pipeline)
 
-- **Never** touch `history/`, `plan-history/`, or `iteration`, `reviewRound`
-  and `appliedReviewKey` in meta.json — clash owns all five.
+- **Never** touch `history/`, `plan-history/`, or `iteration`, `reviewRound`,
+  `appliedReviewKey` and `blueprint` in meta.json — clash owns all six.
+  `blueprint.md` and `structure.md` belong to the explainer; read them freely
+  (an accepted blueprint is the agreed shape of the work), write neither.
 - Write `annotations.json` **only while** `meta.json.status` is
   `changes-requested` or `implementing`. During review phases the file
   belongs to the human's GUI.

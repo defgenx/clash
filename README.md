@@ -640,6 +640,18 @@ real ones. Items created before this store adopt whatever their round snapshots
 preserved on first open, so upgrading doesn't present a multi-round item as
 having no history.
 
+**◫ Blueprint — agree on the shape before it is built.** At plan review the
+explainer runs *forward*: it reads the plan and the code it will land in, then
+draws what will get built — a diagram first, then the parts, the existing code
+they attach to, the blast radius, and the questions the plan leaves open. You
+then **✓ Accept** it (that is the shape to build), **✗ Reject** it (which opens
+the change-request composer, because a rejected blueprint means the plan needs
+another round), or **↻ Revalidate next round** (ask for another pass without
+judging this one). While a blueprint waits on you, *Approve plan → implement*
+stops being the default action — reading it before authorizing the
+implementation is the whole point. After the work lands, the same ◫ action runs
+the other way and explains the diff instead (the **Structure** tab).
+
 Each document tab says what it holds, because two of them are easy to confuse:
 **Change requests** is *your* notes — one section per round, written when you
 press *Request changes*, and the first thing the next agent round reads — while

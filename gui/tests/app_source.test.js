@@ -380,3 +380,29 @@ test("each workflow document says what it is", () => {
   assert.match(cap, /What the agent review rounds found/);
   assert.match(cap, /It judges nothing/);
 });
+
+test("the blueprint carries a decision, and none of the three is a fallback", () => {
+  // A blueprint is read before the implementation exists, so agreeing on the
+  // shape of the work is the point — and each answer does a different thing.
+  assert.match(APP, /function wfBlueprintDecisionBar\(root, item\)/);
+  const bar = APP.slice(
+    APP.indexOf("function wfBlueprintDecisionBar("),
+    APP.indexOf("/// Render a unified diff as coloured lines")
+  );
+  assert.match(bar, /invoke\("set_workflow_blueprint_decision"/);
+  for (const d of ['decide\\("accepted"\\)', 'decide\\("rejected"', 'decide\\("stale"\\)']) {
+    assert.match(bar, new RegExp(d), `missing the ${d} answer`);
+  }
+  // Rejecting means the *plan* needs a round, through the same composer as
+  // every other change request — not a second mechanism.
+  assert.match(bar, /await wfRequestChanges\(\s*fresh,\s*root,\s*"plan",/);
+  // Accepting does not move the pipeline; approving is still its own click.
+  assert.doesNotMatch(bar, /wfTransition/);
+  // A pending blueprint demotes the stage's approve, like a pending review.
+  assert.match(APP, /const blueprintPending = blueprintState\(item\) === "pending";/);
+  assert.match(APP, /reviewPending \|\| blueprintPending \? "" : "primary"/);
+  // Before the work exists the explainer draws a blueprint instead of a
+  // structure of a diff that does not exist yet.
+  assert.match(APP, /const forward = item\.meta\.status === "plan-review" && wfHasPlanPhase\(item\)/);
+  assert.match(APP, /\{ target: "blueprint" \}/);
+});

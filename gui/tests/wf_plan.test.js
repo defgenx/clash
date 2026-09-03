@@ -13,6 +13,8 @@ const {
   wfNextReviewRound,
   shouldAutoApply,
   planVersionForIteration,
+  blueprintState,
+  blueprintCaption,
 } = require("../dist/wf-plan.js");
 
 const NOW = new Date(2026, 8, 2, 12, 0).getTime();
@@ -293,6 +295,42 @@ test("the hand-back's own summary outranks the item's stale one", () => {
   assert.equal(shouldAutoApply(item, { round: 2, apply: true }), true);
 });
 
+test("a blueprint waits on a decision, and says which one it got", () => {
+  const item = (over = {}) => ({
+    hasBlueprint: true,
+    meta: { status: "plan-review", blueprint: { round: 1, status: "pending" }, ...(over.meta || {}) },
+    ...over,
+  });
+  // Pending is the state that matters: it demotes the stage's own approve,
+  // because a blueprint exists to be read *before* the plan is implemented.
+  assert.equal(blueprintState(item()), "pending");
+  assert.match(blueprintCaption(item()), /waiting on your accept or reject/);
+
+  for (const [status, expected] of [
+    ["accepted", /this is the shape to build/],
+    ["rejected", /needs another pass/],
+    ["stale", /revalidation asked/],
+  ]) {
+    const it = item({ meta: { blueprint: { round: 2, status } } });
+    assert.equal(blueprintState(it), status);
+    assert.match(blueprintCaption(it), expected);
+    assert.match(blueprintCaption(it), /Blueprint 2/);
+  }
+
+  // No document, no state — the tab and its decision only exist once a round
+  // has written one.
+  assert.equal(blueprintState({ hasBlueprint: false, meta: {} }), "");
+  assert.equal(blueprintCaption({ hasBlueprint: false, meta: {} }), "");
+  assert.equal(blueprintState(null), "");
+  // A document with no block yet (or an unreadable status) is pending, never
+  // silently "accepted".
+  assert.equal(blueprintState({ hasBlueprint: true, meta: {} }), "pending");
+  assert.equal(
+    blueprintState({ hasBlueprint: true, meta: { blueprint: { status: "nonsense" } } }),
+    "pending"
+  );
+});
+
 test("the browser branch publishes every name app.js calls", () => {
   const fs = require("node:fs");
   const path = require("node:path");
@@ -313,6 +351,8 @@ test("the browser branch publishes every name app.js calls", () => {
     "wfNextReviewRound",
     "shouldAutoApply",
     "planVersionForIteration",
+    "blueprintState",
+    "blueprintCaption",
   ]) {
     assert.equal(typeof win[name], "function", `${name} must be on window`);
     assert.ok(app.includes(name), `app.js is expected to use ${name}`);

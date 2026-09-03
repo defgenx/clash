@@ -39,6 +39,10 @@ pub const AGENT_REVIEW_FILE: &str = "agent-review.md";
 /// with diagrams. Written (overwritten — a living document, not a log) by the
 /// `clash-explain` skill, rendered by the GUI's Structure tab.
 pub const STRUCTURE_FILE: &str = "structure.md";
+/// The blueprint: what the implementation is going to do, written before it
+/// exists. Its own file rather than a mode of `structure.md`, because a later
+/// structure round would overwrite the thing the human accepted.
+pub const BLUEPRINT_FILE: &str = "blueprint.md";
 pub const ANNOTATIONS_FILE: &str = "annotations.json";
 pub const HISTORY_DIR: &str = "history";
 /// Per-item plan revision store: `plan-history/index.json` + `NNNN.md`.
@@ -160,6 +164,7 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         has_review: has_content(&dir.join(REVIEW_FILE)),
         has_agent_review,
         has_structure: has_content(&dir.join(STRUCTURE_FILE)),
+        has_blueprint: has_content(&dir.join(BLUEPRINT_FILE)),
         open_annotations,
         history_iterations,
         agent_alive: true, // cross-checked against live sessions by the GUI layer
@@ -284,7 +289,9 @@ pub fn write_meta(root: &Path, project: &str, slug: &str, meta: &WorkflowMeta) -
 
 fn doc_path(dir: &Path, doc: &str) -> Result<PathBuf> {
     match doc {
-        PLAN_FILE | REVIEW_FILE | AGENT_REVIEW_FILE | STRUCTURE_FILE => Ok(dir.join(doc)),
+        PLAN_FILE | REVIEW_FILE | AGENT_REVIEW_FILE | STRUCTURE_FILE | BLUEPRINT_FILE => {
+            Ok(dir.join(doc))
+        }
         _ => Err(parse_err(format!("Not a workflow document: '{}'", doc))),
     }
 }

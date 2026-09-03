@@ -638,6 +638,7 @@ pub fn review_job(review: &crate::domain::workflow::WorkflowReview) -> String {
     }
     match review.target {
         ReviewTarget::Structure => "explain".to_string(),
+        ReviewTarget::Blueprint => format!("blueprint r{}", review.round.max(1)),
         ReviewTarget::Plan => format!("plan review r{}", review.round.max(1)),
         ReviewTarget::Diff | ReviewTarget::Unknown => {
             format!("code review r{}", review.round.max(1))
@@ -774,8 +775,9 @@ pub fn review_engine_for(target: crate::domain::workflow::ReviewTarget) -> &'sta
     use crate::domain::workflow::ReviewTarget;
     match target {
         ReviewTarget::Plan => "clash-plan-review",
-        // The explainer: writes structure.md instead of findings.
-        ReviewTarget::Structure => "clash-explain",
+        // The explainer: writes structure.md (what a change did) or
+        // blueprint.md (what it is going to do) instead of findings.
+        ReviewTarget::Structure | ReviewTarget::Blueprint => "clash-explain",
         // Unknown degrades to the code reviewer: every mode has a diff to
         // read, while a plan may not exist at all.
         ReviewTarget::Diff | ReviewTarget::Unknown => "clash-code-review",
@@ -1703,6 +1705,44 @@ Tighten the API.\n\n\
     }
 
     // ── Apply declaration ────────────────────────────────────────────
+
+    #[test]
+    fn the_blueprint_is_the_explainers_other_direction() {
+        use crate::domain::workflow::{ReviewTarget, WorkflowReview};
+        // Same skill, because it is the same job — explain, judge nothing —
+        // pointed the other way along the pipeline.
+        assert_eq!(review_engine_for(ReviewTarget::Blueprint), "clash-explain");
+        assert_eq!(review_engine_for(ReviewTarget::Structure), "clash-explain");
+        // It is numbered like every other round, so its session says which one
+        // it is; the retrospective explainer has only ever had one document and
+        // keeps its bare name.
+        let job = review_job(&WorkflowReview {
+            target: ReviewTarget::Blueprint,
+            round: 2,
+            ..Default::default()
+        });
+        assert_eq!(job, "blueprint r2");
+        assert_eq!(
+            review_job(&WorkflowReview {
+                target: ReviewTarget::Structure,
+                round: 2,
+                ..Default::default()
+            }),
+            "explain"
+        );
+        // And the kickoff names the target, which is what routes the skill.
+        let p = build_review_prompt(
+            "/items/x",
+            &WorkflowReview {
+                target: ReviewTarget::Blueprint,
+                round: 1,
+                ..Default::default()
+            },
+            WorkflowMode::Full,
+        );
+        assert!(p.contains("Use the clash-explain skill"));
+        assert!(p.contains("Target: blueprint"));
+    }
 
     #[test]
     fn round_numbers_restart_per_target() {

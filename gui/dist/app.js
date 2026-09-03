@@ -5244,6 +5244,7 @@ async function buildWorkflowView(el, project, slug) {
     ts.subView = "diff";
   // And for Structure, which only exists once an explain round wrote it.
   if (ts.subView === "structure" && !item.hasStructure) ts.subView = "diff";
+  if (ts.subView === "blueprint" && !item.hasBlueprint) ts.subView = "diff";
   // An item with no plan phase has no plan history either.
   if (ts.subView === "revisions" && !wfHasPlanPhase(item)) ts.subView = "diff";
   // The plan drill-downs are now versions of the Plan tab; a tab persisted
@@ -5405,6 +5406,11 @@ async function buildWorkflowView(el, project, slug) {
     // the item's review history and the reason a round is worth repeating.
     ...(item.hasAgentReview || item.meta.reviewRound
       ? [["agentReview", `Agent reviews${item.meta.reviewRound ? ` (${item.meta.reviewRound})` : ""}`]]
+      : []),
+    // The blueprint: what the plan is going to build, before it exists.
+    // Flagged while it waits on a decision — that is the whole point of it.
+    ...(item.hasBlueprint
+      ? [["blueprint", `◫ Blueprint${blueprintState(item) === "pending" ? " ·decide" : ""}`]]
       : []),
     // The explain round's document — appears once ◫ Explain changes wrote it.
     ...(item.hasStructure ? [["structure", "Structure"]] : []),
@@ -5713,6 +5719,41 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
       return;
     }
     uiAlert(`Review launch failed: ${e}`);
+  }
+}
+
+/// Open the change-request composer and record what it returns.
+///
+/// Top level because two surfaces open it: the action bar's ✎ Request changes,
+/// and a rejected blueprint — a blueprint that is not the shape to build means
+/// the *plan* needs a round, and saying so is the same act as any other change
+/// request, through the same composer and the same snapshotting flow.
+async function wfRequestChanges(item, root, target = "diff", prefill = "") {
+  const annotations = target === "plan" ? [] : await wfOpenAnnotations(item);
+  const req = await wfComposeChangeRequest({
+    item,
+    target,
+    annotations,
+    prefill,
+    onJump: (annId) => wfJumpToAnnotation(root, item.project, item.slug, annId),
+  });
+  if (!req) return;
+  try {
+    await invoke("workflow_request_changes", {
+      project: item.project,
+      slug: item.slug,
+      note: req.note || null,
+      park: req.park.length ? req.park : null,
+    });
+    await refreshWorkflows();
+    if (req.launch) {
+      const fresh = wfItem(item.project, item.slug) || item;
+      await launchWfAgent(fresh, "revise", root, null, req.launch);
+    } else {
+      buildWorkflowView(root, item.project, item.slug);
+    }
+  } catch (e) {
+    uiAlert(`Request changes failed: ${e}`);
   }
 }
 
@@ -6722,6 +6763,9 @@ function renderWfActions(bar, root, item) {
   // demote the stage's approve — there is nothing waiting to be done.
   const pendingRound = pendingReviewRound(item);
   const reviewPending = !!pendingRound && pendingRound.apply !== false;
+  // A blueprint exists to be read *before* the plan is implemented, so while
+  // nobody has answered it the stage's own approve is not the default action.
+  const blueprintPending = blueprintState(item) === "pending";
   // Three labeled zones instead of one undifferentiated row: actions ON the
   // current step's artifact (reviews, explain, open things — nothing moves),
   // the decisions that ADVANCE the pipeline, and item-lifecycle actions.
@@ -6778,34 +6822,8 @@ function renderWfActions(bar, root, item) {
   // changed. The composer decides the round's whole shape: which comments
   // ride along (unchecked ones are parked), and whether the fix round
   // launches immediately (with interaction mode + optional skill override).
-  const requestChanges = async (target = "diff", prefill = "") => {
-    const annotations = target === "plan" ? [] : await wfOpenAnnotations(item);
-    const req = await wfComposeChangeRequest({
-      item,
-      target,
-      annotations,
-      prefill,
-      onJump: (annId) => wfJumpToAnnotation(root, item.project, item.slug, annId),
-    });
-    if (!req) return;
-    try {
-      await invoke("workflow_request_changes", {
-        project: item.project,
-        slug: item.slug,
-        note: req.note || null,
-        park: req.park.length ? req.park : null,
-      });
-      await refreshWorkflows();
-      if (req.launch) {
-        const fresh = wfItem(item.project, item.slug) || item;
-        await launchWfAgent(fresh, "revise", root, null, req.launch);
-      } else {
-        buildWorkflowView(root, item.project, item.slug);
-      }
-    } catch (e) {
-      uiAlert(`Request changes failed: ${e}`);
-    }
-  };
+  const requestChanges = (target = "diff", prefill = "") =>
+    wfRequestChanges(item, root, target, prefill);
 
   // Apply a finished review round in one click.
   //
@@ -6923,6 +6941,34 @@ function renderWfActions(bar, root, item) {
   // diff, so plan-review is excluded.
   const explainButton = () => {
     if (!wfCanExplain(item)) return;
+    // Two directions, and the stage decides which is useful: before the work
+    // exists there is nothing to explain retrospectively, and a blueprint of
+    // a change that has already landed is the diff with extra steps.
+    const forward = item.meta.status === "plan-review" && wfHasPlanPhase(item);
+    const bpState = blueprintState(item);
+    if (forward) {
+      add(
+        item.hasBlueprint
+          ? bpState === "stale"
+            ? "◫ Re-draw blueprint"
+            : "◫ Blueprint again"
+          : "◫ Blueprint this plan",
+        bpState === "stale" ? "primary" : "",
+        async () => {
+          if (
+            !(await uiConfirm(
+              "Spend tokens: an agent reads the plan and the code it will land in, then draws a blueprint — what will get built, where it attaches, what it touches, with diagrams. You then accept it, reject it, or ask for another pass. The item is parked while it runs and comes back here.",
+              "Draw it"
+            ))
+          )
+            return;
+          await spawnWfReview(item, root, "standard", "local", { target: "blueprint" });
+        },
+        "Draw what this plan is going to build, before it exists — diagrams of the shape, the blast radius, the open questions. Then accept or reject the design. Spends tokens.",
+        "step"
+      );
+      return;
+    }
     add(
       item.hasStructure ? "◫ Re-explain changes" : "◫ Explain changes",
       "",
@@ -7068,7 +7114,7 @@ function renderWfActions(bar, root, item) {
       applyReviewButton();
       add(
         "✓ Approve plan → implement",
-        reviewPending ? "" : "primary",
+        reviewPending || blueprintPending ? "" : "primary",
         async () => {
           if (!(await uiConfirm("Approve this plan and move to implementation?", "Approve")))
             return;
@@ -7080,7 +7126,9 @@ function renderWfActions(bar, root, item) {
           const fresh = wfItem(item.project, item.slug) || item;
           if (go === "go") launchWfAgent(fresh, "implement", root);
         },
-        "Accept plan.md as written — the item moves to implementation (you choose whether to launch the agent right away)"
+        blueprintPending
+          ? "Accept plan.md as written — the item moves to implementation. A blueprint is waiting on your accept or reject; approving now skips reading it."
+          : "Accept plan.md as written — the item moves to implementation (you choose whether to launch the agent right away)"
       );
       add(
         "✎ Request changes…",
@@ -7385,6 +7433,85 @@ function renderWfActions(bar, root, item) {
   }
 }
 
+/// The blueprint's three answers: accept, reject, or send it back.
+///
+/// A blueprint is the one explainer output that carries a decision, because it
+/// is read *before* the implementation exists — agreeing on the shape of the
+/// work is the point. The three do different things and none of them is the
+/// other's fallback: accepting records the design and leaves the pipeline
+/// where it is (the stage's own approve still moves it, and is demoted while
+/// this is pending); rejecting records that and opens the change-request
+/// composer, because a rejected blueprint means the *plan* needs a round;
+/// revalidating asks for another blueprint pass without judging this one.
+function wfBlueprintDecisionBar(root, item) {
+  const bar = document.createElement("div");
+  bar.className = "wf-blueprint-bar";
+  const state = blueprintState(item);
+  const caption = document.createElement("span");
+  caption.className = "wf-blueprint-state dim";
+  caption.textContent = blueprintCaption(item);
+  bar.appendChild(caption);
+  bar.appendChild(Object.assign(document.createElement("span"), { className: "spacer" }));
+
+  const decide = async (decision, then) => {
+    try {
+      await invoke("set_workflow_blueprint_decision", {
+        project: item.project,
+        slug: item.slug,
+        decision,
+      });
+      await refreshWorkflows();
+      if (then) await then();
+      else buildWorkflowView(root, item.project, item.slug);
+    } catch (e) {
+      uiAlert(`Blueprint decision failed: ${e}`);
+    }
+  };
+
+  const add = (label, cls, title, fn) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.title = title;
+    b.onclick = () => busyButton(b, () => fn());
+    bar.appendChild(b);
+    return b;
+  };
+
+  if (state !== "accepted") {
+    add(
+      "✓ Accept blueprint",
+      state === "pending" ? "primary" : "",
+      "Record that this is the shape to build. It does not start the implementation — the stage's own approve does, and it stops being demoted once this is decided.",
+      () => decide("accepted")
+    );
+  }
+  if (state !== "rejected") {
+    add(
+      "✗ Reject…",
+      "",
+      "Record that this is not the shape to build, and write what should change — the plan takes another round.",
+      () =>
+        decide("rejected", async () => {
+          const fresh = wfItem(item.project, item.slug) || item;
+          await wfRequestChanges(
+            fresh,
+            root,
+            "plan",
+            "The blueprint is not the shape to build.\n\n<what is wrong with it, and what to do instead>\n"
+          );
+        })
+    );
+  }
+  add(
+    "↻ Revalidate next round",
+    "",
+    "Ask for another blueprint pass — the current one is out of date with the plan, or you want it looked at again. Judges nothing.",
+    () => decide("stale")
+  );
+  return bar;
+}
+
 /// Render a unified diff as coloured lines. Plans are prose, so this is the
 /// plain reader — the code-diff view's annotation machinery would add nothing.
 function renderUnifiedDiff(container, text) {
@@ -7649,14 +7776,17 @@ async function renderWfSubView(body, root, item, ts) {
   if (
     ts.subView === "review" ||
     ts.subView === "agentReview" ||
-    ts.subView === "structure"
+    ts.subView === "structure" ||
+    ts.subView === "blueprint"
   ) {
     const doc =
       ts.subView === "review"
         ? "review.md"
         : ts.subView === "structure"
           ? "structure.md"
-          : "agent-review.md";
+          : ts.subView === "blueprint"
+            ? "blueprint.md"
+            : "agent-review.md";
     body.innerHTML = "<p class='hint'>loading…</p>";
     let text = "";
     try {
@@ -7676,7 +7806,9 @@ async function renderWfSubView(body, root, item, ts) {
         ? "Your change requests, one section per round — written when you press ✎ Request changes, and the first thing the next agent round reads. clash appends; agents only read."
         : ts.subView === "agentReview"
           ? "What the agent review rounds found: verdict, findings and what each round published. Appended by the reviewer, never edited by clash — code findings also arrive as comments on the Diff tab."
-          : "What this change does, written by the ◫ Explain round: functional parts, diagrams, risks. It judges nothing and decides nothing.";
+          : ts.subView === "blueprint"
+            ? "What the plan is going to build, drawn before any of it exists: the shape, what gets touched, what is still open. Accept it and that is the design to build; reject it and the plan takes another round."
+            : "What this change does, written by the ◫ Explain round: functional parts, diagrams, risks. It judges nothing and decides nothing.";
     body.appendChild(caption);
 
     const tools = document.createElement("div");
@@ -7709,7 +7841,7 @@ async function renderWfSubView(body, root, item, ts) {
 
     // Structure reads as a document, not a dump: dedicated typography plus
     // section chips built from its H2s, so it navigates like an exposé.
-    if (ts.subView === "structure" && text.trim()) {
+    if ((ts.subView === "structure" || ts.subView === "blueprint") && text.trim()) {
       md.classList.add("wf-structure");
       const heads = [...md.querySelectorAll("h2")];
       if (heads.length > 1) {
@@ -7743,6 +7875,11 @@ async function renderWfSubView(body, root, item, ts) {
       }
       if (heads.length)
         requestAnimationFrame(() => heads[heads.length - 1].scrollIntoView({ block: "start" }));
+    }
+    // The decision lives with the document, not only on the action bar: the
+    // three answers only mean something once you have read the thing.
+    if (ts.subView === "blueprint" && text.trim()) {
+      body.appendChild(wfBlueprintDecisionBar(root, item));
     }
     body.appendChild(md);
     return;

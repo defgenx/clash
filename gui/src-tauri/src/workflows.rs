@@ -1481,7 +1481,12 @@ pub(crate) async fn start_workflow_review_agent(
     }
     // An explain round is not a review: it judges nothing, so the only thing
     // that can stop it is another agent already writing this item's files.
-    let explaining = target == Some(ReviewTarget::Structure);
+    // Both explainer targets qualify — the blueprint (what the plan is going
+    // to do) and the structure (what the diff did).
+    let explaining = matches!(
+        target,
+        Some(ReviewTarget::Structure) | Some(ReviewTarget::Blueprint)
+    );
     if explaining {
         if !meta.status.can_explain() {
             return Err(format!(
@@ -1522,10 +1527,13 @@ pub(crate) async fn start_workflow_review_agent(
     // rather than trusted.
     let target = match target {
         Some(ReviewTarget::Structure) => ReviewTarget::Structure,
+        Some(ReviewTarget::Blueprint) => ReviewTarget::Blueprint,
         _ => ReviewTarget::for_status(meta.status, meta.mode),
     };
-    if target == ReviewTarget::Plan && !has_plan_content(&state, &project, &slug) {
-        return Err("This item has no plan to review yet".to_string());
+    if matches!(target, ReviewTarget::Plan | ReviewTarget::Blueprint)
+        && !has_plan_content(&state, &project, &slug)
+    {
+        return Err("This item has no plan yet — there is nothing to read".to_string());
     }
 
     // The item's interaction default fills in when the launch surface offered
@@ -1578,6 +1586,17 @@ pub(crate) async fn start_workflow_review_agent(
     // annotations unlocked, cancel refusing) has no recovery path.
     let rollback = meta.clone();
     meta.session_id = Some(session_id.clone());
+    // A blueprint round in flight supersedes whatever the previous one was
+    // decided as: the document is about to be rewritten, so a stale
+    // "accepted" must not outlive it.
+    if review.target == ReviewTarget::Blueprint {
+        meta.blueprint = Some(clash::domain::workflow::WorkflowBlueprint {
+            round: review.round,
+            status: clash::domain::workflow::BlueprintStatus::Pending,
+            decided_at: 0,
+            ..Default::default()
+        });
+    }
     // The item-wide total keeps climbing — it is what "Agent reviews (n)" and
     // the share summary count. The round's own number is per target.
     meta.review_round = meta.review_round.saturating_add(1);
@@ -2524,6 +2543,44 @@ pub(crate) async fn share_workflow_jira(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Record the human's verdict on the blueprint: accept it, reject it, or ask
+/// for it to be redone next round.
+///
+/// A decision and nothing else — it moves no status. Accepting does not
+/// implement the plan (the stage's own approve does that, and is demoted while
+/// a blueprint is pending); rejecting does not request changes (the composer
+/// does, and the caller opens it). Keeping those separate is what lets the
+/// human accept the shape of the work and still sit on the plan for a while.
+#[tauri::command]
+pub(crate) fn set_workflow_blueprint_decision(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    decision: String,
+) -> Result<clash::domain::workflow::WorkflowMeta, String> {
+    use clash::domain::workflow::BlueprintStatus;
+    let status = match decision.trim() {
+        "accepted" => BlueprintStatus::Accepted,
+        "rejected" => BlueprintStatus::Rejected,
+        "stale" => BlueprintStatus::Stale,
+        other => return Err(format!("Unknown blueprint decision '{}'", other)),
+    };
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    let mut block = meta.blueprint.clone().unwrap_or_default();
+    block.status = status;
+    block.decided_at = now_ms();
+    meta.blueprint = Some(block);
+    state
+        .backend
+        .write_workflow_meta(&project, &slug, &meta)
+        .map_err(e2s)?;
+    seed_local(&state, &project, &slug, meta.status);
+    Ok(meta)
 }
 
 /// Hand a share document to a Claude Code session.
