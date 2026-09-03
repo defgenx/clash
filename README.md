@@ -662,9 +662,12 @@ differently:
   what you look at for fifteen seconds to get the shape. clash renders it in a
   sandbox with scripts disabled, themed to match the app.
 
-The tab opens on the picture and toggles to the text. Both are regenerated on
-each run, and you can name something for the round to concentrate on when you
-launch it. The explainer **judges nothing and decides nothing** — no accept, no
+The tab opens on the picture and toggles to the text. The drawing fills the
+pane — it is the one document read at a glance — and **⤢** hands it the whole
+tab: the item header, the pipeline stepper and the action bar step aside, and
+**⤡** brings them back. Both forms are regenerated on each run, and you can
+name something for the round to concentrate on when you launch it. The
+explainer **judges nothing and decides nothing** — no accept, no
 reject, no gate on the pipeline; it writes its own two documents and nothing
 else.
 

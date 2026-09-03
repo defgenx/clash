@@ -1134,17 +1134,33 @@ html, body, #app {
   border-color: var(--accent);
   color: var(--on-accent);
 }
-/* The explainer's graphical page. Rendered in a sandboxed iframe (see
-   renderWfExplainView), sized to its content by the parent — so it scrolls
-   with the tab instead of trapping a scrollbar inside itself. */
+/* The explainer's graphical page, in a sandboxed iframe (see
+   renderWfExplainView). It fills what is left under its bar and scrolls its
+   own content, so a short overview reads as a canvas rather than a stamp at
+   the top of an empty tab. */
 .wf-explain-frame {
   width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  border: none;
+  border-top: 1px solid var(--border);
   background: var(--bg);
-  min-height: 240px;
+  flex: 1;
+  min-height: 320px;
   display: block;
 }
+/* Slim toolbar over the drawing — the form toggle, ⤢, and Edit on one row. */
+.wf-explain-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  flex: none;
+}
+.wf-explain-bar .wf-round-nav { margin: 0; }
+/* A document that owns the pane edge-to-edge (the drawing) — the body's own
+   padding would frame it in dead space. */
+/* `auto`, not `hidden`: the frame keeps a floor (min-height), so a pane
+   squeezed below it must be scrollable rather than clip the drawing. */
+.wf-body-flush { padding: 0; display: flex; flex-direction: column; overflow: auto; }
 .wf-pipe-sub { color: var(--accent); font-size: 10px; }
 .wf-pipe-sep { width: 18px; height: 1px; background: var(--fg-dim); flex: none; }
 .wf-pipe-sep.future { opacity: 0.35; }

@@ -5262,6 +5262,22 @@ async function buildWorkflowView(el, project, slug) {
   el.innerHTML = "";
   const info = wfStatusInfo(item.meta.status);
 
+  // The explanation the agent draws is read at a glance, so its ⤢ hands it
+  // the whole tab: everything but the sub-view bar (the way back) steps
+  // aside. Gated on the drawing actually existing — a stale `explainBig`
+  // from another item would otherwise hide the chrome with no ⤢ to undo it,
+  // since the written form has no zoom of its own.
+  const explainWhich =
+    ts.subView === "explainPlan" ? "plan" : ts.subView === "explainDiff" ? "diff" : null;
+  const explainForms =
+    explainWhich === "plan" ? item.planExplain : explainWhich === "diff" ? item.diffExplain : null;
+  const bigDrawing = !!(
+    ts.explainBig &&
+    explainForms &&
+    explainForms.html &&
+    ts.explainView !== "text"
+  );
+
   // ── Header strip ──
   const head = document.createElement("div");
   head.className = "wf-head";
@@ -5341,12 +5357,12 @@ async function buildWorkflowView(el, project, slug) {
     }
     head.appendChild(prBtn);
   }
-  el.appendChild(head);
+  if (!bigDrawing) el.appendChild(head);
 
   // ── Pipeline stepper ──
   // "Where am I, what happened, what's left" at a glance: the mode's main
   // line with done/current/future states, the loop counters as chips.
-  {
+  if (!bigDrawing) {
     const model = wfPipelineModel({
       status: item.meta.status,
       mode: item.meta.mode || "full",
@@ -5461,8 +5477,11 @@ async function buildWorkflowView(el, project, slug) {
 
   // ── Last review round outcome ──
   // The verdict and what (if anything) was published, without opening the
-  // report. Hidden while a round is in flight — the action bar owns that.
-  if (item.lastAgentReview && item.meta.status !== "reviewing") {
+  // report. Hidden while a round is in flight — the action bar owns that —
+  // and on the explanation tabs, where a review's verdict is a line of text
+  // above a document that has nothing to do with it (the Agent reviews tab
+  // is one click away).
+  if (item.lastAgentReview && item.meta.status !== "reviewing" && !explainWhich) {
     const r = item.lastAgentReview;
     const strip = document.createElement("div");
     strip.className = "wf-review-strip";
@@ -5512,10 +5531,12 @@ async function buildWorkflowView(el, project, slug) {
   el.appendChild(body);
 
   // ── Action bar ──
-  const actions = document.createElement("div");
-  actions.className = "wf-actions";
-  el.appendChild(actions);
-  renderWfActions(actions, el, item);
+  if (!bigDrawing) {
+    const actions = document.createElement("div");
+    actions.className = "wf-actions";
+    el.appendChild(actions);
+    renderWfActions(actions, el, item);
+  }
 
   renderWfSubView(body, el, item, ts);
 }
@@ -7806,13 +7827,15 @@ async function renderWfExplainView(body, root, item, ts, which) {
   }
   body.innerHTML = "";
 
-  const caption = document.createElement("p");
-  caption.className = "wf-doc-caption dim";
-  caption.textContent =
+  // One slim bar, not three stacked rows: the drawing is the content here,
+  // and a caption explaining what an explanation is spent a fifth of the
+  // pane saying what the tab label already says. It rides the bar's tooltip.
+  const bar = document.createElement("div");
+  bar.className = "wf-explain-bar";
+  bar.title =
     which === "plan"
-      ? "What this plan is going to do, drawn before any of it exists — by the ◫ Explain plan round. It judges nothing and changes nothing but this document."
-      : "What this change actually does — by the ◫ Explain changes round. It judges nothing and changes nothing but this document.";
-  body.appendChild(caption);
+      ? "What this plan is going to do, drawn before any of it exists — written by the ◫ Explain plan round. It judges nothing and changes nothing but this document."
+      : "What this change actually does — written by the ◫ Explain changes round. It judges nothing and changes nothing but this document.";
 
   // Both forms exist: one toggle, because they answer the same question at
   // two altitudes and the reader picks.
@@ -7832,11 +7855,26 @@ async function renderWfExplainView(body, root, item, ts, which) {
       };
       seg.appendChild(b);
     }
-    body.appendChild(seg);
+    bar.appendChild(seg);
+  }
+  bar.appendChild(Object.assign(document.createElement("span"), { className: "spacer" }));
+
+  // The drawing is the one document read at a glance, so it can take the
+  // whole tab: header, pipeline stepper and action bar step aside.
+  if (view === "graphic") {
+    const zoom = document.createElement("button");
+    zoom.className = "icon-btn";
+    zoom.textContent = ts.explainBig ? "⤡" : "⤢";
+    zoom.title = ts.explainBig
+      ? "Back to the item view"
+      : "Fill the tab with the drawing — hides the header, the pipeline and the actions";
+    zoom.onclick = () => {
+      ts.explainBig = !ts.explainBig;
+      buildWorkflowView(root, project, slug);
+    };
+    bar.appendChild(zoom);
   }
 
-  const tools = document.createElement("div");
-  tools.className = "wf-doc-tools";
   const doc = view === "graphic" ? htmlDoc : mdDoc;
   const edit = document.createElement("button");
   edit.className = "icon-btn wide";
@@ -7847,8 +7885,8 @@ async function renderWfExplainView(body, root, item, ts, which) {
       ev.clientX,
       ev.clientY
     );
-  tools.appendChild(edit);
-  body.appendChild(tools);
+  bar.appendChild(edit);
+  body.appendChild(bar);
 
   if (!text.trim()) {
     body.insertAdjacentHTML(
@@ -7861,25 +7899,16 @@ async function renderWfExplainView(body, root, item, ts, which) {
   }
 
   if (view === "graphic") {
+    // The frame fills the pane and scrolls its own content. Measuring the
+    // page and growing the frame to fit left a short drawing — the fifteen
+    // second overview, which is the whole point of the form — as a stamp at
+    // the top of an empty tab.
+    body.classList.add("wf-body-flush");
     const frame = document.createElement("iframe");
     frame.className = "wf-explain-frame";
-    // No allow-scripts: the page is inert markup. Same-origin so the height
-    // can be measured below.
+    // No allow-scripts: the page is inert markup.
     frame.setAttribute("sandbox", "allow-same-origin");
     frame.srcdoc = wfExplainFrameDoc(text);
-    frame.onload = () => {
-      try {
-        const d = frame.contentDocument;
-        const h = Math.max(
-          d.body.scrollHeight,
-          d.documentElement.scrollHeight,
-          240
-        );
-        frame.style.height = `${h + 24}px`;
-      } catch {
-        frame.style.height = "70vh"; // measuring failed; give it a page
-      }
-    };
     body.appendChild(frame);
     return;
   }

@@ -289,6 +289,24 @@ test("the action zones say which of them moves the item", () => {
   assert.match(APP, /\["item", "Item · back, park, share"/);
 });
 
+test("the drawing can take the whole tab, and can always give it back", () => {
+  // ⤢ hides the item header, the pipeline stepper and the action bar. The zoom
+  // button lives in the graphic form only, so the mode must be gated on that
+  // drawing existing — a stale `explainBig` on an item with no HTML form would
+  // otherwise hide the chrome with no button left to undo it.
+  assert.match(
+    APP,
+    /const bigDrawing = !!\([\s\S]*?ts\.explainBig &&[\s\S]*?explainForms\.html &&[\s\S]*?ts\.explainView !== "text"/
+  );
+  assert.match(APP, /if \(!bigDrawing\) el\.appendChild\(head\)/);
+  assert.match(APP, /if \(!bigDrawing\) \{\s*const model = wfPipelineModel/);
+  assert.match(APP, /if \(!bigDrawing\) \{\s*const actions = document\.createElement/);
+  // The sub-view bar always survives: it is the way out of the mode.
+  assert.match(APP, /bar\.className = "wf-subbar";/);
+  // Nothing above the document restates what the tab label already says.
+  assert.doesNotMatch(APP, /wf-doc-caption dim";\s*caption\.textContent =\s*which === "plan"/);
+});
+
 test("every workflow sub-view renderer is actually reachable", () => {
   // This is the test that was missing: `renderWfPlanView` shipped defined but
   // never called, so the Plan tab still rendered the plain document and the
