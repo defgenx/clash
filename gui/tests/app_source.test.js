@@ -262,6 +262,33 @@ test("applying a review round goes through the change-round flow", () => {
   assert.match(APP, /const seeded = \(wfDrafts\.get\(key\) \|\| ""\)\.trim\(\) \? "" : prefill;/);
 });
 
+test("going back a stage is one mechanism, offered from two places", () => {
+  // Backwards used to be two hardcoded buttons at two stages (pr-draft →
+  // diff-review, Reopen at done); everywhere else the pipeline was one-way.
+  // Both entry points — the Item-zone action and a click on a passed stepper
+  // node — must go through the same helper, and only that helper may call the
+  // command, or one of them ends up skipping its validation.
+  assert.match(APP, /async function wfMoveBack\(item, root, status = null\)/);
+  const calls = [...APP.matchAll(/invoke\("rewind_workflow_item"/g)].length;
+  assert.equal(calls, 1, "only wfMoveBack may invoke rewind_workflow_item");
+  assert.match(APP, /add\(\s*"↩ Move back to…"/);
+  assert.match(APP, /node\.onclick = \(\) => wfMoveBack\(item, el, to\)/);
+  // What may be clicked comes from the shared rule, never from a status list
+  // written out at the call site.
+  assert.match(APP, /wfNodeRewindStatus\(n\.id, back\)/);
+  assert.match(APP, /const back = wfRewindTargets\(item\.meta\.status/);
+  // The stage-specific back button is gone — it was the thing this replaces.
+  assert.doesNotMatch(APP, /"↩ Back to diff review"/);
+});
+
+test("the action zones say which of them moves the item", () => {
+  // Three labeled zones already grouped the buttons; the captions still left
+  // "which one advances this?" to be inferred from the labels.
+  assert.match(APP, /\["step", "This step · stays here"/);
+  assert.match(APP, /\["advance", "Continue · moves the item"/);
+  assert.match(APP, /\["item", "Item · back, park, share"/);
+});
+
 test("every workflow sub-view renderer is actually reachable", () => {
   // This is the test that was missing: `renderWfPlanView` shipped defined but
   // never called, so the Plan tab still rendered the plain document and the

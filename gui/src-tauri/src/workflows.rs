@@ -772,6 +772,50 @@ pub(crate) fn update_workflow_status(
     Ok(meta)
 }
 
+/// Send an item **back** to an earlier parked stage.
+///
+/// Deliberately not `update_workflow_status`: that command validates against
+/// the forward transition table, which is why going back only ever existed
+/// where somebody had hardcoded a button for it. This one validates against
+/// [`WorkflowStatus::rewind_targets`] — the parked stages behind the item, in
+/// its own entry mode — so "back to plan review from a PR" is one move
+/// instead of an impossibility.
+///
+/// It refuses while an agent is working, because the agent owns the item's
+/// files; the GUI offers End round / relaunch there instead.
+#[tauri::command]
+pub(crate) fn rewind_workflow_item(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    status: WorkflowStatus,
+) -> Result<clash::domain::workflow::WorkflowMeta, String> {
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    if !meta.status.rewind_targets(meta.mode).contains(&status) {
+        return Err(if meta.status.is_working() {
+            format!(
+                "an agent is working on this item ({}) — end the round or let it finish first",
+                meta.status
+            )
+        } else {
+            format!(
+                "cannot move this item back to {} from {}",
+                status, meta.status
+            )
+        });
+    }
+    meta.status = status;
+    state
+        .backend
+        .write_workflow_meta(&project, &slug, &meta)
+        .map_err(e2s)?;
+    seed_local(&state, &project, &slug, status);
+    Ok(meta)
+}
+
 /// Upsert an annotation (by id; empty id = new). The backend owns hashing:
 /// `line_content_hash` is always recomputed from `line_content` here, so
 /// there is exactly one hash implementation (FNV-1a in the core).

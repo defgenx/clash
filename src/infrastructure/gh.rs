@@ -413,7 +413,7 @@ pub fn pr_comment(dir: &Path, number: u64, body: &str) -> Result<(), GhError> {
     }
 }
 
-/// One review comment from `GET /pulls/{n}/comments` — only the two fields
+/// One review comment from `GET /pulls/{n}/comments` — only the fields
 /// threading needs. GitHub flattens threads: every reply's `in_reply_to_id`
 /// points at the thread's root comment.
 #[derive(serde::Deserialize)]
@@ -422,25 +422,97 @@ struct ReviewComment {
     id: u64,
     #[serde(default)]
     in_reply_to_id: Option<u64>,
+    #[serde(default)]
+    user: CommentUser,
 }
 
-/// Pure: count review-comment threads nobody has replied to yet — root
-/// comments (no `in_reply_to_id`) with no comment pointing back at them.
-/// This matches the `respond-pr-comments` round's notion of "still
-/// unanswered", so the count tells the human whether such a round has work.
-pub fn count_unanswered_review_comments(json: &str) -> Result<u64, GhError> {
+#[derive(Default, serde::Deserialize)]
+struct CommentUser {
+    #[serde(default)]
+    login: String,
+}
+
+/// Pure: count review-comment threads that are waiting on **`viewer`** — the
+/// threads whose most recent comment was written by somebody else.
+///
+/// "Whose turn is it" is the only definition that matches what a
+/// `respond-pr-comments` round can actually do, and getting it wrong is not
+/// cosmetic: counting every replyless root instead counted *clash's own
+/// posted findings*, so an item whose review round had published seven line
+/// comments advertised "Answer 7 PR comments", spent a session, and the
+/// reviewer correctly answered none of them — they were its own.
+///
+/// The last-comment rule also fixes the reverse case for free: a thread the
+/// viewer opened and a reviewer replied to *is* waiting on them, even though
+/// its root has a reply.
+///
+/// `viewer` is `None` when `gh` could not say who is authenticated; the count
+/// then falls back to replyless roots, which at least never invents work that
+/// someone else already answered.
+pub fn count_unanswered_review_comments(json: &str, viewer: Option<&str>) -> Result<u64, GhError> {
     let comments: Vec<ReviewComment> =
         serde_json::from_str(json.trim()).map_err(|e| GhError::Parse(e.to_string()))?;
-    let replied: std::collections::HashSet<u64> =
-        comments.iter().filter_map(|c| c.in_reply_to_id).collect();
-    Ok(comments
+    let Some(viewer) = viewer.map(str::trim).filter(|v| !v.is_empty()) else {
+        let replied: std::collections::HashSet<u64> =
+            comments.iter().filter_map(|c| c.in_reply_to_id).collect();
+        return Ok(comments
+            .iter()
+            .filter(|c| c.in_reply_to_id.is_none() && !replied.contains(&c.id))
+            .count() as u64);
+    };
+    // Threads in the order the API reports them (ascending creation), so the
+    // last entry per thread is its most recent comment.
+    let mut last_author: std::collections::HashMap<u64, &str> = std::collections::HashMap::new();
+    let mut order: Vec<u64> = Vec::new();
+    for c in &comments {
+        let thread = c.in_reply_to_id.unwrap_or(c.id);
+        if last_author.insert(thread, c.user.login.as_str()).is_none() {
+            order.push(thread);
+        }
+    }
+    Ok(order
         .iter()
-        .filter(|c| c.in_reply_to_id.is_none() && !replied.contains(&c.id))
+        .filter(|t| {
+            last_author
+                .get(*t)
+                .is_some_and(|a| !a.eq_ignore_ascii_case(viewer))
+        })
         .count() as u64)
 }
 
-/// Unanswered review-comment count for PR `number`, via
-/// `gh api repos/{owner}/{repo}/pulls/<n>/comments`. The placeholders resolve
+/// Pure: the `login` from `gh api user`.
+pub fn parse_viewer_login(json: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct User {
+        #[serde(default)]
+        login: String,
+    }
+    let user: User = serde_json::from_str(json.trim()).ok()?;
+    let login = user.login.trim();
+    (!login.is_empty()).then(|| login.to_string())
+}
+
+/// Who `gh` is authenticated as, for "is this thread waiting on me".
+///
+/// Memoized for the life of the process: it is one more subprocess on a path
+/// that already polls several PRs, and the answer only changes if the user
+/// re-authenticates as somebody else — at which point a restart is the fix.
+/// A failure caches as `None` rather than retrying every poll.
+pub fn viewer_login(dir: &Path) -> Option<String> {
+    static VIEWER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    VIEWER
+        .get_or_init(|| {
+            let output = run(dir, &["api", "user"]).ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            parse_viewer_login(&String::from_utf8_lossy(&output.stdout))
+        })
+        .clone()
+}
+
+/// Count of this PR's review-comment threads waiting on the authenticated
+/// user, via `gh api repos/{owner}/{repo}/pulls/<n>/comments`. The placeholders resolve
 /// from `dir`'s remotes; an explicit `repo` (`owner/repo`) replaces them —
 /// a linked PR's repository is not the one `dir` points at. One page of 100 —
 /// the count is advisory (a button label), not an audit.
@@ -458,7 +530,10 @@ pub fn pr_unanswered_review_comments(
     };
     let output = run(dir, &["api", &path])?;
     if output.status.success() {
-        count_unanswered_review_comments(&String::from_utf8_lossy(&output.stdout))
+        count_unanswered_review_comments(
+            &String::from_utf8_lossy(&output.stdout),
+            viewer_login(dir).as_deref(),
+        )
     } else {
         Err(GhError::Command(
             String::from_utf8_lossy(&output.stderr).trim().to_string(),
@@ -626,27 +701,77 @@ mod tests {
     }
 
     #[test]
-    fn unanswered_counts_only_replyless_roots() {
-        // Two roots, one replied to (GitHub points replies at the thread root),
-        // plus fields the parser must ignore.
+    fn unanswered_counts_threads_waiting_on_the_viewer() {
+        // Three threads: one the viewer already had the last word in (their
+        // own published finding, nobody replied), one a reviewer opened and
+        // nobody answered, one the viewer answered.
         let json = r#"[
-            {"id": 1, "body": "root, answered", "user": {"login": "alice"}},
-            {"id": 2, "in_reply_to_id": 1, "body": "the answer"},
-            {"id": 3, "body": "root, unanswered"}
+            {"id": 1, "body": "our own line comment", "user": {"login": "me"}},
+            {"id": 2, "body": "please rename this", "user": {"login": "alice"}},
+            {"id": 3, "body": "asked", "user": {"login": "alice"}},
+            {"id": 4, "in_reply_to_id": 3, "body": "done", "user": {"login": "me"}}
         ]"#;
-        assert_eq!(count_unanswered_review_comments(json).unwrap(), 1);
-        // A second reply on the same thread changes nothing.
-        let json = r#"[
-            {"id": 1}, {"id": 2, "in_reply_to_id": 1}, {"id": 4, "in_reply_to_id": 1}
-        ]"#;
-        assert_eq!(count_unanswered_review_comments(json).unwrap(), 0);
-        assert_eq!(count_unanswered_review_comments("[]").unwrap(), 0);
-        // An explicit null reply-id is a root, same as an absent one.
         assert_eq!(
-            count_unanswered_review_comments(r#"[{"id": 9, "in_reply_to_id": null}]"#).unwrap(),
+            count_unanswered_review_comments(json, Some("me")).unwrap(),
             1
         );
-        assert!(count_unanswered_review_comments("not json").is_err());
+        // Case is GitHub's business, not ours.
+        assert_eq!(
+            count_unanswered_review_comments(json, Some("ME")).unwrap(),
+            1
+        );
+        // The exact regression: a round that published its findings as line
+        // comments must not read as work waiting for an answer.
+        let ours = r#"[
+            {"id": 1, "user": {"login": "me"}},
+            {"id": 2, "user": {"login": "me"}},
+            {"id": 3, "user": {"login": "me"}}
+        ]"#;
+        assert_eq!(
+            count_unanswered_review_comments(ours, Some("me")).unwrap(),
+            0
+        );
+        // A thread the viewer opened and a reviewer answered is waiting on
+        // them again, even though its root has a reply.
+        let back = r#"[
+            {"id": 1, "user": {"login": "me"}},
+            {"id": 2, "in_reply_to_id": 1, "user": {"login": "alice"}}
+        ]"#;
+        assert_eq!(
+            count_unanswered_review_comments(back, Some("me")).unwrap(),
+            1
+        );
+        assert_eq!(
+            count_unanswered_review_comments("[]", Some("me")).unwrap(),
+            0
+        );
+        assert!(count_unanswered_review_comments("not json", Some("me")).is_err());
+    }
+
+    #[test]
+    fn unanswered_falls_back_to_replyless_roots_without_a_viewer() {
+        // `gh` could not say who we are: count replyless roots, the old rule.
+        let json = r#"[
+            {"id": 1, "user": {"login": "me"}},
+            {"id": 2, "in_reply_to_id": 1, "user": {"login": "alice"}},
+            {"id": 3, "user": {"login": "alice"}}
+        ]"#;
+        assert_eq!(count_unanswered_review_comments(json, None).unwrap(), 1);
+        assert_eq!(
+            count_unanswered_review_comments(json, Some("  ")).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn viewer_login_reads_the_login_field() {
+        assert_eq!(
+            parse_viewer_login(r#"{"login": "octocat", "id": 1}"#).as_deref(),
+            Some("octocat")
+        );
+        assert_eq!(parse_viewer_login(r#"{"login": ""}"#), None);
+        assert_eq!(parse_viewer_login("{}"), None);
+        assert_eq!(parse_viewer_login("not json"), None);
     }
 
     #[test]

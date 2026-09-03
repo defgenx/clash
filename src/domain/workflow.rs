@@ -149,6 +149,59 @@ impl WorkflowStatus {
         matches!(self, Self::Planning | Self::Implementing | Self::Reviewing)
     }
 
+    /// The stages an item may be sent **back** to from here, nearest first.
+    ///
+    /// Going backwards is a normal move — a diff review that reveals the plan
+    /// was wrong, a PR opened too early, a done item that has to be reopened
+    /// three stages up — and it used to exist only as two hardcoded buttons
+    /// (`pr-draft → diff-review`, and Reopen at `done`), so from anywhere else
+    /// the pipeline was a one-way street.
+    ///
+    /// Only the **parked** stages are offered. `planning`, `implementing` and
+    /// `reviewing` mean "an agent of ours is writing this item right now", so
+    /// they are not somewhere a human can move an item *to*: sending it there
+    /// would claim an agent that does not exist. For the same reason the list
+    /// is empty while one of them is the current status — end the round or let
+    /// the agent finish first, which the GUI already offers.
+    ///
+    /// `changes-requested` is left out too, in the other direction: it is a
+    /// queued change round, and the way to queue one is to request changes
+    /// (which records the note and freezes the snapshot). A bare status move
+    /// there would leave an agent with nothing to read.
+    pub fn rewind_targets(&self, mode: WorkflowMode) -> Vec<WorkflowStatus> {
+        use WorkflowStatus::*;
+        if self.is_working() || *self == Unknown {
+            return Vec::new();
+        }
+        // The parked main line, in pipeline order. `Done` is not a rewind
+        // target — finishing an item is an approval, not a move backwards.
+        const LINE: [WorkflowStatus; 5] = [Draft, PlanReview, DiffReview, PrDraft, PrReady];
+        // Where this status sits on that line. The loop states anchor to the
+        // stage whose artifact they produce, matching the GUI's stepper.
+        let at = match self {
+            Draft => 0,
+            PlanReview => 1,
+            ChangesRequested | DiffReview => 2,
+            PrDraft => 3,
+            PrReady => 4,
+            // A finished item may go back anywhere the mode has.
+            Done | Abandoned => LINE.len(),
+            Planning | Implementing | Reviewing | Unknown => return Vec::new(),
+        };
+        LINE[..at]
+            .iter()
+            .rev()
+            .copied()
+            .filter(|s| match s {
+                // No plan phase means no plan stages to go back to, and only
+                // the full pipeline ever had a `draft`.
+                Draft => mode.has_plan_phase() && !matches!(mode, WorkflowMode::FromPlan),
+                PlanReview => mode.has_plan_phase(),
+                _ => true,
+            })
+            .collect()
+    }
+
     /// May an *explain* round run from here?
     ///
     /// Wider than `can_request_review` on purpose: the explainer judges
@@ -905,6 +958,92 @@ pub struct AnnotationsFile {
 mod tests {
     use super::*;
 
+    #[test]
+    fn rewind_targets_offer_the_parked_stages_behind_you() {
+        use WorkflowStatus::*;
+        // Nearest first: the common move is one stage back.
+        assert_eq!(
+            PrReady.rewind_targets(WorkflowMode::Full),
+            vec![PrDraft, DiffReview, PlanReview, Draft]
+        );
+        assert_eq!(
+            DiffReview.rewind_targets(WorkflowMode::Full),
+            vec![PlanReview, Draft]
+        );
+        // A finished item may go back anywhere — reopening three stages up is
+        // exactly what "go back at any point" means.
+        assert_eq!(
+            Done.rewind_targets(WorkflowMode::Full),
+            vec![PrReady, PrDraft, DiffReview, PlanReview, Draft]
+        );
+        assert_eq!(
+            Abandoned.rewind_targets(WorkflowMode::Full),
+            Done.rewind_targets(WorkflowMode::Full)
+        );
+        // The first stage of each mode has nothing behind it.
+        assert!(Draft.rewind_targets(WorkflowMode::Full).is_empty());
+        assert!(PlanReview.rewind_targets(WorkflowMode::FromPlan).is_empty());
+        assert!(DiffReview
+            .rewind_targets(WorkflowMode::ReviewOnly)
+            .is_empty());
+        // Mode filters: no `draft` without a planning agent, no plan stages at
+        // all in review-only.
+        assert_eq!(
+            DiffReview.rewind_targets(WorkflowMode::FromPlan),
+            vec![PlanReview]
+        );
+        assert_eq!(
+            PrDraft.rewind_targets(WorkflowMode::ReviewOnly),
+            vec![DiffReview]
+        );
+        // A queued change round anchors where its fix is heading.
+        assert_eq!(
+            ChangesRequested.rewind_targets(WorkflowMode::Full),
+            vec![PlanReview, Draft]
+        );
+    }
+
+    #[test]
+    fn nothing_rewinds_while_an_agent_is_working() {
+        // Sending an item to a parked stage under an agent's feet would take
+        // the files out from under it; the GUI offers End round / relaunch.
+        for st in [
+            WorkflowStatus::Planning,
+            WorkflowStatus::Implementing,
+            WorkflowStatus::Reviewing,
+            WorkflowStatus::Unknown,
+        ] {
+            assert!(st.rewind_targets(WorkflowMode::Full).is_empty(), "{st}");
+        }
+    }
+
+    #[test]
+    fn no_rewind_target_is_a_working_or_terminal_stage() {
+        // The list is what a human may move an item *to*: an agent-owned
+        // stage would claim an agent that does not exist, and `done` is an
+        // approval rather than a move backwards.
+        for st in [
+            WorkflowStatus::PlanReview,
+            WorkflowStatus::DiffReview,
+            WorkflowStatus::PrDraft,
+            WorkflowStatus::PrReady,
+            WorkflowStatus::Done,
+            WorkflowStatus::Abandoned,
+            WorkflowStatus::ChangesRequested,
+        ] {
+            for mode in [
+                WorkflowMode::Full,
+                WorkflowMode::FromPlan,
+                WorkflowMode::ReviewOnly,
+            ] {
+                for t in st.rewind_targets(mode) {
+                    assert!(!t.is_working(), "{st} → {t}");
+                    assert!(!t.is_terminal(), "{st} → {t}");
+                    assert_ne!(t, st, "{st} → itself");
+                }
+            }
+        }
+    }
     #[test]
     fn explaining_is_gated_only_by_another_agent_working() {
         use WorkflowStatus::*;

@@ -223,25 +223,64 @@ instead.
 - **`respond-pr-comments`** — read the review comments of **the round's PR**
   (the kickoff's `PR:` field, else the primary `meta.pr.url`) via
   `gh api /repos/{owner}/{repo}/pulls/<n>/comments` and
-  `gh pr view <n> --json reviews,comments`, and for each one still unanswered:
-  address it if it is a trivial fix under the rule above, otherwise mirror it
-  into `annotations.json` as an `author: "agent"` annotation so it enters the
-  human's triage queue. Interactive rounds walk the human through each comment
-  with the proposed action and reply text (checkpoint 3) — they decide what
-  gets fixed, what gets mirrored, and what gets said in their PR. Reply on
-  the PR thread with what you did — one short reply per comment, pointing at
-  the commit when you fixed it. Never resolve a thread you did not fix, and
-  never argue: if you disagree, say so once, briefly, and record it as a
-  finding for the human to arbitrate.
+  `gh pr view <n> --json reviews,comments`, and answer the ones waiting on
+  you.
+
+  **What "unanswered" means here, exactly.** GitHub flattens threads: every
+  reply carries `in_reply_to_id` pointing at the thread's root. A thread is
+  waiting on you when **its most recent comment was written by somebody other
+  than the authenticated user** (`gh api user --jq .login`). Two consequences,
+  and both have bitten:
+
+  - A comment **you** posted with no reply is *not* waiting on you — that
+    includes the line comments a previous `pr-comments` round of this same
+    pipeline published. Answering your own findings is not a job. A round that
+    treats them as work either replies to itself or reports "nothing to do"
+    with a number in the label that says otherwise.
+  - A thread you *did* reply to is waiting on you again as soon as somebody
+    answers back. The last word is what decides, not whether the root has a
+    reply.
+
+  clash's own count (the "Answer N PR comments" button) uses that same rule, so
+  agreeing with it is not a nicety: it is what makes the number you were
+  launched with mean something.
+
+  For each thread waiting on you: address it if it is a trivial fix under the
+  rule above, otherwise mirror it into `annotations.json` as an
+  `author: "agent"` annotation so it enters the human's triage queue.
+  Interactive rounds walk the human through each comment with the proposed
+  action and reply text (checkpoint 3) — they decide what gets fixed, what
+  gets mirrored, and what gets said in their PR.
+
+  **Reply *in the thread*, with the replies endpoint:**
+
+  ```
+  gh api --method POST \
+    /repos/{owner}/{repo}/pulls/<n>/comments/<root_comment_id>/replies \
+    -f body="Fixed in abc1234 — <one line>."
+  ```
+
+  `<root_comment_id>` is the thread root's `id` (the `in_reply_to_id` of its
+  replies, or the comment's own `id` when it is the root). `gh pr comment` is
+  **not** a reply: it posts a detached issue comment on the PR, so the thread
+  still shows no answer and clash still counts it as waiting on you. That is
+  the difference between "the round replied" and "the round appeared to do
+  nothing", which is exactly how a silent respond round reads from the
+  outside. One short reply per thread, pointing at the commit when you fixed
+  it. Never resolve a thread you did not fix, and never argue: if you
+  disagree, say so once, briefly, and record it as a finding for the human to
+  arbitrate.
 
   **Fetch the comments twice: once at the start, and again right before you
   finish.** A review round takes long enough that comments routinely arrive
   while you work — a single check at the start silently misses them (this
   happened: a round found "zero comments" on a PR that had two by the time it
   finished). Answer anything the second fetch surfaces. If the final fetch
-  still finds nothing to answer, your report and final message must say so
-  explicitly — and point the human at clash's "Post round N to PR" button if
-  they wanted the findings published (that is `pr-comments`, a different mode).
+  still finds nothing waiting on you, your report and final message must say
+  so explicitly — including *why*, when the PR does have comments that are all
+  your own side of the conversation — and point the human at clash's "Post
+  round N to PR" button if they wanted the findings published (that is
+  `pr-comments`, a different mode).
 
 If `gh` is missing or unauthenticated, do the local half of the work, then say
 clearly in your final message that publishing was skipped and why. Never fail
@@ -334,9 +373,13 @@ reads as "silently did nothing". State exactly what left the machine, or that
 nothing did and why:
 
 - `local` round → `- Nothing — local round by request.`
-- a PR mode that had nothing to do → say so and when you checked, e.g.
-  `- Publish was respond-pr-comments, but the PR had no unanswered review
-  comments at 17:25 — nothing posted. Findings are in annotations.json.`
+- a PR mode that had nothing to do → say so, when you checked, and why, e.g.
+  `- Publish was respond-pr-comments; at 17:25 no thread on PR #41 was waiting
+  on a reply from us (its 7 threads are this pipeline's own round-2 line
+  comments, none replied to). Nothing posted. Findings are in
+  annotations.json.`
+- a respond round that did answer → `- Replied in 3 threads on PR #41 (2
+  fixed in abc1234, 1 mirrored as r5-2).`
 - `gh` failed → `- Publishing skipped: gh not authenticated.`
 - a draft PR → `- Posted 3 line comments and a summary comment to PR #41 (a
   draft, so not as a review).`

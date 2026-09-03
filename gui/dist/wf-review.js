@@ -133,11 +133,20 @@
     return null;
   }
 
-  /// Label for the "Answer PR comments" action. `count` is the unanswered
-  /// thread count from the last PR refresh — null/undefined when never
-  /// fetched (gh unavailable, no refresh yet), in which case the label
-  /// stays generic rather than claiming a number it doesn't have.
+  /// Label for the "Answer PR comments" action. `count` is the number of
+  /// threads waiting on *you* at the last PR refresh — null/undefined when it
+  /// was never fetched (gh unavailable, no refresh yet), in which case the
+  /// label stays generic rather than claiming a number it doesn't have.
+  ///
+  /// A known zero says so out loud. The count and the round used to disagree
+  /// about what "unanswered" meant — clash counted every replyless thread,
+  /// including the line comments its own review round had published, so the
+  /// button offered to answer seven comments and the reviewer correctly
+  /// answered none of them: they were its own. The count now means "waiting
+  /// on you" (`count_unanswered_review_comments`), and a button with nothing
+  /// to do must not read like a button that has work.
   function answerCommentsLabel(count) {
+    if (count === 0) return "Answer PR comments · none waiting";
     if (count === 1) return "Answer 1 PR comment";
     if (typeof count === "number" && count > 1) return `Answer ${count} PR comments`;
     return "Answer PR comments";
@@ -148,19 +157,31 @@
   /// stays: comments arrive between polls, and the agent re-fetches).
   function answerCommentsTitle(count, prName) {
     const base =
-      `Spend tokens: launch an agent to read ${prName}'s review comments, ` +
+      `Spends tokens: launches an agent to read ${prName}'s review comments, ` +
       "fix the trivial ones, and reply on each thread. Non-trivial ones land " +
       "in this item's comment queue.";
-    if (count === 0) return `${base} None unanswered at last check.`;
+    if (count === 0)
+      return (
+        `No thread on ${prName} is waiting on a reply from you (last check). ` +
+        "Your own comments — including line comments an agent review round " +
+        "published — are not waiting on you. Launch it anyway to re-check " +
+        "GitHub now, or use \u201cPost round to PR\u201d to publish this item's findings."
+      );
     return base;
   }
 
   /// Confirm copy before launching a respond round.
   function answerCommentsConfirm(prName, count) {
+    if (count === 0)
+      return (
+        `Nothing on ${prName} was waiting on a reply from you at the last ` +
+        "check. Launch an agent anyway to re-check GitHub now? It spends " +
+        "tokens, and a round that finds nothing to answer says so and stops."
+      );
     const what =
       typeof count === "number" && count > 0
-        ? `its ${count} unanswered review comment${count > 1 ? "s" : ""}`
-        : "its review comments";
+        ? `its ${count} review comment${count > 1 ? "s" : ""} waiting on you`
+        : "the review comments waiting on you";
     return (
       `Launch an agent to read ${prName} and answer ${what}? ` +
       "It fixes trivial findings with commits, replies on each thread, and " +

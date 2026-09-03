@@ -3201,6 +3201,7 @@ fn main() {
             workflows::create_workflow_review,
             workflows::list_repo_branches,
             workflows::update_workflow_status,
+            workflows::rewind_workflow_item,
             workflows::save_workflow_annotation,
             workflows::set_workflow_annotation_status,
             workflows::delete_workflow_annotation,

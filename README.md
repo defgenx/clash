@@ -750,11 +750,22 @@ a per-item **PR skill** override (`none` disables), the default **interaction
 mode** for that item's agent rounds (ask at start / interactive / autonomous,
 pre-selected in the review composer and applied to one-click launches) — plus
 the item's facts (mode, repo, branch, base, worktree). The action bar below
-every item is organized into three labeled zones — **This step** (actions on
-the current artifact: reviews, explain, open the PR or the session),
-**Continue** (the decisions that advance the pipeline) and **Item**
-(lifecycle: abandon, reopen, back) — so which button moves the workflow
-forward is always legible.
+every item is organized into three labeled zones whose captions carry the rule
+— **This step · stays here** (work on the current artifact: reviews, explain,
+open the PR or the session — none of these moves the item), **Continue · moves
+the item** (the decisions that advance the pipeline) and **Item · back, park,
+share** — so which button moves the workflow forward is legible before you read
+a single label.
+
+**Going back is a move like any other.** From any parked stage — and from a
+finished or abandoned item — **↩ Move back to…** lists the stages behind this
+one (in its own entry mode) with a line saying what each is for, and clicking a
+**passed stage in the pipeline stepper** does the same thing in one click.
+Nothing is deleted or rewritten: the plan, the diff, your annotations, the PR
+and every recorded round stay exactly where they are — only the stage moves, and
+no agent runs. The three agent-owned stages are deliberately not destinations
+(you cannot move an item *into* an agent's hands) and while one of them is
+running there is nothing to move: **End round** or let the agent finish first.
 
 **Applying a round's findings** is the *Request changes* step — a review never
 applies itself, and approving doesn't either (approval means "ship it as it
@@ -766,10 +777,16 @@ note — which is exactly the next round's prompt.
 Answering the PR's existing review comments is a different job and gets its own
 button: **⇄ Answer PR comments** (on any reviewable state with a PR) launches an
 agent that reads every review thread, fixes the trivial ones with commits,
-replies on each thread, and mirrors the rest into the item's comment queue for
-your triage. clash polls the PR while the item is on screen and puts the
-unanswered-thread count right on the button (**⇄ Answer 3 PR comments**), so you
-can see there's work waiting without opening GitHub. Code findings
+replies on each thread (in the thread, through GitHub's replies endpoint — a
+detached PR comment is not an answer), and mirrors the rest into the item's
+comment queue for your triage. clash polls the PR while the item is on screen
+and puts the count of threads **waiting on you** right on the button
+(**⇄ Answer 3 PR comments**), so you can see there's work waiting without
+opening GitHub — and when nothing is, the button says so
+(**⇄ Answer PR comments · none waiting**) instead of sending an agent to answer
+nothing. "Waiting on you" means the thread's most recent comment is somebody
+else's: your own comments are not work, *including* the line comments a previous
+review round of this same item published. Code findings
 come back as **real diff annotations** (graded `BLOCKER`/`RISK`/`GAP`/`NIT`,
 authored `agent`) that you triage in the Diff tab exactly like your own, so one
 *Request changes* turns them into the next round of work; plan findings and the

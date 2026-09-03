@@ -104,7 +104,64 @@
     return { nodes: out, chips, dead: status === "abandoned" };
   }
 
-  const api = { wfPipelineNodes, wfPipelineAnchor, wfPipelineModel };
+  /// The stages this item may be sent **back** to, nearest first.
+  ///
+  /// Mirrors `WorkflowStatus::rewind_targets` in src/domain/workflow.rs, which
+  /// is the authority — the command validates there, this decides what the
+  /// picker and the stepper offer. Only the *parked* stages are candidates:
+  /// the three agent-owned ones (`planning`, `implementing`, `reviewing`) are
+  /// not somewhere a human can move an item to, and `changes-requested` is
+  /// queued by requesting changes, which records the note the agent reads.
+  function wfRewindTargets(status, mode) {
+    const LINE = ["draft", "plan-review", "diff-review", "pr-draft", "pr-ready"];
+    const at = {
+      draft: 0,
+      "plan-review": 1,
+      "changes-requested": 2,
+      "diff-review": 2,
+      "pr-draft": 3,
+      "pr-ready": 4,
+      done: LINE.length,
+      abandoned: LINE.length,
+    }[status];
+    if (at == null) return []; // planning / implementing / reviewing / unknown
+    const hasPlan = mode !== "review-only";
+    return LINE.slice(0, at)
+      .reverse()
+      .filter((s) =>
+        s === "draft" ? hasPlan && mode !== "from-plan" : s === "plan-review" ? hasPlan : true
+      );
+  }
+
+  /// One line about what a stage *is*, for the "move back to…" picker. A bare
+  /// status name is a label; this is the reason to pick it.
+  function wfStageBlurb(status) {
+    return {
+      draft: "Nothing written yet — planning starts from scratch",
+      "plan-review": "Read and revise plan.md before any code is written",
+      "diff-review": "Review the code as it stands, comment on lines, request changes",
+      "pr-draft": "The draft PR is the thing under validation",
+      "pr-ready": "The PR is open for review",
+    }[status] || "";
+  }
+
+  /// The status a stepper node stands for, when clicking it can move the item
+  /// there. The two agent nodes have no parked equivalent (you cannot move an
+  /// item *into* an agent's hands), and the PR node covers two statuses — it
+  /// stands for whichever of them is actually behind the item.
+  function wfNodeRewindStatus(nodeId, targets) {
+    if (nodeId === "pr") return targets.find((t) => t === "pr-draft" || t === "pr-ready") || null;
+    return targets.includes(nodeId) ? nodeId : null;
+  }
+
+  const api = {
+    wfPipelineNodes,
+    wfPipelineAnchor,
+    wfPipelineModel,
+    wfRewindTargets,
+    wfStageBlurb,
+    wfNodeRewindStatus,
+  };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else Object.assign(window, api);

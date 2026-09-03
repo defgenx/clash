@@ -266,6 +266,23 @@ Publish rules that earned their place:
   right before finishing**. A round takes long enough that comments routinely
   arrive mid-round; a single early check reported "zero comments" on a PR that
   had two by the time the round published.
+- **"Unanswered" means "waiting on the authenticated user"** — a thread whose
+  *most recent* comment is somebody else's. Both halves of that matter, and
+  clash and the skill must agree on it or the button lies. Counting replyless
+  thread roots instead counted the line comments clash's own `pr-comments`
+  rounds had published: an item advertised "Answer 7 PR comments", spent a
+  session, and the reviewer correctly answered none of them — they were its
+  own. The other half is the reverse case: a thread the user already replied
+  to is waiting on them again the moment somebody answers back, even though
+  its root has a reply. `gh::count_unanswered_review_comments(json, viewer)`
+  is the implementation (viewer from `gh api user`, memoized per process;
+  unknown viewer falls back to replyless roots), and the reviewer skill states
+  the same rule.
+- **A reply goes in the thread**, through
+  `POST /repos/{owner}/{repo}/pulls/<n>/comments/<root_id>/replies`.
+  `gh pr comment` posts a *detached* issue comment: the thread still shows no
+  answer and still counts as waiting, which is how a respond round that did
+  its reading can look like a round that did nothing.
 - Publishing is **recoverable after the fact**: `publish_workflow_review`
   (GUI: "Post round N to PR") posts the latest `agent-review.md` round as one
   PR comment via `gh pr comment`, so sharing an already-written round never

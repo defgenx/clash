@@ -5356,18 +5356,28 @@ async function buildWorkflowView(el, project, slug) {
     });
     const strip = document.createElement("div");
     strip.className = "wf-pipeline" + (model.dead ? " dead" : "");
+    // A stage you have already passed is clickable: the stepper is where you
+    // look to ask "where am I", so it is where you reach when the answer is
+    // "further along than I should be". Only the parked stages behind the item
+    // qualify — see wfRewindTargets.
+    const back = wfRewindTargets(item.meta.status, item.meta.mode || "full");
     model.nodes.forEach((n, i) => {
       if (i) {
         const sep = document.createElement("span");
         sep.className = "wf-pipe-sep" + (n.state === "future" ? " future" : "");
         strip.appendChild(sep);
       }
+      const to = n.state === "done" ? wfNodeRewindStatus(n.id, back) : null;
       const node = document.createElement("span");
-      node.className = `wf-pipe-node ${n.state}`;
+      node.className = `wf-pipe-node ${n.state}${to ? " back" : ""}`;
       node.innerHTML =
         `<span class="wf-pipe-dot">${n.state === "done" ? "✓" : ""}</span>` +
         `<span class="wf-pipe-label">${escapeHtml(n.label)}</span>` +
         (n.sub ? `<span class="wf-pipe-sub">${escapeHtml(n.sub)}</span>` : "");
+      if (to) {
+        node.title = `Move this item back to ${wfStatusInfo(to).label} — ${wfStageBlurb(to)}. Nothing is deleted; no agent, no tokens.`;
+        node.onclick = () => wfMoveBack(item, el, to);
+      }
       strip.appendChild(node);
     });
     if (model.chips.length) {
@@ -6305,6 +6315,44 @@ async function wfTransition(item, root, status) {
   }
 }
 
+/// Move an item **back** to an earlier stage.
+///
+/// Backwards is a normal move — a diff review that shows the plan was wrong, a
+/// PR opened a stage too early, a done item that needs another look — and it
+/// used to exist only as two hardcoded buttons (pr-draft → diff-review, and
+/// Reopen on a finished item). From anywhere else the pipeline was a one-way
+/// street, and the only way back was editing meta.json by hand.
+///
+/// The picker names the stage *and* what it is for: "pr-draft" is a label,
+/// "the draft PR is the thing under validation" is a reason to pick it.
+/// Nothing is deleted or rewritten — the plan, the diff, the annotations, the
+/// PR and every recorded round stay exactly where they are; only the stage
+/// moves, which is why this needs no confirmation beyond the pick.
+async function wfMoveBack(item, root, status = null) {
+  const targets = wfRewindTargets(item.meta.status, item.meta.mode || "full");
+  if (!targets.length) return;
+  let pick = status;
+  if (!pick) {
+    pick = await uiListChoice({
+      message: `Move "${item.meta.title || item.slug}" back to which stage?`,
+      items: targets.map((t) => ({
+        label: wfStatusInfo(t).label,
+        detail: wfStageBlurb(t),
+        value: t,
+      })),
+    });
+  }
+  if (!pick) return;
+  try {
+    await invoke("rewind_workflow_item", { project: item.project, slug: item.slug, status: pick });
+    flashToast(`Moved back to ${wfStatusInfo(pick).label}`);
+    await refreshWorkflows();
+    buildWorkflowView(root, item.project, item.slug);
+  } catch (e) {
+    uiAlert(`Move failed: ${e}`);
+  }
+}
+
 /// In-memory change-request drafts, keyed by item.
 ///
 /// Guards the real failure: a stray Esc or backdrop click destroying a paragraph
@@ -6771,13 +6819,17 @@ function renderWfActions(bar, root, item) {
   // the decisions that ADVANCE the pipeline, and item-lifecycle actions.
   // Mixed together, "which button moves this forward?" was a guessing game.
   const zones = {};
-  for (const [key, label] of [
-    ["step", "This step"],
-    ["advance", "Continue"],
-    ["item", "Item"],
+  // The captions carry the *rule* of the zone, not just its name: "which of
+  // these moves the item?" was still a guess when they read "This step" and
+  // "Continue" — three words each answers it before any button is read.
+  for (const [key, label, why] of [
+    ["step", "This step · stays here", "Work on the current stage — none of these moves the item"],
+    ["advance", "Continue · moves the item", "The decisions that move this item to its next stage"],
+    ["item", "Item · back, park, share", "The item as a whole: send it back a stage, park it, share it"],
   ]) {
     const g = document.createElement("div");
     g.className = `wf-actions-group wf-actions-${key}`;
+    g.title = why;
     const cap = document.createElement("span");
     cap.className = "wf-actions-caption";
     cap.textContent = label;
@@ -7357,14 +7409,6 @@ function renderWfActions(bar, root, item) {
         requestChanges,
         "Open the change-request composer — your note + the open annotations become the next fix round (the agent pushes, so the PR picks up the fixes)"
       );
-      // Names the destination stage; no agent involved. See reviewButton().
-      add(
-        "↩ Back to diff review",
-        "",
-        () => wfTransition(item, root, "diff-review"),
-        "Move this item back to the DIFF REVIEW stage — no agent, no tokens",
-        "item"
-      );
       reviewButton();
       answerCommentsButton();
       postRoundButton();
@@ -7404,10 +7448,10 @@ function renderWfActions(bar, root, item) {
     case "abandoned":
       openPrsButton();
       add(
-        "Reopen",
+        "↩ Reopen at diff review",
         "",
         () => wfTransition(item, root, "diff-review"),
-        "Bring the item back at the DIFF REVIEW stage — no agent, no tokens",
+        "Bring the item back at the DIFF REVIEW stage — no agent, no tokens. Move back to… reopens it at any other stage.",
         "item"
       );
       break;
@@ -7423,10 +7467,30 @@ function renderWfActions(bar, root, item) {
     "item"
   );
 
-  // A zone with no buttons would render as a floating caption.
   // Outside the switch on purpose: "what does this change do" is worth asking
   // at every stage, and per-case calls meant it was missing from five of them.
   explainButton();
+
+  // Going back was two hardcoded buttons at two stages; from everywhere else
+  // the pipeline was a one-way street. Same reason it lives outside the
+  // switch: every parked stage has somewhere behind it, and which stages
+  // those are is one rule (wfRewindTargets), not nine cases.
+  {
+    const back = wfRewindTargets(st, item.meta.mode || "full");
+    if (back.length) {
+      add(
+        "↩ Move back to…",
+        "",
+        () => wfMoveBack(item, root),
+        `Send this item back to an earlier stage — ${back
+          .map((t) => wfStatusInfo(t).label.toLowerCase())
+          .join(", ")}. Nothing is deleted or rewritten; no agent, no tokens.`,
+        "item"
+      );
+    }
+  }
+
+  // A zone with no buttons would render as a floating caption.
 
   for (const { group, btns } of Object.values(zones)) {
     if (!btns.childNodes.length) group.remove();

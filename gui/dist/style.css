@@ -1124,6 +1124,16 @@ html, body, #app {
 .wf-pipe-node.current .wf-pipe-label { color: var(--fg); font-weight: 600; }
 .wf-pipe-node.future .wf-pipe-label,
 .wf-pipe-node.future .wf-pipe-dot { color: var(--fg-dim); opacity: 0.55; }
+/* A passed stage you can send the item back to. Hover-only affordance: the
+   strip's job is to say where you are, and a permanently underlined half of
+   it would read as an error state. */
+.wf-pipe-node.back { cursor: pointer; }
+.wf-pipe-node.back:hover .wf-pipe-label { color: var(--fg); text-decoration: underline; }
+.wf-pipe-node.back:hover .wf-pipe-dot {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
 .wf-pipe-sub { color: var(--accent); font-size: 10px; }
 .wf-pipe-sep { width: 18px; height: 1px; background: var(--fg-dim); flex: none; }
 .wf-pipe-sep.future { opacity: 0.35; }
