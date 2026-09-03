@@ -305,15 +305,26 @@ pub enum ReviewTarget {
     /// The working diff — is the implementation correct?
     Diff,
     /// The working diff again, but to *explain* rather than judge: the round
-    /// writes `structure.md` (the Structure tab) instead of findings.
-    Structure,
+    /// writes the changes explanation (`explain-diff.md` + `.html`) instead of
+    /// findings.
+    ///
+    /// `structure` was this target's original name, kept as a read alias:
+    /// items carry it in `meta.review.target` and in every
+    /// `## Review N — structure` heading already written to `agent-review.md`.
+    #[serde(alias = "structure")]
+    ExplainDiff,
     /// The plan, explained *forward*: what the implementation is going to do,
-    /// with diagrams, written to `blueprint.md` before any of it exists. The
-    /// sibling of `Structure` at the other end of the pipeline — one says what
-    /// a change will do, the other what it did — and the only explain target
-    /// that carries a human decision, because agreeing on the shape of the
-    /// work is worth doing before the work.
-    Blueprint,
+    /// with diagrams, before any of it exists (`explain-plan.md` + `.html`).
+    /// The sibling of [`Self::ExplainDiff`] at the other end of the pipeline —
+    /// one says what a change will do, the other what it did.
+    ///
+    /// `blueprint` was this target's original name, kept as a read alias for
+    /// the same reason as `structure` above. Nothing writes either spelling:
+    /// the feature says "explain" everywhere else — the files, the tabs, the
+    /// actions — and one feature with two vocabularies is how a word the UI
+    /// never uses surfaces in a round heading.
+    #[serde(alias = "blueprint")]
+    ExplainPlan,
     #[serde(other)]
     Unknown,
 }
@@ -323,9 +334,32 @@ impl ReviewTarget {
         match self {
             Self::Plan => "plan",
             Self::Diff => "diff",
-            Self::Structure => "structure",
-            Self::Blueprint => "blueprint",
+            Self::ExplainDiff => "explain-diff",
+            Self::ExplainPlan => "explain-plan",
             Self::Unknown => "unknown",
+        }
+    }
+
+    /// Does this round *explain* rather than judge? Both explainer targets
+    /// answer yes.
+    ///
+    /// A predicate rather than a comparison against one variant: every
+    /// "explainers are different here" site checked `structure` alone, so the
+    /// plan explainer inherited none of them — it counted as a pending review
+    /// (demoting the stage's own Approve and offering to "apply" findings that
+    /// do not exist) and had no round label of its own.
+    pub fn explains(&self) -> bool {
+        matches!(self, Self::ExplainDiff | Self::ExplainPlan)
+    }
+
+    /// Normalize a target string off disk — a `meta.review.target` or an
+    /// `agent-review.md` heading — to its current spelling, so rounds written
+    /// under the old names keep counting toward the same per-target tally.
+    pub fn canonical(raw: &str) -> String {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "structure" => Self::ExplainDiff.as_str().to_string(),
+            "blueprint" => Self::ExplainPlan.as_str().to_string(),
+            other => other.to_string(),
         }
     }
 
@@ -1483,13 +1517,35 @@ mod tests {
             serde_json::to_string(&WorkflowStatus::Reviewing).unwrap(),
             r#""reviewing""#
         );
-        // The explicit explain-round target round-trips.
+        // The explainer targets round-trip under their current names…
         assert_eq!(
-            serde_json::to_string(&ReviewTarget::Structure).unwrap(),
-            r#""structure""#
+            serde_json::to_string(&ReviewTarget::ExplainDiff).unwrap(),
+            r#""explain-diff""#
         );
-        let s: ReviewTarget = serde_json::from_str(r#""structure""#).unwrap();
-        assert_eq!(s, ReviewTarget::Structure);
+        assert_eq!(
+            serde_json::to_string(&ReviewTarget::ExplainPlan).unwrap(),
+            r#""explain-plan""#
+        );
+        // …and still read under the names they were first written with, which
+        // is what stops an item mid-round across an upgrade from losing its
+        // target and re-deriving a *review* where an explanation was asked for.
+        assert_eq!(
+            serde_json::from_str::<ReviewTarget>(r#""structure""#).unwrap(),
+            ReviewTarget::ExplainDiff
+        );
+        assert_eq!(
+            serde_json::from_str::<ReviewTarget>(r#""blueprint""#).unwrap(),
+            ReviewTarget::ExplainPlan
+        );
+        // Both explain; neither judges. Every "explainers are different here"
+        // site asks this, rather than naming one variant and missing the other.
+        assert!(ReviewTarget::ExplainDiff.explains() && ReviewTarget::ExplainPlan.explains());
+        assert!(!ReviewTarget::Plan.explains() && !ReviewTarget::Diff.explains());
+        // Old spellings normalize, so a round written as `structure` counts
+        // toward `explain-diff`'s per-target tally.
+        assert_eq!(ReviewTarget::canonical(" Structure "), "explain-diff");
+        assert_eq!(ReviewTarget::canonical("blueprint"), "explain-plan");
+        assert_eq!(ReviewTarget::canonical("DIFF"), "diff");
         // Unknown on-disk values degrade instead of failing the whole meta read.
         let d: ReviewDepth = serde_json::from_str(r#""paranoid""#).unwrap();
         assert_eq!(d, ReviewDepth::Unknown);

@@ -6019,9 +6019,9 @@ async function wfPrRecovery(item, err, retry) {
 /// call site.
 ///
 /// `focus` is what the round must settle, in the human's words — the
-/// blueprint's "dive deeper into part 3". Absent, a blueprint round inherits
-/// whatever focus the human last recorded, so sending one back for another
-/// look never means retyping it.
+/// plan explanation's "dive deeper into part 3". Absent, an explainer round
+/// inherits whatever focus the human last recorded, so sending one back for
+/// another look never means retyping it.
 async function spawnWfReview(item, root, depth, publish, opts = {}) {
   const {
     interactive = null,
@@ -6045,11 +6045,14 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
       rows: 40,
     });
     await refreshSessions();
+    // Mirrors `application::workflow::review_job` — this is the tab title for
+    // the instant before the registry name lands, so a spelling of its own
+    // shows up as a flicker of a word nothing else says.
     const job =
-      target === "structure"
-        ? "explain"
-        : target === "blueprint"
-          ? "blueprint"
+      target === "explain-diff"
+        ? "explain changes"
+        : target === "explain-plan"
+          ? "explain plan"
           : publish === "respond-pr-comments"
             ? "answer PR comments"
             : "review";
@@ -6087,8 +6090,8 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
 /// Open the change-request composer and record what it returns.
 ///
 /// Top level because two surfaces open it: the action bar's ✎ Request changes,
-/// and a rejected blueprint — a blueprint that is not the shape to build means
-/// the *plan* needs a round, and saying so is the same act as any other change
+/// and reading a plan explanation that shows the wrong shape — that means the
+/// *plan* needs a round, and saying so is the same act as any other change
 /// request, through the same composer and the same snapshotting flow.
 async function wfRequestChanges(item, root, target = "diff", prefill = "") {
   const annotations = target === "plan" ? [] : await wfOpenAnnotations(item);
@@ -7465,7 +7468,7 @@ function renderWfActions(bar, root, item) {
       );
       if (focus === null) return; // cancelled
       await spawnWfReview(item, root, focus.trim() ? "deep" : "standard", "local", {
-        target: plan ? "blueprint" : "structure",
+        target: plan ? "explain-plan" : "explain-diff",
         focus: focus.trim() || null,
       });
     };
@@ -8181,6 +8184,9 @@ async function renderWfExplainView(body, root, item, ts, which) {
   // Legacy single-file items report `md` with no `explain-*.md` on disk; the
   // backend reads the old name for the same doc, so the fallback is a name.
   const mdDoc = which === "plan" ? "explain-plan.md" : "explain-diff.md";
+  // The names these documents had before the md+html pairs existed. Real
+  // files on disk for older items, so the fallback is a filename, not a word
+  // this UI still uses anywhere.
   const legacy = which === "plan" ? "blueprint.md" : "structure.md";
   const htmlDoc = which === "plan" ? "explain-plan.html" : "explain-diff.html";
   // The picture is the headline when there is one — that is what it is for.
@@ -8215,17 +8221,28 @@ async function renderWfExplainView(body, root, item, ts, which) {
 
   // Both forms exist: one toggle, because they answer the same question at
   // two altitudes and the reader picks.
+  //
+  // A real segmented control, not the `.wf-round-nav` pill row it used to
+  // borrow. That row is a heading jump-nav — 10px, dim, and with no style at
+  // all for its `.on` class — so the switch between the two halves of the
+  // document, the most-used control on the tab, was both the smallest thing
+  // on it and gave no sign of which half you were looking at.
   if (forms.html && forms.md) {
     const seg = document.createElement("div");
-    seg.className = "wf-round-nav";
-    for (const [key, label] of [
-      ["graphic", "◫ Diagram"],
-      ["text", "☰ Written"],
+    seg.className = "wf-seg";
+    seg.setAttribute("role", "tablist");
+    for (const [key, label, hint] of [
+      ["graphic", "◫ Diagram", "The drawn overview — boxes, arrows, the repos and features it touches"],
+      ["text", "☰ Write-up", "The written walk-through, with diagrams where they help"],
     ]) {
       const b = document.createElement("button");
       b.textContent = label;
-      if (key === view) b.className = "on";
+      b.title = hint;
+      b.setAttribute("role", "tab");
+      b.setAttribute("aria-selected", key === view ? "true" : "false");
+      if (key === view) b.classList.add("on");
       b.onclick = () => {
+        if (key === view) return; // already here: a repaint would only blur
         ts.explainView = key;
         buildWorkflowView(root, project, slug);
       };

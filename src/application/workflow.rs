@@ -422,12 +422,17 @@ fn parse_round(lines: &[&str], start: usize, end: usize, round: u32) -> AgentRev
     // The target is the heading's first word (`## Review 2 — diff · deep · …`).
     // Round numbers restart per target, so the pair is the round's identity and
     // neither half is optional.
-    let target = heading
-        .split(['·', ' '])
-        .find(|t| !t.trim().is_empty())
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
+    //
+    // Normalized, because the explainer targets were renamed: a round written
+    // as `structure` counts toward `explain-diff`'s tally, or the next
+    // explainer round on an existing item restarts at 1 and its identity
+    // collides with a round already in the file.
+    let target = crate::domain::workflow::ReviewTarget::canonical(
+        heading
+            .split(['·', ' '])
+            .find(|t| !t.trim().is_empty())
+            .unwrap_or_default(),
+    );
 
     AgentReviewSummary {
         round,
@@ -446,7 +451,7 @@ fn parse_round(lines: &[&str], start: usize, end: usize, round: u32) -> AgentRev
 /// the file is the record of rounds, so the count cannot drift from it, and
 /// per-target numbering needs no migration for items whose rounds predate it.
 pub fn next_review_round(agent_review_md: &str, target: &str) -> u32 {
-    let target = target.trim().to_ascii_lowercase();
+    let target = crate::domain::workflow::ReviewTarget::canonical(target);
     all_agent_reviews(agent_review_md)
         .iter()
         .filter(|r| r.target == target)
@@ -457,7 +462,11 @@ pub fn next_review_round(agent_review_md: &str, target: &str) -> u32 {
 /// Pure: the identity of a round, for `meta.applied_review_key`. Numbers
 /// restart per target, so neither half identifies a round on its own.
 pub fn review_round_key(target: &str, round: u32) -> String {
-    format!("{}:{}", target.trim().to_ascii_lowercase(), round)
+    format!(
+        "{}:{}",
+        crate::domain::workflow::ReviewTarget::canonical(target),
+        round
+    )
 }
 
 /// Line span (start inclusive, end exclusive) and round number of the last
@@ -639,8 +648,8 @@ pub fn review_job(review: &crate::domain::workflow::WorkflowReview) -> String {
     match review.target {
         // Named by what they explain, not by which file they write: the
         // sessions sidebar is read by a human deciding which pane to look at.
-        ReviewTarget::Structure => "explain changes".to_string(),
-        ReviewTarget::Blueprint => "explain plan".to_string(),
+        ReviewTarget::ExplainDiff => "explain changes".to_string(),
+        ReviewTarget::ExplainPlan => "explain plan".to_string(),
         ReviewTarget::Plan => format!("plan review r{}", review.round.max(1)),
         ReviewTarget::Diff | ReviewTarget::Unknown => {
             format!("code review r{}", review.round.max(1))
@@ -871,7 +880,7 @@ pub fn review_engine_for(target: crate::domain::workflow::ReviewTarget) -> &'sta
         ReviewTarget::Plan => "clash-plan-review",
         // The explainer: writes structure.md (what a change did) or
         // blueprint.md (what it is going to do) instead of findings.
-        ReviewTarget::Structure | ReviewTarget::Blueprint => "clash-explain",
+        ReviewTarget::ExplainDiff | ReviewTarget::ExplainPlan => "clash-explain",
         // Unknown degrades to the code reviewer: every mode has a diff to
         // read, while a plan may not exist at all.
         ReviewTarget::Diff | ReviewTarget::Unknown => "clash-code-review",
@@ -1005,7 +1014,10 @@ mod tests {
         assert_eq!(review_engine_for(ReviewTarget::Plan), "clash-plan-review");
         assert_eq!(review_engine_for(ReviewTarget::Diff), "clash-code-review");
         // The explainer writes structure.md instead of findings.
-        assert_eq!(review_engine_for(ReviewTarget::Structure), "clash-explain");
+        assert_eq!(
+            review_engine_for(ReviewTarget::ExplainDiff),
+            "clash-explain"
+        );
         // Unknown degrades to the code reviewer: every mode has a diff.
         assert_eq!(
             review_engine_for(ReviewTarget::Unknown),
@@ -1038,7 +1050,7 @@ mod tests {
         for t in [
             ReviewTarget::Plan,
             ReviewTarget::Diff,
-            ReviewTarget::Structure,
+            ReviewTarget::ExplainDiff,
             ReviewTarget::Unknown,
         ] {
             let e = review_engine_for(t);
@@ -1557,6 +1569,31 @@ Tighten the API.\n\n\
         )));
     }
 
+    #[test]
+    fn a_renamed_target_keeps_counting_the_rounds_already_written() {
+        // The explainer targets were renamed (`structure` → `explain-diff`,
+        // `blueprint` → `explain-plan`). Headings already on disk carry the old
+        // spelling, so without normalizing, the next round restarts at 1 and
+        // collides with a round the file already holds — and `appliedReviewKey`
+        // stops matching the round it was stamped for.
+        let md = concat!(
+            "## Review 1 — structure\n\n**Verdict:** ok\n\n",
+            "## Review 2 — structure\n\n**Verdict:** ok\n\n",
+            "## Review 1 — blueprint\n\n**Verdict:** ok\n"
+        );
+        assert_eq!(next_review_round(md, "explain-diff"), 3);
+        assert_eq!(next_review_round(md, "explain-plan"), 2);
+        // Asking under the old name is the same question.
+        assert_eq!(next_review_round(md, "structure"), 3);
+        // A parsed round reports its target canonically, so the UI and the
+        // key both see one spelling.
+        let rounds = all_agent_reviews(md);
+        assert_eq!(rounds[0].target, "explain-diff");
+        assert_eq!(rounds[2].target, "explain-plan");
+        assert_eq!(review_round_key("blueprint", 1), "explain-plan:1");
+        assert_eq!(review_round_key("explain-plan", 1), "explain-plan:1");
+    }
+
     // ── select_prs ──────────────────────────────────────────────────
 
     #[test]
@@ -1788,11 +1825,11 @@ Tighten the API.\n\n\
             "answer PR comments"
         );
         assert_eq!(
-            review_job(&mk(ReviewTarget::Structure, ReviewPublish::Local, 5)),
+            review_job(&mk(ReviewTarget::ExplainDiff, ReviewPublish::Local, 5)),
             "explain changes"
         );
         assert_eq!(
-            review_job(&mk(ReviewTarget::Blueprint, ReviewPublish::Local, 5)),
+            review_job(&mk(ReviewTarget::ExplainPlan, ReviewPublish::Local, 5)),
             "explain plan"
         );
         // A default/legacy round never says "r0".
@@ -1940,7 +1977,7 @@ Tighten the API.\n\n\
     fn a_round_carries_the_focus_it_was_launched_for() {
         use crate::domain::workflow::{ReviewPublish, ReviewTarget, WorkflowReview};
         let review = WorkflowReview {
-            target: ReviewTarget::Blueprint,
+            target: ReviewTarget::ExplainPlan,
             publish: ReviewPublish::Local,
             round: 2,
             focus: "  node 3 — how the migration handles existing rows  ".to_string(),
@@ -1962,25 +1999,31 @@ Tighten the API.\n\n\
     }
 
     #[test]
-    fn the_blueprint_is_the_explainers_other_direction() {
+    fn the_plan_explanation_is_the_explainers_other_direction() {
         use crate::domain::workflow::{ReviewTarget, WorkflowReview};
         // Same skill, because it is the same job — explain, judge nothing —
         // pointed the other way along the pipeline.
-        assert_eq!(review_engine_for(ReviewTarget::Blueprint), "clash-explain");
-        assert_eq!(review_engine_for(ReviewTarget::Structure), "clash-explain");
+        assert_eq!(
+            review_engine_for(ReviewTarget::ExplainPlan),
+            "clash-explain"
+        );
+        assert_eq!(
+            review_engine_for(ReviewTarget::ExplainDiff),
+            "clash-explain"
+        );
         // The session is named by what it explains — the sidebar is read by a
         // human choosing a pane, and "which artifact" is the only distinction
         // that matters there. Rounds are not numbered: each one replaces the
         // document, so there is no round N to point at.
         let job = review_job(&WorkflowReview {
-            target: ReviewTarget::Blueprint,
+            target: ReviewTarget::ExplainPlan,
             round: 2,
             ..Default::default()
         });
         assert_eq!(job, "explain plan");
         assert_eq!(
             review_job(&WorkflowReview {
-                target: ReviewTarget::Structure,
+                target: ReviewTarget::ExplainDiff,
                 round: 2,
                 ..Default::default()
             }),
@@ -1990,14 +2033,14 @@ Tighten the API.\n\n\
         let p = build_review_prompt(
             "/items/x",
             &WorkflowReview {
-                target: ReviewTarget::Blueprint,
+                target: ReviewTarget::ExplainPlan,
                 round: 1,
                 ..Default::default()
             },
             WorkflowMode::Full,
         );
         assert!(p.contains("Use the clash-explain skill"));
-        assert!(p.contains("Target: blueprint"));
+        assert!(p.contains("Target: explain-plan."));
     }
 
     #[test]

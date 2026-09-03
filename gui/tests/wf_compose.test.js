@@ -227,7 +227,14 @@ test("a round is looked up by position, because its number is not unique", () =>
 test("a round's label names its phase, since the number alone cannot", () => {
   assert.equal(roundLabel({ round: 2, target: "plan" }), "Plan review 2");
   assert.equal(roundLabel({ round: 1, target: "diff" }), "Code review 1");
-  assert.equal(roundLabel({ round: 3, target: "structure" }), "Explainer 3");
+  // Both explainer targets have a label of their own. Naming only one left
+  // plan explanations reading as "Review 3" — a label claiming a judgement
+  // nobody made.
+  assert.equal(roundLabel({ round: 3, target: "explain-diff" }), "Changes explained 3");
+  assert.equal(roundLabel({ round: 1, target: "explain-plan" }), "Plan explained 1");
+  // …under their original spellings too: those headings are already on disk.
+  assert.equal(roundLabel({ round: 3, target: "structure" }), "Changes explained 3");
+  assert.equal(roundLabel({ round: 1, target: "blueprint" }), "Plan explained 1");
   // An unlabelled round (a report predating the target in its heading) still
   // reads sensibly rather than claiming a phase it never named.
   assert.equal(roundLabel({ round: 4, target: "" }), "Review 4");

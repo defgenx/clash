@@ -196,9 +196,9 @@ pr-draft / pr-ready likewise
   key rather than a number because numbers restart per target: three applied
   plan rounds would otherwise read as having covered code round 1.
 - **The explainer explains two artifacts, in two forms, and judges nothing.**
-  `Target: blueprint` reads `plan.md` plus the code it will land in and writes
-  `explain-plan.{md,html}` (what the implementation is going to do, before any
-  of it exists); `Target: structure` reads the diff and writes
+  `Target: explain-plan` reads `plan.md` plus the code it will land in and
+  writes `explain-plan.{md,html}` (what the implementation is going to do,
+  before any of it exists); `Target: explain-diff` reads the diff and writes
   `explain-diff.{md,html}` (what the change did). Both run the `clash-explain`
   skill and write **only their own pair** — a round on one must never touch the
   other's, since a human reads the first to authorize the work and the second
@@ -213,6 +213,16 @@ pr-draft / pr-ready likewise
   accepted or rejected, with a `meta.blueprint` block and a demoted approve,
   and it was removed — the explainer's value is being judgement-free, and the
   stage's own approve was already the decision.
+  The two targets were originally called `blueprint` and `structure`. Both
+  spellings are still **read** (a serde alias on the enum, and
+  `ReviewTarget::canonical` for the round headings already on disk, so an
+  existing item's rounds keep counting toward the same per-target tally), and
+  neither is written any more: the feature says "explain" in its file names,
+  its tabs and its buttons, and one feature with two vocabularies is how a
+  word the UI never uses surfaces in a round heading. `ReviewTarget::explains()`
+  is the predicate every "explainers are different here" site asks — naming one
+  variant is what left the plan explanation counting as a pending review,
+  demoting the stage's own approve over findings that do not exist.
 - **Every round declares whether it should be applied**, as
   `**Apply:** yes|no — <reason>` next to its `**Verdict:**`. The reviewers'
   skills own the judgement (interactive rounds ask the human; autonomous ones
@@ -251,7 +261,7 @@ pr-draft / pr-ready likewise
 
 | field | values | meaning |
 |---|---|---|
-| `target` | `plan` \| `diff` \| `structure` \| `blueprint` | plan/diff derived from the launch status, never chosen; the two explainer targets only via the explicit **◫ Explain changes** / **◫ Explain plan** actions |
+| `target` | `plan` \| `diff` \| `explain-diff` \| `explain-plan` (reads `structure`/`blueprint` too) | plan/diff derived from the launch status, never chosen; the two explainer targets only via the explicit **◫ Explain changes** / **◫ Explain plan** actions |
 | `depth` | `standard` \| `deep` | `deep` reads the surrounding implementation and checks the artifact against it |
 | `publish` | `local` \| `pr-comments` \| `respond-pr-comments` | what the round does beyond the item |
 | `interactive` | absent \| `true` \| `false` | absent = the skill asks in-session; the composer's launch-time answer otherwise |
@@ -342,7 +352,7 @@ describable on its own.
 |--------|--------|
 | `plan` | `clash-plan-review` (embedded skill) |
 | `diff` | `clash-code-review` (embedded skill) |
-| `structure` / `blueprint` | `clash-explain` (embedded skill — explains, never judges) |
+| `explain-diff` / `explain-plan` | `clash-explain` (embedded skill — explains, never judges) |
 
 Every engine is a skill clash itself installs, so a review round needs no
 third-party plugin present. A unit test asserts any skill named by
@@ -375,10 +385,10 @@ round — a choice with one real answer is not a choice.
 An **explain round** is review-shaped (parks in `reviewing`, restores
 `Return to:`) but judges nothing. Two of them exist, one per artifact:
 
-- **◫ Explain plan** (`Target: blueprint`) reads `plan.md` and the code it will
+- **◫ Explain plan** (`Target: explain-plan`) reads `plan.md` and the code it will
   land in, and says what the implementation is going to do — offered wherever
   the item has a plan and no agent of ours is working.
-- **◫ Explain changes** (`Target: structure`) reads the diff and enough
+- **◫ Explain changes** (`Target: explain-diff`) reads the diff and enough
   surrounding code, and says what the change did — offered from any stage past
   `plan-review`, including finished items.
 
@@ -478,8 +488,8 @@ for context.
   only commits locally leaves the PR silently stale. An unpublished branch
   (`full`/`from-plan`, no PR) is still never pushed.
 - Never touch `history/` or `plan-history/`, and never change `iteration`,
-  `reviewRound`, `appliedReviewKey` or `blueprint` — clash
-  owns all six (the first two are written atomically by the request-changes
+  `reviewRound` or `appliedReviewKey` — clash
+  owns all five (the first two are written atomically by the request-changes
   flow, the third by the review launcher).
 - Write `annotations.json` **only** while status is `changes-requested` or
   `implementing` — during review phases the GUI owns the file (this phase

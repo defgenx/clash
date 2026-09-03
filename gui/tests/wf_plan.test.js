@@ -182,17 +182,45 @@ test("the next round's number counts only its own phase", () => {
   assert.equal(wfNextReviewRound(null, "plan"), 1);
 });
 
-test("an explainer round is never offered as work to apply", () => {
-  // A structure round writes the Structure tab and judges nothing, so
-  // "apply its findings" has no meaning — and it still bumps reviewRound and
-  // shows up as the latest round, so it has to be excluded explicitly.
-  const explained = {
-    lastAgentReview: { round: 4, verdict: "n/a" },
-    meta: { status: "diff-review", appliedReviewKey: "", review: { target: "structure" } },
-  };
-  assert.equal(pendingReviewRound(explained), null);
-  // And the header claims neither state for it.
-  assert.equal(reviewAppliedState(explained), "");
+test("an explainer round is never offered as work to apply — either of them", () => {
+  // An explainer round writes its own document and judges nothing, so "apply
+  // its findings" has no meaning — and it still bumps reviewRound and shows
+  // up as the latest round, so it has to be excluded explicitly.
+  //
+  // BOTH targets. This checked `structure` alone, so a plan explanation on a
+  // `plan-review` item read as a pending review: it demoted the stage's own
+  // Approve and offered "↻ Apply review → revise plan" for findings that do
+  // not exist.
+  const rounds = [
+    ["explain-diff", "diff-review"],
+    ["explain-plan", "plan-review"],
+    // The pre-rename spellings explain exactly as much.
+    ["structure", "diff-review"],
+    ["blueprint", "plan-review"],
+  ];
+  for (const [target, status] of rounds) {
+    const explained = {
+      lastAgentReview: { round: 4, verdict: "n/a", target },
+      meta: { status, appliedReviewKey: "", review: { target } },
+    };
+    assert.equal(pendingReviewRound(explained), null, `${target} at ${status}`);
+    // And the header claims neither state for it.
+    assert.equal(reviewAppliedState(explained), "", `${target} state`);
+  }
+});
+
+test("a key stamped under a target's old name still matches its round", () => {
+  // `appliedReviewKey` is `<target>:<round>`, and the explainer targets were
+  // renamed. Without normalizing, a round applied before the rename reads as
+  // unapplied forever — the strip says "not applied yet" and the stage's
+  // approve stays demoted.
+  const applied = (target, key) => ({
+    lastAgentReview: { round: 2, target },
+    meta: { status: "plan-review", appliedReviewKey: key, review: { target: "plan" } },
+  });
+  assert.equal(reviewAppliedState(applied("blueprint", "explain-plan:2")), "applied");
+  assert.equal(reviewAppliedState(applied("explain-plan", "blueprint:2")), "applied");
+  assert.equal(reviewAppliedState(applied("plan", "plan:2")), "applied");
 });
 
 test("a round about the other artifact is not applyable at this stage", () => {

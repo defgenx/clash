@@ -49,7 +49,9 @@ pub const AGENT_REVIEW_FILE: &str = "agent-review.md";
 // Written (overwritten — living documents, not logs) by the `clash-explain`
 // skill, rendered by the GUI's two Explain tabs. `structure.md` and
 // `blueprint.md` are the names these had before the pairs existed; they are
-// still read so no existing item loses its explanation.
+// still read so no existing item loses its explanation, and the constants
+// naming them say `LEGACY_` — nothing writes those files, and the whole
+// feature says "explain" everywhere else.
 pub const EXPLAIN_PLAN_FILE: &str = "explain-plan.md";
 pub const EXPLAIN_PLAN_HTML: &str = "explain-plan.html";
 pub const EXPLAIN_DIFF_FILE: &str = "explain-diff.md";

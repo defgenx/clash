@@ -155,8 +155,12 @@
     const n = (r && r.round) || 1;
     const t = (r && r.target) || "";
     if (t === "plan") return `Plan review ${n}`;
-    if (t === "structure") return `Explainer ${n}`;
     if (t === "diff") return `Code review ${n}`;
+    // Both explainer targets, under their current and original spellings:
+    // naming only one left plan explanations reading as "Review 3", a label
+    // that says a judgement was made when none was.
+    if (t === "explain-diff" || t === "structure") return `Changes explained ${n}`;
+    if (t === "explain-plan" || t === "blueprint") return `Plan explained ${n}`;
     return `Review ${n}`;
   }
 

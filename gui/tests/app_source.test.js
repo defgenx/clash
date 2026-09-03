@@ -530,7 +530,7 @@ test("the two explanations are separate, and each has two forms", () => {
     APP.indexOf("const explainButtons = () => {"),
     APP.indexOf("// Available from every state holding a reviewable artifact")
   );
-  assert.match(btn, /target: plan \? "blueprint" : "structure",/);
+  assert.match(btn, /target: plan \? "explain-plan" : "explain-diff",/);
   assert.match(btn, /"◫ Explain plan again" : "◫ Explain plan"/);
   assert.match(btn, /"◫ Explain changes again" : "◫ Explain changes"/);
   // The plan explanation needs a plan; the diff one needs a diff to exist.
@@ -546,6 +546,17 @@ test("the two explanations are separate, and each has two forms", () => {
   assert.match(APP, /if \(ts\.subView === "explainDiff"\) return renderWfExplainView\(body, root, item, ts, "diff"\);/);
   // Tab names persisted before the split still land somewhere real.
   assert.match(APP, /ts\.subView === "structure" \|\| ts\.subView === "explain"\) ts\.subView = "explainDiff"/);
+
+  // The switch between the two forms is a real segmented control, not the
+  // `.wf-round-nav` pill row it used to borrow: that row is a heading
+  // jump-nav with no style at all for its `.on` class, so the most-used
+  // control on the tab was both the smallest thing on it and gave no sign of
+  // which form you were reading.
+  assert.match(APP, /seg\.className = "wf-seg"/);
+  assert.match(APP, /\["graphic", "◫ Diagram"/);
+  assert.match(APP, /\["text", "☰ Write-up"/);
+  const css = fs.readFileSync(path.join(__dirname, "..", "dist", "style.css"), "utf8");
+  assert.match(css, /\.wf-seg button\.on/, "the active segment must be styled");
 
   // The graphical page is generated markup, so it is rendered in a frame that
   // cannot run scripts and cannot reach this document's Tauri bridge — never

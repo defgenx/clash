@@ -1526,12 +1526,9 @@ pub(crate) async fn start_workflow_review_agent(
     }
     // An explain round is not a review: it judges nothing, so the only thing
     // that can stop it is another agent already writing this item's files.
-    // Both explainer targets qualify — the blueprint (what the plan is going
-    // to do) and the structure (what the diff did).
-    let explaining = matches!(
-        target,
-        Some(ReviewTarget::Structure) | Some(ReviewTarget::Blueprint)
-    );
+    // Both explainer targets qualify — the plan explanation (what the work is
+    // going to do) and the diff explanation (what it did).
+    let explaining = target.is_some_and(|t| t.explains());
     if explaining {
         if !meta.status.can_explain() {
             return Err(format!(
@@ -1572,16 +1569,15 @@ pub(crate) async fn start_workflow_review_agent(
         return Err("no-pr: this item has no pull request yet".to_string());
     }
     // Plan/diff stay DERIVED from the launch status (a plan review at
-    // diff-review has nothing to read); `structure` is the one explicitly
-    // requested target — the "Explain changes" button's round, which writes
-    // structure.md instead of findings. Any other explicit value is ignored
-    // rather than trusted.
+    // diff-review has nothing to read); the two *explainer* targets are the
+    // only ones a launcher may request explicitly — the ◫ Explain buttons'
+    // rounds, which write a document instead of findings. Any other explicit
+    // value is ignored rather than trusted.
     let target = match target {
-        Some(ReviewTarget::Structure) => ReviewTarget::Structure,
-        Some(ReviewTarget::Blueprint) => ReviewTarget::Blueprint,
+        Some(t) if t.explains() => t,
         _ => ReviewTarget::for_status(meta.status, meta.mode),
     };
-    if matches!(target, ReviewTarget::Plan | ReviewTarget::Blueprint)
+    if matches!(target, ReviewTarget::Plan | ReviewTarget::ExplainPlan)
         && !has_plan_content(&state, &project, &slug)
     {
         return Err("This item has no plan yet — there is nothing to read".to_string());
@@ -1594,7 +1590,7 @@ pub(crate) async fn start_workflow_review_agent(
         .or_else(|| clash::application::workflow::interaction_param(&meta.interaction_default));
     // An explainer round writes no findings, so there is nothing to apply and
     // pre-authorizing it would be meaningless.
-    let auto_apply = auto_apply.unwrap_or(false) && target != ReviewTarget::Structure;
+    let auto_apply = auto_apply.unwrap_or(false) && !target.explains();
     // Per-target numbering, counted from the report itself: a well-planned
     // item's first code review is round 1, not round 7.
     let round = clash::application::workflow::next_review_round(

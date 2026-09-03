@@ -124,8 +124,11 @@
   /// Two rounds are deliberately not applyable, and both would otherwise offer
   /// a button that makes no sense:
   ///
-  /// - a `structure` round is the explainer — it judges nothing, so there are
-  ///   no findings to apply;
+  /// - an **explainer** round judges nothing, so there are no findings to
+  ///   apply. Both explainer targets: this checked `structure` alone, so a
+  ///   plan explanation counted as a pending review — it demoted the stage's
+  ///   own Approve and offered "apply the findings" for a round that produced
+  ///   none;
   /// - a round about the other artifact. A plan round left unapplied when the
   ///   human approved the plan anyway is still the latest round once the item
   ///   reaches diff review, and "apply this plan review to the code" is not a
@@ -139,27 +142,37 @@
     if (meta.status === "reviewing") return null; // still running
     // Identity, not order: round numbers restart per target, so "3 plan rounds
     // applied" must not read as "code round 1 applied".
-    if (meta.appliedReviewKey && meta.appliedReviewKey === reviewRoundKey(r)) return null;
+    if (meta.appliedReviewKey && roundKeyMatches(meta.appliedReviewKey, r)) return null;
     // Absent on items reviewed before the block was recorded — those predate
-    // structure rounds too, so "no target" means "the stage's own artifact".
+    // explainer rounds too, so "no target" means "the stage's own artifact".
     const target = meta.review && meta.review.target;
-    if (target === "structure") return null;
+    if (isExplainTarget(target)) return null;
     const stagePlan = meta.status === "plan-review";
     if (target === "plan" && !stagePlan) return null;
     if (target === "diff" && stagePlan) return null;
     return r;
   }
 
+  /// Mirrors `ReviewTarget::explains()` — is this round an explanation rather
+  /// than a judgement? Accepts the pre-rename spellings, since a round
+  /// recorded as `structure`/`blueprint` explains exactly as much as one
+  /// recorded under the current names.
+  function isExplainTarget(target) {
+    return ["explain-diff", "explain-plan", "structure", "blueprint"].includes(
+      String(target || "").toLowerCase()
+    );
+  }
+
   /// What the item header says about the last round: `pending` while it is
   /// waiting to be applied, `applied` once a change round has carried it, and
-  /// nothing at all when neither is true — a `structure` round or a round about
+  /// nothing at all when neither is true — an explainer round or a round about
   /// the other artifact was never going to be "applied", and claiming either
   /// state for it would be a lie in one direction or the other.
   function reviewAppliedState(item) {
     if (pendingReviewRound(item)) return "pending";
     const r = item && item.lastAgentReview;
     const applied = (item && item.meta && item.meta.appliedReviewKey) || "";
-    if (r && r.round && applied && applied === reviewRoundKey(r)) return "applied";
+    if (r && r.round && applied && roundKeyMatches(applied, r)) return "applied";
     return "";
   }
 
@@ -167,7 +180,30 @@
   /// `application::workflow::review_round_key` — the number restarts per
   /// target, so neither half identifies a round on its own.
   function reviewRoundKey(r) {
-    return `${((r && r.target) || "").toLowerCase()}:${(r && r.round) || 0}`;
+    return `${canonicalTarget((r && r.target) || "")}:${(r && r.round) || 0}`;
+  }
+
+  /// Mirrors `ReviewTarget::canonical`: the explainer targets were renamed,
+  /// and both spellings name the same target.
+  function canonicalTarget(raw) {
+    const t = String(raw || "").trim().toLowerCase();
+    if (t === "structure") return "explain-diff";
+    if (t === "blueprint") return "explain-plan";
+    return t;
+  }
+
+  /// Does a stored `appliedReviewKey` name this round?
+  ///
+  /// Both sides are normalized, not just the round's: a key stamped as
+  /// `blueprint:2` before the rename would otherwise never match the round it
+  /// was stamped for, so the header would say "not applied yet" forever and
+  /// the stage's own approve would stay demoted.
+  function roundKeyMatches(stored, r) {
+    const key = String(stored || "");
+    const cut = key.lastIndexOf(":");
+    if (cut < 0) return false;
+    const normalized = `${canonicalTarget(key.slice(0, cut))}:${key.slice(cut + 1)}`;
+    return normalized === reviewRoundKey(r);
   }
 
   /// The number the next round against `target` will carry — the count of
@@ -206,6 +242,8 @@
   }
 
   const api = {
+    isExplainTarget,
+    canonicalTarget,
     planVersionForIteration,
     planVersionLabel,
     planVersionCaption,

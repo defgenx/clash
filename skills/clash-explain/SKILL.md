@@ -1,6 +1,6 @@
 ---
 name: clash-explain
-description: Explain a clash Workflow item in depth — one of two artifacts, in two forms. `Target: blueprint` reads plan.md and the real code and explains what the implementation is *going to do*, before any of it exists (explain-plan.md + explain-plan.html); `Target: structure` reads the diff and explains what the change *did* (explain-diff.md + explain-diff.html). Each round writes a written walk-through with mermaid diagrams AND a self-contained HTML page — boxes, arrows, repos, features — that gives a graphical high-level overview. Judges nothing, changes nothing but its own two documents, then hands the item back where it came from. Triggers on "Use the clash-explain skill", "Target: structure" or "Target: blueprint" in a clash kickoff prompt, or a request to explain what a PR, diff or plan does.
+description: Explain a clash Workflow item in depth — one of two artifacts, in two forms. `Target: explain-plan` reads plan.md and the real code and explains what the implementation is *going to do*, before any of it exists (explain-plan.md + explain-plan.html); `Target: explain-diff` reads the diff and explains what the change *did* (explain-diff.md + explain-diff.html). Each round writes a written walk-through with mermaid diagrams AND a self-contained HTML page — boxes, arrows, repos, features — that gives a graphical high-level overview. Judges nothing, changes nothing but its own two documents, then hands the item back where it came from. Triggers on "Use the clash-explain skill", "Target: explain-diff" or "Target: explain-plan" in a clash kickoff prompt, or a request to explain what a PR, diff or plan does.
 ---
 
 # clash-explain — one explainer round per run
@@ -22,8 +22,8 @@ says which one this round is about:
 
 | Target | Reads | Writes | Answers |
 |---|---|---|---|
-| `blueprint` | `plan.md` + the real code | `explain-plan.md` + `explain-plan.html` | what the implementation is **going to do** |
-| `structure` | the diff | `explain-diff.md` + `explain-diff.html` | what this change **did** |
+| `explain-plan` | `plan.md` + the real code | `explain-plan.md` + `explain-plan.html` | what the implementation is **going to do** |
+| `explain-diff` | the diff | `explain-diff.md` + `explain-diff.html` | what this change **did** |
 
 Never write the other target's pair. "What this is going to do" and "what it
 did" are both worth keeping — a human reads the first to authorize the work
@@ -52,7 +52,7 @@ The kickoff prompt gives you:
 - **Item directory** — absolute path to `<workflows_root>/<project>/<slug>/`
 - **Focus** — optional: what the human wants this pass to concentrate on, in
   their words. Lead with it — see "When the kickoff carries `Focus:`".
-- **Target** — `structure` or `blueprint`, and it decides which direction you
+- **Target** — `explain-diff` or `explain-plan`, and it decides which direction you
   are explaining (see below). Anything else belongs to a reviewer; if you get
   one, stop and say so
 - **Depth** — advisory; err toward reading enough real code that the
@@ -82,12 +82,12 @@ Blocking on a question is safe: the item is parked and clash always offers
 ## Step 0 — read first, every run
 
 1. `meta.json` — status, mode, branch/base, `pr`. Parse leniently.
-2. **On `Target: blueprint`** — `plan.md` is the artifact you explain, and the
+2. **On `Target: explain-plan`** — `plan.md` is the artifact you explain, and the
    *current code it will land in* is what makes the explanation worth reading.
    Read the plan, then read the files and symbols it names (and their callers)
    as they exist today. Skip to "The written document"; there is no
    diff to read and `git diff` is expected to be empty.
-3. **On `Target: structure`** — the diff: `git diff <base>...HEAD` (base from
+3. **On `Target: explain-diff`** — the diff: `git diff <base>...HEAD` (base from
    `meta.base`, or the repo's default branch when empty). This is the artifact
    you explain.
 4. `plan.md` and `review.md` — the intent and the decision history (both
@@ -108,22 +108,23 @@ Blocking on a question is safe: the item is parked and clash always offers
   (the target's `explain-*.md` and `explain-*.html` — write/overwrite; each is a living
   document, regenerated per round, not an append log) and **`agent-review.md`**
   (append your round entry — see Finish). Never write the *other* target's
-  document: a `blueprint` round that overwrote `explain-diff.*` would erase
-  what the change actually did, and a `structure` round that overwrote
+  document: an `explain-plan` round that overwrote `explain-diff.*` would
+  erase what the change actually did, and an `explain-diff` round that overwrote
   `explain-plan.*` would erase the picture the human read before authorizing
   the work.
 - The only status you may write is the prompt's **`Return to:`** value, and
   only as your final act.
 
-## The written document — `explain-plan.md` (`Target: blueprint`)
+## The written document — `explain-plan.md` (`Target: explain-plan`)
 
-Written for the human about to authorize this implementation. A blueprint is
+Written for the human about to authorize this implementation. A plan
+explanation is
 not the plan restated: the plan says *what* and *why*, and you say **what it
 will look like in this codebase** — which parts appear, where they attach, and
 how the pieces will talk to each other. Lead with the picture.
 
 ```markdown
-# Blueprint — <item title>
+# Plan explained — <item title>
 
 ## The plan as one graph
 <**One** mermaid diagram, first thing in the document: the mid-level actions
@@ -180,10 +181,10 @@ to rule on — you are not the reviewer and you do not grade the plan.>
 for the human to spot a wrong assumption.>
 ```
 
-Two rules that decide whether a blueprint is worth reading:
+Two rules that decide whether a plan explanation is worth reading:
 
 - **Ground every part in real code.** Name files and symbols that exist, as
-  they exist today. A blueprint that could have been written without opening
+  they exist today. An explanation that could have been written without opening
   the repository is the plan with diagrams, and the human already has the plan.
 - **Say what you could not settle.** This is read to decide whether the work
   should go ahead as planned; a gap you hid becomes a decision the implementer
@@ -199,11 +200,11 @@ change they care about. That is the round's job:
   names, before the rest of the actions.
 - If what they asked cannot be settled from the plan and the code, say so
   there and say what would settle it. "I could not answer this" is a useful
-  blueprint; a confident guess in its place is not.
+  explanation; a confident guess in its place is not.
 - Keep the node numbering meaningful: if the graph changes shape, say which
   node the focus corresponds to now.
 
-## The written document — `explain-diff.md` (`Target: structure`)
+## The written document — `explain-diff.md` (`Target: explain-diff`)
 
 Written for a reviewer or teammate meeting this change cold. Organize by
 **behavior, not by file**: "what does this change do" splits into functional
@@ -323,8 +324,8 @@ Sketch of the shape (yours will differ — this is the altitude, not a template)
 ## Finish — in this order, every run
 
 1. Write/overwrite **the target's pair** — `explain-plan.md` +
-   `explain-plan.html` on `Target: blueprint`, `explain-diff.md` +
-   `explain-diff.html` on `Target: structure`. Both files, never the other
+   `explain-plan.html` on `Target: explain-plan`, `explain-diff.md` +
+   `explain-diff.html` on `Target: explain-diff`. Both files, never the other
    target's.
 2. **Append** your round to `agent-review.md` (append-only, like every round).
    The heading's first word after the number is the target, and clash reads it:
@@ -332,7 +333,7 @@ Sketch of the shape (yours will differ — this is the altitude, not a template)
    rounds indistinguishable.
 
 ```markdown
-## Review <round> — structure · <depth> · <YYYY-MM-DD HH:MM>
+## Review <round> — explain-diff · <depth> · <YYYY-MM-DD HH:MM>
 
 **Verdict:** <one line: what the change does — a summary, not a judgement>
 
@@ -341,10 +342,10 @@ Sketch of the shape (yours will differ — this is the altitude, not a template)
   ◫ Changes explained tab).
 ```
 
-   For a blueprint round, the same shape with its own target and file:
+   For a plan-explanation round, the same shape with its own target and file:
 
 ```markdown
-## Review <round> — blueprint · <depth> · <YYYY-MM-DD HH:MM>
+## Review <round> — explain-plan · <depth> · <YYYY-MM-DD HH:MM>
 
 **Verdict:** <one line: the shape of what will be built — a summary, not a
 judgement>
