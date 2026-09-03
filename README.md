@@ -876,19 +876,27 @@ contract). The **Diff tab's source picker** also lists every linked PR: pick
 one to read its diff fetched from GitHub (`gh pr diff`), view-only — comments
 stay on the item's own diff.
 
-**Which PR? — per-PR action scope**: once an item has more than one PR, every
+**Which PRs? — per-PR action scope**: once an item has more than one PR, every
 PR action asks which, because there is no honest default — "ready for review"
 is a statement about one repository's change, so flipping three at once is a
-release while flipping one is a step. A button whose click will ask carries
-the usual `…`:
+release while flipping one is a step. **The answer is a set**: tick one PR,
+several, or use the all/none toggle. A four-repo change where three repos are
+ready and one is not has no expression as one-or-all, and that is the normal
+shape of the work. A button whose click will ask carries the usual `…`, and
+Confirm stays disabled until something is ticked.
 
-| Action | Choices |
-|---|---|
-| **Open PRs (n)…** | one of them, or all at once — the first in a split pane, the rest as browser tabs (already-open ones are surfaced, never duplicated) |
-| **✓ Mark PR ready…** | one draft, or all drafts. A merged or already-ready PR is never offered. Only the primary moves the item to PR READY; a linked-only flip says so |
-| **↗ Post round n to PR…** | one PR, or all of them |
-| **⌕ Code review** | the composer's *Which change?* row: the whole change (the item's own diff), or one PR — a round is one agent session, so never several. Picking a linked PR reviews **that PR's** diff, read from GitHub, and pre-selects posting the findings there (they cannot anchor to files this repo doesn't have) |
-| **⇄ Answer PR comments…** | one PR, for the same reason |
+| Action | Choices | Pre-ticked |
+|---|---|---|
+| **Open PRs (n)…** | any subset — the first opens in a split pane, the rest as browser tabs (already-open ones are surfaced, never duplicated) | all (read-only) |
+| **✓ Mark PR ready…** | any subset of the **drafts**. A merged or already-ready PR is never offered. Only the primary moves the item to PR READY; a linked-only flip says the item stayed put | the primary |
+| **↗ Post round n to PR…** | any subset | the primary |
+| **⌕ Code review** | the composer's *Which change?* rows: this repository's own diff, and/or any of the item's PRs. Several PRs is **one round over several diffs** — that is the case that matters, since judging the API PR without the web PR that consumes it leaves the contract between them unchecked. Picking a linked PR reads **that PR's** diff from GitHub and pre-selects posting the findings there (they cannot anchor to files this repo doesn't have) | this repo's own diff |
+| **⇄ Answer PR comments…** | any subset — one round works through every open thread on every PR picked, replying in each | every PR with threads waiting |
+
+The pre-ticked default is the answer the button already promised: right for
+the single-PR case, and — outside *Open* and *Answer PR comments*, whose
+labels promise more — never another repository, since announcing a second repo
+is the thing you tick deliberately.
 
 Every PR chip also has its own right-click menu — in the item header *and* in
 the PR dashboard — with that PR's whole set of actions pre-scoped to it: open,

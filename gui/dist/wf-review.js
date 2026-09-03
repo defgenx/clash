@@ -35,42 +35,49 @@
     autoApplyDefault = false,
     prs = [],
     // A pre-picked scope (a launch that started from one PR's own menu) —
-    // pre-selects that row instead of "the whole change".
-    prUrl = null,
+    // pre-checks those rows instead of "this repository's own diff".
+    prUrls = null,
   } = {}) {
     // A plan is one document however many repos implement it, so a plan round
-    // has no PR scope. A code round on a multi-repo item does: reviewing "the
-    // whole change" and reviewing the contracts repo's PR are different jobs
-    // with different diffs, and a round can only do one — it is one agent
-    // session, parked on one item.
+    // has no PR scope. A code round on a multi-repo item does — and its
+    // answer is a **set**: a cross-repo change is one change, and reviewing
+    // the API PR without the web PR that consumes it is how a contract break
+    // survives review. Checkboxes rather than radios for exactly that reason.
+    //
+    // Nothing checked means the item's own diff, which is what a code round
+    // read before the scope existed. That state is rendered as its own row
+    // instead of being left implicit: "leave everything unchecked" is not a
+    // thing anyone reads off a dialog.
+    const seeded = (prUrls || []).filter((u) => (prs || []).some((p) => p.url === u));
     const prScope =
       target === "plan" || (prs || []).length < 2
         ? null
         : {
             legend: "Which change?",
-            default: (prs || []).some((p) => p.url === prUrl) ? prUrl : "",
-            choices: [
-              {
-                value: "",
-                label: "The whole change",
-                detail:
-                  "The item's own diff across every file on the branch — findings land as diff comments you can triage here.",
-              },
-              ...prs.map((pr) => ({
-                value: pr.url,
-                label: prScopeRowLabel(pr),
-                detail: prScopeRowDetail(pr),
-                // A linked PR's files are in another repository, so its
-                // findings cannot be annotations on this item's diff — they
-                // belong on that PR.
-                linked: !pr.primary,
-              })),
-            ],
+            // The local row and the PR rows are one group: picking a PR is
+            // saying "read that repository instead of / as well as mine".
+            local: {
+              value: "",
+              label: "This repository's own diff",
+              detail:
+                "Every file on the branch — findings land as diff comments you can triage here.",
+              checked: seeded.length === 0,
+            },
+            choices: (prs || []).map((pr) => ({
+              value: pr.url,
+              label: prScopeRowLabel(pr),
+              detail: prScopeRowDetail(pr),
+              checked: seeded.includes(pr.url),
+              // A linked PR's files are in another repository, so its
+              // findings cannot be annotations on this item's diff — they
+              // belong on that PR.
+              linked: !pr.primary,
+            })),
           };
     // With a scope choice on screen, naming the primary in the publish option
-    // is a lie for two of the three answers: it says where the findings go,
-    // which is whichever PR the round is about.
-    const prName = prScope ? "the PR under review" : prNumber ? `#${prNumber}` : "the PR";
+    // is a lie for most of the answers: it says where the findings go, which
+    // is whichever PRs the round is about.
+    const prName = prScope ? "the PRs under review" : prNumber ? `#${prNumber}` : "the PR";
     return {
       prScope,
       title: `Agent review — round ${round}`,
@@ -173,7 +180,7 @@
       typeof prChipLabel === "function"
         ? prChipLabel(pr)
         : `${String(pr.repo || "").split("/")[1] || ""}#${pr.number || "?"}`;
-    return pr.primary ? `Only ${chip} · primary` : `Only ${chip}`;
+    return pr.primary ? `${chip} · primary` : chip;
   }
 
   /// Composer detail for one PR: enough to tell two of an item's PRs apart,
@@ -187,7 +194,9 @@
           : String(pr.state || "").toLowerCase();
     const bits = [];
     if (st) bits.push(st);
-    bits.push(pr.primary ? "this repository's change" : "that repository's diff, read from GitHub");
+    bits.push(
+      pr.primary ? "this repository's PR diff" : "that repository's diff, read from GitHub"
+    );
     return `${bits.join(" · ")} — ${pr.url}`;
   }
 

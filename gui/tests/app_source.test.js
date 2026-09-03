@@ -448,7 +448,12 @@ test("every PR-scoped action asks which PR, through one picker", () => {
   // alone. The scope question now has exactly one implementation — a second
   // one is how two surfaces end up disagreeing about what "all" means.
   assert.match(APP, /async function pickPrScope\(item, action/);
-  for (const fn of ["openWorkflowPr", "wfMarkPrReady", "publishWfReview", "launchWfReviewRespond"]) {
+  for (const fn of [
+    "openWorkflowPr",
+    "wfMarkPrReady",
+    "publishWfReview",
+    "launchWfReviewRespond",
+  ]) {
     const src = extractFunction(APP, fn);
     assert.ok(
       /pickPrScope\(/.test(src),
@@ -486,14 +491,35 @@ test("a review round's PR scope is a row in the composer, not a second dialog", 
   const composer = extractFunction(APP, "wfComposeReviewRound");
   assert.ok(composer.includes("model.prScope"), "the composer must render the scope group");
   assert.ok(composer.includes("prs: itemPrs(item.meta)"), "the model needs the item's PRs");
-  assert.ok(composer.includes("prUrl:"), "the launch payload must carry the pick");
+  assert.ok(composer.includes("prUrls: scopeUrls()"), "the launch payload must carry the picks");
+  // The scope is a SET — checkboxes, not radios: a cross-repo change is one
+  // change, and reviewing the API PR without the web PR that consumes it
+  // leaves the contract between them unchecked.
+  assert.match(composer, /input\.type = "checkbox";\n\s+input\.value = c\.value/);
   // Scoping to a linked PR moves the findings' only reachable destination to
   // that PR — the composer pre-selects it rather than let a round end with
   // findings nobody can see.
   assert.ok(
-    /linked\.has\(picked\(scopeGroup/.test(composer),
+    /scope\.rows\.some\(\(r\) => r\.linked && r\.input\.checked\)/.test(composer),
     "picking a linked PR must pre-select posting to it"
   );
+});
+
+test("the PR scope dialog is multi-select, and an empty set is not an answer", () => {
+  // One-or-all could not say "these two of the four", which is the normal
+  // shape of a multi-repo change where three repos are ready and one is not.
+  assert.match(APP, /function uiCheckChoice\(\{/);
+  const dialog = extractFunction(APP, "uiCheckChoice");
+  assert.ok(dialog.includes('cb.type = "checkbox"'), "rows must be checkboxes");
+  assert.ok(dialog.includes("allBox.indeterminate"), "a partial set must not read as none");
+  assert.ok(dialog.includes("ok.disabled = n === 0"), "confirm must require a selection");
+  // The picker uses it, and hands back the pure model's ordered selection.
+  const pick = extractFunction(APP, "pickPrScope");
+  assert.ok(pick.includes("uiCheckChoice("), "pickPrScope must use the multi-select dialog");
+  assert.ok(pick.includes("prScopeSelection(model, picked)"), "order comes from the model");
+  // Native browser webviews paint over all DOM — every dialog must drop them.
+  assert.ok(dialog.includes("hideBrowserWebviews"), "the dialog must hide browser webviews");
+  assert.ok(dialog.includes("wireBackdropDismiss"), "the dialog must use the shared scrim guard");
 });
 
 test("the two explanations are separate, and each has two forms", () => {

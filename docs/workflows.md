@@ -255,7 +255,8 @@ pr-draft / pr-ready likewise
 | `depth` | `standard` \| `deep` | `deep` reads the surrounding implementation and checks the artifact against it |
 | `publish` | `local` \| `pr-comments` \| `respond-pr-comments` | what the round does beyond the item |
 | `interactive` | absent \| `true` \| `false` | absent = the skill asks in-session; the composer's launch-time answer otherwise |
-| `prUrl` | absent \| a PR URL | the PR the round talks to when the launcher picked one (respond rounds on multi-PR items); absent = the primary |
+| `prUrls` | absent \| a list of PR URLs | the PRs the round is about, when the launcher picked any; absent = the item's own change (local diff, primary PR to talk to). Several is one round over several diffs — see *Per-PR action scope* |
+| `prUrl` | absent \| a PR URL | the single-PR spelling `prUrls` replaced. Read-only, folded in by `review_pr_urls`; nothing writes it |
 | `returnStatus` | any status | where the round puts the item back — the repeatability contract |
 
 Publish rules that earned their place:
@@ -575,17 +576,41 @@ than acted on, so a stale frontend cannot run `gh` against a PR nobody
 linked). Omitting the pick means the primary, which is what every action did
 before the scope existed.
 
-Which answers an action offers is a property of the action, not of the UI:
+**The answer is a set, for every action** — one PR, several, or all of them.
+A four-repo change where three repos are ready and one is not has no
+expression as one-or-all, and that is the normal shape of the work.
 
-| Action | Scope answers |
-|---|---|
-| Open PR | any one, or all (one split pane, the rest background tabs) |
-| Mark PR ready | any one **draft**, or all drafts — a merged or already-ready PR is never offered |
-| Post round to PR | any one, or all (one round covered the whole change) |
-| Code review | the item's whole local diff, **or** one PR — never several: a round is one agent session parked on one item |
-| Answer PR comments | one PR, for the same reason |
+Agent rounds are included in that, and an earlier version of this feature
+wrongly excluded them on the grounds that "a round is one agent session parked
+on one item". That is a constraint on agent *concurrency* — two rounds at once
+would be two agents editing one item's files, which the `reviewing` status
+forbids — and it says nothing about how many PRs one round may read. A
+cross-repo review is in fact the case that needs the set most: judging the API
+PR without the web PR that consumes it leaves the contract between them
+unchecked. So a round over several PRs is **one round over several diffs**.
 
-Two consequences are contractual rather than cosmetic:
+What is genuinely per-action is only which PRs it can act on, and which start
+selected:
+
+| Action | Candidates | Pre-selected |
+|---|---|---|
+| Open PR | every PR | all — read-only, and "Open PRs (3)" promises three |
+| Mark PR ready | **drafts** only; a merged or already-ready PR is never offered | the primary |
+| Post round to PR | every PR | the primary |
+| Code review | every PR, plus "this repository's own diff" as its own row | the own diff (what an unscoped round always read) |
+| Answer PR comments | every PR | every PR with threads waiting (the primary when no count is known) |
+
+The pre-selection rule is "the answer the button already promised": that is
+the right answer for the single-PR case and the one nobody has to think
+about. Two entries above are the deliberate exceptions — `open` is read-only
+and its label promises every PR, and the respond action advertises the item's
+whole unanswered-thread count, so opening its dialog with only the primary
+ticked would agree to a fraction of what the button just said. Outside those,
+a *linked* repository is never pre-selected: announcing a second repo is the
+thing the human ticks deliberately. An empty selection is not an answer, so
+the dialog's confirm button is disabled until something is checked.
+
+Three consequences are contractual rather than cosmetic:
 
 - **Only the primary moves the item.** Marking a linked draft ready records
   its new state and leaves the status alone; the GUI says so out loud, or a
@@ -594,7 +619,11 @@ Two consequences are contractual rather than cosmetic:
   forge, and its findings are published on that PR — not written as
   annotations, which would anchor to files this repository does not have. The
   reviewer skill states the same rule; clash pre-selects the matching publish
-  mode when the round is scoped that way.
+  mode as soon as a linked PR is picked.
+- **A round over several PRs must report per PR.** The kickoff names them all
+  (`PR: <url>, <url>`) and the skills require the round report to say which
+  ones it read and, for a respond round, what it published where — a round
+  that answered two repositories and reported one total cannot be audited.
 
 ### Sharing, export and webhook notifications (clash-side, informative)
 

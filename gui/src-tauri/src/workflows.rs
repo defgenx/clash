@@ -1511,7 +1511,7 @@ pub(crate) async fn start_workflow_review_agent(
     publish: ReviewPublish,
     interactive: Option<bool>,
     target: Option<ReviewTarget>,
-    pr_url: Option<String>,
+    pr_urls: Option<Vec<String>>,
     auto_apply: Option<bool>,
     focus: Option<String>,
     cols: u16,
@@ -1545,22 +1545,30 @@ pub(crate) async fn start_workflow_review_agent(
             meta.status
         ));
     }
-    // The PR the round talks to: the primary by default, or a specific one
-    // the launcher picked (multi-repo items answer reviewers per PR). A pick
-    // must be one of the item's recorded PRs — anything else is a typo, not
-    // a target.
-    let pr_url = pr_url
+    // The PRs the round is about: the item's own change by default, or the
+    // ones the launcher picked. Every pick must be one of the item's recorded
+    // PRs — anything else is a typo or a stale frontend, not a target — and
+    // the same resolver every PR-scoped action uses answers that, so "this
+    // item does not track that PR" is one rule with one wording.
+    let pr_urls: Vec<String> = pr_urls
+        .unwrap_or_default()
+        .into_iter()
         .map(|u| u.trim().to_string())
-        .filter(|u| !u.is_empty());
-    if let Some(u) = &pr_url {
-        // Same resolver every PR-scoped action uses, so "this item does not
-        // track that PR" is one rule with one wording.
-        clash::application::workflow::select_prs(&meta, Some(std::slice::from_ref(u)))?;
-    }
+        .filter(|u| !u.is_empty())
+        .collect();
+    let pr_urls = if pr_urls.is_empty() {
+        Vec::new()
+    } else {
+        clash::application::workflow::select_prs(&meta, Some(&pr_urls))?
+            .into_iter()
+            .map(|p| p.url)
+            .collect()
+    };
     // Fail before spawning rather than letting the agent discover it: a round
     // that talks to the forge needs a PR to talk to. An explicit pick IS that
     // PR, even when the item has no primary (linked-only items).
-    if publish.needs_pr() && pr_url.is_none() && meta.pr.as_ref().is_none_or(|p| p.url.is_empty()) {
+    if publish.needs_pr() && pr_urls.is_empty() && meta.pr.as_ref().is_none_or(|p| p.url.is_empty())
+    {
         return Err("no-pr: this item has no pull request yet".to_string());
     }
     // Plan/diff stay DERIVED from the launch status (a plan review at
@@ -1608,7 +1616,7 @@ pub(crate) async fn start_workflow_review_agent(
         round,
         interactive,
         auto_apply,
-        pr_url: pr_url.unwrap_or_default(),
+        pr_urls,
         // What this pass must concentrate on, when the human said so at launch.
         focus: focus.map(|f| f.trim().to_string()).unwrap_or_default(),
         started_at: now_ms(),

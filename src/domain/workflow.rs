@@ -462,8 +462,21 @@ pub struct WorkflowReview {
     /// never asked, can never spawn an executor nobody authorized.
     #[serde(default)]
     pub auto_apply: bool,
-    /// The PR this round talks to, when the launcher picked one — multi-repo
-    /// items answer reviewers per PR. Empty means the primary `meta.pr`.
+    /// The PRs this round is about, when the launcher picked any. Empty means
+    /// the item's own change — its whole local diff, and its primary
+    /// `meta.pr` as the PR to talk to.
+    ///
+    /// A list because a cross-repo change is one change: one round reads the
+    /// API PR and the web PR that consumes it, since reviewing half of it is
+    /// how the contract between the halves goes unchecked. Two rounds would
+    /// be two agents on one item, which the `reviewing` status forbids — the
+    /// set is what makes the fan-out possible without that.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pr_urls: Vec<String>,
+    /// The single-PR spelling this predates. Read-only: rounds are transient
+    /// ("in flight" while `reviewing`, "the most recent" afterwards), so the
+    /// only item this can matter for is one mid-round across an upgrade —
+    /// `review_pr_urls` folds it in, and nothing writes it any more.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub pr_url: String,
     /// What this round must concentrate on, in the human's words — asked at

@@ -835,6 +835,28 @@ pub fn build_agent_prompt(item_dir: &str, kickoff: &ExecutorKickoff) -> String {
     prompt
 }
 
+/// Pure: the PRs a round is about — `pr_urls`, falling back to the legacy
+/// single `pr_url` for a round recorded before the field was a list.
+///
+/// One accessor because two spellings with two readers is how a round ends up
+/// scoped differently in the kickoff and in the UI that launched it.
+pub fn review_pr_urls(review: &crate::domain::workflow::WorkflowReview) -> Vec<String> {
+    if !review.pr_urls.is_empty() {
+        return review
+            .pr_urls
+            .iter()
+            .map(|u| u.trim().to_string())
+            .filter(|u| !u.is_empty())
+            .collect();
+    }
+    let legacy = review.pr_url.trim();
+    if legacy.is_empty() {
+        Vec::new()
+    } else {
+        vec![legacy.to_string()]
+    }
+}
+
 /// Pure: the review skill for a round's target. Plan reviews and code reviews
 /// are deliberately **separate skills** — a reviewer that may rewrite what it
 /// reviews has reviewed nothing, and a skill that does both jobs describes
@@ -876,13 +898,14 @@ pub fn build_review_prompt(
     mode: WorkflowMode,
 ) -> String {
     let engine = review_engine_for(review.target);
-    // The PR the round talks to, when the launcher picked one (a linked PR
-    // lives in another repository, so the reviewer must know before reading
-    // anything). Absent means the primary `meta.pr`.
-    let pr = if review.pr_url.is_empty() {
+    // The PRs the round is about, when the launcher picked any (each may live
+    // in another repository, so the reviewer must know before reading
+    // anything). Absent means the item's own change.
+    let picked = review_pr_urls(review);
+    let pr = if picked.is_empty() {
         String::new()
     } else {
-        format!(" PR: {}.", review.pr_url)
+        format!(" PR: {}.", picked.join(", "))
     };
     // What the human asked this pass to settle. A blueprint they sent back for
     // a deeper look is the case this exists for: without it the next round
@@ -1641,20 +1664,68 @@ Tighten the API.\n\n\
     }
 
     #[test]
-    fn review_prompt_names_the_picked_pr() {
+    fn review_prompt_names_every_picked_pr() {
         use crate::domain::workflow::{ReviewPublish, WorkflowReview};
-        let p = build_review_prompt(
+        // The reviewer must know which PRs before reading anything — each may
+        // live in another repository.
+        let one = build_review_prompt(
             "/x/i",
             &WorkflowReview {
                 publish: ReviewPublish::RespondPrComments,
-                pr_url: "https://github.com/o/other/pull/7".into(),
+                pr_urls: vec!["https://github.com/o/other/pull/7".into()],
                 ..WorkflowReview::default()
             },
             WorkflowMode::Full,
         );
-        // The reviewer must know which PR before reading anything — a linked
-        // PR lives in another repository.
-        assert!(p.contains("PR: https://github.com/o/other/pull/7."));
+        assert!(one.contains("PR: https://github.com/o/other/pull/7."));
+
+        // A cross-repo round names all of them: one round reads the API PR
+        // and the web PR that consumes it.
+        let many = build_review_prompt(
+            "/x/i",
+            &WorkflowReview {
+                pr_urls: vec![
+                    "https://github.com/o/api/pull/1".into(),
+                    "https://github.com/o/web/pull/2".into(),
+                ],
+                ..WorkflowReview::default()
+            },
+            WorkflowMode::Full,
+        );
+        assert!(
+            many.contains("PR: https://github.com/o/api/pull/1, https://github.com/o/web/pull/2.")
+        );
+    }
+
+    #[test]
+    fn a_round_recorded_before_the_list_still_names_its_pr() {
+        use crate::domain::workflow::WorkflowReview;
+        // `prUrl` was the single-PR spelling. An item mid-round across an
+        // upgrade must not silently lose its scope and review the wrong
+        // repository, so the accessor folds the legacy field in.
+        let legacy = WorkflowReview {
+            pr_url: "https://github.com/o/other/pull/7".into(),
+            ..WorkflowReview::default()
+        };
+        assert_eq!(
+            review_pr_urls(&legacy),
+            vec!["https://github.com/o/other/pull/7"]
+        );
+        assert!(build_review_prompt("/x/i", &legacy, WorkflowMode::Full)
+            .contains("PR: https://github.com/o/other/pull/7."));
+
+        // The list wins when both are somehow present, and blanks never
+        // become a PR.
+        let both = WorkflowReview {
+            pr_url: "https://github.com/o/stale/pull/1".into(),
+            pr_urls: vec!["https://github.com/o/fresh/pull/2".into(), "  ".into()],
+            ..WorkflowReview::default()
+        };
+        assert_eq!(
+            review_pr_urls(&both),
+            vec!["https://github.com/o/fresh/pull/2"]
+        );
+        assert!(review_pr_urls(&WorkflowReview::default()).is_empty());
     }
 
     #[test]

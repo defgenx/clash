@@ -48,6 +48,7 @@ function sandbox(over = {}) {
     uiConfirm: async () => true,
     uiChoice: async () => null,
     uiListChoice: async () => null,
+    uiCheckChoice: async () => null,
     uiPrompt: async () => null,
     flashToast: () => {},
     openLink: () => {},
@@ -72,12 +73,13 @@ function sandbox(over = {}) {
   return box;
 }
 
-test("the scope picker asks once, with rows the item actually has", async () => {
+test("the scope picker asks once, over the rows the action can act on", async () => {
   let asked = null;
   const box = sandbox({
-    uiListChoice: async (args) => {
+    // Answer with every offered row: the "all" case.
+    uiCheckChoice: async (args) => {
       asked = args;
-      return args.items[0].value;
+      return args.items.map((i) => i.value);
     },
   });
   vm.runInContext(`pickPrScope = ${extractFunction(APP, "pickPrScope")}`, box);
@@ -85,11 +87,27 @@ test("the scope picker asks once, with rows the item actually has", async () => 
   // Three PRs, one of them merged: mark-ready asks over the two drafts only.
   const sel = await box.pickPrScope(ITEM, "markReady");
   assert.ok(asked, "a multi-draft item must be asked");
-  assert.equal(asked.items.length, 3, "the fan-out row plus one row per draft");
+  assert.equal(asked.items.length, 2, "one row per draft, no fan-out row");
+  assert.match(asked.allLabel, /All 2 drafts/, "the all/none toggle names the set");
+  // Only the primary starts checked — never another repository.
+  assert.deepEqual(
+    [...asked.items.filter((i) => i.checked).map((i) => i.value)],
+    ["https://github.com/o/api/pull/1"]
+  );
   assert.deepEqual([...sel.urls], [
     "https://github.com/o/api/pull/1",
     "https://github.com/o/web/pull/2",
   ]);
+  assert.equal(sel.all, true);
+
+  // A subset of exactly one linked PR — the answer one-or-all could not give.
+  const subset = sandbox({
+    uiCheckChoice: async () => ["https://github.com/o/web/pull/2"],
+  });
+  vm.runInContext(`pickPrScope = ${extractFunction(APP, "pickPrScope")}`, subset);
+  const two = await subset.pickPrScope(ITEM, "markReady");
+  assert.deepEqual([...two.urls], ["https://github.com/o/web/pull/2"]);
+  assert.equal(two.all, false);
 
   // A single candidate resolves with no dialog at all.
   asked = null;
@@ -102,9 +120,49 @@ test("the scope picker asks once, with rows the item actually has", async () => 
   assert.deepEqual([...one.urls], ["https://github.com/o/api/pull/1"]);
 
   // Cancelling resolves null, so callers stop instead of acting on a default.
-  const cancelled = sandbox({ uiListChoice: async () => null });
+  const cancelled = sandbox({ uiCheckChoice: async () => null });
   vm.runInContext(`pickPrScope = ${extractFunction(APP, "pickPrScope")}`, cancelled);
   assert.equal(await cancelled.pickPrScope(ITEM, "markReady"), null);
+});
+
+test("a respond round takes the whole picked set, in one round", async () => {
+  // Answering the reviewers of a cross-repo change is one pass, not one pass
+  // per repository — and the confirmation counts the threads of exactly the
+  // PRs picked, not of the item.
+  const spawned = [];
+  const confirms = [];
+  const box = sandbox({
+    uiCheckChoice: async (args) => args.items.map((i) => i.value),
+    uiConfirm: async (m) => {
+      confirms.push(m);
+      return true;
+    },
+    spawnWfReview: async (...args) => spawned.push(args),
+    answerCommentsConfirm: (name, count) => `answer ${count} on ${name}?`,
+    prChipLabel: (pr) => `chip${pr.number}`,
+  });
+  vm.runInContext(`pickPrScope = ${extractFunction(APP, "pickPrScope")}`, box);
+  vm.runInContext(
+    `launchWfReviewRespond = ${extractFunction(APP, "launchWfReviewRespond")}`,
+    box
+  );
+  const withThreads = {
+    ...ITEM,
+    meta: {
+      ...ITEM.meta,
+      pr: { ...ITEM.meta.pr, unansweredComments: 2 },
+      linkedPrs: [{ url: "https://github.com/o/web/pull/2", number: 2, unansweredComments: 3 }],
+    },
+  };
+  await box.launchWfReviewRespond(withThreads, null);
+  assert.match(confirms[0], /answer 5 on 2 pull requests\?/);
+  const [, , depth, publish, opts] = spawned[0];
+  assert.equal(depth, "standard");
+  assert.equal(publish, "respond-pr-comments");
+  assert.deepEqual([...opts.prUrls], [
+    "https://github.com/o/api/pull/1",
+    "https://github.com/o/web/pull/2",
+  ]);
 });
 
 test("a no-candidate action says why instead of doing nothing", async () => {
@@ -123,7 +181,7 @@ test("a no-candidate action says why instead of doing nothing", async () => {
 test("mark ready sends the picked URLs and reports what did not flip", async () => {
   const calls = [];
   const box = sandbox({
-    uiListChoice: async (a) => a.items[0].value, // the fan-out row
+    uiCheckChoice: async (a) => a.items.map((i) => i.value), // every draft
     invoke: async (cmd, args) => {
       calls.push([cmd, args]);
       return {
@@ -161,7 +219,7 @@ test("a linked-only flip says the item stayed where it was", async () => {
   // reads as a stage transition that failed.
   const toasts = [];
   const box = sandbox({
-    uiListChoice: async (a) => a.items.at(-1).value,
+    uiCheckChoice: async (a) => [a.items.at(-1).value], // the linked draft alone
     invoke: async () => ({
       flipped: ["https://github.com/o/web/pull/2"],
       failed: [],
@@ -219,14 +277,26 @@ test("the review composer opens with a scope group and pre-selects the pick", ()
     target: "diff",
     hasPr: true,
     prs: box.itemPrs(ITEM.meta),
-    prUrl: "https://github.com/o/web/pull/2",
+    prUrls: ["https://github.com/o/web/pull/2"],
   });
   assert.ok(model.prScope, "a multi-PR code round must offer a scope");
-  assert.equal(model.prScope.default, "https://github.com/o/web/pull/2");
-  assert.equal(model.prScope.choices.length, 4, "whole change + one row per PR");
+  assert.equal(model.prScope.choices.length, 3, "one row per PR");
+  // The seeded PR is checked and the local-diff row is not — a scoped launch
+  // must not also read the whole branch.
+  assert.equal(model.prScope.local.checked, false);
+  assert.deepEqual(
+    [...model.prScope.choices.filter((c) => c.checked).map((c) => c.value)],
+    ["https://github.com/o/web/pull/2"]
+  );
+  // Unscoped, the round reads the item's own diff — what it always read.
+  const plain = box.reviewRoundModel({ target: "diff", prs: box.itemPrs(ITEM.meta) });
+  assert.equal(plain.prScope.local.checked, true);
+  assert.ok(plain.prScope.choices.every((c) => !c.checked));
 
   let rejected = null;
-  const p = box.wfComposeReviewRound(ITEM, { prUrl: "https://github.com/o/web/pull/2" });
+  const p = box.wfComposeReviewRound(ITEM, {
+    prUrls: ["https://github.com/o/web/pull/2"],
+  });
   p.catch((e) => (rejected = e));
   assert.equal(rejected, null, `the composer must open: ${rejected}`);
 });

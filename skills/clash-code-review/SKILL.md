@@ -25,9 +25,14 @@ The kickoff prompt gives you:
 - **Round** — the 1-based round number; use it as your section heading
 - **Return to** — the status to restore when you finish. **This is a contract.**
 - **Mode** — `full` | `from-plan` | `review-only`
-- **PR** — optional; the URL of the PR this round is about (also in
-  `meta.review.prUrl`). Absent means "the item's whole change" — the local
-  diff, with the primary `meta.pr.url` as the PR to talk to.
+- **PR** — optional; the PR this round is about, or **several** separated by
+  `, ` (also in `meta.review.prUrls`). Absent means "the item's own change" —
+  the local diff, with the primary `meta.pr.url` as the PR to talk to.
+
+  Several is the cross-repo case, and it is one round, not several: a change
+  split across an API repo and the web repo that consumes it is *one* change,
+  and judging half of it leaves the contract between the halves unchecked.
+  Read every named PR, and say in your report which ones you read.
 
   A **linked** PR is in a *different repository* than your cwd, so a round
   naming one changes both what you read and where the findings go — see "The
@@ -35,7 +40,7 @@ The kickoff prompt gives you:
   parsed from the URL, read file context through `gh api`, and never edit
   anything locally for a linked PR: the checkout around you is the item's
   repo, not that one. The one thing that *is* an annotation on the item's own
-  diff is work the linked PR implies **here** — "this repo's caller needs the
+  diff is work a linked PR implies **here** — "this repo's caller needs the
   new field too" is a finding about your own files.
 - **Interactive** — optional; see the opening question below.
 
@@ -150,19 +155,26 @@ inventing a `NIT` to look productive wastes the human's next round.
 
 ### The diff under review
 
-Which diff depends on the kickoff's `PR:` field, and getting this wrong means
-reviewing the wrong repository:
+Which diffs depends on the kickoff's `PR:` field, and getting this wrong means
+reviewing the wrong repository. Take each named PR in turn; with none named,
+the item's own change is the whole subject:
 
 - **No `PR:`, or `PR:` naming the primary `meta.pr.url`** — the item's own
   change: `git diff <base>...HEAD` (base from `meta.base`, or the repo's
   default branch when empty). This is the normal round.
 - **`PR:` naming a linked PR** — *that PR's* diff, which is in another
   repository and not in your checkout at all:
-  `gh pr diff <n> --repo <owner/repo>`. The human scoped the round to one
-  repository of a multi-repo change, so reviewing your local branch instead
-  would be reviewing something they did not ask about. Read file context
-  through `gh api` (`/repos/{owner}/{repo}/contents/<path>?ref=<head sha>`);
-  never edit anything locally for a linked PR.
+  `gh pr diff <n> --repo <owner/repo>`. The human scoped the round to that
+  repository, so reviewing your local branch instead would be reviewing
+  something they did not ask about. Read file context through `gh api`
+  (`/repos/{owner}/{repo}/contents/<path>?ref=<head sha>`); never edit
+  anything locally for a linked PR.
+
+With several named, review them as **one** change: read all the diffs before
+grading anything, and look specifically at what crosses between them — a
+field added on one side and not consumed on the other, a version bumped in one
+repo and pinned in another. Those cross-repo findings are the reason the human
+picked more than one PR, and they are invisible from either diff alone.
 
 Review the change, not the whole file — but read enough of each file to judge
 the change in context.
@@ -257,10 +269,13 @@ instead.
   published decision, and fix what the comments ask for.** This is not a
   review round with a posting step at the end; the threads are the work.
 
-  Read them from **the round's PR** (the kickoff's `PR:` field, else the
-  primary `meta.pr.url`) via
+  Read them from **every PR the round names** (the kickoff's `PR:` field —
+  one URL or several — else the primary `meta.pr.url`) via
   `gh api /repos/{owner}/{repo}/pulls/<n>/comments` and
-  `gh pr view <n> --json reviews,comments`.
+  `gh pr view <n> --json reviews,comments`, each `--repo`-scoped to its own
+  repository. With several, work through them one PR at a time and report per
+  PR under `### Published`: a round that answered two repositories and
+  reported one total is a round nobody can audit.
 
   **Which threads are open.** A thread is **settled** when *you* have replied
   in it and nobody has spoken after you. Everything else is open, and that

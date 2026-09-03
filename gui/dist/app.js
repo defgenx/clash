@@ -304,6 +304,127 @@ const uiAlert = (message) => uiDialog({ message, cancelable: false });
 const uiTextPrompt = (message, def = "", okLabel = "OK") =>
   uiDialog({ message, input: def, multiline: true, okLabel });
 
+/// A modal that picks **several** entries from a list: an all/none toggle
+/// over scrollable checkbox rows, each with a label and a dim detail line.
+/// Resolves to the array of picked values, or null when cancelled.
+///
+/// The sibling of `uiListChoice` for questions whose honest answer is a set
+/// rather than one entry — "which of this item's pull requests". A one-or-all
+/// list could not express "these two of the four", which is the normal shape
+/// of a multi-repo change where three repos are ready and one is not.
+///
+/// An empty selection is not an answer, so the confirm button stays disabled
+/// until something is checked; that is what lets the dialog open with a
+/// deliberate default (often just the primary) without also making "confirm
+/// immediately" mean "act on nothing".
+function uiCheckChoice({ message, detail = null, items, allLabel = "All", okLabel = "OK" }) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "dialog-backdrop";
+    const box = document.createElement("div");
+    box.className = "dialog-box";
+    const msg = document.createElement("p");
+    msg.textContent = message;
+    box.appendChild(msg);
+    if (detail !== null) {
+      const d = document.createElement("p");
+      d.className = "dialog-detail";
+      d.textContent = detail;
+      box.appendChild(d);
+    }
+    const done = (val) => {
+      backdrop.remove();
+      resolve(val);
+      if (typeof fitAll === "function") fitAll();
+    };
+
+    const list = document.createElement("div");
+    list.className = "dialog-list check-list";
+    // The all/none row is a row of the list, not a button beside it: it is
+    // the answer people want most often on a multi-repo item, and a checkbox
+    // that mirrors the rows below it also *shows* the current state.
+    const allRow = document.createElement("label");
+    allRow.className = "dialog-list-row check-all";
+    const allBox = document.createElement("input");
+    allBox.type = "checkbox";
+    const allText = document.createElement("div");
+    allText.className = "dialog-list-label";
+    allText.textContent = allLabel;
+    allRow.append(allBox, allText);
+    list.appendChild(allRow);
+
+    const boxes = [];
+    for (const it of items) {
+      const row = document.createElement("label");
+      row.className = "dialog-list-row";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !!it.checked;
+      const text = document.createElement("div");
+      text.className = "dialog-list-text";
+      const label = document.createElement("div");
+      label.className = "dialog-list-label";
+      label.textContent = it.label;
+      text.appendChild(label);
+      if (it.detail) {
+        const d = document.createElement("div");
+        d.className = "dialog-list-detail";
+        d.textContent = it.detail;
+        text.appendChild(d);
+      }
+      row.append(cb, text);
+      list.appendChild(row);
+      boxes.push({ cb, value: it.value });
+    }
+    box.appendChild(list);
+
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.onclick = () => done(null);
+    const ok = document.createElement("button");
+    ok.className = "primary";
+    const picked = () => boxes.filter((b) => b.cb.checked).map((b) => b.value);
+    const sync = () => {
+      const n = picked().length;
+      allBox.checked = n === boxes.length;
+      // Neither all nor none: say so on the box rather than reading as "none".
+      allBox.indeterminate = n > 0 && n < boxes.length;
+      ok.disabled = n === 0;
+      ok.textContent = n > 1 ? `${okLabel} (${n})` : okLabel;
+    };
+    allBox.onchange = () => {
+      const on = allBox.checked;
+      for (const b of boxes) b.cb.checked = on;
+      sync();
+    };
+    for (const b of boxes) b.cb.onchange = sync;
+    ok.onclick = () => {
+      const sel = picked();
+      if (sel.length) done(sel);
+    };
+    actions.append(cancel, ok);
+    box.appendChild(actions);
+    sync();
+
+    backdrop.appendChild(box);
+    // Native browser webviews paint over the DOM and would hide the dialog —
+    // drop them while it's up; fitAll() (in done) brings them back.
+    if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
+    document.body.appendChild(backdrop);
+    wireBackdropDismiss(backdrop, () => done(null));
+    backdrop.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") done(null);
+      // Enter confirms, but only a selection that exists — the same rule the
+      // button follows.
+      else if (e.key === "Enter" && !ok.disabled) ok.onclick();
+    });
+    setTimeout(() => ok.focus(), 0);
+  });
+}
+
 /// A modal that picks one entry from a (possibly long) list: scrollable
 /// rows with a label and an optional dim detail line. Resolves to the
 /// picked value, or null when cancelled. Use this instead of uiChoice when
@@ -5523,23 +5644,36 @@ async function buildWorkflowView(el, project, slug) {
 /// Ask which of the item's PRs an action applies to — the one scope question
 /// every PR-shaped action goes through.
 ///
-/// Multi-repo items carry several PRs, and acting on all of them is a
-/// decision, not a default: three repos going up for review at once is a
-/// release. Nothing is asked when the action has a single candidate (or none
-/// — the caller is told why), so single-PR items behave exactly as before.
+/// The answer is a **set**: one PR, several, or all of them. A multi-repo
+/// change where three repos are ready and one is not has no expression as
+/// one-or-all, and that is the normal shape of the work. Nothing is asked
+/// when the action has a single candidate (or none — the caller is told
+/// why), so single-PR items behave exactly as before.
 ///
-/// Resolves the pure model's selection `{ all, urls }`, or null when the user
-/// cancelled or the action has nothing to act on.
+/// Resolves `{ all, urls }`, or null when the user cancelled or the action
+/// has nothing to act on.
 async function pickPrScope(item, action, opts = {}) {
   const prs = itemPrs(item.meta);
-  const model = prScopeModel(prs, action);
+  const model = prScopeModel(prs, action, opts);
   if (!model.candidates.length) {
     if (opts.quiet !== true) uiAlert(model.empty);
     return null;
   }
   if (!model.needed) return model.only;
-  const picked = await uiListChoice({ message: model.message, items: model.rows });
-  return picked || null;
+  const picked = await uiCheckChoice({
+    message: model.message,
+    detail: model.detail || null,
+    allLabel: model.allLabel,
+    okLabel: model.okLabel,
+    items: model.rows.map((r) => ({
+      value: r.url,
+      label: r.label,
+      detail: r.detail,
+      checked: r.checked,
+    })),
+  });
+  if (!picked) return null;
+  return prScopeSelection(model, picked);
 }
 
 /// The menu one PR of an item gets: everything a PR-shaped action can do,
@@ -5610,7 +5744,7 @@ function wfPrMenu(item, pr, root) {
     entries.push({
       label: `Code review ${name}…`,
       icon: "search",
-      action: () => launchWfReview(item, root, { prUrl: pr.url }),
+      action: () => launchWfReview(item, root, { prUrls: [pr.url] }),
     });
     entries.push({
       label: pr.unanswered
@@ -5718,7 +5852,7 @@ async function wfMarkPrReady(item, root, { scope = null, confirmed = false } = {
   await run(item);
 }
 
-/// Open the item's PRs — one, or all of them.
+/// Open the item's PRs — whichever of them you pick.
 ///
 /// Opening all of a multi-repo item's PRs is one legitimate intent (reviewing
 /// three repos' halves of one change) and opening exactly one is another;
@@ -5797,7 +5931,7 @@ async function launchWfReview(item, root, opts = {}) {
   await spawnWfReview(item, root, picked.depth, picked.publish, {
     interactive: picked.interactive,
     autoApply: picked.autoApply,
-    prUrl: picked.prUrl,
+    prUrls: picked.prUrls,
   });
 }
 
@@ -5806,21 +5940,30 @@ async function launchWfReview(item, root, opts = {}) {
 /// rest into the item's comment queue. Its own action, not a publish mode
 /// buried two dialogs deep — answering reviewers is a different job from
 /// producing a fresh review, and a job you can't see is a job you don't have.
-/// Multi-repo items answer reviewers per PR, so several PRs means picking one
-/// — the choice rides the kickoff (`PR: <url>`) and `meta.review.prUrl`.
+/// A multi-repo item picks which PRs the round serves — one, several, or all
+/// of them: the reviewers of one change are spread across its repositories,
+/// and one round answering all of them is one pass, not several. The picks
+/// ride the kickoff (`PR: <url>[, <url>]`) and `meta.review.prUrls`.
 async function launchWfReviewRespond(item, root, { scope = null } = {}) {
   const prs = itemPrs(item.meta);
   const sel = scope || (await pickPrScope(item, "respond"));
-  if (!sel) return;
-  const pr = prs.find((p) => p.url === sel.urls[0]);
-  if (!pr) return;
-  const prName = pr.primary
-    ? pr.number
-      ? `#${pr.number}`
-      : "the PR"
-    : prChipLabel(pr);
-  if (!(await uiConfirm(answerCommentsConfirm(prName, pr.unanswered), "Launch"))) return;
-  await spawnWfReview(item, root, "standard", "respond-pr-comments", { prUrl: pr.url });
+  if (!sel || !sel.urls.length) return;
+  const picked = prs.filter((p) => sel.urls.includes(p.url));
+  // What the confirmation is about: one PR by name, several by count — and
+  // the thread total across exactly the PRs picked, not across the item, so
+  // the number the human agrees to is the number the round will work on.
+  const prName =
+    picked.length > 1
+      ? `${picked.length} pull requests`
+      : picked[0].primary && picked[0].number
+        ? `#${picked[0].number}`
+        : prChipLabel(picked[0]);
+  const known = picked.filter((p) => p.unanswered != null);
+  const count = known.length ? known.reduce((n, p) => n + p.unanswered, 0) : null;
+  if (!(await uiConfirm(answerCommentsConfirm(prName, count), "Launch"))) return;
+  await spawnWfReview(item, root, "standard", "respond-pr-comments", {
+    prUrls: sel.urls,
+  });
 }
 
 /// Mirror of the backend's `workflow_session_name`: the item title (shortened,
@@ -5868,10 +6011,10 @@ async function wfPrRecovery(item, err, retry) {
 /// comments" action, and the "Explain changes" structure round), so the
 /// session is registered, named and refreshed identically wherever it starts.
 /// `target` is only ever "structure" — plan/diff stay derived by the backend.
-/// `prUrl` pins the round to one of the item's PRs (respond rounds on
-/// multi-PR items); null means the primary.
+/// `prUrls` pins the round to those of the item's PRs; empty means the item's
+/// own change (and, for a round that must talk to a forge, its primary PR).
 /// Launch a review round. Everything past `publish` rides an options bag:
-/// `interactive`, `target`, `prUrl`, `autoApply`, `focus` — six positional
+/// `interactive`, `target`, `prUrls`, `autoApply`, `focus` — six positional
 /// arguments with three nulls in the middle told the reader nothing at the
 /// call site.
 ///
@@ -5883,7 +6026,7 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
   const {
     interactive = null,
     target = null,
-    prUrl = null,
+    prUrls = null,
     autoApply = false,
     focus = null,
   } = opts;
@@ -5895,7 +6038,7 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
       publish,
       interactive,
       target,
-      prUrl,
+      prUrls: prUrls && prUrls.length ? prUrls : null,
       autoApply,
       focus,
       cols: 120,
@@ -5933,7 +6076,7 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
       } else if (how === "local") {
         // Downgraded to a local round: the PR pick goes with the publish mode
         // it belonged to.
-        await spawnWfReview(item, root, depth, "local", { ...opts, prUrl: null });
+        await spawnWfReview(item, root, depth, "local", { ...opts, prUrls: null });
       }
       return;
     }
@@ -6334,7 +6477,7 @@ async function wfShareDialog(item) {
 /// launches. Replaces two stacked uiChoice dialogs, which never showed the
 /// publish question and the depth question on the same screen. Pure model in
 /// wf-review.js. Resolves { depth, publish } or null on cancel.
-function wfComposeReviewRound(item, { prUrl = null } = {}) {
+function wfComposeReviewRound(item, { prUrls = null } = {}) {
   return new Promise((resolve) => {
     const model = reviewRoundModel({
       round: wfNextReviewRound(item, wfReviewTarget(item)),
@@ -6342,14 +6485,15 @@ function wfComposeReviewRound(item, { prUrl = null } = {}) {
       hasPr: wfHasPr(item),
       prNumber: item.meta.pr ? item.meta.pr.number : 0,
       prDraft: !!(item.meta.pr && item.meta.pr.draft),
-      // Which change the round reads is a dimension of the round on a
+      // Which changes the round reads is a dimension of the round on a
       // multi-repo item, so it belongs in this dialog rather than in a second
       // one nobody would find.
       prs: itemPrs(item.meta),
-      // A launch that already named its PR (the per-PR menu) opens with that
-      // row selected — the dialog still shows the choice, so the scope of the
-      // round is never something the human has to remember having picked.
-      prUrl,
+      // A launch that already named its PRs (a per-PR menu, a re-open) opens
+      // with those rows checked — the dialog still shows the choice, so the
+      // scope of the round is never something the human has to remember
+      // having picked.
+      prUrls,
       interactionDefault: item.meta.interactionDefault || "",
       // Remember the last round's answer for this item: someone who wants the
       // loop hands-off wants it every round, and someone who reads findings
@@ -6406,11 +6550,67 @@ function wfComposeReviewRound(item, { prUrl = null } = {}) {
       body.appendChild(fs);
       return fs;
     };
+    /// The scope group is checkboxes, not radios: a cross-repo change is one
+    /// change, so "the API PR and the web PR" is a legitimate round. The
+    /// local-diff row is the "no PR scope" state made visible — checking it
+    /// clears the PRs and checking a PR clears it, because reading your own
+    /// branch and reading a PR's diff from the forge are alternative sources
+    /// for the same repository's change.
+    const buildScope = (group) => {
+      const fs = document.createElement("fieldset");
+      fs.className = "wf-review-group";
+      const lg = document.createElement("legend");
+      lg.textContent = group.legend;
+      fs.appendChild(lg);
+      const rows = [];
+      const mk = (c, local) => {
+        const row = document.createElement("label");
+        row.className = "wf-review-opt";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.value = c.value;
+        input.checked = !!c.checked;
+        input.dataset.local = local ? "1" : "";
+        const text = document.createElement("span");
+        text.className = "wf-review-opt-text";
+        const label = document.createElement("span");
+        label.className = "wf-review-opt-label";
+        label.textContent = c.label;
+        const detail = document.createElement("span");
+        detail.className = "wf-review-opt-detail";
+        detail.textContent = c.detail;
+        text.append(label, detail);
+        row.append(input, text);
+        fs.appendChild(row);
+        rows.push({ input, local, linked: !!c.linked });
+        return input;
+      };
+      mk(group.local, true);
+      for (const c of group.choices) mk(c, false);
+      fs.addEventListener("change", (e) => {
+        const hit = rows.find((r) => r.input === e.target);
+        if (!hit) return;
+        if (hit.local && hit.input.checked) {
+          for (const r of rows) if (!r.local) r.input.checked = false;
+        } else if (!hit.local && hit.input.checked) {
+          for (const r of rows) if (r.local) r.input.checked = false;
+        }
+        // Nothing checked is not a round: fall back to the local diff, which
+        // is what an unscoped code round has always read.
+        if (!rows.some((r) => r.input.checked)) {
+          const local = rows.find((r) => r.local);
+          if (local) local.input.checked = true;
+        }
+      });
+      body.appendChild(fs);
+      return { fs, rows };
+    };
+
     // A null group means the dimension has one real answer — render nothing
     // and use the fallback, instead of offering a choice that isn't one.
     // Scope goes first: it decides *what* is reviewed, and the rest of the
     // dialog is how.
-    const scopeGroup = model.prScope ? buildGroup(model.prScope, "wf-review-scope") : null;
+    const scope = model.prScope ? buildScope(model.prScope) : null;
     const depthGroup = model.depth ? buildGroup(model.depth, "wf-review-depth") : null;
     const publishGroup = model.publish ? buildGroup(model.publish, "wf-review-publish") : null;
     const interactionGroup = buildGroup(model.interaction, "wf-review-interaction");
@@ -6418,17 +6618,16 @@ function wfComposeReviewRound(item, { prUrl = null } = {}) {
       const el = fs && fs.querySelector("input:checked");
       return el ? el.value : fallback;
     };
+    const scopeUrls = () =>
+      scope ? scope.rows.filter((r) => !r.local && r.input.checked).map((r) => r.input.value) : [];
     // Scoping a round to a *linked* PR moves the findings' only sane
     // destination: that PR's files are in another repository, so they cannot
     // be annotations on this item's diff. Pre-select "post to the PR" rather
     // than let the round end with findings nobody can see — the human can
     // still change it back.
-    if (scopeGroup && publishGroup) {
-      const linked = new Set(
-        model.prScope.choices.filter((c) => c.linked).map((c) => c.value)
-      );
-      scopeGroup.addEventListener("change", () => {
-        if (!linked.has(picked(scopeGroup, ""))) return;
+    if (scope && publishGroup) {
+      scope.fs.addEventListener("change", () => {
+        if (!scope.rows.some((r) => r.linked && r.input.checked)) return;
         const post = publishGroup.querySelector('input[value="pr-comments"]');
         if (post) post.checked = true;
       });
@@ -6473,9 +6672,9 @@ function wfComposeReviewRound(item, { prUrl = null } = {}) {
         publish: picked(publishGroup, "local"),
         interactive: interactiveParam(picked(interactionGroup, "ask")),
         autoApply: applyBox.checked,
-        // "" = the item's whole diff (no PR scope); a URL pins the round to
-        // one of its PRs.
-        prUrl: picked(scopeGroup, "") || null,
+        // Empty = the item's own diff (no PR scope); URLs pin the round to
+        // those PRs, however many.
+        prUrls: scopeUrls(),
       });
     actions.appendChild(cancel);
     actions.appendChild(launch);
@@ -7213,7 +7412,7 @@ function renderWfActions(bar, root, item) {
       "",
       () => publishWfReview(item),
       prs.length > 1
-        ? `Post the latest agent review round as one comment — the click asks which of this item's ${prs.length} pull requests, or all of them. No agent, no tokens.`
+        ? `Post the latest agent review round as one comment — the click asks which of this item's ${prs.length} pull requests it goes to: any of them, or all. No agent, no tokens.`
         : "Post the latest agent review round to the pull request as one comment — no agent, no tokens",
       "step"
     );
@@ -7231,7 +7430,7 @@ function renderWfActions(bar, root, item) {
     const count = known.length ? known.reduce((n, p) => n + p.unanswered, 0) : null;
     const prName =
       prs.length > 1
-        ? `${prs.length} PRs (you pick one)`
+        ? `${prs.length} PRs (you pick which)`
         : prs[0].number
           ? `#${prs[0].number}`
           : "the PR";
@@ -7318,7 +7517,7 @@ function renderWfActions(bar, root, item) {
         // Multi-repo items choose their round's subject in the composer: the
         // whole change, or one repository's PR.
         (target === "diff" && itemPrs(item.meta).length > 1
-          ? ". The composer asks which change: all of it, or one of this item's PRs"
+          ? ". The composer asks which change to read: this repo's own diff, or any of this item's PRs — a cross-repo round reads several"
           : ""),
       "step"
     );
@@ -7335,7 +7534,7 @@ function renderWfActions(bar, root, item) {
       style,
       () => openWorkflowPr(item),
       itemPrs(item.meta).length > 1
-        ? "Open this item's pull requests in the browser panel — the click asks which: one of them, or all at once"
+        ? "Open this item's pull requests in the browser panel — the click asks which of them; all are pre-selected"
         : "Open this item's pull request in the browser panel",
       "step"
     );
@@ -7579,7 +7778,7 @@ function renderWfActions(bar, root, item) {
           reviewPending ? "" : "primary",
           () => wfMarkPrReady(item, root),
           drafts.length > 1
-            ? `Flip a draft to ready-for-review on GitHub — the validation step. This item tracks ${drafts.length} drafts across repositories, so the click asks which: one repository, or all of them at once.`
+            ? `Flip drafts to ready-for-review on GitHub — the validation step. This item tracks ${drafts.length} drafts across repositories, so the click asks which of them go up: any subset, or all. Only the primary moves this item to PR READY.`
             : `Flip PR ${drafts[0].number ? `#${drafts[0].number}` : drafts[0].url} from draft to ready-for-review on GitHub — the validation step`
         );
       }

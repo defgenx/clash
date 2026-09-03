@@ -1916,6 +1916,24 @@ button.busy:disabled { opacity: 1; }
   margin: 10px 0 4px;
 }
 .dialog-list-row { padding: 7px 10px; cursor: pointer; }
+/* Multi-select rows (uiCheckChoice): the box, then the label + detail block.
+   `align-items: start` keeps the checkbox on the label line when the detail
+   wraps — centred, it floats into the middle of a two-line row. */
+.check-list .dialog-list-row {
+  display: flex;
+  align-items: start;
+  gap: 9px;
+}
+.check-list .dialog-list-row input[type="checkbox"] { margin: 2px 0 0; flex: none; }
+.check-list .dialog-list-text { min-width: 0; }
+/* The all/none toggle reads as a header for the rows under it, not as one
+   more of them. */
+.check-list .check-all {
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.check-list .check-all .dialog-list-label { font-weight: 600; }
+.dialog-box .modal-actions button:disabled { opacity: 0.45; cursor: default; }
 .dialog-list-row:hover { background: var(--bg-hover); }
 .dialog-list-row + .dialog-list-row { border-top: 1px solid var(--border); }
 .dialog-list-label { font-size: 13px; }
