@@ -1479,7 +1479,17 @@ pub(crate) async fn start_workflow_review_agent(
     if meta.repo_path.trim().is_empty() {
         return Err("This item has no repository path — set repoPath in meta.json".to_string());
     }
-    if !meta.status.can_request_review() {
+    // An explain round is not a review: it judges nothing, so the only thing
+    // that can stop it is another agent already writing this item's files.
+    let explaining = target == Some(ReviewTarget::Structure);
+    if explaining {
+        if !meta.status.can_explain() {
+            return Err(format!(
+                "An agent is already working on this item ('{}') — wait for it to hand back",
+                meta.status
+            ));
+        }
+    } else if !meta.status.can_request_review() {
         return Err(format!(
             "Can't review an item in '{}' — wait for the current phase to hand back",
             meta.status

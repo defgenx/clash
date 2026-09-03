@@ -4295,6 +4295,14 @@ const WF_REVIEWABLE = new Set(["plan-review", "diff-review", "pr-draft", "pr-rea
 const wfCanReview = (item) =>
   WF_REVIEWABLE.has(item.meta.status) && !!(item.meta.repoPath || "").trim();
 
+// Mirrors WorkflowStatus::is_working / can_explain. Explaining judges nothing
+// and writes nothing but its own document, so the only thing that can stop it
+// is another agent already writing this item's files — not "is this artifact
+// parked on my decision", which is the question a *review* has to ask.
+const WF_WORKING = new Set(["planning", "implementing", "reviewing"]);
+const wfCanExplain = (item) =>
+  !WF_WORKING.has(item.meta.status) && !!(item.meta.repoPath || "").trim();
+
 // Mirrors ReviewTarget::for_status — a plan review only makes sense where a
 // plan exists to read.
 const wfReviewTarget = (item) =>
@@ -5390,7 +5398,9 @@ async function buildWorkflowView(el, project, slug) {
           ["revisions", "◫ Revisions"],
         ]
       : []),
-    ["review", `Review${item.hasReview ? "" : " ·empty"}`],
+    // "Review" and "Agent reviews" side by side told you nothing about which
+    // was which. One holds your notes, the other the reviewer's findings.
+    ["review", `Change requests${item.hasReview ? "" : " ·empty"}`],
     // Agent review rounds accumulate, so the tab counts them — that count is
     // the item's review history and the reason a round is worth repeating.
     ...(item.hasAgentReview || item.meta.reviewRound
@@ -6912,7 +6922,7 @@ function renderWfActions(bar, root, item) {
   // nothing — a different job from the review button next to it. Needs a
   // diff, so plan-review is excluded.
   const explainButton = () => {
-    if (!wfCanReview(item) || item.meta.status === "plan-review") return;
+    if (!wfCanExplain(item)) return;
     add(
       item.hasStructure ? "◫ Re-explain changes" : "◫ Explain changes",
       "",
@@ -7192,7 +7202,6 @@ function renderWfActions(bar, root, item) {
         "Open the change-request composer — your note + the open annotations become the next fix round, and this iteration's diff is frozen into history first"
       );
       reviewButton();
-      explainButton();
       answerCommentsButton();
       postRoundButton();
       linkPrButton();
@@ -7309,7 +7318,6 @@ function renderWfActions(bar, root, item) {
         "item"
       );
       reviewButton();
-      explainButton();
       answerCommentsButton();
       postRoundButton();
       linkPrButton();
@@ -7338,7 +7346,6 @@ function renderWfActions(bar, root, item) {
         "Open the change-request composer — your note + the open annotations become the next fix round (the agent pushes, so the PR picks up the fixes)"
       );
       reviewButton();
-      explainButton();
       answerCommentsButton();
       postRoundButton();
       linkPrButton();
@@ -7369,6 +7376,10 @@ function renderWfActions(bar, root, item) {
   );
 
   // A zone with no buttons would render as a floating caption.
+  // Outside the switch on purpose: "what does this change do" is worth asking
+  // at every stage, and per-case calls meant it was missing from five of them.
+  explainButton();
+
   for (const { group, btns } of Object.values(zones)) {
     if (!btns.childNodes.length) group.remove();
   }
@@ -7655,6 +7666,19 @@ async function renderWfSubView(body, root, item, ts) {
       return;
     }
     body.innerHTML = "";
+    // What this document is and who writes it. The two review tabs are the
+    // reason: their names alone left "which of these is which" to be inferred
+    // from the contents.
+    const caption = document.createElement("p");
+    caption.className = "wf-doc-caption dim";
+    caption.textContent =
+      ts.subView === "review"
+        ? "Your change requests, one section per round — written when you press ✎ Request changes, and the first thing the next agent round reads. clash appends; agents only read."
+        : ts.subView === "agentReview"
+          ? "What the agent review rounds found: verdict, findings and what each round published. Appended by the reviewer, never edited by clash — code findings also arrive as comments on the Diff tab."
+          : "What this change does, written by the ◫ Explain round: functional parts, diagrams, risks. It judges nothing and decides nothing.";
+    body.appendChild(caption);
+
     const tools = document.createElement("div");
     tools.className = "wf-doc-tools";
     const edit = document.createElement("button");

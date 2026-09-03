@@ -140,6 +140,26 @@ impl WorkflowStatus {
             Self::PlanReview | Self::DiffReview | Self::PrDraft | Self::PrReady
         )
     }
+
+    /// An agent of clash's own is working on the item right now.
+    ///
+    /// The one thing that must gate a second agent: two of them on one item is
+    /// two writers on the same files.
+    pub fn is_working(&self) -> bool {
+        matches!(self, Self::Planning | Self::Implementing | Self::Reviewing)
+    }
+
+    /// May an *explain* round run from here?
+    ///
+    /// Wider than `can_request_review` on purpose: the explainer judges
+    /// nothing and changes nothing but `structure.md`, so "is this artifact
+    /// parked on my decision" is the wrong question to ask of it. "What does
+    /// this change do" is worth asking of a finished item, of one whose
+    /// changes were just requested, of anything that is not mid-agent — which
+    /// is the only real constraint.
+    pub fn can_explain(&self) -> bool {
+        !self.is_working() && *self != Self::Unknown
+    }
 }
 
 impl std::fmt::Display for WorkflowStatus {
@@ -816,6 +836,35 @@ pub struct AnnotationsFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explaining_is_gated_only_by_another_agent_working() {
+        use WorkflowStatus::*;
+        // Reviewing asks "is this parked on my decision"; explaining asks
+        // nothing of the kind — it judges nothing and writes only its own
+        // document, so "what does this change do" is a fair question of a
+        // finished item or one whose changes were just requested.
+        for st in [
+            Draft,
+            PlanReview,
+            ChangesRequested,
+            DiffReview,
+            PrDraft,
+            PrReady,
+            Done,
+            Abandoned,
+        ] {
+            assert!(st.can_explain(), "{st} should allow an explain round");
+        }
+        for st in [Planning, Implementing, Reviewing] {
+            assert!(!st.can_explain(), "{st} already has an agent writing");
+            assert!(st.is_working());
+        }
+        // The serde fallback is not a state to launch anything from.
+        assert!(!Unknown.can_explain());
+        // And it is genuinely wider than the review gate.
+        assert!(Done.can_explain() && !Done.can_request_review());
+    }
 
     const ALL_WORKFLOW_STATUSES: [WorkflowStatus; 12] = [
         WorkflowStatus::Draft,

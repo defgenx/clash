@@ -358,3 +358,25 @@ test("a session share hands off without leaking credentials or the payload's sha
   assert.doesNotMatch(APP, /\.value = s\.jiraApiToken/);
   assert.match(APP, /s\.jiraTokenSet \? "•••••• \(stored\)" : "API token"/);
 });
+
+test("explain is offered from every state that is not mid-agent", () => {
+  // It judges nothing and writes only its own document, so the question a
+  // *review* has to ask — "is this artifact parked on my decision" — is the
+  // wrong gate for it. Three of the eight status cases used to call it.
+  assert.match(APP, /const wfCanExplain = \(item\) =>\s*!WF_WORKING\.has\(item\.meta\.status\)/);
+  assert.match(APP, /if \(!wfCanExplain\(item\)\) return;/);
+  // Called once, outside the switch — not remembered per case.
+  assert.equal((APP.match(/^\s*explainButton\(\);$/gm) || []).length, 1);
+  assert.doesNotMatch(APP, /wfCanReview\(item\) \|\| item\.meta\.status === "plan-review"/);
+});
+
+test("each workflow document says what it is", () => {
+  // "Review" and "Agent reviews" as bare tab labels left the difference to be
+  // inferred from the contents.
+  assert.match(APP, /\["review", `Change requests\$\{/);
+  assert.match(APP, /className = "wf-doc-caption dim"/);
+  const cap = APP.slice(APP.indexOf('caption.textContent ='), APP.indexOf('body.appendChild(caption)'));
+  assert.match(cap, /Your change requests/);
+  assert.match(cap, /What the agent review rounds found/);
+  assert.match(cap, /It judges nothing/);
+});

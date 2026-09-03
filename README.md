@@ -640,6 +640,14 @@ real ones. Items created before this store adopt whatever their round snapshots
 preserved on first open, so upgrading doesn't present a multi-round item as
 having no history.
 
+Each document tab says what it holds, because two of them are easy to confuse:
+**Change requests** is *your* notes — one section per round, written when you
+press *Request changes*, and the first thing the next agent round reads — while
+**Agent reviews** is what the review rounds found, appended by the reviewer.
+**◫ Explain changes** is available from every stage that isn't mid-agent
+(including a finished item): "what does this change do" is a fair question long
+after the fact, and it judges nothing.
+
 The **Timeline** tab is the item's whole revision record in one newest-first
 feed: every change round as a card carrying the note you wrote (the *why*),
 the *plan diff* of that revision, the full **plan as it stood** at that

@@ -2429,3 +2429,13 @@ button.busy:disabled { opacity: 1; }
 .setting-row.setting-inactive { opacity: 0.45; }
 .setting-row.setting-inactive input,
 .setting-row.setting-inactive select { color: var(--fg-dim); }
+
+/* What a workflow document is, above the document. Two tabs called "Review"
+   and "Agent reviews" needed it most: their names alone left "which of these
+   is which" to be inferred from the contents. */
+.wf-doc-caption {
+  margin: 8px 16px 0;
+  font-size: 11px;
+  line-height: 1.45;
+  max-width: 78ch;
+}
