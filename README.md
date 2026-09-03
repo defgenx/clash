@@ -1103,10 +1103,13 @@ scroll past them.
 Sessions carry the same status vocabulary as the TUI — animated
 PROMPTING / THINKING / RUNNING / WAITING / STARTING / STASHED / ERRORED
 labels in the sidebar and a colored status dot per tab. STASHED means
-*resumable*: a conversation that still exists on disk. Claude Code deletes
-its transcripts after about 30 days, so a session whose conversation is gone
-(or that was created and never messaged) stops being listed instead of
-lingering as a row that would reopen empty. External claude
+*resumable*: a conversation that still exists on disk. Every session is
+stashed when clash starts — a transcript on disk says what a conversation was
+doing, never whether its process is still alive, so a row only reads as
+running while clash's daemon holds its PTY or the process scan can see it.
+Claude Code deletes its transcripts after about 30 days, so a session whose
+conversation is gone (or that was created and never messaged) stops being
+listed instead of lingering as a row that would reopen empty. External claude
 processes (started outside clash) are segregated in their own
 `⚡ EXTERNAL` section at the bottom of the sidebar with distinct styling;
 clicking one (or its ⚡ button) takes it over after a confirm — the

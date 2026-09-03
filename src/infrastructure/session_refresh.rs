@@ -91,7 +91,12 @@ pub fn gather_sync_input<'a>(
 ) -> RefreshInput<'a> {
     use crate::domain::ports::DataRepository;
 
-    let disk_sessions = backend.load_sessions().unwrap_or_default();
+    // A failed scan must not read as "no sessions" without a trace: the
+    // symptom is every disk-backed row vanishing for a cycle.
+    let disk_sessions = backend.load_sessions().unwrap_or_else(|e| {
+        tracing::warn!("session scan failed: {}", e);
+        Vec::new()
+    });
     let hook_statuses = crate::infrastructure::hooks::read_all_statuses(backend.base_dir());
     let saved_names = crate::infrastructure::hooks::read_all_session_names(backend.base_dir());
 
@@ -217,10 +222,97 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
     // surface stopped/closed bare claudes.
     synthesize_orphan_wild_rows(&mut sessions, &input.wild_processes);
 
+    // Phase 7.6: a row with nothing running behind it is not running.
+    // The disk heuristic never reports a stashed session (it reads a
+    // transcript, and a transcript cannot say whether a process is alive),
+    // so without this every registered session came back ACTIVE the moment
+    // clash reopened.
+    demote_unbacked_sessions(
+        &mut sessions,
+        input.daemon_infos.is_some(),
+        &input.hook_statuses,
+        SystemTime::now(),
+    );
+
     // Phase 8: Sort by section (Active/Done/Fail/External) then name
     sort_sessions_by_section(&mut sessions);
 
     sessions
+}
+
+// ── Phase 7.6: Demote rows with no live process ───────────────────
+
+/// How long a `starting` hook status keeps a row ACTIVE on its own. A spawn
+/// is recorded (registry entry + "starting" status) before the PTY exists, so
+/// the row would otherwise read STASHED for the tick between the two.
+pub const SPAWN_GRACE_SECS: u64 = 20;
+
+/// Clear `is_running` for every session no daemon PTY and no live process
+/// backs — `SessionSource::Unknown` after the Phase 7 overlay, which is
+/// exactly "session file on disk, no daemon entry, no matching PID".
+///
+/// This is the only phase that can report a session stashed from disk state
+/// alone. `detect_session_status` reads a transcript, and a transcript never
+/// says whether the process that wrote it is alive: its most idle answer is
+/// `Waiting` (at the REPL prompt). A hook status is no better — `starting`
+/// and `prompting` are applied with no expiry, so a session killed between
+/// those events and its `SessionEnd` stayed ACTIVE across every later launch.
+/// Both frontends therefore listed every registered session as running after
+/// a restart, with no PTY to attach to.
+///
+/// A terminal status (`Errored`) is kept — an error is worth reading — but it
+/// still loses `is_running`, so the row sorts into Fail instead of Active.
+///
+/// `daemon_answered` gates the whole phase: with the daemon unreachable there
+/// is no liveness evidence to reason from, and `preserve_daemon_only_sessions`
+/// is deliberately keeping the previous cycle's running rows.
+///
+/// A claude the user started outside clash *before* clash launched is
+/// demoted too: the wild scan hides pre-launch processes on purpose, so
+/// nothing vouches for the row. Stashed is the honest answer — clash can
+/// neither attach to nor kill a process it cannot see.
+fn demote_unbacked_sessions(
+    sessions: &mut [Session],
+    daemon_answered: bool,
+    hook_statuses: &HashMap<String, (SessionStatus, Option<SystemTime>)>,
+    now: SystemTime,
+) {
+    use crate::domain::entities::SessionSource;
+
+    if !daemon_answered {
+        return;
+    }
+    for session in sessions.iter_mut() {
+        if !matches!(session.source, SessionSource::Unknown) {
+            continue;
+        }
+        if !session.is_running && matches!(session.status, SessionStatus::Stashed) {
+            continue;
+        }
+        if spawn_in_flight(&session.id, hook_statuses, now) {
+            continue;
+        }
+        session.is_running = false;
+        if !matches!(session.status, SessionStatus::Errored | SessionStatus::Done) {
+            session.status = SessionStatus::Stashed;
+        }
+    }
+}
+
+/// True while a `starting` hook status is young enough that the PTY may not
+/// exist yet (see [`SPAWN_GRACE_SECS`]).
+fn spawn_in_flight(
+    id: &str,
+    hook_statuses: &HashMap<String, (SessionStatus, Option<SystemTime>)>,
+    now: SystemTime,
+) -> bool {
+    match hook_statuses.get(id) {
+        Some((SessionStatus::Starting, Some(mtime))) => now
+            .duration_since(*mtime)
+            .map(|age| age.as_secs() < SPAWN_GRACE_SECS)
+            .unwrap_or(true),
+        _ => false,
+    }
 }
 
 // ── Phase 7.5: Synthesize orphan wild rows ────────────────────────
@@ -497,6 +589,10 @@ fn merge_with_previous(sessions: &mut [Session], previous: &[Session]) {
 /// - `prompting`: from PermissionRequest event
 /// - `starting`: from SessionStart event
 /// - `idle`: from SessionEnd event (only if hook file is newer than JSONL)
+///
+/// None of these is evidence that the process still lives — a status file is
+/// only ever as current as the last event that fired, and a killed session
+/// fires nothing. Liveness is settled later, by `demote_unbacked_sessions`.
 fn overlay_hook_statuses(
     sessions: &mut [Session],
     hook_statuses: &HashMap<String, (SessionStatus, Option<SystemTime>)>,
@@ -1023,10 +1119,9 @@ pub fn merge_sessions(
 
 /// Returns `true` if the two session lists differ (using derived `PartialEq`).
 ///
-/// Currently used by tests to validate PartialEq-based change detection.
-/// The primary caller (`merge_sessions`) uses inline comparison instead,
-/// but this function is kept as a public utility for callers that compare
-/// snapshots directly (e.g., future event-based refresh paths).
+/// For callers holding two snapshots. `merge_sessions` reports its own
+/// changes inline; the TUI's delta subagent reload compares before/after
+/// lists with this.
 pub fn sessions_changed(old: &[Session], new: &[Session]) -> bool {
     old != new
 }
@@ -1165,6 +1260,134 @@ mod tests {
             wild_processes: Vec::new(),
             externally_opened: HashSet::new(),
         }
+    }
+
+    // ── Phase 7.6: liveness demotion ─────────────────────────────
+
+    #[test]
+    fn registered_session_with_no_pty_is_stashed_not_active() {
+        // Exactly the state after clash is closed and reopened: the registry
+        // and the transcripts are on disk, the daemon owns nothing.
+        let mut registry = HashMap::new();
+        registry.insert(
+            "sid-1".to_string(),
+            make_registry_entry("sid-1", "my session", "/home/user/proj"),
+        );
+        let previous: Vec<Session> = Vec::new();
+        let mut input = empty_input(&previous);
+        input.disk_sessions = vec![make_disk_session("sid-1", "proj", "some work")];
+        input.registry = registry;
+        // The transcript tail says Waiting — the most idle answer disk can give.
+        input.disk_sessions[0].status = SessionStatus::Waiting;
+        input.disk_sessions[0].is_running = true;
+        input.daemon_infos = Some(Vec::new());
+
+        let sessions = build_session_list(&input);
+        assert_eq!(sessions.len(), 1);
+        assert!(!sessions[0].is_running, "no PTY behind it — not running");
+        assert_eq!(sessions[0].status, SessionStatus::Stashed);
+    }
+
+    #[test]
+    fn stale_starting_hook_does_not_pin_a_dead_session_active() {
+        // A session killed between SessionStart and SessionEnd leaves
+        // "starting" behind forever; it must not read as ACTIVE on the next
+        // launch, however often the list is rebuilt.
+        let mut registry = HashMap::new();
+        registry.insert(
+            "sid-1".to_string(),
+            make_registry_entry("sid-1", "my session", "/home/user/proj"),
+        );
+        let previous: Vec<Session> = Vec::new();
+        let mut input = empty_input(&previous);
+        input.disk_sessions = vec![make_disk_session("sid-1", "proj", "some work")];
+        input.registry = registry;
+        input.daemon_infos = Some(Vec::new());
+        let stale = SystemTime::now() - std::time::Duration::from_secs(SPAWN_GRACE_SECS + 60);
+        input
+            .hook_statuses
+            .insert("sid-1".to_string(), (SessionStatus::Starting, Some(stale)));
+
+        let sessions = build_session_list(&input);
+        assert_eq!(sessions[0].status, SessionStatus::Stashed);
+        assert!(!sessions[0].is_running);
+    }
+
+    #[test]
+    fn fresh_starting_hook_keeps_a_spawning_session_active() {
+        // The spawn is recorded before the PTY exists — the row must not
+        // blink through STASHED on the way to ACTIVE.
+        let mut registry = HashMap::new();
+        registry.insert(
+            "sid-1".to_string(),
+            make_registry_entry("sid-1", "my session", "/home/user/proj"),
+        );
+        let previous: Vec<Session> = Vec::new();
+        let mut input = empty_input(&previous);
+        input.disk_sessions = vec![make_disk_session("sid-1", "proj", "")];
+        input.registry = registry;
+        input.daemon_infos = Some(Vec::new());
+        input.hook_statuses.insert(
+            "sid-1".to_string(),
+            (SessionStatus::Starting, Some(SystemTime::now())),
+        );
+
+        let sessions = build_session_list(&input);
+        assert_eq!(sessions[0].status, SessionStatus::Starting);
+        assert!(sessions[0].is_running);
+    }
+
+    #[test]
+    fn daemon_owned_session_is_never_demoted() {
+        let mut registry = HashMap::new();
+        registry.insert(
+            "sid-1".to_string(),
+            make_registry_entry("sid-1", "my session", "/home/user/proj"),
+        );
+        let previous: Vec<Session> = Vec::new();
+        let mut input = empty_input(&previous);
+        input.disk_sessions = vec![make_disk_session("sid-1", "proj", "")];
+        input.registry = registry;
+        input.daemon_infos = Some(vec![make_daemon_info(
+            "sid-1",
+            "/home/user/proj",
+            "thinking",
+            true,
+        )]);
+
+        let sessions = build_session_list(&input);
+        assert_eq!(sessions[0].status, SessionStatus::Thinking);
+        assert!(sessions[0].is_running);
+    }
+
+    #[test]
+    fn unreachable_daemon_demotes_nothing() {
+        // No liveness evidence at all — the preservation branch is holding
+        // the previous cycle's rows, and demoting them would fight it.
+        let mut registry = HashMap::new();
+        registry.insert(
+            "sid-1".to_string(),
+            make_registry_entry("sid-1", "my session", "/home/user/proj"),
+        );
+        let previous = vec![make_session("sid-1", SessionStatus::Thinking, true)];
+        let mut input = empty_input(&previous);
+        input.disk_sessions = vec![make_disk_session("sid-1", "proj", "")];
+        input.registry = registry;
+        input.daemon_infos = None;
+
+        let sessions = build_session_list(&input);
+        assert!(sessions[0].is_running);
+        assert_eq!(sessions[0].status, SessionStatus::Thinking);
+    }
+
+    #[test]
+    fn errored_row_keeps_its_status_but_stops_running() {
+        let previous: Vec<Session> = Vec::new();
+        let mut sessions = vec![make_session("sid-1", SessionStatus::Errored, true)];
+        let _ = &previous;
+        demote_unbacked_sessions(&mut sessions, true, &HashMap::new(), SystemTime::now());
+        assert_eq!(sessions[0].status, SessionStatus::Errored);
+        assert!(!sessions[0].is_running);
     }
 
     // ── Shell-terminal exclusion ─────────────────────────────────

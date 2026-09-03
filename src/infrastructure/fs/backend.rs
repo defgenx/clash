@@ -1173,13 +1173,14 @@ impl DataRepository for FsBackend {
                 }
             }
 
-            // Move project sessions to the main list and cache them
-            for s in &project_sessions {
-                if global_seen_ids.insert(s.id.clone()) {
-                    sessions.push(s.clone());
-                }
-            }
-            new_cache_entries.insert(project_path, Arc::new(project_sessions));
+            // Move project sessions to the main list and cache them.
+            // Pushed unconditionally: both discovery loops above already
+            // deduped through `global_seen_ids`, so re-checking the set here
+            // reports every scanned session as a duplicate and silently drops
+            // the whole project from this cycle's list.
+            let project_sessions = Arc::new(project_sessions);
+            sessions.extend(project_sessions.iter().cloned());
+            new_cache_entries.insert(project_path, project_sessions);
         }
 
         // Update the session cache
@@ -2007,6 +2008,43 @@ mod tests {
         let tasks = backend.load_tasks("my-team").unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].id, "task-1");
+    }
+
+    /// A freshly scanned project must appear in the *returned* list, not only
+    /// in the cache: the first load scans everything, and every load after a
+    /// watcher invalidation re-scans the dirty project. Dropping those rows
+    /// emptied the first refresh entirely and made a busy session's row blink
+    /// in and out on every subsequent one.
+    #[test]
+    fn load_sessions_returns_freshly_scanned_projects() {
+        let (dir, backend) = setup_test_dir();
+        let project = dir.path().join("projects").join("-tmp-demo");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("11111111-1111-1111-1111-111111111111.jsonl"),
+            "{\"type\":\"user\",\"cwd\":\"/tmp/demo\"}\n",
+        )
+        .unwrap();
+
+        // First call: nothing is cached, so every project is scanned.
+        let first = backend.load_sessions().unwrap();
+        assert_eq!(first.len(), 1, "first scan must return the session");
+
+        // Second call: served from the cache — same result.
+        let cached = backend.load_sessions().unwrap();
+        assert_eq!(cached, first);
+
+        // Invalidated (what the FS watcher does on every transcript write):
+        // the project is re-scanned and must still be returned.
+        backend.invalidate_session_cache(&[
+            project.join("11111111-1111-1111-1111-111111111111.jsonl")
+        ]);
+        let rescanned = backend.load_sessions().unwrap();
+        assert_eq!(
+            rescanned.len(),
+            1,
+            "re-scanned project must still be listed"
+        );
     }
 
     #[test]

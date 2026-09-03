@@ -87,40 +87,6 @@ impl DataStore {
         Ok(())
     }
 
-    /// Superseded by `session_refresh::build_session_list` — kept for tests only.
-    #[cfg(test)]
-    pub fn refresh_sessions(&mut self, backend: &dyn DataRepository) -> Result<()> {
-        let new_sessions = backend.load_sessions()?;
-
-        // Merge: preserve daemon-derived fields (status, is_running, name) from
-        // existing sessions when the disk-based status would downgrade them.
-        // This prevents "flickering" when disk says idle but daemon says running.
-        let old_by_id: HashMap<String, &Session> =
-            self.sessions.iter().map(|s| (s.id.clone(), s)).collect();
-
-        self.sessions = new_sessions
-            .into_iter()
-            .map(|mut new| {
-                if let Some(old) = old_by_id.get(&new.id) {
-                    // Preserve in-memory status for existing sessions.
-                    // Disk-based status detection is just a baseline for NEW sessions.
-                    // Hooks and daemon overlays (which run immediately after this
-                    // in refresh_daemon_sessions) are the authoritative sources
-                    // for status updates on existing sessions.
-                    new.is_running = old.is_running;
-                    new.status = old.status;
-                    // Preserve daemon-assigned name
-                    if new.name.is_none() && old.name.is_some() {
-                        new.name = old.name.clone();
-                    }
-                }
-                new
-            })
-            .collect();
-
-        Ok(())
-    }
-
     /// Sort sessions by section (Active → Done → Fail), then alphabetically by name.
     ///
     /// Re-sort sessions by section then name. Called after in-memory name
@@ -351,62 +317,6 @@ mod tests {
         {
             Ok(vec![])
         }
-    }
-
-    #[test]
-    fn test_refresh_preserves_idle_status() {
-        let mut store = DataStore::new();
-        // In-memory: session is idle (e.g., after stash)
-        store.sessions = vec![Session {
-            id: "s1".to_string(),
-            is_running: false,
-            status: SessionStatus::Stashed,
-            ..Default::default()
-        }];
-
-        // Disk: session appears running (JSONL has recent activity)
-        let backend = MockBackend {
-            sessions: vec![Session {
-                id: "s1".to_string(),
-                is_running: true,
-                status: SessionStatus::Running,
-                ..Default::default()
-            }],
-        };
-
-        store.refresh_sessions(&backend).unwrap();
-
-        // Old idle status should be preserved — overlays are authoritative
-        assert!(!store.sessions[0].is_running);
-        assert_eq!(store.sessions[0].status, SessionStatus::Stashed);
-    }
-
-    #[test]
-    fn test_refresh_preserves_running_status() {
-        let mut store = DataStore::new();
-        // In-memory: session is running (daemon says so)
-        store.sessions = vec![Session {
-            id: "s1".to_string(),
-            is_running: true,
-            status: SessionStatus::Running,
-            ..Default::default()
-        }];
-
-        // Disk: session appears idle (stale JSONL)
-        let backend = MockBackend {
-            sessions: vec![Session {
-                id: "s1".to_string(),
-                is_running: false,
-                status: SessionStatus::Stashed,
-                ..Default::default()
-            }],
-        };
-
-        store.refresh_sessions(&backend).unwrap();
-
-        // Old running status should be preserved — overlays are authoritative
-        assert!(store.sessions[0].is_running);
-        assert_eq!(store.sessions[0].status, SessionStatus::Running);
     }
 
     #[test]

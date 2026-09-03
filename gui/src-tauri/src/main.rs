@@ -31,8 +31,14 @@ struct GuiState {
     /// by every reader at once — and so `claude_bin` and the custom IDE list
     /// have exactly one source of truth instead of a cached copy each.
     config: ConfigHandle,
-    /// Previous session list — input to the merge step of the refresh pipeline.
+    /// The displayed session list — merged in place on every refresh, and the
+    /// merge's own input. Cloned out as the command's answer.
     previous: Mutex<Vec<Session>>,
+    /// Consecutive refreshes each session has been missing from the freshly
+    /// built list, so a row that misses a cycle (a failed scan, a daemon
+    /// hiccup) waits instead of blinking out of the sidebar. The TUI's
+    /// counter, kept here for the same `merge_sessions` call.
+    missing_streaks: Mutex<HashMap<String, u8>>,
     /// Last seen status per session — attention-transition detection.
     prev_statuses: Mutex<HashMap<String, clash::domain::entities::SessionStatus>>,
     /// Control-plane client (list/kill). Separate from attach clients so a
@@ -214,14 +220,29 @@ async fn list_sessions(
 
     // Drop freshly killed sessions the pipeline re-admitted (dying daemon
     // process, stale wild-scan snapshot), and age out the guard entries.
-    {
+    let killed: std::collections::HashSet<String> = {
         let mut removed = state.recently_removed.lock().unwrap();
-        if !removed.is_empty() {
+        if removed.is_empty() {
+            std::collections::HashSet::new()
+        } else {
             sessions.retain(|s| !removed.contains_key(&s.id));
             removed.values_mut().for_each(|v| *v = v.saturating_add(1));
             removed.retain(|_, age| *age <= RECENTLY_REMOVED_TTL);
+            removed.keys().cloned().collect()
         }
-    }
+    };
+
+    // Merge into the displayed list rather than replacing it — the same
+    // stage the TUI runs. A session absent from one cycle keeps its row
+    // until it has been missing `MISSING_STREAK_THRESHOLD` times, and a
+    // cycle that produced incomplete data (a project re-scanned mid-write
+    // loses its summary and branch) doesn't blank those fields.
+    let sessions = {
+        let mut displayed = state.previous.lock().unwrap();
+        let mut streaks = state.missing_streaks.lock().unwrap();
+        session_refresh::merge_sessions(&mut displayed, sessions, &mut streaks, &killed);
+        displayed.clone()
+    };
 
     // Deliver follow-up prompts that came due. Reads `prev_statuses` while it
     // still holds the *previous* cycle (the attention block below overwrites
@@ -319,7 +340,6 @@ async fn list_sessions(
         *prev_statuses = sessions.iter().map(|s| (s.id.clone(), s.status)).collect();
     }
 
-    *state.previous.lock().unwrap() = sessions.clone();
     Ok(sessions)
 }
 
@@ -2965,6 +2985,7 @@ fn main() {
             .with_workflows_dir(settings.paths.workflows_dir.clone()),
         config,
         previous: Mutex::new(Vec::new()),
+        missing_streaks: Mutex::new(HashMap::new()),
         prev_statuses: Mutex::new(HashMap::new()),
         control: tokio::sync::Mutex::new(DaemonClient::new(DaemonClient::instance_socket_path())),
         attached: tokio::sync::Mutex::new(HashMap::new()),
@@ -3088,15 +3109,7 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 // Quit-stash before shutdown so sessions show as resumable
                 // (stashed) instead of errored on the next launch.
-                if let Some(state) = window.app_handle().try_state::<GuiState>() {
-                    quit_stash(&state);
-                }
-                if let Some(shutdown) = window
-                    .app_handle()
-                    .try_state::<std::sync::Arc<tokio::sync::Notify>>()
-                {
-                    shutdown.notify_one();
-                }
+                shutdown_app(window.app_handle());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -3240,8 +3253,35 @@ fn main() {
             workflows::list_skills,
             workflows::get_skill
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running clash GUI");
+        .build(tauri::generate_context!())
+        .expect("error while building clash GUI")
+        .run(|app, event| {
+            // Closing the window is only one way out: ⌘Q, the Dock's Quit and
+            // a logout all terminate the app without a `CloseRequested`, and
+            // the PTYs then die by SIGHUP when the daemon goes with the
+            // process — mid-write, so the conversation comes back errored
+            // instead of resumable. `ExitRequested` is the one event every
+            // route passes through.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                shutdown_app(app);
+            }
+        });
+}
+
+/// Stash every running session, then release the daemon. Idempotent: the
+/// second caller finds no live sessions and returns immediately, so the
+/// window-close and app-exit routes can both run it.
+fn shutdown_app(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    // Which exit route ran is the first thing to know when a session comes
+    // back errored instead of stashed.
+    tracing::info!("shutdown: quit-stashing sessions");
+    if let Some(state) = app.try_state::<GuiState>() {
+        quit_stash(&state);
+    }
+    if let Some(shutdown) = app.try_state::<std::sync::Arc<tokio::sync::Notify>>() {
+        shutdown.notify_one();
+    }
 }
 
 #[cfg(test)]
