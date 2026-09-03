@@ -358,7 +358,8 @@ test("a pre-authorized round applies itself through the same one mechanism", () 
   assert.match(APP, /wfMaybeAutoApplyReview\(project, slug, review\);/);
   // And the launch surface passes the checkbox through.
   assert.match(APP, /autoApply: picked\.autoApply,/);
-  assert.match(APP, /autoApply,\n\s+cols: 120,/);
+  // …and reaches the backend, alongside the round's focus.
+  assert.match(APP, /autoApply,\n\s+focus,\n\s+cols: 120,/);
 });
 
 test("a session share hands off without leaking credentials or the payload's shape", () => {
@@ -393,7 +394,7 @@ test("explain is offered from every state that is not mid-agent", () => {
   assert.match(APP, /const wfCanExplain = \(item\) =>\s*!WF_WORKING\.has\(item\.meta\.status\)/);
   assert.match(APP, /if \(!wfCanExplain\(item\)\) return;/);
   // Called once, outside the switch — not remembered per case.
-  assert.equal((APP.match(/^\s*explainButton\(\);$/gm) || []).length, 1);
+  assert.equal((APP.match(/^\s*explainButtons\(\);$/gm) || []).length, 1);
   assert.doesNotMatch(APP, /wfCanReview\(item\) \|\| item\.meta\.status === "plan-review"/);
 });
 
@@ -402,34 +403,63 @@ test("each workflow document says what it is", () => {
   // inferred from the contents.
   assert.match(APP, /\["review", `Change requests\$\{/);
   assert.match(APP, /className = "wf-doc-caption dim"/);
-  const cap = APP.slice(APP.indexOf('caption.textContent ='), APP.indexOf('body.appendChild(caption)'));
+  // The generic doc branch's caption — the explanations have their own below.
+  const generic = APP.indexOf("async function renderWfSubView(");
+  const cap = APP.slice(
+    APP.indexOf("caption.textContent =", generic),
+    APP.indexOf("body.appendChild(caption)", generic)
+  );
   assert.match(cap, /Your change requests/);
   assert.match(cap, /What the agent review rounds found/);
-  assert.match(cap, /It judges nothing/);
+  // The two explanations carry their own captions, in their own renderer.
+  const ex = APP.slice(
+    APP.indexOf("async function renderWfExplainView("),
+    APP.indexOf("function wfExplainFrameDoc(")
+  );
+  assert.match(ex, /What this plan is going to do/);
+  assert.match(ex, /What this change actually does/);
+  assert.match(ex, /It judges nothing/);
 });
 
-test("the blueprint carries a decision, and none of the three is a fallback", () => {
-  // A blueprint is read before the implementation exists, so agreeing on the
-  // shape of the work is the point — and each answer does a different thing.
-  assert.match(APP, /function wfBlueprintDecisionBar\(root, item\)/);
-  const bar = APP.slice(
-    APP.indexOf("function wfBlueprintDecisionBar("),
-    APP.indexOf("/// Render a unified diff as coloured lines")
+test("the two explanations are separate, and each has two forms", () => {
+  // The plan and the diff are different artifacts: "what this is going to do"
+  // and "what it did" are both worth keeping, so a round on one never
+  // overwrites the other's documents.
+  const btn = APP.slice(
+    APP.indexOf("const explainButtons = () => {"),
+    APP.indexOf("// Available from every state holding a reviewable artifact")
   );
-  assert.match(bar, /invoke\("set_workflow_blueprint_decision"/);
-  for (const d of ['decide\\("accepted"\\)', 'decide\\("rejected"', 'decide\\("stale"\\)']) {
-    assert.match(bar, new RegExp(d), `missing the ${d} answer`);
-  }
-  // Rejecting means the *plan* needs a round, through the same composer as
-  // every other change request — not a second mechanism.
-  assert.match(bar, /await wfRequestChanges\(\s*fresh,\s*root,\s*"plan",/);
-  // Accepting does not move the pipeline; approving is still its own click.
-  assert.doesNotMatch(bar, /wfTransition/);
-  // A pending blueprint demotes the stage's approve, like a pending review.
-  assert.match(APP, /const blueprintPending = blueprintState\(item\) === "pending";/);
-  assert.match(APP, /reviewPending \|\| blueprintPending \? "" : "primary"/);
-  // Before the work exists the explainer draws a blueprint instead of a
-  // structure of a diff that does not exist yet.
-  assert.match(APP, /const forward = item\.meta\.status === "plan-review" && wfHasPlanPhase\(item\)/);
-  assert.match(APP, /\{ target: "blueprint" \}/);
+  assert.match(btn, /target: plan \? "blueprint" : "structure",/);
+  assert.match(btn, /"◫ Explain plan again" : "◫ Explain plan"/);
+  assert.match(btn, /"◫ Explain changes again" : "◫ Explain changes"/);
+  // The plan explanation needs a plan; the diff one needs a diff to exist.
+  assert.match(btn, /wfHasPlanPhase\(item\) && item\.hasPlan/);
+  assert.match(btn, /!\["draft", "plan-review"\]\.includes\(st\)/);
+  // A focus is asked per run and rides the round — no stored verdict state.
+  assert.match(btn, /focus: focus\.trim\(\) \|\| null,/);
+
+  // One tab per artifact, each dispatched from the sub-view router.
+  assert.match(APP, /\["explainPlan", "◫ Plan explained"\]/);
+  assert.match(APP, /\["explainDiff", "◫ Changes explained"\]/);
+  assert.match(APP, /if \(ts\.subView === "explainPlan"\) return renderWfExplainView\(body, root, item, ts, "plan"\);/);
+  assert.match(APP, /if \(ts\.subView === "explainDiff"\) return renderWfExplainView\(body, root, item, ts, "diff"\);/);
+  // Tab names persisted before the split still land somewhere real.
+  assert.match(APP, /ts\.subView === "structure" \|\| ts\.subView === "explain"\) ts\.subView = "explainDiff"/);
+
+  // The graphical page is generated markup, so it is rendered in a frame that
+  // cannot run scripts and cannot reach this document's Tauri bridge — never
+  // injected with innerHTML.
+  const ex = APP.slice(
+    APP.indexOf("async function renderWfExplainView("),
+    APP.indexOf("async function renderWfSubView(")
+  );
+  assert.match(ex, /frame\.setAttribute\("sandbox", "allow-same-origin"\)/);
+  assert.doesNotMatch(ex, /"sandbox", "[^"]*allow-scripts/);
+  assert.match(ex, /frame\.srcdoc = wfExplainFrameDoc\(text\)/);
+  // The written form still renders its mermaid like every other document.
+  assert.match(ex, /renderMermaidIn\(md\)/);
+
+  // The accept/reject ceremony is gone: no verdict, no demoted approve.
+  assert.doesNotMatch(APP, /wfBlueprintDecisionBar|blueprintState|blueprintPending/);
+  assert.doesNotMatch(APP, /set_workflow_blueprint_decision/);
 });

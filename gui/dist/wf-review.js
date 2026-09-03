@@ -133,39 +133,38 @@
     return null;
   }
 
-  /// Label for the "Answer PR comments" action. `count` is the number of
-  /// threads waiting on *you* at the last PR refresh — null/undefined when it
-  /// was never fetched (gh unavailable, no refresh yet), in which case the
-  /// label stays generic rather than claiming a number it doesn't have.
+  /// Label for the "Answer PR comments" action. `count` is the number of open
+  /// threads at the last PR refresh — null/undefined when it was never fetched
+  /// (gh unavailable, no refresh yet), in which case the label stays generic
+  /// rather than claiming a number it doesn't have.
   ///
-  /// A known zero says so out loud. The count and the round used to disagree
-  /// about what "unanswered" meant — clash counted every replyless thread,
-  /// including the line comments its own review round had published, so the
-  /// button offered to answer seven comments and the reviewer correctly
-  /// answered none of them: they were its own. The count now means "waiting
-  /// on you" (`count_unanswered_review_comments`), and a button with nothing
-  /// to do must not read like a button that has work.
+  /// "Open" means the thread does not yet end with a reply of ours: a
+  /// reviewer's remark nobody answered, *and* a finding an earlier round of
+  /// this item published with no decision posted under it. Both need a
+  /// published answer; the second is the one a "count only other people's
+  /// comments" rule hid, leaving a PR with seven remarks and no outcomes.
   function answerCommentsLabel(count) {
-    if (count === 0) return "Answer PR comments · none waiting";
-    if (count === 1) return "Answer 1 PR comment";
-    if (typeof count === "number" && count > 1) return `Answer ${count} PR comments`;
+    if (count === 0) return "Answer PR comments · all answered";
+    if (count === 1) return "Answer 1 open PR thread";
+    if (typeof count === "number" && count > 1) return `Answer ${count} open PR threads`;
     return "Answer PR comments";
   }
 
-  /// Tooltip for the same action — says what the agent will do and what the
-  /// count means, including the honest "none right now" case (the button
-  /// stays: comments arrive between polls, and the agent re-fetches).
+  /// Tooltip for the same action — what the agent will do, and what the count
+  /// means, including the honest "nothing open" case (the button stays:
+  /// comments arrive between polls, and the agent re-fetches).
   function answerCommentsTitle(count, prName) {
     const base =
-      `Spends tokens: launches an agent to read ${prName}'s review comments, ` +
-      "fix the trivial ones, and reply on each thread. Non-trivial ones land " +
-      "in this item's comment queue.";
+      `Spends tokens: launches an agent to work through every open thread on ` +
+      `${prName} — fixing what the comment asks for where the change is ` +
+      "bounded, queueing the rest as diff comments for your triage — and to " +
+      "publish a reply in every thread saying what was decided, whether the " +
+      "comment was right or wrong.";
     if (count === 0)
       return (
-        `No thread on ${prName} is waiting on a reply from you (last check). ` +
-        "Your own comments — including line comments an agent review round " +
-        "published — are not waiting on you. Launch it anyway to re-check " +
-        "GitHub now, or use \u201cPost round to PR\u201d to publish this item's findings."
+        `Every thread on ${prName} already ends with a reply from you (last ` +
+        "check), so there is nothing to answer. Launch it anyway to re-check " +
+        "GitHub now, or use “Post round to PR” to publish this item's findings."
       );
     return base;
   }
@@ -174,18 +173,20 @@
   function answerCommentsConfirm(prName, count) {
     if (count === 0)
       return (
-        `Nothing on ${prName} was waiting on a reply from you at the last ` +
-        "check. Launch an agent anyway to re-check GitHub now? It spends " +
-        "tokens, and a round that finds nothing to answer says so and stops."
+        `Every thread on ${prName} was already answered at the last check. ` +
+        "Launch an agent anyway to re-check GitHub now? It spends tokens, and " +
+        "a round that finds nothing open says so and stops."
       );
     const what =
       typeof count === "number" && count > 0
-        ? `its ${count} review comment${count > 1 ? "s" : ""} waiting on you`
-        : "the review comments waiting on you";
+        ? `${count} open thread${count > 1 ? "s" : ""}`
+        : "every open thread";
     return (
-      `Launch an agent to read ${prName} and answer ${what}? ` +
-      "It fixes trivial findings with commits, replies on each thread, and " +
-      "mirrors the rest into this item's comment queue for your triage."
+      `Launch an agent to work through ${what} on ${prName}? It fixes what the ` +
+      "comments ask for where the change is bounded (commits and pushes), " +
+      "queues the rest as diff comments for your triage, and publishes a reply " +
+      "in every thread saying what was decided — including the ones it " +
+      "declines, with the reason."
     );
   }
 

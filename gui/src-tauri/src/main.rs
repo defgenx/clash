@@ -3233,7 +3233,6 @@ fn main() {
             workflows::get_workflow_forge,
             workflows::set_workflow_forge,
             workflows::set_workflow_item_settings,
-            workflows::set_workflow_blueprint_decision,
             workflows::get_skills_plan,
             workflows::apply_skills_decision,
             workflows::get_skills_update_mode,

@@ -640,25 +640,38 @@ real ones. Items created before this store adopt whatever their round snapshots
 preserved on first open, so upgrading doesn't present a multi-round item as
 having no history.
 
-**◫ Blueprint — agree on the shape before it is built.** At plan review the
-explainer runs *forward*: it reads the plan and the code it will land in, then
-draws what will get built — a diagram first, then the parts, the existing code
-they attach to, the blast radius, and the questions the plan leaves open. You
-then **✓ Accept** it (that is the shape to build), **✗ Reject** it (which opens
-the change-request composer, because a rejected blueprint means the plan needs
-another round), or **↻ Revalidate next round** (ask for another pass without
-judging this one). While a blueprint waits on you, *Approve plan → implement*
-stops being the default action — reading it before authorizing the
-implementation is the whole point. After the work lands, the same ◫ action runs
-the other way and explains the diff instead (the **Structure** tab).
+**◫ Explain — two artifacts, two forms, no verdict.** The explainer answers
+"what is this?", and there are two separate questions worth asking, so there
+are two actions and two tabs that never overwrite each other:
+
+- **◫ Explain plan** reads `plan.md` *and the code it will land in*, and says
+  what the implementation is going to do — before any of it exists. That is the
+  document to argue with while arguing is still cheap.
+- **◫ Explain changes** reads the diff and says what the change actually did —
+  fair to ask of an item long after it is finished.
+
+Each round writes **both forms** of its explanation, because they are read
+differently:
+
+- a **written walk-through** (`explain-plan.md` / `explain-diff.md`) — prose
+  and mermaid diagrams, organized by functional part, with the file and symbol
+  names, what attaches to what, and the open questions;
+- a **graphical overview** (`explain-plan.html` / `explain-diff.html`) — one
+  hand-drawn page of boxes and arrows: the parts, the repos and features they
+  live in, what is new versus what already existed, and the blast radius. It is
+  what you look at for fifteen seconds to get the shape. clash renders it in a
+  sandbox with scripts disabled, themed to match the app.
+
+The tab opens on the picture and toggles to the text. Both are regenerated on
+each run, and you can name something for the round to concentrate on when you
+launch it. The explainer **judges nothing and decides nothing** — no accept, no
+reject, no gate on the pipeline; it writes its own two documents and nothing
+else.
 
 Each document tab says what it holds, because two of them are easy to confuse:
 **Change requests** is *your* notes — one section per round, written when you
 press *Request changes*, and the first thing the next agent round reads — while
 **Agent reviews** is what the review rounds found, appended by the reviewer.
-**◫ Explain changes** is available from every stage that isn't mid-agent
-(including a finished item): "what does this change do" is a fair question long
-after the fact, and it judges nothing.
 
 The **Timeline** tab is the item's whole revision record in one newest-first
 feed: every change round as a card carrying the note you wrote (the *why*),
@@ -821,7 +834,7 @@ ones land in an orphan tray). The file contract for agents is documented in
 **Skills**: the agent side is four skills — `clash-workflow` (the executor:
 plans, implements, addresses comments, opens PRs), `clash-plan-review` (the
 interactive plan reviewer), `clash-code-review` (the code/diff reviewer) and
-`clash-explain` (the explainer — see the Structure tab below) — all embedded
+`clash-explain` (the explainer — see ◫ Explain above) — all embedded
 in the clash binary. Startup keeps them current by itself — missing ones
 install, and ones you never edited are refreshed to the version this clash
 ships (no setup, no popup: nothing of yours is at stake). **clash asks only

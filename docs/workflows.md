@@ -19,8 +19,11 @@ workflows are a structured store.
 ├── plan.md            # the plan (freely editable markdown)
 ├── review.md          # append-only iteration audit trail (clash writes, agent reads)
 ├── agent-review.md    # append-only agent review rounds (agent writes, clash renders)
-├── structure.md       # what the change DID (clash-explain overwrites, Structure tab renders)
-├── blueprint.md       # what the plan WILL DO, with diagrams (clash-explain overwrites, Blueprint tab)
+├── explain-plan.md    # what the plan WILL DO — prose + mermaid (clash-explain overwrites)
+├── explain-plan.html  # …and as one hand-drawn page: boxes, arrows, repos, features
+├── explain-diff.md    # what the change DID — prose + mermaid (clash-explain overwrites)
+├── explain-diff.html  # …and as one hand-drawn page
+│                      #   (structure.md / blueprint.md: the pre-pair names, still read)
 ├── annotations.json   # line-level diff comments
 ├── history/<NNN>/     # per-iteration snapshots (diff.patch + plan.md + annotations.json)
 └── plan-history/      # every recorded revision of plan.md (index.json + NNNN.md), clash-owned
@@ -192,20 +195,24 @@ pr-draft / pr-ready likewise
   and the reason the stage's own approve button is demoted while it holds. A
   key rather than a number because numbers restart per target: three applied
   plan rounds would otherwise read as having covered code round 1.
-- **The explainer has two directions, and the forward one carries a decision.**
-  `Target: structure` reads the diff and writes `structure.md` (what the change
-  did); `Target: blueprint` reads `plan.md` and the code it will land in and
-  writes `blueprint.md` (what the implementation is going to do, with
-  diagrams), *before* any of it exists. Both run the `clash-explain` skill,
-  judge nothing, and write only their own document — never each other's, since
-  a blueprint round overwriting `structure.md` would erase what the change
-  actually did, and the reverse would erase what the human accepted. The
-  blueprint alone gets a verdict: `meta.json.blueprint` (`round`, `status` ∈
-  pending/accepted/rejected/stale, `decidedAt`) is **clash-owned** — the agent
-  writes the document, never the human's answer to it. A pending blueprint
-  demotes the plan stage's own approve, because reading it before authorizing
-  the implementation is the point; launching a new blueprint round resets it to
-  pending, since the document it described is about to be rewritten.
+- **The explainer explains two artifacts, in two forms, and judges nothing.**
+  `Target: blueprint` reads `plan.md` plus the code it will land in and writes
+  `explain-plan.{md,html}` (what the implementation is going to do, before any
+  of it exists); `Target: structure` reads the diff and writes
+  `explain-diff.{md,html}` (what the change did). Both run the `clash-explain`
+  skill and write **only their own pair** — a round on one must never touch the
+  other's, since a human reads the first to authorize the work and the second
+  to review it. The two forms are not alternatives: the `.md` is the written
+  walk-through (prose + mermaid, file and symbol names, open questions), the
+  `.html` is one self-contained page of boxes and arrows — the parts, the repos
+  and features they live in, what is new versus existing, the blast radius.
+  clash renders the page in a sandboxed iframe with **scripts disabled**, so it
+  must carry no `<script>`, no external resources and no mermaid (which needs
+  JS and belongs in the `.md`); inline `<style>` and inline `<svg>` are the
+  tools. There is **no verdict**: an earlier design had the plan explanation
+  accepted or rejected, with a `meta.blueprint` block and a demoted approve,
+  and it was removed — the explainer's value is being judgement-free, and the
+  stage's own approve was already the decision.
 - **Every round declares whether it should be applied**, as
   `**Apply:** yes|no — <reason>` next to its `**Verdict:**`. The reviewers'
   skills own the judgement (interactive rounds ask the human; autonomous ones
@@ -244,7 +251,7 @@ pr-draft / pr-ready likewise
 
 | field | values | meaning |
 |---|---|---|
-| `target` | `plan` \| `diff` \| `structure` | plan/diff derived from the launch status, never chosen; `structure` only via the explicit **Explain changes** action |
+| `target` | `plan` \| `diff` \| `structure` \| `blueprint` | plan/diff derived from the launch status, never chosen; the two explainer targets only via the explicit **◫ Explain changes** / **◫ Explain plan** actions |
 | `depth` | `standard` \| `deep` | `deep` reads the surrounding implementation and checks the artifact against it |
 | `publish` | `local` \| `pr-comments` \| `respond-pr-comments` | what the round does beyond the item |
 | `interactive` | absent \| `true` \| `false` | absent = the skill asks in-session; the composer's launch-time answer otherwise |
@@ -334,7 +341,7 @@ describable on its own.
 |--------|--------|
 | `plan` | `clash-plan-review` (embedded skill) |
 | `diff` | `clash-code-review` (embedded skill) |
-| `structure` | `clash-explain` (embedded skill — explains, never judges) |
+| `structure` / `blueprint` | `clash-explain` (embedded skill — explains, never judges) |
 
 Every engine is a skill clash itself installs, so a review round needs no
 third-party plugin present. A unit test asserts any skill named by
@@ -365,19 +372,26 @@ round — a choice with one real answer is not a choice.
 ### Explain rounds (clash-explain skill)
 
 An **explain round** is review-shaped (parks in `reviewing`, restores
-`Return to:`) but judges nothing: it reads the diff and enough surrounding
-code, then writes **`structure.md`** — what the change does, organized by
-functional part (behavior first, files second), with mermaid diagrams of how
-the pieces fit, risks/review-focus observations, and a suggested reading
-order. The GUI renders it as the **Structure** tab (mermaid fences are drawn
-as real diagrams) and offers the round as the **◫ Explain changes** action
-wherever a diff is parked on a decision (`diff-review`, `pr-draft`,
-`pr-ready`). `structure.md` is a living document — each round overwrites it —
-while the round still appends a `## Review <n> — structure · …` entry to
-`agent-review.md` (verdict = a one-line summary, `### Published` = "wrote
-structure.md"), so hand-back toasts, the outcome strip and the Timeline stay
+`Return to:`) but judges nothing. Two of them exist, one per artifact:
+
+- **◫ Explain plan** (`Target: blueprint`) reads `plan.md` and the code it will
+  land in, and says what the implementation is going to do — offered wherever
+  the item has a plan and no agent of ours is working.
+- **◫ Explain changes** (`Target: structure`) reads the diff and enough
+  surrounding code, and says what the change did — offered from any stage past
+  `plan-review`, including finished items.
+
+Each writes its pair: the `.md` organized by functional part (behavior first,
+files second) with mermaid diagrams, risks and a reading order; the `.html` as
+one graphical overview. The GUI renders them as the **◫ Plan explained** and
+**◫ Changes explained** tabs, opening on the page and toggling to the text.
+Both files are living documents — each round overwrites its own pair — while
+the round still appends a `## Review <n> — <target> · …` entry to
+`agent-review.md` (verdict = a one-line summary, `### Published` = which files
+it wrote), so hand-back toasts, the outcome strip and the Timeline stay
 truthful. Rounds are unbounded like every side-trip: regenerate after each
-change round.
+change round. `Focus:` (optional, asked at launch) names what the round should
+concentrate on.
 
 A code review is available at `diff-review`, `pr-draft` **and** `pr-ready`
 (`WF_REVIEWABLE` / `can_request_review`), so an item that already has a PR can

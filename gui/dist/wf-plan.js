@@ -205,37 +205,7 @@
     return !!pendingReviewRound({ ...item, lastAgentReview: r });
   }
 
-  /// What the blueprint is waiting for, if anything.
-  ///
-  /// `pending` is the state that matters: a blueprint exists, nobody has said
-  /// yes or no to it, and the point of writing one is to be read *before* the
-  /// plan is implemented — so it demotes the stage's own approve exactly like
-  /// a pending review round does. Every other state is informational.
-  ///
-  /// Returns `"pending" | "accepted" | "rejected" | "stale" | ""` (no
-  /// blueprint at all).
-  function blueprintState(item) {
-    if (!item || !item.hasBlueprint) return "";
-    const b = (item.meta && item.meta.blueprint) || {};
-    const st = b.status || "pending";
-    return ["pending", "accepted", "rejected", "stale"].includes(st) ? st : "pending";
-  }
-
-  /// One line about the blueprint, for the item header.
-  function blueprintCaption(item) {
-    const st = blueprintState(item);
-    const n = ((item && item.meta && item.meta.blueprint) || {}).round || 0;
-    const which = n ? `Blueprint ${n}` : "Blueprint";
-    if (st === "pending") return `${which} — waiting on your accept or reject`;
-    if (st === "accepted") return `${which} — accepted; this is the shape to build`;
-    if (st === "rejected") return `${which} — rejected; the plan needs another pass`;
-    if (st === "stale") return `${which} — revalidation asked; run it again`;
-    return "";
-  }
-
   const api = {
-    blueprintState,
-    blueprintCaption,
     planVersionForIteration,
     planVersionLabel,
     planVersionCaption,

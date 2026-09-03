@@ -1134,6 +1134,17 @@ html, body, #app {
   border-color: var(--accent);
   color: var(--on-accent);
 }
+/* The explainer's graphical page. Rendered in a sandboxed iframe (see
+   renderWfExplainView), sized to its content by the parent — so it scrolls
+   with the tab instead of trapping a scrollbar inside itself. */
+.wf-explain-frame {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  min-height: 240px;
+  display: block;
+}
 .wf-pipe-sub { color: var(--accent); font-size: 10px; }
 .wf-pipe-sep { width: 18px; height: 1px; background: var(--fg-dim); flex: none; }
 .wf-pipe-sep.future { opacity: 0.35; }

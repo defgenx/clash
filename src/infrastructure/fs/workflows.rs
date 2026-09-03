@@ -35,13 +35,28 @@ pub const REVIEW_FILE: &str = "review.md";
 /// append-only record of *human* decisions) so ownership of each file stays
 /// unambiguous: the agent appends here, never there.
 pub const AGENT_REVIEW_FILE: &str = "agent-review.md";
-/// The explain round's document — what the change does, by functional part,
-/// with diagrams. Written (overwritten — a living document, not a log) by the
-/// `clash-explain` skill, rendered by the GUI's Structure tab.
+// ── The explainer's four documents ──────────────────────────────────────
+//
+// Two artifacts get explained — the plan (before the work exists) and the
+// diff (after it lands) — and each explanation comes in two forms, because
+// they answer the question differently and neither replaces the other:
+//
+// - a **markdown** document: prose and mermaid diagrams, the thing you read
+//   top to bottom;
+// - a **self-contained HTML page**: boxes, arrows, the repos and features it
+//   touches — the high-level picture you take in at a glance.
+//
+// Written (overwritten — living documents, not logs) by the `clash-explain`
+// skill, rendered by the GUI's two Explain tabs. `structure.md` and
+// `blueprint.md` are the names these had before the pairs existed; they are
+// still read so no existing item loses its explanation.
+pub const EXPLAIN_PLAN_FILE: &str = "explain-plan.md";
+pub const EXPLAIN_PLAN_HTML: &str = "explain-plan.html";
+pub const EXPLAIN_DIFF_FILE: &str = "explain-diff.md";
+pub const EXPLAIN_DIFF_HTML: &str = "explain-diff.html";
+/// Legacy name of [`EXPLAIN_DIFF_FILE`].
 pub const STRUCTURE_FILE: &str = "structure.md";
-/// The blueprint: what the implementation is going to do, written before it
-/// exists. Its own file rather than a mode of `structure.md`, because a later
-/// structure round would overwrite the thing the human accepted.
+/// Legacy name of [`EXPLAIN_PLAN_FILE`].
 pub const BLUEPRINT_FILE: &str = "blueprint.md";
 pub const ANNOTATIONS_FILE: &str = "annotations.json";
 pub const HISTORY_DIR: &str = "history";
@@ -163,8 +178,8 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         has_plan: has_content(&dir.join(PLAN_FILE)),
         has_review: has_content(&dir.join(REVIEW_FILE)),
         has_agent_review,
-        has_structure: has_content(&dir.join(STRUCTURE_FILE)),
-        has_blueprint: has_content(&dir.join(BLUEPRINT_FILE)),
+        plan_explain: explain_forms(&dir, EXPLAIN_PLAN_FILE, EXPLAIN_PLAN_HTML, BLUEPRINT_FILE),
+        diff_explain: explain_forms(&dir, EXPLAIN_DIFF_FILE, EXPLAIN_DIFF_HTML, STRUCTURE_FILE),
         open_annotations,
         history_iterations,
         agent_alive: true, // cross-checked against live sessions by the GUI layer
@@ -287,9 +302,25 @@ pub fn write_meta(root: &Path, project: &str, slug: &str, meta: &WorkflowMeta) -
 
 // ── Documents (plan.md / review.md) ─────────────────────────────────────
 
+/// Which forms of one explanation exist on disk: the markdown document, the
+/// graphical HTML page, or neither. The legacy single-file name counts as the
+/// markdown form, so an item explained by an older clash keeps its tab.
+fn explain_forms(
+    dir: &Path,
+    md: &str,
+    html: &str,
+    legacy: &str,
+) -> crate::domain::workflow::ExplainForms {
+    crate::domain::workflow::ExplainForms {
+        md: has_content(&dir.join(md)) || has_content(&dir.join(legacy)),
+        html: has_content(&dir.join(html)),
+    }
+}
+
 fn doc_path(dir: &Path, doc: &str) -> Result<PathBuf> {
     match doc {
-        PLAN_FILE | REVIEW_FILE | AGENT_REVIEW_FILE | STRUCTURE_FILE | BLUEPRINT_FILE => {
+        PLAN_FILE | REVIEW_FILE | AGENT_REVIEW_FILE | EXPLAIN_PLAN_FILE | EXPLAIN_PLAN_HTML
+        | EXPLAIN_DIFF_FILE | EXPLAIN_DIFF_HTML | STRUCTURE_FILE | BLUEPRINT_FILE => {
             Ok(dir.join(doc))
         }
         _ => Err(parse_err(format!("Not a workflow document: '{}'", doc))),
@@ -1038,22 +1069,43 @@ mod tests {
     }
 
     #[test]
-    fn structure_doc_is_readable_writable_and_flagged() {
+    fn each_explanation_reports_the_forms_it_has() {
         let (_g, root) = root();
         create_item(&root, &req("p", "item", "")).unwrap();
         // Never seeded — a missing file reads as empty so the explain round's
         // first write needs no setup step.
-        assert_eq!(read_doc(&root, "p", "item", STRUCTURE_FILE).unwrap(), "");
-        assert!(!load_items(&root).unwrap()[0].has_structure);
-        write_doc(
-            &root,
-            "p",
-            "item",
-            STRUCTURE_FILE,
-            "# What this change does\n",
-        )
-        .unwrap();
-        assert!(load_items(&root).unwrap()[0].has_structure);
+        assert_eq!(read_doc(&root, "p", "item", EXPLAIN_DIFF_FILE).unwrap(), "");
+        let item = &load_items(&root).unwrap()[0];
+        assert!(!item.diff_explain.md && !item.diff_explain.html);
+        assert!(!item.plan_explain.md && !item.plan_explain.html);
+
+        // The two forms of one explanation are tracked apart: the GUI opens on
+        // the picture when there is one and falls back to the prose when not.
+        write_doc(&root, "p", "item", EXPLAIN_DIFF_FILE, "# What it does\n").unwrap();
+        let item = &load_items(&root).unwrap()[0];
+        assert!(item.diff_explain.md && !item.diff_explain.html);
+        write_doc(&root, "p", "item", EXPLAIN_DIFF_HTML, "<h1>map</h1>").unwrap();
+        assert!(load_items(&root).unwrap()[0].diff_explain.html);
+
+        // The two artifacts are tracked apart too — explaining the diff says
+        // nothing about the plan.
+        assert!(!load_items(&root).unwrap()[0].plan_explain.md);
+        write_doc(&root, "p", "item", EXPLAIN_PLAN_FILE, "# What it will do\n").unwrap();
+        assert!(load_items(&root).unwrap()[0].plan_explain.md);
+    }
+
+    #[test]
+    fn an_older_items_single_file_explanation_still_counts() {
+        // `structure.md` / `blueprint.md` predate the md+html pairs. An item
+        // explained by an older clash must keep its tab, so the legacy name
+        // reads as the markdown form.
+        let (_g, root) = root();
+        create_item(&root, &req("p", "item", "")).unwrap();
+        write_doc(&root, "p", "item", STRUCTURE_FILE, "# old\n").unwrap();
+        write_doc(&root, "p", "item", BLUEPRINT_FILE, "# older\n").unwrap();
+        let item = &load_items(&root).unwrap()[0];
+        assert!(item.diff_explain.md && !item.diff_explain.html);
+        assert!(item.plan_explain.md && !item.plan_explain.html);
     }
 
     #[test]

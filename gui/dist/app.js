@@ -3229,7 +3229,7 @@ function ensureMermaid() {
 
 let wfMermaidSeq = 0;
 /// Render ```mermaid fences inside an element renderMarkdown just filled —
-/// structure.md carries architecture/flow diagrams, and any other doc may.
+/// the explain documents carry architecture/flow diagrams, and any other may.
 /// Each failure leaves that fence as visible code instead of a blank hole.
 async function renderMermaidIn(el) {
   const blocks = el.querySelectorAll("pre > code.language-mermaid");
@@ -5243,8 +5243,11 @@ async function buildWorkflowView(el, project, slug) {
   if (ts.subView === "agentReview" && !(item.hasAgentReview || item.meta.reviewRound))
     ts.subView = "diff";
   // And for Structure, which only exists once an explain round wrote it.
-  if (ts.subView === "structure" && !item.hasStructure) ts.subView = "diff";
-  if (ts.subView === "blueprint" && !item.hasBlueprint) ts.subView = "diff";
+  // Tab names from a persisted layout written before the pairs existed.
+  if (ts.subView === "structure" || ts.subView === "explain") ts.subView = "explainDiff";
+  if (ts.subView === "blueprint") ts.subView = "explainPlan";
+  if (ts.subView === "explainDiff" && !wfExplainAny(item.diffExplain)) ts.subView = "diff";
+  if (ts.subView === "explainPlan" && !wfExplainAny(item.planExplain)) ts.subView = "diff";
   // An item with no plan phase has no plan history either.
   if (ts.subView === "revisions" && !wfHasPlanPhase(item)) ts.subView = "diff";
   // The plan drill-downs are now versions of the Plan tab; a tab persisted
@@ -5417,13 +5420,12 @@ async function buildWorkflowView(el, project, slug) {
     ...(item.hasAgentReview || item.meta.reviewRound
       ? [["agentReview", `Agent reviews${item.meta.reviewRound ? ` (${item.meta.reviewRound})` : ""}`]]
       : []),
-    // The blueprint: what the plan is going to build, before it exists.
-    // Flagged while it waits on a decision — that is the whole point of it.
-    ...(item.hasBlueprint
-      ? [["blueprint", `◫ Blueprint${blueprintState(item) === "pending" ? " ·decide" : ""}`]]
-      : []),
-    // The explain round's document — appears once ◫ Explain changes wrote it.
-    ...(item.hasStructure ? [["structure", "Structure"]] : []),
+    // Two artifacts, explained separately: what the work is *going* to do and
+    // what it *did* are different documents, and a round on one must never
+    // overwrite the other. Each tab holds both forms of its explanation — the
+    // diagram page and the prose — behind one toggle.
+    ...(wfExplainAny(item.planExplain) ? [["explainPlan", "◫ Plan explained"]] : []),
+    ...(wfExplainAny(item.diffExplain) ? [["explainDiff", "◫ Changes explained"]] : []),
     ["diff", item.openAnnotations > 0 ? `Diff 💬${item.openAnnotations}` : "Diff"],
     // The timeline counts everything it feeds on: change rounds + review rounds.
     [
@@ -5677,10 +5679,22 @@ async function wfPrRecovery(item, err, retry) {
 /// `prUrl` pins the round to one of the item's PRs (respond rounds on
 /// multi-PR items); null means the primary.
 /// Launch a review round. Everything past `publish` rides an options bag:
-/// `interactive`, `target`, `prUrl`, `autoApply` — six positional arguments
-/// with three nulls in the middle told the reader nothing at the call site.
+/// `interactive`, `target`, `prUrl`, `autoApply`, `focus` — six positional
+/// arguments with three nulls in the middle told the reader nothing at the
+/// call site.
+///
+/// `focus` is what the round must settle, in the human's words — the
+/// blueprint's "dive deeper into part 3". Absent, a blueprint round inherits
+/// whatever focus the human last recorded, so sending one back for another
+/// look never means retyping it.
 async function spawnWfReview(item, root, depth, publish, opts = {}) {
-  const { interactive = null, target = null, prUrl = null, autoApply = false } = opts;
+  const {
+    interactive = null,
+    target = null,
+    prUrl = null,
+    autoApply = false,
+    focus = null,
+  } = opts;
   try {
     const sid = await invoke("start_workflow_review_agent", {
       project: item.project,
@@ -5691,6 +5705,7 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
       target,
       prUrl,
       autoApply,
+      focus,
       cols: 120,
       rows: 40,
     });
@@ -5698,9 +5713,11 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
     const job =
       target === "structure"
         ? "explain"
-        : publish === "respond-pr-comments"
-          ? "answer PR comments"
-          : "review";
+        : target === "blueprint"
+          ? "blueprint"
+          : publish === "respond-pr-comments"
+            ? "answer PR comments"
+            : "review";
     await openSession(sid, wfSessionName(item, job));
     await refreshWorkflows();
     if (root) buildWorkflowView(root, item.project, item.slug);
@@ -6811,9 +6828,6 @@ function renderWfActions(bar, root, item) {
   // demote the stage's approve — there is nothing waiting to be done.
   const pendingRound = pendingReviewRound(item);
   const reviewPending = !!pendingRound && pendingRound.apply !== false;
-  // A blueprint exists to be read *before* the plan is implemented, so while
-  // nobody has answered it the stage's own approve is not the default action.
-  const blueprintPending = blueprintState(item) === "pending";
   // Three labeled zones instead of one undifferentiated row: actions ON the
   // current step's artifact (reviews, explain, open things — nothing moves),
   // the decisions that ADVANCE the pipeline, and item-lifecycle actions.
@@ -6986,57 +7000,52 @@ function renderWfActions(bar, root, item) {
     );
   };
 
-  // The explainer round: an agent reads the diff + surrounding code and
-  // writes the Structure tab (what the change does, by functional part, with
-  // diagrams). Review-shaped (parks in `reviewing`, returns), but it judges
-  // nothing — a different job from the review button next to it. Needs a
-  // diff, so plan-review is excluded.
-  const explainButton = () => {
+  // Two explanations, offered separately, because they are about different
+  // artifacts: what the work is *going* to do (from plan.md and the code it
+  // will land in) and what it *did* (from the diff). Each round writes a pair
+  // of documents — a written one and a hand-drawn HTML overview — and never
+  // touches the other artifact's pair.
+  const explainButtons = () => {
     if (!wfCanExplain(item)) return;
-    // Two directions, and the stage decides which is useful: before the work
-    // exists there is nothing to explain retrospectively, and a blueprint of
-    // a change that has already landed is the diff with extra steps.
-    const forward = item.meta.status === "plan-review" && wfHasPlanPhase(item);
-    const bpState = blueprintState(item);
-    if (forward) {
+    const launch = async (which) => {
+      const plan = which === "plan";
+      // A focus is optional and per-run: "concentrate on the migration step"
+      // beats re-reading a document that answered everything but that.
+      const focus = await uiPrompt(
+        `Spend tokens: an agent reads ${
+          plan ? "plan.md and the code it will land in" : "the diff and the surrounding code"
+        } and writes two documents — a written explanation with diagrams, and a ` +
+          "graphical HTML overview (boxes, arrows, the repos and features it touches). " +
+          `The item is parked while it runs and comes back here.\n\n` +
+          "Anything specific to concentrate on? (optional)",
+        ""
+      );
+      if (focus === null) return; // cancelled
+      await spawnWfReview(item, root, focus.trim() ? "deep" : "standard", "local", {
+        target: plan ? "blueprint" : "structure",
+        focus: focus.trim() || null,
+      });
+    };
+    // The plan explanation needs a plan; review-only items have none.
+    if (wfHasPlanPhase(item) && item.hasPlan) {
       add(
-        item.hasBlueprint
-          ? bpState === "stale"
-            ? "◫ Re-draw blueprint"
-            : "◫ Blueprint again"
-          : "◫ Blueprint this plan",
-        bpState === "stale" ? "primary" : "",
-        async () => {
-          if (
-            !(await uiConfirm(
-              "Spend tokens: an agent reads the plan and the code it will land in, then draws a blueprint — what will get built, where it attaches, what it touches, with diagrams. You then accept it, reject it, or ask for another pass. The item is parked while it runs and comes back here.",
-              "Draw it"
-            ))
-          )
-            return;
-          await spawnWfReview(item, root, "standard", "local", { target: "blueprint" });
-        },
-        "Draw what this plan is going to build, before it exists — diagrams of the shape, the blast radius, the open questions. Then accept or reject the design. Spends tokens.",
+        wfExplainAny(item.planExplain) ? "◫ Explain plan again" : "◫ Explain plan",
+        "",
+        () => launch("plan"),
+        "Explain what this plan is going to do, before it exists: a written walk-through plus a graphical overview of the parts, where they attach and what they touch. Judges nothing. Spends tokens; replaces the plan explanation on each run.",
         "step"
       );
-      return;
     }
-    add(
-      item.hasStructure ? "◫ Re-explain changes" : "◫ Explain changes",
-      "",
-      async () => {
-        if (
-          !(await uiConfirm(
-            "Spend tokens: an agent reads the diff and the surrounding code, then writes the Structure tab — what this change does, organized by functional part, with diagrams. The item is parked while it runs and comes back here.",
-            "Explain"
-          ))
-        )
-          return;
-        await spawnWfReview(item, root, "standard", "local", { target: "structure" });
-      },
-      "Generate the Structure tab: an in-depth explanation of what this change does (functional parts + mermaid diagrams). Spends tokens; regenerates on each run.",
-      "step"
-    );
+    // The diff explanation needs a diff — before implementation there is none.
+    if (!["draft", "plan-review"].includes(st)) {
+      add(
+        wfExplainAny(item.diffExplain) ? "◫ Explain changes again" : "◫ Explain changes",
+        "",
+        () => launch("diff"),
+        "Explain what this change does: a written walk-through by functional part plus a graphical overview. Judges nothing. Spends tokens; replaces the changes explanation on each run.",
+        "step"
+      );
+    }
   };
 
   // Available from every state holding a reviewable artifact, every time the
@@ -7166,7 +7175,7 @@ function renderWfActions(bar, root, item) {
       applyReviewButton();
       add(
         "✓ Approve plan → implement",
-        reviewPending || blueprintPending ? "" : "primary",
+        reviewPending ? "" : "primary",
         async () => {
           if (!(await uiConfirm("Approve this plan and move to implementation?", "Approve")))
             return;
@@ -7178,9 +7187,7 @@ function renderWfActions(bar, root, item) {
           const fresh = wfItem(item.project, item.slug) || item;
           if (go === "go") launchWfAgent(fresh, "implement", root);
         },
-        blueprintPending
-          ? "Accept plan.md as written — the item moves to implementation. A blueprint is waiting on your accept or reject; approving now skips reading it."
-          : "Accept plan.md as written — the item moves to implementation (you choose whether to launch the agent right away)"
+        "Accept plan.md as written — the item moves to implementation (you choose whether to launch the agent right away)"
       );
       add(
         "✎ Request changes…",
@@ -7467,9 +7474,9 @@ function renderWfActions(bar, root, item) {
     "item"
   );
 
-  // Outside the switch on purpose: "what does this change do" is worth asking
-  // at every stage, and per-case calls meant it was missing from five of them.
-  explainButton();
+  // Outside the switch on purpose: "what does this do" is worth asking at
+  // every stage, and per-case calls meant it was missing from five of them.
+  explainButtons();
 
   // Going back was two hardcoded buttons at two stages; from everywhere else
   // the pipeline was a one-way street. Same reason it lives outside the
@@ -7495,85 +7502,6 @@ function renderWfActions(bar, root, item) {
   for (const { group, btns } of Object.values(zones)) {
     if (!btns.childNodes.length) group.remove();
   }
-}
-
-/// The blueprint's three answers: accept, reject, or send it back.
-///
-/// A blueprint is the one explainer output that carries a decision, because it
-/// is read *before* the implementation exists — agreeing on the shape of the
-/// work is the point. The three do different things and none of them is the
-/// other's fallback: accepting records the design and leaves the pipeline
-/// where it is (the stage's own approve still moves it, and is demoted while
-/// this is pending); rejecting records that and opens the change-request
-/// composer, because a rejected blueprint means the *plan* needs a round;
-/// revalidating asks for another blueprint pass without judging this one.
-function wfBlueprintDecisionBar(root, item) {
-  const bar = document.createElement("div");
-  bar.className = "wf-blueprint-bar";
-  const state = blueprintState(item);
-  const caption = document.createElement("span");
-  caption.className = "wf-blueprint-state dim";
-  caption.textContent = blueprintCaption(item);
-  bar.appendChild(caption);
-  bar.appendChild(Object.assign(document.createElement("span"), { className: "spacer" }));
-
-  const decide = async (decision, then) => {
-    try {
-      await invoke("set_workflow_blueprint_decision", {
-        project: item.project,
-        slug: item.slug,
-        decision,
-      });
-      await refreshWorkflows();
-      if (then) await then();
-      else buildWorkflowView(root, item.project, item.slug);
-    } catch (e) {
-      uiAlert(`Blueprint decision failed: ${e}`);
-    }
-  };
-
-  const add = (label, cls, title, fn) => {
-    const b = document.createElement("button");
-    b.textContent = label;
-    if (cls) b.className = cls;
-    b.title = title;
-    b.onclick = () => busyButton(b, () => fn());
-    bar.appendChild(b);
-    return b;
-  };
-
-  if (state !== "accepted") {
-    add(
-      "✓ Accept blueprint",
-      state === "pending" ? "primary" : "",
-      "Record that this is the shape to build. It does not start the implementation — the stage's own approve does, and it stops being demoted once this is decided.",
-      () => decide("accepted")
-    );
-  }
-  if (state !== "rejected") {
-    add(
-      "✗ Reject…",
-      "",
-      "Record that this is not the shape to build, and write what should change — the plan takes another round.",
-      () =>
-        decide("rejected", async () => {
-          const fresh = wfItem(item.project, item.slug) || item;
-          await wfRequestChanges(
-            fresh,
-            root,
-            "plan",
-            "The blueprint is not the shape to build.\n\n<what is wrong with it, and what to do instead>\n"
-          );
-        })
-    );
-  }
-  add(
-    "↻ Revalidate next round",
-    "",
-    "Ask for another blueprint pass — the current one is out of date with the plan, or you want it looked at again. Judges nothing.",
-    () => decide("stale")
-  );
-  return bar;
 }
 
 /// Render a unified diff as coloured lines. Plans are prose, so this is the
@@ -7831,26 +7759,197 @@ async function renderWfRevisionsView(body, root, item, ts) {
   pane.appendChild(md);
 }
 
+/// Does this explanation exist in any form?
+function wfExplainAny(forms) {
+  return !!(forms && (forms.md || forms.html));
+}
+
+/// Render one of the two explanations: the graphical page or the prose, with a
+/// toggle when both exist.
+///
+/// The **HTML page** is the agent's own hand-drawn overview — boxes, arrows,
+/// the repos and features the work touches — so it is rendered in a sandboxed
+/// iframe rather than injected into this document. `sandbox="allow-same-origin"`
+/// is the load-bearing pair of choices: no `allow-scripts`, so nothing in the
+/// page runs (inline handlers and `<img onerror>` included), and same-origin so
+/// this side can measure the content and size the frame to it. Injecting the
+/// same markup with `innerHTML` would put generated content in the same DOM as
+/// the Tauri bridge.
+///
+/// The **markdown** form goes through the normal renderer, so its mermaid
+/// fences render exactly like every other document's.
+async function renderWfExplainView(body, root, item, ts, which) {
+  const { project, slug } = item;
+  const forms = which === "plan" ? item.planExplain : item.diffExplain;
+  // Legacy single-file items report `md` with no `explain-*.md` on disk; the
+  // backend reads the old name for the same doc, so the fallback is a name.
+  const mdDoc = which === "plan" ? "explain-plan.md" : "explain-diff.md";
+  const legacy = which === "plan" ? "blueprint.md" : "structure.md";
+  const htmlDoc = which === "plan" ? "explain-plan.html" : "explain-diff.html";
+  // The picture is the headline when there is one — that is what it is for.
+  const view = ts.explainView === "text" || !forms.html ? "text" : "graphic";
+
+  body.innerHTML = "<p class='hint'>loading…</p>";
+  let text = "";
+  try {
+    text = await invoke("get_workflow_doc", {
+      project,
+      slug,
+      doc: view === "graphic" ? htmlDoc : mdDoc,
+    });
+    if (view === "text" && !text.trim()) {
+      text = await invoke("get_workflow_doc", { project, slug, doc: legacy });
+    }
+  } catch (e) {
+    body.innerHTML = `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
+    return;
+  }
+  body.innerHTML = "";
+
+  const caption = document.createElement("p");
+  caption.className = "wf-doc-caption dim";
+  caption.textContent =
+    which === "plan"
+      ? "What this plan is going to do, drawn before any of it exists — by the ◫ Explain plan round. It judges nothing and changes nothing but this document."
+      : "What this change actually does — by the ◫ Explain changes round. It judges nothing and changes nothing but this document.";
+  body.appendChild(caption);
+
+  // Both forms exist: one toggle, because they answer the same question at
+  // two altitudes and the reader picks.
+  if (forms.html && forms.md) {
+    const seg = document.createElement("div");
+    seg.className = "wf-round-nav";
+    for (const [key, label] of [
+      ["graphic", "◫ Diagram"],
+      ["text", "☰ Written"],
+    ]) {
+      const b = document.createElement("button");
+      b.textContent = label;
+      if (key === view) b.className = "on";
+      b.onclick = () => {
+        ts.explainView = key;
+        buildWorkflowView(root, project, slug);
+      };
+      seg.appendChild(b);
+    }
+    body.appendChild(seg);
+  }
+
+  const tools = document.createElement("div");
+  tools.className = "wf-doc-tools";
+  const doc = view === "graphic" ? htmlDoc : mdDoc;
+  const edit = document.createElement("button");
+  edit.className = "icon-btn wide";
+  edit.innerHTML = `${svgIcon("pencil", 12)}<span>Edit ${doc}</span>`;
+  edit.onclick = (ev) =>
+    openScratchInEditor(
+      { path: `${item.path}/${doc}`, title: `${slug} ${doc}` },
+      ev.clientX,
+      ev.clientY
+    );
+  tools.appendChild(edit);
+  body.appendChild(tools);
+
+  if (!text.trim()) {
+    body.insertAdjacentHTML(
+      "beforeend",
+      `<p class="hint">nothing written yet — ◫ Explain ${
+        which === "plan" ? "plan" : "changes"
+      } writes it</p>`
+    );
+    return;
+  }
+
+  if (view === "graphic") {
+    const frame = document.createElement("iframe");
+    frame.className = "wf-explain-frame";
+    // No allow-scripts: the page is inert markup. Same-origin so the height
+    // can be measured below.
+    frame.setAttribute("sandbox", "allow-same-origin");
+    frame.srcdoc = wfExplainFrameDoc(text);
+    frame.onload = () => {
+      try {
+        const d = frame.contentDocument;
+        const h = Math.max(
+          d.body.scrollHeight,
+          d.documentElement.scrollHeight,
+          240
+        );
+        frame.style.height = `${h + 24}px`;
+      } catch {
+        frame.style.height = "70vh"; // measuring failed; give it a page
+      }
+    };
+    body.appendChild(frame);
+    return;
+  }
+
+  const md = document.createElement("div");
+  md.className = "wf-md wf-structure";
+  renderMarkdown(md, text);
+  renderMermaidIn(md);
+  const heads = [...md.querySelectorAll("h2")];
+  if (heads.length > 1) {
+    const nav = document.createElement("div");
+    nav.className = "wf-round-nav";
+    heads.forEach((h) => {
+      const chip = document.createElement("button");
+      chip.textContent = wfShort(h.textContent || "", 28);
+      chip.onclick = () => h.scrollIntoView({ block: "start" });
+      nav.appendChild(chip);
+    });
+    body.appendChild(nav);
+  }
+  body.appendChild(md);
+}
+
+/// Wrap the agent's HTML page in a document that inherits the app's theme.
+///
+/// The agent writes a fragment or a whole page; either works. The preamble
+/// carries the *computed* theme colours (the iframe cannot see this document's
+/// custom properties) and a neutral baseline, so a page that sets no colours
+/// still reads as part of the app — and one that sets its own wins, because it
+/// comes after.
+function wfExplainFrameDoc(html) {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (name, fallback) => (cs.getPropertyValue(name) || fallback).trim();
+  const style = `
+    :root { color-scheme: ${document.documentElement.classList.contains("theme-light") ? "light" : "dark"}; }
+    body {
+      margin: 0; padding: 18px;
+      background: ${v("--bg", "#111")};
+      color: ${v("--fg", "#eee")};
+      font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: ${v("--accent", "#4a9")}; }
+    svg { max-width: 100%; height: auto; }
+    table { border-collapse: collapse; }
+    td, th { border: 1px solid ${v("--border", "#333")}; padding: 4px 8px; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    pre { overflow-x: auto; }
+    .box, .node {
+      border: 1px solid ${v("--border", "#333")};
+      border-radius: 8px; padding: 8px 10px;
+      background: ${v("--bg-raised", "#1a1a1a")};
+    }
+  `;
+  const head = `<meta charset="utf-8"><style>${style}</style>`;
+  // A full page keeps its own <head>; a fragment gets one.
+  return /<html[\s>]/i.test(html)
+    ? html.replace(/<head(\s[^>]*)?>/i, (m) => `${m}${head}`)
+    : `<!doctype html><html><head>${head}</head><body>${html}</body></html>`;
+}
+
 async function renderWfSubView(body, root, item, ts) {
   const { project, slug } = item;
   // The plan is the one doc with versions, so it gets two readers of its own:
   // the live document, and its history.
   if (ts.subView === "plan") return renderWfPlanView(body, root, item, ts);
   if (ts.subView === "revisions") return renderWfRevisionsView(body, root, item, ts);
-  if (
-    ts.subView === "review" ||
-    ts.subView === "agentReview" ||
-    ts.subView === "structure" ||
-    ts.subView === "blueprint"
-  ) {
-    const doc =
-      ts.subView === "review"
-        ? "review.md"
-        : ts.subView === "structure"
-          ? "structure.md"
-          : ts.subView === "blueprint"
-            ? "blueprint.md"
-            : "agent-review.md";
+  if (ts.subView === "explainPlan") return renderWfExplainView(body, root, item, ts, "plan");
+  if (ts.subView === "explainDiff") return renderWfExplainView(body, root, item, ts, "diff");
+  if (ts.subView === "review" || ts.subView === "agentReview") {
+    const doc = ts.subView === "review" ? "review.md" : "agent-review.md";
     body.innerHTML = "<p class='hint'>loading…</p>";
     let text = "";
     try {
@@ -7868,11 +7967,7 @@ async function renderWfSubView(body, root, item, ts) {
     caption.textContent =
       ts.subView === "review"
         ? "Your change requests, one section per round — written when you press ✎ Request changes, and the first thing the next agent round reads. clash appends; agents only read."
-        : ts.subView === "agentReview"
-          ? "What the agent review rounds found: verdict, findings and what each round published. Appended by the reviewer, never edited by clash — code findings also arrive as comments on the Diff tab."
-          : ts.subView === "blueprint"
-            ? "What the plan is going to build, drawn before any of it exists: the shape, what gets touched, what is still open. Accept it and that is the design to build; reject it and the plan takes another round."
-            : "What this change does, written by the ◫ Explain round: functional parts, diagrams, risks. It judges nothing and decides nothing.";
+        : "What the agent review rounds found: verdict, findings and what each round published. Appended by the reviewer, never edited by clash — code findings also arrive as comments on the Diff tab.";
     body.appendChild(caption);
 
     const tools = document.createElement("div");
@@ -7898,28 +7993,8 @@ async function renderWfSubView(body, root, item, ts) {
       md.innerHTML = `<p class="hint">${
         ts.subView === "review"
           ? "no review notes yet — they accumulate when you request changes"
-          : ts.subView === "structure"
-            ? "no structure document yet — ◫ Explain changes writes it"
-            : "no agent reviews yet — each round appends its findings here"
+          : "no agent reviews yet — each round appends its findings here"
       }</p>`;
-
-    // Structure reads as a document, not a dump: dedicated typography plus
-    // section chips built from its H2s, so it navigates like an exposé.
-    if ((ts.subView === "structure" || ts.subView === "blueprint") && text.trim()) {
-      md.classList.add("wf-structure");
-      const heads = [...md.querySelectorAll("h2")];
-      if (heads.length > 1) {
-        const nav = document.createElement("div");
-        nav.className = "wf-round-nav";
-        heads.forEach((h) => {
-          const chip = document.createElement("button");
-          chip.textContent = wfShort(h.textContent || "", 28);
-          chip.onclick = () => h.scrollIntoView({ block: "start" });
-          nav.appendChild(chip);
-        });
-        body.appendChild(nav);
-      }
-    }
 
     // Rounds accumulate top-down, so a long report opens on round 1 — the one
     // the user has already read. Jump chips per section + land on the latest.
@@ -7939,11 +8014,6 @@ async function renderWfSubView(body, root, item, ts) {
       }
       if (heads.length)
         requestAnimationFrame(() => heads[heads.length - 1].scrollIntoView({ block: "start" }));
-    }
-    // The decision lives with the document, not only on the action bar: the
-    // three answers only mean something once you have read the thing.
-    if (ts.subView === "blueprint" && text.trim()) {
-      body.appendChild(wfBlueprintDecisionBar(root, item));
     }
     body.appendChild(md);
     return;

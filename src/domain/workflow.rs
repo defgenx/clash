@@ -466,60 +466,13 @@ pub struct WorkflowReview {
     /// items answer reviewers per PR. Empty means the primary `meta.pr`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub pr_url: String,
+    /// What this round must concentrate on, in the human's words — asked at
+    /// launch ("the migration step", "node 3 of the graph"). Empty means the
+    /// whole artifact, which is the common case.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub focus: String,
     #[serde(default)]
     pub started_at: i64,
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
-}
-
-/// Where a blueprint stands: written, and what the human said about it.
-///
-/// A blueprint is the one explainer output with a decision attached, because
-/// its whole point is to be agreed *before* the implementation exists.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum BlueprintStatus {
-    /// Written and waiting on the human. Demotes the stage's own approve: the
-    /// point of a blueprint is to be read before the plan is implemented.
-    #[default]
-    Pending,
-    /// "Build this." The plan can go to implementation.
-    Accepted,
-    /// "Not this." Recorded, and the plan needs a revision round.
-    Rejected,
-    /// "Do it again next round" — the blueprint is out of date with the plan
-    /// (or the human wants another pass) and the next round must redo it.
-    Stale,
-    #[serde(other)]
-    Unknown,
-}
-
-impl BlueprintStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Accepted => "accepted",
-            Self::Rejected => "rejected",
-            Self::Stale => "stale",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-/// The blueprint block of `meta.json`: which round wrote it and what the human
-/// decided. clash-owned — the agent writes `blueprint.md`, never this.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowBlueprint {
-    /// The blueprint round that wrote it (per-target numbering, like every
-    /// other round).
-    #[serde(default)]
-    pub round: u32,
-    #[serde(default)]
-    pub status: BlueprintStatus,
-    /// When the human decided, epoch ms; 0 while pending.
-    #[serde(default)]
-    pub decided_at: i64,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
@@ -598,10 +551,6 @@ pub struct WorkflowMeta {
     /// items that were never reviewed by an agent.
     #[serde(default)]
     pub review: Option<WorkflowReview>,
-    /// The blueprint's round and the human's verdict on it. Absent until a
-    /// blueprint round has run. clash-owned.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub blueprint: Option<WorkflowBlueprint>,
     /// How many agent review rounds have been launched. Bumped only by clash
     /// (never by the agent), like `iteration` — reviews are unbounded, so this
     /// just keeps climbing and numbers the `agent-review.md` sections.
@@ -812,6 +761,27 @@ pub struct AgentReviewSummary {
     pub apply_reason: String,
 }
 
+/// Which forms one explanation exists in. Both may be present: the markdown
+/// document is read top to bottom, the HTML page is the diagram you take in at
+/// a glance, and neither is a substitute for the other.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplainForms {
+    /// `explain-<target>.md` (or the legacy single-file name) has content.
+    #[serde(default)]
+    pub md: bool,
+    /// `explain-<target>.html` has content.
+    #[serde(default)]
+    pub html: bool,
+}
+
+impl ExplainForms {
+    /// Anything to show at all.
+    pub fn any(&self) -> bool {
+        self.md || self.html
+    }
+}
+
 /// A workflow item as listed to the frontends — a runtime DTO like
 /// [`crate::domain::entities::ScratchNote`]: `project`/`slug` are computed
 /// from the directory layout (the path *is* the identity, never trusted from
@@ -831,9 +801,16 @@ pub struct WorkflowItem {
     pub has_review: bool,
     /// True once `agent-review.md` holds at least one review round.
     pub has_agent_review: bool,
-    /// True once `structure.md` (the explain round's document) has content —
-    /// gates the GUI's Structure tab.
-    pub has_structure: bool,
+    /// Which forms of the **diff** explanation exist (`explain-diff.md` /
+    /// `.html`) — gates the GUI's "Changes explained" tab and decides whether
+    /// it opens on the picture or the prose.
+    #[serde(default)]
+    pub diff_explain: ExplainForms,
+    /// The same for the **plan** explanation (`explain-plan.md` / `.html`).
+    /// Two artifacts, explained separately: what the work is going to do is a
+    /// different document from what it did, and both are worth keeping.
+    #[serde(default)]
+    pub plan_explain: ExplainForms,
     /// Count of annotations with status `open` (0 for terminal items, whose
     /// annotations are not read during listing).
     pub open_annotations: usize,
@@ -843,10 +820,6 @@ pub struct WorkflowItem {
     /// alive while the item claims an agent is working (planning /
     /// implementing). Computed by the GUI layer against live sessions.
     pub agent_alive: bool,
-    /// True when `blueprint.md` has content — the tab and its decision only
-    /// exist once a blueprint round has written one.
-    #[serde(default)]
-    pub has_blueprint: bool,
     /// Latest round parsed from `agent-review.md`, when one exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_agent_review: Option<AgentReviewSummary>,

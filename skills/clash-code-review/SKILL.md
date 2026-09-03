@@ -77,9 +77,10 @@ Three checkpoints, in order:
    intend to change and ask. No edit before the yes.
 3. **Publish** — before anything leaves the machine. `pr-comments`: show the
    review summary and each line comment as it will be posted, then ask.
-   `respond-pr-comments`: per unanswered comment, show the proposed action —
-   the fix, or the mirror-to-annotation, and the reply text — and ask before
-   posting.
+   `respond-pr-comments`: per open thread, show the proposed **decision**
+   (fixed / queued / declined / needs the human), the fix if there is one, and
+   the reply text that will be published — then ask before posting. Every
+   thread gets a reply; what the human decides is *which* reply.
 
 At any checkpoint the human may answer "apply your recommendations and finish"
 — from then on, stop asking for the rest of the round.
@@ -184,6 +185,11 @@ Anything that changes behavior, structure, or an interface is a finding, not a
 fix — even when the fix is obvious to you. If you are unsure which side of the
 line something falls on, it is a finding.
 
+**One mode widens this: `respond-pr-comments`.** There, a reviewer has already
+asked for the change and the human launched the round to act on it, so a
+bounded, unambiguous fix inside the diff under review is in scope. See the
+Publish section for exactly where that line falls.
+
 When you do fix things:
 1. Interactive rounds: checkpoint 2 above — list the intended fixes; no edit
    before the yes. Autonomous rounds: fix only what is unambiguously inside
@@ -220,37 +226,57 @@ instead.
   one: a draft is exactly what a change is in while it is being reviewed, and
   the local half of the round — findings as annotations — never depended on the
   PR's state at all.
-- **`respond-pr-comments`** — read the review comments of **the round's PR**
-  (the kickoff's `PR:` field, else the primary `meta.pr.url`) via
+- **`respond-pr-comments`** — **close every open thread on the PR with a
+  published decision, and fix what the comments ask for.** This is not a
+  review round with a posting step at the end; the threads are the work.
+
+  Read them from **the round's PR** (the kickoff's `PR:` field, else the
+  primary `meta.pr.url`) via
   `gh api /repos/{owner}/{repo}/pulls/<n>/comments` and
-  `gh pr view <n> --json reviews,comments`, and answer the ones waiting on
-  you.
+  `gh pr view <n> --json reviews,comments`.
 
-  **What "unanswered" means here, exactly.** GitHub flattens threads: every
-  reply carries `in_reply_to_id` pointing at the thread's root. A thread is
-  waiting on you when **its most recent comment was written by somebody other
-  than the authenticated user** (`gh api user --jq .login`). Two consequences,
-  and both have bitten:
+  **Which threads are open.** A thread is **settled** when *you* have replied
+  in it and nobody has spoken after you. Everything else is open, and that
+  covers two kinds of thread — both are your job:
 
-  - A comment **you** posted with no reply is *not* waiting on you — that
-    includes the line comments a previous `pr-comments` round of this same
-    pipeline published. Answering your own findings is not a job. A round that
-    treats them as work either replies to itself or reports "nothing to do"
-    with a number in the label that says otherwise.
-  - A thread you *did* reply to is waiting on you again as soon as somebody
-    answers back. The last word is what decides, not whether the root has a
-    reply.
+  - **Somebody else's comment** with no answer from you, or with a follow-up
+    after your answer. The obvious case.
+  - **A finding this pipeline published itself** (a line comment from an
+    earlier `pr-comments` round, posted under your own account) with no
+    decision under it. A finding is a *question*; until the thread says what
+    was done about it, the PR shows a pile of remarks and no outcomes. These
+    are not "your own comments, so not your problem" — they are precisely the
+    loop this mode closes.
 
-  clash's own count (the "Answer N PR comments" button) uses that same rule, so
-  agreeing with it is not a nicety: it is what makes the number you were
-  launched with mean something.
+  clash's own count (the "Answer N PR comments" button) uses that same rule.
 
-  For each thread waiting on you: address it if it is a trivial fix under the
-  rule above, otherwise mirror it into `annotations.json` as an
-  `author: "agent"` annotation so it enters the human's triage queue.
-  Interactive rounds walk the human through each comment with the proposed
-  action and reply text (checkpoint 3) — they decide what gets fixed, what
-  gets mirrored, and what gets said in their PR.
+  **Every open thread gets a published reply. No exceptions.** Right or wrong,
+  the comment gets an answer that says what was decided and why. A thread you
+  read and silently skipped is indistinguishable from a round that never ran —
+  that is the actual failure this rule exists to prevent. Four honest
+  decisions, and one of them must be in every reply:
+
+  | Decision | Reply says | Also do |
+  |---|---|---|
+  | **Fixed** | what changed, and the commit sha | make the change, commit it |
+  | **Queued** | that it needs a change round, and why it is not being done here | mirror it into `annotations.json` (`author: "agent"`) and name the annotation id |
+  | **Declined** | why the comment does not hold — the code, the invariant, or the constraint that makes it wrong or unnecessary. Once, briefly, no argument | record it in your report |
+  | **Needs the human** | what the open question is and who has to answer it | mirror it as an annotation for triage |
+
+  **Fixing is in scope here** — wider than the "one trivial thing" allowance
+  above, because a reviewer's comment on a PR *is* a change request and the
+  human launched this round to act on them. Implement a comment when the
+  change is bounded and unambiguous inside the diff under review. It stays a
+  **Queued** decision (not a fix) when it changes the design, touches code
+  outside the diff, needs a plan revision, or you would have to guess what
+  "right" means. When in doubt, queue it and say so in the thread — a wrong
+  fix costs more than a round.
+
+  Every fix follows the fix discipline above: run the project's formatter,
+  linter and tests; commit with a message naming the round; **push** when the
+  branch is published (a local-only commit leaves the PR stale and your reply
+  pointing at a sha nobody can see). Group the fixes into commits that make
+  sense — one per thread is fine, one per theme is better.
 
   **Reply *in the thread*, with the replies endpoint:**
 
@@ -263,24 +289,31 @@ instead.
   `<root_comment_id>` is the thread root's `id` (the `in_reply_to_id` of its
   replies, or the comment's own `id` when it is the root). `gh pr comment` is
   **not** a reply: it posts a detached issue comment on the PR, so the thread
-  still shows no answer and clash still counts it as waiting on you. That is
-  the difference between "the round replied" and "the round appeared to do
-  nothing", which is exactly how a silent respond round reads from the
-  outside. One short reply per thread, pointing at the commit when you fixed
-  it. Never resolve a thread you did not fix, and never argue: if you
-  disagree, say so once, briefly, and record it as a finding for the human to
-  arbitrate.
+  still shows no answer and still counts as open. That is the difference
+  between "the round replied" and "the round appeared to do nothing".
+
+  Never resolve a thread you did not fix. Never argue: state your reasoning
+  once and, if you disagree with something material, record it as a finding
+  for the human to arbitrate.
+
+  Interactive rounds walk the human through the threads before anything is
+  posted (checkpoint 3): per thread, the proposed decision, the fix if any,
+  and the reply text. They can overrule any of it. Autonomous rounds decide
+  by the table above and report every decision.
 
   **Fetch the comments twice: once at the start, and again right before you
-  finish.** A review round takes long enough that comments routinely arrive
-  while you work — a single check at the start silently misses them (this
-  happened: a round found "zero comments" on a PR that had two by the time it
-  finished). Answer anything the second fetch surfaces. If the final fetch
-  still finds nothing waiting on you, your report and final message must say
-  so explicitly — including *why*, when the PR does have comments that are all
-  your own side of the conversation — and point the human at clash's "Post
-  round N to PR" button if they wanted the findings published (that is
-  `pr-comments`, a different mode).
+  finish.** A round takes long enough that comments routinely arrive while you
+  work — a single check at the start silently misses them (this happened: a
+  round found "zero comments" on a PR that had two by the time it finished).
+  Everything the second fetch surfaces gets the same treatment. If the final
+  fetch finds every thread settled, say so explicitly in your report and final
+  message — and point the human at clash's "Post round N to PR" button if what
+  they wanted was this round's *findings* published (that is `pr-comments`, a
+  different mode).
+
+  `### Published` must list **one line per thread**: the thread (file:line or
+  comment id), the decision, and what was posted. A count is not enough — the
+  human has to be able to check the list against the PR.
 
 If `gh` is missing or unauthenticated, do the local half of the work, then say
 clearly in your final message that publishing was skipped and why. Never fail
@@ -373,13 +406,20 @@ reads as "silently did nothing". State exactly what left the machine, or that
 nothing did and why:
 
 - `local` round → `- Nothing — local round by request.`
-- a PR mode that had nothing to do → say so, when you checked, and why, e.g.
-  `- Publish was respond-pr-comments; at 17:25 no thread on PR #41 was waiting
-  on a reply from us (its 7 threads are this pipeline's own round-2 line
-  comments, none replied to). Nothing posted. Findings are in
-  annotations.json.`
-- a respond round that did answer → `- Replied in 3 threads on PR #41 (2
-  fixed in abc1234, 1 mirrored as r5-2).`
+- a respond round → one line per thread, e.g.
+  ```
+  - PR #41, 4 threads, all answered:
+    - `src/auth.rs:42` (c#1902) — FIXED in abc1234 (constant-time compare); replied.
+    - `src/auth.rs:88` (c#1903) — QUEUED as r5-2 (needs a plan revision); replied.
+    - `src/watch.rs:12` (c#1904) — DECLINED (the debounce is intentional, see
+      docs/watching.md); replied.
+    - `src/lib.rs:3` (c#1905) — NEEDS THE HUMAN (which error type is canonical);
+      queued as r5-3; replied.
+  ```
+- a respond round with nothing open → say so, when you checked, and why, e.g.
+  `- Publish was respond-pr-comments; at 17:25 every thread on PR #41 was
+  settled (each of its 7 findings carries our decision reply). Nothing
+  posted.`
 - `gh` failed → `- Publishing skipped: gh not authenticated.`
 - a draft PR → `- Posted 3 line comments and a summary comment to PR #41 (a
   draft, so not as a review).`

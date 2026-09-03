@@ -637,8 +637,10 @@ pub fn review_job(review: &crate::domain::workflow::WorkflowReview) -> String {
         return "answer PR comments".to_string();
     }
     match review.target {
-        ReviewTarget::Structure => "explain".to_string(),
-        ReviewTarget::Blueprint => format!("blueprint r{}", review.round.max(1)),
+        // Named by what they explain, not by which file they write: the
+        // sessions sidebar is read by a human deciding which pane to look at.
+        ReviewTarget::Structure => "explain changes".to_string(),
+        ReviewTarget::Blueprint => "explain plan".to_string(),
         ReviewTarget::Plan => format!("plan review r{}", review.round.max(1)),
         ReviewTarget::Diff | ReviewTarget::Unknown => {
             format!("code review r{}", review.round.max(1))
@@ -812,6 +814,14 @@ pub fn build_review_prompt(
     } else {
         format!(" PR: {}.", review.pr_url)
     };
+    // What the human asked this pass to settle. A blueprint they sent back for
+    // a deeper look is the case this exists for: without it the next round
+    // redraws the same document and answers the same questions.
+    let focus = if review.focus.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" Focus: {}.", review.focus.trim())
+    };
     let interactive = match review.interactive {
         Some(true) => " Interactive: yes.",
         Some(false) => " Interactive: no.",
@@ -827,7 +837,7 @@ pub fn build_review_prompt(
     };
     format!(
         "Use the {} skill. Workflow item directory: {}. \
-         Target: {}. Depth: {}. Publish: {}. Round: {}. Return to: {}. Mode: {}.{}{}{}",
+         Target: {}. Depth: {}. Publish: {}. Round: {}. Return to: {}. Mode: {}.{}{}{}{}",
         engine,
         item_dir,
         review.target,
@@ -837,6 +847,7 @@ pub fn build_review_prompt(
         review.return_status,
         mode,
         pr,
+        focus,
         interactive,
         auto_apply
     )
@@ -1563,7 +1574,11 @@ Tighten the API.\n\n\
         );
         assert_eq!(
             review_job(&mk(ReviewTarget::Structure, ReviewPublish::Local, 5)),
-            "explain"
+            "explain changes"
+        );
+        assert_eq!(
+            review_job(&mk(ReviewTarget::Blueprint, ReviewPublish::Local, 5)),
+            "explain plan"
         );
         // A default/legacy round never says "r0".
         assert_eq!(
@@ -1707,28 +1722,54 @@ Tighten the API.\n\n\
     // ── Apply declaration ────────────────────────────────────────────
 
     #[test]
+    fn a_round_carries_the_focus_it_was_launched_for() {
+        use crate::domain::workflow::{ReviewPublish, ReviewTarget, WorkflowReview};
+        let review = WorkflowReview {
+            target: ReviewTarget::Blueprint,
+            publish: ReviewPublish::Local,
+            round: 2,
+            focus: "  node 3 — how the migration handles existing rows  ".to_string(),
+            ..Default::default()
+        };
+        let p = build_review_prompt("/x/i", &review, WorkflowMode::Full);
+        // Trimmed, and a sentence of its own so the skill can lead with it.
+        assert!(p.contains("Focus: node 3 — how the migration handles existing rows."));
+        // Every other round has no focus and says nothing about one.
+        let p = build_review_prompt(
+            "/x/i",
+            &WorkflowReview {
+                focus: String::new(),
+                ..review
+            },
+            WorkflowMode::Full,
+        );
+        assert!(!p.contains("Focus:"));
+    }
+
+    #[test]
     fn the_blueprint_is_the_explainers_other_direction() {
         use crate::domain::workflow::{ReviewTarget, WorkflowReview};
         // Same skill, because it is the same job — explain, judge nothing —
         // pointed the other way along the pipeline.
         assert_eq!(review_engine_for(ReviewTarget::Blueprint), "clash-explain");
         assert_eq!(review_engine_for(ReviewTarget::Structure), "clash-explain");
-        // It is numbered like every other round, so its session says which one
-        // it is; the retrospective explainer has only ever had one document and
-        // keeps its bare name.
+        // The session is named by what it explains — the sidebar is read by a
+        // human choosing a pane, and "which artifact" is the only distinction
+        // that matters there. Rounds are not numbered: each one replaces the
+        // document, so there is no round N to point at.
         let job = review_job(&WorkflowReview {
             target: ReviewTarget::Blueprint,
             round: 2,
             ..Default::default()
         });
-        assert_eq!(job, "blueprint r2");
+        assert_eq!(job, "explain plan");
         assert_eq!(
             review_job(&WorkflowReview {
                 target: ReviewTarget::Structure,
                 round: 2,
                 ..Default::default()
             }),
-            "explain"
+            "explain changes"
         );
         // And the kickoff names the target, which is what routes the skill.
         let p = build_review_prompt(

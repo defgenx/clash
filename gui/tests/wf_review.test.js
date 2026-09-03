@@ -98,40 +98,43 @@ test("the model tolerates an empty call", () => {
   assert.equal(m.publish, null);
 });
 
-test("the answer-comments label only claims a count it has", () => {
-  assert.equal(answerCommentsLabel(3), "Answer 3 PR comments");
-  assert.equal(answerCommentsLabel(1), "Answer 1 PR comment");
-  // A known zero says so. The button used to read "Answer 7 PR comments" on a
-  // PR whose only threads were clash's own published findings — it launched an
-  // agent that correctly answered none of them. An unknown count still stays
-  // generic: no number the poll never fetched.
-  assert.match(answerCommentsLabel(0), /none waiting/);
+test("the answer-comments label counts open threads, not other people's", () => {
+  assert.equal(answerCommentsLabel(3), "Answer 3 open PR threads");
+  assert.equal(answerCommentsLabel(1), "Answer 1 open PR thread");
+  // A thread is open until it ends with a reply of ours — which includes the
+  // findings an earlier round of this item published and never followed up.
+  // A known zero says so; an unknown count claims no number.
+  assert.match(answerCommentsLabel(0), /all answered/);
   assert.equal(answerCommentsLabel(null), "Answer PR comments");
   assert.equal(answerCommentsLabel(undefined), "Answer PR comments");
 });
 
-test("a known-zero count says why, and still lets you re-check", () => {
-  const t = answerCommentsTitle(0, "#5");
-  assert.match(t, /waiting on a reply from you/);
-  // The reason is the useful half: your own comments are not work.
-  assert.match(t, /Your own comments/);
-  assert.match(t, /Launch it anyway/);
-  assert.doesNotMatch(answerCommentsTitle(2, "#5"), /waiting on a reply from you \(last check\)/);
+test("the tooltip promises a reply in every thread, and says when none is open", () => {
+  const t = answerCommentsTitle(4, "#5");
+  // The three halves of the job, in the tooltip, because they are the reason
+  // to press it: fix, queue, and answer every thread either way.
+  assert.match(t, /fixing what the comment asks for/);
+  assert.match(t, /queueing the rest/);
+  assert.match(t, /whether the comment was right or wrong/);
+  const zero = answerCommentsTitle(0, "#5");
+  assert.match(zero, /already ends with a reply from you/);
+  assert.match(zero, /Launch it anyway/);
   assert.match(answerCommentsTitle(null, "#5"), /#5/);
 });
 
 test("the confirm says what the agent will actually do", () => {
-  const c = answerCommentsConfirm("#9", 2);
+  const c = answerCommentsConfirm("#9", 7);
   assert.match(c, /#9/);
-  assert.match(c, /2 review comments waiting on you/);
-  assert.match(c, /comment queue/);
+  assert.match(c, /7 open threads/);
+  assert.match(c, /publishes a reply in every thread/);
+  // Declining is a decision that still gets published — the point of the ask.
+  assert.match(c, /declines, with the reason/);
   // Unknown count: no invented number.
-  assert.match(answerCommentsConfirm("the PR", null), /review comments waiting on you/);
-  // Zero: still launchable (comments arrive between polls), but the price and
-  // the likely outcome are stated first.
+  assert.match(answerCommentsConfirm("the PR", null), /every open thread/);
+  // Zero: still launchable (comments arrive between polls), price stated.
   const z = answerCommentsConfirm("#9", 0);
-  assert.match(z, /Nothing on #9 was waiting/);
-  assert.match(z, /spends\s+tokens/);
+  assert.match(z, /already answered/);
+  assert.match(z, /spends tokens/);
 });
 
 test("the browser branch publishes every name app.js calls", () => {

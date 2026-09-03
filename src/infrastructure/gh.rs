@@ -432,23 +432,31 @@ struct CommentUser {
     login: String,
 }
 
-/// Pure: count review-comment threads that are waiting on **`viewer`** — the
-/// threads whose most recent comment was written by somebody else.
+/// Pure: count review-comment threads that still owe a reply from `viewer`.
 ///
-/// "Whose turn is it" is the only definition that matches what a
-/// `respond-pr-comments` round can actually do, and getting it wrong is not
-/// cosmetic: counting every replyless root instead counted *clash's own
-/// posted findings*, so an item whose review round had published seven line
-/// comments advertised "Answer 7 PR comments", spent a session, and the
-/// reviewer correctly answered none of them — they were its own.
+/// A thread is **settled** when the viewer has replied *in* it and nobody has
+/// spoken after them. Everything else is open. That one sentence covers the
+/// two jobs a `respond-pr-comments` round actually has, and no simpler rule
+/// does:
 ///
-/// The last-comment rule also fixes the reverse case for free: a thread the
-/// viewer opened and a reviewer replied to *is* waiting on them, even though
-/// its root has a reply.
+/// - **A reviewer's comment nobody answered** — the obvious case.
+/// - **A finding this pipeline published itself, with no decision posted
+///   under it.** A line comment clash's own review round posted is a
+///   *question*, not an answer: until the thread says "fixed in abc1234" or
+///   "not doing this, because…", the loop is open and the PR shows a pile of
+///   remarks with no outcome. Counting only *other people's* comments hid
+///   exactly that — seven findings, zero replies, and a button reporting
+///   nothing to do.
+/// - **A thread the viewer answered and somebody answered back** — open
+///   again, even though its root has a reply.
+///
+/// So a root of the viewer's own is settled only once the viewer has replied
+/// *under* it, and a root of theirs answered by somebody else is not: the last
+/// word has to be the viewer's, and it has to be a reply.
 ///
 /// `viewer` is `None` when `gh` could not say who is authenticated; the count
-/// then falls back to replyless roots, which at least never invents work that
-/// someone else already answered.
+/// then falls back to "threads with no reply at all", which is the same answer
+/// for every thread nobody has touched and never invents work.
 pub fn count_unanswered_review_comments(json: &str, viewer: Option<&str>) -> Result<u64, GhError> {
     let comments: Vec<ReviewComment> =
         serde_json::from_str(json.trim()).map_err(|e| GhError::Parse(e.to_string()))?;
@@ -460,22 +468,36 @@ pub fn count_unanswered_review_comments(json: &str, viewer: Option<&str>) -> Res
             .filter(|c| c.in_reply_to_id.is_none() && !replied.contains(&c.id))
             .count() as u64);
     };
-    // Threads in the order the API reports them (ascending creation), so the
-    // last entry per thread is its most recent comment.
-    let mut last_author: std::collections::HashMap<u64, &str> = std::collections::HashMap::new();
+    // Per thread, in the order the API reports them (ascending creation):
+    // whether the viewer has a *reply* in it, and who spoke last.
+    struct Thread<'a> {
+        viewer_replied: bool,
+        last_author: &'a str,
+    }
+    let mut threads: std::collections::HashMap<u64, Thread<'_>> = std::collections::HashMap::new();
     let mut order: Vec<u64> = Vec::new();
     for c in &comments {
-        let thread = c.in_reply_to_id.unwrap_or(c.id);
-        if last_author.insert(thread, c.user.login.as_str()).is_none() {
-            order.push(thread);
+        let root = c.in_reply_to_id.unwrap_or(c.id);
+        let mine = c.user.login.eq_ignore_ascii_case(viewer);
+        let entry = threads.entry(root).or_insert_with(|| {
+            order.push(root);
+            Thread {
+                viewer_replied: false,
+                last_author: "",
+            }
+        });
+        // Only a reply settles a thread; the root is the remark being settled.
+        if mine && c.in_reply_to_id.is_some() {
+            entry.viewer_replied = true;
         }
+        entry.last_author = c.user.login.as_str();
     }
     Ok(order
         .iter()
-        .filter(|t| {
-            last_author
-                .get(*t)
-                .is_some_and(|a| !a.eq_ignore_ascii_case(viewer))
+        .filter(|root| {
+            threads
+                .get(*root)
+                .is_some_and(|t| !(t.viewer_replied && t.last_author.eq_ignore_ascii_case(viewer)))
         })
         .count() as u64)
 }
@@ -701,12 +723,9 @@ mod tests {
     }
 
     #[test]
-    fn unanswered_counts_threads_waiting_on_the_viewer() {
-        // Three threads: one the viewer already had the last word in (their
-        // own published finding, nobody replied), one a reviewer opened and
-        // nobody answered, one the viewer answered.
+    fn a_thread_is_settled_only_once_we_replied_and_nobody_spoke_after() {
+        // A reviewer's remark nobody answered, and one we answered: one open.
         let json = r#"[
-            {"id": 1, "body": "our own line comment", "user": {"login": "me"}},
             {"id": 2, "body": "please rename this", "user": {"login": "alice"}},
             {"id": 3, "body": "asked", "user": {"login": "alice"}},
             {"id": 4, "in_reply_to_id": 3, "body": "done", "user": {"login": "me"}}
@@ -720,8 +739,9 @@ mod tests {
             count_unanswered_review_comments(json, Some("ME")).unwrap(),
             1
         );
-        // The exact regression: a round that published its findings as line
-        // comments must not read as work waiting for an answer.
+        // Findings this pipeline published itself are open until a decision is
+        // posted under them: a line comment is a question, not an answer. This
+        // is the state a real PR was in — 7 findings, 0 replies.
         let ours = r#"[
             {"id": 1, "user": {"login": "me"}},
             {"id": 2, "user": {"login": "me"}},
@@ -729,16 +749,35 @@ mod tests {
         ]"#;
         assert_eq!(
             count_unanswered_review_comments(ours, Some("me")).unwrap(),
+            3
+        );
+        // …and settled once each carries our decision.
+        let decided = r#"[
+            {"id": 1, "user": {"login": "me"}},
+            {"id": 9, "in_reply_to_id": 1, "body": "fixed in abc1234", "user": {"login": "me"}}
+        ]"#;
+        assert_eq!(
+            count_unanswered_review_comments(decided, Some("me")).unwrap(),
             0
         );
-        // A thread the viewer opened and a reviewer answered is waiting on
-        // them again, even though its root has a reply.
+        // A thread we opened and somebody else answered is open: the last word
+        // must be ours.
         let back = r#"[
             {"id": 1, "user": {"login": "me"}},
             {"id": 2, "in_reply_to_id": 1, "user": {"login": "alice"}}
         ]"#;
         assert_eq!(
             count_unanswered_review_comments(back, Some("me")).unwrap(),
+            1
+        );
+        // Answered, then answered back — open again.
+        let again = r#"[
+            {"id": 1, "user": {"login": "alice"}},
+            {"id": 2, "in_reply_to_id": 1, "user": {"login": "me"}},
+            {"id": 3, "in_reply_to_id": 1, "user": {"login": "alice"}}
+        ]"#;
+        assert_eq!(
+            count_unanswered_review_comments(again, Some("me")).unwrap(),
             1
         );
         assert_eq!(
@@ -749,8 +788,9 @@ mod tests {
     }
 
     #[test]
-    fn unanswered_falls_back_to_replyless_roots_without_a_viewer() {
-        // `gh` could not say who we are: count replyless roots, the old rule.
+    fn unanswered_falls_back_to_replyless_threads_without_a_viewer() {
+        // `gh` could not say who we are: count threads with no reply at all,
+        // the same answer for everything nobody has touched.
         let json = r#"[
             {"id": 1, "user": {"login": "me"}},
             {"id": 2, "in_reply_to_id": 1, "user": {"login": "alice"}},
