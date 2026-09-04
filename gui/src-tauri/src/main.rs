@@ -44,6 +44,20 @@ struct GuiState {
     /// Control-plane client (list/kill). Separate from attach clients so a
     /// streaming attach never blocks a list request.
     control: tokio::sync::Mutex<DaemonClient>,
+    /// Set by whoever quit-stashes first, so the stash runs **once** per
+    /// process. Three routes reach it — the window's `CloseRequested`, the
+    /// app's `ExitRequested` (⌘Q, the Dock, a logout) and `restart_app` — and
+    /// on a window close the first two both fire.
+    ///
+    /// This is not just deduplication. `AppHandle::restart()` called off the
+    /// main thread parks its caller in `sleep(Duration::MAX)` forever and
+    /// hands the restart to the event loop; that park holds a Tokio worker,
+    /// and with it the runtime's IO/time driver, so **no `await` in the
+    /// process completes afterwards**. A second stash on the `ExitRequested`
+    /// that `restart()` triggers therefore blocks the event loop on its first
+    /// await — the event loop that was going to perform the restart. The app
+    /// freezes with no way out but `kill`, which is exactly what it did.
+    stashed: std::sync::atomic::AtomicBool,
     /// One streaming client per attached session.
     attached: tokio::sync::Mutex<HashMap<String, DaemonClient>>,
     /// Latest wild-process scan snapshot (background task, same scan the
@@ -2857,7 +2871,14 @@ fn clipboard_read_text(app: tauri::AppHandle) -> Result<String, String> {
 /// (Re)connect the control client if the connection was lost.
 async fn ensure_connected(client: &mut DaemonClient) {
     if !client.is_connected() {
-        let _ = client.connect().await;
+        // The error is swallowed on purpose — every caller degrades to "no
+        // daemon data this cycle" rather than failing — but on the shutdown
+        // path that degradation means *nothing was stashed*, and a session
+        // coming back errored with no explanation is the kind of thing that
+        // costs an afternoon. One line, at debug, where the cycle is noisy.
+        if let Err(e) = client.connect().await {
+            tracing::debug!("daemon connect failed: {}", e);
+        }
     }
 }
 
@@ -2875,6 +2896,16 @@ async fn ensure_connected(client: &mut DaemonClient) {
 /// clears (mirrors `reload_session`) closes that race. ~8s cap covers the
 /// SIGKILL escalation (6s); Claude normally exits on `/exit` well under 1s.
 async fn stash_and_wait(state: &GuiState) {
+    // Claim the stash. Returns false to every later caller, whichever exit
+    // route they came from — see `GuiState::stashed` for why a second run is
+    // not merely wasteful but unrecoverable.
+    if state
+        .stashed
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        tracing::info!("shutdown: sessions already stashed, skipping");
+        return;
+    }
     let ids: Vec<String> = {
         let mut control = state.control.lock().await;
         ensure_connected(&mut control).await;
@@ -2916,10 +2947,44 @@ async fn stash_and_wait(state: &GuiState) {
     }
 }
 
+/// How long the exit handler will wait for the quit-stash before exiting
+/// anyway. Generous: `stash_and_wait` polls for up to ~8s by design.
+const QUIT_STASH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(12);
+
 /// Quit-stash on app exit. Runs synchronously in the window-close / exit
 /// handler so it completes (children fully stopped) before the process exits.
-fn quit_stash(state: &GuiState) {
-    tauri::async_runtime::block_on(stash_and_wait(state));
+///
+/// **Bounded with std primitives, not `tokio::time::timeout`.** This runs on
+/// the main thread, and the reason it can hang is that the Tokio drivers have
+/// stopped (see `GuiState::stashed`) — a Tokio timer would be waiting on the
+/// very clock that is not being driven. A `std::sync::mpsc` deadline is
+/// immune to that: whatever wedges the stash, the app exits instead of
+/// freezing. Leaving sessions un-stashed costs a conversation coming back
+/// errored; freezing costs the user a `kill -9` and every session anyway.
+fn quit_stash(app: tauri::AppHandle) {
+    use tauri::Manager;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("clash-quit-stash".into())
+        // An owned `AppHandle` rather than a borrowed `&GuiState`: the handle
+        // is `Send + 'static`, so the state can be resolved inside the thread
+        // instead of borrowed across it.
+        .spawn(move || {
+            if let Some(state) = app.try_state::<GuiState>() {
+                tauri::async_runtime::block_on(stash_and_wait(&state));
+            }
+            let _ = tx.send(());
+        })
+        .map(|_| ())
+        .unwrap_or_else(|e| tracing::error!("shutdown: could not spawn the stash thread: {}", e));
+    match rx.recv_timeout(QUIT_STASH_DEADLINE) {
+        Ok(()) => {}
+        Err(_) => tracing::error!(
+            "shutdown: quit-stash did not finish in {}s — exiting anyway; \
+             sessions may come back errored instead of stashed",
+            QUIT_STASH_DEADLINE.as_secs()
+        ),
+    }
 }
 
 /// Consume the quit-stash marker written on the previous exit and force the
@@ -2988,6 +3053,7 @@ fn main() {
         missing_streaks: Mutex::new(HashMap::new()),
         prev_statuses: Mutex::new(HashMap::new()),
         control: tokio::sync::Mutex::new(DaemonClient::new(DaemonClient::instance_socket_path())),
+        stashed: std::sync::atomic::AtomicBool::new(false),
         attached: tokio::sync::Mutex::new(HashMap::new()),
         wild_processes_rx,
         recently_removed: Mutex::new(HashMap::new()),
@@ -3276,9 +3342,7 @@ fn shutdown_app(app: &tauri::AppHandle) {
     // Which exit route ran is the first thing to know when a session comes
     // back errored instead of stashed.
     tracing::info!("shutdown: quit-stashing sessions");
-    if let Some(state) = app.try_state::<GuiState>() {
-        quit_stash(&state);
-    }
+    quit_stash(app.clone());
     if let Some(shutdown) = app.try_state::<std::sync::Arc<tokio::sync::Notify>>() {
         shutdown.notify_one();
     }
@@ -3287,6 +3351,59 @@ fn shutdown_app(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::remote_to_web_url;
+
+    /// The shutdown path's two load-bearing properties, pinned against the
+    /// source because neither is reachable from a unit test (both need a live
+    /// Tauri app) and both are silent until the app hangs.
+    ///
+    /// The bug they encode: `AppHandle::restart()` off the main thread parks
+    /// its caller in `sleep(Duration::MAX)` and hands the restart to the
+    /// event loop. That park holds a Tokio worker — and the runtime's IO/time
+    /// driver with it — so nothing `await`s to completion afterwards. The
+    /// `ExitRequested` that `restart()` triggers then ran a *second*
+    /// quit-stash, on the main thread, which blocked on its first await: the
+    /// event loop that was going to perform the restart never came back, and
+    /// the app could only be killed.
+    #[test]
+    fn the_quit_stash_runs_once_and_cannot_freeze_the_exit() {
+        const SRC: &str = include_str!("main.rs");
+
+        // 1. The stash claims a flag before it awaits anything, so the three
+        //    exit routes (CloseRequested, ExitRequested, restart_app) run it
+        //    at most once between them.
+        let stash = SRC
+            .split_once("async fn stash_and_wait(state: &GuiState) {")
+            .expect("stash_and_wait must exist")
+            .1;
+        let claim = stash
+            .find(".swap(true")
+            .expect("the stash must claim `stashed`");
+        let first_await = stash
+            .find(".await")
+            .expect("the stash must await something");
+        assert!(
+            claim < first_await,
+            "the stash must claim the flag BEFORE its first await — after it, \
+             a second caller has already started the work that cannot finish"
+        );
+
+        // 2. The exit handler's deadline is a std one. A `tokio::time`
+        //    timeout would be waiting on the very clock that is not being
+        //    driven, which is the whole reason the stash can hang here.
+        let quit = SRC
+            .split_once("fn quit_stash(app: tauri::AppHandle) {")
+            .expect("quit_stash must exist")
+            .1;
+        let body = &quit[..quit.find("\n}\n").unwrap_or(quit.len())];
+        assert!(
+            body.contains("recv_timeout"),
+            "quit_stash must bound itself with a std deadline"
+        );
+        assert!(
+            !body.contains("tokio::time"),
+            "quit_stash must not depend on the Tokio clock to bound itself"
+        );
+    }
 
     #[test]
     fn remote_to_web_url_forms() {
