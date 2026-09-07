@@ -103,6 +103,17 @@ struct GuiState {
     /// per instance, like the TUI's: the queue belongs to the same process as
     /// the daemon holding the PTY it will be written to.
     prompt_queue: Mutex<clash::application::prompt_queue::PromptQueue>,
+    /// Workflow items (`<project>/<slug>`) with an agent launch in flight.
+    ///
+    /// A first launch creates the item's worktree, which is a full checkout —
+    /// three quarters of a minute on a large repository — and the frontend's
+    /// per-button click-lock does not survive the action bar being rebuilt
+    /// under it. So the refusal has to live here: two agents on one item means
+    /// two sessions editing the same files, which is precisely what the
+    /// phase-ownership split forbids, and the second one silently overwrites
+    /// the first's `sessionId` in meta — orphaning a running agent nothing can
+    /// reach.
+    launching: Mutex<std::collections::HashSet<String>>,
 }
 
 impl GuiState {
@@ -1891,12 +1902,70 @@ pub(crate) async fn branch_exists(dir: &str, name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// One step of a launch, for the webview's status line.
+///
+/// A launch is a sequence of set-up steps ending in a spawn, and the slowest
+/// of them — the worktree checkout — is 28k files and three quarters of a
+/// minute on a large monorepo. A disabled button and no other sign of life is
+/// indistinguishable from a wedged app, which is how it was read, so every
+/// step announces itself and the long one carries git's own counters.
+///
+/// Structured rather than a ready-made sentence, on the `update-phase`
+/// precedent: the wording belongs with the rest of the UI text, and the
+/// backend has no business owning copy it cannot see rendered.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LaunchStage {
+    /// What the frontend is watching: the workflow item key
+    /// (`<project>/<slug>`) for an agent launch, the session name for a
+    /// worktree session. A launch repaints only its own line, so a second one
+    /// running elsewhere can't take it over.
+    key: String,
+    /// One of the step names the frontend knows how to word.
+    stage: &'static str,
+    /// The branch being created or checked out, on the steps about one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch: Option<String>,
+    /// git's checkout counters — only on `checkout`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    percent: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    files: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total: Option<u32>,
+}
+
+/// Announce a launch step that carries no numbers — every step but `checkout`.
+pub(crate) fn launch_stage(
+    app: &tauri::AppHandle,
+    key: &str,
+    stage: &'static str,
+    branch: Option<&str>,
+) {
+    let _ = app.emit(
+        "launch-stage",
+        LaunchStage {
+            key: key.to_string(),
+            stage,
+            branch: branch.map(str::to_string),
+            percent: None,
+            files: None,
+            total: None,
+        },
+    );
+}
+
 /// Create a git worktree for `project_path` named `name`:
 /// `<parent>/<project>-worktrees/<name>`, new branch `name` forked from the
 /// project's current branch. Returns `(worktree_path, source_branch)`.
 /// Extracted from `create_worktree_session` (behavior-preserving); also used
 /// by the workflow agent launch.
+///
+/// Announces itself to the webview as `launch-stage` events under `key`: one
+/// `worktree` step, then a `checkout` per progress report from git.
 pub(crate) async fn create_worktree(
+    app: &tauri::AppHandle,
+    key: &str,
     project_path: &str,
     name: &str,
 ) -> Result<(String, String), String> {
@@ -1928,22 +1997,25 @@ pub(crate) async fn create_worktree(
     std::fs::create_dir_all(&worktree_base).map_err(|e| e.to_string())?;
 
     let wt_str = worktree_path.to_string_lossy().to_string();
-    let mut git_args = vec!["worktree", "add", &wt_str, "-b", name];
+    let mut git_args = vec![wt_str.as_str(), "-b", name];
     if !git_branch.is_empty() {
         git_args.push(&git_branch);
     }
-    let out = tokio::process::Command::new("git")
-        .args(&git_args)
-        .current_dir(project_path)
-        .output()
-        .await
-        .map_err(|e| format!("git worktree failed: {}", e))?;
-    if !out.status.success() {
-        return Err(format!(
-            "git worktree add failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
+    launch_stage(app, key, "worktree", Some(name));
+    clash::infrastructure::git::worktree_add(project_dir, &git_args, |p| {
+        let _ = app.emit(
+            "launch-stage",
+            LaunchStage {
+                key: key.to_string(),
+                stage: "checkout",
+                branch: Some(name.to_string()),
+                percent: Some(p.percent),
+                files: Some(p.files),
+                total: Some(p.total),
+            },
+        );
+    })
+    .await?;
     Ok((wt_str, git_branch))
 }
 
@@ -1951,6 +2023,7 @@ pub(crate) async fn create_worktree(
 /// worktree-spawn pipeline (worktree add -b <name> + register + daemon spawn).
 #[tauri::command]
 async fn create_worktree_session(
+    app: tauri::AppHandle,
     state: State<'_, GuiState>,
     name: String,
     project_path: String,
@@ -1961,7 +2034,8 @@ async fn create_worktree_session(
     if name.is_empty() {
         return Err("Name is required".to_string());
     }
-    let (wt_str, git_branch) = create_worktree(&project_path, &name).await?;
+    let (wt_str, git_branch) = create_worktree(&app, &name, &project_path, &name).await?;
+    launch_stage(&app, &name, "spawn", None);
 
     let session_id = uuid::Uuid::now_v7().to_string();
     clash::infrastructure::hooks::registry::register(
@@ -3095,6 +3169,7 @@ fn main() {
         pr_checked: Mutex::new(HashMap::new()),
         forge_cache: Mutex::new(HashMap::new()),
         prompt_queue: Mutex::new(clash::application::prompt_queue::PromptQueue::default()),
+        launching: Mutex::new(std::collections::HashSet::new()),
     };
 
     // Skills: everything clash itself wrote is synced at startup (missing

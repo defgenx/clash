@@ -856,6 +856,32 @@ html, body, #app {
   transform: translateX(-50%) translateY(0);
 }
 
+/* Sticky sibling of the toast, one line higher so both can be up at once —
+   long work (a worktree checkout) reports itself here while flashToast keeps
+   the transient confirmations. */
+#gui-progress {
+  position: fixed;
+  bottom: 68px;
+  left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  z-index: 400;
+  max-width: 70vw;
+  padding: 8px 16px;
+  background: var(--bg-raised);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  font-size: 12px;
+  box-shadow: var(--shadow-soft);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+#gui-progress.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
 #content { flex: 1; display: flex; min-height: 0; }
 
 /* Terminal pane grid — the column/row template is computed per pane

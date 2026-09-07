@@ -2036,25 +2036,26 @@ impl App {
                         continue;
                     }
 
-                    // Run git worktree add
-                    let mut git_args = vec![
-                        "worktree".to_string(),
-                        "add".to_string(),
-                        worktree_path.to_string_lossy().to_string(),
-                        "-b".to_string(),
-                        name.clone(),
-                    ];
+                    // Run git worktree add through the shared helper, so both
+                    // frontends spawn the same subprocess and read the same
+                    // failure. The progress it reports is dropped here: this
+                    // arm holds the event loop for the whole checkout, so
+                    // nothing could repaint a percentage anyway — the spinner
+                    // already set above is the TUI's sign of life.
+                    let wt_path = worktree_path.to_string_lossy().to_string();
+                    let mut git_args = vec![wt_path.as_str(), "-b", name.as_str()];
                     if !git_branch.is_empty() {
-                        git_args.push(git_branch.clone());
+                        git_args.push(&git_branch);
                     }
-                    let git_result = tokio::process::Command::new("git")
-                        .args(&git_args)
-                        .current_dir(&project_path)
-                        .output()
-                        .await;
+                    let git_result = crate::infrastructure::git::worktree_add(
+                        std::path::Path::new(&project_path),
+                        &git_args,
+                        |_| {},
+                    )
+                    .await;
 
                     match git_result {
-                        Ok(output) if output.status.success() => {
+                        Ok(()) => {
                             let wt_str = worktree_path.to_string_lossy().to_string();
                             // Register session with the source branch
                             let src_branch = if git_branch.is_empty() {
@@ -2129,16 +2130,11 @@ impl App {
                                 wt_str
                             );
                         }
-                        Ok(output) => {
-                            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                            self.state.toast =
-                                Some(format!("git worktree failed: {}", stderr.trim()));
-                            self.state.input_mode = InputMode::Normal;
-                            self.state.attached_session = None;
-                            self.state.spinner = None;
-                        }
+                        // One arm now: the helper folds git's refusal and a
+                        // failed spawn into the same message, which already
+                        // names which of the two it was.
                         Err(e) => {
-                            self.state.toast = Some(format!("Failed to run git: {}", e));
+                            self.state.toast = Some(e);
                             self.state.input_mode = InputMode::Normal;
                             self.state.attached_session = None;
                             self.state.spinner = None;

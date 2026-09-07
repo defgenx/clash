@@ -63,6 +63,10 @@ pub(crate) async fn list_workflow_items(
         .filter(|s| s.is_running)
         .map(|s| s.id.clone())
         .collect();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default();
     for item in &mut items {
         // `Reviewing` is included so a dead reviewer surfaces the same "the
         // agent is gone" affordance — without it a crashed round would leave
@@ -71,11 +75,18 @@ pub(crate) async fn list_workflow_items(
             item.meta.status,
             WorkflowStatus::Planning | WorkflowStatus::Implementing | WorkflowStatus::Reviewing
         ) {
-            item.agent_alive = item
-                .meta
-                .session_id
-                .as_ref()
-                .is_some_and(|sid| live.contains(sid));
+            // The launch grace is load-bearing, not a nicety: see
+            // `workflow::agent_alive`. A launch records its session id before
+            // the process exists, so the list has not caught up yet.
+            item.agent_alive = clash::application::workflow::agent_alive(
+                item.meta.session_id.is_some(),
+                item.meta
+                    .session_id
+                    .as_ref()
+                    .is_some_and(|sid| live.contains(sid)),
+                item.meta.updated_at,
+                now,
+            );
         }
     }
 
@@ -1230,6 +1241,54 @@ pub(crate) fn delete_workflow_item(
 
 // ── Agent launch ────────────────────────────────────────────────────────
 
+/// Marker prefix for "this item's agent is already starting". Machine-readable
+/// like `no-pr:` and `branch-exists:`: the GUI answers it by saying so and
+/// waiting, never by reporting a failed launch — nothing failed.
+pub(crate) const ALREADY_LAUNCHING: &str = "already-launching:";
+
+/// Holds the launch claim on one item for as long as the launch runs.
+///
+/// A `Drop` guard rather than a release call at the end, because the launch
+/// has five exits — three `?`s, the spawn rollback and success — and a claim
+/// leaked on any of them locks the item out of launching for the life of the
+/// process, which is worse than the duplicate it was preventing.
+struct LaunchClaim<'a> {
+    state: &'a GuiState,
+    key: String,
+}
+
+impl Drop for LaunchClaim<'_> {
+    fn drop(&mut self) {
+        self.state.launching.lock().unwrap().remove(&self.key);
+    }
+}
+
+/// Claim `(project, slug)` for a launch, or refuse because one is in flight.
+///
+/// The window this closes is not theoretical: a first launch spends the better
+/// part of a minute checking out the worktree, and the item still reads
+/// `draft` throughout (meta is written only once the worktree exists), so any
+/// rebuild of the action bar in between hands back a fresh, clickable "Start
+/// planning".
+fn claim_launch<'a>(
+    state: &'a GuiState,
+    project: &str,
+    slug: &str,
+) -> Result<LaunchClaim<'a>, String> {
+    let key = item_key(project, slug);
+    if !state.launching.lock().unwrap().insert(key.clone()) {
+        return Err(format!("{}{}", ALREADY_LAUNCHING, key));
+    }
+    Ok(LaunchClaim { state, key })
+}
+
+/// The one spelling of an item's identity outside its directory path — the
+/// launch claim and the launch's status-line events must agree on it, or the
+/// frontend watches a key nothing reports under.
+fn item_key(project: &str, slug: &str) -> String {
+    format!("{}/{}", project, slug)
+}
+
 /// Spawn a Claude Code session for this item in `cwd`, with a kickoff prompt
 /// built from the item directory. Reuses the exact session machinery of
 /// `create_new_session`/`create_worktree_session`: registry + name + status
@@ -1350,6 +1409,7 @@ async fn spawn_item_session(
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub(crate) async fn start_workflow_agent(
+    app: tauri::AppHandle,
     state: State<'_, GuiState>,
     project: String,
     slug: String,
@@ -1360,6 +1420,12 @@ pub(crate) async fn start_workflow_agent(
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
+    let _claim = claim_launch(&state, &project, &slug)?;
+    // Every step of the set-up says so: the status line is the only thing
+    // standing between a minute of worktree checkout and an app that looks
+    // wedged. `read` first, because it is the click's own acknowledgement.
+    let key = item_key(&project, &slug);
+    crate::launch_stage(&app, &key, "read", None);
     // The skill name lands verbatim in the kickoff prompt — one token only.
     let skill = skill
         .map(|s| s.trim().to_string())
@@ -1387,10 +1453,12 @@ pub(crate) async fn start_workflow_agent(
             .filter(|b| !b.is_empty())
             .unwrap_or(&slug)
             .to_string();
+        crate::launch_stage(&app, &key, "branch", Some(&branch_name));
         if crate::branch_exists(&meta.repo_path, &branch_name).await {
             return Err(format!("branch-exists:{}", branch_name));
         }
-        let (wt, _source_branch) = crate::create_worktree(&meta.repo_path, &branch_name).await?;
+        let (wt, _source_branch) =
+            crate::create_worktree(&app, &key, &meta.repo_path, &branch_name).await?;
         meta.worktree = Some(wt);
         meta.branch = branch_name;
     }
@@ -1418,6 +1486,7 @@ pub(crate) async fn start_workflow_agent(
             meta.status = target;
         }
     }
+    crate::launch_stage(&app, &key, "record", None);
     state
         .backend
         .write_workflow_meta(&project, &slug, &meta)
@@ -1432,6 +1501,7 @@ pub(crate) async fn start_workflow_agent(
     );
     let interactive = interactive
         .or_else(|| clash::application::workflow::interaction_param(&meta.interaction_default));
+    crate::launch_stage(&app, &key, "spawn", None);
     let spawned = spawn_item_session(
         &state,
         ItemSessionSpawn {
@@ -1504,6 +1574,7 @@ pub(crate) async fn start_workflow_agent(
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub(crate) async fn start_workflow_review_agent(
+    app: tauri::AppHandle,
     state: State<'_, GuiState>,
     project: String,
     slug: String,
@@ -1517,6 +1588,11 @@ pub(crate) async fn start_workflow_review_agent(
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
+    // Same claim as the executor launch: a round is one agent parked on one
+    // item, so a doubled click must not become two of them.
+    let _claim = claim_launch(&state, &project, &slug)?;
+    let key = item_key(&project, &slug);
+    crate::launch_stage(&app, &key, "read", None);
     let mut meta = state
         .backend
         .load_workflow_meta(&project, &slug)
@@ -1633,6 +1709,7 @@ pub(crate) async fn start_workflow_review_agent(
     // "End round" / the agent-gone cross-check; a live reviewer writing
     // `annotations.json` on an item that isn't in `reviewing` (approval open,
     // annotations unlocked, cancel refusing) has no recovery path.
+    crate::launch_stage(&app, &key, "record", None);
     let rollback = meta.clone();
     meta.session_id = Some(session_id.clone());
     // The item-wide total keeps climbing — it is what "Agent reviews (n)" and
@@ -1648,6 +1725,7 @@ pub(crate) async fn start_workflow_review_agent(
         .map_err(e2s)?;
     seed_local(&state, &project, &slug, meta.status);
 
+    crate::launch_stage(&app, &key, "spawn", None);
     let spawned = spawn_item_session(
         &state,
         ItemSessionSpawn {
@@ -2912,4 +2990,57 @@ pub(crate) fn get_skill(state: State<'_, GuiState>, name: String) -> Result<Stri
         .join(&name)
         .join("SKILL.md");
     std::fs::read_to_string(&path).map_err(|e| format!("Cannot read {}: {}", path.display(), e))
+}
+
+#[cfg(test)]
+mod tests {
+    /// Both agent launches must claim the item, and must *bind* the claim.
+    ///
+    /// Pinned against the source because neither property is reachable from a
+    /// unit test (both commands need a live Tauri app and a real repo) and
+    /// both fail silently: `let _ = claim_launch(…)` drops the guard on the
+    /// spot, which reads exactly like the working version and disables the
+    /// whole protection.
+    ///
+    /// What it protects: a first launch spends the better part of a minute
+    /// checking out the item's worktree, and meta is written only once that
+    /// finishes — so the item reads `draft` throughout and any rebuild of the
+    /// action bar in between hands back a fresh, clickable "Start planning".
+    /// The second launch then overwrites `sessionId`, orphaning a live agent
+    /// nothing can reach, and leaves two agents editing one item's files.
+    #[test]
+    fn every_agent_launch_claims_the_item_first() {
+        const SRC: &str = include_str!("workflows.rs");
+
+        for cmd in [
+            "pub(crate) async fn start_workflow_agent(",
+            "pub(crate) async fn start_workflow_review_agent(",
+        ] {
+            let body = SRC.split_once(cmd).expect(cmd).1;
+            let claim = body
+                .find("claim_launch(&state, &project, &slug)?")
+                .unwrap_or_else(|| panic!("{} must claim the launch", cmd));
+            assert!(
+                body[..claim].contains("let _claim ="),
+                "{} must bind the claim — `let _` drops it immediately",
+                cmd
+            );
+            // Before any write or spawn: a claim taken later leaves the whole
+            // load_meta → create_worktree stretch unguarded, which is where
+            // the entire minute is spent.
+            for later in [
+                "write_workflow_meta",
+                "create_worktree",
+                "spawn_item_session",
+            ] {
+                let at = body.find(later);
+                assert!(
+                    at.is_none_or(|at| claim < at),
+                    "{} must claim before {}",
+                    cmd,
+                    later
+                );
+            }
+        }
+    }
 }

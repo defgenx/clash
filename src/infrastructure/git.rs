@@ -75,6 +75,123 @@ async fn merge_base(dir: &Path, branch: &str) -> Option<String> {
     }
 }
 
+/// How far a `git worktree add` checkout has got, from git's own progress
+/// output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckoutProgress {
+    pub files: u32,
+    pub total: u32,
+    /// Derived from the counts rather than read from git's `NN%`, so the two
+    /// halves of the message can never disagree.
+    pub percent: u8,
+}
+
+/// Pure: one chunk of git's checkout progress (`Updating files:  47%
+/// (13176/28034)`) into counts. `None` for everything else git writes on the
+/// same stream — `Preparing worktree (new branch 'x')`, `HEAD is now at
+/// abc123 fix(auth): …`, a blank chunk — which is why a `%` *and* an
+/// `(a/b)` group are both required: a commit subject alone can supply either.
+pub fn parse_checkout_progress(chunk: &str) -> Option<CheckoutProgress> {
+    if !chunk.contains('%') {
+        return None;
+    }
+    let open = chunk.rfind('(')?;
+    let inner = &chunk[open + 1..];
+    let inner = &inner[..inner.find(')')?];
+    let (files, total) = inner.split_once('/')?;
+    let files: u32 = files.trim().parse().ok()?;
+    let total: u32 = total.trim().parse().ok()?;
+    if total == 0 {
+        return None;
+    }
+    Some(CheckoutProgress {
+        files,
+        total,
+        percent: (u64::from(files) * 100 / u64::from(total)).min(100) as u8,
+    })
+}
+
+/// `git worktree add <args>` in `repo`, reporting the checkout to
+/// `on_progress` as it goes.
+///
+/// The progress is the whole point of not using `.output()` here: a worktree
+/// add is a full checkout, so on a large repository it writes tens of
+/// thousands of files and takes the better part of a minute. A frontend with
+/// nothing to show for that is indistinguishable from one that is wedged,
+/// which is exactly how it was read. git reports "Updating files" on stderr
+/// even when that is a pipe, carriage-return separated; `GIT_PROGRESS_DELAY=0`
+/// only drops the 2s it otherwise waits before the first report, so the first
+/// thing the human sees is a number rather than a pause.
+pub async fn worktree_add(
+    repo: &Path,
+    args: &[&str],
+    mut on_progress: impl FnMut(CheckoutProgress),
+) -> Result<(), String> {
+    use tokio::io::AsyncReadExt;
+
+    let mut child = tokio::process::Command::new("git")
+        .arg("worktree")
+        .arg("add")
+        .args(args)
+        .current_dir(repo)
+        .env("GIT_PROGRESS_DELAY", "0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to run git: {}", e))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "git stderr not piped".to_string())?;
+
+    // Chunks are split on bytes and only then decoded, so a read that lands
+    // mid-character can't turn a path in git's output into replacement marks.
+    let mut buf = [0u8; 4096];
+    let mut pending: Vec<u8> = Vec::new();
+    // Everything that wasn't progress, kept for the failure message — git's
+    // reason for refusing (a taken path, a locked worktree) is in there.
+    let mut said = String::new();
+    let mut consume = |chunk: &[u8], said: &mut String| {
+        let text = String::from_utf8_lossy(chunk);
+        let text = text.trim();
+        match parse_checkout_progress(text) {
+            Some(p) => on_progress(p),
+            None if !text.is_empty() => {
+                said.push_str(text);
+                said.push('\n');
+            }
+            None => {}
+        }
+    };
+    loop {
+        let n = match stderr.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        pending.extend_from_slice(&buf[..n]);
+        while let Some(i) = pending.iter().position(|b| *b == b'\r' || *b == b'\n') {
+            let chunk: Vec<u8> = pending.drain(..=i).collect();
+            consume(&chunk, &mut said);
+        }
+    }
+    consume(&pending, &mut said);
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("git worktree add failed: {}", e))?;
+    if !status.success() {
+        let why = said.trim();
+        return Err(format!(
+            "git worktree add failed{}{}",
+            if why.is_empty() { "" } else { ": " },
+            why
+        ));
+    }
+    Ok(())
+}
+
 /// Branch & worktree plumbing for review-only workflow items: materializing a
 /// checkout of code that already exists elsewhere, and listing the branches to
 /// choose from.
@@ -406,6 +523,109 @@ detached
             assert_eq!(worktree_dir_name("a/b/c"), "a-b-c");
             assert_eq!(worktree_dir_name("plain"), "plain");
             assert_eq!(worktree_dir_name("/"), "review");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checkout_progress_reads_gits_own_counts() {
+        // The two shapes git emits, with the leading spaces it pads to.
+        assert_eq!(
+            parse_checkout_progress("Updating files:  47% (13176/28034)"),
+            Some(CheckoutProgress {
+                files: 13176,
+                total: 28034,
+                percent: 47,
+            })
+        );
+        assert_eq!(
+            parse_checkout_progress("Updating files: 100% (28034/28034), done."),
+            Some(CheckoutProgress {
+                files: 28034,
+                total: 28034,
+                percent: 100,
+            })
+        );
+    }
+
+    /// The streaming half, against a real repository: it must not hang, it
+    /// must report git's own reason for a refusal, and the checkout it reports
+    /// must be the one it performed. Only the progress *parsing* is unit
+    /// tested; the reason this exists is that the plumbing around it — piping
+    /// stderr, splitting on carriage returns, reaping the child — is what
+    /// turns "slow" into "wedged forever" if it is wrong.
+    #[test]
+    fn worktree_add_reports_its_checkout_and_its_failures() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {:?}: {:?}", args, out);
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        // Enough files that git has something to count.
+        for i in 0..40 {
+            std::fs::write(repo.join(format!("f{}.txt", i)), "x").unwrap();
+        }
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "seed"]);
+
+        let wt = dir.path().join("wt");
+        let wt_str = wt.to_string_lossy().into_owned();
+        let seen = std::cell::RefCell::new(Vec::new());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(worktree_add(&repo, &[&wt_str, "-b", "feat"], |p| {
+            seen.borrow_mut().push(p)
+        }))
+        .expect("worktree add");
+        assert!(wt.join("f0.txt").is_file(), "the checkout must have landed");
+        // `GIT_PROGRESS_DELAY=0` is what makes this deterministic: without it
+        // git waits 2s before its first report and a 40-file checkout would
+        // finish first — the flag is the difference between a number on
+        // screen from the first frame and 44 silent seconds.
+        assert!(
+            !seen.borrow().is_empty(),
+            "the checkout must have reported itself"
+        );
+        for p in seen.borrow().iter() {
+            assert!(p.files <= p.total, "nonsense progress: {:?}", p);
+            assert_eq!(p.total, 40, "the counts must describe this checkout");
+        }
+
+        // Same path twice: git refuses, and its reason must survive to the
+        // caller — a bare "failed" leaves nothing to act on.
+        let err = rt
+            .block_on(worktree_add(&repo, &[&wt_str, "-b", "feat2"], |_| {}))
+            .expect_err("a taken path must fail");
+        assert!(err.contains("already exists"), "unhelpful error: {}", err);
+    }
+
+    #[test]
+    fn only_progress_chunks_parse_as_progress() {
+        // Everything else git writes on the same stream. The commit subject is
+        // the trap: parentheses and a slash are both ordinary in one, so a
+        // `%` is required too — and a percentage alone isn't enough either.
+        for other in [
+            "Preparing worktree (new branch 'user-consent-revocation')",
+            "HEAD is now at 6d58ea6878a refactor(auth): nest the serializers",
+            "HEAD is now at abc1234 chore: bump coverage to 90% (unit/integration)",
+            "fatal: '/w/x' already exists",
+            "Updating files: 100%",
+            "",
+            "   ",
+        ] {
+            assert_eq!(parse_checkout_progress(other), None, "parsed {:?}", other);
         }
     }
 }

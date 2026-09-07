@@ -1929,6 +1929,30 @@ function flashToast(msg) {
   _toastTimer = setTimeout(() => el.classList.remove("show"), 1600);
 }
 
+/// A toast that stays up: for work that takes long enough that its absence
+/// reads as a hang. Its own element rather than a pinned `#gui-toast`, so a
+/// flashToast landing mid-progress can't overwrite the line the user is
+/// watching (nor re-arm the timer that would hide it).
+///
+/// `showProgress` is idempotent per message, so a per-percent repaint costs
+/// one textContent write; `hideProgress` always runs from a `finally`, because
+/// a status line left behind after a failure is worse than none.
+function showProgress(msg) {
+  let el = $("gui-progress");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "gui-progress";
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.add("show");
+}
+
+function hideProgress() {
+  const el = $("gui-progress");
+  if (el) el.classList.remove("show");
+}
+
 /// Rename a session via dialog — used by the tab context menu.
 async function renameSessionDialog(sid) {
   const s = state.sessions.find((x) => x.id === sid);
@@ -5880,11 +5904,64 @@ function wfOpenPrLabel(item) {
   return prs.length > 1 ? `Open PRs (${prs.length})${prScopeSuffix(prs, "open")}` : "Open PR";
 }
 
+/// Launches whose status line is on screen, keyed the way the backend keys its
+/// `launch-stage` events: `<project>/<slug>` for an agent launch, the session
+/// name for a worktree session. A set rather than one value so two launches at
+/// once don't take each other's line down on the way out.
+const wfLaunching = new Set();
+
+/// The line for one launch step. Pure, and the only place the set-up is put
+/// into words — the backend sends the step and its data, never the sentence.
+function launchStageLine(p) {
+  const b = p.branch ? `“${p.branch}”` : "";
+  switch (p.stage) {
+    case "read":
+      return "Reading the item…";
+    case "branch":
+      return `Checking that the branch ${b} is free…`;
+    case "worktree":
+      // Says why it is about to sit there: this is the 44-second step, and a
+      // percentage with no explanation reads as a stall rather than a copy.
+      return `Creating the worktree ${b} — a first launch checks out the whole repo`;
+    case "checkout":
+      return `Checking out the repository — ${p.percent}% (${p.files}/${p.total} files)`;
+    case "record":
+      return "Recording the launch…";
+    case "spawn":
+      return "Starting the agent session…";
+    default:
+      return "Setting up…";
+  }
+}
+
+listen("launch-stage", (event) => {
+  const p = event.payload;
+  // Only a launch one of the callers below is watching gets to repaint the
+  // line — a worktree session created elsewhere reports under its own key.
+  if (!wfLaunching.has(p.key)) return;
+  showProgress(launchStageLine(p));
+}).catch((e) => console.error("launch-stage listen failed:", e));
+
 /// Launch (or relaunch) the workflow agent for a phase and open its session
 /// tab split next to the workflow tab. `opts` carries the composer's launch
 /// choices: `interactive` (tri-state; null = the skill asks in-session) and
 /// `skill` (executor override; null = clash-workflow).
+///
+/// The status line is not decoration. A launch is a sequence of set-up steps
+/// — read the item, claim the branch, check out a worktree (28k files and the
+/// better part of a minute on a large repo), record the launch, spawn — and
+/// the only sign of any of it used to be a disabled button, read, reasonably,
+/// as "loading forever, the agent never started". So every step announces
+/// itself from the first frame, and the backend refuses a second launch of the
+/// same item while this one runs (`already-launching:`), because clicking
+/// again is exactly what a silent minute invites and two agents on one item is
+/// the one thing the phase split forbids.
 async function launchWfAgent(item, phase, root, branch = null, opts = {}) {
+  const key = `${item.project}/${item.slug}`;
+  wfLaunching.add(key);
+  // Immediate: the backend's first step lands a round-trip later, and the
+  // acknowledgement of the click must not wait on it.
+  showProgress(`Setting up ${wfSessionName(item, phase)}…`);
   try {
     const sid = await invoke("start_workflow_agent", {
       project: item.project,
@@ -5896,11 +5973,17 @@ async function launchWfAgent(item, phase, root, branch = null, opts = {}) {
       cols: 120,
       rows: 40,
     });
+    showProgress(`Opening ${wfSessionName(item, phase)}…`);
     await refreshSessions();
     await openSession(sid, wfSessionName(item, phase));
     await refreshWorkflows();
     if (root) buildWorkflowView(root, item.project, item.slug);
   } catch (e) {
+    // The launch is over on every branch below, so its status line goes now —
+    // before the branch-name prompt appears over the top of a line claiming a
+    // checkout is still running.
+    wfLaunching.delete(key);
+    if (!wfLaunching.size) hideProgress();
     // The default branch name (the slug) already exists in the repo — ask
     // what to call this workflow's branch and retry with it.
     const msg = String(e);
@@ -5913,9 +5996,22 @@ async function launchWfAgent(item, phase, root, branch = null, opts = {}) {
       if (next === null) return;
       const name = next.trim();
       if (!name) return;
-      return launchWfAgent(item, phase, root, name, opts);
+      // `await`, not a bare `return` of the promise: the retry uses the same
+      // key, and a returned-but-unawaited promise lets this function's
+      // `finally` run *after* the retry has already registered that key —
+      // deleting it out from under a launch that then reports no progress at
+      // all. Awaiting puts the cleanup after the retry's own.
+      return await launchWfAgent(item, phase, root, name, opts);
+    }
+    // Nothing failed — the click landed on an item already starting one.
+    if (msg.includes("already-launching:")) {
+      flashToast("This item's agent is already starting…");
+      return;
     }
     uiAlert(`Agent launch failed: ${e}`);
+  } finally {
+    wfLaunching.delete(key);
+    if (!wfLaunching.size) hideProgress();
   }
 }
 
@@ -6030,6 +6126,12 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
     autoApply = false,
     focus = null,
   } = opts;
+  // Same status line as the executor launch: a round has the same set-up
+  // sequence minus the worktree, and the spawn alone is long enough that a
+  // bare disabled button reads as nothing happening.
+  const key = `${item.project}/${item.slug}`;
+  wfLaunching.add(key);
+  showProgress(`Setting up a review round for ${item.meta.title || item.slug}…`);
   try {
     const sid = await invoke("start_workflow_review_agent", {
       project: item.project,
@@ -6044,6 +6146,7 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
       cols: 120,
       rows: 40,
     });
+    showProgress("Opening the review session…");
     await refreshSessions();
     // Mirrors `application::workflow::review_job` — this is the tab title for
     // the instant before the registry name lands, so a spelling of its own
@@ -6060,6 +6163,10 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
     await refreshWorkflows();
     if (root) buildWorkflowView(root, item.project, item.slug);
   } catch (e) {
+    // Over on every branch below — including the ones that open a dialog,
+    // which must not appear over a line claiming the round is still starting.
+    wfLaunching.delete(key);
+    if (!wfLaunching.size) hideProgress();
     const msg = String(e);
     if (msg.startsWith("no-pr:")) {
       // Never a dead end: attach the PR here, downgrade to a local round, or
@@ -6083,7 +6190,15 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
       }
       return;
     }
+    // Nothing failed — a round for this item is already starting.
+    if (msg.includes("already-launching:")) {
+      flashToast("A round for this item is already starting…");
+      return;
+    }
     uiAlert(`Review launch failed: ${e}`);
+  } finally {
+    wfLaunching.delete(key);
+    if (!wfLaunching.size) hideProgress();
   }
 }
 
@@ -9498,12 +9613,16 @@ async function createSession() {
     if (preset.worktree === true) worktree = true;
   }
 
+  // A worktree session runs the same checkout a workflow launch does, so it
+  // reports itself the same way — under its own key, the session name.
+  const wtKey = worktree ? (name || (preset ? preset.name : "")).trim() : null;
   try {
     let sid;
     if (worktree) {
-      const wtName = (name || (preset ? preset.name : "")).trim();
+      wfLaunching.add(wtKey);
+      showProgress(`Setting up the worktree session “${wtKey}”…`);
       sid = await invoke("create_worktree_session", {
-        name: wtName,
+        name: wtKey,
         projectPath: cwd,
         cols: 120,
         rows: 40,
@@ -9534,6 +9653,11 @@ async function createSession() {
     const err = $("ns-error");
     err.textContent = String(e);
     err.classList.remove("hidden");
+  } finally {
+    if (wtKey !== null) {
+      wfLaunching.delete(wtKey);
+      if (!wfLaunching.size) hideProgress();
+    }
   }
 }
 

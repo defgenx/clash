@@ -683,6 +683,41 @@ pub fn workflow_session_name(
     format!("{} · {}", prefix, job)
 }
 
+// ── Agent liveness ──────────────────────────────────────────────────────
+
+/// How long a recorded agent session counts as alive on the strength of the
+/// launch alone. Mirrors `session_refresh::SPAWN_GRACE_SECS`, and for the same
+/// reason: a launch records the session id *before* the process exists, and
+/// the session list it would be cross-checked against is rebuilt on its own
+/// schedule.
+pub const AGENT_LAUNCH_GRACE_MS: i64 = 20_000;
+
+/// Whether an item's recorded agent counts as alive.
+///
+/// `false` is what surfaces the "⚠ the agent is gone" affordance — and that
+/// button *launches another agent*, so answering it too eagerly is not a
+/// cosmetic mistake. Cross-checking the session list alone said "gone" for
+/// every launch that had not reached the list yet: the meta write that records
+/// the session id happens before the spawn, it wakes the watcher, and the
+/// rebuilt action bar then offered `⚠ Relaunch agent` over a launch that was
+/// perfectly healthy. Clicking it — which is the obvious thing to do — put two
+/// agents on one item and left the first one orphaned, its id overwritten in
+/// meta by the second.
+///
+/// So "not listed yet" and "gone" are only the same answer after the ramp-up.
+/// A recorded id is required either way: a meta with a working status and no
+/// session id at all was never spawned, which is exactly what the affordance
+/// is for.
+pub fn agent_alive(
+    session_recorded: bool,
+    listed_running: bool,
+    meta_updated_at: i64,
+    now_ms: i64,
+) -> bool {
+    session_recorded
+        && (listed_running || now_ms.saturating_sub(meta_updated_at) < AGENT_LAUNCH_GRACE_MS)
+}
+
 // ── PR-skill resolution ─────────────────────────────────────────────────
 
 /// The PR skill a launch actually carries: the item's override when set
@@ -1021,6 +1056,25 @@ mod tests {
     use super::*;
     use crate::application::diff::parse_file_diffs;
     use crate::domain::workflow::AnnotationStatus;
+
+    #[test]
+    fn a_just_launched_agent_is_not_reported_gone() {
+        let now = 1_700_000_000_000i64;
+        // Recorded and listed: alive, obviously.
+        assert!(agent_alive(true, true, now - 3_600_000, now));
+        // Recorded a second ago and not listed yet — the session list has not
+        // caught up. Reporting this as gone is what offered "⚠ Relaunch
+        // agent" over a healthy launch and produced a second agent.
+        assert!(agent_alive(true, false, now - 1_000, now));
+        // Recorded long ago and still not listed: genuinely gone.
+        assert!(!agent_alive(true, false, now - AGENT_LAUNCH_GRACE_MS, now));
+        // No session id at all: never spawned, whatever the clock says. This
+        // is precisely the case the affordance exists for.
+        assert!(!agent_alive(false, false, now, now));
+        // A clock that moved backwards (a meta stamp from the future) must not
+        // read as an expired grace.
+        assert!(agent_alive(true, false, now + 60_000, now));
+    }
 
     #[test]
     fn thinking_phases_run_on_fable() {

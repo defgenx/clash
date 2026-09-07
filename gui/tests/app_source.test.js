@@ -593,3 +593,94 @@ test("the two explanations are separate, and each has two forms", () => {
   assert.doesNotMatch(APP, /wfBlueprintDecisionBar|blueprintState|blueprintPending/);
   assert.doesNotMatch(APP, /set_workflow_blueprint_decision/);
 });
+
+test("a launch narrates its set-up instead of just spinning", () => {
+  // A launch is a sequence of set-up steps, and the worktree one is a full
+  // checkout — 28k files and the better part of a minute on a large monorepo.
+  // The only sign of any of it used to be a disabled button, which reads as
+  // "loading forever, the agent never started", so every step says what it is
+  // doing and the long one carries git's own counters.
+  const launch = extractFunction(APP, "launchWfAgent");
+  // Acknowledged before the backend's first step can possibly land.
+  assert.match(launch, /wfLaunching\.add\(key\)/);
+  assert.match(launch, /showProgress\(`Setting up \$\{wfSessionName\(item, phase\)\}…`\)/);
+  // Cleared on every exit — a status line surviving a failure is worse than
+  // no status line at all.
+  assert.match(
+    launch,
+    /\} finally \{\s*wfLaunching\.delete\(key\);\s*if \(!wfLaunching\.size\) hideProgress\(\);/
+  );
+
+  // The event repaints only a launch someone is watching, so a worktree
+  // session created elsewhere reports under its own key and cannot take over.
+  assert.match(APP, /listen\("launch-stage"/);
+  assert.match(APP, /if \(!wfLaunching\.has\(p\.key\)\) return;/);
+
+  // The sticky line is its own element: pinning #gui-toast would let any
+  // flashToast overwrite it and re-arm the timer that hides it.
+  assert.match(APP, /function showProgress\(msg\)/);
+  assert.match(APP, /function hideProgress\(\)/);
+  assert.match(APP, /el\.id = "gui-progress"/);
+  const css = fs.readFileSync(path.join(__dirname, "..", "dist", "style.css"), "utf8");
+  assert.match(css, /#gui-progress\.show/, "the progress line needs a visible state");
+
+  // The branch-name retry recurses under the SAME key, so it must be awaited:
+  // a bare `return launchWfAgent(...)` lets this function's `finally` run
+  // before the retry finishes (proven: the finally fires between the retry's
+  // first await and its end), deleting the key the retry just registered —
+  // and the retry then reports no progress at all, which is the original bug
+  // for anyone whose branch name was taken.
+  assert.match(launch, /return await launchWfAgent\(item, phase, root, name, opts\)/);
+
+  // The other two launches carry the same line — a review round (same
+  // sequence minus the worktree) and a worktree session (the same checkout).
+  for (const fn of ["spawnWfReview", "createSession"]) {
+    const body = extractFunction(APP, fn);
+    assert.match(body, /wfLaunching\.add\(/, `${fn} must report its set-up`);
+    assert.match(body, /hideProgress\(\)/, `${fn} must clear its line`);
+  }
+});
+
+test("every stage the backend reports has words in the frontend", () => {
+  // Both ends of the event, checked against each other. A stage the frontend
+  // has no case for falls through to a generic "Setting up…", and a renamed
+  // event or field is silent at runtime — the listener simply never fires and
+  // the symptom is the original bug back again.
+  const line = extractFunction(APP, "launchStageLine");
+  const SRC = ["main.rs", "workflows.rs"]
+    .map((f) => fs.readFileSync(path.join(__dirname, "..", "src-tauri", "src", f), "utf8"))
+    .join("\n");
+
+  assert.match(SRC, /"launch-stage"/, "the backend must emit the event");
+  const emitted = new Set();
+  // `launch_stage(app, key, "<stage>", …)` plus the one struct literal that
+  // carries the checkout counters.
+  for (const m of SRC.matchAll(/launch_stage\(\s*&?app,\s*&?key,\s*"([a-z]+)"/g))
+    emitted.add(m[1]);
+  for (const m of SRC.matchAll(/stage:\s*"([a-z]+)"/g)) emitted.add(m[1]);
+  assert.ok(emitted.size >= 5, `expected the whole sequence, found ${[...emitted]}`);
+  for (const stage of emitted)
+    assert.match(line, new RegExp(`case "${stage}":`), `no wording for stage "${stage}"`);
+
+  // The payload the wording reads must be the payload the backend sends.
+  const payload = SRC.slice(
+    SRC.indexOf("struct LaunchStage {"),
+    SRC.indexOf("/// Announce a launch step")
+  );
+  for (const field of ["key", "stage", "branch", "percent", "files", "total"])
+    assert.match(payload, new RegExp(`\\b${field}:`), `payload must carry ${field}`);
+});
+
+test("a second launch of the same item is refused, not reported as a failure", () => {
+  // The backend owns the refusal (`already-launching:`): the per-button click
+  // lock does not survive the action bar being rebuilt under it, and during a
+  // first launch the item still reads `draft` for the whole checkout — so a
+  // rebuild in between hands back a fresh, clickable "Start planning". Two
+  // agents on one item is what the phase-ownership split forbids, and the
+  // second one overwrites the first's sessionId, orphaning a live agent.
+  for (const fn of ["launchWfAgent", "spawnWfReview"]) {
+    const body = extractFunction(APP, fn);
+    assert.match(body, /already-launching:/, `${fn} must recognize the refusal`);
+    assert.match(body, /flashToast\(/, `${fn} must say so without alerting`);
+  }
+});
