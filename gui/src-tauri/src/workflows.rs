@@ -1874,12 +1874,14 @@ pub(crate) async fn workflow_create_pr(
 
 /// Refresh the recorded PR state from `gh pr view` — the primary *and* every
 /// linked PR. Throttled in-memory (30s unless `force`); meta is written only
-/// when something changed, so polling never feeds the FS watcher. The
-/// **primary** PR observed as MERGED moves the item to `done` — linked PRs
-/// are tracked, never drivers, with one exception: an item that has *only*
-/// linked PRs has no primary to drive it, so all of them merging closes it
-/// (see `linked_only_all_merged`). A linked PR that fails to refresh keeps
-/// its previous state (best-effort, like the unanswered count).
+/// when something changed, so polling never feeds the FS watcher. The item
+/// then **follows its primary PR** (`status_after_pr_refresh`): observed
+/// MERGED moves it to `done`, observed open-and-not-a-draft moves a `pr-draft`
+/// item to `pr-ready`. Linked PRs are tracked, never drivers, with one
+/// exception: an item that has *only* linked PRs has no primary to drive it,
+/// so all of them merging closes it (see `linked_only_all_merged`). A linked
+/// PR that fails to refresh keeps its previous state (best-effort, like the
+/// unanswered count).
 #[tauri::command]
 pub(crate) async fn refresh_workflow_pr(
     state: State<'_, GuiState>,
@@ -1961,7 +1963,6 @@ pub(crate) async fn refresh_workflow_pr(
     .map_err(|e| e.to_string())?;
 
     let mut changed = false;
-    let mut primary_merged = false;
     if let Some(result) = primary_result {
         let (view, unanswered) = result.map_err(forge_err)?;
         changed |= merge_pr_view(&mut meta, &view);
@@ -1971,7 +1972,6 @@ pub(crate) async fn refresh_workflow_pr(
                 changed = true;
             }
         }
-        primary_merged = view.state == clash::domain::forge::ChangeState::Merged;
     }
     for (i, view, unanswered) in linked_results {
         let Some(pr) = meta.linked_prs.get_mut(i) else {
@@ -1992,10 +1992,11 @@ pub(crate) async fn refresh_workflow_pr(
             }
         }
     }
-    let all_linked_merged = clash::application::workflow::linked_only_all_merged(&meta);
-    if (primary_merged || all_linked_merged) && meta.status.can_transition_to(WorkflowStatus::Done)
-    {
-        meta.status = WorkflowStatus::Done;
+    // Decided on the merged record, not on this cycle's views: a state that was
+    // observed earlier but could not move the item then (a round was in
+    // flight) still moves it now.
+    if let Some(next) = clash::application::workflow::status_after_pr_refresh(&meta) {
+        meta.status = next;
         changed = true;
     }
     if changed {

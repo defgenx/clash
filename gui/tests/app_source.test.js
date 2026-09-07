@@ -116,6 +116,24 @@ test("approving a diff never requires a draft PR", () => {
   assert.match(diffReview, /add\("Create draft PR…"/);
 });
 
+test("the PR draft stage always has a way forward", () => {
+  // Its one advancing button, "Mark PR ready", hides itself once nothing is a
+  // draft — which is exactly the state a PR flipped on GitHub leaves behind.
+  // An item with two ready PRs then had an empty Continue zone: no PR READY,
+  // no done. Both moves are legal in the forward table and must be offered.
+  // Other switches have a "pr-ready" case too: look for the one after this case.
+  const start = APP.indexOf('case "pr-draft": {');
+  const prDraft = APP.slice(start, APP.indexOf('case "pr-ready":', start));
+  assert.ok(start >= 0 && prDraft.length > 0, "the pr-draft case must exist");
+  // The primary is already ready → record it, no gh call.
+  assert.match(prDraft, /primaryPrReady\(prs\)/);
+  assert.match(prDraft, /✓ PR is ready → PR ready/);
+  assert.match(prDraft, /wfTransition\(item, root, "pr-ready"\)/);
+  // Closing is always possible, as it is at PR READY.
+  assert.match(prDraft, /✓ Mark done/);
+  assert.match(prDraft, /wfTransition\(item, root, "done"\)/);
+});
+
 test("requesting changes uses the composer, not a one-line prompt", () => {
   // The note is appended verbatim to review.md and read by the agent as its
   // instructions for the next round — a single-line <input> could not hold it,

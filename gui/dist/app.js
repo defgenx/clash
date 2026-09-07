@@ -7771,14 +7771,30 @@ function renderWfActions(bar, root, item) {
 
     case "pr-draft": {
       applyReviewButton();
+      const prs = itemPrs(item.meta);
+      // The primary is already ready-for-review while the item still says
+      // draft — flipped on GitHub, or opened non-draft by a PR skill. The poll
+      // moves the item within a minute; until then this stage's only forward
+      // action (flip a draft) has nothing to flip, and a Continue zone with
+      // nothing in it reads as a dead end. So offer the move itself: a status
+      // write, no PR change, no tokens.
+      const primaryReady = primaryPrReady(prs);
+      if (primaryReady) {
+        add(
+          "✓ PR is ready → PR ready",
+          reviewPending ? "" : "primary",
+          () => wfTransition(item, root, "pr-ready"),
+          "The primary PR is already ready-for-review on GitHub — record that and move the item to PR READY. Nothing changes on the PR; no tokens."
+        );
+      }
       // Gated on having a *draft* to flip, not on having a primary: a
       // linked-only item's drafts are just as flippable, they simply cannot
       // move the item's status.
-      const drafts = prActionCandidates(itemPrs(item.meta), "markReady");
+      const drafts = prActionCandidates(prs, "markReady");
       if (drafts.length) {
         add(
-          `✓ Mark PR ready${prScopeSuffix(itemPrs(item.meta), "markReady")}`,
-          reviewPending ? "" : "primary",
+          `✓ Mark PR ready${prScopeSuffix(prs, "markReady")}`,
+          reviewPending || primaryReady ? "" : "primary",
           () => wfMarkPrReady(item, root),
           drafts.length > 1
             ? `Flip drafts to ready-for-review on GitHub — the validation step. This item tracks ${drafts.length} drafts across repositories, so the click asks which of them go up: any subset, or all. Only the primary moves this item to PR READY.`
@@ -7788,7 +7804,7 @@ function renderWfActions(bar, root, item) {
       if (!wfHasPr(item)) {
         add(
           "Attach PR by URL…",
-          drafts.length ? "" : "primary",
+          drafts.length || primaryReady ? "" : "primary",
           async () => {
             const url = await uiPrompt("GitHub PR URL");
             if (!url || !url.trim()) return;
@@ -7808,6 +7824,19 @@ function renderWfActions(bar, root, item) {
         );
       }
       openPrsButton();
+      // `pr-draft → done` has always been a legal move; the bar just never
+      // offered it, so a PR that landed some other way (squashed by hand,
+      // superseded, merged in a repo clash cannot poll) left the item with no
+      // way to close. Secondary, like at PR READY: merging is the normal exit.
+      add(
+        "✓ Mark done",
+        "",
+        async () => {
+          if (!(await uiConfirm("Mark this workflow item as done?", "Done"))) return;
+          wfTransition(item, root, "done");
+        },
+        "Close the item without going through PR READY — a merged PR closes it automatically on the next refresh"
+      );
       // Review feedback keeps arriving once a PR exists (agent rounds, GitHub
       // review comments) — without this the findings were a dead end here.
       add(

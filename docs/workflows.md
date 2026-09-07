@@ -74,6 +74,15 @@ published, and a fix that only commits locally leaves the PR silently stale.
   `implementing → plan-review` (a `revise` launch parks the item in
   `implementing`; a revision that only touched the plan hands back to
   `plan-review`), and `reviewing → <the status the round started in>`.
+- **Forge-driven transitions** (clash's PR refresh, no click): the item
+  follows its **primary** PR — observed merged moves it to `done`, observed
+  open-and-not-a-draft moves a `pr-draft` item to `pr-ready`. "Ready for
+  review" clicked on GitHub, or a PR opened non-draft by a PR skill, is the
+  validation step happening elsewhere, and an item that did not follow it was
+  stranded: the only forward action at `pr-draft` flips a draft, and nothing
+  was a draft any more. Only exactly `pr-draft` advances this way — a
+  `reviewing` round hands back where it started and the next refresh moves it.
+  Linked PRs never drive either move.
 - **Everything else is clash-owned** (buttons in the GUI): approve, request
   changes, mark PR ready, done, abandon, reopen, and launching a review round.
 
@@ -529,7 +538,9 @@ additionally offers "run the round locally instead". The principle
 generalizes: an error caused by a data gap must offer the human a way to
 supply the datum and continue, so the pipeline is never blocked on a bug
 that can be fixed in parallel. `state == "MERGED"`
-observed on refresh moves the item to `done`. The agent may create the draft PR
+observed on refresh moves the item to `done`, and `draft == false` with
+`state == "OPEN"` observed on a `pr-draft` item moves it to `pr-ready` (the
+pure `status_after_pr_refresh` decides both). The agent may create the draft PR
 itself — writing `pr.url` is enough: clash fills the rest on the next refresh,
 and every command that needs the number derives it from the URL in the
 meantime (a URL-only record must never make a button fail with "refresh

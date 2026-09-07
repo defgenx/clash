@@ -713,6 +713,36 @@ pub fn linked_only_all_merged(meta: &crate::domain::workflow::WorkflowMeta) -> b
         && meta.linked_prs.iter().all(|p| p.state == "MERGED")
 }
 
+/// Pure: the status an item's *recorded* PR state says it should be in, when
+/// that differs from the one on disk — `None` means leave it.
+///
+/// Two forge facts drive the pipeline. A **merged** primary (or every linked
+/// PR of a linked-only item) closes the item. A primary that is **open and no
+/// longer a draft** while the item still says `pr-draft` moves it to
+/// `pr-ready`: "Ready for review" clicked on GitHub, or a PR opened non-draft
+/// by a PR skill, *is* the validation step, and without following it the item
+/// was stranded — its only forward action there flips a draft, and nothing
+/// was a draft any more. Only exactly `pr-draft` advances: a `reviewing` round
+/// in flight must hand back where it started, and the refresh after that
+/// hand-back is what moves it.
+pub fn status_after_pr_refresh(
+    meta: &crate::domain::workflow::WorkflowMeta,
+) -> Option<WorkflowStatus> {
+    let primary = meta.pr.as_ref().filter(|p| !p.url.trim().is_empty());
+    let primary_merged = primary.is_some_and(|p| p.state == "MERGED");
+    if (primary_merged || linked_only_all_merged(meta))
+        && meta.status.can_transition_to(WorkflowStatus::Done)
+    {
+        return Some(WorkflowStatus::Done);
+    }
+    if meta.status == WorkflowStatus::PrDraft
+        && primary.is_some_and(|p| !p.draft && p.state == "OPEN")
+    {
+        return Some(WorkflowStatus::PrReady);
+    }
+    None
+}
+
 // ── PR selection (which of an item's PRs an action acts on) ─────────────
 
 /// One of an item's PRs, resolved for an action to act on.
@@ -1567,6 +1597,105 @@ Tighten the API.\n\n\
             r#"{"title":"x","pr":{"url":"https://github.com/o/c/pull/3"},
                 "linkedPrs":[{"url":"https://github.com/o/a/pull/1","state":"MERGED"}]}"#
         )));
+    }
+
+    // ── status_after_pr_refresh ─────────────────────────────────────
+
+    #[test]
+    fn an_item_at_pr_draft_follows_its_primary_pr_to_ready() {
+        use crate::domain::workflow::WorkflowMeta;
+        let meta = |json: &str| -> WorkflowMeta { serde_json::from_str(json).unwrap() };
+        // The stranding case: the PR was flipped on GitHub (or opened
+        // non-draft), the item still says draft, and no draft is left to flip.
+        assert_eq!(
+            status_after_pr_refresh(&meta(
+                r#"{"status":"pr-draft","pr":{"url":"https://github.com/o/a/pull/1","draft":false,"state":"OPEN"},
+                    "linkedPrs":[{"url":"https://github.com/o/b/pull/2","draft":false,"state":"OPEN"}]}"#
+            )),
+            Some(WorkflowStatus::PrReady)
+        );
+        // Still a draft → nothing to follow.
+        assert_eq!(
+            status_after_pr_refresh(&meta(
+                r#"{"status":"pr-draft","pr":{"url":"https://github.com/o/a/pull/1","draft":true,"state":"OPEN"}}"#
+            )),
+            None
+        );
+        // Non-draft but closed without merging is not "ready for review".
+        assert_eq!(
+            status_after_pr_refresh(&meta(
+                r#"{"status":"pr-draft","pr":{"url":"https://github.com/o/a/pull/1","draft":false,"state":"CLOSED"}}"#
+            )),
+            None
+        );
+        // Never checked (no state yet) → wait for a real observation.
+        assert_eq!(
+            status_after_pr_refresh(&meta(
+                r#"{"status":"pr-draft","pr":{"url":"https://github.com/o/a/pull/1"}}"#
+            )),
+            None
+        );
+        // Linked PRs never drive status: a linked-only item with a ready
+        // linked PR stays where it is.
+        assert_eq!(
+            status_after_pr_refresh(&meta(
+                r#"{"status":"pr-draft","linkedPrs":[{"url":"https://github.com/o/b/pull/2","draft":false,"state":"OPEN"}]}"#
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn only_exactly_pr_draft_advances_to_ready() {
+        use crate::domain::workflow::WorkflowMeta;
+        let meta = |json: &str| -> WorkflowMeta { serde_json::from_str(json).unwrap() };
+        // A review round in flight hands back to `pr-draft`; the refresh after
+        // that hand-back is what moves the item — never mid-round, which would
+        // unlock approval under a running reviewer.
+        for st in [
+            "reviewing",
+            "diff-review",
+            "changes-requested",
+            "implementing",
+            "pr-ready",
+        ] {
+            assert_eq!(
+                status_after_pr_refresh(&meta(&format!(
+                    r#"{{"status":"{st}","pr":{{"url":"https://github.com/o/a/pull/1","draft":false,"state":"OPEN"}}}}"#
+                ))),
+                None,
+                "status {st} must not advance to pr-ready on refresh"
+            );
+        }
+    }
+
+    #[test]
+    fn a_merged_primary_closes_the_item_from_either_pr_stage() {
+        use crate::domain::workflow::WorkflowMeta;
+        let meta = |json: &str| -> WorkflowMeta { serde_json::from_str(json).unwrap() };
+        for st in ["pr-draft", "pr-ready", "diff-review"] {
+            assert_eq!(
+                status_after_pr_refresh(&meta(&format!(
+                    r#"{{"status":"{st}","pr":{{"url":"https://github.com/o/a/pull/1","draft":false,"state":"MERGED"}}}}"#
+                ))),
+                Some(WorkflowStatus::Done),
+                "a merged primary closes an item at {st}"
+            );
+        }
+        // Merged wins over "ready": one move, to done.
+        assert_eq!(
+            status_after_pr_refresh(&meta(
+                r#"{"status":"pr-draft","linkedPrs":[{"url":"https://github.com/o/b/pull/2","state":"MERGED"}]}"#
+            )),
+            Some(WorkflowStatus::Done)
+        );
+        // A running reviewer is never closed under.
+        assert_eq!(
+            status_after_pr_refresh(&meta(
+                r#"{"status":"reviewing","pr":{"url":"https://github.com/o/a/pull/1","state":"MERGED"}}"#
+            )),
+            None
+        );
     }
 
     #[test]

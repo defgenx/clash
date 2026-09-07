@@ -575,9 +575,13 @@ must address every open comment → *Approve → done* closes the item, or
 *Create draft PR* (via `gh`) first if you want the PR stages, in which case
 *Mark PR ready* flips the draft once you've validated everything — and when
 the item tracks linked draft PRs in other repos, offers to flip them in the
-same step (best-effort; failures are listed, the primary's flip stands). A
-merged PR moves the item to done automatically (an item with *only linked*
-PRs closes once all of them merge — it has no primary PR to drive it). *Request changes* stays available at
+same step (best-effort; failures are listed, the primary's flip stands). The
+item **follows its primary PR**: a merged PR moves it to done automatically
+(an item with *only linked* PRs closes once all of them merge — it has no
+primary PR to drive it), and a PR flipped to ready-for-review on GitHub moves
+a `pr-draft` item to PR READY on the next refresh — meanwhile the bar offers
+*✓ PR is ready → PR ready* directly, so a stage whose drafts are all gone is
+never a dead end. *✓ Mark done* is available at both PR stages. *Request changes* stays available at
 `pr-draft` and `pr-ready` — review feedback keeps arriving once a PR is up,
 and a fix round on an item with a PR pushes its commits so the PR follows.
 **Reviewing at any stage, draft PR included.** A review round is available

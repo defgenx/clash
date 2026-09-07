@@ -232,6 +232,7 @@ test("the browser branch publishes every name app.js calls", () => {
     "prScopeSummary",
     "prActionCandidates",
     "prLive",
+    "primaryPrReady",
   ]) {
     assert.equal(typeof win[name], "function", `${name} must be on window`);
     assert.ok(app.includes(name), `app.js is expected to use ${name}`);
@@ -248,4 +249,24 @@ test("the browser branch publishes every name app.js calls", () => {
     html.indexOf("wf-pr-scope.js") < html.indexOf("app.js"),
     "wf-pr-scope.js must be loaded before app.js"
   );
+});
+
+test("an item is behind its primary PR only when that PR is open and not a draft", () => {
+  const { primaryPrReady } = require("../dist/wf-pr-scope.js");
+  // The stranding case: both PRs flipped to ready, item still at pr-draft.
+  assert.equal(
+    primaryPrReady([
+      pr({ primary: true, draft: false, state: "OPEN" }),
+      pr({ url: "https://github.com/o/web/pull/2", draft: false, state: "OPEN" }),
+    ]),
+    true
+  );
+  // Still a draft → the normal "Mark PR ready" path applies.
+  assert.equal(primaryPrReady([pr({ primary: true, draft: true })]), false);
+  // Closed without merging, or never checked, is not "ready for review".
+  assert.equal(primaryPrReady([pr({ primary: true, state: "CLOSED" })]), false);
+  assert.equal(primaryPrReady([pr({ primary: true, state: "" })]), false);
+  // Linked PRs never drive the item: a linked-only item is never "behind".
+  assert.equal(primaryPrReady([pr({ draft: false, state: "OPEN" })]), false);
+  assert.equal(primaryPrReady([]), false);
 });

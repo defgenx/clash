@@ -125,7 +125,9 @@ findings into `agent-review.md` and `annotations.json` and never touch
   `planning → plan-review`, `changes-requested → plan-review` (plan-revision
   round), `changes-requested → implementing`,
   `implementing → diff-review | pr-draft`, and in phase `pr` only,
-  `diff-review → pr-draft`.
+  `diff-review → pr-draft`. Write `pr-draft` even when the PR is already
+  ready for review — clash moves the item to `pr-ready` itself on its next
+  refresh; `pr-ready` is never yours to write.
 - Git: commit your work on the current branch with clear conventional
   messages. **Never `--no-verify`** — if a hook fails, fix the cause or stop and
   explain in your final message. Pushing:

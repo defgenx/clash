@@ -214,6 +214,19 @@
     return prActionCandidates(prs, action).length > 1 ? "…" : "";
   }
 
+  /// The primary PR is already up for review — open and not a draft — so an
+  /// item still parked at `pr-draft` is behind its own PR. That is what
+  /// "Ready for review" clicked on GitHub, or a PR opened non-draft by a PR
+  /// skill, leaves behind: clash's poll moves the item on its next refresh,
+  /// and until then the action bar offers the move directly, because the only
+  /// other forward action at that stage flips a draft and has nothing left
+  /// to flip. Linked PRs are deliberately not consulted: they never drive the
+  /// item's status.
+  function primaryPrReady(prs) {
+    const p = (prs || []).find((x) => x.primary);
+    return !!p && !p.draft && p.state === "OPEN";
+  }
+
   const api = {
     PR_ACTIONS,
     prLive,
@@ -222,6 +235,7 @@
     prScopeSelection,
     prScopeSummary,
     prScopeSuffix,
+    primaryPrReady,
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
