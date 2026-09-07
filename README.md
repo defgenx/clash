@@ -1121,7 +1121,10 @@ hops to AppKit's main thread and can take a moment on a machine with hundreds
 installed.
 
 Below the settings sits an `⟳ Update clash` self-update button — when the update
-lands, a modal offers Restart / Cancel (restarting closes running sessions).
+lands, a modal offers Restart / Cancel (restarting closes running sessions). The
+restart stashes every session, relaunches the new binary and logs the
+relaunch in `clash.log` (`restart: relaunched … as pid …`), so a restart that
+never came back is diagnosable rather than silent.
 Settings persist in `gui-state.json`, except the three directories and the
 `claude` binary, which live in the shared `config.toml` so the TUI agrees. The sidebar and details panel are
 drag-resizable (widths persist), and the collapsible sidebar sections

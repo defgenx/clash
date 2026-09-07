@@ -46,17 +46,18 @@ struct GuiState {
     control: tokio::sync::Mutex<DaemonClient>,
     /// Set by whoever quit-stashes first, so the stash runs **once** per
     /// process. Three routes reach it — the window's `CloseRequested`, the
-    /// app's `ExitRequested` (⌘Q, the Dock, a logout) and `restart_app` — and
-    /// on a window close the first two both fire.
+    /// app's `ExitRequested` (⌘Q, the Dock, a logout, and the exit
+    /// `restart_app` requests) and `restart_app` itself — and on a window
+    /// close the first two both fire.
     ///
-    /// This is not just deduplication. `AppHandle::restart()` called off the
-    /// main thread parks its caller in `sleep(Duration::MAX)` forever and
-    /// hands the restart to the event loop; that park holds a Tokio worker,
-    /// and with it the runtime's IO/time driver, so **no `await` in the
-    /// process completes afterwards**. A second stash on the `ExitRequested`
-    /// that `restart()` triggers therefore blocks the event loop on its first
-    /// await — the event loop that was going to perform the restart. The app
-    /// freezes with no way out but `kill`, which is exactly what it did.
+    /// It earned its keep when `restart_app` still called
+    /// `AppHandle::restart()`: off the main thread that parks its caller in
+    /// `sleep(Duration::MAX)` forever, and the park held a Tokio worker with
+    /// the runtime's IO/time driver, so a second stash on the `ExitRequested`
+    /// it triggered blocked the event loop on its first await — the app froze
+    /// with no way out but `kill`. clash no longer calls `restart()` (see
+    /// `restart_app`), but the flag stays: a second stash is still a second
+    /// kill-and-poll over sessions that are already gone.
     stashed: std::sync::atomic::AtomicBool,
     /// One streaming client per attached session.
     attached: tokio::sync::Mutex<HashMap<String, DaemonClient>>,
@@ -2401,16 +2402,47 @@ fn get_version() -> String {
 }
 
 /// Relaunch the app binary — offered after a self-update so the new
-/// version takes over. `app.restart()` re-execs the process, taking the
-/// in-process daemon (and every PTY session it owns) with it, and — when it
-/// runs on the main thread — it does so WITHOUT emitting `RunEvent::Exit*`,
-/// so the exit-stash handler never fires. We therefore stash-and-wait here
-/// explicitly first, so sessions are left cleanly resumable rather than
-/// SIGHUP'd mid-write by the re-exec.
+/// version takes over.
+///
+/// clash performs the relaunch itself rather than calling
+/// `AppHandle::restart()`, for two reasons that each cost a real incident.
+/// Off the main thread — where every async command runs — `restart()` parks
+/// its caller in `sleep(Duration::MAX)` forever and hands the re-exec to the
+/// event loop; that park held a Tokio worker and the runtime's IO/time driver
+/// with it, so the second quit-stash on the `ExitRequested` it triggered hung
+/// the exit (see `GuiState::stashed`). And its relaunch fails *silently*: it
+/// reports through the `log` facade, which clash does not bridge into
+/// clash.log, and it refuses any executable path containing a symlink — so a
+/// launch through `/usr/local/bin/clash-gui` would exit and never come back,
+/// with nothing in the log to say why.
+///
+/// Order: stash-and-wait first, so sessions are left resumable rather than
+/// SIGHUP'd by the exit and so the new instance never meets a live PTY it
+/// would resume a second copy of; then spawn the new binary, logged either
+/// way; then `app.exit(0)`, which walks the ordinary `ExitRequested` → `Exit`
+/// route — the exit-stash handler finds the flag set and does nothing, and
+/// tao ends the process. Nothing parks. A failed spawn returns the error
+/// instead of exiting: an app that is still running beats one that vanished.
 #[tauri::command]
 async fn restart_app(state: State<'_, GuiState>, app: tauri::AppHandle) -> Result<(), String> {
     stash_and_wait(state.inner()).await;
-    app.restart();
+    let (exe, pid) = relaunch_self().inspect_err(|e| tracing::error!("restart: {}", e))?;
+    tracing::info!("restart: relaunched {} as pid {}", exe.display(), pid);
+    app.exit(0);
+    Ok(())
+}
+
+/// Spawn a fresh instance of this binary with our own arguments. The path is
+/// resolved through symlinks so a PATH link relaunches the real file — the
+/// updater replaced that file, not the link.
+fn relaunch_self() -> Result<(std::path::PathBuf, u32), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate own binary: {}", e))?;
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    let child = std::process::Command::new(&exe)
+        .args(std::env::args_os().skip(1))
+        .spawn()
+        .map_err(|e| format!("cannot relaunch {}: {}", exe.display(), e))?;
+    Ok((exe, child.id()))
 }
 
 /// Parse a terminal notification escape sequence from raw PTY output.
@@ -3402,6 +3434,33 @@ mod tests {
         assert!(
             !body.contains("tokio::time"),
             "quit_stash must not depend on the Tokio clock to bound itself"
+        );
+
+        // 3. The restart relaunches explicitly and leaves through the normal
+        //    exit route. `AppHandle::restart()` off the main thread is the
+        //    park described above, and its own relaunch fails silently (the
+        //    `log` facade, unbridged; any symlink in the path) — it must not
+        //    come back.
+        let restart = SRC
+            .split_once("async fn restart_app(")
+            .expect("restart_app must exist")
+            .1;
+        let body = &restart[..restart.find("\n}\n").unwrap_or(restart.len())];
+        assert!(
+            !body.contains(".restart()"),
+            "the restart must not call AppHandle::restart()"
+        );
+        assert!(
+            body.contains("relaunch_self()") && body.contains("app.exit(0)"),
+            "the restart must relaunch explicitly, then exit through ExitRequested"
+        );
+        let stash_at = body
+            .find("stash_and_wait(")
+            .expect("the restart must stash first");
+        assert!(
+            stash_at < body.find("relaunch_self()").unwrap(),
+            "sessions must be stashed BEFORE the new instance is spawned — it \
+             resumes them, and a live PTY would be resumed twice"
         );
     }
 
