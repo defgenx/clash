@@ -1,0 +1,126 @@
+# Status hooks
+
+clash shows a session's live state — THINKING, WAITING, PROMPTING, STASHED —
+from three layers, in increasing order of latency:
+
+1. **Hooks** (this document) — Claude Code calls a script on its own lifecycle
+   events, so the state changes the instant it happens.
+2. **Daemon screen analysis** — the PTY's vt100 mirror, read by the daemon.
+3. **JSONL parsing** — `detect_session_status` over the transcript tail.
+
+Only the hook layer can report two things the other two cannot infer: a
+session **blocked on a permission prompt** (`PermissionRequest`), and a session
+that **ended** (`SessionEnd`). Everything downstream of that — the prompt
+queue refusing to type into a tool-approval dialog, the attention inbox's
+"blocked tool call" band, a row going STASHED when its agent exits — depends
+on this layer working.
+
+## How registration works
+
+Everything lives in clash's own data directory:
+
+```
+~/.claude/clash/hooks/
+├── status-hook.sh     # the script: reads the event JSON on stdin, writes ../status/<id>
+└── settings.json      # registers the script for 7 events
+```
+
+The daemon appends `--settings ~/.claude/clash/hooks/settings.json` to every
+`claude` it spawns (`PtySession::spawn`). `--settings` **merges** with the
+settings Claude Code loads on its own rather than replacing them, so the
+user's own hooks, permissions and env are unaffected, and clash's file names
+only clash's handlers.
+
+Three properties of that injection are load-bearing:
+
+- **It happens at the spawn, not at the call sites.** `PtySession::spawn` is
+  the one place every claude spawn passes through — a new launcher cannot
+  forget it. (There are already five: new session, resume, workflow executor,
+  workflow reviewer, attach.)
+- **It is claude-only.** The daemon also spawns shells (`shellterm-*`), which
+  would reject the flag. Decided by `wants_hook_settings`, on the binary's
+  basename.
+- **It is existence-guarded.** claude refuses to start at all on a
+  `--settings` path it cannot read (`Error: Settings file not found`), so a
+  missing hooks file must cost the status hooks and never the session.
+  `install_hooks` runs at startup in **both** binaries for the same reason —
+  the GUI used to rely on the TUI having run once, which left a GUI-only
+  machine with no hooks at all.
+
+## Why not the user's settings files
+
+Registration used to be merged into `~/.claude/settings.local.json`, on the
+reasoning that it was the one file inside `~/.claude/` that clash could
+politely write. **Claude Code does not read that file.** The settings it
+loads are:
+
+```
+~/.claude/settings.json
+<project>/.claude/settings.json
+<project>/.claude/settings.local.json
+```
+
+`settings.local.json` is a *project*-scoped concept; there is no user-scoped
+equivalent. So the hook was registered somewhere nothing looked, and the
+failure was silent in the worst way: `Phase 3`'s hook overlay applies
+`starting` with **no expiry** and forces `is_running = true`, so every row
+stayed pinned at the `starting` clash itself writes at spawn — a session that
+had long since gone idle still read as live, `prompting` never appeared at
+all, and the only status that ever moved was whatever clash wrote by hand.
+Reloading a session appeared to fix it, because a reload rewrites the status
+file.
+
+`~/.claude/settings.json` would work, and is where the user's own global hooks
+live, but Claude Code writes that file too — approving a permission appends to
+it — so a clash startup write can clobber a concurrent one. clash's config
+subsystem takes an advisory lock for exactly this hazard
+(`docs/configuration.md`); a settings file clash does not own has no such
+protocol available. Passing the path explicitly avoids the question: nothing
+clash writes is a file anyone else writes, and *which* files Claude Code
+chooses to search can never break it again.
+
+`install_hooks` withdraws the old registration from
+`~/.claude/settings.local.json` on first launch (`strip_clash_hooks`), pruning
+emptied groups and events and the `hooks` key itself, and leaving every other
+key byte-identical. A file it cannot parse is left alone: rewriting settings
+clash does not understand would be worse than a stale entry that does nothing.
+
+## The events, and what they mean
+
+| Event | Status written | Why clash needs it |
+|---|---|---|
+| `SessionStart` | `starting` | A session exists before its transcript does. Also re-keys the registry after `/clear` (see below). |
+| `UserPromptSubmit` | `thinking` | The turn began. |
+| `PostToolUse` / `PostToolUseFailure` | `thinking` | Still working — keeps a long turn from reading as idle. |
+| `Stop` | `waiting` | Turn finished; the prompt queue may now deliver. |
+| `PermissionRequest` | `prompting` | **Blocked on a human.** Not inferable from the transcript. |
+| `SessionEnd` | `idle` | The session is over — the row goes STASHED. |
+
+`SessionStart` additionally carries clash's `/clear` handling: the hook
+inherits the previous session's name and re-keys `sessions.json` to the new
+conversation id. Without it a `/clear` leaves clash pointing at the pre-clear
+conversation — see the resume-fork gotcha in `CLAUDE.md`.
+
+## Consequence: sessions clash did not spawn
+
+A `claude` the user started in their own terminal gets no `--settings`, so it
+writes no status file. Those rows are the EXTERNAL/wild section: they are
+correlated by process scan and their status comes from the transcript tail,
+which is what has always driven them. The loss is `prompting` on a session
+clash cannot interact with anyway.
+
+## Verifying it works
+
+The positive signal is a status file that moves:
+
+```sh
+id=$(uuidgen | tr 'A-Z' 'a-z')
+claude -p "say ok" --session-id "$id" \
+  --settings ~/.claude/clash/hooks/settings.json
+cat ~/.claude/clash/status/"$id"     # → {"status":"idle",...}
+```
+
+No file means the hooks are not firing. To see which settings files Claude
+Code is actually loading — the check that found this bug — run any claude
+command with `--debug` and look for the `Watching for changes in setting
+files` line.

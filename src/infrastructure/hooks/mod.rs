@@ -1,8 +1,20 @@
 //! Claude Code hooks integration for instant session status detection.
 //!
-//! Hooks are registered in `~/.claude/settings.local.json` (the only file
-//! clash writes inside `~/.claude/`). All clash state files (status, names,
-//! hook scripts) live in clash's own data directory (`~/.claude/clash/`).
+//! Everything clash needs lives in clash's own data directory
+//! (`~/.claude/clash/`): the status/name state files, the hook script, and
+//! the settings file that registers it. Sessions get the hooks because the
+//! daemon passes `--settings <that file>` when it spawns `claude` — clash
+//! writes no file it does not own.
+//!
+//! Registration used to be merged into `~/.claude/settings.local.json`.
+//! Claude Code does not load that file: the settings it reads are
+//! `~/.claude/settings.json` plus the project's `.claude/settings.json` and
+//! `.claude/settings.local.json`. A hook registered there therefore never
+//! fired, and clash never learned a session had started thinking, gone idle
+//! or blocked on a permission prompt — every row stayed pinned at the
+//! `starting` clash itself wrote at spawn. `--settings` is immune to that:
+//! the path is explicit, so which files Claude Code searches cannot matter.
+//! See `docs/hooks.md`.
 
 pub mod registry;
 
@@ -18,6 +30,8 @@ const NAMES_DIR: &str = "names";
 const PROJECT_NAMES_DIR: &str = "project-names";
 const HOOKS_DIR: &str = "hooks";
 const HOOK_SCRIPT_NAME: &str = "status-hook.sh";
+/// Settings file clash owns outright and hands to `claude --settings`.
+const HOOK_SETTINGS_NAME: &str = "settings.json";
 
 /// The hook script that Claude Code calls on lifecycle events.
 /// It reads JSON from stdin, extracts event + session_id, and writes
@@ -114,11 +128,13 @@ fn clash_data_dir() -> PathBuf {
     Config::clash_data_dir()
 }
 
-/// Install the clash hook script and merge hook config into Claude Code settings.
+/// Install the clash hook script and the settings file that registers it.
 /// Safe to call multiple times — idempotent.
 ///
-/// - Hook script + state files go to `~/.claude/clash/` (clash's RW dir)
-/// - Hook registration goes to `~/.claude/settings.local.json` (only RW in .claude)
+/// Both go to clash's own data dir (`~/.claude/clash/hooks/`); the daemon
+/// points `claude --settings` at the settings file. `claude_dir` is only
+/// read from, to clear the registration older versions left in
+/// `settings.local.json`.
 pub fn install_hooks(claude_dir: &Path) -> std::io::Result<()> {
     let data_dir = clash_data_dir();
 
@@ -139,12 +155,30 @@ pub fn install_hooks(claude_dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(data_dir.join(NAMES_DIR))?;
     std::fs::create_dir_all(data_dir.join(PROJECT_NAMES_DIR))?;
 
-    // 3. Merge hooks into Claude Code's settings.local.json
-    // (the only file clash writes inside ~/.claude/)
-    let settings_path = claude_dir.join("settings.local.json");
-    merge_hook_settings(&settings_path, &script_path)?;
+    // 3. Write the settings file the daemon hands to `--settings`. clash owns
+    //    it outright, so it is generated rather than merged — but only when
+    //    the bytes actually change, because the config dir is watched and a
+    //    rewrite per startup would wake the watcher for nothing.
+    let settings_path = hook_settings_path();
+    let desired = serde_json::to_string_pretty(&build_hook_settings(&script_path))?;
+    let current = std::fs::read_to_string(&settings_path).unwrap_or_default();
+    if current != desired {
+        crate::infrastructure::fs::atomic::write_atomic(&settings_path, desired.as_bytes())?;
+    }
+
+    // 4. Withdraw the registration older versions merged into
+    //    `~/.claude/settings.local.json`. Claude Code never reads it, so the
+    //    entries are dead weight — and leaving them would have a downgraded
+    //    clash silently depend on a file that does nothing.
+    remove_legacy_hook_settings(claude_dir);
 
     Ok(())
+}
+
+/// Path of the settings file that registers clash's hooks — what the daemon
+/// passes to `claude --settings`.
+pub fn hook_settings_path() -> PathBuf {
+    clash_data_dir().join(HOOKS_DIR).join(HOOK_SETTINGS_NAME)
 }
 
 /// Get the path to the status directory (for FS watcher).
@@ -280,89 +314,119 @@ pub fn take_quit_stashed() -> Vec<String> {
     ids
 }
 
-/// Merge clash hook configuration into the Claude Code settings file.
-/// Preserves any existing hooks the user has configured.
-fn merge_hook_settings(settings_path: &Path, script_path: &Path) -> std::io::Result<()> {
-    let mut settings: serde_json::Value = if settings_path.exists() {
-        let content = std::fs::read_to_string(settings_path)?;
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    let script = script_path.to_string_lossy().to_string();
-    let hooks = settings
-        .as_object_mut()
-        .unwrap()
-        .entry("hooks")
-        .or_insert(serde_json::json!({}));
-
-    let hook_handler = serde_json::json!({
+/// The hook registration clash hands to `claude --settings`.
+///
+/// Pure — the whole file, generated from the script path. `--settings`
+/// merges with the settings Claude Code loads on its own rather than
+/// replacing them, so naming only clash's own handlers here leaves the
+/// user's hooks, permissions and env untouched.
+fn build_hook_settings(script_path: &Path) -> serde_json::Value {
+    let handler = serde_json::json!({
         "type": "command",
-        "command": script,
+        "command": script_path.to_string_lossy(),
         "async": true
     });
 
-    // Events that don't use matchers
-    for event in &["UserPromptSubmit", "Stop", "SessionStart", "SessionEnd"] {
-        ensure_hook(hooks, event, None, &hook_handler);
+    let mut hooks = serde_json::Map::new();
+    // Events that don't use matchers.
+    for event in ["UserPromptSubmit", "Stop", "SessionStart", "SessionEnd"] {
+        hooks.insert(
+            event.to_string(),
+            serde_json::json!([{ "hooks": [handler] }]),
+        );
+    }
+    // Events that use matchers (need "*" to match all tools).
+    for event in ["PostToolUse", "PostToolUseFailure", "PermissionRequest"] {
+        hooks.insert(
+            event.to_string(),
+            serde_json::json!([{ "matcher": "*", "hooks": [handler] }]),
+        );
     }
 
-    // Events that use matchers (need "*" to match all tools)
-    for event in &["PostToolUse", "PostToolUseFailure", "PermissionRequest"] {
-        ensure_hook(hooks, event, Some("*"), &hook_handler);
-    }
-
-    let output = serde_json::to_string_pretty(&settings)?;
-    crate::infrastructure::fs::atomic::write_atomic(settings_path, output.as_bytes())
+    serde_json::json!({ "hooks": hooks })
 }
 
-/// Ensure a hook handler exists in the settings for the given event.
-/// Does not duplicate if the clash hook is already present.
-fn ensure_hook(
-    hooks: &mut serde_json::Value,
-    event: &str,
-    matcher: Option<&str>,
-    handler: &serde_json::Value,
-) {
-    let command = handler
-        .get("command")
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
+/// True when `command` is some clash `status-hook.sh`.
+///
+/// Matches on the trailing `hooks/status-hook.sh` under a `clash` directory
+/// rather than on the current data dir, so an entry left by a run with a
+/// different data dir (the GUI's app-support path, an isolated `HOME`) is
+/// recognised as clash's own and cleaned up too.
+fn is_clash_hook_command(command: &str) -> bool {
+    command.contains("clash/hooks/") && command.ends_with(HOOK_SCRIPT_NAME)
+}
 
-    let event_hooks = hooks
-        .as_object_mut()
-        .unwrap()
-        .entry(event)
-        .or_insert(serde_json::json!([]));
-
-    let groups = match event_hooks.as_array_mut() {
-        Some(a) => a,
-        None => return,
+/// Strip every clash hook handler from a parsed settings document, pruning
+/// the groups, events and the `hooks` key itself once they are empty.
+/// Returns whether anything changed.
+///
+/// Pure, and deliberately surgical: this edits a file whose other contents
+/// (a user's `permissions`, `env`, their own hooks) are none of clash's
+/// business.
+fn strip_clash_hooks(settings: &mut serde_json::Value) -> bool {
+    let Some(root) = settings.as_object_mut() else {
+        return false;
+    };
+    let Some(hooks) = root.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
+        return false;
     };
 
-    // Check if our hook is already registered in any matcher group
-    for group in groups.iter() {
-        if let Some(handlers) = group.get("hooks").and_then(|h| h.as_array()) {
-            for h in handlers {
-                if h.get("command").and_then(|c| c.as_str()) == Some(command) {
-                    return; // Already installed
-                }
-            }
+    let mut changed = false;
+    let events: Vec<String> = hooks.keys().cloned().collect();
+    for event in events {
+        let Some(groups) = hooks.get_mut(&event).and_then(|g| g.as_array_mut()) else {
+            continue;
+        };
+        for group in groups.iter_mut() {
+            let Some(handlers) = group.get_mut("hooks").and_then(|h| h.as_array_mut()) else {
+                continue;
+            };
+            let before = handlers.len();
+            handlers.retain(|h| {
+                !h.get("command")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(is_clash_hook_command)
+            });
+            changed |= handlers.len() != before;
+        }
+        // A group whose handler list we emptied is ours; drop it.
+        groups.retain(|g| {
+            g.get("hooks")
+                .and_then(|h| h.as_array())
+                .is_none_or(|h| !h.is_empty())
+        });
+        if groups.is_empty() {
+            hooks.remove(&event);
+            changed = true;
         }
     }
 
-    // Add a new matcher group with our hook
-    let mut group = serde_json::json!({
-        "hooks": [handler]
-    });
-    if let Some(m) = matcher {
-        group
-            .as_object_mut()
-            .unwrap()
-            .insert("matcher".to_string(), serde_json::json!(m));
+    if hooks.is_empty() {
+        root.remove("hooks");
+        changed = true;
     }
-    groups.push(group);
+    changed
+}
+
+/// Remove clash's hook registration from `~/.claude/settings.local.json`.
+///
+/// Best-effort: a missing or unparseable file is left exactly as it is —
+/// rewriting one clash cannot read would destroy settings it does not
+/// understand, and the entries being stale is harmless in itself.
+fn remove_legacy_hook_settings(claude_dir: &Path) {
+    let path = claude_dir.join("settings.local.json");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+    if !strip_clash_hooks(&mut settings) {
+        return;
+    }
+    if let Ok(output) = serde_json::to_string_pretty(&settings) {
+        let _ = crate::infrastructure::fs::atomic::write_atomic(&path, output.as_bytes());
+    }
 }
 
 #[cfg(test)]
@@ -371,61 +435,127 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_install_hooks_creates_settings() {
+    fn install_writes_the_settings_file_the_spawn_points_at() {
         let dir = TempDir::new().unwrap();
-        let claude_dir = dir.path();
+        install_hooks(dir.path()).unwrap();
 
-        install_hooks(claude_dir).unwrap();
+        // The file the daemon hands to `--settings` — not anything under
+        // the Claude dir, which clash no longer writes.
+        let settings_path = hook_settings_path();
+        assert!(settings_path.is_file());
+        assert!(!dir.path().join("settings.local.json").exists());
 
-        // Settings file has hooks (written to claude_dir)
-        let settings_path = claude_dir.join("settings.local.json");
-        assert!(settings_path.exists());
-        let content = std::fs::read_to_string(&settings_path).unwrap();
-        let val: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert!(val.get("hooks").is_some());
-        assert!(val["hooks"].get("Stop").is_some());
-        assert!(val["hooks"].get("PostToolUse").is_some());
-        assert!(val["hooks"].get("PermissionRequest").is_some());
+        let val: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        for event in [
+            "UserPromptSubmit",
+            "Stop",
+            "SessionStart",
+            "SessionEnd",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "PermissionRequest",
+        ] {
+            assert!(
+                val["hooks"].get(event).is_some(),
+                "{event} missing from the hook settings"
+            );
+        }
     }
 
     #[test]
-    fn test_install_hooks_idempotent() {
+    fn install_is_idempotent() {
         let dir = TempDir::new().unwrap();
-        let claude_dir = dir.path();
+        install_hooks(dir.path()).unwrap();
+        let first = std::fs::read_to_string(hook_settings_path()).unwrap();
+        install_hooks(dir.path()).unwrap();
+        let second = std::fs::read_to_string(hook_settings_path()).unwrap();
+        assert_eq!(first, second);
 
-        install_hooks(claude_dir).unwrap();
-        install_hooks(claude_dir).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(val["hooks"]["Stop"].as_array().unwrap().len(), 1);
+    }
 
-        let settings_path = claude_dir.join("settings.local.json");
-        let content = std::fs::read_to_string(&settings_path).unwrap();
-        let val: serde_json::Value = serde_json::from_str(&content).unwrap();
-
-        // Should have exactly 1 matcher group per event, not duplicates
+    /// `--settings` merges with the settings Claude Code loads on its own,
+    /// so clash's file names only clash's handlers.
+    #[test]
+    fn hook_settings_name_only_clash_handlers() {
+        let val = build_hook_settings(Path::new("/data/clash/hooks/status-hook.sh"));
         let stop = val["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(stop.len(), 1);
+        let handlers = stop[0]["hooks"].as_array().unwrap();
+        assert_eq!(handlers.len(), 1);
+        assert_eq!(
+            handlers[0]["command"].as_str().unwrap(),
+            "/data/clash/hooks/status-hook.sh"
+        );
+        // Matcher events carry "*", matcher-less ones carry none.
+        assert_eq!(val["hooks"]["PostToolUse"][0]["matcher"], "*");
+        assert!(val["hooks"]["Stop"][0].get("matcher").is_none());
     }
 
     #[test]
-    fn test_install_preserves_existing_hooks() {
+    fn legacy_registration_is_withdrawn_and_nothing_else_touched() {
         let dir = TempDir::new().unwrap();
-        let claude_dir = dir.path();
-
-        // Write existing settings with a user hook
-        let settings_path = claude_dir.join("settings.local.json");
+        let legacy = dir.path().join("settings.local.json");
         std::fs::write(
-            &settings_path,
-            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"my-hook.sh"}]}]}}"#,
+            &legacy,
+            r#"{
+              "env": {"FOO": "bar"},
+              "permissions": {"allow": ["Bash(ls:*)"]},
+              "hooks": {
+                "Stop": [
+                  {"hooks": [{"type": "command", "command": "/home/me/.claude/clash/hooks/status-hook.sh", "async": true}]},
+                  {"hooks": [{"type": "command", "command": "my-own-hook.sh"}]}
+                ],
+                "PostToolUse": [
+                  {"matcher": "*", "hooks": [{"type": "command", "command": "/somewhere/else/clash/hooks/status-hook.sh"}]}
+                ]
+              }
+            }"#,
         )
         .unwrap();
 
-        install_hooks(claude_dir).unwrap();
+        install_hooks(dir.path()).unwrap();
 
-        let content = std::fs::read_to_string(&settings_path).unwrap();
-        let val: serde_json::Value = serde_json::from_str(&content).unwrap();
-
-        // Should have 2 matcher groups for Stop: user's + clash's
+        let val: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&legacy).unwrap()).unwrap();
+        // The user's own hook survives; both clash entries are gone —
+        // including the one written under a different data dir.
         let stop = val["hooks"]["Stop"].as_array().unwrap();
-        assert_eq!(stop.len(), 2);
+        assert_eq!(stop.len(), 1);
+        assert_eq!(stop[0]["hooks"][0]["command"], "my-own-hook.sh");
+        // An event left with nothing but clash's handler is removed outright.
+        assert!(val["hooks"].get("PostToolUse").is_none());
+        // Everything that was never clash's business is untouched.
+        assert_eq!(val["env"]["FOO"], "bar");
+        assert_eq!(val["permissions"]["allow"][0], "Bash(ls:*)");
+    }
+
+    #[test]
+    fn stripping_drops_the_hooks_key_once_it_is_empty() {
+        let mut val: serde_json::Value = serde_json::json!({
+            "includeCoAuthoredBy": false,
+            "hooks": {
+                "Stop": [{"hooks": [{"command": "/x/clash/hooks/status-hook.sh"}]}]
+            }
+        });
+        assert!(strip_clash_hooks(&mut val));
+        assert!(val.get("hooks").is_none());
+        assert_eq!(val["includeCoAuthoredBy"], false);
+        // Nothing left to strip — a second pass reports no change, so the
+        // caller never rewrites the file for nothing.
+        assert!(!strip_clash_hooks(&mut val));
+    }
+
+    #[test]
+    fn a_foreign_hook_named_status_hook_is_not_clash() {
+        assert!(is_clash_hook_command("/a/clash/hooks/status-hook.sh"));
+        assert!(is_clash_hook_command(
+            "/Users/me/Library/Application Support/clash/hooks/status-hook.sh"
+        ));
+        assert!(!is_clash_hook_command("/a/other/hooks/status-hook.sh"));
+        assert!(!is_clash_hook_command("/a/clash/hooks/something-else.sh"));
     }
 
     #[test]
@@ -459,27 +589,5 @@ mod tests {
     #[test]
     fn test_hook_script_template_has_placeholder() {
         assert!(HOOK_SCRIPT_TEMPLATE.contains("{DATA_DIR}"));
-    }
-
-    #[test]
-    fn test_merge_hook_settings_unit() {
-        // Test the merge logic directly without filesystem side effects
-        let dir = TempDir::new().unwrap();
-        let settings_path = dir.path().join("settings.json");
-        let script_path = dir.path().join("hook.sh");
-
-        // First install
-        merge_hook_settings(&settings_path, &script_path).unwrap();
-        let content = std::fs::read_to_string(&settings_path).unwrap();
-        let val: serde_json::Value = serde_json::from_str(&content).unwrap();
-        let stop = val["hooks"]["Stop"].as_array().unwrap();
-        assert_eq!(stop.len(), 1);
-
-        // Second install — should not duplicate
-        merge_hook_settings(&settings_path, &script_path).unwrap();
-        let content = std::fs::read_to_string(&settings_path).unwrap();
-        let val: serde_json::Value = serde_json::from_str(&content).unwrap();
-        let stop = val["hooks"]["Stop"].as_array().unwrap();
-        assert_eq!(stop.len(), 1);
     }
 }

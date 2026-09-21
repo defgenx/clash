@@ -96,7 +96,7 @@ clash --debug                      # Enable debug logging
 clash update                       # Update to the latest release
 ```
 
-On first launch, clash installs lifecycle hooks into `~/.claude/settings.local.json` for instant status detection and shows a guided tour. Replay it anytime with `:tour`.
+On first launch, clash writes its lifecycle hooks to `~/.claude/clash/hooks/` for instant status detection and shows a guided tour. Replay it anytime with `:tour`. clash passes that hook file to every session it spawns (`claude --settings …`), so it registers nothing in your own settings files — see [docs/hooks.md](docs/hooks.md).
 
 ### Session Status
 
@@ -427,15 +427,19 @@ clash reads directly from Claude Code's filesystem:
 │   └── {session-id}/subagents/        # Subagent transcripts
 ├── teams/{name}/config.json           # Team config + members
 │                                       #   (Claude's auto session-* teams are hidden)
-├── tasks/{team-name}/{id}.json        # Tasks
-└── settings.local.json                # Hook registrations (written by clash)
+└── tasks/{team-name}/{id}.json        # Tasks
 ```
+
+clash writes nothing inside `~/.claude/` itself — only its own `~/.claude/clash/`
+subdirectory. Older versions registered their hooks in
+`~/.claude/settings.local.json`; that entry is withdrawn on first launch.
 
 clash also maintains its own state in `~/.claude/clash/`:
 
 ```
 ~/.claude/clash/
 ├── hooks/status-hook.sh               # Lifecycle hook script
+├── hooks/settings.json                # Hook registration, passed to `claude --settings`
 ├── status/{session-id}                # Instant status from hooks
 ├── names/{session-id}                 # Session display names
 ├── project-names/{encoded-cwd}        # Project-to-name mapping

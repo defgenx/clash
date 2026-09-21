@@ -3172,6 +3172,15 @@ fn main() {
         launching: Mutex::new(std::collections::HashSet::new()),
     };
 
+    // Status hooks: write the hook script and the settings file the daemon
+    // hands to `claude --settings`. The GUI used to rely on the TUI having
+    // done this once, which left a GUI-only machine with no hook at all —
+    // and the spawn only passes `--settings` when the file is on disk, so a
+    // missing install now costs every session its status signals.
+    if let Err(e) = clash::infrastructure::hooks::install_hooks(state.backend.base_dir()) {
+        tracing::warn!("Failed to install hooks: {}", e);
+    }
+
     // Skills: everything clash itself wrote is synced at startup (missing
     // installs, refreshes, retired dirs) — nothing there can lose work, so
     // nothing there is worth a popup. Only a file hand-edited since clash

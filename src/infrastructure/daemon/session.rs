@@ -156,6 +156,15 @@ impl PtySession {
             }
         }
 
+        // Register clash's status hooks for this child. Claude Code does not
+        // read `~/.claude/settings.local.json`, where clash used to merge the
+        // registration, so the path is passed explicitly instead — see
+        // `infrastructure::hooks`. Done here because this is the one place
+        // every claude spawn passes through, so no future call site can
+        // forget it.
+        let args = with_hook_settings(bin, args);
+        let args = args.as_ref();
+
         if !args.is_empty() {
             cmd.args(args);
         }
@@ -654,6 +663,42 @@ fn has_thinking_indicator(bottom: &str, _last_lines: &[&str]) -> bool {
 
 /// The UTF-8 ctype to set for a PTY child, or `None` when a locale is already
 /// configured (never override the user's). Kept pure — no `std::env` reads — so
+/// Whether `--settings <clash hooks>` should be appended to this spawn.
+///
+/// Pure. True only for `claude` itself — a shell session (`shellterm-*`)
+/// has no use for it and would reject the flag — and only when the caller
+/// has not already passed its own `--settings`, which claude would then see
+/// twice.
+fn wants_hook_settings(bin: &str, args: &[String]) -> bool {
+    let is_claude = std::path::Path::new(bin)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == "claude");
+    is_claude
+        && !args
+            .iter()
+            .any(|a| a == "--settings" || a.starts_with("--settings="))
+}
+
+/// `args` plus `--settings <clash hooks file>` when that applies.
+///
+/// The existence check is the fail-safe half: claude refuses to start at all
+/// on a `--settings` path it cannot read ("Settings file not found"), so a
+/// missing hooks file must cost the status hooks, never the session.
+fn with_hook_settings<'a>(bin: &str, args: &'a [String]) -> std::borrow::Cow<'a, [String]> {
+    if !wants_hook_settings(bin, args) {
+        return std::borrow::Cow::Borrowed(args);
+    }
+    let path = crate::infrastructure::hooks::hook_settings_path();
+    if !path.is_file() {
+        return std::borrow::Cow::Borrowed(args);
+    }
+    let mut out = args.to_vec();
+    out.push("--settings".to_string());
+    out.push(path.to_string_lossy().to_string());
+    std::borrow::Cow::Owned(out)
+}
+
 /// it's unit-tested directly; the caller passes the live env values.
 fn default_lc_ctype(
     lc_all: Option<&std::ffi::OsStr>,
@@ -674,6 +719,52 @@ fn default_lc_ctype(
 
 #[cfg(test)]
 mod tests {
+    /// The flag is claude's alone: a shell session would reject it.
+    #[test]
+    fn hook_settings_are_for_claude_only() {
+        let none: Vec<String> = vec![];
+        assert!(wants_hook_settings("claude", &none));
+        assert!(wants_hook_settings("/Users/me/.local/bin/claude", &none));
+        assert!(!wants_hook_settings("/bin/zsh", &none));
+        assert!(!wants_hook_settings("/opt/homebrew/bin/fish", &none));
+        // A wrapper that merely mentions claude is not the binary.
+        assert!(!wants_hook_settings("/usr/local/bin/claude-wrapper", &none));
+    }
+
+    /// A caller that brought its own `--settings` keeps it, rather than
+    /// having claude handed the flag twice.
+    #[test]
+    fn a_caller_supplied_settings_flag_wins() {
+        let explicit = vec!["--settings".to_string(), "/tmp/mine.json".to_string()];
+        assert!(!wants_hook_settings("claude", &explicit));
+        let eq_form = vec!["--settings=/tmp/mine.json".to_string()];
+        assert!(!wants_hook_settings("claude", &eq_form));
+        let unrelated = vec!["--resume".to_string(), "abc".to_string()];
+        assert!(wants_hook_settings("claude", &unrelated));
+    }
+
+    /// claude refuses to start on a `--settings` path it cannot read, so a
+    /// missing hooks file must cost the hooks and not the session.
+    #[test]
+    fn a_missing_hooks_file_is_not_passed() {
+        let args = vec!["--session-id".to_string(), "abc".to_string()];
+        let out = with_hook_settings("/bin/zsh", &args);
+        assert_eq!(out.as_ref(), args.as_slice());
+
+        // Whatever the real data dir holds, the flag is present only when
+        // the file it names is on disk.
+        let out = with_hook_settings("claude", &args);
+        let injected = out.iter().any(|a| a == "--settings");
+        assert_eq!(
+            injected,
+            crate::infrastructure::hooks::hook_settings_path().is_file()
+        );
+        if injected {
+            let path = out.last().unwrap();
+            assert!(std::path::Path::new(path).is_file());
+        }
+    }
+
     use super::*;
 
     #[test]
