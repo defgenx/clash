@@ -707,6 +707,15 @@ async fn stash_session(state: State<'_, GuiState>, session_id: String) -> Result
 /// session would pop back into the list.
 #[tauri::command]
 async fn kill_session(state: State<'_, GuiState>, session_id: String) -> Result<(), String> {
+    // Every id this session answers to. The row the user clicked carries one
+    // of them, but the refresh pipeline can name the session by another (a
+    // PTY spawned before a `/clear` keeps the pre-`/clear` id while the
+    // registry has moved on), so a guard on the clicked id alone lets the
+    // session reappear under a sibling id — as a brand-new row.
+    let aliases = {
+        let registry = clash::infrastructure::hooks::registry::load();
+        clash::infrastructure::hooks::registry::session_aliases(&registry, &session_id)
+    };
     let (worktree, wild_pid) = {
         let mut prev = state.previous.lock().unwrap();
         let s = prev.iter().find(|s| s.id == session_id);
@@ -717,14 +726,15 @@ async fn kill_session(state: State<'_, GuiState>, session_id: String) -> Result<
         // Purge from the merge input immediately — a killed session left in
         // `previous` as running gets resurrected by the empty-daemon
         // preservation branch of the refresh pipeline.
-        prev.retain(|s| s.id != session_id);
+        prev.retain(|s| !aliases.contains(&s.id));
         extracted
     };
-    state
-        .recently_removed
-        .lock()
-        .unwrap()
-        .insert(session_id.clone(), 0);
+    {
+        let mut removed = state.recently_removed.lock().unwrap();
+        for id in &aliases {
+            removed.insert(id.clone(), 0);
+        }
+    }
     {
         let mut attached = state.attached.lock().await;
         attached.remove(&session_id);
@@ -737,12 +747,11 @@ async fn kill_session(state: State<'_, GuiState>, session_id: String) -> Result<
     clash::infrastructure::hooks::registry::unregister(&session_id);
     // Idle now, so the daemon overlay won't re-admit the dying process
     // (`hook_says_idle` guard); re-written after death below in case the
-    // dying Claude's Stop hook overwrites it meanwhile.
-    clash::infrastructure::hooks::write_session_status(
-        state.backend.base_dir(),
-        &session_id,
-        "idle",
-    );
+    // dying Claude's Stop hook overwrites it meanwhile. Written for every
+    // alias, because the guard is keyed by the id the *daemon* reports.
+    for id in &aliases {
+        clash::infrastructure::hooks::write_session_status(state.backend.base_dir(), id, "idle");
+    }
 
     let base_dir = state.backend.base_dir().to_path_buf();
     tauri::async_runtime::spawn(async move {
@@ -759,7 +768,9 @@ async fn kill_session(state: State<'_, GuiState>, session_id: String) -> Result<
         }
         // After the process is dead, force idle so a dying Claude's Stop
         // hook can't strand the row in Waiting.
-        clash::infrastructure::hooks::write_session_status(&base_dir, &session_id, "idle");
+        for id in &aliases {
+            clash::infrastructure::hooks::write_session_status(&base_dir, id, "idle");
+        }
     });
     Ok(())
 }

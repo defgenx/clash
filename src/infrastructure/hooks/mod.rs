@@ -96,22 +96,37 @@ if [ "$event" = "SessionStart" ]; then
         rtmp=$(mktemp "{DATA_DIR}/.tmp.XXXXXX")
         if command -v python3 >/dev/null 2>&1; then
           python3 -c "
-import json, sys
+import json, os
 with open('$reg') as f: reg = json.load(f)
-for k, v in list(reg.items()):
-    if v.get('cwd','').rstrip('/') == '$cwd'.rstrip('/'):
-        v['claude_session_id'] = '$sid'
-        new_entry = dict(v)
-        # Record the old key in the lineage so a stale id persisted elsewhere
-        # (e.g. a GUI workspace pane) resolves forward to this new session.
-        prev = list(new_entry.get('previous_ids') or [])
-        if k not in prev and k != '$sid':
-            prev.append(k)
-        new_entry['previous_ids'] = prev
-        del reg[k]
-        reg['$sid'] = new_entry
-        new_entry['session_id'] = '$sid'
-        break
+cands = [(k, v) for k, v in reg.items()
+         if (v.get('cwd','') or '').rstrip('/') == '$cwd'.rstrip('/')
+         and k != '$sid' and (v.get('claude_session_id') or '') != '$sid']
+def last_seen(kv):
+    k, v = kv
+    best = -1.0
+    for i in (v.get('claude_session_id') or '', k):
+        try: best = max(best, os.path.getmtime('{DATA_DIR}/status/' + i)) if i else best
+        except OSError: pass
+    return (best, k)
+if cands:
+    # Several sessions can share a cwd, and only one of them was cleared.
+    # The cleared one is the one the user was interacting with, so its
+    # status file — written by this same hook on every event — is the most
+    # recently touched; the key breaks ties into a stable answer. Picking
+    # the first cwd match instead always re-keyed the same entry whatever
+    # was cleared, handing one session's conversation to another.
+    k, v = max(cands, key=last_seen)
+    v['claude_session_id'] = '$sid'
+    new_entry = dict(v)
+    # Record the old key in the lineage so a stale id persisted elsewhere
+    # (e.g. a GUI workspace pane) resolves forward to this new session.
+    prev = list(new_entry.get('previous_ids') or [])
+    if k not in prev:
+        prev.append(k)
+    new_entry['previous_ids'] = prev
+    del reg[k]
+    reg['$sid'] = new_entry
+    new_entry['session_id'] = '$sid'
 with open('$rtmp', 'w') as f: json.dump(reg, f, indent=2)
 " && mv "$rtmp" "$reg" || rm -f "$rtmp"
         else

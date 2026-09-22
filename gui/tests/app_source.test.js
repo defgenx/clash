@@ -684,3 +684,30 @@ test("a second launch of the same item is refused, not reported as a failure", (
     assert.match(body, /flashToast\(/, `${fn} must say so without alerting`);
   }
 });
+
+test("a renamed session's ownership transfers immediately, and only the drop waits", () => {
+  // `/clear` re-keys the registry and `claude --resume` forks the
+  // conversation, so a session carries on under a NEW id. The old id merely
+  // stops being listed — which is also what a killed session looks like, and
+  // the two need opposite treatment: a rename must move ownership at once
+  // (the new id is already in the list, already showing under UNASSIGNED),
+  // while dropping ownership is irreversible and keeps the 3-cycle grace.
+  const body = extractFunction(APP, "refreshSessions");
+  // The probe cannot be gated on the grace alone, or the rename is invisible
+  // for three ticks — which is the whole reported symptom.
+  assert.match(
+    body,
+    /if \(vanished\.size \|\| \(missing\.length && someoneUnowned\)\)/,
+    "the rename probe must also run before the grace expires"
+  );
+  // Only expired ids are dropped; moved ids are rewritten in place.
+  assert.match(
+    body,
+    /const gone = new Set\(\[\.\.\.vanished, \.\.\.moved\.keys\(\)\]\)/,
+    "the prune set must be the expired plus the moved, never all missing ids"
+  );
+  assert.ok(
+    !/pruneOwnership\(state\.workspaces,\s*new Set\(missing\)/.test(body),
+    "a missing id below the grace must never be dropped"
+  );
+});

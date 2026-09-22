@@ -282,6 +282,17 @@ pub fn find_entry<'a>(
     })
 }
 
+/// Does this entry answer to `session_id` — as its key, as its current
+/// conversation, or anywhere in its lineage?
+///
+/// The three are the same session at different points in its life, and which
+/// one a caller holds is an accident of when it was handed the id.
+fn entry_answers_to(key: &str, entry: &ClashSession, session_id: &str) -> bool {
+    key == session_id
+        || entry.claude_session_id == session_id
+        || entry.previous_ids.iter().any(|p| p == session_id)
+}
+
 /// Resolve a possibly-stale session ID to the Claude session ID that should
 /// actually be resumed. After a `/clear`, the hook re-keys the entry to the
 /// new conversation id and records the old id in `previous_ids`; a caller
@@ -514,10 +525,42 @@ pub fn unregister(session_id: &str) {
     let Some(mut registry) = load_for_mutation("unregister") else {
         return;
     };
-    // Remove by session_id key OR by claude_session_id value
-    // (in case /clear updated the claude_session_id)
-    registry.retain(|k, v| k != session_id && v.claude_session_id != session_id);
+    // Match every id the entry answers to, lineage included. A caller holds
+    // whichever id it was given — a GUI pane, a workspace ownership list and
+    // a row whose PTY predates a `/clear` all hold ids that have since moved
+    // into `previous_ids`. Matching only the current ones left the entry in
+    // place, and the next refresh re-admitted the session under its current
+    // conversation id: a row the user had just deleted, back as a new one.
+    registry.retain(|k, v| !entry_answers_to(k, v, session_id));
     save_checked(&registry, "unregister", false);
+}
+
+/// Every id the entry owning `session_id` answers to — its key, its current
+/// conversation and its whole lineage — with `session_id` itself always
+/// included.
+///
+/// Which of those a caller holds is an accident of when it was handed the id,
+/// so anything that must suppress a session rather than find it (a kill
+/// guard, a dedupe) has to cover all of them: guarding one id lets the same
+/// session come straight back under another.
+pub fn session_aliases(registry: &HashMap<String, ClashSession>, session_id: &str) -> Vec<String> {
+    let mut out = vec![session_id.to_string()];
+    let Some((key, entry)) = registry
+        .iter()
+        .find(|(k, v)| entry_answers_to(k, v, session_id))
+        .map(|(k, v)| (k.clone(), v))
+    else {
+        return out;
+    };
+    for id in std::iter::once(key)
+        .chain(std::iter::once(entry.claude_session_id.clone()))
+        .chain(entry.previous_ids.iter().cloned())
+    {
+        if !id.is_empty() && !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    out
 }
 
 /// Rename a session in the registry.
@@ -631,6 +674,54 @@ mod tests {
         assert!(
             rekey_forked_entries(reg, |_, from| from.to_string()).is_none(),
             "no fork anywhere = no write"
+        );
+    }
+
+    /// A caller that deletes a session holds whichever id it was given, and
+    /// after a `/clear` that is a lineage id. Matching only the current ones
+    /// left the entry behind, and the next refresh re-admitted the session
+    /// under its current conversation id — the row came back as a new one.
+    #[test]
+    fn an_entry_answers_to_its_whole_lineage() {
+        let mut e = entry("current", "current", "/p");
+        e.previous_ids = vec!["first".to_string(), "second".to_string()];
+        assert!(entry_answers_to("current", &e, "current"));
+        assert!(entry_answers_to("current", &e, "first"));
+        assert!(entry_answers_to("current", &e, "second"));
+        assert!(!entry_answers_to("current", &e, "someone-else"));
+
+        // A key that has not caught up with the conversation (the shape
+        // `record_resumed_conversation` leaves) answers to both.
+        let mut forked = entry("key", "key", "/p");
+        forked.claude_session_id = "fork".to_string();
+        assert!(entry_answers_to("key", &forked, "key"));
+        assert!(entry_answers_to("key", &forked, "fork"));
+    }
+
+    /// Anything that must *suppress* a session — a kill guard, an idle
+    /// status write — has to name every id the refresh pipeline might report
+    /// it under, or the session reappears under a sibling id.
+    #[test]
+    fn session_aliases_names_every_id_the_session_answers_to() {
+        let mut e = entry("current", "current", "/p");
+        e.previous_ids = vec!["old".to_string()];
+        let mut reg = HashMap::new();
+        reg.insert("current".to_string(), e);
+
+        for asked in ["current", "old"] {
+            let mut got = session_aliases(&reg, asked);
+            got.sort();
+            assert_eq!(
+                got,
+                vec!["current".to_string(), "old".to_string()],
+                "asked for {asked}"
+            );
+        }
+        // An id no entry claims is still returned, so a caller can guard it
+        // without checking whether the lookup found anything.
+        assert_eq!(
+            session_aliases(&reg, "unknown"),
+            vec!["unknown".to_string()]
         );
     }
 

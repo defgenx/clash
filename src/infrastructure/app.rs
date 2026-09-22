@@ -1611,9 +1611,23 @@ impl App {
                     );
                 }
                 Effect::UnregisterSession { session_id } => {
+                    // Guard every id this session answers to, not just the one
+                    // the row carried: a PTY spawned before a `/clear` still
+                    // answers to the pre-`/clear` id while the registry has
+                    // moved on, so guarding one id lets the merge re-add the
+                    // session under a sibling — as a brand-new row.
+                    let aliases = {
+                        let registry = crate::infrastructure::hooks::registry::load();
+                        crate::infrastructure::hooks::registry::session_aliases(
+                            &registry,
+                            &session_id,
+                        )
+                    };
                     crate::infrastructure::hooks::registry::unregister(&session_id);
                     // Prevent the merge from re-adding this session on the next cycle
-                    self.recently_removed.insert(session_id, 0);
+                    for id in aliases {
+                        self.recently_removed.insert(id, 0);
+                    }
                 }
                 Effect::RenameSession { session_id, name } => {
                     crate::infrastructure::hooks::registry::rename(&session_id, &name);

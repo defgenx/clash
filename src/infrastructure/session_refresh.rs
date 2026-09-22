@@ -192,6 +192,15 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
     // workhorse). The Phase 7 source overlay then badges them as Wild.
     admit_wild_disk_sessions(&mut sessions, &input.disk_sessions, &input.wild_processes);
 
+    // Phase 5.75: one row per registry entry. A session's *conversation* id
+    // changes under it (`/clear` re-keys the entry, `claude --resume` forks
+    // into a new transcript), and the phases above match on ids, so one
+    // session can arrive here as several rows: the pre-`/clear` transcript,
+    // the new one, and the daemon's PTY — which still answers to the id it
+    // was spawned with. Every extra row is a session the user never started,
+    // owned by no GUI workspace, listed under UNASSIGNED.
+    collapse_registry_aliases(&mut sessions, &input.registry, &input.daemon_infos);
+
     // Phase 6: Resolve names from daemon infos and saved names
     resolve_names(&mut sessions, &input.daemon_infos, &input.saved_names);
 
@@ -469,6 +478,189 @@ fn admit_wild_disk_sessions(
                 sessions.push(admitted);
             }
         }
+    }
+}
+
+// ── Phase 5.75: One row per registry entry ────────────────────────
+
+/// Every id a registry entry answers to, mapped to that entry's key.
+///
+/// An entry accumulates ids: its key is the current conversation, and
+/// `previous_ids` holds the ones it has been through (`/clear` re-keys the
+/// entry and pushes the old key; `record_resumed_conversation` moves
+/// `claude_session_id` forward and pushes the id that was resumed). Any of
+/// them can still name a row — a transcript stays on disk after the
+/// conversation forks away from it, and a live PTY keeps answering to the id
+/// it was spawned with.
+///
+/// Current ids are claimed before lineage ids so the map is deterministic: an
+/// id that *is* some entry's key or current conversation belongs to that
+/// entry, never to another entry that merely used to hold it.
+fn registry_alias_map(registry: &HashMap<String, ClashSession>) -> HashMap<&str, &str> {
+    let mut out: HashMap<&str, &str> = HashMap::with_capacity(registry.len() * 2);
+    for (key, entry) in registry {
+        out.insert(key.as_str(), key.as_str());
+        if !entry.claude_session_id.is_empty() {
+            out.insert(entry.claude_session_id.as_str(), key.as_str());
+        }
+    }
+    for (key, entry) in registry {
+        for prev in &entry.previous_ids {
+            if !prev.is_empty() {
+                out.entry(prev.as_str()).or_insert(key.as_str());
+            }
+        }
+    }
+    out
+}
+
+/// The entry's current conversation: `claude_session_id`, else the key.
+fn current_conversation<'a>(key: &'a str, entry: &'a ClashSession) -> &'a str {
+    if entry.claude_session_id.is_empty() {
+        key
+    } else {
+        entry.claude_session_id.as_str()
+    }
+}
+
+/// Collapse every group of rows that resolve to the same registry entry into
+/// one row — the entry *is* the session, whatever its conversation is called
+/// today.
+///
+/// The surviving row keeps **the id the daemon owns**, not the current
+/// conversation id, and that direction is load-bearing: a live PTY is
+/// registered under the id it was spawned with, and the row id is the handle
+/// every caller uses against it — attach, input, resize, stash, kill, and the
+/// GUI's persisted pane and ownership lists. Re-keying a live row to the new
+/// conversation would make `open_session` find no PTY and resume a *second*
+/// claude on the same conversation. The current conversation id only has to
+/// be right for a resume, and `resolve_latest_conversation` derives it there.
+///
+/// Content is taken from the current conversation's row instead: after a
+/// `/clear` the survivor was enriched from the abandoned transcript, so its
+/// summary and mtime describe work the session has moved on from.
+fn collapse_registry_aliases(
+    sessions: &mut Vec<Session>,
+    registry: &HashMap<String, ClashSession>,
+    daemon_infos: &Option<Vec<SessionInfo>>,
+) {
+    if sessions.len() < 2 || registry.is_empty() {
+        return;
+    }
+    let aliases = registry_alias_map(registry);
+
+    // Group row indices by entry key, in list order. Rows with no registry
+    // entry (wild claudes) are never grouped.
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut keys: Vec<&str> = Vec::new();
+    let mut group_of: HashMap<&str, usize> = HashMap::new();
+    for (i, s) in sessions.iter().enumerate() {
+        let Some(key) = aliases.get(s.id.as_str()).copied() else {
+            continue;
+        };
+        match group_of.get(key) {
+            Some(&g) => groups[g].push(i),
+            None => {
+                group_of.insert(key, groups.len());
+                keys.push(key);
+                groups.push(vec![i]);
+            }
+        }
+    }
+    if groups.iter().all(|g| g.len() < 2) {
+        return;
+    }
+
+    let alive: HashSet<&str> = daemon_infos
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .filter(|i| i.is_alive)
+        .map(|i| i.session_id.as_str())
+        .collect();
+    let known_to_daemon: HashSet<&str> = daemon_infos
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|i| i.session_id.as_str())
+        .collect();
+
+    let mut drop: Vec<usize> = Vec::new();
+    for (g, group) in groups.iter().enumerate() {
+        if group.len() < 2 {
+            continue;
+        }
+        let key = keys[g];
+        let current = registry
+            .get(key)
+            .map(|e| current_conversation(key, e))
+            .unwrap_or(key);
+        // Attachability first, then the conversation a resume would reach.
+        let rank = |id: &str| -> u8 {
+            if alive.contains(id) {
+                3
+            } else if known_to_daemon.contains(id) {
+                2
+            } else if id == current {
+                1
+            } else {
+                0
+            }
+        };
+        let mut survivor = group[0];
+        for &i in &group[1..] {
+            if rank(&sessions[i].id) > rank(&sessions[survivor].id) {
+                survivor = i;
+            }
+        }
+        let content = group
+            .iter()
+            .copied()
+            .find(|&i| sessions[i].id == current)
+            .unwrap_or(survivor);
+        if content != survivor {
+            let from = sessions[content].clone();
+            adopt_conversation_content(&mut sessions[survivor], &from);
+        }
+        drop.extend(group.iter().copied().filter(|&i| i != survivor));
+    }
+
+    if drop.is_empty() {
+        return;
+    }
+    let dropped: HashSet<usize> = drop.into_iter().collect();
+    let mut i = 0;
+    sessions.retain(|_| {
+        let keep = !dropped.contains(&i);
+        i += 1;
+        keep
+    });
+}
+
+/// Move the current conversation's content onto the row that survives the
+/// collapse. Identity, liveness and the user's own labels stay with the
+/// survivor; everything that describes *the conversation* comes from the row
+/// that actually read it.
+fn adopt_conversation_content(survivor: &mut Session, from: &Session) {
+    survivor.summary = from.summary.clone();
+    survivor.first_prompt = from.first_prompt.clone();
+    survivor.last_modified = from.last_modified.clone();
+    survivor.has_subagents = from.has_subagents;
+    survivor.subagent_count = from.subagent_count;
+    if !from.git_branch.is_empty() {
+        survivor.git_branch = from.git_branch.clone();
+    }
+    if survivor.project.is_empty() {
+        survivor.project = from.project.clone();
+    }
+    if survivor.project_path.is_empty() {
+        survivor.project_path = from.project_path.clone();
+    }
+    if survivor.name.is_none() {
+        survivor.name = from.name.clone();
+    }
+    if survivor.worktree.is_none() {
+        survivor.worktree = from.worktree.clone();
     }
 }
 
@@ -1260,6 +1452,160 @@ mod tests {
             wild_processes: Vec::new(),
             externally_opened: HashSet::new(),
         }
+    }
+
+    // ── Phase 5.75: one row per registry entry ───────────────────
+
+    /// The state right after `/clear` on a session open in a pane: the hook
+    /// re-keyed the entry to the new conversation and pushed the old key into
+    /// the lineage, the new transcript is on disk, and the daemon's PTY still
+    /// answers to the id it was spawned with. That used to list the session
+    /// twice — and the second row, owned by no GUI workspace, is the
+    /// UNASSIGNED row for a session the user never started.
+    #[test]
+    fn a_cleared_session_is_one_row_keyed_by_the_live_pty() {
+        let mut entry = make_registry_entry("new-conv", "my session", "/home/user/proj");
+        entry.previous_ids = vec!["old-conv".to_string()];
+        let mut registry = HashMap::new();
+        registry.insert("new-conv".to_string(), entry);
+
+        let previous: Vec<Session> = Vec::new();
+        let mut input = empty_input(&previous);
+        // Both transcripts exist on disk — a fork does not delete the one it
+        // forked from.
+        input.disk_sessions = vec![
+            make_disk_session("old-conv", "proj", "work before the clear"),
+            make_disk_session("new-conv", "proj", "work after the clear"),
+        ];
+        input.registry = registry;
+        input.daemon_infos = Some(vec![make_daemon_info(
+            "old-conv",
+            "/home/user/proj",
+            "thinking",
+            true,
+        )]);
+
+        let sessions = build_session_list(&input);
+        assert_eq!(sessions.len(), 1, "one entry is one session: {sessions:?}");
+        // The id the daemon owns, so attach/input/kill still reach the PTY
+        // and the GUI's persisted pane + ownership ids still match.
+        assert_eq!(sessions[0].id, "old-conv");
+        // ...but the content of the conversation it is actually in.
+        assert_eq!(sessions[0].summary, "work after the clear");
+        assert!(sessions[0].is_running);
+    }
+
+    /// Same entry, no live PTY (clash reopened after the `/clear`): nothing
+    /// pins the row to the old id, so it takes the current conversation —
+    /// the one a resume would reach.
+    #[test]
+    fn without_a_pty_the_row_takes_the_current_conversation() {
+        let mut entry = make_registry_entry("new-conv", "my session", "/home/user/proj");
+        entry.previous_ids = vec!["old-conv".to_string()];
+        let mut registry = HashMap::new();
+        registry.insert("new-conv".to_string(), entry);
+
+        let previous: Vec<Session> = Vec::new();
+        let mut input = empty_input(&previous);
+        input.disk_sessions = vec![
+            make_disk_session("old-conv", "proj", "work before the clear"),
+            make_disk_session("new-conv", "proj", "work after the clear"),
+        ];
+        input.registry = registry;
+        input.daemon_infos = Some(Vec::new());
+
+        let sessions = build_session_list(&input);
+        assert_eq!(sessions.len(), 1, "{sessions:?}");
+        assert_eq!(sessions[0].id, "new-conv");
+        assert_eq!(sessions[0].summary, "work after the clear");
+    }
+
+    /// `record_resumed_conversation` moves `claude_session_id` forward and
+    /// keeps the key, so one entry matches two transcripts through
+    /// `find_entry` alone — no lineage and no daemon needed to double a row.
+    #[test]
+    fn an_entry_matching_two_transcripts_is_still_one_row() {
+        let mut entry = make_registry_entry("key-conv", "my session", "/home/user/proj");
+        entry.claude_session_id = "forked-conv".to_string();
+        let mut registry = HashMap::new();
+        registry.insert("key-conv".to_string(), entry);
+
+        let previous: Vec<Session> = Vec::new();
+        let mut input = empty_input(&previous);
+        input.disk_sessions = vec![
+            make_disk_session("key-conv", "proj", "pre-fork"),
+            make_disk_session("forked-conv", "proj", "post-fork"),
+        ];
+        input.registry = registry;
+        input.daemon_infos = Some(Vec::new());
+
+        let sessions = build_session_list(&input);
+        assert_eq!(sessions.len(), 1, "{sessions:?}");
+        assert_eq!(sessions[0].id, "forked-conv");
+        assert_eq!(sessions[0].summary, "post-fork");
+    }
+
+    /// Two genuinely different sessions must never collapse, however similar
+    /// their rows look — same project, same cwd, both live.
+    #[test]
+    fn two_sessions_in_one_directory_stay_two_rows() {
+        let mut registry = HashMap::new();
+        registry.insert(
+            "sid-a".to_string(),
+            make_registry_entry("sid-a", "session A", "/home/user/proj"),
+        );
+        registry.insert(
+            "sid-b".to_string(),
+            make_registry_entry("sid-b", "session B", "/home/user/proj"),
+        );
+
+        let previous: Vec<Session> = Vec::new();
+        let mut input = empty_input(&previous);
+        input.disk_sessions = vec![
+            make_disk_session("sid-a", "proj", "work A"),
+            make_disk_session("sid-b", "proj", "work B"),
+        ];
+        input.registry = registry;
+        input.daemon_infos = Some(vec![
+            make_daemon_info("sid-a", "/home/user/proj", "thinking", true),
+            make_daemon_info("sid-b", "/home/user/proj", "thinking", true),
+        ]);
+
+        let sessions = build_session_list(&input);
+        assert_eq!(sessions.len(), 2, "{sessions:?}");
+    }
+
+    /// An id another entry has since taken as its *current* conversation is
+    /// that entry's, not the lineage-holder's — otherwise a stale
+    /// `previous_ids` entry (a registry a `/clear` mis-linked) would swallow
+    /// a live session's row.
+    #[test]
+    fn a_current_conversation_outranks_another_entrys_lineage() {
+        let mut stale = make_registry_entry("stale-key", "old session", "/home/user/proj");
+        stale.previous_ids = vec!["live-sid".to_string()];
+        let mut registry = HashMap::new();
+        registry.insert("stale-key".to_string(), stale);
+        registry.insert(
+            "live-sid".to_string(),
+            make_registry_entry("live-sid", "live session", "/home/user/proj"),
+        );
+
+        let previous: Vec<Session> = Vec::new();
+        let mut input = empty_input(&previous);
+        input.disk_sessions = vec![
+            make_disk_session("stale-key", "proj", "old work"),
+            make_disk_session("live-sid", "proj", "live work"),
+        ];
+        input.registry = registry;
+        input.daemon_infos = Some(Vec::new());
+
+        let sessions = build_session_list(&input);
+        assert_eq!(sessions.len(), 2, "{sessions:?}");
+        let live = sessions
+            .iter()
+            .find(|s| s.id == "live-sid")
+            .expect("live row");
+        assert_eq!(live.summary, "live work");
     }
 
     // ── Phase 7.6: liveness demotion ─────────────────────────────

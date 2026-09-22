@@ -1658,6 +1658,8 @@ async function refreshSessions() {
     // consecutive refreshes (killed/removed) — tolerates transient
     // daemon hiccups without orphaning the workspace's session list.
     const known = new Set(sessions.map((s) => s.id));
+    const owned = state.workspaces.flatMap((w) => w.sessions);
+    const missing = [];
     const vanished = new Set();
     for (const w of state.workspaces) {
       for (const id of [...w.sessions]) {
@@ -1667,27 +1669,37 @@ async function refreshSessions() {
           state.missingStreak.delete(id);
           continue;
         }
+        missing.push(id);
         const streak = (state.missingStreak.get(id) || 0) + 1;
         state.missingStreak.set(id, streak);
         if (streak >= 3) vanished.add(id);
       }
     }
-    // A vanished id is not necessarily a dead session: a `/clear` (hook re-key)
-    // or a resume fork moves the conversation to a NEW id mid-run, and the old
-    // one simply stops being listed. Resolve each forward before dropping it —
-    // if it moved, transfer ownership to the new id so the session stays in its
-    // workspace instead of resurfacing under UNASSIGNED. Rare, so the extra
-    // round-trip costs nothing on a normal tick. A failed resolve defers the
-    // whole prune to the next tick rather than guessing "dead" — dropping
-    // ownership is the one outcome we can't undo.
-    if (vanished.size) {
-      const ids = [...vanished];
+    // A missing id is not necessarily a dead session: a `/clear` (hook
+    // re-key) or a resume fork moves the conversation to a NEW id, and the
+    // old one simply stops being listed. Resolve each forward and transfer
+    // ownership to the id it became, so the session stays in its workspace.
+    //
+    // The transfer does not wait for the 3-cycle grace, because by then the
+    // damage is already on screen: the new id is in the list from the first
+    // tick, owned by nobody, sitting under UNASSIGNED as a session the user
+    // never started. A rename is evidence, not a guess. *Dropping* ownership
+    // is the irreversible half and keeps the grace.
+    //
+    // The probe is bounded: an id is either transferred or dropped within
+    // three ticks, so `missing` cannot keep asking forever. A failed resolve
+    // defers everything to the next tick rather than guessing "dead".
+    const someoneUnowned = sessions.some((s) => !owned.includes(s.id));
+    if (vanished.size || (missing.length && someoneUnowned)) {
       try {
-        const resolved = await invoke("resolve_session_ids", { ids });
-        const owned = state.workspaces.flatMap((w) => w.sessions);
-        const moved = ownershipTransfers(ids, resolved, known, owned);
-        if (pruneOwnership(state.workspaces, vanished, moved)) saveWorkspaces();
-        for (const id of ids) state.missingStreak.delete(id);
+        const resolved = await invoke("resolve_session_ids", { ids: missing });
+        const moved = ownershipTransfers(missing, resolved, known, owned);
+        // Anything that moved is applied now; only ids past the grace are
+        // dropped. `pruneOwnership` replaces a `gone` id by its target, so
+        // the union is exactly "rewrite the renamed, remove the expired".
+        const gone = new Set([...vanished, ...moved.keys()]);
+        if (pruneOwnership(state.workspaces, gone, moved)) saveWorkspaces();
+        for (const id of gone) state.missingStreak.delete(id);
       } catch (e) {
         console.error("resolve_session_ids failed:", e);
       }

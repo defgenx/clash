@@ -98,8 +98,34 @@ clash does not understand would be worse than a stale entry that does nothing.
 
 `SessionStart` additionally carries clash's `/clear` handling: the hook
 inherits the previous session's name and re-keys `sessions.json` to the new
-conversation id. Without it a `/clear` leaves clash pointing at the pre-clear
-conversation — see the resume-fork gotcha in `CLAUDE.md`.
+conversation id, pushing the old key into the entry's `previous_ids`. Without
+it a `/clear` leaves clash pointing at the pre-clear conversation — see the
+resume-fork gotcha in `CLAUDE.md`.
+
+Two properties of that re-key are load-bearing.
+
+**Which entry.** The payload names the *new* conversation and nothing else, so
+the entry is found by `cwd` — and several sessions can share one. The hook
+picks the cwd match whose status file (written by this same hook on every
+event) was touched most recently, because the session that just ran `/clear`
+is the one the user was interacting with; the registry key breaks ties into a
+stable answer. Taking the first cwd match instead always re-keyed the same
+entry whatever was cleared, handing one session's conversation to another
+entry — which then reads as one session vanishing and another gaining a
+conversation it never had.
+
+**The lineage is the session.** An entry's key, its `claude_session_id` and
+its `previous_ids` are one session at different points in its life, and which
+of them a caller holds is an accident of when it was handed the id: a GUI
+pane, a workspace ownership list, and a PTY spawned before the `/clear` all
+keep older ones. So anything that *finds* a session resolves through the
+lineage (`resolve_resume_id`), anything that *suppresses* one covers all of it
+(`session_aliases` → the kill guard, the idle status write, `unregister`), and
+the refresh pipeline collapses the ids to one row per entry (Phase 5.75 in
+`session_refresh.rs`). Each of those was a real bug: matching only the current
+ids let a deleted session come back under a sibling id, and listing them
+separately put a live session's second row under UNASSIGNED, owned by no
+workspace.
 
 ## Consequence: sessions clash did not spawn
 
