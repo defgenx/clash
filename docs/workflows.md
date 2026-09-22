@@ -553,16 +553,43 @@ for context.
   agreed understanding opens `plan.md`, and autonomous runs record an
   **Assumptions** section instead. Then write/overwrite `plan.md`; finish by
   setting `meta.json.status = "plan-review"`.
-- **Phase `revise`**: if the review round was about the plan, revise
-  `plan.md` and finish with `"plan-review"`. If it was about code, behave
-  like `implement`. In `review-only` mode there is no plan, so `revise` is
-  always `implement`.
+- **Phase `revise`**: revise `plan.md` and finish with `"plan-review"`. The
+  plan is the artifact here and clash has already decided that: a change
+  round is launched on `revise` only when the changes were requested at
+  `plan-review` (see *Which phase a change round runs in* below), so the
+  agent must not re-derive the target from the note's wording. In
+  `review-only` mode there is no plan, so `revise` is always `implement`, as
+  it is for an older item queued before clash named the phase.
 - **Phase `implement`**: set `"implementing"` while working; address every
   `open` annotation — set it `"addressed"` with a short resolution appended
   to its `replies`, or `"wontfix"` with a justification; commit on the item
   branch (never push, never `--no-verify`); optionally create a draft PR
   (`gh pr create --draft`) and write its URL into `meta.json.pr.url`;
   finish with `"diff-review"` (or `"pr-draft"` when a PR was created).
+
+### Which phase a change round runs in
+
+Requesting changes queues a round; clash picks its phase from the stage the
+request was made at, and records it as `meta.phase` (clash-only, like
+`iteration`): `plan-review` → `revise`, every other stage → `implement`. It is
+recorded because the round may be launched later, and by then nothing else
+knows — `changes-requested` says a round is waiting without saying about what,
+and `implementing` is where a plan approval and a code change round both land.
+The same field is what a relaunch after a dead agent resumes. An item queued
+before the field existed falls back to `revise` — exactly what it would have
+been launched on — while one already *at* `implementing` falls back to
+`implement`: it has an approved plan either way, and the phase that cannot
+rewind the pipeline fails visibly rather than silently.
+
+Letting the agent decide instead is what this replaced, and it fails in one
+specific way: a note about a design mistake reads as being about the plan even
+when the code it describes is already written and in a draft PR. The round
+then rewrote `plan.md`, finished at `plan-review`, and the human was asked to
+approve a plan again while nothing in the PR had changed. So an `implement`
+round never writes `plan.md` and never finishes at `plan-review`; when the
+note argues the approach itself was wrong, it implements the right thing in
+the code and says the plan now describes something else — the human amends it
+via ↩ Move back to… → plan-review.
 
 ### Hard rules
 
@@ -576,9 +603,10 @@ for context.
   only commits locally leaves the PR silently stale. An unpublished branch
   (`full`/`from-plan`, no PR) is still never pushed.
 - Never touch `history/` or `plan-history/`, and never change `iteration`,
-  `reviewRound` or `appliedReviewKey` — clash
-  owns all five (the first two are written atomically by the request-changes
-  flow, the third by the review launcher).
+  `reviewRound`, `appliedReviewKey` or `phase` — clash
+  owns all six (the first two are written atomically by the request-changes
+  flow, the third by the review launcher, the last by whichever of the two
+  started the round).
 - Write `annotations.json` **only** while status is `changes-requested` or
   `implementing` — during review phases the GUI owns the file (this phase
   split is what makes concurrent writes safe). Only `open` annotations are

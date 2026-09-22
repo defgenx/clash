@@ -700,6 +700,24 @@ pub struct WorkflowMeta {
     /// written by the agent.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub applied_review_key: String,
+    /// The executor phase of the round clash launched, or queued: `plan` |
+    /// `revise` | `implement` | `pr`. Written on every executor launch and by
+    /// request-changes (which queues a round before any launch); clash-only,
+    /// like `iteration`.
+    ///
+    /// It exists because the phase is **not** derivable from the status once
+    /// the round is under way: `implementing` is reached from a plan approval
+    /// and from a code change round alike, and `changes-requested` says a
+    /// round is queued without saying which artifact it is about. Relaunching
+    /// a dead agent, or launching the queued round, therefore has to read
+    /// what clash decided rather than guess — a code round mis-launched as
+    /// `revise` rewrites `plan.md` and hands the item back at `plan-review`,
+    /// with the change it was supposed to fix still sitting in its PR.
+    ///
+    /// Empty on items predating the field: callers fall back to the phase
+    /// they used before it existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub phase: String,
     /// Review iteration, starting at 1. Bumped only by clash on
     /// request-changes (never by the agent).
     #[serde(default)]

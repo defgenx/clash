@@ -594,6 +594,24 @@ pub fn phase_keeps_status(phase: &str) -> bool {
     phase == "pr"
 }
 
+/// Pure: the executor phase a change round runs in, from the status the
+/// changes were requested at.
+///
+/// The plan is the artifact at exactly one stage. Everywhere else the change
+/// under review is code — a diff, a draft PR, a PR ready for review — and the
+/// round that applies the note is an `implement` round. Sending `revise`
+/// there made the *agent* decide from the note's wording, and a note about a
+/// design mistake reads as being about the plan: it rewrote `plan.md` and
+/// finished at `plan-review`, so an item with a draft PR open came back
+/// asking for a plan review, with the code untouched.
+pub fn change_round_phase(status: crate::domain::workflow::WorkflowStatus) -> &'static str {
+    if status == crate::domain::workflow::WorkflowStatus::PlanReview {
+        "revise"
+    } else {
+        "implement"
+    }
+}
+
 // ── PR body ─────────────────────────────────────────────────────────────
 
 /// Pure: compose a draft PR body from the item's own `plan.md`. A transcription,
@@ -1066,6 +1084,27 @@ mod tests {
     use super::*;
     use crate::application::diff::parse_file_diffs;
     use crate::domain::workflow::AnnotationStatus;
+
+    /// A change round is a plan revision at exactly one stage. Everywhere
+    /// else the artifact is code, and `revise` there let the *agent* decide
+    /// from the note's wording — a note about a design mistake reads as being
+    /// about the plan, so a change requested on a draft PR rewrote `plan.md`
+    /// and handed the item back at `plan-review` with nothing fixed.
+    #[test]
+    fn a_change_round_revises_the_plan_only_where_the_plan_is_the_artifact() {
+        use crate::domain::workflow::WorkflowStatus as S;
+        assert_eq!(change_round_phase(S::PlanReview), "revise");
+        for st in [S::DiffReview, S::PrDraft, S::PrReady] {
+            assert_eq!(change_round_phase(st), "implement", "{}", st);
+        }
+        // Every phase it can name must be one the executor skill implements.
+        for st in [S::PlanReview, S::DiffReview, S::PrDraft, S::PrReady] {
+            let phase = change_round_phase(st);
+            assert!(["plan", "revise", "implement", "pr"].contains(&phase));
+            // A change round always works, so it never keeps the status.
+            assert!(!phase_keeps_status(phase));
+        }
+    }
 
     #[test]
     fn a_just_launched_agent_is_not_reported_gone() {

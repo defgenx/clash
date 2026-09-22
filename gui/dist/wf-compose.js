@@ -235,7 +235,35 @@
     return roundFindingsAt(md, rounds.length - 1);
   }
 
+  /// The executor phase a change round runs in — mirrors
+  /// `application::workflow::change_round_phase`, which is what clash records
+  /// on the item.
+  ///
+  /// The plan is the artifact at exactly one stage. Everywhere else the change
+  /// under review is code, and the round that applies the note is an
+  /// `implement` round. Launching `revise` there left the agent to decide from
+  /// the note's wording — and a note about a design mistake reads as being
+  /// about the plan, so it rewrote `plan.md` and handed the item back at
+  /// `plan-review` with the code untouched and its draft PR still open.
+  function changeRoundPhase(status) {
+    return status === "plan-review" ? "revise" : "implement";
+  }
+
+  /// The phase to launch for a round clash already decided on: what it wrote
+  /// to `meta.phase`, or `fallback` for an item that predates the field.
+  ///
+  /// Read rather than re-derived because the status cannot answer it:
+  /// `changes-requested` says a round is queued without saying which artifact
+  /// it is about, and `implementing` is where a plan approval and a code
+  /// change round both land.
+  function recordedPhase(meta, fallback) {
+    const p = String((meta && meta.phase) || "").trim();
+    return ["plan", "revise", "implement", "pr"].includes(p) ? p : fallback;
+  }
+
   const api = {
+    changeRoundPhase,
+    recordedPhase,
     changeRequestTemplate,
     composerIntro,
     noteCaption,

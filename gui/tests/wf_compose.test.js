@@ -18,6 +18,8 @@ const {
   roundFindingsAt,
   roundLabel,
   latestAgentRoundFindings,
+  changeRoundPhase,
+  recordedPhase,
 } = require("../dist/wf-compose.js");
 
 test("the template carries the three things a change request needs", () => {
@@ -346,4 +348,27 @@ test("a drift round's approved divergences never become work", () => {
   ]) {
     assert.ok(!f.text.includes(gone), `"${gone}" must not reach the executor`);
   }
+});
+
+test("a change round's phase follows the stage it was requested at", () => {
+  // The one stage where the plan is the artifact.
+  assert.equal(changeRoundPhase("plan-review"), "revise");
+  // Everywhere a change is already built, the round is a code round. Sending
+  // `revise` here let the agent decide from the note's wording, and a note
+  // about a design mistake reads as being about the plan: it rewrote plan.md
+  // and handed the item back at plan-review with its draft PR untouched.
+  for (const st of ["diff-review", "pr-draft", "pr-ready"]) {
+    assert.equal(changeRoundPhase(st), "implement", st);
+  }
+});
+
+test("a recorded phase is read back, and an item without one keeps its old behaviour", () => {
+  assert.equal(recordedPhase({ phase: "implement" }, "revise"), "implement");
+  assert.equal(recordedPhase({ phase: " plan " }, "revise"), "plan");
+  // Items written before the field exists, and anything unrecognizable — a
+  // phase clash never launches must not reach the kickoff prompt.
+  assert.equal(recordedPhase({}, "revise"), "revise");
+  assert.equal(recordedPhase({ phase: "" }, "implement"), "implement");
+  assert.equal(recordedPhase({ phase: "reviewing" }, "revise"), "revise");
+  assert.equal(recordedPhase(null, "plan"), "plan");
 });

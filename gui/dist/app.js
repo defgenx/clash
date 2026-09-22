@@ -6256,7 +6256,15 @@ async function wfRequestChanges(item, root, target = "diff", prefill = "") {
     await refreshWorkflows();
     if (req.launch) {
       const fresh = wfItem(item.project, item.slug) || item;
-      await launchWfAgent(fresh, "revise", root, null, req.launch);
+      // The phase follows the stage the changes were requested at, never the
+      // note's wording: only at plan-review is the plan the artifact.
+      await launchWfAgent(
+        fresh,
+        changeRoundPhase(item.meta.status),
+        root,
+        null,
+        req.launch
+      );
     } else {
       buildWorkflowView(root, item.project, item.slug);
     }
@@ -6298,7 +6306,10 @@ async function wfRecordAndRevise(item, root, note) {
   });
   await refreshWorkflows();
   const fresh = wfItem(item.project, item.slug) || item;
-  await launchWfAgent(fresh, "revise", root, null, {
+  // Same rule as the composer's launch-now: the round applies the artifact of
+  // the stage it was requested at. `item` is the pre-request item, so its
+  // status is that stage — `fresh` is already `changes-requested`.
+  await launchWfAgent(fresh, changeRoundPhase(item.meta.status), root, null, {
     interactive: interactiveParam(item.meta.interactionDefault),
   });
 }
@@ -7782,7 +7793,20 @@ function renderWfActions(bar, root, item) {
         add(
           "⚠ Relaunch agent",
           "primary",
-          () => launchWfAgent(item, st === "planning" ? "plan" : "revise", root),
+          () =>
+            launchWfAgent(
+              item,
+              // The same phase, which is why clash records it: at
+              // `implementing` the status cannot say whether the round was a
+              // plan revision or a code round. Items mid-round across the
+              // upgrade have no record, and `implement` is the safer guess
+              // for them — an item only reaches `implementing` with an
+              // approved plan, and the phase that cannot rewind the pipeline
+              // fails visibly (code work from a plan note) instead of
+              // silently (a rewritten plan and a PR left as it was).
+              recordedPhase(item.meta, st === "planning" ? "plan" : "implement"),
+              root
+            ),
           "The recorded agent session is gone — spend tokens to start a fresh one on the same phase",
           "step"
         );
@@ -7832,7 +7856,11 @@ function renderWfActions(bar, root, item) {
       add(
         item.meta.sessionId ? "▶ Relaunch agent" : "▶ Launch agent",
         "primary",
-        () => launchWfAgent(item, "revise", root),
+        // The phase the request-changes call queued. This status says a round
+        // is waiting without saying which artifact it is about, so it is read,
+        // not derived — `revise` for an item that predates the field, which is
+        // what it would have been launched on anyway.
+        () => launchWfAgent(item, recordedPhase(item.meta, "revise"), root),
         "Spend tokens: launch the agent to apply the requested changes — it reads your latest note and every open annotation"
       );
       // Multi-repo items keep their PRs relevant mid-round (the fix round

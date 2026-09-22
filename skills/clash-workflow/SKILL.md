@@ -175,11 +175,20 @@ and say so instead of writing a plan.
 
 ## Phase: revise
 
+**The plan is the artifact here, and clash already decided that.** A change
+round is launched on `revise` only when the changes were requested at
+`plan-review`; requested against a diff, a draft PR or a PR ready for review,
+the same round arrives as phase `implement`. So do not re-derive the target
+from the note's wording: a note about a design mistake reads as being about
+the plan even when the code it describes is already written and in a PR, and
+answering it by rewriting `plan.md` hands the item back at `plan-review` with
+nothing fixed.
+
 Read the **latest** `## Iteration` section of `review.md` first.
 
 - In `review-only` mode: behave exactly like phase `implement`. Stop reading
   this section.
-- If the requested changes concern the **plan**: update `plan.md`
+- Normally the requested changes concern the **plan**: update `plan.md`
   accordingly and finish with `status = "plan-review"`.
   - **Edit it in place.** clash froze the previous plan as a version before
     launching you and shows the human a diff of what you changed, so keep every
@@ -189,14 +198,23 @@ Read the **latest** `## Iteration` section of `review.md` first.
     `agent-review.md` **is** the work: address each of its findings, and where
     you disagree with one, say so in your summary rather than dropping it in
     silence.
-- If they concern the **code** (there are open annotations, or the note
+- Only if the item predates this rule — an older `changes-requested` item
+  whose note plainly concerns the **code** (open annotations, or the note
   references the diff): behave exactly like phase `implement`.
 
 ## Phase: implement
 
+**Never write `plan.md` in this phase and never finish at `plan-review`.** The
+plan is already approved; a change round that lands here is about the code,
+including when the note argues that the approach itself was wrong. Implement
+the right thing in the code and say in your summary that the plan now
+describes something else — the human amends it by taking the item back to
+`plan-review` themselves.
+
 1. Set `meta.json.status = "implementing"` before you start.
-2. Implement the plan (or the requested changes) in the worktree. Follow the
-   repo's own CLAUDE.md conventions. Run the project's tests/linters.
+2. Implement the plan (or the requested changes — the latest `## Iteration`
+   section of `review.md`) in the worktree. Follow the repo's own CLAUDE.md
+   conventions. Run the project's tests/linters.
 3. **Address every open annotation**, one by one. Each is anchored to
    `file` + `line` with the annotated source line in `lineContent`. For each:
    - Make the change (or decide, with good reason, not to).

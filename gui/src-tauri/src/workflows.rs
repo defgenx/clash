@@ -1054,6 +1054,12 @@ pub(crate) async fn workflow_request_changes(
         meta.applied_review_key =
             clash::application::workflow::review_round_key(&latest.target, latest.round);
     }
+    // Which phase the round this just queued must run in — decided here,
+    // from the stage the request was made at, because that is the only place
+    // that still knows. `changes-requested` does not say which artifact the
+    // note is about, so the launch button would otherwise have to guess, and
+    // guessing `revise` on a code round rewrites the plan.
+    meta.phase = clash::application::workflow::change_round_phase(meta.status).to_string();
     meta.status = WorkflowStatus::ChangesRequested;
     state
         .backend
@@ -1476,6 +1482,11 @@ pub(crate) async fn start_workflow_agent(
     // `implementing`.
     let rollback = meta.clone();
     meta.session_id = Some(session_id.clone());
+    // The phase of the round now in flight. A relaunch after the agent dies
+    // has to resume the same one, and the status cannot say which it was:
+    // `implementing` is where a plan approval and a code change round both
+    // land.
+    meta.phase = phase.clone();
     if !clash::application::workflow::phase_keeps_status(&phase) {
         let target = if phase == "plan" && meta.mode.has_plan_phase() {
             WorkflowStatus::Planning
@@ -3009,6 +3020,60 @@ pub(crate) fn get_skill(state: State<'_, GuiState>, name: String) -> Result<Stri
 
 #[cfg(test)]
 mod tests {
+    /// Every round clash starts, or queues, records the phase it runs in.
+    ///
+    /// Pinned against the source because the property is unreachable from a
+    /// unit test (both writers need a live Tauri app and a real repo) and the
+    /// failure is silent: the launch works, and only the *next* launch — a
+    /// relaunch after the agent died, or the button that starts the queued
+    /// round — picks the wrong phase. A code round launched as `revise`
+    /// rewrites `plan.md` and hands the item back at `plan-review` with the
+    /// change it was meant to fix still sitting in its PR.
+    ///
+    /// The status cannot stand in for it: `implementing` is reached from a
+    /// plan approval and from a code change round alike, and
+    /// `changes-requested` says a round is waiting without saying about what.
+    #[test]
+    fn a_round_records_the_phase_it_runs_in() {
+        const SRC: &str = include_str!("workflows.rs");
+
+        // The launch: the phase it was given, recorded in the same write as
+        // the session id — the write that precedes the spawn.
+        let launch = SRC
+            .split_once("pub(crate) async fn start_workflow_agent(")
+            .expect("start_workflow_agent")
+            .1;
+        let recorded = launch
+            .find("meta.phase = phase.clone();")
+            .expect("start_workflow_agent must record the phase it launches");
+        let written = launch
+            .find("write_workflow_meta")
+            .expect("start_workflow_agent writes meta");
+        assert!(
+            recorded < written,
+            "the phase must be recorded by the pre-spawn meta write, not after it"
+        );
+
+        // Request-changes queues a round that nothing has launched yet, so it
+        // records the phase the launch button must use — derived from the
+        // stage the changes were requested at, which is the only place that
+        // still knows. Before the status write, which overwrites that stage.
+        let req = SRC
+            .split_once("pub(crate) async fn workflow_request_changes(")
+            .expect("workflow_request_changes")
+            .1;
+        let derived = req
+            .find("change_round_phase(meta.status)")
+            .expect("request-changes must derive the phase from the stage it was called at");
+        let parked = req
+            .find("meta.status = WorkflowStatus::ChangesRequested;")
+            .expect("request-changes parks the item");
+        assert!(
+            derived < parked,
+            "the phase must be derived before the status is overwritten"
+        );
+    }
+
     /// Both agent launches must claim the item, and must *bind* the claim.
     ///
     /// Pinned against the source because neither property is reachable from a

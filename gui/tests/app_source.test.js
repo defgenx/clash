@@ -385,7 +385,7 @@ test("a pre-authorized round applies itself through the same one mechanism", () 
     APP.indexOf("// Items whose auto-apply is in flight")
   );
   assert.match(mech, /invoke\("workflow_request_changes"/);
-  assert.match(mech, /launchWfAgent\(fresh, "revise"/);
+  assert.match(mech, /launchWfAgent\(fresh, changeRoundPhase\(item\.meta\.status\)/);
   // Exactly one caller composes the note, and both paths use it.
   assert.match(APP, /async function wfApplyReviewNoteFor\(item, round, target\)/);
   assert.equal((APP.match(/wfRecordAndRevise\(/g) || []).length, 3); // def + 2 callers
@@ -768,5 +768,36 @@ test("a renamed session's ownership transfers immediately, and only the drop wai
   assert.ok(
     !/pruneOwnership\(state\.workspaces,\s*new Set\(missing\)/.test(body),
     "a missing id below the grace must never be dropped"
+  );
+});
+
+test("a change round is launched on the phase clash decided, never a hardcoded revise", () => {
+  // `revise` is the plan-revision phase: the agent updates plan.md and hands
+  // the item back at plan-review. Launching every change round on it made a
+  // code round decide from the note's wording — so a change requested on a
+  // draft PR rewrote the plan and came back asking for a plan review, with
+  // the code untouched. The phase follows the stage instead, and the two
+  // stages that cannot derive it read what clash recorded.
+  for (const fn of ["wfRequestChanges", "wfRecordAndRevise"]) {
+    const src = extractFunction(APP, fn);
+    assert.match(
+      src,
+      /launchWfAgent\(\s*fresh,\s*changeRoundPhase\(item\.meta\.status\)/,
+      `${fn} must derive the phase from the stage the changes were requested at`
+    );
+  }
+  // `changes-requested` says a round is queued without saying about what, and
+  // `implementing` is where a plan approval and a code round both land — both
+  // read `meta.phase`, with the pre-field behaviour as the fallback.
+  const bar = extractFunction(APP, "renderWfActions");
+  assert.match(bar, /recordedPhase\(item\.meta, "revise"\)/);
+  assert.match(
+    bar,
+    /recordedPhase\(\s*item\.meta,\s*st === "planning" \? "plan" : "implement"\s*\)/
+  );
+  // No launch site may name the phase outright any more.
+  assert.ok(
+    !/launchWfAgent\(\s*[\w.]+,\s*"revise"/.test(APP),
+    'a launch hardcoding "revise" is the bug this test exists for'
   );
 });
