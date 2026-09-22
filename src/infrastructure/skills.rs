@@ -62,6 +62,10 @@ pub const SKILLS: &[EmbeddedSkill] = &[
         name: "clash-explain",
         content: include_str!("../../skills/clash-explain/SKILL.md"),
     },
+    EmbeddedSkill {
+        name: "clash-drift-review",
+        content: include_str!("../../skills/clash-drift-review/SKILL.md"),
+    },
 ];
 
 /// Skills clash used to ship and no longer does. Removed when an update
@@ -698,6 +702,34 @@ mod tests {
                 content.contains("description:"),
                 "{}: needs a description",
                 skill.name
+            );
+        }
+    }
+
+    /// Every embedded skill is named in the docs.
+    ///
+    /// The count was spelled out in prose in three places ("the four
+    /// skills…"), which is exactly the sentence nobody updates: a fifth skill
+    /// shipped while all three still said four. Naming the skills instead of
+    /// counting them is what makes the claim checkable, so this asserts each
+    /// name appears rather than trying to parse a number word.
+    ///
+    /// Frontmatter validity is a different property and has its own test
+    /// above.
+    #[test]
+    fn every_embedded_skill_is_named_in_the_docs() {
+        const WORKFLOWS_DOC: &str = include_str!("../../docs/workflows.md");
+        const README: &str = include_str!("../../README.md");
+        for s in SKILLS {
+            assert!(
+                WORKFLOWS_DOC.contains(s.name),
+                "{} is not mentioned in docs/workflows.md",
+                s.name
+            );
+            assert!(
+                README.contains(s.name),
+                "{} is not mentioned in README.md",
+                s.name
             );
         }
     }

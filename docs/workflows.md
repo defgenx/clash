@@ -3,7 +3,8 @@
 The Workflows feature manages a plan → review → implement → PR pipeline per
 item. clash's GUI renders and mutates the files below; Claude Code agents co-edit
 them — the executor (`clash-workflow` skill) does the work, the reviewers
-(`clash-plan-review` for plans, `clash-code-review` for diffs) judge it. This
+(`clash-plan-review` for plans, `clash-code-review` for diffs) judge it, and
+`clash-drift-review` judges the two against each other. This
 document is the contract all sides follow.
 
 ## Layout
@@ -24,6 +25,8 @@ workflows are a structured store.
 ├── explain-diff.md    # what the change DID — prose + mermaid (clash-explain overwrites)
 ├── explain-diff.html  # …and as one hand-drawn page
 │                      #   (structure.md / blueprint.md: the pre-pair names, still read)
+├── drift.md           # the plan AGAINST what was built — graded (clash-drift-review)
+├── drift.html         # …and as one hand-drawn map, every part badged
 ├── annotations.json   # line-level diff comments
 ├── history/<NNN>/     # per-iteration snapshots (diff.patch + plan.md + annotations.json)
 └── plan-history/      # every recorded revision of plan.md (index.json + NNNN.md), clash-owned
@@ -270,7 +273,7 @@ pr-draft / pr-ready likewise
 
 | field | values | meaning |
 |---|---|---|
-| `target` | `plan` \| `diff` \| `explain-diff` \| `explain-plan` (reads `structure`/`blueprint` too) | plan/diff derived from the launch status, never chosen; the two explainer targets only via the explicit **◫ Explain changes** / **◫ Explain plan** actions |
+| `target` | `plan` \| `diff` \| `explain-diff` \| `explain-plan` (reads `structure`/`blueprint` too) \| `drift` | plan/diff derived from the launch status, never chosen; the rest only via their own explicit action (**◫ Explain changes** / **◫ Explain plan** / **⇄ Compare plan vs changes**). `ReviewTarget::requestable()` is the rule |
 | `depth` | `standard` \| `deep` | `deep` reads the surrounding implementation and checks the artifact against it |
 | `publish` | `local` \| `pr-comments` \| `respond-pr-comments` | what the round does beyond the item |
 | `interactive` | absent \| `true` \| `false` | absent = the skill asks in-session; the composer's launch-time answer otherwise |
@@ -362,6 +365,7 @@ describable on its own.
 | `plan` | `clash-plan-review` (embedded skill) |
 | `diff` | `clash-code-review` (embedded skill) |
 | `explain-diff` / `explain-plan` | `clash-explain` (embedded skill — explains, never judges) |
+| `drift` | `clash-drift-review` (embedded skill — compares the plan with what was built, and grades the gap) |
 
 Every engine is a skill clash itself installs, so a review round needs no
 third-party plugin present. A unit test asserts any skill named by
@@ -416,6 +420,81 @@ concentrate on.
 A code review is available at `diff-review`, `pr-draft` **and** `pr-ready`
 (`WF_REVIEWABLE` / `can_request_review`), so an item that already has a PR can
 still be reviewed without moving it backwards.
+
+### Drift rounds (clash-drift-review skill)
+
+A **drift round** (`⇄ Compare plan vs changes`, `Target: drift`) answers the one
+question nothing else in the pipeline asks: *is this the change we agreed to
+build?* The plan reviewer judges the plan, the code reviewer judges the diff,
+and a diff can pass a code review on its own merits while delivering something
+else — half a feature, an extra subsystem nobody signed off on, a different
+mechanism than the one that was authorized. Only this round reads `plan.md` and
+the diff together.
+
+It is **a reviewer, not a third explainer**, and every difference follows from
+that:
+
+- **Gated like a review** (`can_request_review`), not like an explanation, and
+  it additionally needs *both* sides of the comparison — a plan
+  (`ReviewTarget::needs_plan`, so never on a `review-only` item) and an
+  implemented change (`needs_diff`, so never at `draft` or `plan-review`, where
+  nothing has been built). In practice: `diff-review`, `pr-draft`, `pr-ready`.
+- **Its findings become work through the single existing mechanism.** Every
+  divergence graded an issue whose remedy is in the code is written to
+  `annotations.json` with `"author": "agent"`, so it enters the same triage
+  loop as a code review's findings and one *Request changes* turns the set into
+  an executor round. The round is therefore an ordinary pending review: it
+  carries `**Apply:** yes|no`, `↻ Apply review rN` offers it, and
+  `meta.appliedReviewKey` records `drift:<n>`. It is deliberately **not**
+  `ReviewTarget::explains()` — that predicate drives the "no findings to apply"
+  exemptions, and a drift round marked as explaining would grade divergences
+  nobody could ever act on.
+- **It writes an explanation-shaped document pair anyway** (`drift.md` +
+  `drift.html`, the GUI's **⇄ Plan vs changes** tab), because a divergence is
+  only arguable once both shapes are visible side by side. Same two forms and
+  the same sandbox rules as the explanations: the `.md` is the written
+  comparison with a mermaid graph of the plan's spine, every node badged with
+  what happened to it; the `.html` is **one** hand-drawn map with the same
+  badges — never two maps, since making the reader diff two pictures by eye is
+  the work the round was launched to do for them.
+
+Each divergence carries a **direction** (`MISSING` — promised, not delivered;
+`EXTRA` — delivered, never planned; `DIFFERENT` — done by other means) and a
+**grade**, which is the answer the human wanted:
+
+| Grade | Means | Remedy |
+|---|---|---|
+| `INTENDED` | Deliberate and justified — authorized in a `review.md` iteration, or forced by something found during implementation. The code is right; the plan is now stale. | amend the plan |
+| `BENIGN` | Real but consequence-free. | none |
+| `ISSUE` | The item does not deliver what was agreed, or delivers what nobody agreed to, with a consequence someone will meet. | fix the code, or amend the plan |
+
+Grading is on **consequence, never size**, and a plan-promised test, migration
+or doc that is absent is an ISSUE rather than a nit — it is the part of a plan
+most reliably dropped under pressure and the part a diff review cannot see,
+because you cannot review what is not there. `review.md` is read as the
+authorization log: a deviation the human asked for in a change request is not
+drift from the agreement, it is the agreement being updated.
+
+**The one remedy clash cannot apply for you is a plan amendment.** An executor
+fix round never writes `plan.md`, so a round whose issues all need the plan
+changed must answer `**Apply:** no` — otherwise clash would spawn an agent that
+finds nothing it is allowed to do. Those entries go under
+`### Plan amendments needed` in the report and in a `## Plan amendments needed`
+section of `drift.md`, and the route is **↩ Move back to… → plan-review**, then
+*Request changes*. Three places enforce the split so it cannot be applied by
+accident: the composer's auto-apply detail says it, `roundFindingsAt` omits
+that section (along with `### Intended deviations` and `### Benign` — pasting
+divergences the round approved would ask an executor to undo them), and
+`pendingReviewRound` returns nothing for a `drift` round at `plan-review`, so
+"apply this to the code" is never offered on the stage where the plan is the
+artifact.
+
+Ground truth is `plan.md` and the diff — **not** `explain-plan.md` and
+`explain-diff.md`. Those are read as context, and `explain-plan.md`'s numbered
+action graph is adopted as the report's spine when it exists (same numbers, so
+the two documents can be read side by side), but comparing two explanations
+would measure drift between two *documents*: an `explain-diff.md` written three
+rounds ago describes code that no longer exists.
 
 ## Entry modes
 
@@ -746,8 +825,8 @@ under-powering real work is the worse failure.
 
 ## Embedded skills — install as a decision
 
-The four skills (`clash-workflow`, `clash-plan-review`, `clash-code-review`,
-`clash-explain`) are compiled into both binaries. Installing them under
+The five skills (`clash-workflow`, `clash-plan-review`, `clash-code-review`,
+`clash-explain`, `clash-drift-review`) are compiled into both binaries. Installing them under
 `<claude_dir>/skills/` becomes a **decision only where it could lose work**:
 
 - `sync_unattended` runs at every startup and needs no permission: it

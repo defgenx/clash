@@ -5416,6 +5416,8 @@ async function buildWorkflowView(el, project, slug) {
   if (ts.subView === "blueprint") ts.subView = "explainPlan";
   if (ts.subView === "explainDiff" && !wfExplainAny(item.diffExplain)) ts.subView = "diff";
   if (ts.subView === "explainPlan" && !wfExplainAny(item.planExplain)) ts.subView = "diff";
+  // Same for the drift report, which only exists once a comparison round ran.
+  if (ts.subView === "drift" && !wfExplainAny(item.driftReport)) ts.subView = "diff";
   // An item with no plan phase has no plan history either.
   if (ts.subView === "revisions" && !wfHasPlanPhase(item)) ts.subView = "diff";
   // The plan drill-downs are now versions of the Plan tab; a tab persisted
@@ -5436,9 +5438,14 @@ async function buildWorkflowView(el, project, slug) {
   // from another item would otherwise hide the chrome with no ⤢ to undo it,
   // since the written form has no zoom of its own.
   const explainWhich =
-    ts.subView === "explainPlan" ? "plan" : ts.subView === "explainDiff" ? "diff" : null;
-  const explainForms =
-    explainWhich === "plan" ? item.planExplain : explainWhich === "diff" ? item.diffExplain : null;
+    ts.subView === "explainPlan"
+      ? "plan"
+      : ts.subView === "explainDiff"
+        ? "diff"
+        : ts.subView === "drift"
+          ? "drift"
+          : null;
+  const explainForms = explainWhich ? wfExplainFormsFor(item, explainWhich) : null;
   const bigDrawing = !!(
     ts.explainBig &&
     explainForms &&
@@ -5578,6 +5585,10 @@ async function buildWorkflowView(el, project, slug) {
     // diagram page and the prose — behind one toggle.
     ...(wfExplainAny(item.planExplain) ? [["explainPlan", "◫ Plan explained"]] : []),
     ...(wfExplainAny(item.diffExplain) ? [["explainDiff", "◫ Changes explained"]] : []),
+    // The comparison between those two. Its own tab because it is a third
+    // document with a third question — and unlike them it carries a verdict,
+    // so it must not read as a variant of either.
+    ...(wfExplainAny(item.driftReport) ? [["drift", "⇄ Plan vs changes"]] : []),
     ["diff", item.openAnnotations > 0 ? `Diff 💬${item.openAnnotations}` : "Diff"],
     // The timeline counts everything it feeds on: change rounds + review rounds.
     [
@@ -6040,6 +6051,9 @@ async function launchWfReview(item, root, opts = {}) {
     interactive: picked.interactive,
     autoApply: picked.autoApply,
     prUrls: picked.prUrls,
+    // Only set for the rounds with their own button; null leaves the backend
+    // to derive plan-vs-diff from the status, which is where that belongs.
+    target: opts.target || null,
   });
 }
 
@@ -6168,9 +6182,11 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
         ? "explain changes"
         : target === "explain-plan"
           ? "explain plan"
-          : publish === "respond-pr-comments"
-            ? "answer PR comments"
-            : "review";
+          : target === "drift"
+            ? "plan vs changes"
+            : publish === "respond-pr-comments"
+              ? "answer PR comments"
+              : "review";
     await openSession(sid, wfSessionName(item, job));
     await refreshWorkflows();
     if (root) buildWorkflowView(root, item.project, item.slug);
@@ -6607,11 +6623,15 @@ async function wfShareDialog(item) {
 /// launches. Replaces two stacked uiChoice dialogs, which never showed the
 /// publish question and the depth question on the same screen. Pure model in
 /// wf-review.js. Resolves { depth, publish } or null on cancel.
-function wfComposeReviewRound(item, { prUrls = null } = {}) {
+/// `target` overrides the derived one for the rounds that have their own
+/// action button (currently `drift`). Plan/diff stay derived — the backend
+/// ignores an explicit value for them anyway, so asking would be theatre.
+function wfComposeReviewRound(item, { prUrls = null, target = null } = {}) {
   return new Promise((resolve) => {
+    const t = target || wfReviewTarget(item);
     const model = reviewRoundModel({
-      round: wfNextReviewRound(item, wfReviewTarget(item)),
-      target: wfReviewTarget(item),
+      round: wfNextReviewRound(item, t),
+      target: t,
       hasPr: wfHasPr(item),
       prNumber: item.meta.pr ? item.meta.pr.number : 0,
       prDraft: !!(item.meta.pr && item.meta.pr.draft),
@@ -7621,6 +7641,33 @@ function renderWfActions(bar, root, item) {
     }
   };
 
+  // The comparison: did we build the plan? Its own action rather than a mode
+  // of the code review, because a diff can pass a code review on its own
+  // merits while delivering something else — half a feature, an extra
+  // subsystem, another mechanism than the one that was authorized. Nothing
+  // else in the pipeline reads the plan and the diff together.
+  //
+  // Gated like a review, not like an explainer: it grades each divergence and
+  // writes annotations, so its findings become work through the same
+  // Request-changes mechanism as any other round. It needs both sides of the
+  // comparison — a plan (review-only items have none) and an implemented
+  // change (nothing is built at plan-review).
+  const driftButton = () => {
+    if (!wfCanReview(item)) return;
+    if (!wfHasPlanPhase(item) || !item.hasPlan) return;
+    if (["draft", "plan-review"].includes(st)) return;
+    const next = wfNextReviewRound(item, "drift");
+    add(
+      `⇄ Compare plan vs changes${next > 1 ? ` · round ${next}` : ""}…`,
+      "",
+      () => launchWfReview(item, root, { target: "drift" }),
+      "Spends tokens: an agent reads plan.md and the diff, inventories every divergence and grades each one intended / harmless / a problem. " +
+        "Writes a comparison document plus a drawn overview, and files the problems as diff comments you can turn into a fix round. " +
+        "Drift it resolves by amending the plan is reported instead — that one goes back through plan-review.",
+      "step"
+    );
+  };
+
   // Available from every state holding a reviewable artifact, every time the
   // item lands back there — that is what makes rounds repeatable. The label
   // counts past rounds so it is obvious this is round N+1, not a one-shot.
@@ -8034,6 +8081,11 @@ function renderWfActions(bar, root, item) {
   // every stage, and per-case calls meant it was missing from five of them.
   explainButtons();
 
+  // Same reasoning, and the same lesson: "did we build the plan?" is worth
+  // asking at every stage that has both a plan and a change, and the gate is
+  // one rule rather than a case per stage.
+  driftButton();
+
   // Going back was two hardcoded buttons at two stages; from everywhere else
   // the pipeline was a one-way street. Same reason it lives outside the
   // switch: every parked stage has somewhere behind it, and which stages
@@ -8320,8 +8372,54 @@ function wfExplainAny(forms) {
   return !!(forms && (forms.md || forms.html));
 }
 
-/// Render one of the two explanations: the graphical page or the prose, with a
-/// toggle when both exist.
+/// Which forms one of the item's document pairs exists in. One accessor
+/// because four call sites picking the field themselves is how a new pair
+/// ends up rendered by a tab that thinks it has no HTML.
+function wfExplainFormsFor(item, which) {
+  if (which === "plan") return item.planExplain;
+  if (which === "diff") return item.diffExplain;
+  if (which === "drift") return item.driftReport;
+  return null;
+}
+
+/// The files, the caption and the tab label for one document pair, so the
+/// renderer below holds no per-pair knowledge of its own.
+const WF_DOC_PAIRS = {
+  plan: {
+    action: "◫ Explain plan",
+    md: "explain-plan.md",
+    html: "explain-plan.html",
+    // The name this document had before the md+html pairs existed. A real
+    // file on disk for older items, so the fallback is a filename, not a word
+    // this UI still uses anywhere.
+    legacy: "blueprint.md",
+    caption:
+      "What this plan is going to do, drawn before any of it exists — written by the ◫ Explain plan round. It judges nothing and changes nothing but this document.",
+  },
+  diff: {
+    action: "◫ Explain changes",
+    md: "explain-diff.md",
+    html: "explain-diff.html",
+    legacy: "structure.md",
+    caption:
+      "What this change actually does — written by the ◫ Explain changes round. It judges nothing and changes nothing but this document.",
+  },
+  drift: {
+    action: "⇄ Compare plan vs changes",
+    md: "drift.md",
+    html: "drift.html",
+    // Never had another name.
+    legacy: null,
+    // The one pair that carries a verdict, so the caption says so: a reader
+    // who took this for a third explanation would miss that the problems it
+    // lists are already waiting as diff comments.
+    caption:
+      "The plan against the change built from it — written by the ⇄ Compare plan vs changes round. Unlike the two explanations it judges: every divergence is graded intended, harmless or a problem, and the problems are filed as diff comments you can turn into a fix round.",
+  },
+};
+
+/// Render one of the item's document pairs: the graphical page or the prose,
+/// with a toggle when both exist.
 ///
 /// The **HTML page** is the agent's own hand-drawn overview — boxes, arrows,
 /// the repos and features the work touches — so it is rendered in a sandboxed
@@ -8336,15 +8434,13 @@ function wfExplainAny(forms) {
 /// fences render exactly like every other document's.
 async function renderWfExplainView(body, root, item, ts, which) {
   const { project, slug } = item;
-  const forms = which === "plan" ? item.planExplain : item.diffExplain;
+  const forms = wfExplainFormsFor(item, which) || {};
   // Legacy single-file items report `md` with no `explain-*.md` on disk; the
   // backend reads the old name for the same doc, so the fallback is a name.
-  const mdDoc = which === "plan" ? "explain-plan.md" : "explain-diff.md";
-  // The names these documents had before the md+html pairs existed. Real
-  // files on disk for older items, so the fallback is a filename, not a word
-  // this UI still uses anywhere.
-  const legacy = which === "plan" ? "blueprint.md" : "structure.md";
-  const htmlDoc = which === "plan" ? "explain-plan.html" : "explain-diff.html";
+  const pair = WF_DOC_PAIRS[which] || WF_DOC_PAIRS.diff;
+  const mdDoc = pair.md;
+  const legacy = pair.legacy;
+  const htmlDoc = pair.html;
   // The picture is the headline when there is one — that is what it is for.
   const view = ts.explainView === "text" || !forms.html ? "text" : "graphic";
 
@@ -8356,7 +8452,7 @@ async function renderWfExplainView(body, root, item, ts, which) {
       slug,
       doc: view === "graphic" ? htmlDoc : mdDoc,
     });
-    if (view === "text" && !text.trim()) {
+    if (view === "text" && !text.trim() && legacy) {
       text = await invoke("get_workflow_doc", { project, slug, doc: legacy });
     }
   } catch (e) {
@@ -8370,10 +8466,7 @@ async function renderWfExplainView(body, root, item, ts, which) {
   // pane saying what the tab label already says. It rides the bar's tooltip.
   const bar = document.createElement("div");
   bar.className = "wf-explain-bar";
-  bar.title =
-    which === "plan"
-      ? "What this plan is going to do, drawn before any of it exists — written by the ◫ Explain plan round. It judges nothing and changes nothing but this document."
-      : "What this change actually does — written by the ◫ Explain changes round. It judges nothing and changes nothing but this document.";
+  bar.title = pair.caption;
 
   // Both forms exist: one toggle, because they answer the same question at
   // two altitudes and the reader picks.
@@ -8440,9 +8533,7 @@ async function renderWfExplainView(body, root, item, ts, which) {
   if (!text.trim()) {
     body.insertAdjacentHTML(
       "beforeend",
-      `<p class="hint">nothing written yet — ◫ Explain ${
-        which === "plan" ? "plan" : "changes"
-      } writes it</p>`
+      `<p class="hint">nothing written yet — ${escapeHtml(pair.action)} writes it</p>`
     );
     return;
   }
@@ -8526,6 +8617,7 @@ async function renderWfSubView(body, root, item, ts) {
   if (ts.subView === "revisions") return renderWfRevisionsView(body, root, item, ts);
   if (ts.subView === "explainPlan") return renderWfExplainView(body, root, item, ts, "plan");
   if (ts.subView === "explainDiff") return renderWfExplainView(body, root, item, ts, "diff");
+  if (ts.subView === "drift") return renderWfExplainView(body, root, item, ts, "drift");
   if (ts.subView === "review" || ts.subView === "agentReview") {
     const doc = ts.subView === "review" ? "review.md" : "agent-review.md";
     body.innerHTML = "<p class='hint'>loading…</p>";

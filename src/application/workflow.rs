@@ -650,6 +650,9 @@ pub fn review_job(review: &crate::domain::workflow::WorkflowReview) -> String {
         // sessions sidebar is read by a human deciding which pane to look at.
         ReviewTarget::ExplainDiff => "explain changes".to_string(),
         ReviewTarget::ExplainPlan => "explain plan".to_string(),
+        // Named for the comparison, not the file: "drift" alone in a sessions
+        // sidebar says nothing about which two things are being compared.
+        ReviewTarget::Drift => format!("plan vs changes r{}", review.round.max(1)),
         ReviewTarget::Plan => format!("plan review r{}", review.round.max(1)),
         ReviewTarget::Diff | ReviewTarget::Unknown => {
             format!("code review r{}", review.round.max(1))
@@ -946,6 +949,13 @@ pub fn review_engine_for(target: crate::domain::workflow::ReviewTarget) -> &'sta
         // The explainer: writes structure.md (what a change did) or
         // blueprint.md (what it is going to do) instead of findings.
         ReviewTarget::ExplainDiff | ReviewTarget::ExplainPlan => "clash-explain",
+        // The drift reviewer: compares the plan against what was built and
+        // grades each divergence. Its own skill rather than a mode of the code
+        // reviewer, for the same reason plan and code review are separate —
+        // "is this code good" and "is this the code we agreed to" are
+        // different questions, and one skill answering both answers neither
+        // sharply.
+        ReviewTarget::Drift => "clash-drift-review",
         // Unknown degrades to the code reviewer: every mode has a diff to
         // read, while a plan may not exist at all.
         ReviewTarget::Diff | ReviewTarget::Unknown => "clash-code-review",
@@ -1107,6 +1117,35 @@ mod tests {
             review_engine_for(ReviewTarget::Unknown),
             "clash-code-review"
         );
+        // The drift reviewer is its own skill: "is this code good" and "is
+        // this the code we agreed to" are different questions.
+        assert_eq!(review_engine_for(ReviewTarget::Drift), "clash-drift-review");
+    }
+
+    /// Every target's session name says what the agent is doing. `drift`
+    /// alone would not: the sessions sidebar is read by a human choosing a
+    /// pane, and the name has to say which two things are compared.
+    #[test]
+    fn every_target_has_a_job_name_and_drift_says_what_it_compares() {
+        use crate::domain::workflow::{ReviewDepth, ReviewPublish, ReviewTarget, WorkflowReview};
+        for &target in ReviewTarget::ALL {
+            let review = WorkflowReview {
+                target,
+                depth: ReviewDepth::Standard,
+                publish: ReviewPublish::Local,
+                round: 2,
+                ..Default::default()
+            };
+            let job = review_job(&review);
+            assert!(!job.is_empty(), "{target} has no job name");
+            assert_eq!(job, job.trim(), "{target}'s job name is padded");
+        }
+        let drift = WorkflowReview {
+            target: ReviewTarget::Drift,
+            round: 2,
+            ..Default::default()
+        };
+        assert_eq!(review_job(&drift), "plan vs changes r2");
     }
 
     /// Embedded skills are clash's own, so a name collision can't hijack a
@@ -1131,12 +1170,11 @@ mod tests {
             .iter()
             .map(|s| s.name)
             .collect();
-        for t in [
-            ReviewTarget::Plan,
-            ReviewTarget::Diff,
-            ReviewTarget::ExplainDiff,
-            ReviewTarget::Unknown,
-        ] {
+        // Every variant, not a hand-written subset: the list this used to
+        // carry had drifted from the enum (it was missing `ExplainPlan`), so
+        // a new target could ship with an engine clash never installs and the
+        // round would die after a full session spawn.
+        for &t in ReviewTarget::ALL {
             let e = review_engine_for(t);
             assert!(
                 installed.contains(&e),
@@ -1165,6 +1203,40 @@ mod tests {
         assert!(p.contains("Use the clash-plan-review skill"));
         // The retired harness must never come back into a kickoff.
         assert!(!p.contains("clash-review skill"));
+    }
+
+    /// The drift kickoff must carry the whole shape of the round, because the
+    /// skill refuses impossible work from the prompt alone — before it reads a
+    /// file. `Auto-apply:` is the one worth pinning: the round asks the human
+    /// what happens when it finishes, and promising an apply that clash will
+    /// only *recommend* is a lie told in the session.
+    #[test]
+    fn a_drift_kickoff_states_the_comparison_and_what_its_answer_does() {
+        use crate::domain::workflow::{ReviewDepth, ReviewPublish, ReviewTarget, WorkflowReview};
+        let review = WorkflowReview {
+            target: ReviewTarget::Drift,
+            depth: ReviewDepth::Deep,
+            publish: ReviewPublish::PrComments,
+            round: 2,
+            return_status: WorkflowStatus::DiffReview,
+            auto_apply: true,
+            focus: "the migration step".to_string(),
+            ..Default::default()
+        };
+        let p = build_review_prompt("/items/x", &review, WorkflowMode::Full);
+        assert!(p.contains("Use the clash-drift-review skill"), "{p}");
+        assert!(p.contains("Target: drift."), "{p}");
+        assert!(p.contains("Depth: deep."), "{p}");
+        assert!(p.contains("Publish: pr-comments."), "{p}");
+        assert!(p.contains("Round: 2."), "{p}");
+        // The repeatability contract: the round puts the item back where the
+        // human launched it, so round N+1 starts from the same place.
+        assert!(p.contains("Return to: diff-review."), "{p}");
+        assert!(p.contains("Auto-apply: yes."), "{p}");
+        assert!(p.contains("Focus: the migration step."), "{p}");
+        // No explainer is ever named for this target — that skill judges
+        // nothing, so it would grade no divergence at all.
+        assert!(!p.contains("clash-explain"), "{p}");
     }
 
     #[test]

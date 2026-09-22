@@ -161,6 +161,9 @@
     // that says a judgement was made when none was.
     if (t === "explain-diff" || t === "structure") return `Changes explained ${n}`;
     if (t === "explain-plan" || t === "blueprint") return `Plan explained ${n}`;
+    // A drift round judges, so "Review N" would not be a lie — but it would
+    // hide which two things were compared, which is the round's whole point.
+    if (t === "drift") return `Plan vs changes ${n}`;
     return `Review ${n}`;
   }
 
@@ -200,6 +203,17 @@
       "### Published",
       "### Fixed in this round",
       "### Dismissed in triage",
+      // A drift round's records. `Intended deviations` and `Benign` are
+      // divergences it graded as *fine* — pasting them into the note would
+      // ask an executor to undo the thing the round just approved. `Plan
+      // amendments needed` is work an executor may not do at all: it never
+      // writes plan.md, so the remedy there is ↩ Move back to plan-review,
+      // and the note would be an instruction with no legal action behind it.
+      "### Intended deviations",
+      "### Benign",
+      "### Plan amendments needed",
+      // The drift reviewer's own escape hatch for things that are not drift.
+      "### Noticed outside the comparison",
     ]);
     const out = [];
     let skipping = false;

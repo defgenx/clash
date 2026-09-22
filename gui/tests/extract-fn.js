@@ -41,7 +41,25 @@ function stubEl(tag = "div") {
           remove() {},
           toggle() {},
         };
-      if (p === "style" || p === "dataset") return t[p] || (t[p] = {});
+      if (p === "style" || p === "dataset" || p === "attrs") return t[p] || (t[p] = {});
+      // Recorded rather than no-oped: `sandbox`, `role` and `aria-selected`
+      // are load-bearing (an iframe that gains `allow-scripts` stops being
+      // inert), so a test has to be able to read them back.
+      if (p === "setAttribute")
+        return (k, v) => {
+          (t.attrs || (t.attrs = {}))[k] = String(v);
+        };
+      if (p === "getAttribute") return (k) => (t.attrs || {})[k] ?? null;
+      if (p === "removeAttribute")
+        return (k) => {
+          delete (t.attrs || {})[k];
+        };
+      // Accumulated into `__html` so an assertion can see what a render wrote
+      // this way — the empty states use it instead of a child element.
+      if (p === "insertAdjacentHTML")
+        return (_pos, html) => {
+          t.__html = `${t.__html || ""}${html}`;
+        };
       if (p === "appendChild" || p === "append")
         return (...cs) => {
           t.children.push(...cs);

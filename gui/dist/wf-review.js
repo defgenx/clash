@@ -49,6 +49,9 @@
     // instead of being left implicit: "leave everything unchecked" is not a
     // thing anyone reads off a dialog.
     const seeded = (prUrls || []).filter((u) => (prs || []).some((p) => p.url === u));
+    // A drift round keeps the scope for the same reason a code round does: a
+    // plan split across an API repo and the web repo that consumes it drifts
+    // *between* the repos as often as inside one.
     const prScope =
       target === "plan" || (prs || []).length < 2
         ? null
@@ -78,13 +81,18 @@
     // is a lie for most of the answers: it says where the findings go, which
     // is whichever PRs the round is about.
     const prName = prScope ? "the PRs under review" : prNumber ? `#${prNumber}` : "the PR";
+    const drift = target === "drift";
     return {
       prScope,
-      title: `Agent review — round ${round}`,
+      // Named for the question it answers. "Agent review — round 3" on a
+      // drift round would put two different jobs behind one heading.
+      title: drift ? `Plan vs changes — round ${round}` : `Agent review — round ${round}`,
       intro:
         (target === "plan"
           ? "Reviews this item's plan against the real codebase, then returns the item here."
-          : "Reviews this item's code diff, then returns the item here.") +
+          : drift
+            ? "Compares this item's plan with the change that was built from it, grades every divergence as intended, harmless or a problem, then returns the item here."
+            : "Reviews this item's code diff, then returns the item here.") +
         " Findings land in this item either way. Spends tokens.",
       launchLabel: `Launch round ${round}`,
       depth:
@@ -96,14 +104,17 @@
               choices: [
                 {
                   value: "deep",
-                  label: "Deep review",
-                  detail:
-                    "Traces every subsystem the change touches — callers, invariants, existing tests — before judging it.",
+                  label: drift ? "Deep comparison" : "Deep review",
+                  detail: drift
+                    ? "Traces every planned action into the code that implements it, instead of matching plan bullets against file names."
+                    : "Traces every subsystem the change touches — callers, invariants, existing tests — before judging it.",
                 },
                 {
                   value: "standard",
-                  label: "Standard review",
-                  detail: "Reviews the diff in context. Faster, lighter.",
+                  label: drift ? "Standard comparison" : "Standard review",
+                  detail: drift
+                    ? "Walks the plan against the diff in context. Faster, lighter."
+                    : "Reviews the diff in context. Faster, lighter.",
                 },
               ],
             },
@@ -167,6 +178,13 @@
           (target === "plan"
             ? "The current plan is frozen as a version first, so you can diff what the round changed."
             : "The current diff is frozen first, so the Timeline keeps what you reviewed.") +
+          // The one thing a fix round cannot do, said where the choice is
+          // made: a drift whose remedy is "the plan is now wrong" is applied
+          // by going back to plan-review, not by an executor — which may not
+          // write plan.md at all.
+          (drift
+            ? " A drift the round resolves by amending the plan is never applied here: it is reported, and you take the item back to plan-review."
+            : "") +
           " Leave it off to read the findings and decide yourself.",
         default: autoApplyDefault,
       },

@@ -13,6 +13,8 @@ const {
   wfNextReviewRound,
   shouldAutoApply,
   planVersionForIteration,
+  isExplainTarget,
+  canonicalTarget,
 } = require("../dist/wf-plan.js");
 
 const NOW = new Date(2026, 8, 2, 12, 0).getTime();
@@ -350,4 +352,65 @@ test("the browser branch publishes every name app.js calls", () => {
     html.indexOf("wf-plan.js") < html.indexOf("app.js"),
     "wf-plan.js must be loaded before app.js"
   );
+});
+
+test("a drift round is pending where the code is the artifact, and nowhere else", () => {
+  // It grades divergences and files them as annotations on the diff, so it is
+  // an ordinary pending review at every code stage — that is what puts
+  // "↻ Apply review" on the item and demotes the stage's own approve while
+  // the round is unread.
+  const item = (status) => ({
+    meta: { status, review: { target: "drift" } },
+    lastAgentReview: { round: 1, target: "drift", verdict: "1 issue", apply: true },
+  });
+  for (const status of ["diff-review", "pr-draft", "pr-ready"]) {
+    assert.ok(pendingReviewRound(item(status)), `${status} must offer it`);
+  }
+  // Not at plan-review: an item rewound there after a drift round would
+  // otherwise offer "apply this to the code" on the stage where the plan is
+  // the artifact. The plan-side outcome travels the other route by design —
+  // a code fix round may not write plan.md.
+  assert.equal(pendingReviewRound(item("plan-review")), null);
+  // Still not while the round itself is running.
+  assert.equal(pendingReviewRound(item("reviewing")), null);
+  // And once applied, the key matches and it stops being pending.
+  const applied = item("diff-review");
+  applied.meta.appliedReviewKey = "drift:1";
+  assert.equal(pendingReviewRound(applied), null);
+  assert.equal(reviewAppliedState(applied), "applied");
+});
+
+test("the drift apply note names the plan as the specification", () => {
+  // The executor gets the note, not the whole report, and a drift finding is
+  // not a defect someone found by reading the code — it is a promise the
+  // change did not keep. Without that framing the note reads as an ordinary
+  // review, and "the plan said X" has no weight.
+  const note = applyReviewNote(
+    { round: 2, verdict: "1 issue" },
+    { text: "1. `layers.rs:88` — MISSING: the env override." },
+    "drift"
+  );
+  assert.match(note, /Apply agent review round 2 to the code\./);
+  assert.match(note, /divergences from `plan\.md`, which is the specification/);
+  assert.match(note, /the env override/);
+  // And it forbids the one edit an executor must never make from here.
+  assert.match(note, /do not edit plan\.md yourself/);
+  // The other targets keep their own wording.
+  assert.doesNotMatch(applyReviewNote({ round: 1 }, { text: "x" }, "diff"), /specification/);
+  assert.match(applyReviewNote({ round: 1 }, { text: "x" }, "plan"), /to plan\.md\./);
+});
+
+test("an explainer is still not a drift round", () => {
+  // The predicate that drives every "no findings to apply" exemption. A drift
+  // round judges, so it must NOT be in it — and the explainers must stay in,
+  // or a plan explanation starts offering to apply findings it never made.
+  assert.ok(isExplainTarget("explain-plan"));
+  assert.ok(isExplainTarget("explain-diff"));
+  assert.ok(isExplainTarget("blueprint"));
+  assert.ok(isExplainTarget("structure"));
+  assert.ok(!isExplainTarget("drift"));
+  assert.ok(!isExplainTarget("diff"));
+  // `drift` never had another spelling, so it is already canonical.
+  assert.equal(canonicalTarget("drift"), "drift");
+  assert.equal(canonicalTarget("DRIFT"), "drift");
 });

@@ -235,10 +235,23 @@ test("a round's label names its phase, since the number alone cannot", () => {
   // …under their original spellings too: those headings are already on disk.
   assert.equal(roundLabel({ round: 3, target: "structure" }), "Changes explained 3");
   assert.equal(roundLabel({ round: 1, target: "blueprint" }), "Plan explained 1");
+  // The drift round judges, so "Review 2" would not be a lie — but it would
+  // hide which two things were compared, which is the round's whole point.
+  assert.equal(roundLabel({ round: 2, target: "drift" }), "Plan vs changes 2");
   // An unlabelled round (a report predating the target in its heading) still
   // reads sensibly rather than claiming a phase it never named.
   assert.equal(roundLabel({ round: 4, target: "" }), "Review 4");
   assert.equal(roundLabel(null), "Review 1");
+  // Every target clash can write into a heading has a label of its own —
+  // falling through to the generic one is what made plan explanations read
+  // as judgements.
+  for (const t of ["plan", "diff", "explain-plan", "explain-diff", "drift"]) {
+    assert.notEqual(
+      roundLabel({ round: 1, target: t }),
+      "Review 1",
+      `${t} has no label of its own`
+    );
+  }
 });
 
 test("the browser branch publishes every name app.js calls", () => {
@@ -280,4 +293,57 @@ test("the browser branch publishes every name app.js calls", () => {
     html.indexOf("wf-compose.js") < html.indexOf("app.js"),
     "wf-compose.js must be loaded before app.js"
   );
+});
+
+test("a drift round's approved divergences never become work", () => {
+  // The dangerous direction: `roundFindingsAt` feeds the change-request note,
+  // which is the executor's prompt. A drift round grades most of what it
+  // finds as *fine*, so pasting those sections in would ask an agent to undo
+  // exactly what the round approved — and the plan-amendment section names
+  // work an executor is not allowed to do at all (it never writes plan.md).
+  const md = [
+    "## Review 1 — drift · deep · 2026-09-22 10:00",
+    "",
+    "**Verdict:** 1 issue",
+    "",
+    "**Apply:** yes — the env override is missing",
+    "",
+    "### Issues",
+    "1. `src/config/layers.rs:88` — MISSING: the env override is not implemented.",
+    "",
+    "### Intended deviations",
+    "2. reused `comment()` instead of a new trait method — authorized.",
+    "",
+    "### Benign",
+    "3. helper moved to its own file.",
+    "",
+    "### Plan amendments needed",
+    "- §Layering still describes a trait method that was deliberately not added.",
+    "",
+    "### Noticed outside the comparison",
+    "- an unrelated unwrap in `git.rs` — worth a code review.",
+    "",
+    "### Published",
+    "- Nothing — local round by request.",
+    "",
+  ].join("\n");
+
+  const f = latestAgentRoundFindings(md);
+  assert.equal(f.target, "drift");
+  // The one section that IS work survives.
+  assert.match(f.text, /the env override is not implemented/);
+  // Everything the round approved, deferred or merely noted does not.
+  for (const gone of [
+    "Intended deviations",
+    "authorized",
+    "Benign",
+    "helper moved",
+    "Plan amendments needed",
+    "deliberately not added",
+    "Noticed outside the comparison",
+    "unrelated unwrap",
+    "local round by request",
+  ]) {
+    assert.ok(!f.text.includes(gone), `"${gone}" must not reach the executor`);
+  }
 });

@@ -1603,7 +1603,9 @@ pub(crate) async fn start_workflow_review_agent(
     // An explain round is not a review: it judges nothing, so the only thing
     // that can stop it is another agent already writing this item's files.
     // Both explainer targets qualify — the plan explanation (what the work is
-    // going to do) and the diff explanation (what it did).
+    // going to do) and the diff explanation (what it did). A `drift` round is
+    // deliberately NOT in this set: it grades divergences and writes
+    // annotations, so it is gated like every other review.
     let explaining = target.is_some_and(|t| t.explains());
     if explaining {
         if !meta.status.can_explain() {
@@ -1645,18 +1647,31 @@ pub(crate) async fn start_workflow_review_agent(
         return Err("no-pr: this item has no pull request yet".to_string());
     }
     // Plan/diff stay DERIVED from the launch status (a plan review at
-    // diff-review has nothing to read); the two *explainer* targets are the
-    // only ones a launcher may request explicitly — the ◫ Explain buttons'
-    // rounds, which write a document instead of findings. Any other explicit
+    // diff-review has nothing to read); the targets with their own action
+    // button may be requested explicitly — the two ◫ Explain rounds and the
+    // ⇄ drift comparison, none of which the status implies. Any other explicit
     // value is ignored rather than trusted.
     let target = match target {
-        Some(t) if t.explains() => t,
+        Some(t) if t.requestable() => t,
         _ => ReviewTarget::for_status(meta.status, meta.mode),
     };
-    if matches!(target, ReviewTarget::Plan | ReviewTarget::ExplainPlan)
-        && !has_plan_content(&state, &project, &slug)
-    {
+    if target.needs_plan() && !has_plan_content(&state, &project, &slug) {
         return Err("This item has no plan yet — there is nothing to read".to_string());
+    }
+    // A drift round measures the plan against what was built from it, so at
+    // plan-review there is nothing on the other side of the comparison —
+    // only a plan. `can_request_review` allows that stage (a plan review
+    // belongs there), which is why this is its own check.
+    if target.needs_diff()
+        && matches!(
+            meta.status,
+            WorkflowStatus::Draft | WorkflowStatus::PlanReview
+        )
+    {
+        return Err(format!(
+            "Nothing is implemented yet ('{}') — there is no change to compare the plan against",
+            meta.status
+        ));
     }
 
     // The item's interaction default fills in when the launch surface offered

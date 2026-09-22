@@ -680,10 +680,40 @@ explainer **judges nothing and decides nothing** — no accept, no
 reject, no gate on the pipeline; it writes its own two documents and nothing
 else.
 
-Each document tab says what it holds, because two of them are easy to confuse:
+**⇄ Compare plan vs changes — did we build what we agreed to?** The two
+explanations describe one artifact each; this round reads both `plan.md` and
+the diff and reports the gap between them, because a change can pass a code
+review on its own merits while delivering something else — half a feature, an
+extra subsystem nobody signed off on, a different mechanism than the one you
+authorized. Every divergence gets a direction (**missing** — promised and not
+delivered; **extra** — delivered and never planned; **different** — done by
+other means) and, more importantly, a **grade**: *intended* (deliberate and
+justified — so the plan is now the stale part), *benign* (real, no
+consequence), or an *issue*. Grading is on consequence, not size: a one-line
+deviation that changes an interface other repos call is an issue, a whole
+module written in a different file than planned is benign. A test, migration
+or doc the plan promised and the change skipped is an issue too — it is the
+part of a plan most reliably dropped under pressure and the part a diff review
+cannot see, because you cannot review what is not there.
+
+It writes the same two forms as an explanation — a written comparison and one
+hand-drawn map with every part badged — in its own **⇄ Plan vs changes** tab,
+so you can see both shapes at once instead of diffing two pictures by eye. But
+unlike the explainer it **judges**, so its issues arrive as diff comments like
+any review's: one *Request changes* turns them into a fix round, and *↻ Apply
+review* offers it in one click. The exception is the drift it resolves by
+saying the plan is now wrong — a fix round never rewrites `plan.md`, so those
+are reported instead, and the route is *↩ Move back to… → plan-review*, then
+*Request changes*. The round says which of the two any issue needs. It is
+offered wherever the item has both a plan and an implemented change, and it is
+worth re-running after a fix round to confirm the gap actually closed.
+
+Each document tab says what it holds, because they are easy to confuse:
 **Change requests** is *your* notes — one section per round, written when you
-press *Request changes*, and the first thing the next agent round reads — while
-**Agent reviews** is what the review rounds found, appended by the reviewer.
+press *Request changes*, and the first thing the next agent round reads —
+**Agent reviews** is what the review rounds found, appended by the reviewer,
+and the three document tabs are the agents' own writing: two that explain and
+one that judges.
 
 The **Timeline** tab is the item's whole revision record in one newest-first
 feed: every change round as a card carrying the note you wrote (the *why*),
@@ -843,11 +873,12 @@ content when the diff drifts between iterations and never dropped (unanchored
 ones land in an orphan tray). The file contract for agents is documented in
 [`docs/workflows.md`](docs/workflows.md).
 
-**Skills**: the agent side is four skills — `clash-workflow` (the executor:
+**Skills**: the agent side is five skills — `clash-workflow` (the executor:
 plans, implements, addresses comments, opens PRs), `clash-plan-review` (the
-interactive plan reviewer), `clash-code-review` (the code/diff reviewer) and
-`clash-explain` (the explainer — see ◫ Explain above) — all embedded
-in the clash binary. Startup keeps them current by itself — missing ones
+interactive plan reviewer), `clash-code-review` (the code/diff reviewer),
+`clash-explain` (the explainer — see ◫ Explain above) and
+`clash-drift-review` (the plan-vs-changes comparison — see ⇄ Compare above) —
+all embedded in the clash binary. Startup keeps them current by itself — missing ones
 install, and ones you never edited are refreshed to the version this clash
 ships (no setup, no popup: nothing of yours is at stake). **clash asks only
 when it detects a diff of your own**: a skill you edited by hand that an

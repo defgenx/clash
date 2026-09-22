@@ -449,14 +449,73 @@ test("each workflow document says what it is", () => {
   );
   assert.match(cap, /Your change requests/);
   assert.match(cap, /What the agent review rounds found/);
-  // The two explanations carry their own captions, in their own renderer.
-  const ex = APP.slice(
-    APP.indexOf("async function renderWfExplainView("),
-    APP.indexOf("function wfExplainFrameDoc(")
+  // The document pairs carry their own captions, in the table that also owns
+  // their filenames — one place per pair, so a new pair cannot ship rendered
+  // by a tab that has no words for it.
+  const pairs = APP.slice(
+    APP.indexOf("const WF_DOC_PAIRS = {"),
+    APP.indexOf("async function renderWfExplainView(")
   );
-  assert.match(ex, /What this plan is going to do/);
-  assert.match(ex, /What this change actually does/);
-  assert.match(ex, /It judges nothing/);
+  assert.match(pairs, /What this plan is going to do/);
+  assert.match(pairs, /What this change actually does/);
+  assert.match(pairs, /It judges nothing/);
+  // Every pair in the table has all four facts; a missing caption is a tab
+  // with a blank tooltip and a missing md/html is a tab that cannot load.
+  for (const which of ["plan:", "diff:", "drift:"]) {
+    const at = pairs.indexOf(which);
+    assert.ok(at >= 0, `WF_DOC_PAIRS must hold ${which}`);
+    const entry = pairs.slice(at, pairs.indexOf("},", at));
+    for (const field of ["md:", "html:", "legacy:", "caption:"])
+      assert.ok(entry.includes(field), `${which} entry is missing ${field}`);
+  }
+  // The drift report is the one pair that judges, and its caption must say
+  // so: read as a third explanation, its graded problems look like prose.
+  const drift = pairs.slice(pairs.indexOf("drift:"));
+  assert.match(drift, /it judges/i);
+  assert.doesNotMatch(drift, /judges nothing/);
+});
+
+test("the drift round is gated and applied as a review, never as an explainer", () => {
+  // It grades each divergence and files the problems as annotations, so its
+  // findings have to reach the executor through the same Request-changes
+  // mechanism as any other round. Gating it like an explainer would offer it
+  // where no decision is parked, and marking it `explains()` would exempt it
+  // from the pending-round machinery that puts "Apply review" on the item.
+  const btn = extractFunction(APP, "renderWfActions");
+  const drift = btn.slice(btn.indexOf("const driftButton ="));
+  assert.match(drift, /if \(!wfCanReview\(item\)\) return;/);
+  // Both sides of the comparison must exist: a review-only item has no plan,
+  // and nothing is built before plan-review hands back.
+  assert.match(drift, /!wfHasPlanPhase\(item\) \|\| !item\.hasPlan/);
+  assert.match(drift, /\["draft", "plan-review"\]\.includes\(st\)/);
+  // It goes through the shared composer with the target pinned, so depth,
+  // publish, interaction and auto-apply are the same four questions as any
+  // other round rather than a second dialog that drifts from it.
+  assert.match(drift, /launchWfReview\(item, root, \{ target: "drift" \}\)/);
+  // The pure side must not treat it as an explanation.
+  const plan = fs.readFileSync(
+    path.join(__dirname, "..", "dist", "wf-plan.js"),
+    "utf8"
+  );
+  const isExplain = extractFunction(plan, "isExplainTarget");
+  assert.doesNotMatch(isExplain, /drift/);
+  // Called once, outside the status switch — the same lesson as explain.
+  assert.equal((APP.match(/^\s*driftButton\(\);$/gm) || []).length, 1);
+
+  // Its own tab, dispatched from the sub-view router. `renderWfPlanView`
+  // shipped defined-but-never-dispatched once and the whole reader was dead
+  // code behind a passing existence test, so reachability is pinned per tab.
+  assert.match(APP, /\["drift", "⇄ Plan vs changes"\]/);
+  assert.match(
+    APP,
+    /if \(ts\.subView === "drift"\) return renderWfExplainView\(body, root, item, ts, "drift"\);/
+  );
+  // A tab restored from a layout written before any comparison ran must not
+  // render a document with no tab to leave it by.
+  assert.match(APP, /ts\.subView === "drift" && !wfExplainAny\(item\.driftReport\)/);
+  // The full-tab zoom knows the third pair too, or ⤢ on it would hide the
+  // chrome with nothing to undo it.
+  assert.match(APP, /ts\.subView === "drift"\s*\?\s*"drift"/);
 });
 
 test("every PR-scoped action asks which PR, through one picker", () => {

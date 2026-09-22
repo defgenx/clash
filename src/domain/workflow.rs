@@ -325,17 +325,44 @@ pub enum ReviewTarget {
     /// never uses surfaces in a round heading.
     #[serde(alias = "blueprint")]
     ExplainPlan,
+    /// `plan.md` **against** the change that was built from it — the drift
+    /// round. It reads both, inventories every divergence, and says of each
+    /// one whether it is intended, harmless, or a problem.
+    ///
+    /// A reviewer, not an explainer, and the distinction is the feature: the
+    /// explainers describe one artifact each and judge nothing, so neither can
+    /// answer "did we build what we agreed to". This one judges, so its
+    /// findings become work through the single mechanism every other review
+    /// round uses — annotations, then a change round. It writes an
+    /// explanation-shaped *document* as well (`drift.md` + `drift.html`),
+    /// because a divergence is only arguable once you can see both shapes side
+    /// by side.
+    Drift,
     #[serde(other)]
     Unknown,
 }
 
 impl ReviewTarget {
+    /// Every variant, so the exhaustive consumers (the engine test, the
+    /// round-label coverage test) cannot silently skip a new one. Kept honest
+    /// by `all_targets_are_listed`, whose `match` fails to compile when a
+    /// variant is added and not listed here.
+    pub const ALL: &'static [Self] = &[
+        Self::Plan,
+        Self::Diff,
+        Self::ExplainDiff,
+        Self::ExplainPlan,
+        Self::Drift,
+        Self::Unknown,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Plan => "plan",
             Self::Diff => "diff",
             Self::ExplainDiff => "explain-diff",
             Self::ExplainPlan => "explain-plan",
+            Self::Drift => "drift",
             Self::Unknown => "unknown",
         }
     }
@@ -350,6 +377,37 @@ impl ReviewTarget {
     /// do not exist) and had no round label of its own.
     pub fn explains(&self) -> bool {
         matches!(self, Self::ExplainDiff | Self::ExplainPlan)
+    }
+
+    /// May a launcher ask for this target **by name**?
+    ///
+    /// `plan` and `diff` stay derived from the launch status — a plan review at
+    /// diff-review has nothing to read, so letting a caller name one only
+    /// creates a round that cannot work. The rest are their own actions with
+    /// their own buttons, and nothing about the status implies them: an item at
+    /// diff-review could equally want a code review, an explanation or a drift
+    /// comparison, and only the human knows which.
+    pub fn requestable(&self) -> bool {
+        self.explains() || matches!(self, Self::Drift)
+    }
+
+    /// Does a round on this target need `plan.md` to exist?
+    ///
+    /// The plan reviewer and the plan explainer read it as their artifact; the
+    /// drift round reads it as one of the two things it compares. A
+    /// `review-only` item has no plan at all, so the answer decides whether
+    /// the round is even offered there.
+    pub fn needs_plan(&self) -> bool {
+        matches!(self, Self::Plan | Self::ExplainPlan | Self::Drift)
+    }
+
+    /// Does a round on this target need an implemented change to read?
+    ///
+    /// Everything about the code does. It is what makes `drift` illegal at
+    /// `plan-review`: nothing has been built yet, so there is no divergence
+    /// from the plan to measure — only a plan.
+    pub fn needs_diff(&self) -> bool {
+        matches!(self, Self::Diff | Self::ExplainDiff | Self::Drift)
     }
 
     /// Normalize a target string off disk — a `meta.review.target` or an
@@ -858,6 +916,12 @@ pub struct WorkflowItem {
     /// different document from what it did, and both are worth keeping.
     #[serde(default)]
     pub plan_explain: ExplainForms,
+    /// Which forms of the **drift report** exist (`drift.md` / `drift.html`) —
+    /// gates the GUI's "Plan vs changes" tab, exactly like the two
+    /// explanations gate theirs. Written by a `drift` review round, which
+    /// unlike an explainer also leaves findings behind.
+    #[serde(default)]
+    pub drift_report: ExplainForms,
     /// Count of annotations with status `open` (0 for terminal items, whose
     /// annotations are not read during listing).
     pub open_annotations: usize,
@@ -977,6 +1041,77 @@ pub struct AnnotationsFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `ReviewTarget::ALL` must hold every variant. The `match` is what
+    /// enforces it: adding a variant without listing it fails to compile here,
+    /// so the exhaustive consumers (every engine resolves to an installed
+    /// skill; every target has a round label) cannot silently skip it.
+    #[test]
+    fn all_targets_are_listed() {
+        for t in ReviewTarget::ALL {
+            let named = match t {
+                ReviewTarget::Plan => ReviewTarget::Plan,
+                ReviewTarget::Diff => ReviewTarget::Diff,
+                ReviewTarget::ExplainDiff => ReviewTarget::ExplainDiff,
+                ReviewTarget::ExplainPlan => ReviewTarget::ExplainPlan,
+                ReviewTarget::Drift => ReviewTarget::Drift,
+                ReviewTarget::Unknown => ReviewTarget::Unknown,
+            };
+            assert_eq!(&named, t);
+        }
+        // Every variant, exactly once, each with a distinct wire value.
+        let mut wires: Vec<&str> = ReviewTarget::ALL.iter().map(|t| t.as_str()).collect();
+        wires.sort_unstable();
+        let n = wires.len();
+        wires.dedup();
+        assert_eq!(wires.len(), n, "two targets share a wire value");
+    }
+
+    /// The drift round judges, so it must be gated and applied as a review —
+    /// not as an explainer. Both halves of that matter: `explains()` drives
+    /// the "no findings to apply" exemptions (no pending round, no Apply
+    /// button, no auto-apply), and the launch gate picks `can_explain` from
+    /// it. A drift round wrongly marked as explaining would grade divergences
+    /// nobody could ever act on.
+    #[test]
+    fn drift_is_a_reviewer_that_may_be_asked_for_by_name() {
+        assert!(!ReviewTarget::Drift.explains());
+        assert!(ReviewTarget::Drift.requestable());
+        // It reads both sides of the comparison, so it needs both artifacts —
+        // which is what keeps it off `review-only` items (no plan) and off
+        // `plan-review` (nothing built).
+        assert!(ReviewTarget::Drift.needs_plan());
+        assert!(ReviewTarget::Drift.needs_diff());
+        assert_eq!(ReviewTarget::Drift.as_str(), "drift");
+        // Already canonical: unlike the explainers it never had another name.
+        assert_eq!(ReviewTarget::canonical("drift"), "drift");
+        // Round-trips through serde, so a `meta.review.target` written by one
+        // clash is read by the next.
+        let json = serde_json::to_string(&ReviewTarget::Drift).unwrap();
+        assert_eq!(json, "\"drift\"");
+        assert_eq!(
+            serde_json::from_str::<ReviewTarget>(&json).unwrap(),
+            ReviewTarget::Drift
+        );
+    }
+
+    /// `plan` and `diff` stay derived from the launch status. A launcher that
+    /// could name them would be able to start a plan review at diff-review,
+    /// which has nothing to read.
+    #[test]
+    fn plan_and_diff_are_never_requestable_by_name() {
+        assert!(!ReviewTarget::Plan.requestable());
+        assert!(!ReviewTarget::Diff.requestable());
+        assert!(!ReviewTarget::Unknown.requestable());
+        // Every explicitly-requestable target has its own action button, so
+        // each one must also be a target the engine map knows.
+        for t in ReviewTarget::ALL.iter().filter(|t| t.requestable()) {
+            assert!(
+                !crate::application::workflow::review_engine_for(*t).is_empty(),
+                "{t} is requestable but has no engine"
+            );
+        }
+    }
 
     #[test]
     fn rewind_targets_offer_the_parked_stages_behind_you() {

@@ -103,9 +103,21 @@
     const n = (round && round.round) || 1;
     const what = target === "plan" ? "plan.md" : "the code";
     const head = `Apply agent review round ${n} to ${what}.`;
+    // A drift round's findings are not defects found by reading the code —
+    // they are the ways it diverges from what `plan.md` promised, so the
+    // note has to say where the specification is. The round already filtered
+    // out the divergences it graded as fine and the ones only a plan
+    // amendment can settle; what is left is delivery.
     const how =
-      "Work through the findings below. Where one is wrong, already handled, or " +
-      "not worth doing, say so in your summary rather than skipping it silently.";
+      target === "drift"
+        ? "These are divergences from `plan.md`, which is the specification here: " +
+          "each one is something the plan promised and the change does not deliver, " +
+          "or something the change does that the plan never authorized. Close each " +
+          "gap in the code. Where one is wrong, already handled, or better resolved " +
+          "by changing the plan instead, say so in your summary rather than skipping " +
+          "it silently — do not edit plan.md yourself."
+        : "Work through the findings below. Where one is wrong, already handled, or " +
+          "not worth doing, say so in your summary rather than skipping it silently.";
     const body = (findings && findings.text ? findings.text : "").trim();
     if (body) return `${head}\n\n${how}\n\n${body}\n`;
     const verdict = ((round && round.verdict) || "").trim();
@@ -150,6 +162,12 @@
     const stagePlan = meta.status === "plan-review";
     if (target === "plan" && !stagePlan) return null;
     if (target === "diff" && stagePlan) return null;
+    // A drift round is about the code side of the comparison — the findings
+    // it files are annotations on the diff. An item rewound to plan-review
+    // after one would otherwise offer "apply this to the code" on the stage
+    // where the plan is the artifact. Its plan-side outcome travels the other
+    // route, by design: a code fix round may not write plan.md.
+    if (target === "drift" && stagePlan) return null;
     return r;
   }
 

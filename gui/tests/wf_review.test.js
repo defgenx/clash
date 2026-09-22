@@ -202,3 +202,64 @@ test("a draft PR keeps the publish choice, with wording that fits a draft", () =
     assert.match(opt(m).detail, /Never approves or requests changes/);
   }
 });
+
+test("a drift round is the same four questions, asked about a comparison", () => {
+  // It reuses the review composer rather than getting a dialog of its own:
+  // depth, publish, interaction and auto-apply are identical dimensions, and
+  // a second dialog is how two surfaces end up offering different rounds.
+  const m = reviewRoundModel({ target: "drift", round: 2, hasPr: true, prNumber: 41 });
+  // Named for the question it answers — "Agent review — round 2" would put
+  // two different jobs behind one heading.
+  assert.match(m.title, /Plan vs changes — round 2/);
+  assert.match(m.intro, /Compares this item's plan with the change/);
+  assert.match(m.intro, /intended, harmless or a problem/);
+  // Depth survives, because tracing each planned action into the code is a
+  // real choice; the wording says what deep means *here*.
+  assert.ok(m.depth, "a comparison has a depth");
+  assert.equal(m.depth.default, "deep");
+  const deep = m.depth.choices.find((c) => c.value === "deep");
+  assert.match(deep.label, /Deep comparison/);
+  assert.match(deep.detail, /every planned action into the code/);
+  // Publishing to the PR is offered like any other round's.
+  assert.ok(m.publish, "a drift round can post to the PR");
+  assert.ok(m.publish.choices.some((c) => c.value === "pr-comments"));
+  // The interaction question is unchanged: grading drift is exactly where the
+  // human's knowledge of what was authorized is decisive.
+  assert.equal(m.interaction.choices.length, 3);
+});
+
+test("the drift composer says which remedy auto-apply cannot carry", () => {
+  // The rule that costs a whole session when it is not visible: an executor
+  // fix round may not write plan.md, so a drift whose remedy is "the plan is
+  // now wrong" is reported, not applied. Said where the choice is made.
+  const drift = reviewRoundModel({ target: "drift" });
+  assert.match(drift.autoApply.label, /fix round/);
+  assert.match(drift.autoApply.detail, /amending the plan is never applied here/);
+  assert.match(drift.autoApply.detail, /back to plan-review/);
+  // The caveat is specific to drift — it would be noise on the other rounds.
+  for (const target of ["plan", "diff"]) {
+    assert.doesNotMatch(
+      reviewRoundModel({ target }).autoApply.detail,
+      /amending the plan is never applied here/
+    );
+  }
+});
+
+test("a drift round keeps the PR scope, because drift happens between repos", () => {
+  // A plan is one document however many repos implement it, so a plan round
+  // has no scope. A drift round does: a change split across an API repo and
+  // the web repo that consumes it drifts *between* the repos as often as
+  // inside one, and reading half of it cannot see that.
+  const prs = [
+    { url: "https://github.com/o/api/pull/1", repo: "o/api", number: 1, primary: true },
+    { url: "https://github.com/o/web/pull/2", repo: "o/web", number: 2, primary: false },
+  ];
+  const drift = reviewRoundModel({ target: "drift", prs, hasPr: true, prNumber: 1 });
+  assert.ok(drift.prScope, "a multi-repo drift round picks its scope");
+  assert.equal(drift.prScope.choices.length, 2);
+  // Nothing ticked still means this repository's own diff.
+  assert.equal(drift.prScope.local.checked, true);
+  // A plan round still has none, and a single-PR item still asks nothing.
+  assert.equal(reviewRoundModel({ target: "plan", prs }).prScope, null);
+  assert.equal(reviewRoundModel({ target: "drift", prs: [prs[0]] }).prScope, null);
+});

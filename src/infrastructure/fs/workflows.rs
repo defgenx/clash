@@ -60,6 +60,12 @@ pub const EXPLAIN_DIFF_HTML: &str = "explain-diff.html";
 pub const STRUCTURE_FILE: &str = "structure.md";
 /// Legacy name of [`EXPLAIN_PLAN_FILE`].
 pub const BLUEPRINT_FILE: &str = "blueprint.md";
+/// The drift report: `plan.md` against what was built from it. Written by a
+/// `drift` review round in the same two forms as an explanation — the prose
+/// comparison and the drawn one — because a divergence is argued from the two
+/// shapes side by side.
+pub const DRIFT_FILE: &str = "drift.md";
+pub const DRIFT_HTML: &str = "drift.html";
 pub const ANNOTATIONS_FILE: &str = "annotations.json";
 pub const HISTORY_DIR: &str = "history";
 /// Per-item plan revision store: `plan-history/index.json` + `NNNN.md`.
@@ -182,6 +188,8 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         has_agent_review,
         plan_explain: explain_forms(&dir, EXPLAIN_PLAN_FILE, EXPLAIN_PLAN_HTML, BLUEPRINT_FILE),
         diff_explain: explain_forms(&dir, EXPLAIN_DIFF_FILE, EXPLAIN_DIFF_HTML, STRUCTURE_FILE),
+        // No legacy spelling: the drift report has only ever had this name.
+        drift_report: explain_forms(&dir, DRIFT_FILE, DRIFT_HTML, DRIFT_FILE),
         open_annotations,
         history_iterations,
         agent_alive: true, // cross-checked against live sessions by the GUI layer
@@ -322,9 +330,8 @@ fn explain_forms(
 fn doc_path(dir: &Path, doc: &str) -> Result<PathBuf> {
     match doc {
         PLAN_FILE | REVIEW_FILE | AGENT_REVIEW_FILE | EXPLAIN_PLAN_FILE | EXPLAIN_PLAN_HTML
-        | EXPLAIN_DIFF_FILE | EXPLAIN_DIFF_HTML | STRUCTURE_FILE | BLUEPRINT_FILE => {
-            Ok(dir.join(doc))
-        }
+        | EXPLAIN_DIFF_FILE | EXPLAIN_DIFF_HTML | STRUCTURE_FILE | BLUEPRINT_FILE | DRIFT_FILE
+        | DRIFT_HTML => Ok(dir.join(doc)),
         _ => Err(parse_err(format!("Not a workflow document: '{}'", doc))),
     }
 }
@@ -1094,6 +1101,47 @@ mod tests {
         assert!(!load_items(&root).unwrap()[0].plan_explain.md);
         write_doc(&root, "p", "item", EXPLAIN_PLAN_FILE, "# What it will do\n").unwrap();
         assert!(load_items(&root).unwrap()[0].plan_explain.md);
+    }
+
+    #[test]
+    fn the_drift_report_is_a_third_pair_and_nothing_else_writes_it() {
+        let (_g, root) = root();
+        create_item(&root, &req("p", "item", "")).unwrap();
+        let item = &load_items(&root).unwrap()[0];
+        assert!(!item.drift_report.md && !item.drift_report.html);
+        // Whitelisted for read and write like the other pairs — a document
+        // the frontend's tab fetches by name is refused otherwise.
+        assert_eq!(read_doc(&root, "p", "item", DRIFT_FILE).unwrap(), "");
+        assert_eq!(read_doc(&root, "p", "item", DRIFT_HTML).unwrap(), "");
+
+        // Each form tracked apart, so the tab opens on the map when there is
+        // one and falls back to the comparison text when not.
+        write_doc(&root, "p", "item", DRIFT_FILE, "# Plan vs changes\n").unwrap();
+        let item = &load_items(&root).unwrap()[0];
+        assert!(item.drift_report.md && !item.drift_report.html);
+        write_doc(&root, "p", "item", DRIFT_HTML, "<h1>map</h1>").unwrap();
+        assert!(load_items(&root).unwrap()[0].drift_report.html);
+
+        // Writing it says nothing about either explanation: three documents,
+        // three rounds, and a round on one must never claim another's tab.
+        let item = &load_items(&root).unwrap()[0];
+        assert!(!item.diff_explain.any());
+        assert!(!item.plan_explain.any());
+
+        // …and neither explanation's files feed the drift pair. The legacy
+        // fallback is what makes this worth asserting: the other two pairs
+        // each accept a second filename, so a copy-paste of that argument
+        // would silently make `structure.md` light up this tab.
+        write_doc(&root, "p", "item", STRUCTURE_FILE, "# old\n").unwrap();
+        write_doc(&root, "p", "item", BLUEPRINT_FILE, "# older\n").unwrap();
+        std::fs::remove_file(root.join("p").join("item").join(DRIFT_FILE)).unwrap();
+        std::fs::remove_file(root.join("p").join("item").join(DRIFT_HTML)).unwrap();
+        let item = &load_items(&root).unwrap()[0];
+        assert!(
+            !item.drift_report.any(),
+            "the drift pair must have no legacy filename"
+        );
+        assert!(item.diff_explain.md && item.plan_explain.md);
     }
 
     #[test]
