@@ -1401,7 +1401,7 @@ button.busy:disabled { opacity: 1; }
 /* Workflow diff view (line-comment review) */
 .wf-diff-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .wf-diff-head select {
-  background: var(--bg-hover);
+  background-color: var(--bg-hover);
   border: 1px solid var(--border);
   border-radius: 5px;
   color: var(--fg);
@@ -2607,3 +2607,52 @@ button.busy:disabled { opacity: 1; }
   max-width: 78ch;
 }
 
+
+/* Themed form controls in workflow tabs and dialogs. Zero specificity
+   (`:where`) so any component rule still wins; without it WebKit draws the
+   native light popups and fields, which ignore the theme entirely. A rule
+   below that sets the `background` shorthand drops the chevron — set
+   `background-color` instead. */
+:where(.wf-view, .dialog-box) :where(select, textarea,
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"])) {
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  outline: none;
+}
+:where(.wf-view, .dialog-box) :where(select) {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 24px;
+  cursor: pointer;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--fg-dim) 50%),
+    linear-gradient(135deg, var(--fg-dim) 50%, transparent 50%);
+  background-position: calc(100% - 13px) 55%, calc(100% - 9px) 55%;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+}
+:where(.wf-view, .dialog-box) :where(select, textarea, input):where(:hover:not(:disabled)) {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+:where(.wf-view, .dialog-box) :where(select, textarea, input):where(:focus) {
+  border-color: var(--accent);
+}
+:where(.wf-view, .dialog-box) :where(select, textarea, input):where(:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+:where(.wf-view, .dialog-box) :where(input::placeholder, textarea::placeholder) {
+  color: var(--fg-dim);
+}
+:where(.wf-view, .dialog-box) :where(select option) {
+  background-color: var(--bg-raised);
+  color: var(--fg);
+}
+:where(.wf-view, .dialog-box) :where(input[type="checkbox"], input[type="radio"]) {
+  accent-color: var(--accent);
+}
