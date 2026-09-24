@@ -379,17 +379,14 @@ async fn handle_client(
                 }
             }
 
+            // Input is fire-and-forget and never replies, not even on failure:
+            // the client pairs replies with requests by order, so an
+            // unsolicited Error would be read as the answer to its next call.
             Request::Input { session_id, data } => {
                 let decoded = match protocol::decode_data(&data) {
                     Ok(d) => d,
                     Err(e) => {
-                        send_event(
-                            &writer,
-                            &Event::Error {
-                                message: format!("Base64 decode error: {}", e),
-                            },
-                        )
-                        .await;
+                        tracing::warn!("input for {}: base64 decode error: {}", session_id, e);
                         continue;
                     }
                 };
@@ -398,25 +395,10 @@ async fn handle_client(
                 match map.get(&session_id) {
                     Some(session) => {
                         if let Err(e) = session.write_input(&decoded) {
-                            send_event(
-                                &writer,
-                                &Event::Error {
-                                    message: format!("Write error: {}", e),
-                                },
-                            )
-                            .await;
+                            tracing::warn!("input for {}: write error: {}", session_id, e);
                         }
-                        // No ack for input — fire and forget for performance
                     }
-                    None => {
-                        send_event(
-                            &writer,
-                            &Event::Error {
-                                message: format!("Session {} not found", session_id),
-                            },
-                        )
-                        .await;
-                    }
+                    None => tracing::debug!("input for unknown session {}", session_id),
                 }
             }
 

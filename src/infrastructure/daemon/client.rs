@@ -20,12 +20,18 @@ pub struct DaemonClient {
     stream: Option<ClientStream>,
     /// Stream events (Output, Exited) for the event loop to consume.
     stream_event_rx: Option<mpsc::UnboundedReceiver<Event>>,
+    /// How long a request waits for its reply.
+    response_timeout: std::time::Duration,
 }
 
 struct ClientStream {
     writer: tokio::net::unix::OwnedWriteHalf,
     /// Response events (Ok, Error, Sessions, Pong) for request/response methods.
     response_rx: mpsc::UnboundedReceiver<Event>,
+    /// Replies still owed to requests that timed out. The server answers
+    /// every reply-bearing request exactly once, in order, so each of those
+    /// late replies is skipped rather than handed to the next caller.
+    stale_replies: usize,
     _reader_task: tokio::task::JoinHandle<()>,
 }
 
@@ -35,6 +41,7 @@ impl DaemonClient {
             socket_path,
             stream: None,
             stream_event_rx: None,
+            response_timeout: std::time::Duration::from_secs(10),
         }
     }
 
@@ -158,6 +165,7 @@ impl DaemonClient {
         self.stream = Some(ClientStream {
             writer,
             response_rx,
+            stale_replies: 0,
             _reader_task: reader_task,
         });
         self.stream_event_rx = Some(stream_rx);
@@ -175,20 +183,28 @@ impl DaemonClient {
     }
 
     async fn recv_response(&mut self) -> std::io::Result<Event> {
+        let deadline = tokio::time::Instant::now() + self.response_timeout;
         let stream = self.stream.as_mut().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotConnected, "Not connected to daemon")
         })?;
-        let timeout = std::time::Duration::from_secs(10);
-        match tokio::time::timeout(timeout, stream.response_rx.recv()).await {
-            Ok(Some(event)) => Ok(event),
-            Ok(None) => Err(std::io::Error::new(
-                std::io::ErrorKind::ConnectionReset,
-                "Connection closed",
-            )),
-            Err(_) => Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Daemon response timeout",
-            )),
+        loop {
+            match tokio::time::timeout_at(deadline, stream.response_rx.recv()).await {
+                Ok(Some(_)) if stream.stale_replies > 0 => stream.stale_replies -= 1,
+                Ok(Some(event)) => return Ok(event),
+                Ok(None) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionReset,
+                        "Connection closed",
+                    ))
+                }
+                Err(_) => {
+                    stream.stale_replies += 1;
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "Daemon response timeout",
+                    ));
+                }
+            }
         }
     }
 
@@ -304,5 +320,49 @@ impl DaemonClient {
             rows,
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A reply that arrives after its request timed out belongs to that
+    /// request, not to the next one: without the skip, every later call was
+    /// answered with its predecessor's reply, for the life of the connection.
+    #[tokio::test]
+    async fn a_late_reply_is_not_handed_to_the_next_request() {
+        let (client_end, server_end) = UnixStream::pair().unwrap();
+        let server = tokio::spawn(async move {
+            let (r, mut w) = server_end.into_split();
+            let mut lines = BufReader::new(r).lines();
+            // 1st request (list_sessions): answered too late.
+            lines.next_line().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            w.write_all(b"{\"type\":\"sessions\",\"sessions\":[]}\n")
+                .await
+                .unwrap();
+            // 2nd request (kill): answered at once.
+            lines.next_line().await.unwrap();
+            w.write_all(b"{\"type\":\"error\",\"message\":\"no such session\"}\n")
+                .await
+                .unwrap();
+        });
+
+        let mut client = DaemonClient::new(PathBuf::new());
+        client.response_timeout = std::time::Duration::from_millis(100);
+        client.setup_stream(client_end);
+
+        let first = client.list_sessions().await;
+        assert_eq!(first.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+
+        client.response_timeout = std::time::Duration::from_secs(2);
+        let second = client.kill_session("x").await;
+        assert_eq!(
+            second.unwrap_err().to_string(),
+            "no such session",
+            "the kill must get its own reply, not the stale session list"
+        );
+        server.await.unwrap();
     }
 }

@@ -736,6 +736,30 @@ pub type DefaultFdProbe = LinuxProcFs;
 pub type DefaultFdProbe = DarwinLsof;
 
 /// Construct the host-appropriate probe.
+/// Pure: keep only processes known to have started at or after `since`.
+/// An unknown start time (exited mid-scan, `ps` unavailable) is dropped, so
+/// a process that predates clash never surfaces by accident.
+pub fn started_since(wild: Vec<WildProcess>, since: SystemTime) -> Vec<WildProcess> {
+    wild.into_iter()
+        .filter(|w| w.started_at.is_some_and(|t| t >= since))
+        .collect()
+}
+
+/// One background scan, as both frontends run it every couple of seconds:
+/// [`gather_wild_processes`] on the blocking pool, filtered to processes
+/// started since `since`.
+///
+/// The blocking pool is the point. `ps`/`lsof` can take many seconds on a
+/// loaded machine, and run on an async worker they starved the in-process
+/// daemon on the same runtime until its clients' requests timed out.
+pub async fn scan_wild_processes_since(since: SystemTime) -> Vec<WildProcess> {
+    tokio::task::spawn_blocking(move || {
+        started_since(gather_wild_processes(&default_fd_probe()), since)
+    })
+    .await
+    .unwrap_or_default()
+}
+
 pub fn default_fd_probe() -> DefaultFdProbe {
     #[cfg(target_os = "linux")]
     {
@@ -754,6 +778,26 @@ mod tests {
     use super::*;
 
     // ── parse_ps_line ─────────────────────────────────────────────
+
+    #[test]
+    fn only_processes_known_to_start_after_clash_are_kept() {
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let at = |pid: u32, t: Option<SystemTime>| WildProcess {
+            pid,
+            started_at: t,
+            ..Default::default()
+        };
+        let kept = started_since(
+            vec![
+                at(1, Some(t0 - Duration::from_secs(1))),
+                at(2, Some(t0)),
+                at(3, Some(t0 + Duration::from_secs(5))),
+                at(4, None),
+            ],
+            t0,
+        );
+        assert_eq!(kept.iter().map(|w| w.pid).collect::<Vec<_>>(), vec![2, 3]);
+    }
 
     #[test]
     fn omp_processes_are_agents_in_either_shape() {

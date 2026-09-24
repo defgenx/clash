@@ -3378,23 +3378,14 @@ fn main() {
             // list doesn't churn with processes the user never started here.
             let clash_started_at = std::time::SystemTime::now();
             tauri::async_runtime::spawn(async move {
-                use clash::infrastructure::process_scan::{
-                    default_fd_probe, gather_wild_processes,
-                };
-                let probe = default_fd_probe();
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     interval.tick().await;
-                    let wild: Vec<_> = gather_wild_processes(&probe)
-                        .into_iter()
-                        .filter(|w| {
-                            // Drop conservatively when start time is unknown
-                            // (process exited mid-scan, ps unavailable) so we
-                            // never accidentally surface a pre-clash row.
-                            w.started_at.map(|t| t >= clash_started_at).unwrap_or(false)
-                        })
-                        .collect();
+                    let wild = clash::infrastructure::process_scan::scan_wild_processes_since(
+                        clash_started_at,
+                    )
+                    .await;
                     if wild_processes_tx.send(wild).is_err() {
                         break;
                     }

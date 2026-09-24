@@ -83,6 +83,16 @@ impl PtySession {
         let master_fd = pty.master.as_raw_fd();
         let slave_fd = pty.slave.as_raw_fd();
 
+        // openpty's fds are inheritable. A master left open in a child keeps
+        // that PTY alive after clash dies, so the agent never gets its SIGHUP
+        // and outlives the app — every later child inherited every earlier
+        // session's master. The slave is dup'd onto 0/1/2 in pre_exec, which
+        // clears the flag on the copies.
+        unsafe { libc::fcntl(master_fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        if slave_fd > 2 {
+            unsafe { libc::fcntl(slave_fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        }
+
         // Put the PTY slave into raw mode before the child exec's. Default
         // openpty termios has ICANON/ECHO/ISIG/OPOST on — that line-buffers
         // input, echoes typed bytes back into the output stream (corrupting
@@ -424,13 +434,15 @@ impl PtySession {
     /// Gracefully stop the child process.
     ///
     /// Strategy: /exit → SIGTERM → SIGKILL
-    /// 1. Send "/exit\n" to the PTY — the built-in quit command of both claude and omp
+    /// 1. Send "/exit" + CR (Enter) to the PTY — the built-in quit command of
+    ///    both claude and omp. CR, not LF: omp reads LF as Ctrl+J, "insert
+    ///    newline", and would never submit it.
     /// 2. After 3s, SIGTERM to process group if still alive
     /// 3. After 3 more seconds, SIGKILL if still alive
     pub fn kill(&self) {
         if self.is_alive() {
             // Step 1: Send /exit command to the PTY
-            let exit_cmd = b"/exit\n";
+            let exit_cmd = b"/exit\r";
             unsafe {
                 libc::write(
                     self.master_fd,
@@ -828,6 +840,38 @@ mod tests {
     }
 
     use super::*;
+
+    /// Closing a session's master must hang up its child, even while other
+    /// sessions are running: a master inherited by a later child kept the
+    /// PTY open, so agents survived clash quitting or crashing.
+    #[test]
+    fn a_session_child_dies_when_its_master_closes_despite_later_sessions() {
+        let spawn = |id: &str| {
+            PtySession::spawn(
+                id.to_string(),
+                None,
+                "/bin/sleep",
+                &["30".to_string()],
+                None,
+                80,
+                24,
+                &HashMap::new(),
+                false,
+            )
+            .expect("spawn sleep")
+        };
+        let first = spawn("cloexec-a");
+        let second = spawn("cloexec-b");
+        let pid = first.pid as i32;
+        drop(first);
+        let alive = || unsafe { libc::kill(pid, 0) } == 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while alive() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(!alive(), "the first child outlived its master");
+        drop(second);
+    }
 
     #[test]
     fn locale_default_only_when_no_locale_set() {

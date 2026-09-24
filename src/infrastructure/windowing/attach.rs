@@ -534,6 +534,12 @@ pub async fn attach_loop(
     // Open /dev/tty directly for reading. This avoids competing with
     // crossterm's internal reader thread which may still hold fd 0 or its
     // own /dev/tty handle after EventStream is dropped.
+    //
+    // The read is polled against `stop` rather than left blocking: a blocking
+    // spawn cannot be aborted, and a reader still parked in `read` after
+    // detach swallowed the first keystroke meant for the TUI.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader_stop = stop.clone();
     let reader = tokio::task::spawn_blocking(move || {
         let tty_fd = unsafe { libc::open(c"/dev/tty".as_ptr(), libc::O_RDONLY) };
         if tty_fd < 0 {
@@ -542,6 +548,36 @@ pub async fn attach_loop(
         }
         let mut buf = [0u8; 4096];
         loop {
+            if reader_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            // select(), not poll(): macOS poll() does not support tty
+            // devices — it reports them ready, and the read then blocks.
+            let ready = unsafe {
+                let mut fds: libc::fd_set = std::mem::zeroed();
+                libc::FD_ZERO(&mut fds);
+                libc::FD_SET(tty_fd, &mut fds);
+                let mut tv = libc::timeval {
+                    tv_sec: 0,
+                    tv_usec: 50_000,
+                };
+                libc::select(
+                    tty_fd + 1,
+                    &mut fds,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut tv,
+                )
+            };
+            if ready < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                break;
+            }
+            if ready == 0 {
+                continue;
+            }
             let n = unsafe { libc::read(tty_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
             if n <= 0 {
                 break;
@@ -664,8 +700,11 @@ pub async fn attach_loop(
     // Reset terminal title
     set_title("");
 
+    // Wait for the reader to let go of the tty (≤ one poll interval) before
+    // the caller starts reading it again.
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
     drop(input_rx);
-    reader.abort();
+    let _ = reader.await;
 
     result
 }
