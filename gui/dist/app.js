@@ -516,9 +516,13 @@ function uiChoice({ message, detail = null, choices }) {
       const b = document.createElement("button");
       b.textContent = c.label;
       if (c.primary) b.className = "primary";
+      if (c.title) b.title = c.title;
+      // Shown but greyed: a choice that exists and can't be taken right now
+      // (a binary that isn't installed) says why, rather than vanishing.
+      b.disabled = !!c.disabled;
       b.onclick = () => done(c.value);
       actions.appendChild(b);
-      if (!firstBtn || c.primary) firstBtn = b;
+      if (!c.disabled && (!firstBtn || c.primary)) firstBtn = b;
     }
     box.appendChild(actions);
     backdrop.appendChild(box);
@@ -5974,6 +5978,64 @@ listen("launch-stage", (event) => {
   showProgress(launchStageLine(p));
 }).catch((e) => console.error("launch-stage listen failed:", e));
 
+/// Agent-CLI availability, fetched per launch: a binary installed or removed
+/// since boot must show up in the very next picker.
+async function wfAgentSettings() {
+  try {
+    return await invoke("get_agent_settings");
+  } catch (_) {
+    return {};
+  }
+}
+
+/// Ask which agent a start runs on. Every agent is listed; one whose binary
+/// does not resolve is greyed with the reason. Resolves to the agent, or null
+/// when cancelled.
+async function pickWfAgent(item, job) {
+  const settings = await wfAgentSettings();
+  const def = wfAgentDefault(item.meta.agent, settings);
+  return uiChoice({
+    message: `Run ${wfSessionName(item, job)} on which agent?`,
+    detail: "The pick becomes this item's agent, so a relaunch or an auto-applied round stays on it.",
+    choices: wfAgentChoices(settings).map((c) => ({
+      label: c.available ? c.label : `${c.label} (not installed)`,
+      value: c.value,
+      primary: c.value === def,
+      disabled: !c.available,
+      title: c.reason,
+    })),
+  });
+}
+
+/// The composers' agent row: a <select> whose unavailable agents are disabled
+/// options carrying the reason. Availability arrives async; a pick made before
+/// it lands is kept unless that agent turned out to be unavailable.
+function wfAgentSelect(item) {
+  const sel = document.createElement("select");
+  sel.className = "wf-agent-select";
+  sel.title = "Which agent CLI this round runs on";
+  let touched = false;
+  sel.addEventListener("change", () => (touched = true));
+  const fill = (settings) => {
+    const keep = touched ? sel.value : null;
+    sel.replaceChildren();
+    const choices = wfAgentChoices(settings);
+    for (const c of choices) {
+      const o = document.createElement("option");
+      o.value = c.value;
+      o.textContent = c.available ? c.label : `${c.label} (not installed)`;
+      o.disabled = !c.available;
+      o.title = c.reason;
+      sel.appendChild(o);
+    }
+    const keepOk = keep && choices.some((c) => c.value === keep && c.available);
+    sel.value = keepOk ? keep : wfAgentDefault(item.meta.agent, settings);
+  };
+  fill({ workflowAgent: item.meta.agent || "claude" });
+  wfAgentSettings().then(fill);
+  return sel;
+}
+
 /// Launch (or relaunch) the workflow agent for a phase and open its session
 /// tab split next to the workflow tab. `opts` carries the composer's launch
 /// choices: `interactive` (tri-state; null = the skill asks in-session) and
@@ -5989,6 +6051,12 @@ listen("launch-stage", (event) => {
 /// again is exactly what a silent minute invites and two agents on one item is
 /// the one thing the phase split forbids.
 async function launchWfAgent(item, phase, root, branch = null, opts = {}) {
+  // `agent`: undefined asks; null keeps the item's (relaunch, auto-apply).
+  if (opts.agent === undefined) {
+    const agent = await pickWfAgent(item, phase);
+    if (agent === null) return;
+    opts = { ...opts, agent };
+  }
   const key = `${item.project}/${item.slug}`;
   wfLaunching.add(key);
   // Immediate: the backend's first step lands a round-trip later, and the
@@ -6002,6 +6070,7 @@ async function launchWfAgent(item, phase, root, branch = null, opts = {}) {
       branch,
       skill: opts.skill || null,
       interactive: opts.interactive ?? null,
+      agent: opts.agent,
       cols: 120,
       rows: 40,
     });
@@ -6059,6 +6128,7 @@ async function launchWfReview(item, root, opts = {}) {
   await spawnWfReview(item, root, picked.depth, picked.publish, {
     interactive: picked.interactive,
     autoApply: picked.autoApply,
+    agent: picked.agent,
     prUrls: picked.prUrls,
     // Only set for the rounds with their own button; null leaves the backend
     // to derive plan-vs-diff from the status, which is where that belongs.
@@ -6154,6 +6224,13 @@ async function wfPrRecovery(item, err, retry) {
 /// inherits whatever focus the human last recorded, so sending one back for
 /// another look never means retyping it.
 async function spawnWfReview(item, root, depth, publish, opts = {}) {
+  // Same `agent` rule as `launchWfAgent`; resolved once so the recovery
+  // retries below reuse the pick instead of asking again.
+  if (opts.agent === undefined) {
+    const agent = await pickWfAgent(item, opts.target ? "explain" : "review");
+    if (agent === null) return;
+    opts = { ...opts, agent };
+  }
   const {
     interactive = null,
     target = null,
@@ -6178,6 +6255,7 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
       prUrls: prUrls && prUrls.length ? prUrls : null,
       autoApply,
       focus,
+      agent: opts.agent,
       cols: 120,
       rows: 40,
     });
@@ -6306,7 +6384,13 @@ async function wfApplyReviewNoteFor(item, round, target) {
 /// mechanism behind both ways of applying a review — the button and the
 /// pre-authorized hand-back — so neither can drift into skipping the snapshot
 /// that versions the plan.
-async function wfRecordAndRevise(item, root, note) {
+async function wfRecordAndRevise(item, root, note, agent = undefined) {
+  // Asked before anything is recorded: cancelling must not leave a round
+  // queued that nobody launched.
+  if (agent === undefined) {
+    agent = await pickWfAgent(item, changeRoundPhase(item.meta.status));
+    if (agent === null) return;
+  }
   await invoke("workflow_request_changes", {
     project: item.project,
     slug: item.slug,
@@ -6320,6 +6404,7 @@ async function wfRecordAndRevise(item, root, note) {
   // status is that stage — `fresh` is already `changes-requested`.
   await launchWfAgent(fresh, changeRoundPhase(item.meta.status), root, null, {
     interactive: interactiveParam(item.meta.interactionDefault),
+    agent,
   });
 }
 
@@ -6351,7 +6436,9 @@ async function wfMaybeAutoApplyReview(project, slug, review) {
     );
     const note = await wfApplyReviewNoteFor(item, round, target);
     const root = state.open.get(`view:workflow:${key}`)?.el || null;
-    await wfRecordAndRevise(item, root, note);
+    // No question: a pre-authorized apply runs with no clicks, on the agent
+    // the item was last started on.
+    await wfRecordAndRevise(item, root, note, null);
   } catch (e) {
     // Never silent: the round declared work and clash failed to start it, so
     // the human has to know the button is theirs again.
@@ -6557,6 +6644,8 @@ async function wfShareDialog(item) {
               ))
             )
               return;
+            const agent = await pickWfAgent(item, `share to ${d.id}`);
+            if (agent === null) return;
             const sid = await invoke("share_workflow_via_agent", {
               project: item.project,
               slug: item.slug,
@@ -6564,6 +6653,7 @@ async function wfShareDialog(item) {
               skill: d.skill || null,
               text: current,
               ticket,
+              agent,
               cols: 120,
               rows: 40,
             });
@@ -6823,6 +6913,13 @@ function wfComposeReviewRound(item, { prUrls = null, target = null } = {}) {
     applyRow.append(applyBox, applyText);
     body.appendChild(applyRow);
 
+    const agentRow = document.createElement("label");
+    agentRow.className = "wf-review-opt wf-review-agent";
+    agentRow.appendChild(document.createTextNode("Run on "));
+    const agentSel = wfAgentSelect(item);
+    agentRow.appendChild(agentSel);
+    body.appendChild(agentRow);
+
     const done = (val) => {
       backdrop.remove();
       resolve(val);
@@ -6842,6 +6939,7 @@ function wfComposeReviewRound(item, { prUrls = null, target = null } = {}) {
         publish: picked(publishGroup, "local"),
         interactive: interactiveParam(picked(interactionGroup, "ask")),
         autoApply: applyBox.checked,
+        agent: agentSel.value,
         // Empty = the item's own diff (no PR scope); URLs pin the round to
         // those PRs, however many.
         prUrls: scopeUrls(),
@@ -7300,7 +7398,8 @@ function wfComposeChangeRequest({ item, target, annotations, onJump, prefill = "
     skillInput.spellcheck = false;
     skillInput.title =
       "Executor skill for this round. Leave empty for clash-workflow; a custom skill must honor the same file contract (docs/workflows.md).";
-    launchRow.append(interactionSel, skillInput);
+    const agentSel = wfAgentSelect(item);
+    launchRow.append(agentSel, interactionSel, skillInput);
     next.appendChild(launchRow);
     const syncLaunchRow = () => {
       launchRow.hidden = !launchNow.checked;
@@ -7361,6 +7460,7 @@ function wfComposeChangeRequest({ item, target, annotations, onJump, prefill = "
           ? {
               interactive: interactiveParam(interactionSel.value),
               skill: skillInput.value.trim() || null,
+              agent: agentSel.value,
             }
           : null,
       });
@@ -9009,7 +9109,7 @@ async function renderWfSubView(body, root, item, ts) {
     agentSel.onchange = () =>
       save({ agent: agentSel.value }, () => (agentSel.value = committed.agent));
     agentSel.title =
-      "Which agent CLI this item's sessions run on — per-item override of Settings → Workflows → Workflow agent. Applies to sessions launched from now on.";
+      "Which agent CLI this item's sessions run on — per-item override of Settings → Workflows → Workflow agent. Every start asks and pre-selects this; the pick is saved back here.";
     agentRow.appendChild(agentSel);
     agents.appendChild(agentRow);
 
@@ -9682,20 +9782,17 @@ function showNewSessionModal() {
 
 /// Pre-select the configured default agent on every open — the choice is
 /// made per session, so a previous pick is not carried over — and grey out
-/// OMP when its binary does not resolve, instead of letting the spawn fail.
+/// an agent whose binary does not resolve, instead of letting the spawn fail.
 async function syncAgentPicker() {
-  let cfg = { defaultAgent: "claude", ompAvailable: true };
-  try {
-    cfg = await invoke("get_agent_settings");
-  } catch (_) {}
-  const omp = document.querySelector('input[name="ns-agent"][value="omp"]');
-  const wrap = $("ns-agent-omp-wrap");
-  omp.disabled = !cfg.ompAvailable;
-  wrap.classList.toggle("unavailable", !cfg.ompAvailable);
-  wrap.title = cfg.ompAvailable
-    ? "oh-my-pi"
-    : `omp not found (${cfg.ompBin || "omp"}) — set the OMP binary in Settings`;
-  const want = cfg.defaultAgent === "omp" && cfg.ompAvailable ? "omp" : "claude";
+  const cfg = await wfAgentSettings();
+  for (const c of wfAgentChoices(cfg)) {
+    const input = document.querySelector(`input[name="ns-agent"][value="${c.value}"]`);
+    const wrap = $(`ns-agent-${c.value}-wrap`);
+    input.disabled = !c.available;
+    wrap.classList.toggle("unavailable", !c.available);
+    wrap.title = c.available ? (c.value === "omp" ? "oh-my-pi" : "Claude Code") : c.reason;
+  }
+  const want = wfAgentDefault("", { ...cfg, workflowAgent: cfg.defaultAgent });
   document.querySelector(`input[name="ns-agent"][value="${want}"]`).checked = true;
 }
 

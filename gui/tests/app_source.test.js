@@ -379,7 +379,9 @@ test("a pre-authorized round applies itself through the same one mechanism", () 
   // Two entry points — the button and the hand-back — must not become two
   // implementations, or one of them ends up skipping the snapshot that
   // versions the plan.
-  assert.match(APP, /async function wfRecordAndRevise\(item, root, note\)/);
+  assert.match(APP, /async function wfRecordAndRevise\(item, root, note, agent = undefined\)/);
+  // The no-click path must not stop to ask which agent: it keeps the item's.
+  assert.match(APP, /wfRecordAndRevise\(item, root, note, null\)/);
   const mech = APP.slice(
     APP.indexOf("async function wfRecordAndRevise("),
     APP.indexOf("// Items whose auto-apply is in flight")
@@ -397,7 +399,7 @@ test("a pre-authorized round applies itself through the same one mechanism", () 
   // And the launch surface passes the checkbox through.
   assert.match(APP, /autoApply: picked\.autoApply,/);
   // …and reaches the backend, alongside the round's focus.
-  assert.match(APP, /autoApply,\n\s+focus,\n\s+cols: 120,/);
+  assert.match(APP, /autoApply,\n\s+focus,\n\s+agent: opts\.agent,\n\s+cols: 120,/);
 });
 
 test("a session share hands off without leaking credentials or the payload's shape", () => {
@@ -800,4 +802,18 @@ test("a change round is launched on the phase clash decided, never a hardcoded r
     !/launchWfAgent\(\s*[\w.]+,\s*"revise"/.test(APP),
     'a launch hardcoding "revise" is the bug this test exists for'
   );
+});
+
+test("every workflow start names its agent, and an unavailable one is greyed", () => {
+  // A launch that forgot the field would silently run on the item's old
+  // agent — the pick the human just made would be ignored.
+  for (const cmd of ["start_workflow_agent", "start_workflow_review_agent", "share_workflow_via_agent"]) {
+    const at = APP.indexOf(`invoke("${cmd}", {`);
+    assert.ok(at >= 0, cmd);
+    const call = APP.slice(at, APP.indexOf("});", at));
+    assert.match(call, /\bagent\b/, `${cmd} must pass the picked agent`);
+  }
+  // Shown, not hidden: the picker disables a missing binary with its reason.
+  assert.match(APP, /disabled: !c\.available,/);
+  assert.match(APP, /o\.disabled = !c\.available;/);
 });

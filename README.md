@@ -323,8 +323,14 @@ manual re-list.
 
 clash runs [OMP](https://omp.sh) (oh-my-pi, `omp`) sessions next to Claude
 Code ones; the choice is made per session (the GUI's new-session dialog, the
-TUI's last new-session prompt, or `:new --agent omp <path>`), and workflow
-items take `workflows.agent` (overridable per item in its ⚙ Settings tab).
+TUI's last new-session prompt, or `:new --agent omp <path>`), and every
+workflow start asks too — a picker for one-click starts, a *Run on* row in the
+review and change-request composers — pre-selecting the item's agent (its
+⚙ Settings tab, else `workflows.agent`) and saving the pick back to it, so a
+relaunch stays on it and an auto-applied round runs on it without asking. An
+agent whose binary does not resolve is greyed out with the reason, in these
+pickers and in the new-session dialog, and the backend refuses it before any
+set-up.
 An OMP session is the same row as any other — the GUI badges every row
 with its agent (`CC` for Claude Code, `OMP`) — and
 everything built around sessions applies:
@@ -338,7 +344,9 @@ everything built around sessions applies:
   omp's own events — a tool-approval prompt or an `ask` question reads as
   *prompting*. `/new` and `/resume` inside omp re-key the row like `/clear`.
 - **Skills.** The five `clash-*` skills are also installed into
-  `~/.omp/agent/skills/` (only when that directory exists).
+  `~/.omp/agent/skills/` at startup (when that directory exists) and again
+  before every OMP workflow launch, so an omp installed since startup still
+  has the skills its kickoff names.
 - **Workflows.** OMP workflow sessions launch with `workflows.omp_model`
   (empty = omp's own default model) instead of clash's Claude model ids.
 

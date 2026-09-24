@@ -1573,14 +1573,15 @@ pub(crate) fn omp_skills_root(settings: &clash::infrastructure::config::Config) 
 struct AgentSettings {
     default_agent: String,
     omp_bin: String,
-    /// Whether the omp binary resolves — the dialog greys the choice out
+    /// Whether each binary resolves — the pickers grey the choice out
     /// otherwise, rather than letting a spawn die with ENOENT.
     omp_available: bool,
+    claude_available: bool,
     workflow_agent: String,
     omp_model: String,
 }
 
-fn bin_available(bin: &str) -> bool {
+pub(crate) fn bin_available(bin: &str) -> bool {
     if bin.contains('/') {
         return expand_tilde(bin).is_file();
     }
@@ -1594,6 +1595,7 @@ fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
     AgentSettings {
         default_agent: cfg.default_agent().as_str().to_string(),
         omp_available: bin_available(&cfg.general.omp_bin),
+        claude_available: bin_available(&cfg.general.claude_bin),
         omp_bin: cfg.general.omp_bin,
         workflow_agent: clash::domain::entities::AgentKind::parse(&cfg.workflows.agent)
             .as_str()

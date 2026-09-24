@@ -41,6 +41,7 @@ test("the change-request composer opens without throwing", async () => {
     agentReviewRounds: () => [],
     roundFindings: () => null,
     interactiveParam: () => null,
+    wfAgentSelect: () => stubEl(),
     renderMarkdown: () => {},
     invoke: async () => ({}),
     uiConfirm: async () => false,

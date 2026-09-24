@@ -331,7 +331,7 @@
     <div id="new-session-modal">
       <h3>New session</h3>
       <div class="ns-agent" role="radiogroup" aria-label="Agent">
-        <label class="ns-agent-opt"><input type="radio" name="ns-agent" value="claude" checked /> Claude Code</label>
+        <label class="ns-agent-opt" id="ns-agent-claude-wrap"><input type="radio" name="ns-agent" value="claude" checked /> Claude Code</label>
         <label class="ns-agent-opt" id="ns-agent-omp-wrap"><input type="radio" name="ns-agent" value="omp" /> OMP</label>
       </div>
       <label>Working directory
@@ -367,6 +367,7 @@
   <script src="wf-prs.js"></script>
   <script src="wf-pr-scope.js"></script>
   <script src="wf-plan.js"></script>
+  <script src="wf-agent.js"></script>
   <script src="attention.js"></script>
   <script src="tour.js"></script>
   <script src="ws-ownership.js"></script>

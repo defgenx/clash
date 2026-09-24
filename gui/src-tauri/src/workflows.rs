@@ -1340,6 +1340,33 @@ struct ItemSessionSpawn<'a> {
     rows: u16,
 }
 
+/// The agent a launch runs on: the one picked for this start, recorded as the
+/// item's agent so a relaunch or an auto-applied round keeps it; otherwise the
+/// item's, then the global setting. Refused before any set-up when its binary
+/// does not resolve — a worktree checkout ending in ENOENT is a wasted minute.
+fn launch_agent(
+    state: &GuiState,
+    requested: Option<&str>,
+    meta: &mut clash::domain::workflow::WorkflowMeta,
+) -> Result<clash::domain::entities::AgentKind, String> {
+    if let Some(a) = requested.map(str::trim).filter(|a| !a.is_empty()) {
+        meta.agent = clash::domain::entities::AgentKind::parse(a)
+            .as_str()
+            .to_string();
+    }
+    let cfg = state.config.get();
+    let agent = clash::application::workflow::effective_agent(&meta.agent, &cfg.workflows.agent);
+    let bin = state.agents().bin(agent);
+    if !crate::bin_available(&bin) {
+        return Err(format!(
+            "agent-unavailable: {} not found ({}) — set its binary in Settings",
+            agent.as_str(),
+            bin
+        ));
+    }
+    Ok(agent)
+}
+
 async fn spawn_item_session(
     state: &GuiState,
     spawn: ItemSessionSpawn<'_>,
@@ -1359,6 +1386,11 @@ async fn spawn_item_session(
     let name = name.to_string();
     let cfg = state.config.get();
     let agent = clash::application::workflow::effective_agent(&meta.agent, &cfg.workflows.agent);
+    // Startup syncs the omp dir only when it already exists; an omp installed
+    // since then would otherwise start without the skills its kickoff names.
+    if agent == clash::domain::entities::AgentKind::Omp {
+        clash::infrastructure::skills::sync_unattended(&cfg.omp_dir());
+    }
     clash::infrastructure::hooks::registry::register(
         session_id,
         &name,
@@ -1436,6 +1468,7 @@ pub(crate) async fn start_workflow_agent(
     branch: Option<String>,
     skill: Option<String>,
     interactive: Option<bool>,
+    agent: Option<String>,
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
@@ -1461,6 +1494,7 @@ pub(crate) async fn start_workflow_agent(
     if meta.repo_path.trim().is_empty() {
         return Err("This item has no repository path — set repoPath in meta.json".to_string());
     }
+    launch_agent(&state, agent.as_deref(), &mut meta)?;
 
     // First launch: isolate the item in its own worktree + branch. The
     // branch defaults to the slug; when that name is taken the structured
@@ -1609,6 +1643,7 @@ pub(crate) async fn start_workflow_review_agent(
     pr_urls: Option<Vec<String>>,
     auto_apply: Option<bool>,
     focus: Option<String>,
+    agent: Option<String>,
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
@@ -1624,6 +1659,7 @@ pub(crate) async fn start_workflow_review_agent(
     if meta.repo_path.trim().is_empty() {
         return Err("This item has no repository path — set repoPath in meta.json".to_string());
     }
+    launch_agent(&state, agent.as_deref(), &mut meta)?;
     // An explain round is not a review: it judges nothing, so the only thing
     // that can stop it is another agent already writing this item's files.
     // Both explainer targets qualify — the plan explanation (what the work is
@@ -2817,6 +2853,7 @@ pub(crate) async fn share_workflow_via_agent(
     skill: Option<String>,
     text: String,
     ticket: Option<String>,
+    agent: Option<String>,
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
@@ -2832,10 +2869,12 @@ pub(crate) async fn share_workflow_via_agent(
     if text.trim().is_empty() {
         return Err("nothing to share".to_string());
     }
-    let meta = state
+    let mut meta = state
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
+    // Not persisted: a share is not a round, so it does not re-point the item.
+    launch_agent(&state, agent.as_deref(), &mut meta)?;
 
     // One file per send, named by item and stamp: a session that outlives the
     // click can still read what it was given, and two sends never collide.
