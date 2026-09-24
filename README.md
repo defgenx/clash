@@ -1001,7 +1001,7 @@ plan to its ticket the moment it's ready — same preview, same one-click send.
 **Who posts it is a setting, not a guess.** Per destination family you choose
 one of two, in *Settings → Workflows · sharing*:
 
-- **A Claude session** (the default) — through a skill you name (*Jira skill* /
+- **An agent session** (the default) — through a skill you name (*Jira skill* /
   *Chat skill*), or, with none named, using whatever tooling that session has
   connected: an MCP server for the destination, the CLI it would normally use.
   A named skill that isn't installed in that session falls back to the same
@@ -1120,7 +1120,7 @@ Claude Code's own per-session teams — the `session-<id>` scaffolding it
 writes for every session with a lone `team-lead` — are hidden from this list
 in both frontends; only real, user-managed teams show),
 `⌘K` clears the active terminal,
-and quit-stash on close. Closing a Claude tab (the `×`, `⌘W`, or
+and quit-stash on close. Closing a session tab (the `×`, `⌘W`, or
 middle-click) stashes its session — process stopped, conversation kept
 resumable — so closing a tab and stashing from the sidebar are the same
 linked action whichever way you trigger it; use Detach in the tab's
@@ -1136,7 +1136,7 @@ its tab, and closing a pane keeps its session reachable as a tab.
 An **empty pane** is a quick-start surface: right-click it (or, on a
 fresh workspace with nothing open, click the welcome screen) to pick
 what to launch straight into it — a terminal, a browser tab, or a new
-Claude session — the same unified menu as the `+` ghost tab. A
+session — the same unified menu as the `+` ghost tab. A
 labeled `TUI` badge-button in the sidebar header launches the clash TUI
 alongside the GUI — gold when a TUI is running somewhere, grey when not.
 Clicking it opens a picker of terminals detected on the OS (Terminal,
@@ -1224,7 +1224,7 @@ rename, reload (restart on latest Claude), close (stash), detach (keep running),
 session, shell terminal, browser, or view — renames via double-click on
 its label or the context menu; Claude renames go through the registry
 (propagating to the TUI and sidebar), the others are display-only.
-`Shift+Enter` inserts a newline in Claude session terminals instead of
+`Shift+Enter` inserts a newline in agent session terminals instead of
 submitting (plain `Enter` still submits; shells are untouched).
 `⌘C` copies the terminal selection and `⌘V` pastes (use `Ctrl+Shift+C`/
 `Ctrl+Shift+V` on Linux); plain `Ctrl+C` still sends an interrupt to the
@@ -1236,7 +1236,7 @@ selects the word under the pointer. In the **TUI**, copy/paste is your
 terminal's own — selection and paste work exactly as in any full-screen
 program (e.g. ⌥-drag to select in iTerm2), since attach is raw passthrough.
 The tab strip ends in a `+` ghost tab (same menu as the topbar button):
-a terminal per detected shell, a browser tab, or a new Claude session.
+a terminal per detected shell, a browser tab, or a new session.
 
 The details panel (ⓘ) is a compact overview — live status, branch,
 project, CWD, summary. Conversation, Subagents, and Diff open as full
@@ -1249,7 +1249,7 @@ repository. (The local diff opens as an in-app tab, not in the browser.)
 Browser tabs are first-class tabs (`⌘⇧B` opens a blank one with the
 address bar focused, in its own split pane, also via the `+` new-tab
 menu): each lives in the
-tab strip and panes exactly like a terminal or Claude session — split it
+tab strip and panes exactly like a terminal or agent session — split it
 next to a terminal, move it between panes, zoom it, own it per
 workspace. Each browser pane has full chrome: back/forward,
 reload-or-stop (live loading state), an address bar that takes URLs or

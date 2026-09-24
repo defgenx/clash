@@ -132,7 +132,7 @@ fn render_conversation_section<'a>(
             )
         } else if is_claude {
             (
-                " ✦ Claude ".to_string(),
+                " ✦ Agent ".to_string(),
                 Style::default()
                     .fg(theme::CLAUDE_COLOR)
                     .add_modifier(Modifier::BOLD),

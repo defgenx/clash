@@ -21,7 +21,7 @@
         <div id="workspace-chips"></div>
         <button id="new-ws-btn" class="icon-btn mini" title="New workspace (⌘N)">+</button>
       </div>
-      <button id="new-session-btn" class="primary-action" title="Start a new Claude Code session (⌘T)">＋ New session</button>
+      <button id="new-session-btn" class="primary-action" title="Start a new session (⌘T)">＋ New session</button>
       <div id="search-wrap">
         <input id="search" type="text" placeholder="Search sessions…  ( / )" autocomplete="off" spellcheck="false" />
       </div>
@@ -109,7 +109,7 @@
           </select>
         </label>
         <label class="setting-row">OMP model
-          <input id="set-wf-omp-model" type="text" placeholder="omp's default" autocomplete="off" spellcheck="false" title="Model OMP workflow sessions launch with (omp's --model, fuzzy-matched). Empty uses omp's own default; Claude sessions keep clash's per-phase models." />
+          <input id="set-wf-omp-model" type="text" placeholder="omp's default" autocomplete="off" spellcheck="false" title="Model OMP workflow sessions launch with (omp's --model, fuzzy-matched). Empty uses omp's own default; Claude Code sessions keep clash's per-phase models." />
         </label>
         <label class="setting-row">PR skill
           <input id="set-wf-pr-skill" type="text" placeholder="myorg:github-pr" autocomplete="off" spellcheck="false" title="Skill workflow agents open pull requests with, so your org's PR conventions come along. Empty resets to the shipped default; 'none' disables it and the agent follows the repo's own conventions with gh. An item can override this in its ⚙ Settings tab." />
@@ -132,7 +132,7 @@
         <div class="settings-group">Workflows · sharing</div>
         <p class="settings-note">
           Where an item's <b>↗ Share…</b> can send its document, and <b>who does
-          the posting</b>. Per destination you pick one of two: a <b>Claude
+          the posting</b>. Per destination you pick one of two: an <b>agent
           session</b> — through a skill you name, or with whatever tooling that
           session has connected, an MCP server for instance — or <b>clash
           itself</b>, over HTTPS with the credentials below. Neither falls back
@@ -140,8 +140,8 @@
           ever sent without you pressing one.
         </p>
         <label class="setting-row inline">Jira posted by
-          <select id="set-wf-jira-transport" title="Who posts a share to Jira. A Claude session uses the skill below when you name one, otherwise whatever tooling it has connected. clash itself posts the comment over HTTPS with the site URL, email and token below.">
-            <option value="agent">A Claude session</option>
+          <select id="set-wf-jira-transport" title="Who posts a share to Jira. An agent session uses the skill below when you name one, otherwise whatever tooling it has connected. clash itself posts the comment over HTTPS with the site URL, email and token below.">
+            <option value="agent">An agent session</option>
             <option value="clash">clash itself</option>
           </select>
         </label>
@@ -159,7 +159,7 @@
         </label>
         <label class="setting-row inline">Slack / Discord posted by
           <select id="set-wf-chat-transport" title="Who posts a share to Slack or Discord. Decision notifications below are not affected — they always use the webhook.">
-            <option value="agent">A Claude session</option>
+            <option value="agent">An agent session</option>
             <option value="clash">clash itself</option>
           </select>
         </label>

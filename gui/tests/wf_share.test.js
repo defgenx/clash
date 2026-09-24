@@ -85,7 +85,7 @@ test("clash's own route fails loudly rather than falling back", () => {
   assert.equal(unconfigured.route, "clash", "still the chosen route, not a silent swap");
   assert.equal(unconfigured.enabled, false);
   assert.match(unconfigured.hint, /credentials are missing/);
-  assert.match(unconfigured.hint, /switch this destination to a Claude session/);
+  assert.match(unconfigured.hint, /switch this destination to an agent session/);
   // A skill is irrelevant on this route and must not leak into it.
   assert.equal(
     shareDestination("slack", "l", { transport: "clash", skill: "myorg:x", clientConfigured: true })

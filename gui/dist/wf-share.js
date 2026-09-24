@@ -130,7 +130,7 @@
         enabled: clientConfigured,
         hint: clientConfigured
           ? "clash posts it directly"
-          : "clash posts this one directly, but its credentials are missing — fill them in, or switch this destination to a Claude session in Settings → Workflows",
+          : "clash posts this one directly, but its credentials are missing — fill them in, or switch this destination to an agent session in Settings → Workflows",
       };
     }
     return {
@@ -140,8 +140,8 @@
       skill: named,
       enabled: true,
       hint: named
-        ? `in a Claude session, via the ${named} skill — spends tokens`
-        : "in a Claude session, using the tools it has connected — spends tokens",
+        ? `in an agent session, via the ${named} skill — spends tokens`
+        : "in an agent session, using the tools it has connected — spends tokens",
     };
   }
 

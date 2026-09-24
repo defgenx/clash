@@ -31,7 +31,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
     TourStep {
         title: "Sessions View",
         body: &[
-            "The Sessions view is your home screen. It shows every Claude Code session across all your projects.",
+            "The Sessions view is your home screen. It shows every session across all your projects.",
             "",
             "Sessions are grouped into four sections: Active (working), Done (idle/stashed), Fail (errored), and External — wild claude processes started outside clash, kept at the bottom so they don't interleave with clash-managed rows.",
             "Within each section, sessions are sorted alphabetically by name for stable ordering.",
@@ -42,10 +42,10 @@ pub const TOUR_STEPS: &[TourStep] = &[
             "Status indicators:",
         ],
         keys: &[
-            ("PROMPTING", "Claude needs your approval (tool use)"),
-            ("WAITING", "Claude is waiting for your text input"),
-            ("THINKING", "Claude is reasoning / generating"),
-            ("RUNNING", "Claude is actively executing tools"),
+            ("PROMPTING", "The agent needs your approval (tool use)"),
+            ("WAITING", "The agent is waiting for your text input"),
+            ("THINKING", "The agent is reasoning / generating"),
+            ("RUNNING", "The agent is actively executing tools"),
             ("STARTING", "Session just spawned"),
             ("IDLE", "Session exited or inactive"),
         ],
@@ -78,7 +78,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
     TourStep {
         title: "Attaching to Sessions",
         body: &[
-            "Press  a  to attach inline — the TUI suspends and you interact with Claude directly. Press  o  to open in a new pane or tab instead (clash stays visible).",
+            "Press  a  to attach inline — the TUI suspends and you interact with the agent directly. Press  o  to open in a new pane or tab instead (clash stays visible).",
             "",
             "A status bar at the bottom shows the session name, project, and git branch while attached.",
             "",
@@ -133,7 +133,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
             ("\u{229e}", "Session open in external pane/tab"),
             (
                 "\u{1f33f}",
-                "Wild Claude — outside clash. Grouped under EXTERNAL section. `a` takes over and attaches (latest conversation, one confirm). `:external` lists them all",
+                "Wild session — outside clash. Grouped under EXTERNAL section. `a` takes over and attaches (latest conversation, one confirm). `:external` lists them all",
             ),
             ("\u{229f}", "Session in a git worktree"),
         ],

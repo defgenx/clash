@@ -4122,7 +4122,7 @@ async function showTeamDetails(team) {
   const membersEl = $("d-members");
   if (members.length === 0) {
     membersEl.innerHTML =
-      "<p class='hint'>none yet — add one, or agents join when Claude spawns them into this team</p>";
+      "<p class='hint'>none yet — add one, or agents join when Claude Code spawns them into this team</p>";
   }
   for (const m of members) {
     const sess = runningSessionForMember(m);
@@ -11993,7 +11993,7 @@ function showNewTabMenu(x, y) {
     },
     null,
     {
-      label: "New Claude session…",
+      label: "New session…",
       icon: "plus",
       hint: "⌘T",
       action: showNewSessionModal,

@@ -84,7 +84,7 @@
       target: "terminal-host",
       title: "The terminal",
       body:
-        "Sessions render here. ⌥-drag selects text even while Claude is using the mouse, " +
+        "Sessions render here. ⌥-drag selects text even while the agent is using the mouse, " +
         "⌘C copies, links are clickable. Everything else is your terminal as usual.",
     },
     {
