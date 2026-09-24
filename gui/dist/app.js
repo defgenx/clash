@@ -1394,13 +1394,12 @@ function sessionItem(s) {
   const stLabel = document.createElement("span");
   stLabel.className = `status-label ${st.cls}`;
   stLabel.textContent = `${st.icon} ${st.label}`;
-  if (s.agent === "omp") {
-    const agentBadge = document.createElement("span");
-    agentBadge.className = "agent-badge";
-    agentBadge.textContent = "OMP";
-    agentBadge.title = "Runs on OMP (oh-my-pi)";
-    sub.appendChild(agentBadge);
-  }
+  const isOmp = s.agent === "omp";
+  const agentBadge = document.createElement("span");
+  agentBadge.className = "agent-badge";
+  agentBadge.textContent = isOmp ? "OMP" : "CC";
+  agentBadge.title = isOmp ? "Runs on OMP (oh-my-pi)" : "Runs on Claude Code";
+  sub.appendChild(agentBadge);
   sub.appendChild(stLabel);
   // Queued follow-ups: the whole point is to be visible while the session is
   // busy, which is exactly when you are looking at this list and not at the

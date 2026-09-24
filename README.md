@@ -325,7 +325,8 @@ clash runs [OMP](https://omp.sh) (oh-my-pi, `omp`) sessions next to Claude
 Code ones; the choice is made per session (the GUI's new-session dialog, the
 TUI's last new-session prompt, or `:new --agent omp <path>`), and workflow
 items take `workflows.agent` (overridable per item in its ⚙ Settings tab).
-An OMP session is the same row as any other — OMP badge in the GUI — and
+An OMP session is the same row as any other — the GUI badges every row
+with its agent (`CC` for Claude Code, `OMP`) — and
 everything built around sessions applies:
 
 - **Identity and resume.** clash creates the transcript itself with
