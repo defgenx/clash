@@ -5,6 +5,11 @@ description: Run one plan review round on a clash Workflow item — judge plan.m
 
 # clash-plan-review — one plan review round per run
 
+> **Agent CLI.** clash launches this skill under Claude Code or OMP (oh-my-pi).
+> `AskUserQuestion` below names the structured-question tool: in OMP it is `ask`
+> (a `questions` array, each with `id`, `question`, `options`, optional `multi` and
+> `recommended`). Every other instruction is the same under both.
+
 You are one of clash's two **reviewer** skills. This one reviews the **plan**
 — `plan.md`, before it is implemented. Its sibling, `clash-code-review`,
 reviews the diff; the two are deliberately separate skills because reviewing a

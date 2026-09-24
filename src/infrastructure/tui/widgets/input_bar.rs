@@ -23,6 +23,10 @@ pub fn render_input_bar(
             "Start in worktree? (y/n): ",
             Style::default().fg(theme::PROMPT_COLOR),
         ),
+        InputMode::NewSessionAgent => (
+            "Agent (claude/omp): ",
+            Style::default().fg(theme::PROMPT_COLOR),
+        ),
         InputMode::TeamDescription => (
             "Team description: ",
             Style::default().fg(theme::PROMPT_COLOR),

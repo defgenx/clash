@@ -23,6 +23,7 @@
 ## Features
 
 - **Session management** — list, attach, detach, create, stash, and delete Claude Code sessions
+- **Two agent CLIs** — every new session picks **Claude Code** or **OMP** ([oh-my-pi](https://omp.sh), `omp`); `general.default_agent` decides which is pre-selected. Status, resume, stash/reload, subagents, conversation view, wild-process takeover, queued follow-ups, the embedded skills and every workflow round work on both — see [OMP sessions](#omp-sessions)
 - **Inline terminal** — attach to sessions with a full terminal passthrough, status bar showing session name / project / branch
 - **Real-time status** — instant status detection via hooks, daemon PTY screen analysis, and JSONL parsing (three-layer system)
 - **Animated status icons** — active sessions show animated spinners and pulsing icons for visual feedback
@@ -84,7 +85,7 @@ as a regular desktop application, discoverable like any other app:
 ### Requirements
 
 - Rust 1.75+ (for building from source)
-- Claude Code CLI (`claude`)
+- Claude Code CLI (`claude`), and/or OMP (`omp`, oh-my-pi) for OMP sessions
 
 ## Usage
 
@@ -159,7 +160,7 @@ The Wild detection runs in the background every ~2s. clash surfaces every wild c
 | `F` | Cancel a queued follow-up (picker when several are pending) |
 | `o` | Open in new pane / tab / window |
 | `O` | Open ALL running sessions (smart layout) |
-| `c` / `n` | New session (two-step: directory, then name) |
+| `c` / `n` | New session (directory, name, worktree?, then agent: `claude`/`omp`) |
 | `s` | Stash / unstash session (stop process, keep in registry) |
 | `w` | Spawn session in a git worktree |
 | `Tab` | Expand / collapse subagents |
@@ -306,7 +307,8 @@ manual re-list.
 | `:member prompt <member> <text>` | Set a member's system prompt |
 | `:member rename <old> <new>` | Rename a member |
 | `:create task <team> <subject>` | Create a task |
-| `:new [path]` | Spawn a new session |
+| `:new [path]` | Spawn a new session (default agent) |
+| `:new --agent <claude\|omp> <path>` | Spawn a new Claude Code or OMP session |
 | `:new --preset <name>` | Spawn session from a preset |
 | `:diff` | View git diff for current session |
 | `:rename <name>` | Rename session (from detail view) |
@@ -316,6 +318,31 @@ manual re-list.
 | `:reload` | Re-read `config.toml` now (it is watched, so this is only ever a nudge) |
 | `:update` | Update clash |
 | `:quit` | Exit |
+
+### OMP sessions
+
+clash runs [OMP](https://omp.sh) (oh-my-pi, `omp`) sessions next to Claude
+Code ones; the choice is made per session (the GUI's new-session dialog, the
+TUI's last new-session prompt, or `:new --agent omp <path>`), and workflow
+items take `workflows.agent` (overridable per item in its ⚙ Settings tab).
+An OMP session is the same row as any other — OMP badge in the GUI — and
+everything built around sessions applies:
+
+- **Identity and resume.** clash creates the transcript itself with
+  `omp --resume ~/.omp/agent/sessions/<bucket>/<timestamp>_<id>.jsonl`, so the
+  file's uuid is the session id exactly like `claude --session-id`. A resume
+  reopens that file (omp appends in place — no fork to chase).
+- **Status.** A clash-owned extension (`~/.claude/clash/hooks/omp-status.js`,
+  loaded with `omp -e`) writes the same status files as the Claude hook, from
+  omp's own events — a tool-approval prompt or an `ask` question reads as
+  *prompting*. `/new` and `/resume` inside omp re-key the row like `/clear`.
+- **Skills.** The five `clash-*` skills are also installed into
+  `~/.omp/agent/skills/` (only when that directory exists).
+- **Workflows.** OMP workflow sessions launch with `workflows.omp_model`
+  (empty = omp's own default model) instead of clash's Claude model ids.
+
+Settings: `general.omp_bin`, `general.default_agent`, `paths.omp_dir`,
+`workflows.agent`, `workflows.omp_model`. Details: [docs/hooks.md](docs/hooks.md#omp-sessions).
 
 ## Configuration
 
@@ -355,10 +382,13 @@ schema_version = 2
 
 [general]
 claude_bin = "claude"      # name on PATH, or an absolute path
+omp_bin = "omp"            # OMP (oh-my-pi) binary for OMP sessions
+default_agent = "claude"   # agent new sessions pre-select: claude | omp
 debounce_ms = 200          # filesystem-watcher debounce
 
 [paths]
 claude_dir = ""            # empty = ~/.claude
+omp_dir = ""               # OMP agent dir; empty = ~/.omp/agent
 scratch_dir = ""           # empty = <claude_dir>/clash/scratch
 workflows_dir = ""         # empty = <claude_dir>/clash/workflows
 
@@ -376,6 +406,8 @@ enabled = true
 title_attention = true     # "clash (2!)" in the window title
 
 [workflows]
+agent = "claude"           # agent CLI workflow sessions run on: claude | omp (per-item override)
+omp_model = ""             # --model for OMP workflow sessions; empty = omp's default
 pr_skill = "hivebrite-engineering:github-pr"  # skill the PR phase opens PRs with; "none" disables
 forge = "auto"             # code forge for PR features: auto | github | none
 slack_webhook = ""         # Slack incoming webhook for sharing + notifications

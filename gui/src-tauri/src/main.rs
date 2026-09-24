@@ -126,6 +126,13 @@ impl GuiState {
         self.config.get().general.claude_bin
     }
 
+    /// Every agent CLI's binary and data dirs, read live like `claude_bin`.
+    fn agents(&self) -> clash::infrastructure::agent::Agents {
+        let mut agents = clash::infrastructure::agent::Agents::from_config(&self.config.get());
+        agents.claude_projects_dir = self.backend.projects_dir();
+        agents
+    }
+
     /// Custom IDE entries from config.toml, merged into editor detection.
     fn config_ides(&self) -> Vec<clash::infrastructure::config::IdeEntry> {
         self.config.get().ides
@@ -417,12 +424,12 @@ fn has_resumable_conversation(state: &GuiState, session_id: &str, cwd: &str) -> 
     // Canonical-path-aware check shared with the TUI (handles symlinked cwds
     // like /tmp → /private/tmp, which Claude encodes from the resolved path).
     // Covers both the raw and canonicalized encodings of `cwd`.
-    if !cwd.is_empty() && state.backend.has_resumable_transcript(cwd, session_id) {
+    let projects = state.backend.projects_dir();
+    if clash::infrastructure::agent::claude_transcript_exists(&projects, cwd, session_id) {
         return true;
     }
     // Fall back to dirs derived from the last-known session list (a daemon-only
     // session may record a different cwd / project_path than the one passed in).
-    let projects = state.backend.projects_dir();
     let dirs = project_dir_candidates(state, "", session_id);
     dirs.iter().any(|d| {
         let f = projects.join(d).join(format!("{session_id}.jsonl"));
@@ -485,19 +492,7 @@ async fn open_session(
         // Resolve through both — registry lineage, then the on-disk fork
         // chain — so we resume the conversation the user actually left off
         // in, and record the result so the registry stays current.
-        let resume_id = {
-            let registry = clash::infrastructure::hooks::registry::load();
-            clash::infrastructure::hooks::registry::resolve_latest_conversation(
-                &registry,
-                &state.backend.projects_dir(),
-                &cwd,
-                &session_id,
-            )
-        };
-        clash::infrastructure::hooks::registry::record_resumed_conversation(
-            &session_id,
-            &resume_id,
-        );
+        //
         // `claude --resume <id>` only works when the conversation transcript
         // exists on disk. A session created with `--session-id` but never
         // messaged (e.g. a fresh tab stashed on quit, then restored) — or a
@@ -505,10 +500,14 @@ async fn open_session(
         // makes Claude exit 1 ("No conversation found") and leaves a dead
         // terminal where Enter does nothing. In that case start the session
         // FRESH under the GUI's id so it behaves like a brand-new session.
-        let args = if has_resumable_conversation(&state, &resume_id, &cwd) {
-            vec!["--resume".to_string(), resume_id]
-        } else {
-            vec!["--session-id".to_string(), session_id.clone()]
+        // `Agents::relaunch_with` does all of that, for either agent.
+        let launch = {
+            let registry = clash::infrastructure::hooks::registry::load();
+            state
+                .agents()
+                .relaunch_with(&registry, &session_id, Some(&cwd), |conv| {
+                    has_resumable_conversation(&state, conv, &cwd)
+                })
         };
         // Clear the stale "idle" hook status so the daemon's Starting/Running
         // status can take effect in reconciliation (same as the TUI's resume).
@@ -517,12 +516,11 @@ async fn open_session(
             &session_id,
             "starting",
         );
-        let claude_bin = state.claude_bin();
         client
             .create_session(
                 &session_id,
-                &claude_bin,
-                &args,
+                &launch.bin,
+                &launch.args,
                 if cwd.is_empty() { None } else { Some(&cwd) },
                 name,
                 cols,
@@ -1015,8 +1013,9 @@ fn set_notifications_enabled(state: State<'_, GuiState>, enabled: bool) {
         .store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Create a brand-new Claude session in `cwd` (same pipeline as the TUI's `n`:
-/// register → save name → status starting → daemon spawn with --session-id).
+/// Create a brand-new agent session in `cwd` (same pipeline as the TUI's `n`:
+/// register → save name → status starting → daemon spawn). `agent` is
+/// `claude` | `omp`; absent means the configured default.
 #[tauri::command]
 async fn create_new_session(
     state: State<'_, GuiState>,
@@ -1024,7 +1023,12 @@ async fn create_new_session(
     cwd: String,
     cols: u16,
     rows: u16,
+    agent: Option<String>,
 ) -> Result<String, String> {
+    let agent = agent
+        .as_deref()
+        .map(clash::domain::entities::AgentKind::parse)
+        .unwrap_or_else(|| state.config.get().default_agent());
     let cwd = cwd.trim();
     if cwd.is_empty() {
         return Err("Working directory is required".to_string());
@@ -1046,7 +1050,7 @@ async fn create_new_session(
         name.to_string()
     };
 
-    clash::infrastructure::hooks::registry::register(&session_id, &derived_name, cwd, None);
+    clash::infrastructure::hooks::registry::register(&session_id, &derived_name, cwd, None, agent);
     clash::infrastructure::hooks::save_session_name(
         state.backend.base_dir(),
         &session_id,
@@ -1059,14 +1063,14 @@ async fn create_new_session(
         "starting",
     );
 
-    let claude_bin = state.claude_bin();
+    let launch = state.agents().fresh(agent, &session_id, cwd);
     let mut control = state.control.lock().await;
     ensure_connected(&mut control).await;
     control
         .create_session(
             &session_id,
-            &claude_bin,
-            &["--session-id".to_string(), session_id.clone()],
+            &launch.bin,
+            &launch.args,
             Some(cwd),
             if name.is_empty() {
                 None
@@ -1345,6 +1349,8 @@ enum WatchRoot {
     Workflows,
     /// The config directory. Reloads `config.toml` and emits `config-changed`.
     Config,
+    /// `~/.omp/agent/sessions` — OMP transcripts. Invalidates their buckets.
+    OmpSessions,
 }
 
 /// Build (or rebuild) the single watcher covering every root.
@@ -1366,12 +1372,16 @@ fn rebuild_watcher(app: &tauri::AppHandle) {
         let _ = std::fs::create_dir_all(dir);
     }
 
-    let roots = vec![
+    let mut roots = vec![
         (WatchRoot::Projects, state.backend.projects_dir()),
         (WatchRoot::Scratch, scratch),
         (WatchRoot::Workflows, workflows),
         (WatchRoot::Config, config_dir),
     ];
+    // Only when omp is installed: watching it must not create `~/.omp`.
+    if let Some(omp) = state.backend.omp_sessions_dir().filter(|d| d.is_dir()) {
+        roots.push((WatchRoot::OmpSessions, omp));
+    }
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(WatchRoot, Vec<PathBuf>)>();
     let watcher =
@@ -1396,6 +1406,18 @@ fn rebuild_watcher(app: &tauri::AppHandle) {
                         // Non-jsonl change (sessions-index.json, a new project
                         // dir…) — full rescan on the next load.
                         state.backend.invalidate_session_cache_all();
+                    }
+                }
+                WatchRoot::OmpSessions => {
+                    // Transcripts only: omp writes lock/temp siblings on every
+                    // append, and a full rescan per write would be pointless.
+                    let jsonl: Vec<PathBuf> = paths
+                        .iter()
+                        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+                        .cloned()
+                        .collect();
+                    if !jsonl.is_empty() {
+                        state.backend.invalidate_session_cache(&jsonl);
                     }
                 }
                 WatchRoot::Scratch => {
@@ -1537,6 +1559,87 @@ fn set_path_setting(
             .map_err(|e| e.to_string())?;
     }
     Ok(effective(&state.config.get()))
+}
+
+/// The OMP agent dir skills are mirrored into, when omp is installed.
+pub(crate) fn omp_skills_root(settings: &clash::infrastructure::config::Config) -> Option<PathBuf> {
+    let dir = settings.omp_dir();
+    dir.is_dir().then_some(dir)
+}
+
+/// Agent-CLI settings for the new-session dialog and Settings panel.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentSettings {
+    default_agent: String,
+    omp_bin: String,
+    /// Whether the omp binary resolves — the dialog greys the choice out
+    /// otherwise, rather than letting a spawn die with ENOENT.
+    omp_available: bool,
+    workflow_agent: String,
+    omp_model: String,
+}
+
+fn bin_available(bin: &str) -> bool {
+    if bin.contains('/') {
+        return expand_tilde(bin).is_file();
+    }
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|d| d.join(bin).is_file()))
+}
+
+#[tauri::command]
+fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
+    let cfg = state.config.get();
+    AgentSettings {
+        default_agent: cfg.default_agent().as_str().to_string(),
+        omp_available: bin_available(&cfg.general.omp_bin),
+        omp_bin: cfg.general.omp_bin,
+        workflow_agent: clash::domain::entities::AgentKind::parse(&cfg.workflows.agent)
+            .as_str()
+            .to_string(),
+        omp_model: cfg.workflows.omp_model,
+    }
+}
+
+/// Write one agent-CLI setting to the shared `config.toml`. `key` is one of
+/// `general.default_agent`, `general.omp_bin`, `workflows.agent`,
+/// `workflows.omp_model`; an empty value resets it to the default. An
+/// absolute `omp_bin` must exist, like `claude_bin`.
+#[tauri::command]
+fn set_agent_setting(
+    state: State<'_, GuiState>,
+    key: String,
+    value: String,
+) -> Result<AgentSettings, String> {
+    let value = value.trim();
+    let value = match key.as_str() {
+        "general.default_agent" | "workflows.agent" if !value.is_empty() => {
+            clash::domain::entities::AgentKind::parse(value)
+                .as_str()
+                .to_string()
+        }
+        "general.omp_bin" if value.contains('/') => {
+            let expanded = expand_tilde(value);
+            if !expanded.is_file() {
+                return Err(format!("Not a file: {}", expanded.display()));
+            }
+            value.to_string()
+        }
+        "general.default_agent" | "workflows.agent" | "general.omp_bin" | "workflows.omp_model" => {
+            value.to_string()
+        }
+        other => return Err(format!("Not an agent setting: {other}")),
+    };
+    let result = if value.is_empty() {
+        state.config.reset_values(&[key.as_str()])
+    } else {
+        state
+            .config
+            .set_json(&[(key.as_str(), serde_json::Value::String(value))])
+    };
+    result.map_err(|e| e.to_string())?;
+    Ok(get_agent_settings(state))
 }
 
 /// The `claude` binary sessions are spawned with, for the Settings field.
@@ -2040,7 +2143,12 @@ async fn create_worktree_session(
     project_path: String,
     cols: u16,
     rows: u16,
+    agent: Option<String>,
 ) -> Result<String, String> {
+    let agent = agent
+        .as_deref()
+        .map(clash::domain::entities::AgentKind::parse)
+        .unwrap_or_else(|| state.config.get().default_agent());
     let name = name.trim().to_string();
     if name.is_empty() {
         return Err("Name is required".to_string());
@@ -2054,6 +2162,7 @@ async fn create_worktree_session(
         &name,
         &wt_str,
         Some(git_branch.as_str()),
+        agent,
     );
     clash::infrastructure::hooks::save_session_name(
         state.backend.base_dir(),
@@ -2067,14 +2176,14 @@ async fn create_worktree_session(
         "starting",
     );
 
-    let claude_bin = state.claude_bin();
+    let launch = state.agents().fresh(agent, &session_id, &wt_str);
     let mut control = state.control.lock().await;
     ensure_connected(&mut control).await;
     control
         .create_session(
             &session_id,
-            &claude_bin,
-            &["--session-id".to_string(), session_id.clone()],
+            &launch.bin,
+            &launch.args,
             Some(&wt_str),
             Some(name),
             cols,
@@ -2168,14 +2277,23 @@ async fn takeover_wild(
 ) -> Result<(), String> {
     clash::infrastructure::process_scan::kill_wild_process(pid).await;
 
-    let claude_bin = state.claude_bin();
+    // A wild row is an unregistered transcript: `relaunch` finds its agent
+    // from where the transcript lives.
+    let launch = {
+        let registry = clash::infrastructure::hooks::registry::load();
+        state.agents().relaunch(
+            &registry,
+            &session_id,
+            if cwd.is_empty() { None } else { Some(&cwd) },
+        )
+    };
     let mut control = state.control.lock().await;
     ensure_connected(&mut control).await;
     control
         .create_session(
             &session_id,
-            &claude_bin,
-            &["--resume".to_string(), session_id.clone()],
+            &launch.bin,
+            &launch.args,
             if cwd.is_empty() { None } else { Some(&cwd) },
             None,
             cols,
@@ -3164,7 +3282,8 @@ fn main() {
     let state = GuiState {
         backend: FsBackend::new(data_dir)
             .with_scratch_dir(settings.paths.scratch_dir.clone())
-            .with_workflows_dir(settings.paths.workflows_dir.clone()),
+            .with_workflows_dir(settings.paths.workflows_dir.clone())
+            .with_omp_dir(Some(settings.omp_dir())),
         config,
         previous: Mutex::new(Vec::new()),
         missing_streaks: Mutex::new(HashMap::new()),
@@ -3198,6 +3317,10 @@ fn main() {
     // wrote it is a decision, and the frontend drives that at boot
     // (get_skills_plan → popup/setting → apply_skills_decision).
     let synced = clash::infrastructure::skills::sync_unattended(state.backend.base_dir());
+    // OMP reads the same skills from `<omp_dir>/skills/`; only where omp is.
+    if let Some(omp) = omp_skills_root(&settings) {
+        clash::infrastructure::skills::sync_unattended(&omp);
+    }
     if !synced.updated.is_empty() || !synced.removed.is_empty() {
         tracing::info!(
             "skills synced (updated: {:?}, removed: {:?})",
@@ -3350,6 +3473,8 @@ fn main() {
             set_scratch_dir,
             get_claude_bin,
             set_claude_bin,
+            get_agent_settings,
+            set_agent_setting,
             config_get,
             config_set,
             config_migrate_gui_blob,

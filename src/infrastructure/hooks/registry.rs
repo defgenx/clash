@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::clash_data_dir;
+use crate::domain::entities::AgentKind;
 
 const REGISTRY_FILE: &str = "sessions.json";
 
@@ -68,6 +69,10 @@ pub struct ClashSession {
     /// the pre-`/clear` transcript stays hidden.
     #[serde(default)]
     pub previous_ids: Vec<String>,
+    /// Which agent CLI the session runs; absent in entries older clash wrote,
+    /// which were all Claude Code.
+    #[serde(default)]
+    pub agent: AgentKind,
 }
 
 /// Path to the session registry file.
@@ -251,7 +256,13 @@ fn write_registry(registry: &HashMap<String, ClashSession>) {
 }
 
 /// Register a new session in the registry.
-pub fn register(session_id: &str, name: &str, cwd: &str, source_branch: Option<&str>) {
+pub fn register(
+    session_id: &str,
+    name: &str,
+    cwd: &str,
+    source_branch: Option<&str>,
+    agent: AgentKind,
+) {
     let Some(mut registry) = load_for_mutation("register") else {
         return;
     };
@@ -265,6 +276,7 @@ pub fn register(session_id: &str, name: &str, cwd: &str, source_branch: Option<&
             created_at: chrono::Utc::now().to_rfc3339(),
             source_branch: source_branch.map(|s| s.to_string()),
             previous_ids: Vec::new(),
+            agent,
         },
     );
     save_checked(&registry, "register", false);
@@ -291,6 +303,18 @@ fn entry_answers_to(key: &str, entry: &ClashSession, session_id: &str) -> bool {
     key == session_id
         || entry.claude_session_id == session_id
         || entry.previous_ids.iter().any(|p| p == session_id)
+}
+
+/// The agent CLI of the entry answering to `session_id` (key, current
+/// conversation or lineage); `None` for an id the registry does not know.
+pub fn registered_agent(
+    registry: &HashMap<String, ClashSession>,
+    session_id: &str,
+) -> Option<AgentKind> {
+    registry
+        .iter()
+        .find(|(k, v)| entry_answers_to(k, v, session_id))
+        .map(|(_, v)| v.agent)
 }
 
 /// Resolve a possibly-stale session ID to the Claude session ID that should
@@ -423,7 +447,8 @@ pub fn resolve_latest_conversation(
     session_id: &str,
 ) -> String {
     let rid = resolve_resume_id(registry, session_id).unwrap_or_else(|| session_id.to_string());
-    if cwd.is_empty() {
+    // Only `claude --resume` forks; `omp --resume <file>` appends to the file.
+    if cwd.is_empty() || registered_agent(registry, session_id) == Some(AgentKind::Omp) {
         return rid;
     }
     chase_resume_forks(projects_dir, cwd, &rid)
@@ -496,7 +521,10 @@ fn rekey_forked_entries(
     let mut out: HashMap<String, ClashSession> = HashMap::with_capacity(registry.len());
     let mut changed = false;
     for (key, mut entry) in registry {
-        if entry.cwd.is_empty() || entry.claude_session_id.is_empty() {
+        if entry.cwd.is_empty()
+            || entry.claude_session_id.is_empty()
+            || entry.agent != AgentKind::Claude
+        {
             out.insert(key, entry);
             continue;
         }
@@ -600,6 +628,7 @@ mod tests {
                 created_at: String::new(),
                 source_branch: None,
                 previous_ids: Vec::new(),
+                agent: Default::default(),
             },
         );
 
@@ -638,6 +667,7 @@ mod tests {
             created_at: String::new(),
             source_branch: None,
             previous_ids: Vec::new(),
+            agent: Default::default(),
         }
     }
 
@@ -759,6 +789,7 @@ mod tests {
                 created_at: String::new(),
                 source_branch: Some("main".to_string()),
                 previous_ids: Vec::new(),
+                agent: Default::default(),
             },
         );
 
@@ -776,6 +807,7 @@ mod tests {
             created_at: String::new(),
             source_branch: None,
             previous_ids: Vec::new(),
+            agent: Default::default(),
         }
     }
 

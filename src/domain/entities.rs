@@ -355,6 +355,37 @@ pub enum SessionSource {
     Unknown,
 }
 
+/// Which coding-agent CLI a session runs. Persisted in the session registry
+/// (a missing field reads as `Claude`, the only agent older clash spawned) and
+/// carried on every [`Session`] so a resume relaunches the same agent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentKind {
+    #[default]
+    Claude,
+    /// oh-my-pi (`omp`).
+    Omp,
+}
+
+impl AgentKind {
+    /// Wire / config spelling (`claude`, `omp`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AgentKind::Claude => "claude",
+            AgentKind::Omp => "omp",
+        }
+    }
+
+    /// Lenient parse: anything unrecognised is `Claude`, matching serde's
+    /// missing-field default.
+    pub fn parse(s: &str) -> AgentKind {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "omp" | "oh-my-pi" => AgentKind::Omp,
+            _ => AgentKind::Claude,
+        }
+    }
+}
+
 /// Granular session status — detected by parsing the terminal screen content.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub enum SessionStatus {
@@ -425,11 +456,15 @@ impl std::fmt::Display for SessionStatus {
     }
 }
 
-/// A Claude Code session (from ~/.claude/projects/*/sessions-index.json).
+/// A coding-agent session: a Claude Code transcript under
+/// `~/.claude/projects/` or an OMP one under `~/.omp/agent/sessions/`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     #[serde(default)]
     pub id: String,
+    /// Which agent CLI owns this conversation.
+    #[serde(default)]
+    pub agent: AgentKind,
     #[serde(default)]
     pub project: String,
     #[serde(default)]

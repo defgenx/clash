@@ -26,8 +26,8 @@
       target: "new-session-btn",
       title: "Start a session",
       body:
-        "Launches a Claude Code session in any directory (⌘T). " +
-        "Tick “git worktree” to give it an isolated branch and folder.",
+        "Launches a Claude Code or OMP session in any directory (⌘T) — pick the agent at the top " +
+        "of the dialog. Tick “git worktree” to give it an isolated branch and folder.",
     },
     {
       id: "sessions",

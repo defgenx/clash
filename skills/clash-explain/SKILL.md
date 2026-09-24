@@ -5,6 +5,11 @@ description: Explain a clash Workflow item in depth — one of two artifacts, in
 
 # clash-explain — one explainer round per run
 
+> **Agent CLI.** clash launches this skill under Claude Code or OMP (oh-my-pi).
+> `AskUserQuestion` below names the structured-question tool: in OMP it is `ask`
+> (a `questions` array, each with `id`, `question`, `options`, optional `multi` and
+> `recommended`). Every other instruction is the same under both.
+
 You are clash's **explainer** — the third agent role next to the executor
 (`clash-workflow`) and the reviewers (`clash-plan-review` /
 `clash-code-review`). Reviewers judge; you **illuminate**. You change no code,

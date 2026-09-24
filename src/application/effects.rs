@@ -78,8 +78,10 @@ pub enum Effect {
     // ── Session effects ────────────────────────────────────────
     DaemonAttach {
         session_id: String,
-        /// CLI args for the subprocess. Empty means `--resume <session_id>`.
-        args: Vec<String>,
+        /// `Some(agent)` starts a brand-new session of that agent under
+        /// `session_id`; `None` resumes (or relaunches) the existing one with
+        /// whichever agent the registry records for it.
+        fresh: Option<crate::domain::entities::AgentKind>,
         /// Working directory for the subprocess.
         cwd: Option<String>,
         /// Optional session name to persist (for new sessions).
@@ -88,8 +90,6 @@ pub enum Effect {
     /// Start a session in the daemon without entering passthrough (background).
     DaemonStart {
         session_id: String,
-        /// CLI args for the subprocess. Empty means `--resume <session_id>`.
-        args: Vec<String>,
         /// Working directory for the subprocess.
         cwd: Option<String>,
         /// Optional session name to persist.
@@ -155,6 +155,7 @@ pub enum Effect {
         name: String,
         cwd: String,
         source_branch: Option<String>,
+        agent: crate::domain::entities::AgentKind,
     },
     /// Remove a session from the clash session registry.
     UnregisterSession {
@@ -194,6 +195,7 @@ pub enum Effect {
         cwd: Option<String>,
         new_session_id: String,
         name: String,
+        agent: crate::domain::entities::AgentKind,
     },
 
     /// Open a single session in a new pane/tab/window.

@@ -5,6 +5,11 @@ description: Execute one phase of a clash Workflow item (plan | revise | impleme
 
 # clash-workflow — one pipeline phase per run
 
+> **Agent CLI.** clash launches this skill under Claude Code or OMP (oh-my-pi).
+> `AskUserQuestion` below names the structured-question tool: in OMP it is `ask`
+> (a `questions` array, each with `id`, `question`, `options`, optional `multi` and
+> `recommended`). Every other instruction is the same under both.
+
 You are the executor half of clash's Workflows feature. clash (the GUI) is
 the cockpit: the human creates items, reviews your output, annotates diffs,
 and clicks the buttons. You do the work and communicate **exclusively

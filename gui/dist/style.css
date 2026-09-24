@@ -1847,6 +1847,41 @@ button.busy:disabled { opacity: 1; }
   color: var(--fg);
 }
 #new-session-modal label.check input { width: auto; margin: 0; }
+/* Agent picker: a segmented control — the choice is made on every new session. */
+#new-session-modal .ns-agent {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+#new-session-modal .ns-agent-opt {
+  flex: 1;
+  margin: 0;
+  padding: 6px 8px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+#new-session-modal .ns-agent-opt + .ns-agent-opt { border-left: 1px solid var(--border); }
+#new-session-modal .ns-agent-opt input { position: absolute; opacity: 0; width: 0; margin: 0; }
+#new-session-modal .ns-agent-opt:has(input:checked) { background: var(--accent); color: var(--on-accent); }
+#new-session-modal .ns-agent-opt:has(input:focus-visible) { outline: 1px solid var(--accent); }
+#new-session-modal .ns-agent-opt.unavailable { opacity: 0.45; cursor: not-allowed; }
+/* A session's agent, shown only for the non-default one (OMP) so the list stays quiet. */
+.agent-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 0 4px;
+  margin-right: 4px;
+  border-radius: 3px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  vertical-align: 1px;
+}
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 /* uiChoice switches to this when its buttons overflow the fixed-width box. */
 .modal-actions.stacked { flex-direction: column; align-items: stretch; }

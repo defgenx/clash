@@ -28,7 +28,8 @@ use tokio::sync::mpsc;
 pub struct App {
     state: AppState,
     backend: FsBackend,
-    claude_bin: String,
+    /// Binaries and data dirs of every agent CLI sessions can run on.
+    agents: crate::infrastructure::agent::Agents,
     /// The shared config view. A handle rather than an owned `Config` so a
     /// live reload is observed here and everywhere else at once.
     config: crate::infrastructure::config::ConfigHandle,
@@ -73,7 +74,11 @@ impl App {
         let settings = config.get();
         let backend = FsBackend::new(data_dir.clone())
             .with_scratch_dir(settings.paths.scratch_dir.clone())
-            .with_workflows_dir(settings.paths.workflows_dir.clone());
+            .with_workflows_dir(settings.paths.workflows_dir.clone())
+            .with_omp_dir(Some(settings.omp_dir()));
+        let mut agents = crate::infrastructure::agent::Agents::from_config(&settings);
+        agents.claude_bin = claude_bin;
+        agents.claude_projects_dir = data_dir.join("projects");
 
         // Install Claude Code hooks for instant status detection
         if let Err(e) = crate::infrastructure::hooks::install_hooks(&data_dir) {
@@ -88,6 +93,13 @@ impl App {
         {
             use crate::infrastructure::skills;
             let synced = skills::sync_unattended(&data_dir);
+            // OMP reads skills from `<omp_dir>/skills/` in the same layout;
+            // installed only where omp is (never creates `~/.omp`).
+            let omp_dir = settings.omp_dir();
+            let omp_root = omp_dir.is_dir().then_some(omp_dir);
+            if let Some(ref d) = omp_root {
+                skills::sync_unattended(d);
+            }
             if !synced.updated.is_empty() || !synced.removed.is_empty() {
                 tracing::info!(
                     "skills synced (updated: {:?}, removed: {:?})",
@@ -100,6 +112,9 @@ impl App {
                 match skills::ApplyMode::parse(&settings.general.skills_update) {
                     Some(mode) => {
                         let r = skills::apply_decision(&data_dir, mode);
+                        if let Some(ref d) = omp_root {
+                            skills::apply_decision(d, mode);
+                        }
                         tracing::info!(
                             "skills updated per general.skills_update (updated: {:?}, kept: {:?}, removed: {:?})",
                             r.updated,
@@ -147,6 +162,7 @@ impl App {
             backend.teams_dir(),
             backend.tasks_dir(),
             backend.projects_dir(),
+            crate::infrastructure::omp::sessions_root(&settings.omp_dir()),
             scratch_dir,
             status_dir,
             crate::infrastructure::hooks::registry::RegistryCache::watched_path(),
@@ -156,6 +172,7 @@ impl App {
 
         let mut state = AppState::new();
         state.debug_mode = debug;
+        state.default_agent = settings.default_agent();
         // A config the user has broken must be visible, not a line in a log
         // file nobody reads — the whole point of the ConfigState error.
         if let Some(error) = config.error() {
@@ -221,7 +238,7 @@ impl App {
         Self {
             state,
             backend,
-            claude_bin,
+            agents,
             config,
             _watcher: watcher,
             fs_event_rx: Some(fs_rx),
@@ -393,8 +410,18 @@ impl App {
                     let mut needs_config_reload = false;
                     let mut changed_jsonl_paths: Vec<std::path::PathBuf> = Vec::new();
                     let scratch_dir = self.backend.scratch_dir();
+                    let omp_root = self.backend.omp_sessions_dir();
                     while let Ok(paths) = rx.try_recv() {
                         for p in &paths {
+                            // OMP's session tree: only transcripts matter —
+                            // omp writes lock and temp files beside them on
+                            // every append, and each would be a full reload.
+                            if omp_root.as_deref().is_some_and(|r| p.starts_with(r)) {
+                                if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                                    changed_jsonl_paths.push(p.clone());
+                                }
+                                continue;
+                            }
                             // Config first: the whole config dir is watched, but
                             // only config.toml itself is a reload — the lock file
                             // and write_atomic's temp file are siblings, and
@@ -866,6 +893,7 @@ impl App {
                 | InputMode::NewSession
                 | InputMode::NewSessionName
                 | InputMode::NewSessionWorktree
+                | InputMode::NewSessionAgent
                 | InputMode::TeamDescription
                 | InputMode::NewMemberName
                 | InputMode::NewMemberType
@@ -1129,31 +1157,15 @@ impl App {
                 .filter(|c| !c.is_empty())
                 .or_else(|| Some(s.project_path.clone()).filter(|p| !p.is_empty()))
         });
-        // Resolve a possibly-stale id forward to the current conversation:
-        // the `/clear` re-key lineage (registry), then the resume-fork chain
-        // on disk (`claude --resume` writes a NEW transcript while hooks
-        // keep reporting the old id — see chase_resume_forks).
-        let resume_id = crate::infrastructure::hooks::registry::resolve_latest_conversation(
+        // Resolve a possibly-stale id forward to the current conversation
+        // and resume it, or start fresh when no transcript exists — see
+        // `Agents::relaunch`.
+        let launch = self.agents.relaunch(
             &self.registry_cache.get(),
-            &self.backend.projects_dir(),
-            resolved_cwd.as_deref().unwrap_or(""),
             session_id,
+            resolved_cwd.as_deref(),
         );
-        crate::infrastructure::hooks::registry::record_resumed_conversation(session_id, &resume_id);
         self.registry_cache.invalidate();
-        // `claude --resume <id>` only works when the conversation transcript
-        // exists on disk; otherwise Claude exits 1 ("No conversation found")
-        // and leaves a blank/dead terminal. Fall back to a fresh `--session-id`
-        // start under the same id (matches the GUI's open_session behavior).
-        let has_transcript = resolved_cwd
-            .as_deref()
-            .map(|cwd| self.backend.has_resumable_transcript(cwd, &resume_id))
-            .unwrap_or(false);
-        let cmd_args = if has_transcript {
-            vec!["--resume".to_string(), resume_id]
-        } else {
-            vec!["--session-id".to_string(), session_id.to_string()]
-        };
         let size = terminal
             .size()
             .unwrap_or(ratatui::layout::Size::new(120, 40));
@@ -1162,8 +1174,8 @@ impl App {
             .daemon
             .create_session(
                 session_id,
-                &self.claude_bin,
-                &cmd_args,
+                &launch.bin,
+                &launch.args,
                 resolved_cwd.as_deref(),
                 None,
                 size.width,
@@ -1602,13 +1614,16 @@ impl App {
                     name,
                     cwd,
                     source_branch,
+                    agent,
                 } => {
                     crate::infrastructure::hooks::registry::register(
                         &session_id,
                         &name,
                         &cwd,
                         source_branch.as_deref(),
+                        agent,
                     );
+                    self.registry_cache.invalidate();
                 }
                 Effect::UnregisterSession { session_id } => {
                     // Guard every id this session answers to, not just the one
@@ -1686,7 +1701,7 @@ impl App {
                 // Raw /dev/tty reader forwards input to daemon; Ctrl+B detaches.
                 Effect::DaemonAttach {
                     session_id,
-                    args,
+                    fresh,
                     cwd,
                     name,
                 } => {
@@ -1727,26 +1742,25 @@ impl App {
                         })
                     });
 
-                    // Build CLI args: provided args for new sessions, or
-                    // --resume for existing ones — resolved through the
-                    // `/clear` lineage and the on-disk resume-fork chain so we
-                    // never reopen a stale conversation.
-                    let cmd_args = if args.is_empty() {
-                        let resume_id =
-                            crate::infrastructure::hooks::registry::resolve_latest_conversation(
-                                &self.registry_cache.get(),
-                                &self.backend.projects_dir(),
-                                resolved_cwd.as_deref().unwrap_or(""),
-                                &session_id,
-                            );
-                        crate::infrastructure::hooks::registry::record_resumed_conversation(
+                    // A new session gets its agent's fresh command line; an
+                    // existing one is resolved through the `/clear` lineage
+                    // and Claude's resume forks so a stale conversation is
+                    // never reopened.
+                    let launch = match fresh {
+                        Some(agent) => self.agents.fresh(
+                            agent,
                             &session_id,
-                            &resume_id,
-                        );
-                        self.registry_cache.invalidate();
-                        vec!["--resume".to_string(), resume_id]
-                    } else {
-                        args
+                            resolved_cwd.as_deref().unwrap_or(""),
+                        ),
+                        None => {
+                            let l = self.agents.relaunch(
+                                &self.registry_cache.get(),
+                                &session_id,
+                                resolved_cwd.as_deref(),
+                            );
+                            self.registry_cache.invalidate();
+                            l
+                        }
                     };
 
                     // PTY size = full terminal (Claude owns the whole screen)
@@ -1761,14 +1775,14 @@ impl App {
                         .daemon
                         .create_session(
                             &session_id,
-                            &self.claude_bin,
-                            &cmd_args,
+                            &launch.bin,
+                            &launch.args,
                             resolved_cwd.as_deref(),
                             name,
                             cols,
                             rows,
                             HashMap::new(),
-                            true, // TUI: Claude sets its own termios
+                            true, // TUI: the agent sets its own termios
                         )
                         .await
                     {
@@ -1802,7 +1816,6 @@ impl App {
                 }
                 Effect::DaemonStart {
                     session_id,
-                    args,
                     cwd,
                     name,
                 } => {
@@ -1838,36 +1851,12 @@ impl App {
                         })
                     });
 
-                    let cmd_args = if args.is_empty() {
-                        // Resolve a stale id forward through the `/clear` lineage
-                        // and the on-disk resume-fork chain, then resume only if
-                        // the transcript exists — otherwise start fresh so a
-                        // missing/never-messaged conversation doesn't exit
-                        // `claude --resume` into a blank terminal.
-                        let resume_id =
-                            crate::infrastructure::hooks::registry::resolve_latest_conversation(
-                                &self.registry_cache.get(),
-                                &self.backend.projects_dir(),
-                                resolved_cwd.as_deref().unwrap_or(""),
-                                &session_id,
-                            );
-                        crate::infrastructure::hooks::registry::record_resumed_conversation(
-                            &session_id,
-                            &resume_id,
-                        );
-                        self.registry_cache.invalidate();
-                        let has_transcript = resolved_cwd
-                            .as_deref()
-                            .map(|cwd| self.backend.has_resumable_transcript(cwd, &resume_id))
-                            .unwrap_or(false);
-                        if has_transcript {
-                            vec!["--resume".to_string(), resume_id]
-                        } else {
-                            vec!["--session-id".to_string(), session_id.clone()]
-                        }
-                    } else {
-                        args
-                    };
+                    let launch = self.agents.relaunch(
+                        &self.registry_cache.get(),
+                        &session_id,
+                        resolved_cwd.as_deref(),
+                    );
+                    self.registry_cache.invalidate();
 
                     let size = terminal
                         .size()
@@ -1880,8 +1869,8 @@ impl App {
                         .daemon
                         .create_session(
                             &session_id,
-                            &self.claude_bin,
-                            &cmd_args,
+                            &launch.bin,
+                            &launch.args,
                             resolved_cwd.as_deref(),
                             name,
                             cols,
@@ -1992,6 +1981,7 @@ impl App {
                     cwd,
                     new_session_id,
                     name,
+                    agent,
                 } => {
                     // Resolve project_path and git_branch
                     let (project_path, git_branch) = if let Some(ref sid) = source_session_id {
@@ -2082,7 +2072,9 @@ impl App {
                                 &name,
                                 &wt_str,
                                 src_branch,
+                                agent,
                             );
+                            self.registry_cache.invalidate();
                             // Save session name
                             crate::infrastructure::hooks::save_session_name(
                                 self.backend.base_dir(),
@@ -2100,7 +2092,7 @@ impl App {
                                 continue;
                             }
 
-                            let cmd_args = vec!["--session-id".to_string(), new_session_id.clone()];
+                            let launch = self.agents.fresh(agent, &new_session_id, &wt_str);
                             let size = terminal
                                 .size()
                                 .unwrap_or(ratatui::layout::Size::new(120, 40));
@@ -2109,8 +2101,8 @@ impl App {
                                 .daemon
                                 .create_session(
                                     &new_session_id,
-                                    &self.claude_bin,
-                                    &cmd_args,
+                                    &launch.bin,
+                                    &launch.args,
                                     Some(&wt_str),
                                     Some(name.clone()),
                                     size.width,
@@ -2484,7 +2476,7 @@ pub async fn terminate_pid_if_safe(pid: u32) {
 /// Gracefully stop external Claude Code processes for a session.
 pub async fn terminate_claude_process(session_id: &str) {
     let output = tokio::process::Command::new("pgrep")
-        .args(["-f", &format!("claude.*{}", session_id)])
+        .args(["-f", &format!("(claude|omp).*{}", session_id)])
         .output()
         .await;
 
@@ -2527,7 +2519,7 @@ pub async fn terminate_claude_process(session_id: &str) {
     }
 
     let _ = tokio::process::Command::new("pkill")
-        .args(["-TERM", "-f", &format!("claude.*{}", session_id)])
+        .args(["-TERM", "-f", &format!("(claude|omp).*{}", session_id)])
         .output()
         .await;
 }

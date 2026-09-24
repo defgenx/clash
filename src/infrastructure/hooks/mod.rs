@@ -1,4 +1,6 @@
-//! Claude Code hooks integration for instant session status detection.
+//! Agent hooks integration for instant session status detection: a hook
+//! script for Claude Code, a status extension for OMP (`omp-status.js`),
+//! both writing the same status files.
 //!
 //! Everything clash needs lives in clash's own data directory
 //! (`~/.claude/clash/`): the status/name state files, the hook script, and
@@ -32,6 +34,11 @@ const HOOKS_DIR: &str = "hooks";
 const HOOK_SCRIPT_NAME: &str = "status-hook.sh";
 /// Settings file clash owns outright and hands to `claude --settings`.
 const HOOK_SETTINGS_NAME: &str = "settings.json";
+/// Extension clash owns outright and hands to `omp -e` — the OMP
+/// counterpart of the hook script + settings pair.
+const OMP_EXTENSION_NAME: &str = "omp-status.js";
+/// Source of that extension; `{DATA_DIR}` is replaced at install time.
+const OMP_EXTENSION_TEMPLATE: &str = include_str!("omp-status.js");
 
 /// The hook script that Claude Code calls on lifecycle events.
 /// It reads JSON from stdin, extracts event + session_id, and writes
@@ -181,7 +188,14 @@ pub fn install_hooks(claude_dir: &Path) -> std::io::Result<()> {
         crate::infrastructure::fs::atomic::write_atomic(&settings_path, desired.as_bytes())?;
     }
 
-    // 4. Withdraw the registration older versions merged into
+    // 4. The OMP extension, under the same only-when-changed rule.
+    let ext_path = omp_extension_path();
+    let desired = OMP_EXTENSION_TEMPLATE.replace("{DATA_DIR}", &data_dir.to_string_lossy());
+    if std::fs::read_to_string(&ext_path).unwrap_or_default() != desired {
+        crate::infrastructure::fs::atomic::write_atomic(&ext_path, desired.as_bytes())?;
+    }
+
+    // 5. Withdraw the registration older versions merged into
     //    `~/.claude/settings.local.json`. Claude Code never reads it, so the
     //    entries are dead weight — and leaving them would have a downgraded
     //    clash silently depend on a file that does nothing.
@@ -194,6 +208,11 @@ pub fn install_hooks(claude_dir: &Path) -> std::io::Result<()> {
 /// passes to `claude --settings`.
 pub fn hook_settings_path() -> PathBuf {
     clash_data_dir().join(HOOKS_DIR).join(HOOK_SETTINGS_NAME)
+}
+
+/// Path of the status extension the daemon passes to `omp -e`.
+pub fn omp_extension_path() -> PathBuf {
+    clash_data_dir().join(HOOKS_DIR).join(OMP_EXTENSION_NAME)
 }
 
 /// Get the path to the status directory (for FS watcher).

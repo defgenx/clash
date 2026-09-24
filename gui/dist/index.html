@@ -87,9 +87,30 @@
             <button id="set-claude-bin-browse" class="icon-btn" title="Browse for the claude executable" type="button"></button>
           </span>
         </label>
+        <label class="setting-row">OMP binary
+          <span class="input-with-btn">
+            <input id="set-omp-bin" type="text" placeholder="omp" autocomplete="off" spellcheck="false" title="The oh-my-pi binary — a name resolved on PATH, or an absolute path. Applies to OMP sessions started from now on." />
+            <button id="set-omp-bin-browse" class="icon-btn" title="Browse for the omp executable" type="button"></button>
+          </span>
+        </label>
+        <label class="setting-row inline">Default agent
+          <select id="set-default-agent" title="Agent the New session dialog pre-selects. You can still pick the other one each time.">
+            <option value="claude">Claude Code</option>
+            <option value="omp">OMP</option>
+          </select>
+        </label>
 
         <div class="settings-group">Workflows · agents</div>
         <p class="settings-note">How the agents clash launches for a workflow item behave.</p>
+        <label class="setting-row inline">Workflow agent
+          <select id="set-wf-agent" title="Agent CLI workflow sessions (plan, implement, reviews, explanations, shares) run on. An item's ⚙ Settings tab can override it.">
+            <option value="claude">Claude Code</option>
+            <option value="omp">OMP</option>
+          </select>
+        </label>
+        <label class="setting-row">OMP model
+          <input id="set-wf-omp-model" type="text" placeholder="omp's default" autocomplete="off" spellcheck="false" title="Model OMP workflow sessions launch with (omp's --model, fuzzy-matched). Empty uses omp's own default; Claude sessions keep clash's per-phase models." />
+        </label>
         <label class="setting-row">PR skill
           <input id="set-wf-pr-skill" type="text" placeholder="myorg:github-pr" autocomplete="off" spellcheck="false" title="Skill workflow agents open pull requests with, so your org's PR conventions come along. Empty resets to the shipped default; 'none' disables it and the agent follows the repo's own conventions with gh. An item can override this in its ⚙ Settings tab." />
         </label>
@@ -309,6 +330,10 @@
   <div id="modal-backdrop" class="hidden">
     <div id="new-session-modal">
       <h3>New session</h3>
+      <div class="ns-agent" role="radiogroup" aria-label="Agent">
+        <label class="ns-agent-opt"><input type="radio" name="ns-agent" value="claude" checked /> Claude Code</label>
+        <label class="ns-agent-opt" id="ns-agent-omp-wrap"><input type="radio" name="ns-agent" value="omp" /> OMP</label>
+      </div>
       <label>Working directory
         <span class="input-with-btn">
           <input id="ns-cwd" type="text" placeholder="/Users/you/project" autocomplete="off" spellcheck="false" />

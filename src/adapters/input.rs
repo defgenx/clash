@@ -24,6 +24,7 @@ pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
         | InputMode::NewSession
         | InputMode::NewSessionName
         | InputMode::NewSessionWorktree
+        | InputMode::NewSessionAgent
         | InputMode::TeamDescription
         | InputMode::NewMemberName
         | InputMode::NewMemberType
@@ -1017,6 +1018,19 @@ pub fn parse_command(cmd: &str) -> Action {
                 preset_name: preset_name.to_string(),
             });
         }
+        // `new --agent <claude|omp> <path>` picks the agent; bare `new <path>`
+        // takes the configured default.
+        let (agent, rest) = match rest.strip_prefix("--agent") {
+            Some(after) => {
+                let after = after.trim_start();
+                let (kind, path) = after.split_once(' ').unwrap_or((after, ""));
+                (
+                    Some(crate::domain::entities::AgentKind::parse(kind)),
+                    path.trim(),
+                )
+            }
+            None => (None, rest),
+        };
         if rest.is_empty() {
             // No path — prompt for it (or show preset picker)
             return Action::Ui(UiAction::EnterNewSessionMode);
@@ -1024,6 +1038,7 @@ pub fn parse_command(cmd: &str) -> Action {
         return Action::Agent(AgentAction::SpawnSession {
             cwd: rest.to_string(),
             name: None,
+            agent,
         });
     }
 

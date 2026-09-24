@@ -88,6 +88,31 @@ pub enum SignalDecision {
 
 // ── Pure parsers ──────────────────────────────────────────────────
 
+/// Which agent CLI a command line runs, by executable basename — `claude`,
+/// `omp`, or a JS runtime (`bun`/`node`) running an `omp` script, which is how
+/// omp's `#!/usr/bin/env bun` shebang shows up in `ps`. Basename-exact, so
+/// `/Users/foo/claude-experiments/runner` is not an agent.
+pub fn agent_of_command(command: &str) -> Option<crate::domain::entities::AgentKind> {
+    use crate::domain::entities::AgentKind;
+    let base = |t: &str| t.rsplit('/').next().unwrap_or(t).to_string();
+    let mut tokens = command.split_whitespace();
+    match base(tokens.next()?).as_str() {
+        "claude" => Some(AgentKind::Claude),
+        "omp" => Some(AgentKind::Omp),
+        "bun" | "node" => (base(tokens.next()?) == "omp").then_some(AgentKind::Omp),
+        _ => None,
+    }
+}
+
+/// The session id a `.jsonl` path names: an omp transcript is
+/// `<timestamp>_<id>.jsonl`, a Claude one `<id>.jsonl`.
+fn session_id_of_jsonl(path: &std::path::Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    crate::infrastructure::omp::session_id_from_file_name(name)
+        .map(str::to_string)
+        .or_else(|| name.strip_suffix(".jsonl").map(str::to_string))
+}
+
 /// Parse one row of `ps -p <pids> -o pid=,state=,command=` output.
 ///
 /// Returns `None` when:
@@ -122,11 +147,7 @@ pub fn parse_ps_line(line: &str) -> Option<WildProcess> {
 
     // Match basename only — `/path/to/claude-experiments/bin/runner`
     // must not look like a wild claude.
-    let executable = command.split_whitespace().next()?;
-    let basename = executable.rsplit('/').next().unwrap_or(executable);
-    if basename != "claude" {
-        return None;
-    }
+    agent_of_command(command)?;
 
     let argv_session_ids = parse_argv_session_ids(command);
 
@@ -173,6 +194,15 @@ pub fn parse_argv_session_ids(command: &str) -> Vec<String> {
             None
         };
         if let Some(c) = candidate {
+            // `omp --resume <file>` names the transcript, not the id.
+            let c = if c.contains('/') || c.ends_with(".jsonl") {
+                match session_id_of_jsonl(std::path::Path::new(&c)) {
+                    Some(id) => id,
+                    None => continue,
+                }
+            } else {
+                c
+            };
             if looks_like_session_id(&c) {
                 out.push(c);
             }
@@ -390,7 +420,9 @@ pub struct DarwinLsof;
 impl FdProbe for DarwinLsof {
     fn open_files(&self, pid: u32) -> Vec<PathBuf> {
         let output = Command::new("lsof")
-            .args(["-p", &pid.to_string(), "-F", "n"])
+            // -n/-P: no host or port name lookups. Without them lsof can take
+            // seconds per PID, stalling the runtime the in-process daemon runs on.
+            .args(["-n", "-P", "-p", &pid.to_string(), "-F", "n"])
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output();
@@ -407,7 +439,17 @@ impl FdProbe for DarwinLsof {
         // selectors AND together so we get exactly one record (the cwd
         // of the named PID) or nothing.
         let output = Command::new("lsof")
-            .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-F", "n"])
+            .args([
+                "-n",
+                "-P",
+                "-a",
+                "-p",
+                &pid.to_string(),
+                "-d",
+                "cwd",
+                "-F",
+                "n",
+            ])
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output()
@@ -440,7 +482,7 @@ pub fn extract_jsonl_session_ids(open_files: &[PathBuf]) -> Vec<String> {
     open_files
         .iter()
         .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
-        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(str::to_string))
+        .filter_map(|p| session_id_of_jsonl(p))
         .collect()
 }
 
@@ -532,9 +574,7 @@ pub fn should_signal(pid: u32, probe: &impl ProcessProbe) -> SignalDecision {
         Some(c) => c,
         None => return SignalDecision::ProcessExited,
     };
-    let executable = cmdline.split_whitespace().next().unwrap_or("");
-    let basename = executable.rsplit('/').next().unwrap_or(executable);
-    if basename != "claude" {
+    if agent_of_command(&cmdline).is_none() {
         return SignalDecision::CmdlineChanged;
     }
     SignalDecision::Allow
@@ -623,7 +663,12 @@ impl ProcessProbe for LiveProcessProbe {
 /// wild processes detected this cycle" rather than an error.
 pub fn gather_wild_processes(probe: &impl FdProbe) -> Vec<WildProcess> {
     let pgrep = Command::new("pgrep")
-        .args(["-fl", r"^claude($|[[:space:]])"])
+        // Coarse on purpose — `parse_ps_line` is the exact filter. omp runs
+        // as `bun /path/to/omp …` (its shebang), or as `omp` when compiled.
+        .args([
+            "-fl",
+            r"^claude($|[[:space:]])|^[^[:space:]]*omp($|[[:space:]])|^(bun|node)[[:space:]]+[^[:space:]]*/omp($|[[:space:]])",
+        ])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output();
@@ -709,6 +754,40 @@ mod tests {
     use super::*;
 
     // ── parse_ps_line ─────────────────────────────────────────────
+
+    #[test]
+    fn omp_processes_are_agents_in_either_shape() {
+        use crate::domain::entities::AgentKind;
+        assert_eq!(
+            agent_of_command("claude --resume x"),
+            Some(AgentKind::Claude)
+        );
+        assert_eq!(agent_of_command("/opt/bin/omp"), Some(AgentKind::Omp));
+        assert_eq!(
+            agent_of_command("bun /Users/me/.bun/bin/omp --resume /s/-p/2026_ab.jsonl"),
+            Some(AgentKind::Omp)
+        );
+        assert_eq!(agent_of_command("bun run dev"), None);
+        assert_eq!(
+            agent_of_command("/Users/me/claude-experiments/runner"),
+            None
+        );
+    }
+
+    #[test]
+    fn an_omp_resume_path_yields_the_file_names_session_id() {
+        let line = "84964 S bun /Users/me/.bun/bin/omp --resume \
+                    /Users/me/.omp/agent/sessions/-p/2026-09-24T10-00-00-000Z_0199aaaa-bbbb-7ccc.jsonl";
+        let w = parse_ps_line(line).expect("omp is a wild agent");
+        assert_eq!(w.argv_session_ids, vec!["0199aaaa-bbbb-7ccc".to_string()]);
+        let fd = extract_jsonl_session_ids(&[PathBuf::from(
+            "/x/2026-09-24T10-00-00-000Z_0199aaaa-bbbb-7ccc.jsonl",
+        )]);
+        assert_eq!(fd, vec!["0199aaaa-bbbb-7ccc".to_string()]);
+        // Claude transcripts keep their plain stem.
+        let fd = extract_jsonl_session_ids(&[PathBuf::from("/x/0199aaaa-bbbb.jsonl")]);
+        assert_eq!(fd, vec!["0199aaaa-bbbb".to_string()]);
+    }
 
     #[test]
     fn parse_ps_line_basic() {

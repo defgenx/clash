@@ -235,7 +235,11 @@ pub struct FsBackend {
     /// rationale as `scratch_dir`.
     workflows_dir: Mutex<PathBuf>,
     /// Per-project session cache to avoid re-parsing unchanged projects.
+    /// OMP buckets are cached in the same map, keyed by their own path.
     session_cache: Mutex<SessionCache>,
+    /// OMP agent dir (`~/.omp/agent`) whose `sessions/` is listed alongside
+    /// Claude's projects. `None` lists Claude sessions only.
+    omp_dir: Option<PathBuf>,
 }
 
 impl FsBackend {
@@ -247,7 +251,26 @@ impl FsBackend {
             scratch_dir: Mutex::new(scratch_dir),
             workflows_dir: Mutex::new(workflows_dir),
             session_cache: Mutex::new(SessionCache::new()),
+            omp_dir: None,
         }
+    }
+
+    /// Builder: also list OMP sessions from `dir` (its `sessions/` subtree).
+    pub fn with_omp_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.omp_dir = dir;
+        self
+    }
+
+    /// `<omp_dir>/sessions`, when OMP sessions are listed.
+    pub fn omp_sessions_dir(&self) -> Option<PathBuf> {
+        self.omp_dir
+            .as_deref()
+            .map(crate::infrastructure::omp::sessions_root)
+    }
+
+    /// The OMP transcript of `session_id`, if it is an OMP session.
+    fn omp_session_file(&self, session_id: &str) -> Option<PathBuf> {
+        crate::infrastructure::omp::find_session_file(self.omp_dir.as_deref()?, session_id)
     }
 
     /// Builder: override the scratch directory from config. `None` keeps the
@@ -316,8 +339,18 @@ impl FsBackend {
     /// and marks it for re-scanning.
     pub fn invalidate_session_cache(&self, changed_paths: &[PathBuf]) {
         let projects_dir = self.projects_dir();
+        let omp_root = self.omp_sessions_dir();
         if let Ok(mut cache) = self.session_cache.lock() {
             for path in changed_paths {
+                // OMP: the bucket is the first component under the sessions root.
+                if let Some(root) = omp_root.as_deref() {
+                    if let Ok(rel) = path.strip_prefix(root) {
+                        if let Some(bucket) = rel.components().next() {
+                            cache.dirty_projects.insert(root.join(bucket));
+                        }
+                        continue;
+                    }
+                }
                 // The project dir is the parent of the changed file
                 if let Some(parent) = path.parent() {
                     // Only invalidate if it's a direct child of the projects directory
@@ -354,6 +387,9 @@ impl FsBackend {
         project: &str,
         session_id: &str,
     ) -> Option<std::time::SystemTime> {
+        if let Some(p) = self.omp_session_file(session_id) {
+            return p.metadata().ok().and_then(|m| m.modified().ok());
+        }
         let path = self
             .base_dir
             .join("projects")
@@ -362,32 +398,65 @@ impl FsBackend {
         path.metadata().ok().and_then(|m| m.modified().ok())
     }
 
-    /// True if a resumable Claude conversation transcript exists on disk for
-    /// this session. `claude --resume <id>` only succeeds when the `<id>.jsonl`
-    /// is present and non-empty; otherwise Claude exits 1 ("No conversation
-    /// found") and leaves a dead/blank terminal. Callers should fall back to a
-    /// fresh `--session-id` start when this returns false.
-    ///
-    /// Claude encodes the project dir from the conversation's *canonical* cwd
-    /// (symlinks resolved, e.g. `/tmp` → `/private/tmp`), so we check both the
-    /// raw and canonicalized encodings of `cwd` to avoid a false negative that
-    /// would needlessly discard real history.
-    pub fn has_resumable_transcript(&self, cwd: &str, session_id: &str) -> bool {
-        let projects = self.projects_dir();
-        let mut dirs = Vec::new();
-        if !cwd.is_empty() {
-            dirs.push(encode_project_dir(cwd));
-            if let Ok(canon) = std::fs::canonicalize(cwd) {
-                let enc = encode_project_dir(&canon.to_string_lossy());
-                if !dirs.contains(&enc) {
-                    dirs.push(enc);
-                }
+    /// Build a Session from an OMP transcript (`<bucket>/<ts>_<id>.jsonl`).
+    fn build_omp_session(path: &Path, session_id: &str, bucket: &str) -> Session {
+        use crate::infrastructure::omp;
+        let head = omp::read_head(path, 50);
+        let meta = omp::parse_meta(head.iter().map(String::as_str));
+        let tail = omp::read_tail(path, 16384);
+        let status = omp::detect_status(tail.iter().map(String::as_str));
+        let last_modified = path
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .map(|mtime| {
+                let dt: chrono::DateTime<chrono::Local> = mtime.into();
+                dt.format("%Y-%m-%d %H:%M").to_string()
+            })
+            .unwrap_or_default();
+        let subagent_count = omp::subagent_files(path).len();
+        let (worktree, worktree_project) = match Self::detect_worktree(&meta.cwd) {
+            Some(info) => (Some(info.name), info.parent_project),
+            None => (None, None),
+        };
+        Session {
+            id: session_id.to_string(),
+            agent: crate::domain::entities::AgentKind::Omp,
+            project: bucket.to_string(),
+            project_path: meta.cwd.clone(),
+            last_modified,
+            summary: omp::display_summary(&meta),
+            first_prompt: meta.first_prompt.clone(),
+            has_subagents: subagent_count > 0,
+            subagent_count,
+            git_branch: Self::detect_git_branch(&meta.cwd),
+            is_running: true,
+            status,
+            worktree,
+            worktree_project,
+            ..Session::default()
+        }
+    }
+
+    /// Sessions of one OMP bucket directory.
+    fn scan_omp_bucket(bucket_path: &Path) -> Vec<Session> {
+        let Some(bucket) = bucket_path.file_name().and_then(|n| n.to_str()) else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(bucket_path) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for e in entries.flatten() {
+            let path = e.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if let Some(id) = crate::infrastructure::omp::session_id_from_file_name(name) {
+                out.push(Self::build_omp_session(&path, id, bucket));
             }
         }
-        dirs.iter().any(|d| {
-            let f = projects.join(d).join(format!("{session_id}.jsonl"));
-            std::fs::metadata(&f).map(|m| m.len() > 0).unwrap_or(false)
-        })
+        out
     }
 
     fn read_json_file<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
@@ -476,6 +545,7 @@ impl FsBackend {
 
         Session {
             id: session_id.to_string(),
+            agent: crate::domain::entities::AgentKind::Claude,
             project: project_dir_name.to_string(),
             project_path: project_path_str.to_string(),
             last_modified,
@@ -983,7 +1053,8 @@ impl DataRepository for FsBackend {
 
     fn load_sessions(&self) -> Result<Vec<Session>> {
         let projects_dir = self.base_dir.join("projects");
-        if !projects_dir.exists() {
+        let omp_root = self.omp_sessions_dir().filter(|d| d.is_dir());
+        if !projects_dir.exists() && omp_root.is_none() {
             return Ok(Vec::new());
         }
 
@@ -1002,10 +1073,14 @@ impl DataRepository for FsBackend {
         let now = std::time::SystemTime::now();
         let mut new_cache_entries: HashMap<PathBuf, Arc<Vec<Session>>> = HashMap::new();
 
-        let project_entries = std::fs::read_dir(&projects_dir)?;
-        for project_entry in project_entries {
-            let project_entry = project_entry?;
-            let project_path = project_entry.path();
+        let project_entries: Vec<PathBuf> = if projects_dir.exists() {
+            std::fs::read_dir(&projects_dir)?
+                .map(|e| e.map(|e| e.path()))
+                .collect::<std::io::Result<_>>()?
+        } else {
+            Vec::new()
+        };
+        for project_path in project_entries {
             if !project_path.is_dir() {
                 continue;
             }
@@ -1183,6 +1258,28 @@ impl DataRepository for FsBackend {
             new_cache_entries.insert(project_path, project_sessions);
         }
 
+        // OMP buckets, through the same cache.
+        if let Some(root) = omp_root.as_deref() {
+            for bucket in std::fs::read_dir(root)?.flatten() {
+                let bucket_path = bucket.path();
+                if !bucket_path.is_dir() {
+                    continue;
+                }
+                let bucket_sessions = match cached_projects.get(&bucket_path) {
+                    Some(c) if !needs_full_scan && !dirty_projects.contains(&bucket_path) => {
+                        Arc::clone(c)
+                    }
+                    _ => Arc::new(Self::scan_omp_bucket(&bucket_path)),
+                };
+                for s in bucket_sessions.iter() {
+                    if global_seen_ids.insert(s.id.clone()) {
+                        sessions.push(s.clone());
+                    }
+                }
+                new_cache_entries.insert(bucket_path, bucket_sessions);
+            }
+        }
+
         // Update the session cache
         {
             let mut cache = self.session_cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -1197,6 +1294,9 @@ impl DataRepository for FsBackend {
     }
 
     fn load_subagents(&self, project: &str, session_id: &str) -> Result<Vec<Subagent>> {
+        if let Some(file) = self.omp_session_file(session_id) {
+            return Ok(Self::load_omp_subagents(&file, project, session_id));
+        }
         let subagents_dir = self
             .base_dir
             .join("projects")
@@ -1306,6 +1406,9 @@ impl DataRepository for FsBackend {
         project: &str,
         session_id: &str,
     ) -> Result<Vec<crate::domain::entities::ConversationMessage>> {
+        if let Some(file) = self.omp_session_file(session_id) {
+            return Ok(Self::parse_omp_conversation(&file));
+        }
         let path = self
             .base_dir
             .join("projects")
@@ -1320,6 +1423,10 @@ impl DataRepository for FsBackend {
         session_id: &str,
         agent_id: &str,
     ) -> Result<Vec<crate::domain::entities::ConversationMessage>> {
+        if let Some(file) = self.omp_session_file(session_id) {
+            let sub = file.with_extension("").join(format!("{agent_id}.jsonl"));
+            return Ok(Self::parse_omp_conversation(&sub));
+        }
         let path = self
             .base_dir
             .join("projects")
@@ -1332,6 +1439,58 @@ impl DataRepository for FsBackend {
 }
 
 impl FsBackend {
+    fn parse_omp_conversation(path: &Path) -> Vec<crate::domain::entities::ConversationMessage> {
+        let content = std::fs::read_to_string(path).unwrap_or_default();
+        crate::infrastructure::omp::parse_conversation(content.lines())
+    }
+
+    /// OMP subagents: task-tool children written beside the parent transcript.
+    fn load_omp_subagents(session_file: &Path, project: &str, session_id: &str) -> Vec<Subagent> {
+        use crate::domain::entities::SessionStatus;
+        use crate::infrastructure::omp;
+        let mut out: Vec<Subagent> = omp::subagent_files(session_file)
+            .into_iter()
+            .map(|(agent_id, path)| {
+                let head = omp::read_head(&path, 50);
+                let meta = omp::parse_meta(head.iter().map(String::as_str));
+                let tail = omp::read_tail(&path, 16384);
+                let status = match omp::detect_status(tail.iter().map(String::as_str)) {
+                    // Subagents don't wait for input: a settled one is done.
+                    SessionStatus::Waiting | SessionStatus::Stashed => SessionStatus::Done,
+                    s => s,
+                };
+                let last_modified = path
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map(|mtime| {
+                        let dt: chrono::DateTime<chrono::Local> = mtime.into();
+                        dt.format("%Y-%m-%d %H:%M").to_string()
+                    })
+                    .unwrap_or_default();
+                let (worktree, worktree_project) = match Self::detect_worktree(&meta.cwd) {
+                    Some(info) => (Some(info.name), info.parent_project),
+                    None => (None, None),
+                };
+                Subagent {
+                    id: agent_id,
+                    agent_type: String::new(),
+                    parent_session_id: session_id.to_string(),
+                    project: project.to_string(),
+                    last_modified,
+                    summary: omp::display_summary(&meta),
+                    file_path: meta.cwd,
+                    is_running: !matches!(status, SessionStatus::Done),
+                    status,
+                    worktree,
+                    worktree_project,
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| b.last_modified.cmp(&a.last_modified).then(a.id.cmp(&b.id)));
+        out
+    }
+
     /// Detect session status by reading the tail of the JSONL file.
     ///
     /// This is the **baseline** — hooks and daemon overlay on top.
@@ -1937,30 +2096,6 @@ mod tests {
             "-Users-x-alumni-connect"
         );
         assert_eq!(encode_project_dir("/tmp/a.b"), "-tmp-a-b");
-    }
-
-    #[test]
-    fn test_has_resumable_transcript() {
-        let (dir, backend) = setup_test_dir();
-        let cwd = "/Users/me/proj";
-        let sid = "019ed532-ade6-73a1-acfb-6a58581065c7";
-        let proj_dir = dir.path().join("projects").join(encode_project_dir(cwd));
-        std::fs::create_dir_all(&proj_dir).unwrap();
-
-        // No transcript → not resumable.
-        assert!(!backend.has_resumable_transcript(cwd, sid));
-
-        // Empty transcript → still not resumable (claude --resume would exit 1).
-        let jsonl = proj_dir.join(format!("{sid}.jsonl"));
-        std::fs::write(&jsonl, b"").unwrap();
-        assert!(!backend.has_resumable_transcript(cwd, sid));
-
-        // Non-empty transcript → resumable.
-        std::fs::write(&jsonl, b"{\"type\":\"user\"}\n").unwrap();
-        assert!(backend.has_resumable_transcript(cwd, sid));
-
-        // Unknown cwd → not resumable.
-        assert!(!backend.has_resumable_transcript("/other/dir", sid));
     }
 
     #[test]

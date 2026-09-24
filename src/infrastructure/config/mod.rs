@@ -111,6 +111,10 @@ pub struct IdeEntry {
 pub struct General {
     /// The `claude` binary sessions are spawned with.
     pub claude_bin: String,
+    /// The `omp` binary OMP sessions are spawned with.
+    pub omp_bin: String,
+    /// Agent pre-selected by the new-session dialogs: `claude` | `omp`.
+    pub default_agent: String,
     /// Filesystem-watcher debounce.
     pub debounce_ms: u64,
     /// What a startup does when a clash upgrade shipped changed skills:
@@ -122,6 +126,8 @@ impl Default for General {
     fn default() -> Self {
         Self {
             claude_bin: default_str("general.claude_bin"),
+            omp_bin: default_str("general.omp_bin"),
+            default_agent: default_str("general.default_agent"),
             debounce_ms: default_int("general.debounce_ms") as u64,
             skills_update: default_str("general.skills_update"),
         }
@@ -137,6 +143,11 @@ pub struct Paths {
         skip_serializing_if = "Option::is_none"
     )]
     pub claude_dir: Option<PathBuf>,
+    #[serde(
+        deserialize_with = "empty_as_none",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub omp_dir: Option<PathBuf>,
     #[serde(
         deserialize_with = "empty_as_none",
         skip_serializing_if = "Option::is_none"
@@ -210,6 +221,10 @@ impl Default for Notifications {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Workflows {
+    /// Agent CLI workflow sessions run on: `claude` | `omp`.
+    pub agent: String,
+    /// `--model` for OMP workflow sessions; empty = omp's default.
+    pub omp_model: String,
     /// Skill the workflow PR phase opens pull requests with; empty means
     /// "follow the repo's own conventions with `gh`".
     pub pr_skill: String,
@@ -248,6 +263,8 @@ pub struct Workflows {
 impl Default for Workflows {
     fn default() -> Self {
         Self {
+            agent: default_str("workflows.agent"),
+            omp_model: default_str("workflows.omp_model"),
             pr_skill: default_str("workflows.pr_skill"),
             forge: default_str("workflows.forge"),
             slack_webhook: default_str("workflows.slack_webhook"),
@@ -309,6 +326,19 @@ impl Config {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join(".claude")
         })
+    }
+
+    /// OMP agent directory: the configured override, or `~/.omp/agent`.
+    pub fn omp_dir(&self) -> PathBuf {
+        self.paths
+            .omp_dir
+            .clone()
+            .unwrap_or_else(crate::infrastructure::omp::default_agent_dir)
+    }
+
+    /// Agent the new-session dialogs pre-select.
+    pub fn default_agent(&self) -> crate::domain::entities::AgentKind {
+        crate::domain::entities::AgentKind::parse(&self.general.default_agent)
     }
 
     /// Effective scratch-notes directory: the configured override, or the

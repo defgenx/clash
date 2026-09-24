@@ -37,9 +37,10 @@ Three properties of that injection are load-bearing:
   the one place every claude spawn passes through — a new launcher cannot
   forget it. (There are already five: new session, resume, workflow executor,
   workflow reviewer, attach.)
-- **It is claude-only.** The daemon also spawns shells (`shellterm-*`), which
-  would reject the flag. Decided by `wants_hook_settings`, on the binary's
-  basename.
+- **It is agent-only.** The daemon also spawns shells (`shellterm-*`), which
+  would reject the flag. Decided by `wants_hook_flag`, on the binary's
+  basename: `claude` gets `--settings`, `omp` gets `-e` (see
+  [OMP sessions](#omp-sessions)).
 - **It is existence-guarded.** claude refuses to start at all on a
   `--settings` path it cannot read (`Error: Settings file not found`), so a
   missing hooks file must cost the status hooks and never the session.
@@ -150,3 +151,59 @@ No file means the hooks are not firing. To see which settings files Claude
 Code is actually loading — the check that found this bug — run any claude
 command with `--debug` and look for the `Watching for changes in setting
 files` line.
+
+## OMP sessions
+
+OMP (oh-my-pi, `omp`) has no settings-file hooks; it has an **extension**
+event bus. clash's counterpart of the script + settings pair is one
+extension it owns outright:
+
+```
+~/.claude/clash/hooks/omp-status.js   # written by install_hooks, only when its bytes change
+```
+
+The daemon **prepends** `-e <that file>` to every `omp` spawn (same
+basename rule, same existence guard). Prepended, not appended: a workflow
+launch passes its kickoff prompt as the last positional argument, and
+anything placed after it could read as message text.
+
+The extension maps omp's events onto the same status vocabulary and writes
+the same `status/<id>` files:
+
+| omp event | status |
+|---|---|
+| `session_start` | `waiting` (omp is at its prompt the moment it starts) |
+| `agent_start`, `tool_approval_resolved` | `thinking` |
+| `agent_end` (unless `willContinue`) | `waiting` |
+| `tool_approval_requested`, `tool_call` of `ask` | `prompting` |
+| `tool_result` of `ask` | `thinking` |
+| `session_shutdown` | `idle` |
+
+The `ask` rows exist because omp's `ask` tool (the `AskUserQuestion`
+equivalent) blocks on the human exactly like a tool approval does — the
+prompt queue must not type into it.
+
+**Identity.** omp has no `--session-id`. What it has is `--resume <path>` on
+a file that does not exist yet, which it materializes at exactly that path.
+clash therefore creates every OMP session at
+`<omp_dir>/sessions/<bucket>/<timestamp>_<clash-uuid>.jsonl` (bucket = omp's
+own cwd encoding, `omp::encode_session_dir_name`), and the uuid **suffix of
+the file name** — not the header's `id`, which omp mints itself — is the
+session id everywhere: registry key, status file, wild-scan evidence. The
+extension derives it from `sessionManager.getSessionFile()` the same way.
+Sessions omp creates on its own (`/new`) follow the same naming with omp's
+uuid, so the rule holds for them too.
+
+**Conversation switches.** `/new` and `/resume` inside omp fire
+`session_switch` with the previous file. The extension re-keys the registry
+entry that answered to the previous id — exactly the shape the Claude
+hook's `/clear` branch produces (new key, `claude_session_id` = new id, old
+key appended to `previous_ids`) — and bumps the saved name's numeric suffix.
+Unlike the Claude hook it does not guess the entry by cwd: the previous file
+names it.
+
+**No resume forks.** `omp --resume <file>` appends to that file, so
+`chase_resume_forks` / `heal_registry_forks` skip OMP entries (the registry
+records `agent: "omp"`; a missing field reads as Claude, which is what every
+older entry is).
+

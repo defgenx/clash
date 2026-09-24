@@ -69,6 +69,7 @@ pub fn render_help_overlay(
         (":scratch", "Navigate to Scratches"),
         (":new <path>", "New session in directory"),
         (":new --preset X", "New session from preset"),
+        (":new --agent A <path>", "New claude/omp session"),
         (":diff", "View diff for session"),
         (":rename <name>", "Rename session (detail view)"),
         (":create team X", "Create team"),

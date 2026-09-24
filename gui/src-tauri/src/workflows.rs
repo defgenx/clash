@@ -429,6 +429,7 @@ pub(crate) fn set_workflow_item_settings(
     interaction_default: Option<String>,
     jira_ticket: Option<String>,
     description: Option<String>,
+    agent: Option<String>,
 ) -> Result<clash::domain::workflow::WorkflowMeta, String> {
     let mut meta = state
         .backend
@@ -461,6 +462,13 @@ pub(crate) fn set_workflow_item_settings(
     if let Some(desc) = description {
         meta.description = desc.trim().to_string();
     }
+    if let Some(agent) = agent {
+        let agent = agent.trim().to_ascii_lowercase();
+        if !["", "claude", "omp"].contains(&agent.as_str()) {
+            return Err(format!("Unknown agent '{}'", agent));
+        }
+        meta.agent = agent;
+    }
     state
         .backend
         .write_workflow_meta(&project, &slug, &meta)
@@ -488,6 +496,9 @@ pub(crate) fn apply_skills_decision(
 ) -> Result<clash::infrastructure::skills::SkillsReport, String> {
     let mode = clash::infrastructure::skills::ApplyMode::parse(&mode)
         .ok_or_else(|| format!("Unknown skills-update mode '{}'", mode))?;
+    if let Some(omp) = crate::omp_skills_root(&state.config.get()) {
+        clash::infrastructure::skills::apply_decision(&omp, mode);
+    }
     Ok(clash::infrastructure::skills::apply_decision(
         state.backend.base_dir(),
         mode,
@@ -1346,11 +1357,14 @@ async fn spawn_item_session(
         rows,
     } = spawn;
     let name = name.to_string();
+    let cfg = state.config.get();
+    let agent = clash::application::workflow::effective_agent(&meta.agent, &cfg.workflows.agent);
     clash::infrastructure::hooks::registry::register(
         session_id,
         &name,
         cwd,
         Some(meta.branch.as_str()),
+        agent,
     );
     clash::infrastructure::hooks::save_session_name(
         state.backend.base_dir(),
@@ -1373,23 +1387,22 @@ async fn spawn_item_session(
         .into_owned();
     let prompt = prompt(&item_dir);
 
-    let claude_bin = state.claude_bin();
+    // `--model` is pinned per phase rather than inherited (see
+    // `workflow::model_for_phase`) for Claude; `workflow::launch_model` says
+    // what an OMP session gets. It precedes the prompt, the positional arg.
+    let launch = state.agents().fresh(agent, session_id, cwd);
+    let args = clash::infrastructure::agent::with_prompt(
+        launch.args,
+        clash::application::workflow::launch_model(agent, model, &cfg.workflows.omp_model),
+        &prompt,
+    );
     let mut control = state.control.lock().await;
     crate::ensure_connected(&mut control).await;
     control
         .create_session(
             session_id,
-            &claude_bin,
-            // `--model` is pinned per phase rather than inherited: see
-            // `workflow::model_for_phase`. It precedes the prompt because the
-            // prompt is the positional argument.
-            &[
-                "--session-id".to_string(),
-                session_id.to_string(),
-                "--model".to_string(),
-                model.to_string(),
-                prompt,
-            ],
+            &launch.bin,
+            &args,
             if cwd.is_empty() { None } else { Some(cwd) },
             Some(name),
             cols,

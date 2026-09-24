@@ -680,6 +680,10 @@ pub struct WorkflowMeta {
     /// launches that offer no interaction choice of their own.
     #[serde(default)]
     pub interaction_default: String,
+    /// Per-item agent CLI override (item Settings tab): `claude` | `omp`.
+    /// Empty inherits the global `workflows.agent` setting.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent: String,
     /// Jira ticket this item belongs to (`PROJ-123`). Pre-fills the share
     /// dialog's Post-to-Jira prompt and is remembered after the first post;
     /// also editable in the item Settings tab. Empty means "detect from

@@ -142,6 +142,8 @@ pub enum InputMode {
     NewSessionName,
     /// Prompting user whether to start the new session in a worktree (y/n).
     NewSessionWorktree,
+    /// Prompting user for the agent CLI of the new session (claude/omp).
+    NewSessionAgent,
     /// Editing a team's description (team name in `pending_team_edit`).
     TeamDescription,
     /// Prompting for a new team member's name.
@@ -226,6 +228,29 @@ pub struct PendingSession {
     pub name: Option<String>,
     pub worktree: bool,
     pub preset: Option<Preset>,
+}
+
+/// Human name of an agent CLI, for prompts and toasts.
+pub fn agent_label(agent: crate::domain::entities::AgentKind) -> &'static str {
+    match agent {
+        crate::domain::entities::AgentKind::Claude => "Claude Code",
+        crate::domain::entities::AgentKind::Omp => "OMP",
+    }
+}
+
+/// Parse the new-session agent answer; empty keeps `default`. Strict,
+/// unlike `AgentKind::parse`: a typo must not silently pick Claude Code.
+pub fn parse_agent_answer(
+    input: &str,
+    default: crate::domain::entities::AgentKind,
+) -> Option<crate::domain::entities::AgentKind> {
+    use crate::domain::entities::AgentKind;
+    match input.trim().to_ascii_lowercase().as_str() {
+        "" => Some(default),
+        "claude" | "c" => Some(AgentKind::Claude),
+        "omp" | "o" => Some(AgentKind::Omp),
+        _ => None,
+    }
 }
 
 /// Diff viewer state — transient UI state, not domain data.
@@ -327,6 +352,8 @@ pub struct AppState {
     pub expanded_sessions: HashSet<String>,
     /// Default working directory for new sessions (where clash was started).
     pub default_cwd: String,
+    /// Agent the new-session flow pre-fills (`general.default_agent`).
+    pub default_agent: crate::domain::entities::AgentKind,
     /// Pending session creation state (replaces old cwd/worktree fields).
     pub pending_session: Option<PendingSession>,
     /// Guided tour state: Some(step_index) when active, None when inactive.
@@ -408,6 +435,7 @@ impl AppState {
             default_cwd: std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default(),
+            default_agent: crate::domain::entities::AgentKind::default(),
             pending_session: None,
             tour_step: None,
             terminal_screen: None,

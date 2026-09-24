@@ -3,11 +3,13 @@ pub enum AgentAction {
     Attach {
         session_id: String,
     },
-    /// Spawn a new interactive Claude session in the given directory.
+    /// Spawn a new interactive agent session in the given directory.
     SpawnSession {
         cwd: String,
         /// Optional human-readable label for the session.
         name: Option<String>,
+        /// `None` = the configured default agent.
+        agent: Option<crate::domain::entities::AgentKind>,
     },
     /// Drop a session: kill daemon PTY, terminate Claude process,
     /// unregister from clash registry. Session disappears from UI.
@@ -25,6 +27,7 @@ pub enum AgentAction {
     SpawnSessionInWorktree {
         cwd: String,
         name: Option<String>,
+        agent: crate::domain::entities::AgentKind,
     },
     /// Stash a session: terminate the Claude process and mark idle, but keep
     /// it in the registry. If already idle, unstash by re-attaching.

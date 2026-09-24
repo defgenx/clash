@@ -212,6 +212,21 @@ pub const PROPS: &[Prop] = &[
     )
     .restart(),
     Prop::new(
+        "general.omp_bin",
+        Kind::Str,
+        Val::Str("omp"),
+        "The `omp` (oh-my-pi) binary to spawn OMP sessions with — a name resolved on PATH, or \
+         an absolute path.",
+    )
+    .restart(),
+    Prop::new(
+        "general.default_agent",
+        Kind::Enum(&["claude", "omp"]),
+        Val::Str("claude"),
+        "Agent pre-selected when starting a new session: `claude` (Claude Code) or `omp` \
+         (oh-my-pi). Every new-session dialog still lets you pick the other one.",
+    ),
+    Prop::new(
         "general.debounce_ms",
         Kind::Int { min: 10, max: 5000 },
         Val::Int(200),
@@ -236,6 +251,14 @@ pub const PROPS: &[Prop] = &[
         "Claude Code data directory. Empty means `~/.claude`.",
     )
     .project(),
+    Prop::new(
+        "paths.omp_dir",
+        Kind::Path,
+        Val::Str(""),
+        "OMP (oh-my-pi) agent directory — where its sessions and skills live. Empty means \
+         `~/.omp/agent`.",
+    )
+    .restart(),
     Prop::new(
         "paths.scratch_dir",
         Kind::Path,
@@ -304,6 +327,20 @@ pub const PROPS: &[Prop] = &[
     )
     .gui("titleAttention"),
     // ── [workflows] ─────────────────────────────────────────────────
+    Prop::new(
+        "workflows.agent",
+        Kind::Enum(&["claude", "omp"]),
+        Val::Str("claude"),
+        "Agent CLI workflow sessions (plan, implement, reviews, explanations, shares) run on: \
+         `claude` or `omp`. An item's ⚙ Settings tab can override it.",
+    ),
+    Prop::new(
+        "workflows.omp_model",
+        Kind::Str,
+        Val::Str(""),
+        "Model OMP workflow sessions are launched with (`--model`, omp's fuzzy match). Empty \
+         uses omp's own default model; Claude sessions keep clash's per-phase models.",
+    ),
     Prop::new(
         "workflows.pr_skill",
         Kind::Str,

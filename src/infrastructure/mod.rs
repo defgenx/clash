@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod app;
 pub mod clipboard;
 pub mod config;
@@ -23,6 +24,7 @@ pub mod ide;
 #[allow(dead_code)]
 pub mod jira;
 pub mod logging;
+pub mod omp;
 pub mod process_scan;
 pub mod session_refresh;
 pub mod skills;

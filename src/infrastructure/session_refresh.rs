@@ -201,6 +201,11 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
     // owned by no GUI workspace, listed under UNASSIGNED.
     collapse_registry_aliases(&mut sessions, &input.registry, &input.daemon_infos);
 
+    // Phase 5.8: the registry records which agent a clash session runs; rows
+    // built from the daemon or the registry alone carry no transcript to
+    // say so, and a relaunch reads the agent off the row.
+    stamp_registered_agents(&mut sessions, &input.registry);
+
     // Phase 6: Resolve names from daemon infos and saved names
     resolve_names(&mut sessions, &input.daemon_infos, &input.saved_names);
 
@@ -397,12 +402,15 @@ fn synthesize_orphan_wild_rows(
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string();
+        let agent =
+            crate::infrastructure::process_scan::agent_of_command(&w.command).unwrap_or_default();
         sessions.push(Session {
             id: synth_id,
+            agent,
             project,
             project_path,
             cwd: w.cwd.clone(),
-            name: Some(format!("claude (PID {})", w.pid)),
+            name: Some(format!("{} (PID {})", agent.as_str(), w.pid)),
             is_running: true,
             status: SessionStatus::Running,
             source: SessionSource::Wild,
@@ -1157,6 +1165,18 @@ fn add_registry_only_sessions(
     }
 }
 
+// ── Phase 5.8: Agent of registered rows ─────────────────────────
+
+fn stamp_registered_agents(sessions: &mut [Session], registry: &HashMap<String, ClashSession>) {
+    for s in sessions.iter_mut() {
+        if let Some(agent) =
+            crate::infrastructure::hooks::registry::registered_agent(registry, &s.id)
+        {
+            s.agent = agent;
+        }
+    }
+}
+
 // ── Phase 6: Name resolution ─────────────────────────────────────
 
 /// Resolve session names from daemon infos and saved disk names.
@@ -1424,6 +1444,7 @@ mod tests {
             created_at: String::new(),
             source_branch: None,
             previous_ids: Vec::new(),
+            agent: Default::default(),
         }
     }
 

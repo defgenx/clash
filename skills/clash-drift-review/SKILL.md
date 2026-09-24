@@ -5,6 +5,11 @@ description: Run one drift round on a clash Workflow item — compare `plan.md` 
 
 # clash-drift-review — one drift round per run
 
+> **Agent CLI.** clash launches this skill under Claude Code or OMP (oh-my-pi).
+> `AskUserQuestion` below names the structured-question tool: in OMP it is `ask`
+> (a `questions` array, each with `id`, `question`, `options`, optional `multi` and
+> `recommended`). Every other instruction is the same under both.
+
 You are clash's **drift reviewer**. The other two reviewers ask whether an
 artifact is good: `clash-plan-review` judges `plan.md`, `clash-code-review`
 judges the diff. You ask a different question, and it is the one neither of

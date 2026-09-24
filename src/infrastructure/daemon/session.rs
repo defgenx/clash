@@ -424,7 +424,7 @@ impl PtySession {
     /// Gracefully stop the child process.
     ///
     /// Strategy: /exit → SIGTERM → SIGKILL
-    /// 1. Send "/exit\n" to the PTY — Claude's built-in quit command
+    /// 1. Send "/exit\n" to the PTY — the built-in quit command of both claude and omp
     /// 2. After 3s, SIGTERM to process group if still alive
     /// 3. After 3 more seconds, SIGKILL if still alive
     pub fn kill(&self) {
@@ -661,44 +661,76 @@ fn has_thinking_indicator(bottom: &str, _last_lines: &[&str]) -> bool {
     false
 }
 
-/// The UTF-8 ctype to set for a PTY child, or `None` when a locale is already
-/// configured (never override the user's). Kept pure — no `std::env` reads — so
-/// Whether `--settings <clash hooks>` should be appended to this spawn.
-///
-/// Pure. True only for `claude` itself — a shell session (`shellterm-*`)
-/// has no use for it and would reject the flag — and only when the caller
-/// has not already passed its own `--settings`, which claude would then see
-/// twice.
-fn wants_hook_settings(bin: &str, args: &[String]) -> bool {
-    let is_claude = std::path::Path::new(bin)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n == "claude");
-    is_claude
-        && !args
-            .iter()
-            .any(|a| a == "--settings" || a.starts_with("--settings="))
+/// Which status-hook registration a spawn gets, by the binary's basename.
+#[derive(Debug, PartialEq)]
+enum HookFlag {
+    /// `claude --settings <hooks/settings.json>`.
+    ClaudeSettings,
+    /// `omp -e <hooks/omp-status.js>`.
+    OmpExtension,
 }
 
-/// `args` plus `--settings <clash hooks file>` when that applies.
+fn basename(bin: &str) -> Option<&str> {
+    std::path::Path::new(bin)
+        .file_name()
+        .and_then(|n| n.to_str())
+}
+
+/// Pure. Hooks are for the agent binaries themselves — a shell session
+/// (`shellterm-*`) has no use for them and would reject the flags — and a
+/// caller that already passed its own `--settings` keeps it rather than
+/// handing claude the flag twice.
+fn wants_hook_flag(bin: &str, args: &[String]) -> Option<HookFlag> {
+    match basename(bin)? {
+        "claude"
+            if !args
+                .iter()
+                .any(|a| a == "--settings" || a.starts_with("--settings=")) =>
+        {
+            Some(HookFlag::ClaudeSettings)
+        }
+        "omp" => Some(HookFlag::OmpExtension),
+        _ => None,
+    }
+}
+
+/// `args` plus the agent's hook registration when that applies.
 ///
 /// The existence check is the fail-safe half: claude refuses to start at all
 /// on a `--settings` path it cannot read ("Settings file not found"), so a
-/// missing hooks file must cost the status hooks, never the session.
+/// missing hooks file must cost the status hooks, never the session. omp's
+/// `-e` is *prepended*: a caller's initial prompt is positional, and anything
+/// after a `--` in it would read as message text.
 fn with_hook_settings<'a>(bin: &str, args: &'a [String]) -> std::borrow::Cow<'a, [String]> {
-    if !wants_hook_settings(bin, args) {
+    let Some(flag) = wants_hook_flag(bin, args) else {
         return std::borrow::Cow::Borrowed(args);
-    }
-    let path = crate::infrastructure::hooks::hook_settings_path();
+    };
+    let path = match flag {
+        HookFlag::ClaudeSettings => crate::infrastructure::hooks::hook_settings_path(),
+        HookFlag::OmpExtension => crate::infrastructure::hooks::omp_extension_path(),
+    };
     if !path.is_file() {
         return std::borrow::Cow::Borrowed(args);
     }
-    let mut out = args.to_vec();
-    out.push("--settings".to_string());
-    out.push(path.to_string_lossy().to_string());
+    let path = path.to_string_lossy().to_string();
+    let out = match flag {
+        HookFlag::ClaudeSettings => {
+            let mut out = args.to_vec();
+            out.push("--settings".to_string());
+            out.push(path);
+            out
+        }
+        HookFlag::OmpExtension => {
+            let mut out = vec!["-e".to_string(), path];
+            out.extend_from_slice(args);
+            out
+        }
+    };
     std::borrow::Cow::Owned(out)
 }
 
+/// The UTF-8 ctype to set for a PTY child, or `None` when a locale is already
+/// configured (never override the user's). Kept pure — no `std::env` reads — so
 /// it's unit-tested directly; the caller passes the live env values.
 fn default_lc_ctype(
     lc_all: Option<&std::ffi::OsStr>,
@@ -721,14 +753,41 @@ fn default_lc_ctype(
 mod tests {
     /// The flag is claude's alone: a shell session would reject it.
     #[test]
-    fn hook_settings_are_for_claude_only() {
+    fn hook_flags_are_for_the_agent_binaries_only() {
         let none: Vec<String> = vec![];
-        assert!(wants_hook_settings("claude", &none));
-        assert!(wants_hook_settings("/Users/me/.local/bin/claude", &none));
-        assert!(!wants_hook_settings("/bin/zsh", &none));
-        assert!(!wants_hook_settings("/opt/homebrew/bin/fish", &none));
+        assert_eq!(
+            wants_hook_flag("claude", &none),
+            Some(HookFlag::ClaudeSettings)
+        );
+        assert_eq!(
+            wants_hook_flag("/Users/me/.local/bin/claude", &none),
+            Some(HookFlag::ClaudeSettings)
+        );
+        assert_eq!(
+            wants_hook_flag("/Users/me/.bun/bin/omp", &none),
+            Some(HookFlag::OmpExtension)
+        );
+        assert_eq!(wants_hook_flag("/bin/zsh", &none), None);
+        assert_eq!(wants_hook_flag("/opt/homebrew/bin/fish", &none), None);
         // A wrapper that merely mentions claude is not the binary.
-        assert!(!wants_hook_settings("/usr/local/bin/claude-wrapper", &none));
+        assert_eq!(
+            wants_hook_flag("/usr/local/bin/claude-wrapper", &none),
+            None
+        );
+    }
+
+    /// omp's extension flag goes first, so a positional prompt stays last.
+    #[test]
+    fn omp_extension_is_prepended_when_installed() {
+        let args = vec![
+            "--resume".to_string(),
+            "/s/x.jsonl".to_string(),
+            "hi".to_string(),
+        ];
+        let out = with_hook_settings("omp", &args);
+        let installed = crate::infrastructure::hooks::omp_extension_path().is_file();
+        assert_eq!(out.first().map(String::as_str) == Some("-e"), installed);
+        assert_eq!(out.last().map(String::as_str), Some("hi"));
     }
 
     /// A caller that brought its own `--settings` keeps it, rather than
@@ -736,11 +795,14 @@ mod tests {
     #[test]
     fn a_caller_supplied_settings_flag_wins() {
         let explicit = vec!["--settings".to_string(), "/tmp/mine.json".to_string()];
-        assert!(!wants_hook_settings("claude", &explicit));
+        assert_eq!(wants_hook_flag("claude", &explicit), None);
         let eq_form = vec!["--settings=/tmp/mine.json".to_string()];
-        assert!(!wants_hook_settings("claude", &eq_form));
+        assert_eq!(wants_hook_flag("claude", &eq_form), None);
         let unrelated = vec!["--resume".to_string(), "abc".to_string()];
-        assert!(wants_hook_settings("claude", &unrelated));
+        assert_eq!(
+            wants_hook_flag("claude", &unrelated),
+            Some(HookFlag::ClaudeSettings)
+        );
     }
 
     /// claude refuses to start on a `--settings` path it cannot read, so a

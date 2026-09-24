@@ -741,6 +741,28 @@ pub fn agent_alive(
 
 // ── PR-skill resolution ─────────────────────────────────────────────────
 
+/// The agent CLI an item's sessions run on: the item's override when set,
+/// else the global `workflows.agent` setting.
+pub fn effective_agent(item_value: &str, global: &str) -> crate::domain::entities::AgentKind {
+    let item = item_value.trim();
+    crate::domain::entities::AgentKind::parse(if item.is_empty() { global } else { item })
+}
+
+/// The `--model` a workflow session is launched with. Claude sessions keep
+/// the per-phase model; OMP ones use `workflows.omp_model`, where empty means
+/// omp's own default — clash's Claude model ids mean nothing to a provider
+/// omp may be configured with.
+pub fn launch_model<'a>(
+    agent: crate::domain::entities::AgentKind,
+    phase_model: &'a str,
+    omp_model: &'a str,
+) -> Option<&'a str> {
+    match agent {
+        crate::domain::entities::AgentKind::Claude => Some(phase_model),
+        crate::domain::entities::AgentKind::Omp => Some(omp_model.trim()).filter(|m| !m.is_empty()),
+    }
+}
+
 /// The PR skill a launch actually carries: the item's override when set
 /// (`none` = explicitly disabled for this item), else the global setting.
 pub fn effective_pr_skill(item_value: &str, global: Option<&str>) -> Option<String> {

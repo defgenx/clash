@@ -592,13 +592,14 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
             }
             effects.push(Effect::DaemonAttach {
                 session_id,
-                args: vec![],
+                fresh: None,
                 cwd: None,
                 name: None,
             });
             effects
         }
-        AgentAction::SpawnSession { cwd, name } => {
+        AgentAction::SpawnSession { cwd, name, agent } => {
+            let agent = agent.unwrap_or(state.default_agent);
             let session_id = uuid::Uuid::now_v7().to_string();
             state.input_mode = InputMode::Attached;
             state.attached_session = Some(session_id.clone());
@@ -612,7 +613,11 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 .map(|p| p.setup.clone())
                 .unwrap_or_default();
 
-            state.spinner = Some(format!("Starting session {}...", session_name));
+            state.spinner = Some(format!(
+                "Starting {} session {}...",
+                crate::application::state::agent_label(agent),
+                session_name
+            ));
             state.scroll_state.offset = 0;
             let mut effects = vec![
                 Effect::RegisterSession {
@@ -620,10 +625,11 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                     name: session_name.clone(),
                     cwd: cwd.clone(),
                     source_branch: None,
+                    agent,
                 },
                 Effect::DaemonAttach {
                     session_id: session_id.clone(),
-                    args: vec!["--session-id".to_string(), session_id.clone()],
+                    fresh: Some(agent),
                     cwd: Some(cwd.clone()),
                     name: Some(session_name),
                 },
@@ -717,7 +723,8 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                     state.toast = Some("Session has no project path".to_string());
                     vec![]
                 }
-                Some(_s) => {
+                Some(s) => {
+                    let agent = s.agent;
                     let new_session_id = uuid::Uuid::now_v7().to_string();
                     let short = &new_session_id[..8];
                     let name = format!("wt-{}", short);
@@ -730,6 +737,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                         cwd: None,
                         new_session_id,
                         name,
+                        agent,
                     }]
                 }
                 None => {
@@ -755,7 +763,6 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                         },
                         Effect::DaemonStart {
                             session_id,
-                            args: vec![],
                             cwd: None,
                             name: None,
                         },
@@ -854,7 +861,6 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                     });
                     effects.push(Effect::DaemonStart {
                         session_id: id.clone(),
-                        args: vec![],
                         cwd: None,
                         name: None,
                     });
@@ -876,7 +882,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 vec![]
             }
         }
-        AgentAction::SpawnSessionInWorktree { cwd, name } => {
+        AgentAction::SpawnSessionInWorktree { cwd, name, agent } => {
             let new_session_id = uuid::Uuid::now_v7().to_string();
             let short = &new_session_id[..8];
             let session_name = name.unwrap_or_else(|| format!("wt-{}", short));
@@ -889,6 +895,7 @@ fn reduce_agent(state: &mut AppState, action: AgentAction) -> Vec<Effect> {
                 cwd: Some(cwd),
                 new_session_id,
                 name: session_name,
+                agent,
             }]
         }
         AgentAction::TakeoverWild { session_id } => {
@@ -1680,20 +1687,50 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                 }
                 InputMode::NewSessionWorktree => {
                     let wants_worktree = input.trim().eq_ignore_ascii_case("y");
-                    let pending = state.pending_session.take();
-                    let (cwd, name) = match pending {
-                        Some(p) => (p.cwd, p.name),
-                        None => (state.default_cwd.clone(), None),
+                    if let Some(ref mut pending) = state.pending_session {
+                        pending.worktree = wants_worktree;
+                    } else {
+                        state.pending_session = Some(crate::application::state::PendingSession {
+                            cwd: state.default_cwd.clone(),
+                            name: None,
+                            worktree: wants_worktree,
+                            preset: None,
+                        });
+                    }
+                    state.input_mode = InputMode::NewSessionAgent;
+                    state.input = tui_input::Input::new(state.default_agent.as_str().to_string());
+                    vec![]
+                }
+                InputMode::NewSessionAgent => {
+                    let Some(agent) =
+                        crate::application::state::parse_agent_answer(&input, state.default_agent)
+                    else {
+                        state.toast = Some(format!(
+                            "Unknown agent '{}' — type claude or omp",
+                            input.trim()
+                        ));
+                        state.input_mode = InputMode::NewSessionAgent;
+                        state.input =
+                            tui_input::Input::new(state.default_agent.as_str().to_string());
+                        return vec![];
                     };
-                    if wants_worktree {
+                    let (cwd, name, worktree) = match state.pending_session.take() {
+                        Some(p) => (p.cwd, p.name, p.worktree),
+                        None => (state.default_cwd.clone(), None, false),
+                    };
+                    if worktree {
                         reduce(
                             state,
-                            Action::Agent(AgentAction::SpawnSessionInWorktree { cwd, name }),
+                            Action::Agent(AgentAction::SpawnSessionInWorktree { cwd, name, agent }),
                         )
                     } else {
                         reduce(
                             state,
-                            Action::Agent(AgentAction::SpawnSession { cwd, name }),
+                            Action::Agent(AgentAction::SpawnSession {
+                                cwd,
+                                name,
+                                agent: Some(agent),
+                            }),
                         )
                     }
                 }
@@ -2048,24 +2085,11 @@ fn handle_preset_selection(
                 worktree: wants_worktree,
                 preset: Some(preset),
             });
-            let pending = state.pending_session.take().unwrap();
-            if pending.worktree {
-                return reduce(
-                    state,
-                    Action::Agent(AgentAction::SpawnSessionInWorktree {
-                        cwd: pending.cwd,
-                        name: pending.name,
-                    }),
-                );
-            } else {
-                return reduce(
-                    state,
-                    Action::Agent(AgentAction::SpawnSession {
-                        cwd: pending.cwd,
-                        name: pending.name,
-                    }),
-                );
-            }
+            // The worktree choice is pinned by the preset; the agent is not,
+            // so the flow still asks for it.
+            state.input_mode = InputMode::NewSessionAgent;
+            state.input = tui_input::Input::new(state.default_agent.as_str().to_string());
+            return vec![];
         }
 
         // Store preset in pending and go to name step
@@ -3193,15 +3217,82 @@ mod tests {
         assert_eq!(state.input_mode, InputMode::NewSessionWorktree);
         assert_eq!(state.input.value(), "n"); // default: no worktree
 
-        // Step 4a: Answer "n" — should spawn session normally
+        // Step 4: Answer "n" — should ask for the agent, pre-filled with the default
         let effects = reduce(
             &mut state,
             Action::Ui(UiAction::SubmitInput("n".to_string())),
         );
-        assert!(effects
-            .iter()
-            .any(|e| matches!(e, Effect::DaemonAttach { .. })));
+        assert!(effects.is_empty());
+        assert_eq!(state.input_mode, InputMode::NewSessionAgent);
+        assert_eq!(state.input.value(), "claude");
+
+        // Step 5: Answer "omp" — should register and spawn an OMP session
+        let effects = reduce(
+            &mut state,
+            Action::Ui(UiAction::SubmitInput("omp".to_string())),
+        );
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::RegisterSession {
+                agent: crate::domain::entities::AgentKind::Omp,
+                ..
+            }
+        )));
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::DaemonAttach {
+                fresh: Some(crate::domain::entities::AgentKind::Omp),
+                ..
+            }
+        )));
         assert_eq!(state.input_mode, InputMode::Attached);
+    }
+
+    #[test]
+    fn test_new_session_agent_step_rejects_an_unknown_agent() {
+        let mut state = test_state();
+        state.input_mode = InputMode::NewSessionAgent;
+        state.pending_session = Some(crate::application::state::PendingSession {
+            cwd: "/tmp/project".to_string(),
+            name: None,
+            worktree: false,
+            preset: None,
+        });
+        let effects = reduce(
+            &mut state,
+            Action::Ui(UiAction::SubmitInput("claudeomp".to_string())),
+        );
+        assert!(effects.is_empty(), "a typo must not spawn anything");
+        assert_eq!(state.input_mode, InputMode::NewSessionAgent);
+        assert!(state.pending_session.is_some());
+        assert!(state.toast.as_deref().unwrap_or("").contains("claudeomp"));
+    }
+
+    #[test]
+    fn test_new_session_agent_step_defaults_to_the_configured_agent() {
+        let mut state = test_state();
+        state.default_agent = crate::domain::entities::AgentKind::Omp;
+        state.input_mode = InputMode::NewSessionWorktree;
+        state.pending_session = Some(crate::application::state::PendingSession {
+            cwd: "/tmp/project".to_string(),
+            name: None,
+            worktree: false,
+            preset: None,
+        });
+        reduce(
+            &mut state,
+            Action::Ui(UiAction::SubmitInput("n".to_string())),
+        );
+        assert_eq!(state.input.value(), "omp");
+        // An emptied answer keeps the default rather than silently meaning claude.
+        let effects = reduce(&mut state, Action::Ui(UiAction::SubmitInput(String::new())));
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::DaemonAttach {
+                fresh: Some(crate::domain::entities::AgentKind::Omp),
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -3218,9 +3309,14 @@ mod tests {
         });
         state.input = tui_input::Input::new("y".to_string());
 
-        let effects = reduce(
+        reduce(
             &mut state,
             Action::Ui(UiAction::SubmitInput("y".to_string())),
+        );
+        assert_eq!(state.input_mode, InputMode::NewSessionAgent);
+        let effects = reduce(
+            &mut state,
+            Action::Ui(UiAction::SubmitInput("claude".to_string())),
         );
         assert!(effects
             .iter()
@@ -3315,6 +3411,7 @@ mod tests {
             Action::Agent(AgentAction::SpawnSessionInWorktree {
                 cwd: "/tmp/project".to_string(),
                 name: Some("my-wt".to_string()),
+                agent: crate::domain::entities::AgentKind::Claude,
             }),
         );
         assert!(effects

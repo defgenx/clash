@@ -1236,7 +1236,7 @@ function renderStatusSections(list, items) {
       sectionReloadAllButton(
         ids,
         plural,
-        `Reload all ${noun} sessions on the latest Claude (skips any still working)`
+        `Reload all ${noun} sessions on the latest agent binary (skips any still working)`
       )
     );
     header.appendChild(
@@ -1252,7 +1252,7 @@ function renderExternalSection(list, items) {
   const header = document.createElement("div");
   header.className = "section-label external";
   header.innerHTML = `⚡ EXTERNAL<span class="count">${items.length}</span>`;
-  header.title = "Claude processes running outside clash — click to take over and attach";
+  header.title = "Agent processes (Claude Code / OMP) running outside clash — click to take over and attach";
   // Kill every associated (wild) claude process at once — each row's
   // dynamically-associated PID is signalled, same as a per-row kill.
   header.appendChild(
@@ -1299,7 +1299,7 @@ function renderSidebar() {
         sectionReloadAllButton(
           ids,
           plural,
-          "Reload all unassigned sessions on the latest Claude (skips any still working)"
+          "Reload all unassigned sessions on the latest agent binary (skips any still working)"
         )
       );
       header.appendChild(
@@ -1394,6 +1394,13 @@ function sessionItem(s) {
   const stLabel = document.createElement("span");
   stLabel.className = `status-label ${st.cls}`;
   stLabel.textContent = `${st.icon} ${st.label}`;
+  if (s.agent === "omp") {
+    const agentBadge = document.createElement("span");
+    agentBadge.className = "agent-badge";
+    agentBadge.textContent = "OMP";
+    agentBadge.title = "Runs on OMP (oh-my-pi)";
+    sub.appendChild(agentBadge);
+  }
   sub.appendChild(stLabel);
   // Queued follow-ups: the whole point is to be visible while the session is
   // busy, which is exactly when you are looking at this list and not at the
@@ -1464,7 +1471,7 @@ function sessionItem(s) {
   if (!wild) {
     const reload = document.createElement("button");
     reload.innerHTML = svgIcon("reload", 14);
-    reload.title = "Reload — restart on the latest Claude, resuming the conversation";
+    reload.title = "Reload — restart on the latest agent binary, resuming the conversation";
     reload.onclick = (ev) => {
       ev.stopPropagation();
       reloadSessionInteractive(s);
@@ -1501,7 +1508,7 @@ function sessionMenu(s, x, y) {
     ...(s.source !== "Wild"
       ? [
           {
-            label: "Reload (restart on latest Claude)",
+            label: "Reload (restart on latest agent binary)",
             icon: "reload",
             action: () => reloadSessionInteractive(s),
           },
@@ -1798,7 +1805,7 @@ async function reloadSession(sid) {
   const wasOpen = state.open.has(sid);
   const entry = wasOpen ? state.open.get(sid) : null;
   if (entry && entry.term) {
-    entry.term.writeln("\r\n\x1b[90m⟳ reloading on the latest Claude…\x1b[0m");
+    entry.term.writeln("\r\n\x1b[90m⟳ reloading on the latest agent binary…\x1b[0m");
   }
   try {
     await invoke("reload_session", { sessionId: sid });
@@ -1850,7 +1857,7 @@ async function reloadAll(ids, what) {
     : "";
   if (
     !(await uiConfirm(
-      `Reload ${todo.length} ${what}? Each restarts on the latest Claude, ` +
+      `Reload ${todo.length} ${what}? Each restarts on the latest agent binary, ` +
         `resuming its conversation.${skipNote}`,
       "Reload all"
     ))
@@ -2044,7 +2051,7 @@ function tabContextMenu(ev, sid) {
   showContextMenu(ev.clientX, ev.clientY, [
     { label: "Rename session…", icon: "pencil", action: () => renameSessionDialog(sid) },
     {
-      label: "Reload (restart on latest Claude)",
+      label: "Reload (restart on latest agent binary)",
       icon: "reload",
       action: () => reloadSession(sid),
     },
@@ -2152,7 +2159,7 @@ function renderTabs() {
       const reload = document.createElement("span");
       reload.className = "reload";
       reload.innerHTML = svgIcon("reload", 12);
-      reload.title = "Reload — restart on the latest Claude, resuming the conversation";
+      reload.title = "Reload — restart on the latest agent binary, resuming the conversation";
       reload.onclick = (ev) => {
         ev.stopPropagation();
         // `s` is the session for this claude tab; if it's briefly missing
@@ -2183,7 +2190,7 @@ function renderTabs() {
   // the eye already is when looking at tabs.
   const plus = document.createElement("div");
   plus.className = "tab new-tab";
-  plus.title = "New tab — terminal, browser, or Claude session";
+  plus.title = "New tab — terminal, browser, or agent session";
   plus.innerHTML = svgIcon("plus", 13);
   plus.onclick = (ev) => {
     ev.stopPropagation();
@@ -2996,11 +3003,12 @@ async function openSession(sid, label, opts = {}) {
       e.preventDefault();
       return false;
     }
-    // Shift+Enter inserts a newline in Claude sessions instead of
+    // Shift+Enter inserts a newline in agent sessions instead of
     // submitting. xterm encodes Enter and Shift+Enter identically (\r);
     // Claude Code treats ESC+CR as "insert newline" (the same sequence
-    // its /terminal-setup binds in iTerm/VS Code). Claude sessions only:
-    // in shells ESC+CR is readline M-RET and would surprise.
+    // its /terminal-setup binds in iTerm/VS Code), OMP binds Ctrl+J (LF).
+    // Agent sessions only: in shells ESC+CR is readline M-RET and would
+    // surprise.
     if (
       e.type === "keydown" &&
       e.key === "Enter" &&
@@ -3010,7 +3018,9 @@ async function openSession(sid, label, opts = {}) {
       !e.altKey &&
       !isShellTerm(sid)
     ) {
-      invoke("send_input", { sessionId: sid, text: "\x1b\r" }).catch(console.error);
+      const agent = (state.sessions.find((x) => x.id === sid) || {}).agent;
+      const newline = agent === "omp" ? "\n" : "\x1b\r";
+      invoke("send_input", { sessionId: sid, text: newline }).catch(console.error);
       e.preventDefault();
       return false;
     }
@@ -6526,7 +6536,7 @@ async function wfShareDialog(item) {
               const asked = await uiPrompt(
                 d.skill
                   ? `Post to Jira with the ${d.skill} skill — ticket key`
-                  : "Post to Jira from a Claude session — ticket key",
+                  : "Post to Jira from an agent session — ticket key",
                 item.meta.jiraTicket ||
                   detectTicketKey(item.meta.title, item.meta.branch, item.slug)
               );
@@ -6539,7 +6549,7 @@ async function wfShareDialog(item) {
             const target = d.label.replace(/^(Send to|Post to) /, "").replace("…", "");
             if (
               !(await uiConfirm(
-                `Send this to ${target} from a Claude session? ` +
+                `Send this to ${target} from an agent session? ` +
                   (d.skill
                     ? `It will use the ${d.skill} skill, falling back to the tools that session has connected.`
                     : "It will use the tools that session has connected — an MCP server for it, say.") +
@@ -6565,7 +6575,7 @@ async function wfShareDialog(item) {
             flashToast(
               d.skill
                 ? `Handed the share to ${d.skill} — watch the session`
-                : "Handed the share to a Claude session — watch it post"
+                : "Handed the share to an agent session — watch it post"
             );
             if (ticket && ticket !== (item.meta.jiraTicket || "")) {
               item.meta.jiraTicket = ticket;
@@ -7926,11 +7936,11 @@ function renderWfActions(bar, root, item) {
             message: "Open a draft PR for this branch?",
             detail:
               "clash writes the description from this item's plan — free and instant. " +
-              "Claude Code reads the real diff and writes a proper one, in the repo's " +
+              "The workflow agent reads the real diff and writes a proper one, in the repo's " +
               "PR conventions — spends tokens.",
             choices: [
               { label: "Open it now (from the plan)", value: "now", primary: true },
-              { label: "Let Claude Code write it", value: "agent" },
+              { label: "Let the agent write it", value: "agent" },
             ],
           });
           if (!how) return;
@@ -7954,7 +7964,7 @@ function renderWfActions(bar, root, item) {
           } catch (e) {
             uiAlert(wfGhHint(e) || `Create PR failed: ${e}`);
           }
-        }, "Open a draft PR for this branch — from the plan (free, instant) or written by Claude Code (reads the real diff, spends tokens); you pick next");
+        }, "Open a draft PR for this branch — from the plan (free, instant) or written by the workflow agent (reads the real diff, spends tokens); you pick next");
       }
       openPrsButton();
       add(
@@ -8923,6 +8933,7 @@ async function renderWfSubView(body, root, item, ts) {
         : "",
       prSkill: item.meta.prSkill || "",
       jiraTicket: item.meta.jiraTicket || "",
+      agent: item.meta.agent || "",
     };
     const save = async (patch, revert) => {
       try {
@@ -8980,6 +8991,28 @@ async function renderWfSubView(body, root, item, ts) {
     const alg = document.createElement("legend");
     alg.textContent = "Agents";
     agents.appendChild(alg);
+
+    const agentRow = document.createElement("label");
+    agentRow.className = "wf-settings-row";
+    agentRow.appendChild(document.createTextNode("Agent CLI "));
+    const agentSel = document.createElement("select");
+    for (const [v, l] of [
+      ["", "inherit global setting"],
+      ["claude", "Claude Code"],
+      ["omp", "OMP"],
+    ]) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = l;
+      agentSel.appendChild(o);
+    }
+    agentSel.value = committed.agent;
+    agentSel.onchange = () =>
+      save({ agent: agentSel.value }, () => (agentSel.value = committed.agent));
+    agentSel.title =
+      "Which agent CLI this item's sessions run on — per-item override of Settings → Workflows → Workflow agent. Applies to sessions launched from now on.";
+    agentRow.appendChild(agentSel);
+    agents.appendChild(agentRow);
 
     const modeRow = document.createElement("label");
     modeRow.className = "wf-settings-row";
@@ -9644,7 +9677,32 @@ function showNewSessionModal() {
     state.homeDir ||
     "";
   if ($("ns-cwd").value) loadPresetsForCwd();
+  syncAgentPicker();
   setTimeout(() => $("ns-cwd").focus(), 0);
+}
+
+/// Pre-select the configured default agent on every open — the choice is
+/// made per session, so a previous pick is not carried over — and grey out
+/// OMP when its binary does not resolve, instead of letting the spawn fail.
+async function syncAgentPicker() {
+  let cfg = { defaultAgent: "claude", ompAvailable: true };
+  try {
+    cfg = await invoke("get_agent_settings");
+  } catch (_) {}
+  const omp = document.querySelector('input[name="ns-agent"][value="omp"]');
+  const wrap = $("ns-agent-omp-wrap");
+  omp.disabled = !cfg.ompAvailable;
+  wrap.classList.toggle("unavailable", !cfg.ompAvailable);
+  wrap.title = cfg.ompAvailable
+    ? "oh-my-pi"
+    : `omp not found (${cfg.ompBin || "omp"}) — set the OMP binary in Settings`;
+  const want = cfg.defaultAgent === "omp" && cfg.ompAvailable ? "omp" : "claude";
+  document.querySelector(`input[name="ns-agent"][value="${want}"]`).checked = true;
+}
+
+function selectedAgent() {
+  const el = document.querySelector('input[name="ns-agent"]:checked');
+  return el ? el.value : "claude";
 }
 
 function hideNewSessionModal() {
@@ -9758,6 +9816,7 @@ async function createSession() {
         projectPath: cwd,
         cols: 120,
         rows: 40,
+        agent: selectedAgent(),
       });
     } else {
       sid = await invoke("create_new_session", {
@@ -9765,6 +9824,7 @@ async function createSession() {
         cwd,
         cols: 120,
         rows: 40,
+        agent: selectedAgent(),
       });
     }
     hideNewSessionModal();
@@ -9772,7 +9832,7 @@ async function createSession() {
     $("ns-worktree").checked = false;
     await refreshSessions();
     await openSession(sid);
-    // Preset prompt: typed into the fresh session once Claude has started
+    // Preset prompt: typed into the fresh session once the agent has started
     if (preset && preset.prompt) {
       setTimeout(() => {
         invoke("send_input", {
@@ -11665,6 +11725,30 @@ $("set-claude-bin").addEventListener("change", async () => {
   }
 });
 
+/// Agent-CLI settings live in config.toml (shared with the TUI) and round trip
+/// through `set_agent_setting`, which validates and echoes the effective values.
+function syncAgentSettingsUi(cfg) {
+  $("set-omp-bin").value = cfg.ompBin;
+  $("set-default-agent").value = cfg.defaultAgent;
+  $("set-wf-agent").value = cfg.workflowAgent;
+  $("set-wf-omp-model").value = cfg.ompModel;
+}
+for (const [id, key] of [
+  ["set-omp-bin", "general.omp_bin"],
+  ["set-default-agent", "general.default_agent"],
+  ["set-wf-agent", "workflows.agent"],
+  ["set-wf-omp-model", "workflows.omp_model"],
+]) {
+  $(id).addEventListener("change", async () => {
+    try {
+      syncAgentSettingsUi(await invoke("set_agent_setting", { key, value: $(id).value }));
+    } catch (e) {
+      uiAlert(`${key}: ${e}`);
+      invoke("get_agent_settings").then(syncAgentSettingsUi).catch(() => {});
+    }
+  });
+}
+
 /// The workflow PR skill lives in config.toml (shared with the TUI): when set,
 /// the PR phase's kickoff carries it and the agent opens PRs through that
 /// skill instead of raw `gh pr create`. Empty means repo conventions.
@@ -11781,6 +11865,7 @@ const PATH_SETTINGS = [
   { id: "set-workflows-dir", kind: "dir", title: "Choose the workflows directory" },
   // A binary has no extension to filter on, so this is an unfiltered file pick.
   { id: "set-claude-bin", kind: "file", title: "Choose the claude executable" },
+  { id: "set-omp-bin", kind: "file", title: "Choose the omp executable" },
 ];
 for (const { id, kind, title } of PATH_SETTINGS) {
   const btn = $(`${id}-browse`);
@@ -12125,6 +12210,7 @@ function restartSessionPoll() {
   invoke("get_claude_bin")
     .then((b) => ($("set-claude-bin").value = b))
     .catch(() => {});
+  invoke("get_agent_settings").then(syncAgentSettingsUi).catch(() => {});
   invoke("get_workflow_pr_skill")
     .then((s) => ($("set-wf-pr-skill").value = s))
     .catch(() => {});

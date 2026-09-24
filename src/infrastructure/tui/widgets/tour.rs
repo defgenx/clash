@@ -21,7 +21,7 @@ pub const TOUR_STEPS: &[TourStep] = &[
     TourStep {
         title: "Welcome to clash",
         body: &[
-            "clash is a terminal UI for managing Claude Code sessions and agent teams.",
+            "clash is a terminal UI for managing Claude Code and OMP sessions and agent teams.",
             "",
             "This guided tour will walk you through the main features.",
             "You can restart it anytime with  :tour",
@@ -104,14 +104,17 @@ pub const TOUR_STEPS: &[TourStep] = &[
     TourStep {
         title: "Creating Sessions",
         body: &[
-            "Press  c  or  n  to create a new Claude session.",
+            "Press  c  or  n  to create a new session.",
             "",
             "You'll be prompted for the working directory. The default is where you launched clash. Edit the path or press Enter to accept.",
+            "",
+            "The last prompt picks the agent: claude (Claude Code) or omp (OMP / oh-my-pi), pre-filled with general.default_agent.",
             "",
             "You can also use the command:",
         ],
         keys: &[
             (":new <path>", "Create session in a specific directory"),
+            (":new --agent omp <path>", "Create an OMP session there"),
             (":rename <name>", "Rename session (from detail view)"),
         ],
     },

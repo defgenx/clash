@@ -293,6 +293,7 @@ fn draw_footer(state: &AppState, frame: &mut Frame, area: ratatui::layout::Rect)
         | crate::application::state::InputMode::NewSession
         | crate::application::state::InputMode::NewSessionName
         | crate::application::state::InputMode::NewSessionWorktree
+        | crate::application::state::InputMode::NewSessionAgent
         | crate::application::state::InputMode::TeamDescription
         | crate::application::state::InputMode::NewMemberName
         | crate::application::state::InputMode::NewMemberType
