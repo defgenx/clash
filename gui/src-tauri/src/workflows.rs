@@ -430,11 +430,19 @@ pub(crate) fn set_workflow_item_settings(
     jira_ticket: Option<String>,
     description: Option<String>,
     agent: Option<String>,
+    title: Option<String>,
+    base: Option<String>,
 ) -> Result<clash::domain::workflow::WorkflowMeta, String> {
     let mut meta = state
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
+    if let Some(title) = title {
+        meta.title = clash::application::workflow::normalize_item_title(&title)?;
+    }
+    if let Some(base) = base {
+        meta.base = clash::application::workflow::normalize_diff_base(&base)?;
+    }
     if let Some(bare) = bare_session_names {
         meta.bare_session_names = bare;
     }

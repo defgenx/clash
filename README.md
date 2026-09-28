@@ -855,11 +855,16 @@ after a change round to keep it current. Every workflow session is also named
 by the item's title plus its job (`Auth refactor · implement`,
 `Auth refactor · plan review r2`, `· explain`), so the sessions list says what
 each agent is doing and for what — and each item's **⚙ Settings tab** (right edge of
-the tab bar) holds the per-item configuration — session-name prefix on/off,
+the tab bar) holds the per-item configuration — the item's **title** (rename
+it there, with **Rename…** on its card or tab, or by double-clicking the title
+in its header; the item's folder keeps the slug it was created with, and
+sessions launched afterwards carry the new name), its **diff base** (the
+`origin` branch the diff is taken against; empty = the origin default branch),
+session-name prefix on/off,
 a per-item **PR skill** override (`none` disables), the default **interaction
 mode** for that item's agent rounds (ask at start / interactive / autonomous,
 pre-selected in the review composer and applied to one-click launches) — plus
-the item's facts (mode, repo, branch, base, worktree). The action bar below
+the item's facts (mode, repo, branch, worktree). The action bar below
 every item is organized into three labeled zones whose captions carry the rule
 — **This step · stays here** (work on the current artifact: reviews, explain,
 open the PR or the session — none of these moves the item), **Continue · moves

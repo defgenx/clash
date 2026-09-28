@@ -44,6 +44,35 @@ pub fn slugify(title: &str) -> String {
     }
 }
 
+/// A renamed item title: trimmed, one line, never empty. Renaming changes only
+/// the title — the slug is the item's on-disk identity (directory, tab keys,
+/// recorded sessions), so it stays as created.
+pub fn normalize_item_title(title: &str) -> Result<String, String> {
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        return Err("A workflow item needs a title".to_string());
+    }
+    Ok(title)
+}
+
+/// A user-supplied diff base: a branch name on `origin`, empty for "the origin
+/// default branch". A leading `origin/` is dropped because the diff already
+/// prefixes it (`origin/origin/main` resolves to nothing and the diff silently
+/// falls back to uncommitted changes only).
+pub fn normalize_diff_base(base: &str) -> Result<String, String> {
+    let base = base.trim();
+    let base = base.strip_prefix("origin/").unwrap_or(base);
+    if base.starts_with('-')
+        || base.contains("..")
+        || base
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c))
+    {
+        return Err(format!("Not a branch name: '{}'", base));
+    }
+    Ok(base.to_string())
+}
+
 // ── Line hashing ────────────────────────────────────────────────────────
 
 /// FNV-1a 64-bit over the *trimmed* line text, rendered as lowercase hex.
@@ -1516,6 +1545,28 @@ mod tests {
         assert_eq!(slugify(""), "item");
         assert_eq!(slugify("../evil"), "evil");
         assert!(!slugify("a:b/c\\d").contains([':', '/', '\\']));
+    }
+
+    #[test]
+    fn a_renamed_title_is_one_trimmed_line_and_never_empty() {
+        assert_eq!(
+            normalize_item_title("  Auth\n  refactor\t v2 ").unwrap(),
+            "Auth refactor v2"
+        );
+        assert!(normalize_item_title(" \n\t").is_err());
+    }
+
+    #[test]
+    fn a_diff_base_is_a_bare_origin_branch_name() {
+        assert_eq!(normalize_diff_base("  develop ").unwrap(), "develop");
+        assert_eq!(
+            normalize_diff_base("origin/release/1.2").unwrap(),
+            "release/1.2"
+        );
+        assert_eq!(normalize_diff_base("").unwrap(), "");
+        for bad in ["-rf", "a b", "main..x", "HEAD~1", "x:y", "a^"] {
+            assert!(normalize_diff_base(bad).is_err(), "{bad} accepted");
+        }
     }
 
     // ── line_hash ───────────────────────────────────────────────────

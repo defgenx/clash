@@ -2042,6 +2042,15 @@ function tabContextMenu(ev, sid) {
     ]);
     return;
   }
+  const wfItem = sid.startsWith("view:workflow:") ? wfItemForTabKey(sid) : null;
+  if (entry && wfItem) {
+    // A workflow tab is named after its item, so renaming it renames the item.
+    showContextMenu(ev.clientX, ev.clientY, [
+      { label: "Rename workflow…", icon: "pencil", action: () => renameWorkflowItem(wfItem) },
+      { label: "Close tab", icon: "x", action: () => dropTerminal(sid) },
+    ]);
+    return;
+  }
   if (entry && !entry.term) {
     // Content tab (conversation/subagents/diff) — renamable + closable
     showContextMenu(ev.clientX, ev.clientY, [
@@ -4600,8 +4609,45 @@ function buildWorkflowRow(item) {
   return row;
 }
 
+/// The loaded item behind a `view:workflow:<project>/<slug>` tab key.
+function wfItemForTabKey(key) {
+  const rest = key.slice("view:workflow:".length);
+  return state.workflows.find((w) => wfKey(w.project, w.slug) === rest) || null;
+}
+
+/// Rename an item: the title only. The slug is its on-disk identity (item
+/// directory, tab key, recorded sessions), so it keeps the one it was created
+/// with. Sessions launched from now on carry the new name.
+async function renameWorkflowItem(item) {
+  const current = item.meta.title || item.slug;
+  const name = await uiPrompt("Rename workflow:", current);
+  if (name === null || !name.trim() || name.trim() === current) return;
+  try {
+    const meta = await invoke("set_workflow_item_settings", {
+      project: item.project,
+      slug: item.slug,
+      title: name,
+    });
+    wfSelfWriteAt = Date.now();
+    item.meta.title = meta.title;
+    const tab = state.open.get(`view:workflow:${wfKey(item.project, item.slug)}`);
+    if (tab) {
+      tab.name = `⧉ ${meta.title}`;
+      renderTabs();
+      buildWorkflowView(tab.el, item.project, item.slug);
+    }
+    await refreshWorkflows();
+    flashToast(`Renamed to “${meta.title}”`);
+  } catch (e) {
+    uiAlert(`Rename failed: ${e}`);
+  }
+}
+
 function workflowContextMenu(item, x, y) {
-  const items = [{ label: "Open", icon: "file", action: () => openWorkflowTab(item) }];
+  const items = [
+    { label: "Open", icon: "file", action: () => openWorkflowTab(item) },
+    { label: "Rename…", icon: "pencil", action: () => renameWorkflowItem(item) },
+  ];
   const prs = itemPrs(item.meta);
   if (prs.length) {
     items.push({
@@ -5482,13 +5528,14 @@ async function buildWorkflowView(el, project, slug) {
       : "";
   const branchBit = item.meta.branch ? ` · ${escapeHtml(item.meta.branch)}` : "";
   head.innerHTML =
-    `<span class="wf-title">${escapeHtml(item.meta.title || item.slug)}</span>` +
+    `<span class="wf-title" title="Double-click to rename">${escapeHtml(item.meta.title || item.slug)}</span>` +
     `<span class="wf-chip ${info.cls}">${info.icon} ${info.label}</span>` +
     modeChip +
     `<span class="wf-meta">${escapeHtml(item.project)}${branchBit} · it.${
       item.meta.iteration || 1
     }${warn}</span>` +
     `<span class="spacer"></span>`;
+  head.querySelector(".wf-title").ondblclick = () => renameWorkflowItem(item);
   // One button per PR: the primary (numbers only — its repo is the item's),
   // then each linked PR named by repo. Right-clicking ANY of them opens that
   // PR's own action menu — on a multi-repo item the per-repo decisions have
@@ -9025,6 +9072,8 @@ async function renderWfSubView(body, root, item, ts) {
     // reverts to; the `item.meta` this tab was built from goes stale the
     // moment any other knob saves.
     const committed = {
+      title: item.meta.title || "",
+      base: item.meta.base || "",
       description: item.meta.description || "",
       bareSessionNames: !!item.meta.bareSessionNames,
       interactionDefault: ["interactive", "autonomous"].includes(item.meta.interactionDefault)
@@ -9036,8 +9085,11 @@ async function renderWfSubView(body, root, item, ts) {
     };
     const save = async (patch, revert) => {
       try {
-        await invoke("set_workflow_item_settings", { project, slug, ...patch });
+        const meta = await invoke("set_workflow_item_settings", { project, slug, ...patch });
         wfSelfWriteAt = Date.now();
+        // The backend normalizes some values (title whitespace, an `origin/`
+        // prefix on the base); commit what it stored.
+        for (const k of Object.keys(patch)) if (k in meta) patch[k] = meta[k];
         Object.assign(committed, patch);
         await refreshWorkflows();
       } catch (e) {
@@ -9051,6 +9103,34 @@ async function renderWfSubView(body, root, item, ts) {
     const ilg = document.createElement("legend");
     ilg.textContent = "Intent";
     intent.appendChild(ilg);
+    const titleRow = document.createElement("label");
+    titleRow.className = "wf-settings-row";
+    titleRow.appendChild(document.createTextNode("Title "));
+    const titleInput = document.createElement("input");
+    titleInput.type = "text";
+    titleInput.className = "wf-settings-title";
+    titleInput.spellcheck = false;
+    titleInput.value = committed.title;
+    titleInput.title =
+      "The item's name — on its card, tab, header and the agent sessions launched from now on. The item's folder keeps the slug it was created with.";
+    titleInput.onchange = () => {
+      if (!titleInput.value.trim()) {
+        titleInput.value = committed.title;
+        return;
+      }
+      save({ title: titleInput.value }, () => (titleInput.value = committed.title)).then(() => {
+        titleInput.value = committed.title;
+        const tab = state.open.get(`view:workflow:${wfKey(project, slug)}`);
+        if (tab) {
+          tab.name = `⧉ ${committed.title}`;
+          renderTabs();
+          const h = tab.el.querySelector(".wf-head .wf-title");
+          if (h) h.textContent = committed.title;
+        }
+      });
+    };
+    titleRow.appendChild(titleInput);
+    intent.appendChild(titleRow);
     const desc = document.createElement("textarea");
     desc.className = "wf-settings-desc";
     desc.rows = 4;
@@ -9153,6 +9233,29 @@ async function renderWfSubView(body, root, item, ts) {
     agents.appendChild(prRow);
     wrap.appendChild(agents);
 
+    const diffGroup = document.createElement("fieldset");
+    diffGroup.className = "wf-settings-group";
+    const dlg = document.createElement("legend");
+    dlg.textContent = "Diff";
+    diffGroup.appendChild(dlg);
+    const baseRow = document.createElement("label");
+    baseRow.className = "wf-settings-row";
+    baseRow.appendChild(document.createTextNode("Diff base "));
+    const baseInput = document.createElement("input");
+    baseInput.type = "text";
+    baseInput.spellcheck = false;
+    baseInput.placeholder = "origin default branch";
+    baseInput.value = committed.base;
+    baseInput.title =
+      "The branch on origin the item's diff is taken against (from the merge-base). Empty uses the origin default branch; set it when the work targets another branch, e.g. a release branch.";
+    baseInput.onchange = () =>
+      save({ base: baseInput.value.trim() }, () => (baseInput.value = committed.base)).then(
+        () => (baseInput.value = committed.base)
+      );
+    baseRow.appendChild(baseInput);
+    diffGroup.appendChild(baseRow);
+    wrap.appendChild(diffGroup);
+
     const sharing = document.createElement("fieldset");
     sharing.className = "wf-settings-group";
     const slg = document.createElement("legend");
@@ -9193,7 +9296,6 @@ async function renderWfSubView(body, root, item, ts) {
     fact("Mode", item.meta.mode || "full");
     fact("Repository", item.meta.repoPath);
     fact("Branch", item.meta.branch);
-    fact("Diff base", item.meta.base || "(origin default branch)");
     fact("Worktree", item.meta.worktree);
     fact("Created", item.meta.createdAt ? new Date(item.meta.createdAt).toLocaleString() : "");
     facts.appendChild(dl);

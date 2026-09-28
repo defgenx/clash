@@ -37,7 +37,9 @@ clash's record of **human** decisions, the second the reviewer's own findings.
 One file would make ownership ambiguous exactly where concurrent writes happen.
 
 `(project, slug)` — the directory path — is the identity; `meta.json` never
-overrides it. All JSON is lenient: unknown fields must be preserved on
+overrides it. Renaming an item (⚙ Settings, or **Rename…**) rewrites
+`meta.title` only: the slug stays as created, because tab keys and recorded
+sessions reference it. `meta.base` is likewise editable there. All JSON is lenient: unknown fields must be preserved on
 read-modify-write (clash uses `#[serde(flatten)]` extras; the agent must
 merge, never rewrite from scratch). Three fields are clash-owned per-item settings
 (the item ⚙ Settings tab; agents never read or write them):
