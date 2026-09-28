@@ -225,6 +225,12 @@ pub struct Workflows {
     pub agent: String,
     /// `--model` for OMP workflow sessions; empty = omp's default.
     pub omp_model: String,
+    /// `--model` for Claude workflow sessions (the lead); empty = Claude's default.
+    pub lead_model: String,
+    /// `team` (lead + parallel subagents) | `solo`.
+    pub delegation: String,
+    /// Model the lead's subagents run on; empty = inherit the lead's.
+    pub subagent_model: String,
     /// Skill the workflow PR phase opens pull requests with; empty means
     /// "follow the repo's own conventions with `gh`".
     pub pr_skill: String,
@@ -265,6 +271,9 @@ impl Default for Workflows {
         Self {
             agent: default_str("workflows.agent"),
             omp_model: default_str("workflows.omp_model"),
+            lead_model: default_str("workflows.lead_model"),
+            delegation: default_str("workflows.delegation"),
+            subagent_model: default_str("workflows.subagent_model"),
             pr_skill: default_str("workflows.pr_skill"),
             forge: default_str("workflows.forge"),
             slack_webhook: default_str("workflows.slack_webhook"),
@@ -364,6 +373,16 @@ impl Config {
     /// Watcher debounce as a `Duration`.
     pub fn debounce(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.general.debounce_ms)
+    }
+
+    /// How workflow sessions split their work — see `Delegation`. GUI-only,
+    /// like `workflow_pr_skill`.
+    #[allow(dead_code)]
+    pub fn workflow_delegation(&self) -> crate::application::workflow::Delegation<'_> {
+        crate::application::workflow::Delegation::from_settings(
+            &self.workflows.delegation,
+            &self.workflows.subagent_model,
+        )
     }
 
     /// The configured PR-creation skill for workflow agents, or `None` when

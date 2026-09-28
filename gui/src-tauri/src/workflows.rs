@@ -1334,8 +1334,6 @@ struct ItemSessionSpawn<'a> {
     meta: &'a clash::domain::workflow::WorkflowMeta,
     /// Directory the agent works in: the item's worktree, or its repo.
     cwd: &'a str,
-    /// Model to pin the session to — see `workflow::model_for_phase`.
-    model: &'a str,
     cols: u16,
     rows: u16,
 }
@@ -1379,7 +1377,6 @@ async fn spawn_item_session(
         name,
         meta,
         cwd,
-        model,
         cols,
         rows,
     } = spawn;
@@ -1419,15 +1416,24 @@ async fn spawn_item_session(
         .into_owned();
     let prompt = prompt(&item_dir);
 
-    // `--model` is pinned per phase rather than inherited (see
-    // `workflow::model_for_phase`) for Claude; `workflow::launch_model` says
-    // what an OMP session gets. It precedes the prompt, the positional arg.
+    // `--model` is the lead model, pinned rather than inherited so two rounds
+    // on one item are comparable; `workflow::launch_model` says what an OMP
+    // session gets. It precedes the prompt, the positional arg.
     let launch = state.agents().fresh(agent, session_id, cwd);
     let args = clash::infrastructure::agent::with_prompt(
         launch.args,
-        clash::application::workflow::launch_model(agent, model, &cfg.workflows.omp_model),
+        clash::application::workflow::launch_model(
+            agent,
+            &cfg.workflows.lead_model,
+            &cfg.workflows.omp_model,
+        ),
         &prompt,
     );
+    // The subagent model is enforced by env, not left to the skill's say-so.
+    let env: std::collections::HashMap<String, String> =
+        clash::application::workflow::delegation_env(agent, &cfg.workflow_delegation())
+            .into_iter()
+            .collect();
     let mut control = state.control.lock().await;
     crate::ensure_connected(&mut control).await;
     control
@@ -1439,7 +1445,7 @@ async fn spawn_item_session(
             Some(name),
             cols,
             rows,
-            std::collections::HashMap::new(),
+            env,
             true, // TUI: Claude sets its own termios
         )
         .await
@@ -1569,7 +1575,6 @@ pub(crate) async fn start_workflow_agent(
             name: &clash::application::workflow::workflow_session_name(&meta, &slug, &phase),
             meta: &meta,
             cwd: &cwd,
-            model: clash::application::workflow::model_for_phase(&phase),
             cols,
             rows,
         },
@@ -1582,6 +1587,7 @@ pub(crate) async fn start_workflow_agent(
                     pr_skill: pr_skill.as_deref(),
                     skill: skill.as_deref(),
                     interactive,
+                    delegation: state.config.get().workflow_delegation(),
                 },
             )
         },
@@ -1814,12 +1820,17 @@ pub(crate) async fn start_workflow_review_agent(
             ),
             meta: &meta,
             cwd: &cwd,
-            // A reviewer is always a thinking phase, whatever it is reviewing.
-            model: clash::application::workflow::model_for_phase("review"),
             cols,
             rows,
         },
-        |item_dir| clash::application::workflow::build_review_prompt(item_dir, &review, mode),
+        |item_dir| {
+            clash::application::workflow::build_review_prompt(
+                item_dir,
+                &review,
+                mode,
+                &state.config.get().workflow_delegation(),
+            )
+        },
     )
     .await;
 
@@ -2913,7 +2924,6 @@ pub(crate) async fn share_workflow_via_agent(
             name: &name,
             meta: &meta,
             cwd: &cwd,
-            model: clash::application::workflow::model_for_phase("share"),
             cols,
             rows,
         },

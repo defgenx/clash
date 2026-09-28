@@ -48,6 +48,9 @@ The kickoff prompt gives you:
   diff is work a linked PR implies **here** — "this repo's caller needs the
   new field too" is a finding about your own files.
 - **Interactive** — optional; see the opening question below.
+- **Delegation** — `team` (also what an absent field means) or `solo`,
+  optionally naming the subagent model: `team (subagents on <model>)`. See
+  "Lead and subagents" below.
 
 Your shell cwd is the item's worktree when it has one, otherwise the repo. The
 full file contract is in the clash repo at `docs/workflows.md`.
@@ -126,6 +129,55 @@ At any checkpoint the human may answer "apply your recommendations and finish"
   add must set `"author": "agent"`. Never delete or edit a human's annotation,
   and never reopen one that is `addressed`/`wontfix`.
 - Never force-push, never `--no-verify`, never rewrite published history.
+
+## Lead and subagents — `Delegation: team`
+
+Under `team` you are the **lead**, and delegating is **required, not a
+suggestion** — clash chose it so the round is faster and so every result is
+checked by someone who did not produce it. Breadth comes from reviewers looking at the diff in parallel, each through one lens; precision comes from a second pass that tries to refute every finding. The triage, the grades and every write are yours. Under `solo`, do
+everything yourself and skip this section.
+
+The round runs in two waves:
+
+1. **Find** — one read-only reviewer per lens, launched together:
+   correctness (the concrete failing input for each claim), tests (what the
+   change leaves unasserted), architecture & conventions (held to the repo's
+   `CLAUDE.md`/`AGENTS.md` and the neighbouring code), and security &
+   performance. With several PRs, one reviewer per PR per lens that applies;
+   at `deep`, add one per major subsystem the change touches to trace its
+   callers and invariants. Each returns candidates with `file:line`, the
+   failure scenario and a proposed grade.
+2. **Verify** — dedupe the candidates, then one fresh verifier per finding
+   (or per file's batch), briefed to **refute** it against the code. Keep what
+   survives, regrade what was overstated, drop the rest. In interactive
+   rounds, triage only what survived.
+
+Under `respond-pr-comments`, one subagent per thread (or per file's threads)
+drafts the grounded reply and the fix it implies; you review each before
+anything is posted or edited.
+
+How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
+
+- **Parallel means one message.** Launch every independent subagent of a wave
+  in a single response with several tool calls; one call per message runs
+  them one after another.
+- **Never pass a `model`.** clash pins the subagents' model (the kickoff names
+  it; `CLAUDE_CODE_SUBAGENT_MODEL` enforces it). Your own model is for
+  splitting, integrating and judging.
+- **Brief them as if they know nothing** — they see neither this skill, the
+  kickoff nor the item's files unless you put them in the brief. Each brief
+  states the goal, the exact files or area it covers, the relevant excerpts
+  (plan section, annotations, findings) verbatim, the repo's conventions
+  (`CLAUDE.md`/`AGENTS.md`), and the shape of what to return: `file:line`
+  evidence, not prose.
+- **The lead owns the item.** Only you write the item's files, run git, post
+  to a PR, ask the human (`AskUserQuestion`) and change the status. Say so in
+  every brief — a subagent that writes `meta.json` or commits corrupts the
+  round.
+- **Verify, don't forward.** A subagent's output is a claim. Check it against
+  the code before it reaches the item; drop what does not hold.
+- **Report the split.** Your final message says how the work was divided and
+  what verification dropped or changed.
 
 ## What "review" means here
 

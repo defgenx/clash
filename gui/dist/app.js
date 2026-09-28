@@ -11828,12 +11828,20 @@ function syncAgentSettingsUi(cfg) {
   $("set-default-agent").value = cfg.defaultAgent;
   $("set-wf-agent").value = cfg.workflowAgent;
   $("set-wf-omp-model").value = cfg.ompModel;
+  $("set-wf-lead-model").value = cfg.leadModel;
+  $("set-wf-delegation").value = cfg.delegation;
+  $("set-wf-subagent-model").value = cfg.subagentModel;
+  // Solo launches no subagents, so their model is not in play.
+  $("set-wf-subagent-row").classList.toggle("setting-inactive", cfg.delegation === "solo");
 }
 for (const [id, key] of [
   ["set-omp-bin", "general.omp_bin"],
   ["set-default-agent", "general.default_agent"],
   ["set-wf-agent", "workflows.agent"],
   ["set-wf-omp-model", "workflows.omp_model"],
+  ["set-wf-lead-model", "workflows.lead_model"],
+  ["set-wf-delegation", "workflows.delegation"],
+  ["set-wf-subagent-model", "workflows.subagent_model"],
 ]) {
   $(id).addEventListener("change", async () => {
     try {

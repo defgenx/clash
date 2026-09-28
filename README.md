@@ -348,7 +348,7 @@ everything built around sessions applies:
   before every OMP workflow launch, so an omp installed since startup still
   has the skills its kickoff names.
 - **Workflows.** OMP workflow sessions launch with `workflows.omp_model`
-  (empty = omp's own default model) instead of clash's Claude model ids.
+  (empty = omp's own default model) instead of `workflows.lead_model`.
 
 Settings: `general.omp_bin`, `general.default_agent`, `paths.omp_dir`,
 `workflows.agent`, `workflows.omp_model`. Details: [docs/hooks.md](docs/hooks.md#omp-sessions).
@@ -417,6 +417,9 @@ title_attention = true     # "clash (2!)" in the window title
 [workflows]
 agent = "claude"           # agent CLI workflow sessions run on: claude | omp (per-item override)
 omp_model = ""             # --model for OMP workflow sessions; empty = omp's default
+lead_model = "claude-opus-5-5"     # --model for every Claude workflow session (the lead)
+delegation = "team"        # team: lead fans work out to parallel subagents | solo
+subagent_model = "claude-sonnet-5" # model those subagents run on; empty = inherit the lead's
 pr_skill = "hivebrite-engineering:github-pr"  # skill the PR phase opens PRs with; "none" disables
 forge = "auto"             # code forge for PR features: auto | github | none
 slack_webhook = ""         # Slack incoming webhook for sharing + notifications
@@ -580,6 +583,17 @@ optional, so approving a diff can close the item outright (plus `abandoned`, and
 `reviewing` for an [agent review round](#workflows-gui)). Decision states
 (plan-review, diff-review, pr-draft) badge the sidebar and fire a desktop
 notification.
+
+**Lead and subagents** — every Claude workflow session runs on one pinned
+lead model (`workflows.lead_model`, default `claude-opus-5-5`). With
+`workflows.delegation = team` (the default) the skills *require* the lead to
+split the work across parallel subagents on `workflows.subagent_model`
+(default `claude-sonnet-5`, enforced via `CLAUDE_CODE_SUBAGENT_MODEL`):
+explorers while planning, implementers in waves of disjoint files plus a
+verifier while implementing, and one reviewer per lens plus a refuting verifier
+per finding in every review round. The lead alone writes the item's files,
+commits and talks to you. `solo` keeps everything in one session. Settings →
+Workflows · agents. Details: [docs/workflows.md](docs/workflows.md#lead-and-subagents).
 
 **Entry modes** — an item does not have to start at the beginning. The `+`
 button asks how it starts:

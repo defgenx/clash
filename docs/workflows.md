@@ -833,23 +833,44 @@ flipping it to `implementing` would both advertise work that isn't happening and
 let it re-enter the implement loop. It is also forbidden from changing code — the
 description is the whole deliverable.
 
-## Model per phase
+## Lead and subagents
 
-Phases are pinned to a model rather than inheriting whatever the user last
-selected, so a round is reproducible — two review rounds on one item are
-comparable because the reviewer was the same model both times.
+Every Claude workflow session runs on one pinned **lead model**
+(`workflows.lead_model`, default `claude-opus-5-5`) rather than whatever the
+user last selected, so rounds are reproducible — two review rounds on one item
+are comparable because the reviewer was the same model both times. The lead
+does the thinking: requirements, planning, splitting, integrating, judging.
 
-| Phase | Model |
-|-------|-------|
-| `plan`, `revise` (both rewrite the *plan*) | `claude-fable-5` |
-| agent review rounds (`clash-review`) | `claude-fable-5` |
-| `pr` (writes prose about a finished diff) | `claude-fable-5` |
-| `implement` | `claude-opus-5` |
+Under `workflows.delegation = team` (the default) the lead is **required** to
+fan the work out to parallel subagents, which run on `workflows.subagent_model`
+(default `claude-sonnet-5`):
 
-The mapping is the pure `application::workflow::model_for_phase`, passed to the
-session as `--model`. An unrecognized phase falls back to the implementation
-model: a phase name that isn't listed is assumed to do work, and
-under-powering real work is the worse failure.
+| Skill | Fan-out | Second pass |
+|-------|---------|-------------|
+| `clash-workflow` · `plan` | one explorer per area the task touches | the lead checks the facts the plan rests on |
+| `clash-workflow` · `implement` | the plan's work units, in waves of disjoint files | one verifier over the whole diff |
+| `clash-plan-review` | one reviewer per section (architecture, quality, tests, performance) | one refuting verifier per issue |
+| `clash-code-review` | one reviewer per lens (correctness, tests, conventions, security/perf), per PR | one refuting verifier per finding |
+| `clash-drift-review` | tracers over the plan's actions + one over unexplained hunks | one refuting verifier per divergence |
+| `clash-explain` | one mapper per area | the lead spot-checks every name it writes |
+
+`revise` and `pr` stay with the lead: each writes one document, and a document
+is one voice. The fan-out is for speed; the second pass is for the findings —
+a claim checked by a subagent that did not make it is what keeps a parallel
+review from being a louder one.
+
+Two halves enforce it. The kickoff always states the choice
+(`Delegation: team (subagents on <model>).` or `Delegation: solo.`, right after
+`Mode:` — the pure `Delegation::clause`), and each skill's *Lead and subagents*
+section makes it mandatory; the subagent model is additionally set as
+`CLAUDE_CODE_SUBAGENT_MODEL` in the session's env (`delegation_env`), so it
+does not depend on the lead remembering it — which is why the skills tell the
+lead never to pass a `model` of its own. The lead alone writes the item's
+files, runs git, posts to PRs, asks the human and changes the status; every
+brief says so. An empty `subagent_model` lets subagents inherit the lead's
+model; OMP sessions keep `workflows.omp_model` and omp's own task-model
+configuration (the kickoff clause still applies — omp delegates through its
+`task` tool).
 
 ## Embedded skills — install as a decision
 

@@ -1579,6 +1579,9 @@ struct AgentSettings {
     claude_available: bool,
     workflow_agent: String,
     omp_model: String,
+    lead_model: String,
+    delegation: String,
+    subagent_model: String,
 }
 
 pub(crate) fn bin_available(bin: &str) -> bool {
@@ -1592,6 +1595,7 @@ pub(crate) fn bin_available(bin: &str) -> bool {
 #[tauri::command]
 fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
     let cfg = state.config.get();
+    let team = cfg.workflow_delegation().team;
     AgentSettings {
         default_agent: cfg.default_agent().as_str().to_string(),
         omp_available: bin_available(&cfg.general.omp_bin),
@@ -1601,12 +1605,16 @@ fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
             .as_str()
             .to_string(),
         omp_model: cfg.workflows.omp_model,
+        lead_model: cfg.workflows.lead_model,
+        delegation: if team { "team" } else { "solo" }.to_string(),
+        subagent_model: cfg.workflows.subagent_model,
     }
 }
 
 /// Write one agent-CLI setting to the shared `config.toml`. `key` is one of
 /// `general.default_agent`, `general.omp_bin`, `workflows.agent`,
-/// `workflows.omp_model`; an empty value resets it to the default. An
+/// `workflows.omp_model`, `workflows.lead_model`, `workflows.delegation`,
+/// `workflows.subagent_model`; an empty value resets it to the default. An
 /// absolute `omp_bin` must exist, like `claude_bin`.
 #[tauri::command]
 fn set_agent_setting(
@@ -1628,9 +1636,16 @@ fn set_agent_setting(
             }
             value.to_string()
         }
-        "general.default_agent" | "workflows.agent" | "general.omp_bin" | "workflows.omp_model" => {
-            value.to_string()
+        "workflows.delegation" if !value.is_empty() && value != "team" && value != "solo" => {
+            return Err(format!("Not a delegation mode: {value}"));
         }
+        "general.default_agent"
+        | "workflows.agent"
+        | "general.omp_bin"
+        | "workflows.omp_model"
+        | "workflows.lead_model"
+        | "workflows.delegation"
+        | "workflows.subagent_model" => value.to_string(),
         other => return Err(format!("Not an agent setting: {other}")),
     };
     let result = if value.is_empty() {

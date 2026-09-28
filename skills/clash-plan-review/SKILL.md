@@ -34,6 +34,9 @@ The kickoff prompt gives you:
 - **Return to** — the status to restore when you finish. **This is a contract.**
 - **Mode** — `full` | `from-plan` (a `review-only` item has no plan; refuse)
 - **Interactive** — optional; see the opening question below.
+- **Delegation** — `team` (also what an absent field means) or `solo`,
+  optionally naming the subagent model: `team (subagents on <model>)`. See
+  "Lead and subagents" below.
 
 Your shell cwd is the item's worktree when it has one, otherwise the repo. The
 full file contract is in the clash repo at `docs/workflows.md`. Do not set a
@@ -88,6 +91,49 @@ recommendations are input; their decisions are the deliverable.
 - If you add an annotation (rare — only when a finding lands on a specific
   existing line of code), set `"author": "agent"`; never delete or edit a
   human's annotation.
+
+## Lead and subagents — `Delegation: team`
+
+Under `team` you are the **lead**, and delegating is **required, not a
+suggestion** — clash chose it so the round is faster and so every result is
+checked by someone who did not produce it. The four sections are four parallel reviews of one plan, and every issue is checked against the real code before the human spends a question on it. The walk-through with the human and every write are yours. Under `solo`, do
+everything yourself and skip this section.
+
+The round runs in two waves:
+
+1. **Find** — one read-only reviewer per section below (Architecture, Code
+   quality, Tests, Performance), launched together, each briefed with
+   `plan.md`, the requirements it answers to and the engineering preferences,
+   and told to ground every issue in the code the plan will land in. Each
+   returns issues with the plan section, the `file:line` evidence and the
+   options it sees.
+2. **Verify** — dedupe across sections, then one fresh verifier per issue,
+   briefed to refute it: does the code really behave the way the issue says,
+   and does the plan really not cover it? Only what survives reaches the
+   human or the report.
+
+How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
+
+- **Parallel means one message.** Launch every independent subagent of a wave
+  in a single response with several tool calls; one call per message runs
+  them one after another.
+- **Never pass a `model`.** clash pins the subagents' model (the kickoff names
+  it; `CLAUDE_CODE_SUBAGENT_MODEL` enforces it). Your own model is for
+  splitting, integrating and judging.
+- **Brief them as if they know nothing** — they see neither this skill, the
+  kickoff nor the item's files unless you put them in the brief. Each brief
+  states the goal, the exact files or area it covers, the relevant excerpts
+  (plan section, annotations, findings) verbatim, the repo's conventions
+  (`CLAUDE.md`/`AGENTS.md`), and the shape of what to return: `file:line`
+  evidence, not prose.
+- **The lead owns the item.** Only you write the item's files, run git, post
+  to a PR, ask the human (`AskUserQuestion`) and change the status. Say so in
+  every brief — a subagent that writes `meta.json` or commits corrupts the
+  round.
+- **Verify, don't forward.** A subagent's output is a claim. Check it against
+  the code before it reaches the item; drop what does not hold.
+- **Report the split.** Your final message says how the work was divided and
+  what verification dropped or changed.
 
 ## Scope
 

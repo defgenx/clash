@@ -25,6 +25,9 @@ The kickoff prompt gives you:
 - **PR skill** — optional; the skill to open pull requests with (see the PR
   steps below)
 - **Interactive** — optional; see the opening question below
+- **Delegation** — `team` (also what an absent field means) or `solo`,
+  optionally naming the subagent model: `team (subagents on <model>)`. See
+  "Lead and subagents" below.
 
 Your shell cwd is the item's git worktree. All code work happens there, on the
 already-checked-out branch.
@@ -146,6 +149,51 @@ findings into `agent-review.md` and `annotations.json` and never touch
     Never force-push, never rewrite published history; if the push is
     rejected, stop and report it instead of forcing.
 
+## Lead and subagents — `Delegation: team`
+
+Under `team` you are the **lead**, and delegating is **required, not a
+suggestion** — clash chose it so the round is faster and so every result is
+checked by someone who did not produce it. You split the phase into units, dispatch them, integrate and verify what comes back; the thinking about *what* to build stays with you. Under `solo`, do
+everything yourself and skip this section.
+
+What gets split, per phase (details in each phase below):
+
+- `plan` — **exploration**: one read-only explorer per area the task touches.
+  You write `plan.md` yourself — a plan is one voice.
+- `implement` — **the plan's work units**, dispatched in waves of parallel
+  implementers, then one independent verifier over the whole diff.
+- `revise` and `pr` — done by you: one document, one author. Delegate only
+  read-only fact-checks against the code.
+
+How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
+
+- **Parallel means one message.** Launch every independent subagent of a wave
+  in a single response with several tool calls; one call per message runs
+  them one after another.
+- **Never pass a `model`.** clash pins the subagents' model (the kickoff names
+  it; `CLAUDE_CODE_SUBAGENT_MODEL` enforces it). Your own model is for
+  splitting, integrating and judging.
+- **Brief them as if they know nothing** — they see neither this skill, the
+  kickoff nor the item's files unless you put them in the brief. Each brief
+  states the goal, the exact files or area it covers, the relevant excerpts
+  (plan section, annotations, findings) verbatim, the repo's conventions
+  (`CLAUDE.md`/`AGENTS.md`), and the shape of what to return: `file:line`
+  evidence, not prose.
+- **The lead owns the item.** Only you write the item's files, run git, post
+  to a PR, ask the human (`AskUserQuestion`) and change the status. Say so in
+  every brief — a subagent that writes `meta.json` or commits corrupts the
+  round.
+- **Verify, don't forward.** A subagent's output is a claim. Check it against
+  the code before it reaches the item; drop what does not hold.
+- **Disjoint files.** Two implementers running at the same time never own
+  the same file; a unit that needs another's output waits for the next wave.
+  Implementers edit code only — no git, no item-directory writes.
+- **Small work stays with you.** A one-file change is not worth a brief. When
+  a phase genuinely does not split, say so in your final message instead of
+  inventing units.
+- **Report the split.** Your final message says how the work was divided and
+  what verification dropped or changed.
+
 ## Phase: plan
 
 Never runs in `review-only` mode. If you are somehow asked for it there, stop
@@ -172,10 +220,17 @@ and say so instead of writing a plan.
    In autonomous runs nobody can answer: take the most conservative reading
    and open `plan.md` with an **Assumptions** section listing every call you
    made in place of a question.
-2. Explore the repo as needed to ground the plan in real code.
+2. Explore the repo as needed to ground the plan in real code. Under `team`,
+   fan it out: one read-only explorer per area the task touches (a subsystem,
+   a repo, the tests), launched together, each returning the `file:line`
+   facts, the existing patterns to reuse and the risks it saw. For a design
+   with real alternatives, one more subagent per candidate approach costs it
+   against the code. Check the facts your plan will rest on yourself.
 3. Write/overwrite `plan.md`: a concrete implementation plan — context, the
    approach, files to touch, ordered steps, testing strategy, risks. Plain
-   markdown; the GUI renders it.
+   markdown; the GUI renders it. Write the steps as **work units** — each
+   names the files it owns and the units it depends on — so the implement
+   phase can dispatch them in parallel waves without re-deriving the split.
 4. Finish: set `meta.json.status = "plan-review"`. Stop — the human reviews.
 
 ## Phase: revise
@@ -219,8 +274,22 @@ describes something else — the human amends it by taking the item back to
 1. Set `meta.json.status = "implementing"` before you start.
 2. Implement the plan (or the requested changes — the latest `## Iteration`
    section of `review.md`) in the worktree. Follow the repo's own CLAUDE.md
-   conventions. Run the project's tests/linters.
-3. **Address every open annotation**, one by one. Each is anchored to
+   conventions. Run the project's tests/linters. Under `team`:
+   - Turn the plan's work units (or the round's requested changes) into
+     **waves**: units with no unmet dependency and disjoint files go in the
+     same wave. Dispatch each wave's implementers together.
+   - Give every implementer its unit's plan text, the open annotations on its
+     files (step 3), the test command that proves it, and the rule that it
+     touches only its files and runs no git.
+   - After each wave: read every implementer's diff, run the tests yourself,
+     fix or re-dispatch what is wrong, then start the next wave.
+   - When the last wave lands, launch one **verifier** — read-only, briefed
+     with `plan.md`, the round's notes and the open annotations — to check the
+     whole diff for what is missing, wrong or unasked-for. Resolve what it
+     confirms before you commit.
+3. **Address every open annotation**, one by one (under `team`, hand each to
+   the implementer that owns its file — you still update `annotations.json`
+   yourself). Each is anchored to
    `file` + `line` with the annotated source line in `lineContent`. For each:
    - Make the change (or decide, with good reason, not to).
    - Update the annotation in `annotations.json`: set `"status"` to

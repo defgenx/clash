@@ -339,7 +339,31 @@ pub const PROPS: &[Prop] = &[
         Kind::Str,
         Val::Str(""),
         "Model OMP workflow sessions are launched with (`--model`, omp's fuzzy match). Empty \
-         uses omp's own default model; Claude sessions keep clash's per-phase models.",
+         uses omp's own default model; Claude sessions use `workflows.lead_model`.",
+    ),
+    Prop::new(
+        "workflows.lead_model",
+        Kind::Str,
+        Val::Str("claude-opus-5-5"),
+        "Model every Claude workflow session (plan, implement, reviews, explanations, shares) \
+         runs on — the lead that plans, splits the work and verifies it. Empty uses Claude \
+         Code's own default.",
+    ),
+    Prop::new(
+        "workflows.delegation",
+        Kind::Enum(&["team", "solo"]),
+        Val::Str("team"),
+        "How workflow sessions split their work. `team` makes the lead fan implementation, \
+         exploration and review passes out to parallel subagents and verify what they return; \
+         `solo` does everything in the one session.",
+    ),
+    Prop::new(
+        "workflows.subagent_model",
+        Kind::Str,
+        Val::Str("claude-sonnet-5"),
+        "Model the lead's subagents run on under `team` delegation, enforced through \
+         `CLAUDE_CODE_SUBAGENT_MODEL`. Empty lets them inherit the lead's model. Claude \
+         sessions only — omp picks its task models from its own configuration.",
     ),
     Prop::new(
         "workflows.pr_skill",

@@ -53,6 +53,9 @@ The kickoff prompt gives you:
   named PR. Scope every `gh` call with `--repo <owner/repo>` from the URL, and
   never edit files for a repository that is not your cwd.
 - **Interactive** — optional; see the opening question below.
+- **Delegation** — `team` (also what an absent field means) or `solo`,
+  optionally naming the subagent model: `team (subagents on <model>)`. See
+  "Lead and subagents" below.
 - **Auto-apply** — `yes` | `no`; see "Decide whether this round should be
   applied".
 
@@ -106,6 +109,47 @@ drift between two *documents*, not between the plan and the code.
 8. The real code around the change: who calls what was added, what the plan
    said would be touched and was not. A drift round that only matched plan
    bullets against hunk headers has checked spelling, not delivery.
+
+## Lead and subagents — `Delegation: team`
+
+Under `team` you are the **lead**, and delegating is **required, not a
+suggestion** — clash chose it so the round is faster and so every result is
+checked by someone who did not produce it. Tracing is parallel; grading is yours — a divergence's grade depends on the whole plan, which only you hold. Under `solo`, do
+everything yourself and skip this section.
+
+The round runs in two waves:
+
+1. **Trace** — the plan's actions split across read-only tracers launched
+   together (a few actions each), each briefed with those actions verbatim
+   and told to find them in the diff: delivered, `MISSING`, or `DIFFERENT`,
+   with `file:line` evidence. One more tracer walks the diff the other way and
+   lists every hunk that no plan action explains — the `EXTRA` candidates.
+2. **Verify** — one fresh verifier per candidate `MISSING`/`DIFFERENT`/`EXTRA`
+   (or per file's batch), briefed to refute it. Then you grade what survived
+   `INTENDED`/`BENIGN`/`ISSUE` yourself.
+
+How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
+
+- **Parallel means one message.** Launch every independent subagent of a wave
+  in a single response with several tool calls; one call per message runs
+  them one after another.
+- **Never pass a `model`.** clash pins the subagents' model (the kickoff names
+  it; `CLAUDE_CODE_SUBAGENT_MODEL` enforces it). Your own model is for
+  splitting, integrating and judging.
+- **Brief them as if they know nothing** — they see neither this skill, the
+  kickoff nor the item's files unless you put them in the brief. Each brief
+  states the goal, the exact files or area it covers, the relevant excerpts
+  (plan section, annotations, findings) verbatim, the repo's conventions
+  (`CLAUDE.md`/`AGENTS.md`), and the shape of what to return: `file:line`
+  evidence, not prose.
+- **The lead owns the item.** Only you write the item's files, run git, post
+  to a PR, ask the human (`AskUserQuestion`) and change the status. Say so in
+  every brief — a subagent that writes `meta.json` or commits corrupts the
+  round.
+- **Verify, don't forward.** A subagent's output is a claim. Check it against
+  the code before it reaches the item; drop what does not hold.
+- **Report the split.** Your final message says how the work was divided and
+  what verification dropped or changed.
 
 ## The comparison — how to actually do it
 

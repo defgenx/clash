@@ -67,6 +67,9 @@ The kickoff prompt gives you:
 - **Return to** — the status to restore when you finish. **This is a contract.**
 - **Mode** — `full` | `from-plan` | `review-only`
 - **Interactive** — optional; see the opening question below.
+- **Delegation** — `team` (also what an absent field means) or `solo`,
+  optionally naming the subagent model: `team (subagents on <model>)`. See
+  "Lead and subagents" below.
 
 Your shell cwd is the item's worktree when it has one, otherwise the repo. The
 full file contract is in the clash repo at `docs/workflows.md`.
@@ -103,6 +106,43 @@ Blocking on a question is safe: the item is parked and clash always offers
 6. Enough of the surrounding code to explain the change in its habitat: who
    calls the changed functions, what the touched subsystems do. An explainer
    that only paraphrases hunks adds nothing a diff view doesn't already show.
+
+## Lead and subagents — `Delegation: team`
+
+Under `team` you are the **lead**, and delegating is **required, not a
+suggestion** — clash chose it so the round is faster and so every result is
+checked by someone who did not produce it. Mapping the code is parallel; the documents are yours — an explanation is one voice, and a subagent's summary is not yet a fact. Under `solo`, do
+everything yourself and skip this section.
+
+1. **Map** — one read-only mapper per area (a subsystem, a repo, the plan's
+   group of actions or the diff's group of files), launched together, each
+   returning what exists there: files, symbols, callers, data flow, with
+   `file:line`.
+2. **Write** — you write both documents from those maps, and spot-check every
+   file and symbol you name before it goes in.
+
+How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
+
+- **Parallel means one message.** Launch every independent subagent of a wave
+  in a single response with several tool calls; one call per message runs
+  them one after another.
+- **Never pass a `model`.** clash pins the subagents' model (the kickoff names
+  it; `CLAUDE_CODE_SUBAGENT_MODEL` enforces it). Your own model is for
+  splitting, integrating and judging.
+- **Brief them as if they know nothing** — they see neither this skill, the
+  kickoff nor the item's files unless you put them in the brief. Each brief
+  states the goal, the exact files or area it covers, the relevant excerpts
+  (plan section, annotations, findings) verbatim, the repo's conventions
+  (`CLAUDE.md`/`AGENTS.md`), and the shape of what to return: `file:line`
+  evidence, not prose.
+- **The lead owns the item.** Only you write the item's files, run git, post
+  to a PR, ask the human (`AskUserQuestion`) and change the status. Say so in
+  every brief — a subagent that writes `meta.json` or commits corrupts the
+  round.
+- **Verify, don't forward.** A subagent's output is a claim. Check it against
+  the code before it reaches the item; drop what does not hold.
+- **Report the split.** Your final message says how the work was divided and
+  what verification dropped or changed.
 
 ## Hard rules (violating these corrupts the pipeline)
 

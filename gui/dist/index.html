@@ -108,8 +108,20 @@
             <option value="omp">OMP</option>
           </select>
         </label>
+        <label class="setting-row">Lead model
+          <input id="set-wf-lead-model" type="text" placeholder="claude-opus-5-5" autocomplete="off" spellcheck="false" title="Model every Claude Code workflow session runs on — the lead that plans, reviews, splits the work and verifies it. Empty resets to the shipped default." />
+        </label>
+        <label class="setting-row inline">Delegation
+          <select id="set-wf-delegation" title="Team: the lead fans implementation steps, exploration and review passes out to parallel subagents, then verifies what they return. Solo: everything runs in the one session.">
+            <option value="team">Team (lead + subagents)</option>
+            <option value="solo">Solo</option>
+          </select>
+        </label>
+        <label class="setting-row" id="set-wf-subagent-row">Subagent model
+          <input id="set-wf-subagent-model" type="text" placeholder="claude-sonnet-5" autocomplete="off" spellcheck="false" title="Model the lead's subagents run on under Team delegation (enforced via CLAUDE_CODE_SUBAGENT_MODEL). Empty resets to the shipped default. Claude Code only — OMP picks its task models from its own configuration." />
+        </label>
         <label class="setting-row">OMP model
-          <input id="set-wf-omp-model" type="text" placeholder="omp's default" autocomplete="off" spellcheck="false" title="Model OMP workflow sessions launch with (omp's --model, fuzzy-matched). Empty uses omp's own default; Claude Code sessions keep clash's per-phase models." />
+          <input id="set-wf-omp-model" type="text" placeholder="omp's default" autocomplete="off" spellcheck="false" title="Model OMP workflow sessions launch with (omp's --model, fuzzy-matched). Empty uses omp's own default; Claude Code sessions use the Lead model." />
         </label>
         <label class="setting-row">PR skill
           <input id="set-wf-pr-skill" type="text" placeholder="myorg:github-pr" autocomplete="off" spellcheck="false" title="Skill workflow agents open pull requests with, so your org's PR conventions come along. Empty resets to the shipped default; 'none' disables it and the agent follows the repo's own conventions with gh. An item can override this in its ⚙ Settings tab." />

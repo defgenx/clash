@@ -565,22 +565,56 @@ pub fn parse_review_iterations(md: &str) -> Vec<crate::domain::workflow::ReviewI
 
 // ── Model selection ─────────────────────────────────────────────────────
 
-/// The model a *thinking* phase runs on — planning and reviewing.
-pub const MODEL_PLAN_REVIEW: &str = "claude-fable-5";
+/// How a workflow session splits its work: `team` makes the session a lead
+/// that fans work out to subagents, `solo` does it all itself. See
+/// `docs/workflows.md` → Lead and subagents.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Delegation<'a> {
+    pub team: bool,
+    /// Model the subagents run on; empty = they inherit the lead's.
+    pub subagent_model: &'a str,
+}
 
-/// The model an *implementing* phase runs on.
-pub const MODEL_IMPLEMENT: &str = "claude-opus-5";
+impl<'a> Delegation<'a> {
+    /// From the `workflows.delegation` / `workflows.subagent_model` settings.
+    /// Anything but `solo` is a team: the default must not depend on a typo.
+    pub fn from_settings(delegation: &str, subagent_model: &'a str) -> Self {
+        Self {
+            team: !delegation.trim().eq_ignore_ascii_case("solo"),
+            subagent_model: subagent_model.trim(),
+        }
+    }
 
-/// Pure: pin the model for a workflow phase. See `docs/workflows.md`.
-///
-/// `revise` is a *planning* phase — it rewrites the plan, not the code — and
-/// `pr` writes prose about a finished diff without touching it. An unrecognized
-/// phase gets the implementation model, since under-powering real work is the
-/// worse failure.
-pub fn model_for_phase(phase: &str) -> &'static str {
-    match phase {
-        "plan" | "revise" | "review" | "pr" => MODEL_PLAN_REVIEW,
-        _ => MODEL_IMPLEMENT,
+    /// The kickoff field. Always stated, so a skill never has to guess.
+    fn clause(&self) -> String {
+        match (self.team, self.subagent_model) {
+            (false, _) => " Delegation: solo.".into(),
+            (true, "") => " Delegation: team.".into(),
+            (true, m) => format!(" Delegation: team (subagents on {}).", m),
+        }
+    }
+}
+
+/// Env var Claude Code reads for the model of every subagent a session
+/// launches — the enforcement half; the kickoff clause is the instruction half.
+pub const SUBAGENT_MODEL_ENV: &str = "CLAUDE_CODE_SUBAGENT_MODEL";
+
+/// Pure: the env a workflow session is spawned with. Claude-only: omp picks
+/// its task models from its own configuration.
+pub fn delegation_env(
+    agent: crate::domain::entities::AgentKind,
+    delegation: &Delegation,
+) -> Vec<(String, String)> {
+    match agent {
+        crate::domain::entities::AgentKind::Claude
+            if delegation.team && !delegation.subagent_model.is_empty() =>
+        {
+            vec![(
+                SUBAGENT_MODEL_ENV.to_string(),
+                delegation.subagent_model.to_string(),
+            )]
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -748,19 +782,20 @@ pub fn effective_agent(item_value: &str, global: &str) -> crate::domain::entitie
     crate::domain::entities::AgentKind::parse(if item.is_empty() { global } else { item })
 }
 
-/// The `--model` a workflow session is launched with. Claude sessions keep
-/// the per-phase model; OMP ones use `workflows.omp_model`, where empty means
-/// omp's own default — clash's Claude model ids mean nothing to a provider
-/// omp may be configured with.
+/// The `--model` a workflow session is launched with. Claude sessions run on
+/// `workflows.lead_model`; OMP ones on `workflows.omp_model`, since clash's
+/// Claude model ids mean nothing to a provider omp may be configured with.
+/// Empty means the agent's own default either way.
 pub fn launch_model<'a>(
     agent: crate::domain::entities::AgentKind,
-    phase_model: &'a str,
+    lead_model: &'a str,
     omp_model: &'a str,
 ) -> Option<&'a str> {
-    match agent {
-        crate::domain::entities::AgentKind::Claude => Some(phase_model),
-        crate::domain::entities::AgentKind::Omp => Some(omp_model.trim()).filter(|m| !m.is_empty()),
-    }
+    let m = match agent {
+        crate::domain::entities::AgentKind::Claude => lead_model,
+        crate::domain::entities::AgentKind::Omp => omp_model,
+    };
+    Some(m.trim()).filter(|m| !m.is_empty())
 }
 
 /// The PR skill a launch actually carries: the item's override when set
@@ -922,6 +957,7 @@ pub struct ExecutorKickoff<'a> {
     /// Launch-time interactivity choice; `None` means the skill's opening
     /// question asks in-session.
     pub interactive: Option<bool>,
+    pub delegation: Delegation<'a>,
 }
 
 /// Build the initial prompt for a workflow agent session. The skill owns the
@@ -941,6 +977,7 @@ pub fn build_agent_prompt(item_dir: &str, kickoff: &ExecutorKickoff) -> String {
         "Use the {} skill. Workflow item directory: {}. Phase: {}. Mode: {}.",
         skill, item_dir, kickoff.phase, kickoff.mode
     );
+    prompt.push_str(&kickoff.delegation.clause());
     if let Some(s) = kickoff.pr_skill.map(str::trim).filter(|s| !s.is_empty()) {
         prompt.push_str(&format!(" PR skill: {}.", s));
     }
@@ -1020,6 +1057,7 @@ pub fn build_review_prompt(
     item_dir: &str,
     review: &crate::domain::workflow::WorkflowReview,
     mode: WorkflowMode,
+    delegation: &Delegation,
 ) -> String {
     let engine = review_engine_for(review.target);
     // The PRs the round is about, when the launcher picked any (each may live
@@ -1054,7 +1092,7 @@ pub fn build_review_prompt(
     };
     format!(
         "Use the {} skill. Workflow item directory: {}. \
-         Target: {}. Depth: {}. Publish: {}. Round: {}. Return to: {}. Mode: {}.{}{}{}{}",
+         Target: {}. Depth: {}. Publish: {}. Round: {}. Return to: {}. Mode: {}.{}{}{}{}{}",
         engine,
         item_dir,
         review.target,
@@ -1063,6 +1101,7 @@ pub fn build_review_prompt(
         review.round.max(1),
         review.return_status,
         mode,
+        delegation.clause(),
         pr,
         focus,
         interactive,
@@ -1148,17 +1187,83 @@ mod tests {
     }
 
     #[test]
-    fn thinking_phases_run_on_fable() {
-        // `revise` rewrites the *plan*, so it belongs with planning, not with
-        // implementing — the easy one to get wrong.
-        for phase in ["plan", "revise", "review"] {
-            assert_eq!(model_for_phase(phase), MODEL_PLAN_REVIEW, "phase {}", phase);
-        }
+    fn delegation_is_a_team_unless_explicitly_solo() {
+        assert!(Delegation::from_settings("team", "").team);
+        assert!(Delegation::from_settings("", "").team);
+        assert!(Delegation::from_settings("tema", "").team);
+        assert!(!Delegation::from_settings(" Solo ", "x").team);
     }
 
     #[test]
-    fn implement_runs_on_opus() {
-        assert_eq!(model_for_phase("implement"), MODEL_IMPLEMENT);
+    fn delegation_clause_names_the_subagent_model() {
+        let d = Delegation::from_settings("team", " claude-sonnet-5 ");
+        assert_eq!(
+            d.clause(),
+            " Delegation: team (subagents on claude-sonnet-5)."
+        );
+        assert_eq!(
+            Delegation::from_settings("team", "").clause(),
+            " Delegation: team."
+        );
+        assert_eq!(
+            Delegation::from_settings("solo", "m").clause(),
+            " Delegation: solo."
+        );
+    }
+
+    #[test]
+    fn subagent_model_is_enforced_by_env_on_claude_only() {
+        use crate::domain::entities::AgentKind;
+        let team = Delegation::from_settings("team", "claude-sonnet-5");
+        assert_eq!(
+            delegation_env(AgentKind::Claude, &team),
+            vec![(
+                SUBAGENT_MODEL_ENV.to_string(),
+                "claude-sonnet-5".to_string()
+            )]
+        );
+        assert!(delegation_env(AgentKind::Omp, &team).is_empty());
+        // Solo launches no subagents; an empty model means "inherit the lead".
+        assert!(
+            delegation_env(AgentKind::Claude, &Delegation::from_settings("solo", "m")).is_empty()
+        );
+        assert!(
+            delegation_env(AgentKind::Claude, &Delegation::from_settings("team", "")).is_empty()
+        );
+    }
+
+    #[test]
+    fn both_kickoffs_state_the_delegation_right_after_the_mode() {
+        let d = Delegation::from_settings("team", "claude-sonnet-5");
+        let exec = build_agent_prompt(
+            "/x/i",
+            &ExecutorKickoff {
+                phase: "implement",
+                mode: WorkflowMode::Full,
+                delegation: d,
+                ..ExecutorKickoff::default()
+            },
+        );
+        assert!(exec.contains("Mode: full. Delegation: team (subagents on claude-sonnet-5)."));
+        let review = build_review_prompt(
+            "/x/i",
+            &crate::domain::workflow::WorkflowReview::default(),
+            WorkflowMode::Full,
+            &d,
+        );
+        assert!(review.contains("Mode: full. Delegation: team (subagents on claude-sonnet-5)."));
+    }
+
+    #[test]
+    fn launch_model_picks_per_agent_and_empty_means_default() {
+        use crate::domain::entities::AgentKind;
+        assert_eq!(
+            launch_model(AgentKind::Claude, "claude-opus-5-5", "x"),
+            Some("claude-opus-5-5")
+        );
+        assert_eq!(launch_model(AgentKind::Claude, " ", "x"), None);
+        assert_eq!(launch_model(AgentKind::Omp, "claude-opus-5-5", ""), None);
+        assert_eq!(launch_model(AgentKind::Omp, "a", "sonnet"), Some("sonnet"));
     }
 
     #[test]
@@ -1253,14 +1358,24 @@ mod tests {
             depth: ReviewDepth::Deep,
             ..Default::default()
         };
-        let p = build_review_prompt("/items/x", &diff, WorkflowMode::Full);
+        let p = build_review_prompt(
+            "/items/x",
+            &diff,
+            WorkflowMode::Full,
+            &Delegation::default(),
+        );
         assert!(p.contains("Use the clash-code-review skill"));
 
         let plan = WorkflowReview {
             target: ReviewTarget::Plan,
             ..Default::default()
         };
-        let p = build_review_prompt("/items/x", &plan, WorkflowMode::Full);
+        let p = build_review_prompt(
+            "/items/x",
+            &plan,
+            WorkflowMode::Full,
+            &Delegation::default(),
+        );
         assert!(p.contains("Use the clash-plan-review skill"));
         // The retired harness must never come back into a kickoff.
         assert!(!p.contains("clash-review skill"));
@@ -1284,7 +1399,12 @@ mod tests {
             focus: "the migration step".to_string(),
             ..Default::default()
         };
-        let p = build_review_prompt("/items/x", &review, WorkflowMode::Full);
+        let p = build_review_prompt(
+            "/items/x",
+            &review,
+            WorkflowMode::Full,
+            &Delegation::default(),
+        );
         assert!(p.contains("Use the clash-drift-review skill"), "{p}");
         assert!(p.contains("Target: drift."), "{p}");
         assert!(p.contains("Depth: deep."), "{p}");
@@ -1305,20 +1425,26 @@ mod tests {
         use crate::domain::workflow::WorkflowReview;
         // No launch-time choice → no field: the skill asks in-session.
         let ask = WorkflowReview::default();
-        let p = build_review_prompt("/x", &ask, WorkflowMode::Full);
+        let p = build_review_prompt("/x", &ask, WorkflowMode::Full, &Delegation::default());
         assert!(!p.contains("Interactive:"));
 
         let yes = WorkflowReview {
             interactive: Some(true),
             ..Default::default()
         };
-        assert!(build_review_prompt("/x", &yes, WorkflowMode::Full).contains("Interactive: yes."));
+        assert!(
+            build_review_prompt("/x", &yes, WorkflowMode::Full, &Delegation::default())
+                .contains("Interactive: yes.")
+        );
 
         let no = WorkflowReview {
             interactive: Some(false),
             ..Default::default()
         };
-        assert!(build_review_prompt("/x", &no, WorkflowMode::Full).contains("Interactive: no."));
+        assert!(
+            build_review_prompt("/x", &no, WorkflowMode::Full, &Delegation::default())
+                .contains("Interactive: no.")
+        );
     }
 
     #[test]
@@ -1329,12 +1455,18 @@ mod tests {
         // it" is a lie when clash is only going to recommend it. Silence would
         // leave the skill guessing.
         let off = WorkflowReview::default();
-        assert!(build_review_prompt("/x", &off, WorkflowMode::Full).ends_with("Auto-apply: no."));
+        assert!(
+            build_review_prompt("/x", &off, WorkflowMode::Full, &Delegation::default())
+                .ends_with("Auto-apply: no.")
+        );
         let on = WorkflowReview {
             auto_apply: true,
             ..Default::default()
         };
-        assert!(build_review_prompt("/x", &on, WorkflowMode::Full).ends_with("Auto-apply: yes."));
+        assert!(
+            build_review_prompt("/x", &on, WorkflowMode::Full, &Delegation::default())
+                .ends_with("Auto-apply: yes.")
+        );
     }
 
     #[test]
@@ -1357,14 +1489,6 @@ mod tests {
         let b = pr_body_from_plan("Do the thing.", 0, 0).unwrap();
         assert!(b.contains("Drafted from a clash workflow item.\n"));
         assert!(!b.contains("after"));
-    }
-
-    #[test]
-    fn unknown_phase_falls_back_to_the_implementation_model() {
-        // Deliberate: an unrecognized phase is assumed to do work, and
-        // under-powering real work is the worse of the two failures.
-        assert_eq!(model_for_phase("something-new"), MODEL_IMPLEMENT);
-        assert_eq!(model_for_phase(""), MODEL_IMPLEMENT);
     }
 
     fn ann(file: &str, side: DiffSide, line: u32, content: &str) -> Annotation {
@@ -2000,6 +2124,7 @@ Tighten the API.\n\n\
                 ..WorkflowReview::default()
             },
             WorkflowMode::Full,
+            &Delegation::default(),
         );
         // A different skill than the executor — reviewing is not implementing.
         assert!(p.contains("clash-code-review skill"));
@@ -2029,6 +2154,7 @@ Tighten the API.\n\n\
                 ..WorkflowReview::default()
             },
             WorkflowMode::Full,
+            &Delegation::default(),
         );
         assert!(one.contains("PR: https://github.com/o/other/pull/7."));
 
@@ -2044,6 +2170,7 @@ Tighten the API.\n\n\
                 ..WorkflowReview::default()
             },
             WorkflowMode::Full,
+            &Delegation::default(),
         );
         assert!(
             many.contains("PR: https://github.com/o/api/pull/1, https://github.com/o/web/pull/2.")
@@ -2064,8 +2191,10 @@ Tighten the API.\n\n\
             review_pr_urls(&legacy),
             vec!["https://github.com/o/other/pull/7"]
         );
-        assert!(build_review_prompt("/x/i", &legacy, WorkflowMode::Full)
-            .contains("PR: https://github.com/o/other/pull/7."));
+        assert!(
+            build_review_prompt("/x/i", &legacy, WorkflowMode::Full, &Delegation::default())
+                .contains("PR: https://github.com/o/other/pull/7.")
+        );
 
         // The list wins when both are somehow present, and blanks never
         // become a PR.
@@ -2089,6 +2218,7 @@ Tighten the API.\n\n\
             "/x/i",
             &crate::domain::workflow::WorkflowReview::default(),
             WorkflowMode::Full,
+            &Delegation::default(),
         );
         assert!(p.contains("Round: 1."));
     }
@@ -2299,7 +2429,7 @@ Tighten the API.\n\n\
             focus: "  node 3 — how the migration handles existing rows  ".to_string(),
             ..Default::default()
         };
-        let p = build_review_prompt("/x/i", &review, WorkflowMode::Full);
+        let p = build_review_prompt("/x/i", &review, WorkflowMode::Full, &Delegation::default());
         // Trimmed, and a sentence of its own so the skill can lead with it.
         assert!(p.contains("Focus: node 3 — how the migration handles existing rows."));
         // Every other round has no focus and says nothing about one.
@@ -2310,6 +2440,7 @@ Tighten the API.\n\n\
                 ..review
             },
             WorkflowMode::Full,
+            &Delegation::default(),
         );
         assert!(!p.contains("Focus:"));
     }
@@ -2354,6 +2485,7 @@ Tighten the API.\n\n\
                 ..Default::default()
             },
             WorkflowMode::Full,
+            &Delegation::default(),
         );
         assert!(p.contains("Use the clash-explain skill"));
         assert!(p.contains("Target: explain-plan."));
