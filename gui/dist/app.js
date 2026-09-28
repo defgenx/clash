@@ -10637,6 +10637,36 @@ function handleInputClipboard(e) {
 // listener exactly where text entry matters most.
 document.addEventListener("keydown", handleInputClipboard, true);
 
+/// The text field `handleFieldForwardDelete` may edit, or null.
+function editableTextField(el) {
+  if (!el || (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA")) return null;
+  if (el.classList.contains("xterm-helper-textarea")) return null;
+  if (el.readOnly || el.disabled || el.selectionStart == null) return null;
+  return el;
+}
+
+/// Forward delete (fn+⌫ / Suppr) by hand — macOS would otherwise type U+F728
+/// into the field. See gui/dist/field-keys.js.
+function handleFieldForwardDelete(e) {
+  if (e.key !== "Delete" || e.ctrlKey || e.shiftKey) return;
+  const el = editableTextField(document.activeElement);
+  if (!el) return;
+  e.preventDefault();
+  const r = forwardDeleteRange(el.value, el.selectionStart, el.selectionEnd, e);
+  if (!r) return;
+  el.setRangeText("", r.from, r.to, "start");
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+document.addEventListener("keydown", handleFieldForwardDelete, true);
+// Every other function key (Home, End, F1…) arrives the same way — never type it.
+document.addEventListener(
+  "beforeinput",
+  (e) => {
+    if (isFunctionKeyText(e.data)) e.preventDefault();
+  },
+  true
+);
+
 document.addEventListener("keydown", (e) => {
   const inInput =
     document.activeElement &&
