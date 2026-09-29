@@ -1694,16 +1694,29 @@ async function refreshSessions() {
     // damage is already on screen: the new id is in the list from the first
     // tick, owned by nobody, sitting under UNASSIGNED as a session the user
     // never started. A rename is evidence, not a guess. *Dropping* ownership
-    // is the irreversible half and keeps the grace.
+    // is the irreversible half and keeps the grace. Unowned rows are resolved
+    // too, because a live row can move *back* to its older PTY id (see
+    // `ownershipTransfers`).
     //
     // The probe is bounded: an id is either transferred or dropped within
     // three ticks, so `missing` cannot keep asking forever. A failed resolve
     // defers everything to the next tick rather than guessing "dead".
-    const someoneUnowned = sessions.some((s) => !owned.includes(s.id));
-    if (vanished.size || (missing.length && someoneUnowned)) {
+    const unowned = sessions
+      .filter((s) => s.source !== "Wild" && !owned.includes(s.id))
+      .map((s) => s.id);
+    if (vanished.size || (missing.length && unowned.length)) {
       try {
-        const resolved = await invoke("resolve_session_ids", { ids: missing });
-        const moved = ownershipTransfers(missing, resolved, known, owned);
+        const all = await invoke("resolve_session_ids", { ids: [...missing, ...unowned] });
+        const resolved = all.slice(0, missing.length);
+        const unownedResolved = all.slice(missing.length);
+        const moved = ownershipTransfers(
+          missing,
+          resolved,
+          known,
+          owned,
+          unowned,
+          unownedResolved
+        );
         // Anything that moved is applied now; only ids past the grace are
         // dropped. `pruneOwnership` replaces a `gone` id by its target, so
         // the union is exactly "rewrite the renamed, remove the expired".

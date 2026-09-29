@@ -758,8 +758,15 @@ test("a renamed session's ownership transfers immediately, and only the drop wai
   // for three ticks — which is the whole reported symptom.
   assert.match(
     body,
-    /if \(vanished\.size \|\| \(missing\.length && someoneUnowned\)\)/,
+    /if \(vanished\.size \|\| \(missing\.length && unowned\.length\)\)/,
     "the rename probe must also run before the grace expires"
+  );
+  // A live row can move back to its older PTY id, so the unowned rows are
+  // resolved too and handed to the transfer decision.
+  assert.match(
+    body,
+    /resolve_session_ids", \{ ids: \[\.\.\.missing, \.\.\.unowned\] \}/,
+    "unowned rows must be resolved alongside the missing ids"
   );
   // Only expired ids are dropped; moved ids are rewritten in place.
   assert.match(

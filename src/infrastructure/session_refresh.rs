@@ -199,7 +199,12 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
     // the new one, and the daemon's PTY — which still answers to the id it
     // was spawned with. Every extra row is a session the user never started,
     // owned by no GUI workspace, listed under UNASSIGNED.
-    collapse_registry_aliases(&mut sessions, &input.registry, &input.daemon_infos);
+    collapse_registry_aliases(
+        &mut sessions,
+        &input.registry,
+        &input.daemon_infos,
+        input.previous_sessions,
+    );
 
     // Phase 5.8: the registry records which agent a clash session runs; rows
     // built from the daemon or the registry alone carry no transcript to
@@ -551,6 +556,7 @@ fn collapse_registry_aliases(
     sessions: &mut Vec<Session>,
     registry: &HashMap<String, ClashSession>,
     daemon_infos: &Option<Vec<SessionInfo>>,
+    previous: &[Session],
 ) {
     if sessions.len() < 2 || registry.is_empty() {
         return;
@@ -592,6 +598,15 @@ fn collapse_registry_aliases(
         .iter()
         .map(|i| i.session_id.as_str())
         .collect();
+    // A row that was running last cycle keeps its id until the daemon says
+    // otherwise: a cycle without daemon evidence would otherwise flip it to
+    // the current conversation and back, and the GUI moves ownership on each
+    // flip — stranding the real row under UNASSIGNED.
+    let was_running: HashSet<&str> = previous
+        .iter()
+        .filter(|s| s.is_running)
+        .map(|s| s.id.as_str())
+        .collect();
 
     let mut drop: Vec<usize> = Vec::new();
     for (g, group) in groups.iter().enumerate() {
@@ -606,8 +621,10 @@ fn collapse_registry_aliases(
         // Attachability first, then the conversation a resume would reach.
         let rank = |id: &str| -> u8 {
             if alive.contains(id) {
-                3
+                4
             } else if known_to_daemon.contains(id) {
+                3
+            } else if was_running.contains(id) {
                 2
             } else if id == current {
                 1
@@ -1514,6 +1531,36 @@ mod tests {
         // ...but the content of the conversation it is actually in.
         assert_eq!(sessions[0].summary, "work after the clear");
         assert!(sessions[0].is_running);
+    }
+
+    /// Same cleared session, but the daemon did not answer this cycle. The
+    /// row must keep the PTY's id: flipping to the new conversation for one
+    /// tick moved GUI ownership onto it, and the flip back left the real row
+    /// owned by nobody — permanently UNASSIGNED.
+    #[test]
+    fn a_daemon_hiccup_does_not_flip_a_live_cleared_session_to_its_new_id() {
+        let mut entry = make_registry_entry("new-conv", "my session", "/home/user/proj");
+        entry.previous_ids = vec!["old-conv".to_string()];
+        let mut registry = HashMap::new();
+        registry.insert("new-conv".to_string(), entry);
+
+        let mut live = make_disk_session("old-conv", "proj", "work after the clear");
+        live.status = SessionStatus::Thinking;
+        live.is_running = true;
+        live.name = Some("my session".to_string());
+        let previous = vec![live];
+        let mut input = empty_input(&previous);
+        input.disk_sessions = vec![
+            make_disk_session("old-conv", "proj", "work before the clear"),
+            make_disk_session("new-conv", "proj", "work after the clear"),
+        ];
+        input.registry = registry;
+        input.daemon_infos = None;
+
+        let sessions = build_session_list(&input);
+        assert_eq!(sessions.len(), 1, "{sessions:?}");
+        assert_eq!(sessions[0].id, "old-conv");
+        assert_eq!(sessions[0].summary, "work after the clear");
     }
 
     /// Same entry, no live PTY (clash reopened after the `/clear`): nothing

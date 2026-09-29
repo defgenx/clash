@@ -62,14 +62,29 @@
   /// list and is not already owned — one session belongs to exactly one
   /// workspace, so a claimed id is never re-assigned. Everything else is a
   /// genuinely dead session and drops out.
-  function ownershipTransfers(vanished, resolved, known, owned) {
+  ///
+  /// Resolving forward only covers half the renames: a live session's row keeps
+  /// the id its PTY was spawned with, which is the *older* id. So `unowned` /
+  /// `unownedResolved` (listed rows nobody owns, and where they resolve) also
+  /// count as a target when they resolve to the same session as the vanished id.
+  function ownershipTransfers(vanished, resolved, known, owned, unowned = [], unownedResolved = null) {
     const moved = new Map();
     const taken = new Set(owned);
     vanished.forEach((id, i) => {
       const to = resolved ? resolved[i] : null;
-      if (to && to !== id && known.has(to) && !taken.has(to)) {
+      if (!to) return;
+      if (to !== id && known.has(to) && !taken.has(to)) {
         moved.set(id, to);
         taken.add(to);
+        return;
+      }
+      if (!unownedResolved) return;
+      const j = unowned.findIndex(
+        (u, k) => u !== id && !taken.has(u) && known.has(u) && unownedResolved[k] === to
+      );
+      if (j >= 0) {
+        moved.set(id, unowned[j]);
+        taken.add(unowned[j]);
       }
     });
     return moved;

@@ -156,3 +156,29 @@ test("full reopen scenario: resumed session stays in its workspace", () => {
   assert.deepEqual(wss[0].sessions, ["open", "post"]);
   assert.equal(wss[0].sessions.includes("pre"), false);
 });
+
+test("transfer follows a live row back to its older PTY id", () => {
+  // Ownership moved old → new on a one-tick flip; the row is listed as `old`
+  // again. `new` resolves to itself and `old` resolves to `new`: same session.
+  const moved = ownershipTransfers(
+    ["new"],
+    ["new"],
+    new Set(["old"]),
+    ["new"],
+    ["old"],
+    ["new"]
+  );
+  assert.deepEqual([...moved], [["new", "old"]]);
+});
+
+test("transfer never claims an unowned row of a different session", () => {
+  const moved = ownershipTransfers(
+    ["mine"],
+    ["mine"],
+    new Set(["other"]),
+    ["mine"],
+    ["other"],
+    ["other"]
+  );
+  assert.equal(moved.size, 0);
+});
