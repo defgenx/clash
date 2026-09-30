@@ -233,14 +233,21 @@ pub(crate) async fn workflow_diff_text(
         .backend
         .load_workflow_meta(project, slug)
         .map_err(e2s)?;
-    let dir = meta
-        .worktree
-        .clone()
-        .filter(|w| !w.is_empty())
-        .unwrap_or_else(|| meta.repo_path.clone());
-    if dir.is_empty() {
-        return Err("No repository directory recorded for this item".to_string());
-    }
+    // The item's diff lives in its own checkout: its worktree, or the repo
+    // itself when the item works in place. Before either exists (a plan not
+    // yet implemented) or in a directory git doesn't know, there is nothing
+    // to diff — the main checkout's changes are not this item's.
+    // A missing worktree stays an error: an empty diff would be frozen as
+    // what the human reviewed.
+    let dir = match meta.worktree.clone().filter(|w| !w.is_empty()) {
+        Some(wt) => wt,
+        None if meta.work_in_place
+            && clash::infrastructure::git::is_repository(Path::new(&meta.repo_path)).await =>
+        {
+            meta.repo_path.clone()
+        }
+        None => return Ok(String::new()),
+    };
     let base = if meta.base.trim().is_empty() {
         crate::origin_default_branch(&dir).await
     } else {
@@ -418,6 +425,8 @@ pub(crate) fn set_workflow_forge(
 ///   remembered by the share dialog's Post-to-Jira. Empty clears it.
 /// - `description`: the item's free-form intent — the planning agent's
 ///   primary source. Editable so it can be refined before launching a plan.
+/// - `work_in_place`: never create a worktree; refused once one exists,
+///   since the recorded worktree is the item's checkout from then on.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn set_workflow_item_settings(
@@ -432,11 +441,19 @@ pub(crate) fn set_workflow_item_settings(
     agent: Option<String>,
     title: Option<String>,
     base: Option<String>,
+    work_in_place: Option<bool>,
 ) -> Result<clash::domain::workflow::WorkflowMeta, String> {
     let mut meta = state
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
+    if let Some(in_place) = work_in_place {
+        if in_place != meta.work_in_place && meta.worktree.as_deref().is_some_and(|w| !w.is_empty())
+        {
+            return Err("This item already works in its own worktree".to_string());
+        }
+        meta.work_in_place = in_place;
+    }
     if let Some(title) = title {
         meta.title = clash::application::workflow::normalize_item_title(&title)?;
     }
@@ -1400,7 +1417,7 @@ async fn spawn_item_session(
         session_id,
         &name,
         cwd,
-        Some(meta.branch.as_str()),
+        Some(meta.branch.as_str()).filter(|b| !b.is_empty()),
         agent,
     );
     clash::infrastructure::hooks::save_session_name(
@@ -1510,10 +1527,17 @@ pub(crate) async fn start_workflow_agent(
     }
     launch_agent(&state, agent.as_deref(), &mut meta)?;
 
-    // First launch: isolate the item in its own worktree + branch. The
-    // branch defaults to the slug; when that name is taken the structured
-    // `branch-exists:` error makes the GUI ask for another name and retry.
-    if meta.worktree.as_deref().unwrap_or("").is_empty() {
+    // The first round that writes code isolates the item in its own worktree
+    // + branch; planning, an in-place item and a non-git directory run in
+    // `repo_path`. The branch defaults to the slug; when that name is taken
+    // the structured `branch-exists:` error makes the GUI ask for another
+    // name and retry.
+    let work_dir = clash::application::workflow::resolve_work_dir(
+        &meta,
+        &phase,
+        clash::infrastructure::git::is_repository(Path::new(&meta.repo_path)).await,
+    );
+    if work_dir == clash::application::workflow::WorkDir::CreateWorktree {
         let branch_name = branch
             .as_deref()
             .map(str::trim)
@@ -1529,7 +1553,13 @@ pub(crate) async fn start_workflow_agent(
         meta.worktree = Some(wt);
         meta.branch = branch_name;
     }
-    let cwd = meta.worktree.clone().unwrap_or_default();
+    let cwd = match work_dir {
+        clash::application::workflow::WorkDir::Worktree
+        | clash::application::workflow::WorkDir::CreateWorktree => {
+            meta.worktree.clone().unwrap_or_default()
+        }
+        _ => meta.repo_path.clone(),
+    };
     let session_id = uuid::Uuid::now_v7().to_string();
 
     // Persist the launch BEFORE spawning (session id + phase-appropriate
@@ -1596,6 +1626,7 @@ pub(crate) async fn start_workflow_agent(
                     skill: skill.as_deref(),
                     interactive,
                     delegation: state.config.get().workflow_delegation(),
+                    workspace: work_dir.kickoff_field(),
                 },
             )
         },

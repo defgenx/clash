@@ -23,6 +23,19 @@ pub enum DiffBase {
     MergeBase(String),
 }
 
+/// Whether `dir` is inside a git work tree. `false` also when git is missing.
+/// `dead_code` allowed: only the GUI's workflow launcher calls it.
+#[allow(dead_code)]
+pub async fn is_repository(dir: &Path) -> bool {
+    tokio::process::Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(dir)
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Run `git diff` in `dir` against the given base and return the raw unified
 /// diff. `Err` carries a human-readable message (git's stderr, or the spawn
 /// failure).

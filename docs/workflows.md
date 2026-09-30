@@ -529,9 +529,42 @@ repo's origin default branch. A PR targeting `develop` records `develop`.
 
 The kickoff prompt is:
 `Use the clash-workflow skill. Workflow item directory: <abs path>. Phase: <plan|revise|implement|pr>. Mode: <full|from-plan|review-only>.`
-with two optional trailing fields: `PR skill: <name>.` (from the
+with optional trailing fields: `Workspace: repo|directory.` (see Workspace
+below; absent means the item's worktree), `PR skill: <name>.` (from the
 `workflows.pr_skill` config — see PR integration) and `Interactive: yes|no.`
 (absent means the skill's opening question asks in-session).
+
+### Workspace — where an executor round runs
+
+Decided per launch by the pure `resolve_work_dir` (`application::workflow`),
+first match wins:
+
+| Item state | Round runs in | Kickoff |
+|---|---|---|
+| `meta.worktree` recorded | that worktree | *(absent)* |
+| `repoPath` is not a git repository | `repoPath` | `Workspace: directory` |
+| `meta.workInPlace` set, or a `plan` / `revise` phase | `repoPath` | `Workspace: repo` |
+| otherwise (a round that writes code) | a new worktree + branch, recorded | *(absent)* |
+
+- **The worktree is created by the first round that writes code, not by the
+  first launch.** Planning only reads the repository, and a checkout can take
+  most of a minute on a large repo — so a plan round costs no checkout, and an
+  item abandoned at `plan-review` leaves no branch behind. (`revise` counts as
+  a code round in `review-only`, whose worktree exists from creation.)
+- **A directory that is not a git repository is never refused.** There is
+  nothing to check out, so the agent works on its files directly and the
+  skill skips every git and PR step. The item has no diff: the Diff tab is
+  empty and a change round freezes an empty `diff.patch`.
+- **`meta.workInPlace`** (⚙ Settings → Workspace, clash-only) is the human's
+  choice to never create a worktree: every round runs in the repository's own
+  checkout, on whatever branch is checked out, and the skill neither creates
+  nor switches branches. It is refused once a worktree exists — the recorded
+  worktree is the item's checkout from then on.
+- **The item's diff is taken in its own checkout only**: the worktree, or
+  `repoPath` for an in-place item. An item with neither (a plan not yet
+  implemented) diffs as empty rather than showing the main checkout's
+  unrelated changes. A recorded worktree that is missing stays an error, so a
+  change round cannot freeze an empty diff over work that exists.
 
 The mode is repeated in the prompt (it is also in `meta.json`) so a
 `review-only` run knows before reading anything that it must not write a plan.

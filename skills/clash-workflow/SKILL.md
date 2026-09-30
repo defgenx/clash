@@ -28,9 +28,19 @@ The kickoff prompt gives you:
 - **Delegation** — `team` (also what an absent field means) or `solo`,
   optionally naming the subagent model: `team (subagents on <model>)`. See
   "Lead and subagents" below.
-
-Your shell cwd is the item's git worktree. All code work happens there, on the
-already-checked-out branch.
+- **Workspace** — optional; what your shell cwd is:
+  - absent — the item's own git worktree. All code work happens there, on the
+    already-checked-out branch.
+  - `repo` — the repository's main checkout, shared with the human. A `plan`
+    or `revise` phase only reads it (clash creates the item's worktree when a
+    round first writes code). In an `implement` or `pr` phase the human chose
+    to work in place: work on the branch that is checked out. Never switch,
+    create or delete branches, never add worktrees, never stash or discard
+    changes you did not make — the human decides whether the work gets its
+    own checkout.
+  - `directory` — not a git repository. Work on the files there directly and
+    run no git at all: skip every commit, push and PR step below and say so in
+    your final message. A `pr` phase has nothing to open: stop and report it.
 
 ## Opening question — interactive or autonomous
 
@@ -136,7 +146,7 @@ findings into `agent-review.md` and `annotations.json` and never touch
   `diff-review → pr-draft`. Write `pr-draft` even when the PR is already
   ready for review — clash moves the item to `pr-ready` itself on its next
   refresh; `pr-ready` is never yours to write.
-- Git: commit your work on the current branch with clear conventional
+- Git (skip entirely under `Workspace: directory`): commit your work on the current branch with clear conventional
   messages. **Never `--no-verify`** — if a hook fails, fix the cause or stop and
   explain in your final message. Pushing:
   - `full` / `from-plan` **without a PR**: never push — the branch is

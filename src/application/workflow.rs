@@ -675,6 +675,65 @@ pub fn change_round_phase(status: crate::domain::workflow::WorkflowStatus) -> &'
     }
 }
 
+/// Where an executor round runs. Full rules: `docs/workflows.md` → Workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkDir {
+    /// The worktree already recorded on the item.
+    Worktree,
+    /// A worktree must be created first: this round writes code and the item
+    /// has none yet.
+    CreateWorktree,
+    /// `repo_path`, a git checkout shared with the human.
+    Repo,
+    /// `repo_path`, which is not a git repository at all.
+    Directory,
+}
+
+impl WorkDir {
+    /// The kickoff's `Workspace:` value; `None` for a worktree, which is what
+    /// an absent field means to the skill.
+    pub fn kickoff_field(self) -> Option<&'static str> {
+        match self {
+            WorkDir::Worktree | WorkDir::CreateWorktree => None,
+            WorkDir::Repo => Some("repo"),
+            WorkDir::Directory => Some("directory"),
+        }
+    }
+}
+
+/// Pure: where an executor round in `phase` runs. A worktree is created only
+/// for a round that writes code — planning reads the repository in place — and
+/// never for a directory that is not a git repository or an item the human set
+/// to work in place.
+pub fn resolve_work_dir(
+    meta: &crate::domain::workflow::WorkflowMeta,
+    phase: &str,
+    is_repository: bool,
+) -> WorkDir {
+    if meta
+        .worktree
+        .as_deref()
+        .is_some_and(|w| !w.trim().is_empty())
+    {
+        return WorkDir::Worktree;
+    }
+    if !is_repository {
+        return WorkDir::Directory;
+    }
+    // `revise` is a plan revision everywhere but review-only, where it
+    // behaves like `implement` (and the item always has a worktree anyway).
+    let writes_code = match phase {
+        "plan" => false,
+        "revise" => meta.mode.is_review_only(),
+        _ => true,
+    };
+    if meta.work_in_place || !writes_code {
+        WorkDir::Repo
+    } else {
+        WorkDir::CreateWorktree
+    }
+}
+
 // ── PR body ─────────────────────────────────────────────────────────────
 
 /// Pure: compose a draft PR body from the item's own `plan.md`. A transcription,
@@ -987,6 +1046,8 @@ pub struct ExecutorKickoff<'a> {
     /// question asks in-session.
     pub interactive: Option<bool>,
     pub delegation: Delegation<'a>,
+    /// `WorkDir::kickoff_field` — `None` means the item's worktree.
+    pub workspace: Option<&'a str>,
 }
 
 /// Build the initial prompt for a workflow agent session. The skill owns the
@@ -1007,6 +1068,9 @@ pub fn build_agent_prompt(item_dir: &str, kickoff: &ExecutorKickoff) -> String {
         skill, item_dir, kickoff.phase, kickoff.mode
     );
     prompt.push_str(&kickoff.delegation.clause());
+    if let Some(w) = kickoff.workspace {
+        prompt.push_str(&format!(" Workspace: {}.", w));
+    }
     if let Some(s) = kickoff.pr_skill.map(str::trim).filter(|s| !s.is_empty()) {
         prompt.push_str(&format!(" PR skill: {}.", s));
     }
@@ -2466,6 +2530,62 @@ Tighten the API.\n\n\
             },
         );
         assert!(p.ends_with("Interactive: no."));
+    }
+
+    #[test]
+    fn prompt_names_the_workspace_only_when_it_is_not_a_worktree() {
+        let p = build_agent_prompt("/x/i", &kickoff("plan", WorkflowMode::Full));
+        assert!(!p.contains("Workspace:"));
+        let p = build_agent_prompt(
+            "/x/i",
+            &ExecutorKickoff {
+                workspace: WorkDir::Directory.kickoff_field(),
+                ..kickoff("implement", WorkflowMode::Full)
+            },
+        );
+        assert!(p.contains(" Workspace: directory."));
+    }
+
+    #[test]
+    fn a_worktree_is_created_only_by_a_code_round_in_a_git_repository() {
+        use crate::domain::workflow::WorkflowMeta;
+        let fresh = WorkflowMeta::default();
+        // Planning reads the repository; it never needs its own checkout.
+        assert_eq!(resolve_work_dir(&fresh, "plan", true), WorkDir::Repo);
+        assert_eq!(resolve_work_dir(&fresh, "revise", true), WorkDir::Repo);
+        assert_eq!(
+            resolve_work_dir(&fresh, "implement", true),
+            WorkDir::CreateWorktree
+        );
+        // Nothing to check out from a plain directory, whatever the phase.
+        for phase in ["plan", "revise", "implement", "pr"] {
+            assert_eq!(resolve_work_dir(&fresh, phase, false), WorkDir::Directory);
+        }
+        // The human's in-place choice wins over the default.
+        let in_place = WorkflowMeta {
+            work_in_place: true,
+            ..WorkflowMeta::default()
+        };
+        assert_eq!(
+            resolve_work_dir(&in_place, "implement", true),
+            WorkDir::Repo
+        );
+        // A recorded worktree is the item's checkout from then on.
+        let with_wt = WorkflowMeta {
+            worktree: Some("/r-worktrees/x".into()),
+            work_in_place: true,
+            ..WorkflowMeta::default()
+        };
+        assert_eq!(resolve_work_dir(&with_wt, "plan", false), WorkDir::Worktree);
+        // Review-only's `revise` is a code round.
+        let review_only = WorkflowMeta {
+            mode: WorkflowMode::ReviewOnly,
+            ..WorkflowMeta::default()
+        };
+        assert_eq!(
+            resolve_work_dir(&review_only, "revise", true),
+            WorkDir::CreateWorktree
+        );
     }
 
     // ── Apply declaration ────────────────────────────────────────────

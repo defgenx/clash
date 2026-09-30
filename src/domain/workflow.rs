@@ -639,6 +639,12 @@ pub struct WorkflowMeta {
     /// Absolute worktree path when the item works in a dedicated worktree.
     #[serde(default)]
     pub worktree: Option<String>,
+    /// The human's choice (item Settings tab) to have agents work in
+    /// `repo_path` itself and never create a worktree. False (the default)
+    /// creates one on the first round that writes code — see
+    /// `application::workflow::resolve_work_dir`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub work_in_place: bool,
     /// Last clash session spawned for this item (drives "open agent session"
     /// and the liveness cross-check).
     #[serde(default)]

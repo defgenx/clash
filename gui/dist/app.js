@@ -9095,6 +9095,7 @@ async function renderWfSubView(body, root, item, ts) {
       prSkill: item.meta.prSkill || "",
       jiraTicket: item.meta.jiraTicket || "",
       agent: item.meta.agent || "",
+      workInPlace: !!item.meta.workInPlace,
     };
     const save = async (patch, revert) => {
       try {
@@ -9245,6 +9246,33 @@ async function renderWfSubView(body, root, item, ts) {
     prRow.appendChild(prInput);
     agents.appendChild(prRow);
     wrap.appendChild(agents);
+
+    // Where the agents work. Once a worktree exists it is the item's checkout,
+    // so the choice is only offered before that (the backend refuses it too).
+    const workspace = document.createElement("fieldset");
+    workspace.className = "wf-settings-group";
+    const wlg = document.createElement("legend");
+    wlg.textContent = "Workspace";
+    workspace.appendChild(wlg);
+    const wsRow = document.createElement("label");
+    wsRow.className = "wf-settings-row";
+    const wsCb = document.createElement("input");
+    wsCb.type = "checkbox";
+    wsCb.checked = committed.workInPlace;
+    const hasWorktree = !!(item.meta.worktree || "").trim();
+    wsCb.disabled = hasWorktree;
+    wsCb.onchange = () =>
+      save({ workInPlace: wsCb.checked }, () => (wsCb.checked = committed.workInPlace));
+    wsRow.appendChild(wsCb);
+    wsRow.appendChild(document.createTextNode(" Work in the repository itself — never create a worktree"));
+    workspace.appendChild(wsRow);
+    const wsHint = document.createElement("p");
+    wsHint.className = "hint";
+    wsHint.textContent = hasWorktree
+      ? `This item works in its worktree: ${item.meta.worktree}`
+      : "Off: planning reads the repository in place, and the first round that writes code creates a worktree and branch. A directory that is not a git repository is always used in place.";
+    workspace.appendChild(wsHint);
+    wrap.appendChild(workspace);
 
     const diffGroup = document.createElement("fieldset");
     diffGroup.className = "wf-settings-group";

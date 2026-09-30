@@ -623,8 +623,10 @@ picker as the new-session modal.
 of the goal/scope — the planning agent's primary source, optional but it
 spares you half the requirements questions; editable later in the ⚙ Settings
 tab + project + repo) → *Start planning*
-spawns a Claude Code session in a dedicated git worktree, driven by the
-`clash-workflow` skill → read the rendered plan, *Approve* or *Request
+spawns a Claude Code session driven by the `clash-workflow` skill (planning
+reads the repo in place; the first round that writes code gets a dedicated git
+worktree + branch — never for a directory that isn't a git repository, or when
+the item's ⚙ Settings say to work in place) → read the rendered plan, *Approve* or *Request
 changes* → during **diff review**, hover any line of the diff
 and press `+` to leave a GitHub-style comment (threads support reply / edit /
 resolve / wontfix); *Request changes* snapshots the iteration (diff + plan +
@@ -860,7 +862,8 @@ it there, with **Rename…** on its card or tab, or by double-clicking the title
 in its header; the item's folder keeps the slug it was created with, and
 sessions launched afterwards carry the new name), its **diff base** (the
 `origin` branch the diff is taken against; empty = the origin default branch),
-session-name prefix on/off,
+session-name prefix on/off, **work in place** (never create a worktree —
+offered until one exists),
 a per-item **PR skill** override (`none` disables), the default **interaction
 mode** for that item's agent rounds (ask at start / interactive / autonomous,
 pre-selected in the review composer and applied to one-click launches) — plus
