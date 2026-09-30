@@ -155,9 +155,11 @@
     // Identity, not order: round numbers restart per target, so "3 plan rounds
     // applied" must not read as "code round 1 applied".
     if (meta.appliedReviewKey && roundKeyMatches(meta.appliedReviewKey, r)) return null;
-    // Absent on items reviewed before the block was recorded — those predate
-    // explainer rounds too, so "no target" means "the stage's own artifact".
-    const target = meta.review && meta.review.target;
+    // The round's own heading says what it judged. `meta.review` is only the
+    // fallback — for a heading without a target — because explainers no
+    // longer write it and a reviewer's block may predate the round shown.
+    // Absent on both means "the stage's own artifact".
+    const target = r.target || (meta.review && meta.review.target);
     if (isExplainTarget(target)) return null;
     const stagePlan = meta.status === "plan-review";
     if (target === "plan" && !stagePlan) return null;
@@ -259,7 +261,57 @@
     return !!pendingReviewRound({ ...item, lastAgentReview: r });
   }
 
+  /// Mirrors `WorkflowStatus::can_explain` — may an explainer on `target`
+  /// (`explain-plan` | `explain-diff`) start now? It runs alongside the item's
+  /// other agents, so only its artifact being rewritten under it (or not
+  /// existing yet) stops it. The backend validates; this decides what is
+  /// offered.
+  function canExplain(item, target) {
+    const meta = (item && item.meta) || {};
+    if (!String(meta.repoPath || "").trim()) return false;
+    let at = meta.status || "unknown";
+    // A review round hands back to where it started, and that is the artifact
+    // its explainer would read: a plan review has no diff behind it.
+    if (at === "reviewing") at = (meta.review && meta.review.returnStatus) || "diff-review";
+    const revising = meta.phase === "revise";
+    if (target === "explain-plan") {
+      if (["draft", "planning", "reviewing", "unknown"].includes(at)) return false;
+      return at === "implementing" ? !revising : true;
+    }
+    if (target === "explain-diff") {
+      if (["draft", "planning", "plan-review", "implementing", "reviewing", "unknown"].includes(at))
+        return false;
+      return at === "changes-requested" ? !revising : true;
+    }
+    return false;
+  }
+
+  /// The explainer on `target` that is in flight, or null.
+  function runningExplainer(item, target) {
+    const list = (item && item.explainers) || [];
+    return list.find((e) => canonicalTarget(e.target) === target && e.running) || null;
+  }
+
+  /// Explainers that were running in `prev` and have since written their round
+  /// — what the "explanation ready" toast announces. An explainer whose session
+  /// died unfinished is not in the list: nothing is ready.
+  function explainersFinished(prev, next) {
+    const was = new Set();
+    for (const it of prev || [])
+      for (const e of it.explainers || [])
+        if (e.running) was.add(`${it.project}/${it.slug}#${e.sessionId}`);
+    const out = [];
+    for (const it of next || [])
+      for (const e of it.explainers || [])
+        if (e.finished && was.has(`${it.project}/${it.slug}#${e.sessionId}`))
+          out.push({ item: it, target: canonicalTarget(e.target) });
+    return out;
+  }
+
   const api = {
+    canExplain,
+    runningExplainer,
+    explainersFinished,
     isExplainTarget,
     canonicalTarget,
     planVersionForIteration,

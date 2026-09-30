@@ -1,6 +1,6 @@
 ---
 name: clash-explain
-description: Explain a clash Workflow item in depth — one of two artifacts, in two forms. `Target: explain-plan` reads plan.md and the real code and explains what the implementation is *going to do*, before any of it exists (explain-plan.md + explain-plan.html); `Target: explain-diff` reads the diff and explains what the change *did* (explain-diff.md + explain-diff.html). Each round writes a written walk-through with mermaid diagrams AND a self-contained HTML page — boxes, arrows, repos, features — that gives a graphical high-level overview. Judges nothing, changes nothing but its own two documents, then hands the item back where it came from. Triggers on "Use the clash-explain skill", "Target: explain-diff" or "Target: explain-plan" in a clash kickoff prompt, or a request to explain what a PR, diff or plan does.
+description: Explain a clash Workflow item in depth — one of two artifacts, in two forms. `Target: explain-plan` reads plan.md and the real code and explains what the implementation is *going to do*, before any of it exists (explain-plan.md + explain-plan.html); `Target: explain-diff` reads the diff and explains what the change *did* (explain-diff.md + explain-diff.html). Each round writes a written walk-through with mermaid diagrams AND a self-contained HTML page — boxes, arrows, repos, features — that gives a graphical high-level overview. Judges nothing, changes nothing but its own two documents, and runs alongside the item's other agents without touching its status. Triggers on "Use the clash-explain skill", "Target: explain-diff" or "Target: explain-plan" in a clash kickoff prompt, or a request to explain what a PR, diff or plan does.
 ---
 
 # clash-explain — one explainer round per run
@@ -17,10 +17,10 @@ raise no findings, and grade nothing: your entire deliverable is a document
 that makes the change understandable — what it does, part by part, and how
 the pieces fit.
 
-Like a review round, an explain round is a self-returning side-trip: the item
-was parked on a human decision, you run, and your last act puts it back
-exactly where it was. Rounds are unbounded — the document is regenerated as
-the change evolves.
+Unlike a review round, an explain round **parks nothing**: it runs alongside
+whatever else the item is doing — a plan review, the implementation of the
+plan you are explaining — and leaves the item's status alone. Rounds are
+unbounded — the document is regenerated as the change evolves.
 
 **Two artifacts, and they are explained separately.** The kickoff's `Target:`
 says which one this round is about:
@@ -64,7 +64,9 @@ The kickoff prompt gives you:
   explanation is grounded, not paraphrased from the diff
 - **Publish** — normally `local`; this skill never posts to the PR itself
 - **Round** — the 1-based round number for the report entry
-- **Return to** — the status to restore when you finish. **This is a contract.**
+- There is **no** `Return to:` — you run *alongside* the item's other agents
+  (a plan review, the implementation), never park it, and never write
+  `meta.json`. See Hard rules.
 - **Mode** — `full` | `from-plan` | `review-only`
 - **Interactive** — optional; see the opening question below.
 - **Delegation** — `team` (also what an absent field means) or `solo`,
@@ -84,8 +86,8 @@ full file contract is in the clash repo at `docs/workflows.md`.
      human reorder it, merge parts, or name the ones that deserve the deepest
      treatment before you write.
 
-Blocking on a question is safe: the item is parked and clash always offers
-"End round".
+Blocking on a question is safe: nothing waits on you — the item's other work
+carries on — and clash can always stop tracking the round.
 
 ## Step 0 — read first, every run
 
@@ -136,9 +138,8 @@ How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
   (`CLAUDE.md`/`AGENTS.md`), and the shape of what to return: `file:line`
   evidence, not prose.
 - **The lead owns the item.** Only you write the item's files, run git, post
-  to a PR, ask the human (`AskUserQuestion`) and change the status. Say so in
-  every brief — a subagent that writes `meta.json` or commits corrupts the
-  round.
+  to a PR and ask the human (`AskUserQuestion`). Say so in every brief — a
+  subagent that writes `meta.json` or commits corrupts the round.
 - **Verify, don't forward.** A subagent's output is a claim. Check it against
   the code before it reaches the item; drop what does not hold.
 - **Report the split.** Your final message says how the work was divided and
@@ -157,8 +158,14 @@ How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
   erase what the change actually did, and an `explain-diff` round that overwrote
   `explain-plan.*` would erase the picture the human read before authorizing
   the work.
-- The only status you may write is the prompt's **`Return to:`** value, and
-  only as your final act.
+- **Never write `meta.json`**, not even the status. You run alongside other
+  agents that own it — an executor mid-implementation, a reviewer that will
+  restore its own `Return to:` — and your read-modify-write would race theirs.
+  clash knows you finished from your round entry in `agent-review.md`.
+- **Append to `agent-review.md` in one shell append** (`cat >> agent-review.md
+  <<'EOF'` … `EOF`), never by rewriting the file: a reviewer running beside
+  you may be appending its own round at the same moment, and a whole-file
+  write from an older read would erase it.
 
 ## The written document — `explain-plan.md` (`Target: explain-plan`)
 
@@ -372,8 +379,10 @@ Sketch of the shape (yours will differ — this is the altitude, not a template)
    `explain-plan.html` on `Target: explain-plan`, `explain-diff.md` +
    `explain-diff.html` on `Target: explain-diff`. Both files, never the other
    target's.
-2. **Append** your round to `agent-review.md` (append-only, like every round).
-   The heading's first word after the number is the target, and clash reads it:
+2. **Append** your round to `agent-review.md` — one shell append, never a
+   rewrite (see Hard rules). This entry is also how clash learns you are
+   done, so write it last and write it even when the round went badly. The
+   heading's first word after the number is the target, and clash reads it:
    round numbers restart per target, so dropping it would make two different
    rounds indistinguishable.
 
@@ -406,10 +415,5 @@ judgement>
    and claiming otherwise would put a button on the item that does the wrong
    thing.
 
-3. Read-modify-write `meta.json`: set `status` to the prompt's **`Return
-   to:`** value. Change nothing else.
-4. Final chat message: two sentences — what the change does and how many
+3. Final chat message: two sentences — what the change does and how many
    functional parts the document describes.
-
-Leaving the item in `reviewing` is the one failure the human cannot work
-around from the keyboard, so do step 3 even when the round went badly.

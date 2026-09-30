@@ -372,3 +372,21 @@ test("a recorded phase is read back, and an item without one keeps its old behav
   assert.equal(recordedPhase({ phase: "reviewing" }, "revise"), "revise");
   assert.equal(recordedPhase(null, "plan"), "plan");
 });
+
+test("the latest findings skip an explanation that landed after the review", () => {
+  // An explainer runs beside a review and finishes whenever it does.
+  const md = [
+    "## Review 2 — diff · deep · d",
+    "",
+    "**Verdict:** two bugs",
+    "",
+    "## Review 1 — explain-plan · standard · d",
+    "",
+    "**Verdict:** the shape",
+  ].join("\n");
+  const got = latestAgentRoundFindings(md);
+  assert.equal(got.round, 2);
+  assert.match(got.text, /two bugs/);
+  assert.doesNotMatch(got.text, /the shape/);
+  assert.equal(latestAgentRoundFindings("## Review 1 — structure\n\n**Verdict:** x\n"), null);
+});

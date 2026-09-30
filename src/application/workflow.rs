@@ -286,7 +286,8 @@ impl AttentionLedger {
 
 // ── Agent review report parsing ─────────────────────────────────────────
 
-/// Pure: parse the **last** `## Review <n> …` round out of `agent-review.md`.
+/// Pure: parse the **last** judging `## Review <n> …` round out of
+/// `agent-review.md` (explanation rounds skipped — see `last_round_bounds`).
 ///
 /// The section shape is contractual (the `clash-review` skill's Finish step):
 /// a `## Review <n> — <heading>` heading, a `**Verdict:**` paragraph, and a
@@ -499,29 +500,26 @@ pub fn review_round_key(target: &str, round: u32) -> String {
 }
 
 /// Line span (start inclusive, end exclusive) and round number of the last
-/// `## Review <n> …` section. `end` is the next H2 or EOF.
+/// `## Review <n> …` section that **judged** something. `end` is the next H2
+/// or EOF.
+///
+/// Explanation rounds are skipped: an explainer runs alongside the reviewers
+/// and lands whenever it finishes, and every reader of "the latest round" —
+/// apply, the applied-key stamp, post-to-PR — means the latest findings.
 fn last_round_bounds(lines: &[&str]) -> Option<(usize, usize, u32)> {
-    let start = lines.iter().rposition(|l| {
-        l.strip_prefix("## Review ")
-            .and_then(|rest| rest.split_whitespace().next())
-            .is_some_and(|tok| tok.parse::<u32>().is_ok())
-    })?;
-    let round: u32 = lines[start]
-        .strip_prefix("## Review ")?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()?;
-    let end = lines[start + 1..]
-        .iter()
-        .position(|l| l.starts_with("## "))
-        .map(|i| start + 1 + i)
-        .unwrap_or(lines.len());
-    Some((start, end, round))
+    round_starts(lines)
+        .into_iter()
+        .rev()
+        .find_map(|(start, round)| {
+            let end = next_h2(lines, start).unwrap_or(lines.len());
+            let target = parse_round(lines, start, end, round).target;
+            (!crate::domain::workflow::ReviewTarget::name_explains(&target))
+                .then_some((start, end, round))
+        })
 }
 
-/// Pure: the full markdown of the last `## Review <n>` section, heading
-/// included — what "Post round N to the PR" publishes as one PR comment.
+/// Pure: the full markdown of the last judging `## Review <n>` section,
+/// heading included — what "Post round N to the PR" publishes as one PR comment.
 pub fn latest_agent_review_section(md: &str) -> Option<(u32, String)> {
     let lines: Vec<&str> = md.lines().collect();
     let (start, end, round) = last_round_bounds(&lines)?;
@@ -861,6 +859,38 @@ pub fn agent_alive(
         && (listed_running || now_ms.saturating_sub(meta_updated_at) < AGENT_LAUNCH_GRACE_MS)
 }
 
+/// Pure: the listing view of an item's recorded explainers. `running` is
+/// left false — only the GUI layer knows which sessions are alive.
+pub fn explainer_states(
+    file: &crate::domain::workflow::ExplainersFile,
+    rounds: &[AgentReviewSummary],
+) -> Vec<crate::domain::workflow::ExplainerState> {
+    file.explainers
+        .iter()
+        .map(|e| crate::domain::workflow::ExplainerState {
+            target: e.target,
+            round: e.round,
+            session_id: e.session_id.clone(),
+            started_at: e.started_at,
+            finished: rounds
+                .iter()
+                .any(|r| r.round == e.round && r.target == e.target.as_str()),
+            running: false,
+        })
+        .collect()
+}
+
+/// Pure: record a launched explainer, replacing that target's previous
+/// record — one explainer per target is the most that can be meaningfully
+/// in flight, since both would overwrite the same document pair.
+pub fn record_explainer(
+    file: &mut crate::domain::workflow::ExplainersFile,
+    explainer: crate::domain::workflow::WorkflowExplainer,
+) {
+    file.explainers.retain(|e| e.target != explainer.target);
+    file.explainers.push(explainer);
+}
+
 // ── PR-skill resolution ─────────────────────────────────────────────────
 
 /// The agent CLI an item's sessions run on: the item's override when set,
@@ -1183,16 +1213,23 @@ pub fn build_review_prompt(
     } else {
         " Auto-apply: no."
     };
+    // An explainer runs alongside the item's other agents and never writes the
+    // status, so it is given none to restore.
+    let return_to = if review.target.explains() {
+        String::new()
+    } else {
+        format!(" Return to: {}.", review.return_status)
+    };
     format!(
         "Use the {} skill. Workflow item directory: {}. \
-         Target: {}. Depth: {}. Publish: {}. Round: {}. Return to: {}. Mode: {}.{}{}{}{}{}",
+         Target: {}. Depth: {}. Publish: {}. Round: {}.{} Mode: {}.{}{}{}{}{}",
         engine,
         item_dir,
         review.target,
         review.depth,
         review.publish,
         review.round.max(1),
-        review.return_status,
+        return_to,
         mode,
         delegation.clause(),
         pr,
@@ -1277,6 +1314,51 @@ mod tests {
         // A clock that moved backwards (a meta stamp from the future) must not
         // read as an expired grace.
         assert!(agent_alive(true, false, now + 60_000, now));
+    }
+
+    #[test]
+    fn an_explainer_is_finished_by_its_own_round_entry() {
+        use crate::domain::workflow::{ExplainersFile, ReviewTarget, WorkflowExplainer};
+        let rec = |target, round| WorkflowExplainer {
+            target,
+            round,
+            session_id: format!("s-{round}"),
+            ..Default::default()
+        };
+        let mut file = ExplainersFile::default();
+        record_explainer(&mut file, rec(ReviewTarget::ExplainPlan, 1));
+        record_explainer(&mut file, rec(ReviewTarget::ExplainDiff, 1));
+        // A relaunch replaces its target's record, never the other one's.
+        record_explainer(&mut file, rec(ReviewTarget::ExplainPlan, 2));
+        assert_eq!(file.explainers.len(), 2);
+        // `(target, round)` is the identity: plan round 1 being in the report
+        // does not finish plan round 2, and a diff review 1 does not finish
+        // the diff explanation 1.
+        let md = "\
+## Review 1 — explain-plan · standard · d
+
+**Verdict:** x
+
+## Review 1 — diff · standard · d
+
+**Verdict:** y
+
+## Review 1 — structure · standard · d
+
+**Verdict:** legacy spelling of explain-diff
+";
+        let states = explainer_states(&file, &all_agent_reviews(md));
+        let plan = states
+            .iter()
+            .find(|s| s.target == ReviewTarget::ExplainPlan)
+            .unwrap();
+        let diff = states
+            .iter()
+            .find(|s| s.target == ReviewTarget::ExplainDiff)
+            .unwrap();
+        assert!(!plan.finished && plan.round == 2);
+        assert!(diff.finished);
+        assert!(states.iter().all(|s| !s.running));
     }
 
     #[test]
@@ -2660,6 +2742,37 @@ Tighten the API.\n\n\
         );
         assert!(p.contains("Use the clash-explain skill"));
         assert!(p.contains("Target: explain-plan."));
+        // It runs alongside other agents and never writes the status.
+        assert!(!p.contains("Return to:"), "{p}");
+    }
+
+    #[test]
+    fn the_latest_round_is_the_latest_judgement() {
+        // An explainer lands whenever it finishes, so it routinely follows a
+        // review it ran beside; apply / post / the applied stamp must still see
+        // the review.
+        let md = "\
+## Review 1 — diff · deep · d
+
+**Verdict:** two bugs
+
+## Review 1 — explain-plan · standard · d
+
+**Verdict:** the shape
+
+## Review 2 — structure · standard · d
+
+**Verdict:** legacy spelling
+";
+        let r = latest_agent_review(md).unwrap();
+        assert_eq!((r.target.as_str(), r.round), ("diff", 1));
+        let (round, section) = latest_agent_review_section(md).unwrap();
+        assert_eq!(round, 1);
+        assert!(section.contains("two bugs") && !section.contains("the shape"));
+        // Nothing judged at all: there is no latest judgement.
+        assert!(latest_agent_review("## Review 1 — explain-diff\n\n**Verdict:** x\n").is_none());
+        // Every round is still listed and counted.
+        assert_eq!(all_agent_reviews(md).len(), 3);
     }
 
     #[test]

@@ -226,13 +226,18 @@
     return text ? { index, round: meta.round || 0, target: meta.target || "", text } : null;
   }
 
-  /// The latest round's findings — the last section of the file. Kept as its
-  /// own name because "insert the latest" is the common path, and because the
-  /// round being applied is always this one.
+  /// Explainer targets under their current and original spellings.
+  const EXPLAIN_TARGETS = new Set(["explain-diff", "explain-plan", "structure", "blueprint"]);
+
+  /// The latest *judging* round's findings — the last section that is not an
+  /// explanation. Mirrors `latest_agent_review`: an explainer runs alongside
+  /// the reviewers and lands whenever it finishes, so the last section of the
+  /// file is routinely one with no findings in it, while the round being
+  /// applied is always the latest review.
   function latestAgentRoundFindings(md) {
-    const rounds = agentReviewRounds(md);
-    if (!rounds.length) return null;
-    return roundFindingsAt(md, rounds.length - 1);
+    const judged = agentReviewRounds(md).filter((r) => !EXPLAIN_TARGETS.has(r.target));
+    if (!judged.length) return null;
+    return roundFindingsAt(md, judged[judged.length - 1].index);
   }
 
   /// The executor phase a change round runs in — mirrors

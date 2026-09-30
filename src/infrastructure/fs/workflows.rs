@@ -67,6 +67,9 @@ pub const BLUEPRINT_FILE: &str = "blueprint.md";
 pub const DRIFT_FILE: &str = "drift.md";
 pub const DRIFT_HTML: &str = "drift.html";
 pub const ANNOTATIONS_FILE: &str = "annotations.json";
+/// clash-only record of the explainer rounds launched alongside the item's
+/// other agents — see `WorkflowExplainer`.
+pub const EXPLAINERS_FILE: &str = "explainers.json";
 pub const HISTORY_DIR: &str = "history";
 /// Per-item plan revision store: `plan-history/index.json` + `NNNN.md`.
 pub const PLAN_HISTORY_DIR: &str = "plan-history";
@@ -160,11 +163,21 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         (count_open_annotations(&dir), list_history(&dir))
     };
     let has_agent_review = has_content(&dir.join(AGENT_REVIEW_FILE));
-    // The latest round's verdict/published lines, so the GUI can say what a
-    // finished round concluded without the user opening the whole report.
-    let (last_agent_review, review_rounds) = if !terminal && has_agent_review {
-        let md = std::fs::read_to_string(dir.join(AGENT_REVIEW_FILE)).unwrap_or_default();
-        let rounds = crate::application::workflow::all_agent_reviews(&md);
+    let explainers = read_explainers_in(&dir);
+    // A finished item still reads the report while it has explainers on
+    // record: explaining a done item is allowed, and its round entry is what
+    // says the explainer finished.
+    let md = if has_agent_review && (!terminal || !explainers.explainers.is_empty()) {
+        std::fs::read_to_string(dir.join(AGENT_REVIEW_FILE)).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let rounds = crate::application::workflow::all_agent_reviews(&md);
+    let explainer_states = crate::application::workflow::explainer_states(&explainers, &rounds);
+    // The latest judging round's verdict/published lines, so the GUI can say
+    // what a finished round concluded without the user opening the whole
+    // report.
+    let (last_agent_review, review_rounds) = if !terminal {
         // Per-target tally from the same parse: round numbers restart per
         // target, so the GUI needs the count of *this* target to label the
         // next one.
@@ -175,7 +188,10 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
             }
             *per_target.entry(r.target.clone()).or_insert(0) += 1;
         }
-        (rounds.into_iter().next_back(), per_target)
+        (
+            crate::application::workflow::latest_agent_review(&md),
+            per_target,
+        )
     } else {
         (None, Default::default())
     };
@@ -195,6 +211,7 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         agent_alive: true, // cross-checked against live sessions by the GUI layer
         last_agent_review,
         review_rounds,
+        explainers: explainer_states,
         meta,
     })
 }
@@ -432,6 +449,43 @@ pub fn write_annotations(
     let dir = existing_item_dir(root, project, slug)?;
     write_atomic(
         &dir.join(ANNOTATIONS_FILE),
+        serde_json::to_string_pretty(file)?.as_bytes(),
+    )
+    .map_err(DomainError::from)
+}
+
+// ── Explainer records (explainers.json) ─────────────────────────────────
+
+/// Missing or malformed reads as empty: the file only says which explainers
+/// are in flight, and losing that re-offers the button — never loses work.
+fn read_explainers_in(dir: &Path) -> crate::domain::workflow::ExplainersFile {
+    let path = dir.join(EXPLAINERS_FILE);
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return Default::default();
+    };
+    serde_json::from_str(&raw).unwrap_or_else(|e| {
+        tracing::warn!("malformed {}: {}", path.display(), e);
+        Default::default()
+    })
+}
+
+pub fn read_explainers(
+    root: &Path,
+    project: &str,
+    slug: &str,
+) -> Result<crate::domain::workflow::ExplainersFile> {
+    Ok(read_explainers_in(&existing_item_dir(root, project, slug)?))
+}
+
+pub fn write_explainers(
+    root: &Path,
+    project: &str,
+    slug: &str,
+    file: &crate::domain::workflow::ExplainersFile,
+) -> Result<()> {
+    let dir = existing_item_dir(root, project, slug)?;
+    write_atomic(
+        &dir.join(EXPLAINERS_FILE),
         serde_json::to_string_pretty(file)?.as_bytes(),
     )
     .map_err(DomainError::from)

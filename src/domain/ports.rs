@@ -234,6 +234,25 @@ pub trait WorkflowRepository: Send + Sync {
         Ok(())
     }
 
+    /// Read `explainers.json` (missing or malformed reads as empty).
+    fn load_workflow_explainers(
+        &self,
+        _project: &str,
+        _slug: &str,
+    ) -> Result<crate::domain::workflow::ExplainersFile> {
+        Ok(Default::default())
+    }
+
+    /// Persist `explainers.json` atomically.
+    fn write_workflow_explainers(
+        &self,
+        _project: &str,
+        _slug: &str,
+        _file: &crate::domain::workflow::ExplainersFile,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Snapshot the current iteration's diff + annotations into
     /// `history/{iteration:03}/`. Returns the snapshotted iteration. Never
     /// bumps `iteration` — the caller owns the follow-up meta write.

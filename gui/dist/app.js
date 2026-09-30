@@ -4487,14 +4487,6 @@ const WF_REVIEWABLE = new Set(["plan-review", "diff-review", "pr-draft", "pr-rea
 const wfCanReview = (item) =>
   WF_REVIEWABLE.has(item.meta.status) && !!(item.meta.repoPath || "").trim();
 
-// Mirrors WorkflowStatus::is_working / can_explain. Explaining judges nothing
-// and writes nothing but its own document, so the only thing that can stop it
-// is another agent already writing this item's files — not "is this artifact
-// parked on my decision", which is the question a *review* has to ask.
-const WF_WORKING = new Set(["planning", "implementing", "reviewing"]);
-const wfCanExplain = (item) =>
-  !WF_WORKING.has(item.meta.status) && !!(item.meta.repoPath || "").trim();
-
 // Mirrors ReviewTarget::for_status — a plan review only makes sense where a
 // plan exists to read.
 const wfReviewTarget = (item) =>
@@ -4520,11 +4512,19 @@ async function toggleWorkflows() {
 }
 
 async function refreshWorkflows() {
+  const prev = state.workflows;
   try {
     state.workflows = await invoke("list_workflow_items");
   } catch (e) {
     console.error("list_workflow_items failed:", e);
     state.workflows = [];
+  }
+  // An explainer finishes without a status change — it ran alongside the
+  // item's other agents — so there is no workflow-attention event to say so.
+  for (const { item, target } of explainersFinished(prev, state.workflows)) {
+    flashToast(
+      `${item.meta.title || item.slug}: ${target === "explain-plan" ? "plan" : "changes"} explanation ready`
+    );
   }
   renderWorkflows();
 }
@@ -5174,6 +5174,7 @@ function buildWorkflowCard(item) {
     else if (prs.length) bits.push(prs[0].draft ? "PR·draft" : "PR");
   }
   if (item.agentAlive === false) bits.push("⚠ agent gone");
+  if ((item.explainers || []).some((e) => e.running)) bits.push("◫ explaining");
   card.innerHTML =
     `<div class="wf-card-title"><span class="status-ring wf-ring ${info.cls}"></span>${escapeHtml(
       item.meta.title || item.slug
@@ -7065,6 +7066,18 @@ async function publishWfReview(item, { scope = null, confirmed = false } = {}) {
 /// Put a wedged review round back where it came from. The gated `reviewing`
 /// state is the one place a dead agent could strand the item with its Approve
 /// button disabled, so this escape hatch is always reachable.
+/// Forget an explainer round that will never finish (`end_workflow_explainer`),
+/// so its button is offered again. The session is left alone, like End round.
+async function endWfExplainer(item, root, target) {
+  try {
+    await invoke("end_workflow_explainer", { project: item.project, slug: item.slug, target });
+    await refreshWorkflows();
+    if (root) buildWorkflowView(root, item.project, item.slug);
+  } catch (e) {
+    uiAlert(`Could not end the explanation round: ${e}`);
+  }
+}
+
 async function cancelWfReview(item, root) {
   if (
     !(await uiConfirm(
@@ -7778,8 +7791,12 @@ function renderWfActions(bar, root, item) {
   // will land in) and what it *did* (from the diff). Each round writes a pair
   // of documents — a written one and a hand-drawn HTML overview — and never
   // touches the other artifact's pair.
+  //
+  // Both run ALONGSIDE the item's other agents (a plan review, the
+  // implementation): an explainer never parks the item, so the gate is only
+  // "is my artifact settled" (canExplain), and a running one shows as its own
+  // button next to whatever else the item is doing.
   const explainButtons = () => {
-    if (!wfCanExplain(item)) return;
     const launch = async (which) => {
       const plan = which === "plan";
       // A focus is optional and per-run: "concentrate on the migration step"
@@ -7789,7 +7806,7 @@ function renderWfActions(bar, root, item) {
           plan ? "plan.md and the code it will land in" : "the diff and the surrounding code"
         } and writes two documents — a written explanation with diagrams, and a ` +
           "graphical HTML overview (boxes, arrows, the repos and features it touches). " +
-          `The item is parked while it runs and comes back here.\n\n` +
+          "It runs alongside whatever else this item is doing — nothing is parked or blocked.\n\n" +
           "Anything specific to concentrate on? (optional)",
         ""
       );
@@ -7799,26 +7816,48 @@ function renderWfActions(bar, root, item) {
         focus: focus.trim() || null,
       });
     };
+    const offer = (which, target, forms, again, first, title) => {
+      const running = runningExplainer(item, target);
+      if (running) {
+        const what = which === "plan" ? "plan" : "changes";
+        add(
+          `◫ Explaining ${what}… · open`,
+          "",
+          () => openSession(running.sessionId),
+          `An agent is writing the ${what} explanation alongside this item's other work — open its session. The tab updates when it finishes.`,
+          "step"
+        );
+        add(
+          "✕",
+          "",
+          () => endWfExplainer(item, root, target),
+          `Stop tracking this explanation round (its session is left alone) — use it when the session will never finish, then launch a fresh one`,
+          "step"
+        );
+        return;
+      }
+      if (!canExplain(item, target)) return;
+      add(wfExplainAny(forms) ? again : first, "", () => launch(which), title, "step");
+    };
     // The plan explanation needs a plan; review-only items have none.
     if (wfHasPlanPhase(item) && item.hasPlan) {
-      add(
-        wfExplainAny(item.planExplain) ? "◫ Explain plan again" : "◫ Explain plan",
-        "",
-        () => launch("plan"),
-        "Explain what this plan is going to do, before it exists: a written walk-through plus a graphical overview of the parts, where they attach and what they touch. Judges nothing. Spends tokens; replaces the plan explanation on each run.",
-        "step"
+      offer(
+        "plan",
+        "explain-plan",
+        item.planExplain,
+        "◫ Explain plan again",
+        "◫ Explain plan",
+        "Explain what this plan is going to do, before it exists: a written walk-through plus a graphical overview of the parts, where they attach and what they touch. Judges nothing and runs alongside a plan review or the implementation. Spends tokens; replaces the plan explanation on each run."
       );
     }
-    // The diff explanation needs a diff — before implementation there is none.
-    if (!["draft", "plan-review"].includes(st)) {
-      add(
-        wfExplainAny(item.diffExplain) ? "◫ Explain changes again" : "◫ Explain changes",
-        "",
-        () => launch("diff"),
-        "Explain what this change does: a written walk-through by functional part plus a graphical overview. Judges nothing. Spends tokens; replaces the changes explanation on each run.",
-        "step"
-      );
-    }
+    offer(
+      "diff",
+      "explain-diff",
+      item.diffExplain,
+      "◫ Explain changes again",
+      "◫ Explain changes",
+      "Explain what this change does: a written walk-through by functional part plus a graphical overview. Judges nothing and runs alongside a review round. Spends tokens; replaces the changes explanation on each run."
+    );
   };
 
   // The comparison: did we build the plan? Its own action rather than a mode

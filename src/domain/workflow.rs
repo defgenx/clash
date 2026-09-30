@@ -202,16 +202,41 @@ impl WorkflowStatus {
             .collect()
     }
 
-    /// May an *explain* round run from here?
+    /// May an explainer on `target` start now, alongside whatever else the
+    /// item is doing?
     ///
-    /// Wider than `can_request_review` on purpose: the explainer judges
-    /// nothing and changes nothing but `structure.md`, so "is this artifact
-    /// parked on my decision" is the wrong question to ask of it. "What does
-    /// this change do" is worth asking of a finished item, of one whose
-    /// changes were just requested, of anything that is not mid-agent — which
-    /// is the only real constraint.
-    pub fn can_explain(&self) -> bool {
-        !self.is_working() && *self != Self::Unknown
+    /// An explainer writes only its own document pair and never the status,
+    /// so another agent on the item is no obstacle — the one thing that is,
+    /// is the artifact it reads being rewritten under it. `phase` is
+    /// `meta.phase`, because `implementing` alone does not say whether the plan
+    /// or the code is the thing being written. `review_return` is where a
+    /// `reviewing` round hands back to: a plan review has no diff to explain.
+    /// Full rules: `docs/workflows.md` → *Parallel rounds*.
+    pub fn can_explain(
+        &self,
+        target: ReviewTarget,
+        phase: &str,
+        review_return: Option<WorkflowStatus>,
+    ) -> bool {
+        use WorkflowStatus::*;
+        let at = match self {
+            Reviewing => review_return.unwrap_or(DiffReview),
+            s => *s,
+        };
+        let revising = phase == "revise";
+        match target {
+            ReviewTarget::ExplainPlan => match at {
+                Draft | Planning | Unknown | Reviewing => false,
+                Implementing => !revising,
+                _ => true,
+            },
+            ReviewTarget::ExplainDiff => match at {
+                Draft | Planning | PlanReview | Implementing | Unknown | Reviewing => false,
+                ChangesRequested => !revising,
+                _ => true,
+            },
+            _ => false,
+        }
     }
 }
 
@@ -377,6 +402,13 @@ impl ReviewTarget {
     /// do not exist) and had no round label of its own.
     pub fn explains(&self) -> bool {
         matches!(self, Self::ExplainDiff | Self::ExplainPlan)
+    }
+
+    /// [`Self::explains`] for a target read off disk — a round heading's first
+    /// word — in any spelling [`Self::canonical`] accepts.
+    pub fn name_explains(raw: &str) -> bool {
+        let name = Self::canonical(raw);
+        name == Self::ExplainDiff.as_str() || name == Self::ExplainPlan.as_str()
     }
 
     /// May a launcher ask for this target **by name**?
@@ -580,6 +612,55 @@ pub struct WorkflowReview {
     pub started_at: i64,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// An explainer round clash launched alongside the item's other agents,
+/// recorded in the item's `explainers.json` (clash-only) rather than in
+/// `meta.json`: it never parks the item, and an agent's read-modify-write of
+/// `meta.json` would silently drop a record kept there.
+///
+/// Finished is derived, not written: the round appends its
+/// `## Review <round> — <target>` entry to `agent-review.md`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowExplainer {
+    #[serde(default)]
+    pub target: ReviewTarget,
+    #[serde(default)]
+    pub round: u32,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub started_at: i64,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// Shape of `explainers.json`: at most one record per explainer target (a
+/// launch replaces that target's previous record).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplainersFile {
+    #[serde(default)]
+    pub explainers: Vec<WorkflowExplainer>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// Runtime view of one recorded explainer, for the listing DTO.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplainerState {
+    pub target: ReviewTarget,
+    pub round: u32,
+    pub session_id: String,
+    pub started_at: i64,
+    /// Its round entry is in `agent-review.md`.
+    pub finished: bool,
+    /// Not finished and its session is alive (or still within the launch
+    /// grace). Computed by the GUI layer against live sessions, like
+    /// [`WorkflowItem::agent_alive`].
+    pub running: bool,
 }
 
 /// PR block inside a workflow item's `meta.json`.
@@ -959,7 +1040,8 @@ pub struct WorkflowItem {
     /// alive while the item claims an agent is working (planning /
     /// implementing). Computed by the GUI layer against live sessions.
     pub agent_alive: bool,
-    /// Latest round parsed from `agent-review.md`, when one exists.
+    /// Latest *judging* round parsed from `agent-review.md`, when one exists
+    /// — explanation rounds are skipped, since they land whenever they finish.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_agent_review: Option<AgentReviewSummary>,
     /// How many rounds each target has had, from the same parse — the GUI
@@ -967,6 +1049,9 @@ pub struct WorkflowItem {
     /// plan rounds behind it). A `BTreeMap` so the JSON is stable.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub review_rounds: std::collections::BTreeMap<String, u32>,
+    /// The explainer rounds recorded in `explainers.json`, one per target.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub explainers: Vec<ExplainerState>,
 }
 
 /// Resolution state of a diff annotation.
@@ -1227,33 +1312,41 @@ mod tests {
             }
         }
     }
+    /// An explainer runs alongside other agents; only its artifact being
+    /// rewritten under it (or not existing yet) stops it.
     #[test]
-    fn explaining_is_gated_only_by_another_agent_working() {
+    fn explaining_runs_alongside_every_agent_that_leaves_its_artifact_alone() {
         use WorkflowStatus::*;
-        // Reviewing asks "is this parked on my decision"; explaining asks
-        // nothing of the kind — it judges nothing and writes only its own
-        // document, so "what does this change do" is a fair question of a
-        // finished item or one whose changes were just requested.
-        for st in [
-            Draft,
-            PlanReview,
-            ChangesRequested,
-            DiffReview,
-            PrDraft,
-            PrReady,
-            Done,
-            Abandoned,
-        ] {
-            assert!(st.can_explain(), "{st} should allow an explain round");
+        let plan = ReviewTarget::ExplainPlan;
+        let diff = ReviewTarget::ExplainDiff;
+        // The plan explanation beside a plan review, and beside the code
+        // being implemented from the approved plan — the two cases this exists
+        // for.
+        assert!(Reviewing.can_explain(plan, "", Some(PlanReview)));
+        assert!(Implementing.can_explain(plan, "implement", None));
+        // …but not while the plan itself is being written.
+        assert!(!Planning.can_explain(plan, "plan", None));
+        assert!(!Implementing.can_explain(plan, "revise", None));
+        assert!(!Draft.can_explain(plan, "", None));
+        // The diff explanation beside any reviewer of a built change…
+        for back in [DiffReview, PrDraft, PrReady] {
+            assert!(Reviewing.can_explain(diff, "", Some(back)), "{back}");
         }
-        for st in [Planning, Implementing, Reviewing] {
-            assert!(!st.can_explain(), "{st} already has an agent writing");
-            assert!(st.is_working());
+        // …never while the code is being written, nor before it exists.
+        assert!(!Implementing.can_explain(diff, "implement", None));
+        assert!(!Reviewing.can_explain(diff, "", Some(PlanReview)));
+        assert!(!PlanReview.can_explain(diff, "", None));
+        assert!(!ChangesRequested.can_explain(diff, "revise", None));
+        assert!(ChangesRequested.can_explain(diff, "implement", None));
+        // Parked and finished stages, as before.
+        for st in [DiffReview, PrDraft, PrReady, Done, Abandoned] {
+            assert!(st.can_explain(plan, "", None), "{st}");
+            assert!(st.can_explain(diff, "", None), "{st}");
         }
-        // The serde fallback is not a state to launch anything from.
-        assert!(!Unknown.can_explain());
-        // And it is genuinely wider than the review gate.
-        assert!(Done.can_explain() && !Done.can_request_review());
+        assert!(Done.can_explain(diff, "", None) && !Done.can_request_review());
+        // Not a door for judging rounds, and not from the serde fallback.
+        assert!(!DiffReview.can_explain(ReviewTarget::Drift, "", None));
+        assert!(!Unknown.can_explain(plan, "", None));
     }
 
     const ALL_WORKFLOW_STATUSES: [WorkflowStatus; 12] = [

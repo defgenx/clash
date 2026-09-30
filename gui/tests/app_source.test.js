@@ -427,15 +427,28 @@ test("a session share hands off without leaking credentials or the payload's sha
   assert.match(APP, /s\.jiraTokenSet \? "•••••• \(stored\)" : "API token"/);
 });
 
-test("explain is offered from every state that is not mid-agent", () => {
-  // It judges nothing and writes only its own document, so the question a
-  // *review* has to ask — "is this artifact parked on my decision" — is the
-  // wrong gate for it. Three of the eight status cases used to call it.
-  assert.match(APP, /const wfCanExplain = \(item\) =>\s*!WF_WORKING\.has\(item\.meta\.status\)/);
-  assert.match(APP, /if \(!wfCanExplain\(item\)\) return;/);
+test("explain runs alongside other agents, gated only on its own artifact", () => {
+  // It judges nothing and writes only its own document pair, so neither "is
+  // this parked on my decision" nor "is another agent working" is its gate —
+  // only canExplain (wf-plan.js, mirroring WorkflowStatus::can_explain).
+  const bar = APP.slice(
+    APP.indexOf("const explainButtons = () => {"),
+    APP.indexOf("const driftButton = () => {")
+  );
+  assert.match(bar, /if \(!canExplain\(item, target\)\) return;/);
+  assert.doesNotMatch(bar, /WF_WORKING|wfCanReview/);
+  // A running explainer is its own button, beside whatever else is offered.
+  assert.match(bar, /runningExplainer\(item, target\)/);
+  assert.match(bar, /openSession\(running\.sessionId\)/);
+  assert.match(bar, /endWfExplainer\(item, root, target\)/);
   // Called once, outside the switch — not remembered per case.
   assert.equal((APP.match(/^\s*explainButtons\(\);$/gm) || []).length, 1);
-  assert.doesNotMatch(APP, /wfCanReview\(item\) \|\| item\.meta\.status === "plan-review"/);
+  // Its finish changes no status, so the list refresh announces it.
+  const refresh = APP.slice(
+    APP.indexOf("async function refreshWorkflows() {"),
+    APP.indexOf("function wfItem(")
+  );
+  assert.match(refresh, /explainersFinished\(prev, state\.workflows\)/);
 });
 
 test("each workflow document says what it is", () => {
@@ -610,11 +623,12 @@ test("the two explanations are separate, and each has two forms", () => {
     APP.indexOf("// Available from every state holding a reviewable artifact")
   );
   assert.match(btn, /target: plan \? "explain-plan" : "explain-diff",/);
-  assert.match(btn, /"◫ Explain plan again" : "◫ Explain plan"/);
-  assert.match(btn, /"◫ Explain changes again" : "◫ Explain changes"/);
-  // The plan explanation needs a plan; the diff one needs a diff to exist.
+  assert.match(btn, /"◫ Explain plan again",\s*"◫ Explain plan",/);
+  assert.match(btn, /"◫ Explain changes again",\s*"◫ Explain changes",/);
+  // The plan explanation needs a plan; the diff one needs a diff to exist —
+  // the latter is canExplain's rule (wf_plan.test.js pins it).
   assert.match(btn, /wfHasPlanPhase\(item\) && item\.hasPlan/);
-  assert.match(btn, /!\["draft", "plan-review"\]\.includes\(st\)/);
+  assert.match(btn, /canExplain\(item, target\)/);
   // A focus is asked per run and rides the round — no stored verdict state.
   assert.match(btn, /focus: focus\.trim\(\) \|\| null,/);
 

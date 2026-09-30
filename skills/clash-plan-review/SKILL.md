@@ -241,7 +241,9 @@ round, six wording nits are not.
 ## Finish — in this order, every run
 
 1. **Append** your round to `agent-review.md`. Never rewrite earlier rounds;
-   append-only, same discipline as `review.md`. Shape:
+   append-only, same discipline as `review.md`. Append it in one shell append
+   (`cat >> agent-review.md <<'EOF'` … `EOF`), never by rewriting the file —
+   an explainer may be running beside you and appending its own round. Shape:
 
 ```markdown
 ## Review <round> — plan · <depth> · <YYYY-MM-DD HH:MM>

@@ -443,6 +443,9 @@ The kickoff's **`Auto-apply:`** field says what your answer does:
 1. Write/overwrite **`drift.md`** and **`drift.html`**. Both files, every run.
 2. Append your ISSUE annotations to **`annotations.json`** (read-modify-write).
 3. **Append** your round to `agent-review.md`. Never rewrite earlier rounds.
+   Append it in one shell append (`cat >> agent-review.md <<'EOF'` … `EOF`),
+   never by rewriting the file — an explainer may be running beside you and
+   appending its own round.
 
 ```markdown
 ## Review <round> — drift · <depth> · <YYYY-MM-DD HH:MM>

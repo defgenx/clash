@@ -715,6 +715,15 @@ are two actions and two tabs that never overwrite each other:
 - **◫ Explain changes** reads the diff and says what the change actually did —
   fair to ask of an item long after it is finished.
 
+Explaining **never blocks the item**: an explainer runs alongside whatever else
+is going on — explain the plan while a plan review runs or while the agent
+implements it, explain the changes while a code review or drift round runs —
+and the item keeps moving. The action bar shows **◫ Explaining… · open** while
+it works (✕ forgets a round that will never finish) and a toast says when the
+explanation is ready. It only waits when its own artifact is being written: no
+plan explanation while the plan is being (re)written, no changes explanation
+while the code is.
+
 Each round writes **both forms** of its explanation, because they are read
 differently:
 

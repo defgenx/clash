@@ -28,6 +28,7 @@ workflows are a structured store.
 ├── drift.md           # the plan AGAINST what was built — graded (clash-drift-review)
 ├── drift.html         # …and as one hand-drawn map, every part badged
 ├── annotations.json   # line-level diff comments
+├── explainers.json    # explainer rounds running alongside the item (clash-owned)
 ├── history/<NNN>/     # per-iteration snapshots (diff.patch + plan.md + annotations.json)
 └── plan-history/      # every recorded revision of plan.md (index.json + NNNN.md), clash-owned
 ```
@@ -397,15 +398,17 @@ round — a choice with one real answer is not a choice.
 
 ### Explain rounds (clash-explain skill)
 
-An **explain round** is review-shaped (parks in `reviewing`, restores
-`Return to:`) but judges nothing. Two of them exist, one per artifact:
+An **explain round** judges nothing, and it is the one round that **parks
+nothing**: it runs alongside the item's other agents (see *Parallel rounds*
+below). Two of them exist, one per artifact:
 
 - **◫ Explain plan** (`Target: explain-plan`) reads `plan.md` and the code it will
   land in, and says what the implementation is going to do — offered wherever
-  the item has a plan and no agent of ours is working.
+  the item has a plan that is not being written right now.
 - **◫ Explain changes** (`Target: explain-diff`) reads the diff and enough
   surrounding code, and says what the change did — offered from any stage past
-  `plan-review`, including finished items.
+  `plan-review` whose code is not being written right now, including finished
+  items.
 
 Each writes its pair: the `.md` organized by functional part (behavior first,
 files second) with mermaid diagrams, risks and a reading order; the `.html` as
@@ -414,10 +417,65 @@ one graphical overview. The GUI renders them as the **◫ Plan explained** and
 Both files are living documents — each round overwrites its own pair — while
 the round still appends a `## Review <n> — <target> · …` entry to
 `agent-review.md` (verdict = a one-line summary, `### Published` = which files
-it wrote), so hand-back toasts, the outcome strip and the Timeline stay
-truthful. Rounds are unbounded like every side-trip: regenerate after each
+it wrote), so the Timeline stays truthful and clash can tell the round
+finished. Rounds are unbounded like every side-trip: regenerate after each
 change round. `Focus:` (optional, asked at launch) names what the round should
 concentrate on.
+
+### Parallel rounds
+
+A judging or writing agent — the executor, a plan/code reviewer, a drift round
+— owns the item: it moves the status and may write `plan.md`, the code or
+`annotations.json`, so there is at most one of them, and approval is gated
+while it runs. An explainer writes only its own document pair and one appended
+round entry, so it runs **beside** any of them instead of waiting its turn:
+
+| | alongside it |
+|---|---|
+| **◫ Explain plan** | a plan review (`reviewing` from `plan-review`), the implementation (`implementing`, phase `implement`), any reviewer or drift round, the other explainer |
+| **◫ Explain changes** | any reviewer or drift round of a built change (`reviewing` from `diff-review`/`pr-*`), the other explainer |
+
+What still stops one is its own artifact being written, or not existing yet
+— `WorkflowStatus::can_explain(target, meta.phase, returnStatus)`:
+
+- the plan explanation never runs while the plan is being written (`planning`,
+  or `implementing` on phase `revise`), nor at `draft`;
+- the changes explanation never runs while code is being written
+  (`implementing`), before any exists (`draft`, `planning`, `plan-review`, a
+  review round launched from `plan-review`, `changes-requested` queued as
+  `revise`);
+- one explainer per target at a time — two would overwrite the same pair.
+
+The gate is checked at launch only. An executor may still be launched while an
+explainer runs (that is the point); an explanation of a diff that then moves
+describes the diff it read, and the next round regenerates it.
+
+Three mechanics make it safe:
+
+- **The explainer never writes `meta.json`**, not even the status: its kickoff
+  carries no `Return to:`, and clash does not write `meta.review`,
+  `meta.sessionId` or `meta.reviewRound` for it — those stay the owning
+  agent's. It is recorded instead in **`explainers.json`** (clash-only; one
+  record per target — `target`, `round`, `sessionId`, `startedAt` — replaced
+  by the next launch of that target), because an agent's read-modify-write of
+  `meta.json` would drop a record kept there. An explainer launch claims
+  `<item>#<target>`, not the item, so it neither waits on nor blocks the
+  item's own launches.
+- **Finished is derived, never written.** A record is finished once
+  `agent-review.md` holds its `## Review <round> — <target>` entry, and
+  running while it is unfinished and its session is alive (with the usual
+  launch grace). A session that died unfinished simply stops counting as
+  running, so the button is offered again; **✕** forgets a record whose
+  session is alive but will never finish. The GUI toasts "explanation ready"
+  on the running → finished edge, since no status change announces it.
+- **"The latest round" means the latest judgement.** An explainer lands
+  whenever it finishes, so it routinely follows the review it ran beside.
+  `latest_agent_review` / `latest_agent_review_section` (and the GUI's
+  `latestAgentRoundFindings`) skip explanation rounds, so apply, the
+  `appliedReviewKey` stamp and *Post round N* still act on the review, and
+  `pendingReviewRound` reads the round's own heading target rather than
+  `meta.review`. Every skill appends its round with a single shell append
+  (`cat >> agent-review.md`), never a whole-file rewrite from an older read.
 
 A code review is available at `diff-review`, `pr-draft` **and** `pr-ready`
 (`WF_REVIEWABLE` / `can_request_review`), so an item that already has a PR can
@@ -637,11 +695,11 @@ via ↩ Move back to… → plan-review.
   commit follows the same rule — the branch is published, and a fix round that
   only commits locally leaves the PR silently stale. An unpublished branch
   (`full`/`from-plan`, no PR) is still never pushed.
-- Never touch `history/` or `plan-history/`, and never change `iteration`,
-  `reviewRound`, `appliedReviewKey` or `phase` — clash
-  owns all six (the first two are written atomically by the request-changes
-  flow, the third by the review launcher, the last by whichever of the two
-  started the round).
+- Never touch `history/`, `plan-history/` or `explainers.json`, and never
+  change `iteration`, `reviewRound`, `appliedReviewKey` or `phase` — clash
+  owns all of them (of the fields, the first two are written atomically by the
+  request-changes flow, the third by the review launcher, the last by
+  whichever of the two started the round).
 - Write `annotations.json` **only** while status is `changes-requested` or
   `implementing` — during review phases the GUI owns the file (this phase
   split is what makes concurrent writes safe). Only `open` annotations are

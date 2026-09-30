@@ -55,19 +55,12 @@ pub(crate) async fn list_workflow_items(
     // A dead agent session must not leave an item claiming "agent working"
     // forever: cross-reference against the last session list (the
     // `rebuild_all_members` liveness precedent).
-    let live: HashSet<String> = state
-        .previous
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|s| s.is_running)
-        .map(|s| s.id.clone())
-        .collect();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or_default();
+    let live = live_session_ids(&state);
+    let now = now_ms();
     for item in &mut items {
+        for e in &mut item.explainers {
+            e.running = explainer_running(e, &live, now);
+        }
         // `Reviewing` is included so a dead reviewer surfaces the same "the
         // agent is gone" affordance — without it a crashed round would leave
         // the item gated with no visible way out.
@@ -1281,6 +1274,34 @@ pub(crate) fn delete_workflow_item(
         .map_err(e2s)
 }
 
+/// Ids of the sessions the last refresh saw running.
+fn live_session_ids(state: &GuiState) -> HashSet<String> {
+    state
+        .previous
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| s.is_running)
+        .map(|s| s.id.clone())
+        .collect()
+}
+
+/// An explainer is in flight until its round entry lands, or its session is
+/// gone past the launch grace (then its button is simply offered again).
+fn explainer_running(
+    e: &clash::domain::workflow::ExplainerState,
+    live: &HashSet<String>,
+    now: i64,
+) -> bool {
+    !e.finished
+        && clash::application::workflow::agent_alive(
+            !e.session_id.is_empty(),
+            live.contains(&e.session_id),
+            e.started_at,
+            now,
+        )
+}
+
 // ── Agent launch ────────────────────────────────────────────────────────
 
 /// Marker prefix for "this item's agent is already starting". Machine-readable
@@ -1317,7 +1338,14 @@ fn claim_launch<'a>(
     project: &str,
     slug: &str,
 ) -> Result<LaunchClaim<'a>, String> {
-    let key = item_key(project, slug);
+    claim_launch_key(state, item_key(project, slug))
+}
+
+/// [`claim_launch`] under an explicit key. An explainer claims
+/// `<item>#<target>`, so it neither waits on nor blocks the item's own
+/// launches — it runs alongside them — while a doubled click on the same
+/// explain button is still refused.
+fn claim_launch_key(state: &GuiState, key: String) -> Result<LaunchClaim<'_>, String> {
     if !state.launching.lock().unwrap().insert(key.clone()) {
         return Err(format!("{}{}", ALREADY_LAUNCHING, key));
     }
@@ -1692,6 +1720,24 @@ pub(crate) async fn start_workflow_review_agent(
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
+    if let Some(t) = target.filter(|t| t.explains()) {
+        return start_explainer(
+            &app,
+            &state,
+            ExplainerLaunch {
+                project,
+                slug,
+                target: t,
+                depth,
+                interactive,
+                focus,
+                agent,
+                cols,
+                rows,
+            },
+        )
+        .await;
+    }
     // Same claim as the executor launch: a round is one agent parked on one
     // item, so a doubled click must not become two of them.
     let _claim = claim_launch(&state, &project, &slug)?;
@@ -1705,21 +1751,9 @@ pub(crate) async fn start_workflow_review_agent(
         return Err("This item has no repository path — set repoPath in meta.json".to_string());
     }
     launch_agent(&state, agent.as_deref(), &mut meta)?;
-    // An explain round is not a review: it judges nothing, so the only thing
-    // that can stop it is another agent already writing this item's files.
-    // Both explainer targets qualify — the plan explanation (what the work is
-    // going to do) and the diff explanation (what it did). A `drift` round is
-    // deliberately NOT in this set: it grades divergences and writes
-    // annotations, so it is gated like every other review.
-    let explaining = target.is_some_and(|t| t.explains());
-    if explaining {
-        if !meta.status.can_explain() {
-            return Err(format!(
-                "An agent is already working on this item ('{}') — wait for it to hand back",
-                meta.status
-            ));
-        }
-    } else if !meta.status.can_request_review() {
+    // A `drift` round is deliberately gated here and not with the explainers:
+    // it grades divergences and writes annotations, like every other review.
+    if !meta.status.can_request_review() {
         return Err(format!(
             "Can't review an item in '{}' — wait for the current phase to hand back",
             meta.status
@@ -1784,9 +1818,7 @@ pub(crate) async fn start_workflow_review_agent(
     // explicit; the one-click actions don't ask).
     let interactive = interactive
         .or_else(|| clash::application::workflow::interaction_param(&meta.interaction_default));
-    // An explainer round writes no findings, so there is nothing to apply and
-    // pre-authorizing it would be meaningless.
-    let auto_apply = auto_apply.unwrap_or(false) && !target.explains();
+    let auto_apply = auto_apply.unwrap_or(false);
     // Per-target numbering, counted from the report itself: a well-planned
     // item's first code review is round 1, not round 7.
     let round = clash::application::workflow::next_review_round(
@@ -1891,6 +1923,204 @@ pub(crate) async fn start_workflow_review_agent(
     }
 
     Ok(session_id)
+}
+
+/// An explainer launch's arguments — `start_workflow_review_agent`'s, minus
+/// the ones an explainer has no use for (publish, PRs, auto-apply).
+struct ExplainerLaunch {
+    project: String,
+    slug: String,
+    target: ReviewTarget,
+    depth: ReviewDepth,
+    interactive: Option<bool>,
+    focus: Option<String>,
+    agent: Option<String>,
+    cols: u16,
+    rows: u16,
+}
+
+/// Launch an explainer **alongside** whatever else the item is doing.
+///
+/// Unlike a review it never parks the item and never touches `meta.json`:
+/// it is recorded in `explainers.json`, and it finishes by appending its
+/// round entry to `agent-review.md`. What stops it is only its artifact being
+/// rewritten under it (`WorkflowStatus::can_explain`) or the same target
+/// already explaining. See `docs/workflows.md` → *Parallel rounds*.
+async fn start_explainer(
+    app: &tauri::AppHandle,
+    state: &GuiState,
+    launch: ExplainerLaunch,
+) -> Result<String, String> {
+    let ExplainerLaunch {
+        project,
+        slug,
+        target,
+        depth,
+        interactive,
+        focus,
+        agent,
+        cols,
+        rows,
+    } = launch;
+    let key = item_key(&project, &slug);
+    let _claim = claim_launch_key(state, format!("{}#{}", key, target))?;
+    crate::launch_stage(app, &key, "read", None);
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    if meta.repo_path.trim().is_empty() {
+        return Err("This item has no repository path — set repoPath in meta.json".to_string());
+    }
+    // Picks the agent for this spawn only: nothing here writes `meta.json`.
+    launch_agent(state, agent.as_deref(), &mut meta)?;
+    if !meta.status.can_explain(
+        target,
+        &meta.phase,
+        meta.review.as_ref().map(|r| r.return_status),
+    ) {
+        return Err(if target == ReviewTarget::ExplainPlan {
+            format!(
+                "The plan is not settled yet ('{}') — explain it once it is written",
+                meta.status
+            )
+        } else {
+            format!(
+                "There is no settled change to explain yet ('{}') — wait until the code is written",
+                meta.status
+            )
+        });
+    }
+    if target.needs_plan() && !has_plan_content(state, &project, &slug) {
+        return Err("This item has no plan yet — there is nothing to read".to_string());
+    }
+    let report = state
+        .backend
+        .read_workflow_doc(
+            &project,
+            &slug,
+            clash::infrastructure::fs::workflows::AGENT_REVIEW_FILE,
+        )
+        .unwrap_or_default();
+    let mut file = state
+        .backend
+        .load_workflow_explainers(&project, &slug)
+        .map_err(e2s)?;
+    // Two explainers on one target would overwrite the same document pair.
+    let live = live_session_ids(state);
+    let busy = clash::application::workflow::explainer_states(
+        &file,
+        &clash::application::workflow::all_agent_reviews(&report),
+    )
+    .iter()
+    .any(|e| e.target == target && explainer_running(e, &live, now_ms()));
+    if busy {
+        return Err(format!(
+            "{}{}#{} — this explanation is already being written",
+            ALREADY_LAUNCHING, key, target
+        ));
+    }
+
+    let review = WorkflowReview {
+        target,
+        depth,
+        publish: ReviewPublish::Local,
+        return_status: meta.status,
+        round: clash::application::workflow::next_review_round(&report, target.as_str()),
+        interactive: interactive
+            .or_else(|| clash::application::workflow::interaction_param(&meta.interaction_default)),
+        focus: focus.map(|f| f.trim().to_string()).unwrap_or_default(),
+        started_at: now_ms(),
+        ..Default::default()
+    };
+    let cwd = meta
+        .worktree
+        .clone()
+        .filter(|w| !w.is_empty())
+        .unwrap_or_else(|| meta.repo_path.clone());
+    let session_id = uuid::Uuid::now_v7().to_string();
+
+    // Recorded before the spawn, like every launch: a record whose session
+    // never appears simply stops counting as running after the grace.
+    crate::launch_stage(app, &key, "record", None);
+    clash::application::workflow::record_explainer(
+        &mut file,
+        clash::domain::workflow::WorkflowExplainer {
+            target,
+            round: review.round,
+            session_id: session_id.clone(),
+            started_at: review.started_at,
+            ..Default::default()
+        },
+    );
+    state
+        .backend
+        .write_workflow_explainers(&project, &slug, &file)
+        .map_err(e2s)?;
+
+    crate::launch_stage(app, &key, "spawn", None);
+    let spawned = spawn_item_session(
+        state,
+        ItemSessionSpawn {
+            project: &project,
+            slug: &slug,
+            session_id: &session_id,
+            name: &clash::application::workflow::workflow_session_name(
+                &meta,
+                &slug,
+                &clash::application::workflow::review_job(&review),
+            ),
+            meta: &meta,
+            cwd: &cwd,
+            cols,
+            rows,
+        },
+        |item_dir| {
+            clash::application::workflow::build_review_prompt(
+                item_dir,
+                &review,
+                meta.mode,
+                &state.config.get().workflow_delegation(),
+            )
+        },
+    )
+    .await;
+    if let Err(e) = spawned {
+        // Drop only this launch's record, re-read so a record written since
+        // (the other target's) survives.
+        if let Ok(mut fresh) = state.backend.load_workflow_explainers(&project, &slug) {
+            fresh.explainers.retain(|x| x.session_id != session_id);
+            if let Err(e2) = state
+                .backend
+                .write_workflow_explainers(&project, &slug, &fresh)
+            {
+                tracing::warn!("explainer rollback failed for {}/{}: {}", project, slug, e2);
+            }
+        }
+        return Err(e);
+    }
+    Ok(session_id)
+}
+
+/// Forget an explainer's record — the way out when its session is alive but
+/// will never write its round entry (it stopped, or is waiting on a question
+/// nobody will answer). The session itself is left alone, like `End round`.
+#[tauri::command]
+pub(crate) fn end_workflow_explainer(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    target: ReviewTarget,
+) -> Result<(), String> {
+    let mut file = state
+        .backend
+        .load_workflow_explainers(&project, &slug)
+        .map_err(e2s)?;
+    file.explainers.retain(|e| e.target != target);
+    state
+        .backend
+        .write_workflow_explainers(&project, &slug, &file)
+        .map_err(e2s)
 }
 
 /// True when `plan.md` has something in it — a plan review with no plan would

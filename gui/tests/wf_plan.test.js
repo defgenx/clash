@@ -15,6 +15,9 @@ const {
   planVersionForIteration,
   isExplainTarget,
   canonicalTarget,
+  canExplain,
+  runningExplainer,
+  explainersFinished,
 } = require("../dist/wf-plan.js");
 
 const NOW = new Date(2026, 8, 2, 12, 0).getTime();
@@ -343,6 +346,9 @@ test("the browser branch publishes every name app.js calls", () => {
     "wfNextReviewRound",
     "shouldAutoApply",
     "planVersionForIteration",
+    "canExplain",
+    "runningExplainer",
+    "explainersFinished",
   ]) {
     assert.equal(typeof win[name], "function", `${name} must be on window`);
     assert.ok(app.includes(name), `app.js is expected to use ${name}`);
@@ -413,4 +419,58 @@ test("an explainer is still not a drift round", () => {
   // `drift` never had another spelling, so it is already canonical.
   assert.equal(canonicalTarget("drift"), "drift");
   assert.equal(canonicalTarget("DRIFT"), "drift");
+});
+
+test("an explainer runs alongside other agents, gated only on its artifact", () => {
+  // Mirrors WorkflowStatus::can_explain — the Rust side validates.
+  const at = (status, extra = {}) => ({ meta: { repoPath: "/r", status, ...extra } });
+  const plan = "explain-plan";
+  const diff = "explain-diff";
+  // The two cases this exists for: beside a plan review, beside the
+  // implementation of the approved plan.
+  assert.ok(canExplain(at("reviewing", { review: { returnStatus: "plan-review" } }), plan));
+  assert.ok(canExplain(at("implementing", { phase: "implement" }), plan));
+  // Beside a code review, both explanations.
+  const codeReview = at("reviewing", { review: { returnStatus: "diff-review" } });
+  assert.ok(canExplain(codeReview, plan) && canExplain(codeReview, diff));
+  // Never while its own artifact is being written, or before it exists.
+  assert.ok(!canExplain(at("planning"), plan));
+  assert.ok(!canExplain(at("implementing", { phase: "revise" }), plan));
+  assert.ok(!canExplain(at("implementing", { phase: "implement" }), diff));
+  assert.ok(!canExplain(at("reviewing", { review: { returnStatus: "plan-review" } }), diff));
+  assert.ok(!canExplain(at("plan-review"), diff));
+  assert.ok(!canExplain(at("changes-requested", { phase: "revise" }), diff));
+  assert.ok(canExplain(at("changes-requested", { phase: "implement" }), diff));
+  assert.ok(canExplain(at("done"), diff));
+  // No repository, or a judging target, is never an explainer launch.
+  assert.ok(!canExplain({ meta: { status: "diff-review" } }, diff));
+  assert.ok(!canExplain(at("diff-review"), "drift"));
+});
+
+test("a running explainer is found by target and announced once it finishes", () => {
+  const e = (over) => ({ target: "explain-plan", round: 1, sessionId: "s1", ...over });
+  const item = (explainers) => ({ project: "p", slug: "a", meta: {}, explainers });
+  assert.equal(runningExplainer(item([e({ running: true })]), "explain-plan").sessionId, "s1");
+  assert.equal(runningExplainer(item([e({ running: true })]), "explain-diff"), null);
+  // Legacy spelling on record still counts.
+  assert.ok(runningExplainer(item([e({ target: "blueprint", running: true })]), "explain-plan"));
+  const prev = [item([e({ running: true })])];
+  const done = explainersFinished(prev, [item([e({ finished: true })])]);
+  assert.deepEqual(done.map((d) => d.target), ["explain-plan"]);
+  // A session that died unfinished is not "ready", and nothing is announced twice.
+  assert.equal(explainersFinished(prev, [item([e({})])]).length, 0);
+  assert.equal(
+    explainersFinished([item([e({ finished: true })])], [item([e({ finished: true })])]).length,
+    0
+  );
+});
+
+test("the pending round is judged by its own heading, not the last meta.review", () => {
+  // Explainers no longer write meta.review, so the block may describe an
+  // older round than the one shown; the round's own target wins.
+  const item = {
+    lastAgentReview: { round: 1, target: "diff" },
+    meta: { status: "diff-review", review: { target: "explain-diff" } },
+  };
+  assert.equal(pendingReviewRound(item).round, 1);
 });
