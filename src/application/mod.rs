@@ -1,6 +1,10 @@
 pub mod actions;
 pub mod diff;
 pub mod effects;
+/// Consumed only through the lib crate (the GUI's Files panel); the binary's
+/// private-`mod` compilation would otherwise flag it as dead code.
+#[allow(dead_code)]
+pub mod explorer;
 pub mod nav;
 pub mod prompt_queue;
 pub mod reducer;

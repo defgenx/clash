@@ -697,7 +697,9 @@ function sidebarPersistState() {
       notes: !!state.notesOpen,
       wf: !!state.wfOpen,
       settings: !$("settings-body").classList.contains("hidden"),
+      files: filesPanel.open,
     },
+    files: { showIgnored: filesPanel.showIgnored },
     sizes,
   };
 }
@@ -2153,7 +2155,8 @@ function renderTabs() {
     const owner = sessionWorkspace(tabSession(id));
     if (owner !== -1 && owner !== state.activeWs) continue;
     const tab = document.createElement("div");
-    tab.className = "tab" + (id === state.activeTab ? " active" : "");
+    tab.className =
+      "tab" + (id === state.activeTab ? " active" : "") + (entry.transient ? " transient" : "");
     tab.onclick = () => assignToFocusedPane(id);
     tab.oncontextmenu = (ev) => tabContextMenu(ev, id);
     tab.onauxclick = (ev) => {
@@ -2227,6 +2230,7 @@ function renderTabs() {
     showNewTabMenu(r.left, r.bottom + 4);
   };
   tabs.appendChild(plus);
+  syncFilesRoot();
 }
 
 // ── Panes (split layout) ────────────────────────────────────────
@@ -4102,6 +4106,616 @@ async function launchScratchEditor(note, value) {
     }
   } catch (e) {
     uiAlert(`Open failed: ${e}`);
+  }
+}
+
+// ── Files panel ─────────────────────────────────────────────────
+// A file explorer docked right of the panes (⌘E), rooted at the focused
+// session's directory unless pinned. Pure half: files.js; backend:
+// explorer_* commands. Behaviour: README → Files.
+
+const filesPanel = {
+  open: false,
+  root: null, // absolute folder the tree shows
+  rootSession: null, // session the root was taken from — the mention target
+  pinned: false,
+  showIgnored: false,
+  children: {}, // folder rel ("" = root) -> sorted entries
+  expanded: new Set(),
+  expandedByRoot: new Map(), // each root's open folders, kept across switches
+  status: null, // GitSummary | null outside a repo
+  index: null,
+  query: "",
+  matches: null, // finder results while a query is typed
+  capped: false,
+  selected: null, // rel of the keyboard selection
+  error: null,
+  seq: 0, // drops out-of-order results after a root switch
+  sig: "", // last rendered data, so a poll that changed nothing repaints nothing
+};
+const FILES_POLL_MS = 4000;
+const FILES_FIND_LIMIT = 200;
+
+function sessionDir(s) {
+  return s ? s.cwd || s.project_path || null : null;
+}
+
+function toggleFilesPanel(open) {
+  const want = open ?? !filesPanel.open;
+  filesPanel.open = want;
+  $("files-panel").classList.toggle("hidden", !want);
+  $("files-resizer").classList.toggle("hidden", !want);
+  $("files-btn").classList.toggle("on", want);
+  saveWorkspaces();
+  fitAll();
+  if (!want) return;
+  if (!filesPanel.root || !filesPanel.pinned) {
+    const s = state.sessions.find((x) => x.id === state.activeTab);
+    const dir = sessionDir(s) || filesPanel.root || state.settings.defaultCwd || null;
+    if (dir && dir !== filesPanel.root) {
+      setFilesRoot(dir, s ? s.id : null);
+      return;
+    }
+  }
+  if (filesPanel.root) refreshFiles();
+  else renderFilesPanel();
+}
+
+/// Follow the focused tab: called from renderTabs, so every way of focusing
+/// a session lands here. Tabs without a directory (previews, browsers) keep
+/// the current root.
+function syncFilesRoot() {
+  if (!filesPanel.open || filesPanel.pinned) return;
+  const s = state.sessions.find((x) => x.id === state.activeTab);
+  const dir = sessionDir(s);
+  if (!dir) return;
+  filesPanel.rootSession = s.id;
+  if (dir !== filesPanel.root) setFilesRoot(dir, s.id);
+}
+
+function setFilesRoot(dir, sessionId) {
+  if (filesPanel.root) filesPanel.expandedByRoot.set(filesPanel.root, filesPanel.expanded);
+  filesPanel.root = dir;
+  filesPanel.rootSession = sessionId ?? filesPanel.rootSession;
+  filesPanel.children = {};
+  filesPanel.expanded = new Set(filesPanel.expandedByRoot.get(dir) || []);
+  filesPanel.status = null;
+  filesPanel.index = null;
+  filesPanel.matches = null;
+  filesPanel.selected = null;
+  filesPanel.error = null;
+  filesPanel.sig = "";
+  $("files-filter").value = filesPanel.query = "";
+  $("files-list").scrollTop = 0;
+  renderFilesPanel();
+  refreshFiles();
+}
+
+/// Re-list the root and every visible expanded folder, and re-read git
+/// status, in one round. Repaints only when something changed.
+async function refreshFiles() {
+  const root = filesPanel.root;
+  if (!root) return;
+  const seq = ++filesPanel.seq;
+  const dirs = foldersToRefresh(filesPanel.expanded);
+  let children;
+  let status = null;
+  try {
+    [children, status] = await Promise.all([
+      invoke("explorer_list", { root, dirs, showIgnored: filesPanel.showIgnored }),
+      invoke("explorer_git_status", { root }).catch(() => null),
+    ]);
+  } catch (e) {
+    children = {};
+    dlog(`explorer_list failed: ${e}`);
+  }
+  if (seq !== filesPanel.seq || root !== filesPanel.root) return;
+  filesPanel.error = children[""] ? null : `Can't read ${root}`;
+  // An expanded folder that no longer lists was deleted (or renamed away).
+  for (const d of dirs) if (d && !children[d]) filesPanel.expanded.delete(d);
+  filesPanel.children = children;
+  filesPanel.status = status;
+  filesPanel.index = statusIndex(status);
+  const sig = JSON.stringify([children, status]);
+  if (sig === filesPanel.sig) return;
+  filesPanel.sig = sig;
+  if (filesPanel.query) runFilesFind();
+  else renderFilesPanel();
+}
+
+async function toggleFilesDir(rel) {
+  if (filesPanel.expanded.has(rel)) {
+    filesPanel.expanded.delete(rel);
+    renderFilesPanel();
+    return;
+  }
+  filesPanel.expanded.add(rel);
+  renderFilesPanel();
+  if (filesPanel.children[rel]) return;
+  const root = filesPanel.root;
+  try {
+    const got = await invoke("explorer_list", {
+      root,
+      dirs: [rel],
+      showIgnored: filesPanel.showIgnored,
+    });
+    if (root !== filesPanel.root) return;
+    Object.assign(filesPanel.children, got);
+    renderFilesPanel();
+  } catch (e) {
+    flashToast(`Can't open ${rel}: ${e}`);
+  }
+}
+
+let filesFindTimer = null;
+function onFilesFilterInput() {
+  filesPanel.query = $("files-filter").value.trim();
+  clearTimeout(filesFindTimer);
+  if (!filesPanel.query) {
+    filesPanel.matches = null;
+    filesPanel.selected = null;
+    renderFilesPanel();
+    return;
+  }
+  filesFindTimer = setTimeout(runFilesFind, 120);
+}
+
+async function runFilesFind() {
+  const root = filesPanel.root;
+  const query = filesPanel.query;
+  if (!root || !query) return;
+  try {
+    const res = await invoke("explorer_find", { root, query, limit: FILES_FIND_LIMIT });
+    if (root !== filesPanel.root || query !== filesPanel.query) return;
+    filesPanel.matches = res.matches;
+    filesPanel.capped = res.capped;
+    if (!res.matches.some((m) => m.rel === filesPanel.selected)) {
+      filesPanel.selected = res.matches[0]?.rel ?? null;
+    }
+  } catch (e) {
+    filesPanel.matches = [];
+    dlog(`explorer_find failed: ${e}`);
+  }
+  renderFilesPanel();
+}
+
+/// The rows on screen, in order — the tree, or the finder's results.
+function visibleFileRows() {
+  if (filesPanel.matches) {
+    return filesPanel.matches.map((m) => ({
+      rel: m.rel,
+      name: m.rel.split("/").pop(),
+      isDir: false,
+      match: m,
+    }));
+  }
+  return fileTreeRows(filesPanel.children, filesPanel.expanded);
+}
+
+function renderFilesPanel() {
+  const root = filesPanel.root;
+  const st = filesPanel.status;
+  $("files-root").textContent = root ? root.split("/").pop() || root : "No folder";
+  $("files-root").title = root || "";
+  const branch = $("files-branch");
+  if (st && st.branch) {
+    const ab = `${st.ahead ? ` ↑${st.ahead}` : ""}${st.behind ? ` ↓${st.behind}` : ""}`;
+    branch.textContent = `⎇ ${st.branch}${ab}`;
+    branch.title = `${st.entries.length} changed path${st.entries.length === 1 ? "" : "s"}`;
+    branch.classList.remove("hidden");
+  } else {
+    branch.classList.add("hidden");
+  }
+  $("files-pin-btn").classList.toggle("on", filesPanel.pinned);
+  $("files-pin-btn").title = filesPanel.pinned
+    ? "Pinned to this folder — click to follow the focused session again"
+    : "Following the focused session — click to pin this folder";
+  $("files-ignored-btn").classList.toggle("on", filesPanel.showIgnored);
+
+  const list = $("files-list");
+  const scroll = list.scrollTop;
+  list.innerHTML = "";
+  if (!root) {
+    list.innerHTML = "<p class='hint files-empty'>Focus a session, or pick a folder with 📁.</p>";
+    return;
+  }
+  if (filesPanel.error) {
+    list.innerHTML = `<p class='hint files-empty'>${escapeHtml(filesPanel.error)}</p>`;
+    return;
+  }
+  const rows = visibleFileRows();
+  if (filesPanel.matches && !rows.length) {
+    list.innerHTML = "<p class='hint files-empty'>No matching files.</p>";
+    return;
+  }
+  for (const row of rows) list.appendChild(buildFileRow(row));
+  if (filesPanel.matches && filesPanel.capped) {
+    const note = document.createElement("p");
+    note.className = "hint files-empty";
+    note.textContent = "Large folder: only part of it was searched.";
+    list.appendChild(note);
+  }
+  list.scrollTop = scroll;
+}
+
+function buildFileRow(row) {
+  const item = document.createElement("div");
+  item.className =
+    "team-item note-item file-item" +
+    (row.isDir ? " note-dir" : "") +
+    (row.ignored ? " file-ignored" : "") +
+    (row.rel === filesPanel.selected ? " selected" : "");
+  item.dataset.rel = row.rel;
+  const mark = markFor(filesPanel.index, row.rel, row.isDir);
+  const glyph = mark && markGlyph(mark);
+  if (row.match) {
+    item.style.paddingLeft = "10px";
+    const dir = row.rel.includes("/") ? row.rel.slice(0, row.rel.lastIndexOf("/")) : "";
+    item.innerHTML = `<span class="team-icon">${svgIcon("file", 13)}</span><span class="team-name file-match">${highlightMatch(
+      row.rel,
+      row.match.positions
+    )}</span>`;
+    item.title = dir ? row.rel : row.name;
+  } else {
+    item.style.paddingLeft = `${8 + row.depth * 14}px`;
+    const caret = row.isDir
+      ? `<span class="note-caret ${filesPanel.expanded.has(row.rel) ? "open" : ""}">${svgIcon("chevron", 12)}</span>`
+      : `<span class="note-caret note-caret-spacer"></span>`;
+    item.innerHTML = `${caret}<span class="team-icon">${svgIcon(row.isDir ? "folder" : "file", 13)}</span><span class="team-name">${escapeHtml(
+      row.name
+    )}${row.isSymlink ? " <span class='dim'>↪</span>" : ""}</span>`;
+    item.title = row.isDir ? row.rel : `${row.rel} · ${formatSize(row.size)}`;
+  }
+  if (glyph) {
+    const m = document.createElement("span");
+    m.className = `file-mark mark-${mark}`;
+    m.textContent = glyph.letter;
+    m.title = glyph.title;
+    item.appendChild(m);
+  }
+  item.onclick = () => {
+    filesPanel.selected = row.rel;
+    if (row.isDir) toggleFilesDir(row.rel);
+    else {
+      openFilePreview(joinPath(filesPanel.root, row.rel));
+      renderFilesPanel();
+    }
+  };
+  item.ondblclick = () => {
+    if (!row.isDir) openFilePreview(joinPath(filesPanel.root, row.rel), { keep: true });
+  };
+  item.oncontextmenu = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    fileContextMenu(row, ev.clientX, ev.clientY);
+  };
+  // Dragging a row into a terminal types its path, like a Finder drop.
+  item.draggable = true;
+  item.addEventListener("dragstart", (ev) => {
+    ev.dataTransfer.setData("text/plain", joinPath(filesPanel.root, row.rel));
+    ev.dataTransfer.effectAllowed = "copy";
+  });
+  return item;
+}
+
+/// The session a mention goes to: the focused one, else the session the
+/// panel took its root from.
+function mentionTarget() {
+  const focused = state.sessions.find((x) => x.id === state.activeTab);
+  if (focused) return focused;
+  return state.sessions.find((x) => x.id === filesPanel.rootSession) || null;
+}
+
+async function mentionInSession(abs) {
+  const s = mentionTarget();
+  const entry = s && state.open.get(s.id);
+  if (!s || !entry || !entry.term || entry.deferred) {
+    flashToast("Open a running session to mention a file in it");
+    return;
+  }
+  try {
+    await invoke("send_input", { sessionId: s.id, text: mentionText(sessionDir(s), abs) });
+    assignToFocusedPane(s.id);
+  } catch (e) {
+    uiAlert(`Mention failed: ${e}`);
+  }
+}
+
+function fileContextMenu(row, x, y) {
+  const abs = joinPath(filesPanel.root, row.rel);
+  const target = mentionTarget();
+  const items = [];
+  if (row.isDir) {
+    items.push({
+      label: filesPanel.expanded.has(row.rel) ? "Collapse" : "Expand",
+      icon: "chevron",
+      action: () => toggleFilesDir(row.rel),
+    });
+    items.push({
+      label: "Show as root",
+      icon: "folder",
+      action: () => {
+        filesPanel.pinned = true;
+        setFilesRoot(abs);
+      },
+    });
+    items.push({ label: "New terminal here", icon: "terminal", action: () => openShellAt(abs) });
+  } else {
+    items.push({ label: "Preview", icon: "file", action: () => openFilePreview(abs, { keep: true }) });
+    items.push({
+      label: "Open in editor…",
+      icon: "pencil",
+      action: () => openScratchInEditor({ title: row.name, path: abs }, x, y),
+    });
+  }
+  items.push({
+    label: "Mention in session",
+    icon: "plus",
+    hint: target ? displayName(target) : "",
+    action: () => mentionInSession(abs),
+  });
+  items.push(null);
+  items.push({ label: "Copy absolute path", icon: "copy", action: () => copyText(abs, "absolute path") });
+  items.push({ label: "Copy relative path", icon: "copy", action: () => copyText(row.rel, "relative path") });
+  items.push({ label: "Copy name", icon: "copy", action: () => copyText(row.name, "name") });
+  items.push(null);
+  items.push({
+    label: navigator.platform.startsWith("Mac") ? "Reveal in Finder" : "Show in file manager",
+    icon: "external-link",
+    action: () => invoke("explorer_reveal", { path: abs }).catch((e) => uiAlert(`${e}`)),
+  });
+  showContextMenu(x, y, items);
+}
+
+async function openShellAt(cwd) {
+  try {
+    const sid = await invoke("create_terminal", {
+      shell: state.settings.termShell || null,
+      cwd,
+      cols: 120,
+      rows: 40,
+    });
+    await openSession(sid, `$ ${cwd.split("/").pop()}`);
+  } catch (e) {
+    uiAlert(`New terminal failed: ${e}`);
+  }
+}
+
+async function pickFilesRoot() {
+  const dir = await pickDirectory(filesPanel.root || "", "Show a folder in Files");
+  if (!dir) return;
+  filesPanel.pinned = true;
+  setFilesRoot(dir);
+}
+
+function moveFilesSelection(delta) {
+  const rows = visibleFileRows();
+  if (!rows.length) return;
+  const i = rows.findIndex((r) => r.rel === filesPanel.selected);
+  const next = rows[Math.max(0, Math.min(rows.length - 1, i < 0 ? 0 : i + delta))];
+  filesPanel.selected = next.rel;
+  renderFilesPanel();
+  $("files-list")
+    .querySelector(`.file-item.selected`)
+    ?.scrollIntoView({ block: "nearest" });
+}
+
+/// Arrow keys / Enter in the filter box and on the tree: ↑↓ move, → / ← open
+/// and close a folder, Enter previews (⌥Enter mentions it in the session).
+function onFilesKey(e) {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    moveFilesSelection(e.key === "ArrowDown" ? 1 : -1);
+    return;
+  }
+  const row = visibleFileRows().find((r) => r.rel === filesPanel.selected);
+  if (e.key === "Escape") {
+    if (filesPanel.query) {
+      $("files-filter").value = "";
+      onFilesFilterInput();
+    } else {
+      document.activeElement?.blur();
+    }
+    e.stopPropagation();
+    return;
+  }
+  if (!row) return;
+  const open = filesPanel.expanded.has(row.rel);
+  if (row.isDir && ((e.key === "ArrowRight" && !open) || (e.key === "ArrowLeft" && open))) {
+    e.preventDefault();
+    toggleFilesDir(row.rel);
+    return;
+  }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    const abs = joinPath(filesPanel.root, row.rel);
+    if (e.altKey) mentionInSession(abs);
+    else if (row.isDir) toggleFilesDir(row.rel);
+    else openFilePreview(abs, { keep: true });
+  }
+}
+
+function initFilesPanel() {
+  $("files-btn").innerHTML = svgIcon("folder");
+  $("files-btn").onclick = () => toggleFilesPanel();
+  $("files-close-btn").innerHTML = svgIcon("x", 13);
+  $("files-close-btn").onclick = () => toggleFilesPanel(false);
+  $("files-refresh-btn").innerHTML = svgIcon("reload", 12);
+  $("files-refresh-btn").onclick = () => {
+    filesPanel.sig = "";
+    refreshFiles();
+  };
+  $("files-collapse-btn").innerHTML = svgIcon("minus", 12);
+  $("files-collapse-btn").onclick = () => {
+    filesPanel.expanded.clear();
+    renderFilesPanel();
+  };
+  $("files-pick-btn").innerHTML = svgIcon("folder", 12);
+  $("files-pick-btn").onclick = pickFilesRoot;
+  $("files-pin-btn").onclick = () => {
+    filesPanel.pinned = !filesPanel.pinned;
+    if (!filesPanel.pinned) syncFilesRoot();
+    renderFilesPanel();
+  };
+  $("files-ignored-btn").onclick = () => {
+    filesPanel.showIgnored = !filesPanel.showIgnored;
+    filesPanel.children = {};
+    filesPanel.sig = "";
+    saveWorkspaces();
+    refreshFiles();
+  };
+  $("files-root").onclick = () => {
+    if (filesPanel.root) invoke("explorer_reveal", { path: filesPanel.root }).catch(() => {});
+  };
+  $("files-filter").addEventListener("input", onFilesFilterInput);
+  $("files-filter").addEventListener("keydown", onFilesKey);
+  $("files-list").addEventListener("keydown", onFilesKey);
+  // Polled rather than watched: a checkout's build output would flood a
+  // recursive watcher, and the panel only needs to be fresh while visible.
+  setInterval(() => {
+    if (filesPanel.open && filesPanel.root && !document.hidden) refreshFiles();
+  }, FILES_POLL_MS);
+  window.addEventListener("focus", () => {
+    if (filesPanel.open && filesPanel.root) refreshFiles();
+  });
+}
+
+// ── File preview tabs ───────────────────────────────────────────
+
+/// Open `abs` in a preview tab. Previews share one pane beside the session:
+/// a click replaces the previous preview unless that one was kept (double-
+/// click, Enter, or the tab's Keep button), the VS Code preview convention.
+function openFilePreview(abs, opts = {}) {
+  const key = `view:file:${abs}`;
+  const name = abs.split("/").pop();
+  const w = ws();
+  if (!state.open.has(key)) {
+    const slot = w.panes.findIndex((p) => p && p.startsWith("view:file:"));
+    if (slot >= 0) {
+      w.focused = slot;
+      const old = state.open.get(w.panes[slot]);
+      if (old && old.transient) {
+        old.el.remove();
+        state.open.delete(w.panes[slot]);
+        w.panes[slot] = null;
+      }
+    } else {
+      ensureFreePane();
+    }
+  }
+  openViewTab(key, `▤ ${name}`, (el) => renderFilePreview(el, abs));
+  const entry = state.open.get(key);
+  entry.transient = opts.keep ? false : entry.transient ?? true;
+  renderTabs();
+}
+
+let hljsLoading = null;
+/// Lazy-load the vendored highlight.js (the mermaid precedent): parsed the
+/// first time a preview needs it, never at boot.
+function ensureHighlight() {
+  if (typeof hljs !== "undefined") return Promise.resolve(true);
+  if (!hljsLoading) {
+    hljsLoading = new Promise((resolve) => {
+      const s = document.createElement("script");
+      s.src = "vendor/highlight.min.js";
+      s.onload = () => resolve(typeof hljs !== "undefined");
+      s.onerror = () => resolve(false);
+      document.head.appendChild(s);
+    });
+  }
+  return hljsLoading;
+}
+// Highlighting cost grows with size; past this a preview stays plain.
+const HIGHLIGHT_MAX_CHARS = 400_000;
+
+async function renderFilePreview(el, abs, opts = {}) {
+  el.classList.add("file-view");
+  const dir = abs.slice(0, abs.lastIndexOf("/")) || "/";
+  const name = abs.split("/").pop();
+  el.innerHTML = `<div class="file-view-bar">
+      <span class="file-view-path" title="${escapeHtml(abs)}">${escapeHtml(abs)}</span>
+      <span class="file-view-size dim"></span>
+      <span class="spacer"></span>
+      <span class="file-view-actions"></span>
+    </div>
+    <div class="file-view-body"><p class="hint">loading…</p></div>`;
+  const body = el.querySelector(".file-view-body");
+  const actions = el.querySelector(".file-view-actions");
+  const key = `view:file:${abs}`;
+  const btn = (label, title, fn) => {
+    const b = document.createElement("button");
+    b.className = "mini-btn";
+    b.textContent = label;
+    b.title = title;
+    b.onclick = fn;
+    actions.appendChild(b);
+    return b;
+  };
+  let p;
+  try {
+    p = await invoke("explorer_read", { root: dir, rel: name });
+  } catch (e) {
+    body.innerHTML = `<p class="hint">${escapeHtml(String(e))}</p>`;
+    btn("⟳ Reload", "Read the file again", () => renderFilePreview(el, abs));
+    return;
+  }
+  el.querySelector(".file-view-size").textContent = formatSize(p.size);
+  const showSource = opts.source ?? false;
+  if (p.kind === "markdown") {
+    btn(showSource ? "◧ Rendered" : "‹› Source", "Switch between rendered and source", () =>
+      renderFilePreview(el, abs, { source: !showSource })
+    );
+  }
+  const entry = state.open.get(key);
+  if (entry && entry.transient) {
+    const keep = btn("📌 Keep", "Keep this tab open — the next file you click opens beside it", () => {
+      entry.transient = false;
+      keep.remove();
+    });
+  }
+  btn("@ Mention", "Type @path into the session (⌥↵ in Files)", () => mentionInSession(abs));
+  btn("✎ Editor…", "Open in an editor", (ev) =>
+    openScratchInEditor({ title: name, path: abs }, ev.clientX, ev.clientY)
+  );
+  btn("⧉ Path", "Copy the absolute path", () => copyText(abs, "absolute path"));
+  btn("⟳", "Reload from disk", () => renderFilePreview(el, abs, opts));
+
+  if (p.kind === "image") {
+    body.innerHTML = `<div class="file-image"><img alt="${escapeHtml(name)}" src="data:${p.mime};base64,${p.base64}" /></div>`;
+    return;
+  }
+  if (p.kind === "binary" || p.kind === "too-large") {
+    body.innerHTML = `<p class="hint">${
+      p.kind === "binary" ? "Binary file" : `Too large to preview (${formatSize(p.size)})`
+    } — open it in an editor instead.</p>`;
+    return;
+  }
+  if (p.kind === "markdown" && !showSource) {
+    const md = document.createElement("div");
+    md.className = "wf-md file-md";
+    renderMarkdown(md, p.text);
+    body.innerHTML = "";
+    body.appendChild(md);
+    renderMermaidIn(md);
+    return;
+  }
+  const text = p.text || "";
+  const lines = text.split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  const code = document.createElement("code");
+  code.textContent = lines.join("\n");
+  body.innerHTML = `<div class="file-code"><pre class="file-gutter">${lines
+    .map((_, i) => i + 1)
+    .join("\n")}</pre><pre class="file-text"></pre></div>`;
+  body.querySelector(".file-text").appendChild(code);
+  const lang = hljsLanguage(abs);
+  if (lang && text.length <= HIGHLIGHT_MAX_CHARS && (await ensureHighlight()) && code.isConnected) {
+    try {
+      code.innerHTML = hljs.highlight(code.textContent, { language: lang, ignoreIllegals: true }).value;
+      code.classList.add("hljs");
+    } catch (e) {
+      dlog(`highlight failed for ${abs}: ${e}`);
+    }
   }
 }
 
@@ -11029,6 +11643,18 @@ document.addEventListener("keydown", (e) => {
     closeWorkspace();
     return;
   }
+  if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === "e") {
+    e.preventDefault();
+    toggleFilesPanel();
+    return;
+  }
+  if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === "p") {
+    e.preventDefault();
+    if (!filesPanel.open) toggleFilesPanel(true);
+    $("files-filter").focus();
+    $("files-filter").select();
+    return;
+  }
   if (e.metaKey && e.key === "b") {
     e.preventDefault();
     $("sidebar").classList.toggle("collapsed");
@@ -11691,6 +12317,7 @@ function loadPanelSizes() {
     };
     if (sizes.sidebar) apply($("sidebar"), sizes.sidebar);
     if (sizes.details) apply($("details"), sizes.details);
+    if (sizes.files) apply($("files-panel"), sizes.files);
   } catch (e) {
     console.error("loadPanelSizes failed:", e);
   }
@@ -11738,6 +12365,14 @@ function initResizer(handleId, panelId, storageKey, min, max, compute) {
 
 initResizer("sidebar-resizer", "sidebar", "sidebar", 180, 480, (x) => x);
 initResizer("details-resizer", "details", "details", 240, 640, (x) => window.innerWidth - x);
+initResizer(
+  "files-resizer",
+  "files-panel",
+  "files",
+  200,
+  720,
+  (x) => $("files-panel").getBoundingClientRect().right - x
+);
 loadPanelSizes();
 
 /// Re-open the sections and re-apply the geometry saved in gui-state.json.
@@ -11759,6 +12394,8 @@ async function restoreSidebarState() {
   if (open.notes && !state.notesOpen) jobs.push(toggleNotes());
   if (open.teams && !state.teamsOpen) jobs.push(toggleTeams());
   if (open.settings) toggleSettings(true);
+  filesPanel.showIgnored = !!savedSidebar.files?.showIgnored;
+  if (open.files) toggleFilesPanel(true);
   await Promise.all(jobs).catch(() => {});
   reapplySectionHeights();
 }
@@ -12748,6 +13385,7 @@ function restartSessionPoll() {
 
 (async () => {
   applyStaticIcons(); // before first paint — never show the unicode fallbacks
+  initFilesPanel();
   await loadWorkspaces(); // disk-backed — must complete before first render
   // Settings come from the backend (config.toml + the schema-validated
   // GUI-local half), so this must land before anything reads state.settings.

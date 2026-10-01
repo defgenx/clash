@@ -50,6 +50,9 @@
 - **Attention inbox (GUI)** — one ordered list (`⌘I`) of everything waiting on
   you: approvals, dead agents, errors, decisions, unanswered PR threads,
   finished turns.
+- **Files (GUI)** — a file explorer (`⌘E`) on the focused session's folder:
+  git status on every file, fuzzy find (`⌘P`), syntax-highlighted / Markdown /
+  image previews, and `@`-mentioning a file into the session. See [Files](#files).
 - **Queued follow-ups** — type the next instruction while an agent works; clash
   delivers it the moment the session is idle at its prompt, never to a
   tool-approval question.
@@ -174,11 +177,11 @@ The GUI is the primary way to use clash; the TUI remains fully supported as the
 terminal-native mode. It is a Tauri 2 desktop app (`gui/`) sharing the TUI's
 core: the session pipeline, the in-process PTY daemon and the protocol. Both
 can run side by side, each instance owning its own sessions. Everything in this
-section except [Workflows](#workflows-gui) also exists in the TUI.
+section except [Files](#files) and [Workflows](#workflows-gui) also exists in the TUI.
 
 The first launch opens a **guided tour**, a spotlight walkthrough of
 workspaces, starting a session, sessions, the inbox, workflows, scratches,
-teams, tabs and panes, the terminal and settings. Replay it from *Settings →
+teams, files, tabs and panes, the terminal and settings. Replay it from *Settings →
 ▶ Show the tour*.
 
 ### Workspaces, panes and tabs
@@ -267,6 +270,37 @@ teams, tabs and panes, the terminal and settings. Replay it from *Settings →
 browser*. It applies to every link clash opens: terminal URLs, PR buttons and
 chips, listening ports, and links in rendered plans and reviews. A link opened
 in clash goes to a new split beside the current session.
+
+### Files
+
+The **Files** panel (`⌘E`, or the folder button in the topbar) is a file
+explorer docked to the right of the panes.
+- **Root**: it shows the focused session's folder and follows you as you switch
+  sessions. 📌 pins the current folder; the folder button shows any other one
+  (pinned). Click the folder name to reveal it in Finder.
+- **Tree**: folders load as you expand them and remember what was open per
+  folder. Git-ignored files are hidden (◌ shows them, dimmed), `.git` never
+  appears, and the panel refreshes every few seconds while it is open.
+- **Git status**: the header shows the branch and ahead/behind counts. Files
+  are marked **M**odified, **A**dded, **D**eleted, **R**enamed, **U**ntracked or
+  **!** (conflict), and a collapsed folder holding changes shows `•`.
+- **Find** (`⌘P`, or type in the filter box): fuzzy search over every file git
+  knows about (tracked and untracked, not ignored); outside a repository it
+  walks the folder, skipping dot-folders and `node_modules`/`target`-style
+  trees. Matched letters are highlighted.
+- **Keyboard**: `↑`/`↓` move, `→`/`←` open and close a folder, `↵` previews,
+  `⌥↵` mentions the file in the session, `Esc` clears the search.
+- **Preview**: clicking a file opens it in a preview pane beside the session.
+  Code is syntax-highlighted with line numbers, Markdown is rendered (mermaid
+  included) with a *Source* toggle, and images are shown. Binary files and
+  text over 2 MB are not previewed.
+  - Clicking another file replaces the preview (its tab is in *italics*).
+    Double-click, `↵` or 📌 *Keep* keeps a tab open.
+- **Actions** (right-click a row, or the preview's toolbar): *Mention in
+  session* types `@path` into the session (relative to its folder), *Open in
+  editor…* (the scratch editor picker), copy the absolute or relative path or
+  the name, reveal in Finder, and for folders *New terminal here* and *Show as
+  root*. Dragging a row into a terminal types its path.
 
 ### Teams
 
@@ -367,6 +401,7 @@ Terminal, Konsole, xterm, tmux). It turns gold while a TUI is running.
 | `⌘⇧↩` · `⌘⌥←/→` | zoom pane · cycle pane focus |
 | `⌘W` | close the active tab (agent: stash, shell: kill) |
 | `⌘B` | toggle the sidebar |
+| `⌘E` / `⌘P` | toggle the Files panel / find a file |
 | `⌘⇧B` | new browser tab |
 | `⌘F` or `/` | search |
 | `⌘I` | inbox |

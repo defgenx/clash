@@ -327,6 +327,7 @@
           <button id="stash-all-btn" class="icon-btn wide" title="Stash all running sessions">⏸ all</button>
           <button id="split-btn" class="icon-btn" title="Add split pane (⌘D)">◫</button>
           <button id="unsplit-btn" class="icon-btn" title="Close focused pane (⌘⇧D)">◻</button>
+          <button id="files-btn" class="icon-btn" title="Files — browse the focused session's folder (⌘E · ⌘P to find a file)"></button>
           <button id="details-btn" class="icon-btn" title="Toggle details panel">ⓘ</button>
         </div>
       </div>
@@ -338,6 +339,22 @@
             <p class="hint">/ search · ⌘T new session · ⌘D split · ⌘N workspace · ⌘1-9 switch</p>
           </div>
         </div>
+        <div class="panel-resizer hidden" id="files-resizer" title="Drag to resize"></div>
+        <aside id="files-panel" class="hidden">
+          <div id="files-header">
+            <span id="files-root" class="files-root" title="">No folder</span>
+            <span id="files-branch" class="files-branch hidden"></span>
+            <span class="spacer"></span>
+            <button id="files-pin-btn" class="icon-btn mini" title="Pin this folder">📌</button>
+            <button id="files-ignored-btn" class="icon-btn mini" title="Show git-ignored files">◌</button>
+            <button id="files-pick-btn" class="icon-btn mini" title="Show another folder…"></button>
+            <button id="files-collapse-btn" class="icon-btn mini" title="Collapse all folders"></button>
+            <button id="files-refresh-btn" class="icon-btn mini" title="Refresh"></button>
+            <button id="files-close-btn" class="icon-btn mini" title="Close (⌘E)"></button>
+          </div>
+          <input id="files-filter" type="search" placeholder="Find a file…  (⌘P)" autocomplete="off" spellcheck="false" />
+          <div id="files-list" tabindex="0"></div>
+        </aside>
         <div class="panel-resizer hidden" id="details-resizer" title="Drag to resize"></div>
         <div id="details" class="hidden">
           <div id="details-body"></div>
@@ -393,6 +410,7 @@
   <script src="tour.js"></script>
   <script src="ws-ownership.js"></script>
   <script src="field-keys.js"></script>
+  <script src="files.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

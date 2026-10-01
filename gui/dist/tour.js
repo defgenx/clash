@@ -72,6 +72,15 @@
       body: "Agent teams from Claude Code: members, their tasks and inboxes, at a glance.",
     },
     {
+      id: "files",
+      target: "files-btn",
+      title: "Files",
+      body:
+        "A file explorer for the focused session's folder (⌘E), with git status on every " +
+        "file. ⌘P finds a file by name; click to preview it with syntax highlighting, " +
+        "right-click to @-mention it in the session or open it in your editor.",
+    },
+    {
       id: "tabs",
       target: "topbar",
       title: "Tabs & panes",

@@ -1338,6 +1338,138 @@ async fn open_scratch_terminal_editor(
     Ok(session_id)
 }
 
+// ── Files panel ─────────────────────────────────────────────────
+// Thin wrappers over `infrastructure::explorer`, each on the blocking pool
+// (git and directory reads must not hold an async worker the daemon needs).
+
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Children of each folder in `dirs` (paths relative to `root`), keyed by
+/// folder — one call refreshes every expanded folder of the tree. A folder
+/// that fails to list (deleted since) is simply absent from the result.
+#[tauri::command]
+async fn explorer_list(
+    root: String,
+    dirs: Vec<String>,
+    show_ignored: bool,
+) -> Result<HashMap<String, Vec<clash::application::explorer::ExplorerEntry>>, String> {
+    blocking(move || {
+        let root = std::path::PathBuf::from(root);
+        dirs.into_iter()
+            .filter_map(|d| {
+                clash::infrastructure::explorer::list_dir(&root, &d, show_ignored)
+                    .ok()
+                    .map(|v| (d, v))
+            })
+            .collect()
+    })
+    .await
+}
+
+/// Branch and per-path git status under `root`; `null` outside a repository.
+#[tauri::command]
+async fn explorer_git_status(
+    root: String,
+) -> Result<Option<clash::application::explorer::GitSummary>, String> {
+    blocking(move || clash::infrastructure::explorer::git_status(std::path::Path::new(&root))).await
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FindResult {
+    matches: Vec<clash::application::explorer::FileMatch>,
+    capped: bool,
+}
+
+/// The file index of the last root searched, reused for a few seconds so a
+/// query typed one key at a time lists the tree once, not once per key.
+type FileIndex = (
+    std::path::PathBuf,
+    std::time::Instant,
+    std::sync::Arc<Vec<String>>,
+    bool,
+);
+static FILE_INDEX: std::sync::Mutex<Option<FileIndex>> = std::sync::Mutex::new(None);
+const FILE_INDEX_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Fuzzy-find files under `root` (the panel's filter box).
+#[tauri::command]
+async fn explorer_find(root: String, query: String, limit: usize) -> Result<FindResult, String> {
+    blocking(move || {
+        let root = std::path::PathBuf::from(root);
+        let cached = FILE_INDEX.lock().ok().and_then(|g| {
+            g.as_ref()
+                .filter(|(r, at, _, _)| *r == root && at.elapsed() < FILE_INDEX_TTL)
+                .map(|(_, _, files, capped)| (files.clone(), *capped))
+        });
+        let (files, capped) = cached.unwrap_or_else(|| {
+            let (files, capped) = clash::infrastructure::explorer::list_files(&root);
+            let files = std::sync::Arc::new(files);
+            if let Ok(mut g) = FILE_INDEX.lock() {
+                *g = Some((
+                    root.clone(),
+                    std::time::Instant::now(),
+                    files.clone(),
+                    capped,
+                ));
+            }
+            (files, capped)
+        });
+        FindResult {
+            matches: clash::application::explorer::rank_files(
+                &query,
+                files.iter().map(String::as_str),
+                limit,
+            ),
+            capped,
+        }
+    })
+    .await
+}
+
+/// A file's preview content (text, markdown, or an image as base64).
+#[tauri::command]
+async fn explorer_read(
+    root: String,
+    rel: String,
+) -> Result<clash::infrastructure::explorer::FilePreview, String> {
+    blocking(move || {
+        clash::infrastructure::explorer::read_preview(std::path::Path::new(&root), &rel)
+    })
+    .await?
+}
+
+/// Show a path in the OS file manager (Finder selects it; elsewhere the
+/// containing folder opens).
+#[tauri::command]
+fn explorer_reveal(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("{path} no longer exists"));
+    }
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg("-R").arg(p);
+        c
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(if p.is_dir() {
+            p
+        } else {
+            p.parent().unwrap_or(p)
+        });
+        c
+    };
+    cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// The directories the GUI watches, and what a change in each means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WatchRoot {
@@ -3493,6 +3625,11 @@ fn main() {
             delete_scratch_note,
             detect_editors,
             open_scratch_terminal_editor,
+            explorer_list,
+            explorer_git_status,
+            explorer_find,
+            explorer_read,
+            explorer_reveal,
             get_scratch_dir,
             set_scratch_dir,
             get_claude_bin,
