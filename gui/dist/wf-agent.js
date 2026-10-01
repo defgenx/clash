@@ -1,7 +1,8 @@
-// Pure agent-choice model for workflow launches — which agent CLIs a start
-// may run on, which are greyed out because their binary does not resolve, and
-// which one is pre-selected. No DOM here: app.js renders it (the launch picker
-// and the composers' agent row), gui/tests/wf_agent.test.js exercises it.
+// Pure agent-choice model for workflow launches — whether a start asks at all
+// (the `ask` setting), which agent CLIs it may run on, which are greyed out
+// because their binary does not resolve, and which one is pre-selected. No
+// DOM here: app.js renders it (the launch picker and the composers' agent
+// row), gui/tests/wf_agent.test.js exercises it.
 //
 // The backend stays the authority: `launch_agent` refuses an unavailable
 // binary, so a stale "available" here costs an error, never a broken spawn.
@@ -36,14 +37,28 @@
   /// stands, so the backend's refusal names the binary that is missing.
   function wfAgentDefault(itemAgent, settings = {}) {
     const choices = wfAgentChoices(settings);
-    const want = itemAgent || settings.workflowAgent || "claude";
+    const global = settings.workflowAgent === "ask" ? "" : settings.workflowAgent;
+    const want = itemAgent || global || "claude";
     const hit = choices.find((c) => c.value === want && c.available);
     if (hit) return hit.value;
     const any = choices.find((c) => c.available);
     return any ? any.value : want;
   }
 
-  const api = { wfAgentChoices, wfAgentDefault };
+  /// Mirror of `workflow::agent_asks`: a start asks which agent to run on
+  /// when the item's setting, else the global one, is `ask`. A global setting
+  /// that never arrived counts as `ask`, the shipped default.
+  function wfAgentAsks(itemSetting, settings = {}) {
+    return (itemSetting || settings.workflowAgent || "ask") === "ask";
+  }
+
+  /// The agent a start runs on without asking — the item's fixed setting,
+  /// else the global one. Only meaningful when `wfAgentAsks` is false.
+  function wfFixedAgent(itemSetting, settings = {}) {
+    return itemSetting && itemSetting !== "ask" ? itemSetting : settings.workflowAgent;
+  }
+
+  const api = { wfAgentChoices, wfAgentDefault, wfAgentAsks, wfFixedAgent };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else Object.assign(window, api);

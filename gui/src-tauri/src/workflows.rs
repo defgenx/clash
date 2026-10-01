@@ -418,6 +418,8 @@ pub(crate) fn set_workflow_forge(
 ///   remembered by the share dialog's Post-to-Jira. Empty clears it.
 /// - `description`: the item's free-form intent — the planning agent's
 ///   primary source. Editable so it can be refined before launching a plan.
+/// - `agent_setting`: `claude` | `omp` | `ask`; empty inherits the global
+///   `workflows.agent`.
 /// - `work_in_place`: never create a worktree; refused once one exists,
 ///   since the recorded worktree is the item's checkout from then on.
 #[tauri::command]
@@ -431,7 +433,7 @@ pub(crate) fn set_workflow_item_settings(
     interaction_default: Option<String>,
     jira_ticket: Option<String>,
     description: Option<String>,
-    agent: Option<String>,
+    agent_setting: Option<String>,
     title: Option<String>,
     base: Option<String>,
     work_in_place: Option<bool>,
@@ -480,12 +482,12 @@ pub(crate) fn set_workflow_item_settings(
     if let Some(desc) = description {
         meta.description = desc.trim().to_string();
     }
-    if let Some(agent) = agent {
+    if let Some(agent) = agent_setting {
         let agent = agent.trim().to_ascii_lowercase();
-        if !["", "claude", "omp"].contains(&agent.as_str()) {
+        if !["", "claude", "omp", "ask"].contains(&agent.as_str()) {
             return Err(format!("Unknown agent '{}'", agent));
         }
-        meta.agent = agent;
+        meta.agent_setting = agent;
     }
     state
         .backend
@@ -1391,22 +1393,23 @@ struct ItemSessionSpawn<'a> {
     rows: u16,
 }
 
-/// The agent a launch runs on: the one picked for this start, recorded as the
-/// item's agent so a relaunch or an auto-applied round keeps it; otherwise the
-/// item's, then the global setting. Refused before any set-up when its binary
-/// does not resolve — a worktree checkout ending in ENOENT is a wasted minute.
+/// The agent a launch runs on (`workflow::resolve_launch_agent`), recorded as
+/// the item's last agent so a relaunch or an auto-applied round under `ask`
+/// keeps it. Refused before any set-up when its binary does not resolve — a
+/// worktree checkout ending in ENOENT is a wasted minute.
 fn launch_agent(
     state: &GuiState,
     requested: Option<&str>,
     meta: &mut clash::domain::workflow::WorkflowMeta,
 ) -> Result<clash::domain::entities::AgentKind, String> {
-    if let Some(a) = requested.map(str::trim).filter(|a| !a.is_empty()) {
-        meta.agent = clash::domain::entities::AgentKind::parse(a)
-            .as_str()
-            .to_string();
-    }
     let cfg = state.config.get();
-    let agent = clash::application::workflow::effective_agent(&meta.agent, &cfg.workflows.agent);
+    let agent = clash::application::workflow::resolve_launch_agent(
+        requested,
+        &meta.agent_setting,
+        &cfg.workflows.agent,
+        &meta.agent,
+    );
+    meta.agent = agent.as_str().to_string();
     let bin = state.agents().bin(agent);
     if !crate::bin_available(&bin) {
         return Err(format!(
@@ -1435,7 +1438,8 @@ async fn spawn_item_session(
     } = spawn;
     let name = name.to_string();
     let cfg = state.config.get();
-    let agent = clash::application::workflow::effective_agent(&meta.agent, &cfg.workflows.agent);
+    // Resolved and recorded by `launch_agent`, which every caller runs first.
+    let agent = clash::domain::entities::AgentKind::parse(&meta.agent);
     // Startup syncs the omp dir only when it already exists; an omp installed
     // since then would otherwise start without the skills its kickoff names.
     if agent == clash::domain::entities::AgentKind::Omp {
@@ -1867,6 +1871,11 @@ pub(crate) async fn start_workflow_review_agent(
     // The item-wide total keeps climbing — it is what "Agent reviews (n)" and
     // the share summary count. The round's own number is per target.
     meta.review_round = meta.review_round.saturating_add(1);
+    clash::application::workflow::stamp_review_mark(
+        &mut meta,
+        review.target.as_str(),
+        review.round,
+    );
     meta.review = Some(review.clone());
     if meta.status.can_transition_to(WorkflowStatus::Reviewing) {
         meta.status = WorkflowStatus::Reviewing;
@@ -2050,6 +2059,7 @@ async fn start_explainer(
             round: review.round,
             session_id: session_id.clone(),
             started_at: review.started_at,
+            iteration: meta.iteration,
             ..Default::default()
         },
     );
@@ -2205,6 +2215,15 @@ fn recorded_pr_number(pr: &clash::domain::workflow::WorkflowPr) -> u64 {
     }
 }
 
+/// The `owner/repo` a recorded PR's URL names, passed as `--repo` on every
+/// forge call about it: a bare number resolves against the directory's git
+/// remote, and an item whose directory is not a git repository has none, so
+/// the call fails. `None` for a URL clash cannot parse (GHE), which keeps the
+/// directory-resolved behaviour there.
+fn recorded_pr_repo(pr: &clash::domain::workflow::WorkflowPr) -> Option<String> {
+    clash::infrastructure::gh::parse_pr_url(&pr.url).map(|(repo, _)| repo)
+}
+
 /// The directory gh commands run in: the item's worktree, else its repo.
 fn pr_dir(meta: &clash::domain::workflow::WorkflowMeta) -> Result<String, String> {
     let dir = meta
@@ -2349,11 +2368,12 @@ pub(crate) async fn refresh_workflow_pr(
     // the agent contract deliberately produces.
     let primary_selector = primary.as_ref().map(|pr| {
         let number = recorded_pr_number(pr);
-        if number > 0 {
+        let selector = if number > 0 {
             number.to_string()
         } else {
             meta.branch.clone()
-        }
+        };
+        (selector, recorded_pr_repo(pr))
     });
     // A linked PR lives in another repository, so every call about it is
     // scoped by the `owner/repo` its URL names; an unparseable URL is skipped
@@ -2372,12 +2392,16 @@ pub(crate) async fn refresh_workflow_pr(
     let dir_owned = dir.clone();
     let (primary_result, linked_results) = tauri::async_runtime::spawn_blocking(move || {
         let d = Path::new(&dir_owned);
-        let primary = primary_selector.map(|selector| {
-            forge.view(d, &selector, None).map(|view| {
+        let primary = primary_selector.map(|(selector, repo)| {
+            forge.view(d, &selector, repo.as_deref()).map(|view| {
                 // Best-effort: a failed count keeps the previous value rather
                 // than failing the refresh — a button label, not PR state.
                 let unanswered = (view.number > 0)
-                    .then(|| forge.unanswered_review_comments(d, view.number, None).ok())
+                    .then(|| {
+                        forge
+                            .unanswered_review_comments(d, view.number, repo.as_deref())
+                            .ok()
+                    })
                     .flatten();
                 (view, unanswered)
             })
@@ -2555,8 +2579,8 @@ type PrJobResult = (Option<usize>, String, u64, Result<(), String>);
 /// Two rules live here so both PR-scoped commands share them. A URL-only
 /// record's number comes from parsing the URL — the one forge-specific step,
 /// which is why `select_prs` (pure, in the application layer) leaves it to
-/// the caller. And a **linked** PR is scoped by `--repo`, while the primary's
-/// repository is whatever the item's checkout points at.
+/// the caller. Every PR — primary included — is scoped by the `--repo` its
+/// URL names (see [`recorded_pr_repo`]).
 ///
 /// A primary whose number cannot be told is the *recoverable* case: it errors
 /// with the machine prefix the GUI turns into "paste the PR URL", since
@@ -2584,11 +2608,7 @@ fn plan_pr_jobs(
             unresolved.push(format!("{}: cannot tell the PR number from the URL", t.url));
             continue;
         }
-        let repo = if t.primary {
-            None
-        } else {
-            parsed.map(|(r, _)| r)
-        };
+        let repo = parsed.map(|(r, _)| r);
         jobs.push((t.index, t.url.clone(), number, repo));
     }
     Ok((jobs, unresolved))
@@ -2734,11 +2754,13 @@ pub(crate) async fn attach_workflow_pr(
     // Best-effort detail fill; ignored when the forge tool is unavailable.
     let dir = pr_dir(&meta)?;
     let selector = number.to_string();
+    let repo = meta.pr.as_ref().and_then(recorded_pr_repo);
     let forge = state.forge_for_dir(&dir);
-    if let Ok(Ok(view)) =
-        tauri::async_runtime::spawn_blocking(move || forge.view(Path::new(&dir), &selector, None))
-            .await
-            .map(|r| r.map_err(forge_err))
+    if let Ok(Ok(view)) = tauri::async_runtime::spawn_blocking(move || {
+        forge.view(Path::new(&dir), &selector, repo.as_deref())
+    })
+    .await
+    .map(|r| r.map_err(forge_err))
     {
         if merge_pr_view(&mut meta, &view) {
             state
@@ -3351,6 +3373,26 @@ pub(crate) fn get_skill(state: State<'_, GuiState>, name: String) -> Result<Stri
 
 #[cfg(test)]
 mod tests {
+    use super::plan_pr_jobs;
+    use clash::application::workflow::SelectedPr;
+
+    /// The primary carries its URL's repo like a linked PR does: an item whose
+    /// directory is not a git repository has no remote for a bare number to
+    /// resolve against, so `gh pr ready 209` failed there.
+    #[test]
+    fn a_primary_pr_job_is_scoped_by_its_url_repo() {
+        let (jobs, failed) = plan_pr_jobs(&[SelectedPr {
+            index: None,
+            url: "https://github.com/acme/tools/pull/209".into(),
+            number: 0,
+            primary: true,
+        }])
+        .unwrap();
+        assert!(failed.is_empty());
+        assert_eq!(jobs[0].2, 209);
+        assert_eq!(jobs[0].3.as_deref(), Some("acme/tools"));
+    }
+
     /// Every round clash starts, or queues, records the phase it runs in.
     ///
     /// Pinned against the source because the property is unreachable from a

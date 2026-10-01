@@ -94,23 +94,48 @@ recommendations are input; their decisions are the deliverable.
 
 ## Lead and subagents — `Delegation: team`
 
-Under `team` you are the **lead**, and delegating is **required, not a
-suggestion** — clash chose it so the round is faster and so every result is
-checked by someone who did not produce it. The four sections are four parallel reviews of one plan, and every issue is checked against the real code before the human spends a question on it. The walk-through with the human and every write are yours. Under `solo`, do
-everything yourself and skip this section.
+Under `team` you are the **lead**: you decide how the round splits, dispatch
+what is worth dispatching, and integrate and verify what comes back. `team` is
+permission to parallelize, not a quota. A subagent costs a brief, a cold start
+that re-reads the code, and your check of its result — it pays only when its
+unit is independent and big enough that doing it yourself would take longer.
+The goal is the best result in the least wall-clock time. The four sections are four parallel reviews of one plan, and every issue is checked against the real code before the human spends a question on it. The walk-through with the human and every write are yours. Under
+`solo`, do everything yourself and skip this section.
+
+**Size the round before you split it.** Read the kickoff, the item's files and
+the size of the work (diff stat, plan length, repos and subsystems touched),
+then pick the smallest split that keeps quality:
+
+- **No split** — the work fits in a few reads of your own (roughly a handful
+  of files or a few hundred changed lines, one subsystem, a short plan). Do it
+  yourself, and get the independent check by re-reading each claim against
+  the code before it is written.
+- **By area** — several independent areas (subsystems, repos, PRs, disjoint
+  file groups), each worth its own reading: one subagent per area, covering
+  every concern for that area.
+- **By area and concern** — only for large or `deep` work, where a single
+  reader per area would itself be overloaded.
+
+Never launch more subagents than there are independent units of real work, and
+never one whose whole job is a file read or a grep — do that yourself. The
+waves below describe the split **at full scale**; shrink them to the size you
+picked.
 
 The round runs in two waves:
 
-1. **Find** — one read-only reviewer per section below (Architecture, Code
-   quality, Tests, Performance), launched together, each briefed with
+1. **Find** — read-only reviewers launched together, each briefed with
    `plan.md`, the requirements it answers to and the engineering preferences,
-   and told to ground every issue in the code the plan will land in. Each
-   returns issues with the plan section, the `file:line` evidence and the
-   options it sees.
-2. **Verify** — dedupe across sections, then one fresh verifier per issue,
-   briefed to refute it: does the code really behave the way the issue says,
-   and does the plan really not cover it? Only what survives reaches the
-   human or the report.
+   and told to ground every issue in the code the plan will land in. A short
+   plan over one subsystem needs none: review it yourself. A plan spanning
+   several subsystems or repos gets one reviewer per area, covering all four
+   sections below (Architecture, Code quality, Tests, Performance) for it;
+   split by section only when the plan is large enough that one reader per
+   area would skim. Each returns issues with the plan section, the
+   `file:line` evidence and the options it sees.
+2. **Verify** — dedupe across reviewers and refute each issue: does the code
+   really behave the way the issue says, and does the plan really not cover
+   it? Settle it yourself when one read does; batch the rest per area to
+   fresh verifiers. Only what survives reaches the human or the report.
 
 How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
 
@@ -132,8 +157,13 @@ How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
   round.
 - **Verify, don't forward.** A subagent's output is a claim. Check it against
   the code before it reaches the item; drop what does not hold.
-- **Report the split.** Your final message says how the work was divided and
-  what verification dropped or changed.
+- **Verify in proportion.** Settle a claim yourself when one read settles it.
+  Send it to a fresh refuting verifier only when refuting it takes real
+  tracing (callers, cross-file invariants, another repo), and batch those per
+  file or area — never one verifier per trivial finding.
+- **Report the split.** Your final message says how you sized the round, how
+  the work was divided (or why it was not), and what verification dropped
+  or changed.
 
 ## Scope
 
@@ -178,12 +208,18 @@ with nothing wrong gets one line saying so — padding it dilutes the rest.
 4. Name your recommended option and tie the reason to a preference above.
 5. **Then ask** (interactive rounds). After presenting a section's issues (or
    the whole batch, in batched mode), put them to the human with
-   `AskUserQuestion` — one question per issue, at most 4 per call. Label every
-   option with the issue number and option letter (`3b — extract the shared
-   helper`), put your recommended option **first**, and always include a
-   "Dismiss — not an issue" option. A free-text answer is an instruction: fold
-   it into the record. Autonomous rounds skip the asking and record
-   `unreviewed (autonomous round)` instead.
+   `AskUserQuestion` — one question per issue, the whole open set at once
+   (at most 4 per call, so issue the calls back to back rather than one issue
+   per turn). Label every option with the issue number and option letter
+   (`3b — extract the shared helper`), put your recommended option **first**
+   with its one-line why, and always include a "Dismiss — not an issue"
+   option, so the human confirms or corrects instead of composing an answer.
+   Follow up only on what their answers opened. A free-text answer is an
+   instruction: fold it into the record. Autonomous rounds skip the asking
+   and record `unreviewed (autonomous round)` instead.
+
+Finding facts is your job, the decisions are the human's: never ask something
+the code can answer — read it, and ask only what it cannot settle.
 
 Number the issues and letter the options (`3b`), so the human can approve one by
 name in their change request.
@@ -238,6 +274,25 @@ own recommendation and the reason for it:
 Judge by *materiality*, never by count: one missing migration step is worth a
 round, six wording nits are not.
 
+## Recommend the next step
+
+Alongside the apply call, name the one step you would take next, from this
+fixed vocabulary — clash's "suggested next step" reads it, and an unknown or
+missing action is ignored, so never invent one:
+
+- `apply` — the findings are worth a change round now
+- `approve` — nothing material left; the human can approve this stage
+- `plan-review` — the plan should get another plan review
+- `code-review` / `deep-review` / `drift` / `answer-comments` — the code-side
+  steps; rarely right for a plan round
+
+It must agree with `**Apply:**`: `yes` ⇒ `apply`; `no` ⇒ usually `approve`,
+or `plan-review` when the plan is still unsettled enough that another round
+would find more. It is a recommendation: clash ranks its own checks first (an
+unapplied round, open comments) and uses yours only where those are silent,
+and the human may ignore it. In interactive rounds ask it in the same
+`AskUserQuestion` call as the apply question, with your pick first.
+
 ## Finish — in this order, every run
 
 1. **Append** your round to `agent-review.md`. Never rewrite earlier rounds;
@@ -252,6 +307,8 @@ round, six wording nits are not.
 changes / needs rework before implementation>
 
 **Apply:** yes|no — <one line: why this is or is not worth a revision round>
+
+**Next:** apply|approve|plan-review|… — <one-line reason>
 
 ### Architecture
 1. <issue> — options a/b/c, recommended <x>.
@@ -302,6 +359,8 @@ changes / needs rework before implementation>
    auto-apply is off, to mark the action as recommended). Anything it cannot
    read as yes/no leaves the call to the human, which wastes the judgement you
    just made. Do not hedge it; the reason line is where nuance goes.
+   **`**Next:**` follows it** on its own line: exactly one action from the
+   vocabulary above, then ` — ` and the reason.
 
 2. Read-modify-write `meta.json`: set `status` to the prompt's **`Return to:`**
    value. Change nothing else.

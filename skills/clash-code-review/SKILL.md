@@ -85,9 +85,12 @@ Three checkpoints, in order:
 1. **Findings triage** — after the review is done and the findings are
    drafted, *before writing anything*: print the findings (numbered, graded,
    one line + the concrete failure each), then ask which to keep.
-   `AskUserQuestion` holds at most 4 options per question, so batch — one
-   multiSelect question per batch, options labeled by finding number and
-   grade. A dropped finding never reaches `annotations.json`; record it under
+   Put the whole set to them in one round: `AskUserQuestion` holds at most 4
+   options per question, so batch — one multiSelect question per batch,
+   issued together, options labeled by finding number and grade and carrying
+   your keep/drop recommendation with a one-line why, so the human confirms
+   or corrects rather than composes. Follow up only on what their answers
+   opened, and never ask what reading the code would settle. A dropped finding never reaches `annotations.json`; record it under
    `### Dismissed in triage` in the round report so no later round re-raises
    it. Free-text answers ("downgrade 2 to NIT", "merge 4 into 1") are
    instructions — apply them.
@@ -132,29 +135,53 @@ At any checkpoint the human may answer "apply your recommendations and finish"
 
 ## Lead and subagents — `Delegation: team`
 
-Under `team` you are the **lead**, and delegating is **required, not a
-suggestion** — clash chose it so the round is faster and so every result is
-checked by someone who did not produce it. Breadth comes from reviewers looking at the diff in parallel, each through one lens; precision comes from a second pass that tries to refute every finding. The triage, the grades and every write are yours. Under `solo`, do
-everything yourself and skip this section.
+Under `team` you are the **lead**: you decide how the round splits, dispatch
+what is worth dispatching, and integrate and verify what comes back. `team` is
+permission to parallelize, not a quota. A subagent costs a brief, a cold start
+that re-reads the code, and your check of its result — it pays only when its
+unit is independent and big enough that doing it yourself would take longer.
+The goal is the best result in the least wall-clock time. Breadth comes from reviewers looking at the diff in parallel, each through one lens; precision comes from a second pass that tries to refute every finding. The triage, the grades and every write are yours. Under
+`solo`, do everything yourself and skip this section.
+
+**Size the round before you split it.** Read the kickoff, the item's files and
+the size of the work (diff stat, plan length, repos and subsystems touched),
+then pick the smallest split that keeps quality:
+
+- **No split** — the work fits in a few reads of your own (roughly a handful
+  of files or a few hundred changed lines, one subsystem, a short plan). Do it
+  yourself, and get the independent check by re-reading each claim against
+  the code before it is written.
+- **By area** — several independent areas (subsystems, repos, PRs, disjoint
+  file groups), each worth its own reading: one subagent per area, covering
+  every concern for that area.
+- **By area and concern** — only for large or `deep` work, where a single
+  reader per area would itself be overloaded.
+
+Never launch more subagents than there are independent units of real work, and
+never one whose whole job is a file read or a grep — do that yourself. The
+waves below describe the split **at full scale**; shrink them to the size you
+picked.
 
 The round runs in two waves:
 
-1. **Find** — one read-only reviewer per lens, launched together:
-   correctness (the concrete failing input for each claim), tests (what the
-   change leaves unasserted), architecture & conventions (held to the repo's
-   `CLAUDE.md`/`AGENTS.md` and the neighbouring code), and security &
-   performance. With several PRs, one reviewer per PR per lens that applies;
-   at `deep`, add one per major subsystem the change touches to trace its
-   callers and invariants. Each returns candidates with `file:line`, the
-   failure scenario and a proposed grade.
-2. **Verify** — dedupe the candidates, then one fresh verifier per finding
-   (or per file's batch), briefed to **refute** it against the code. Keep what
-   survives, regrade what was overstated, drop the rest. In interactive
-   rounds, triage only what survived.
+1. **Find** — read-only reviewers launched together, each covering the
+   lenses correctness (the concrete failing input for each claim), tests (what
+   the change leaves unasserted), architecture & conventions (held to the
+   repo's `CLAUDE.md`/`AGENTS.md` and the neighbouring code), and security &
+   performance. Split by **area** first: one reviewer per PR, repo or
+   subsystem the diff touches, applying every lens to it. Split an area by
+   lens only when it is large or the round is `deep`, where a reader holding
+   all four lenses over that much code would skim. Each returns candidates
+   with `file:line`, the failure scenario and a proposed grade.
+2. **Verify** — dedupe the candidates and refute each one against the code:
+   yourself when one read settles it, otherwise through fresh verifiers
+   batched per file or area. Keep what survives, regrade what was overstated,
+   drop the rest. In interactive rounds, triage only what survived.
 
-Under `respond-pr-comments`, one subagent per thread (or per file's threads)
-drafts the grounded reply and the fix it implies; you review each before
-anything is posted or edited.
+Under `respond-pr-comments`, draft the replies yourself when there are only a
+few threads; with many, one subagent per file's threads drafts the grounded
+replies and the fixes they imply. Either way you review each before anything
+is posted or edited.
 
 How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
 
@@ -176,8 +203,13 @@ How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
   round.
 - **Verify, don't forward.** A subagent's output is a claim. Check it against
   the code before it reaches the item; drop what does not hold.
-- **Report the split.** Your final message says how the work was divided and
-  what verification dropped or changed.
+- **Verify in proportion.** Settle a claim yourself when one read settles it.
+  Send it to a fresh refuting verifier only when refuting it takes real
+  tracing (callers, cross-file invariants, another repo), and batch those per
+  file or area — never one verifier per trivial finding.
+- **Report the split.** Your final message says how you sized the round, how
+  the work was divided (or why it was not), and what verification dropped
+  or changed.
 
 ## What "review" means here
 
@@ -454,6 +486,30 @@ and its reason: **Start the fix round now** or **Not yet**.
 Judge by *severity*, never by count: one timing-attack blocker is worth a
 round, nine nits are not.
 
+## Recommend the next step
+
+Alongside the apply call, name the one step you would take next, from this
+fixed vocabulary — clash's "suggested next step" reads it, and an unknown or
+missing action is ignored, so never invent one:
+
+- `apply` — the findings are worth a fix round now
+- `approve` — nothing material left; the human can approve this stage
+- `code-review` — the code should get another standard review (e.g. you could
+  not read part of it)
+- `deep-review` — the change touches a risky area (auth, migrations,
+  concurrency, data loss, money, wide blast radius) and this round was
+  `standard`
+- `drift` — the item has a plan and the diff may not be the change it
+  authorized
+- `answer-comments` — the PR has review comments waiting on an answer
+- `plan-review` — the code exposed a plan problem worth another plan review
+
+It must agree with `**Apply:**`: `yes` ⇒ `apply`, unless you judge
+`answer-comments` more urgent. It is a recommendation: clash ranks its own
+checks first (an unapplied round, open comments) and uses yours only where
+those are silent, and the human may ignore it. In interactive rounds ask it in
+the same `AskUserQuestion` call as the apply question, with your pick first.
+
 ## Finish — in this order, every run
 
 1. **Append** your round to `agent-review.md`. Never rewrite earlier rounds;
@@ -467,6 +523,8 @@ round, nine nits are not.
 **Verdict:** <one line — ship it / N blockers / needs a decision on X>
 
 **Apply:** yes|no — <one line: why this is or is not worth a fix round>
+
+**Next:** apply|approve|deep-review|drift|… — <one-line reason>
 
 ### Blockers
 1. `src/auth.rs:42` — token compared with `==`, so response timing leaks the
@@ -530,7 +588,8 @@ by the reason — it is the decision from the section above, and clash reads it
 to know whether to start the fix round (or, when auto-apply is off, to mark the
 action as recommended). Anything it cannot read as yes/no leaves the call to
 the human, wasting the judgement you just made. Do not hedge it; the reason
-line is where nuance goes.
+line is where nuance goes. **`**Next:**` follows it** on its own line: exactly
+one action from the vocabulary above, then ` — ` and the reason.
 
 2. Read-modify-write `meta.json`: set `status` to the prompt's **`Return to:`**
    value. Change nothing else.

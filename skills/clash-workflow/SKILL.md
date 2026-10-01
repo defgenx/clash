@@ -57,8 +57,8 @@ Before doing anything else, settle how this run goes:
 
 What "interactive" means per phase:
 - `plan` — first hold the requirements discussion (phase step 1: restate the
-  task, ask about everything unclear, proceed only on the human's
-  confirmation), then — before writing `plan.md` — present the 2–3 viable
+  task, ask the open questions in one round with your recommended answers,
+  proceed only on the human's confirmation), then — before writing `plan.md` — present the 2–3 viable
   approaches with a recommendation and ask which to plan around.
 - `revise` — when the change-request note is ambiguous or conflicts with an
   earlier decision in `review.md`, ask instead of guessing.
@@ -139,6 +139,8 @@ findings into `agent-review.md` and `annotations.json` and never touch
   human's action. Linked PRs never change this item's status — only `pr.url`
   (the primary) does.
 - `review.md` is append-only history — read it, never edit it.
+- `handoff.md` is yours alone: overwrite it at the end of every phase (see
+  "Hand-off note" below). Reviewers and explainers never write it.
 - Statuses you may write, and only these transitions:
   `planning → plan-review`, `changes-requested → plan-review` (plan-revision
   round), `changes-requested → implementing`,
@@ -159,19 +161,72 @@ findings into `agent-review.md` and `annotations.json` and never touch
     Never force-push, never rewrite published history; if the push is
     rejected, stop and report it instead of forcing.
 
+## Hand-off note — `handoff.md`, every phase
+
+Every phase (`plan`, `revise`, `implement`, `pr`) ends by **overwriting**
+`<item dir>/handoff.md`, *before* the hand-back status write, so the note is
+there when clash notices the status. It is the human's first read in the
+item's Overview — under ~25 lines, no file dumps:
+
+```markdown
+# Hand-off — <phase> · iteration <meta.iteration>
+## Done
+- …
+## Unsure / needs your decision
+- … (or "nothing")
+## Checked
+- tests/linters run and their result, or what could not be run and why
+**Next:** <action> — <one-line reason>
+```
+
+`**Next:**` takes exactly one action from a fixed vocabulary — clash's
+"suggested next step" reads it, and an unknown or missing action is ignored,
+so never invent one: `apply` (findings worth a change round now), `approve`
+(nothing material left), `plan-review`, `code-review`, `deep-review` (a risky
+area: auth, migrations, concurrency, data loss, money, wide blast radius),
+`drift` (compare the plan with the diff), `answer-comments` (the PR has
+comments waiting). Typically `plan-review` after `plan`/`revise`;
+`code-review`, `deep-review` or `drift` after `implement`; `approve` when a
+re-review would add nothing. It is a recommendation: clash ranks its own
+checks first and uses it only where those are silent.
+
 ## Lead and subagents — `Delegation: team`
 
-Under `team` you are the **lead**, and delegating is **required, not a
-suggestion** — clash chose it so the round is faster and so every result is
-checked by someone who did not produce it. You split the phase into units, dispatch them, integrate and verify what comes back; the thinking about *what* to build stays with you. Under `solo`, do
-everything yourself and skip this section.
+Under `team` you are the **lead**: you decide how the round splits, dispatch
+what is worth dispatching, and integrate and verify what comes back. `team` is
+permission to parallelize, not a quota. A subagent costs a brief, a cold start
+that re-reads the code, and your check of its result — it pays only when its
+unit is independent and big enough that doing it yourself would take longer.
+The goal is the best result in the least wall-clock time. The thinking about
+*what* to build stays with you. Under `solo`, do everything yourself and skip this section.
+
+**Size the round before you split it.** Read the kickoff, the item's files and
+the size of the work (diff stat, plan length, repos and subsystems touched),
+then pick the smallest split that keeps quality:
+
+- **No split** — the work fits in a few reads of your own (roughly a handful
+  of files or a few hundred changed lines, one subsystem, a short plan). Do it
+  yourself, and get the independent check by re-reading each claim against
+  the code before it is written.
+- **By area** — several independent areas (subsystems, repos, PRs, disjoint
+  file groups), each worth its own reading: one subagent per area, covering
+  every concern for that area.
+- **By area and concern** — only for large or `deep` work, where a single
+  reader per area would itself be overloaded.
+
+Never launch more subagents than there are independent units of real work, and
+never one whose whole job is a file read or a grep — do that yourself. The
+waves below describe the split **at full scale**; shrink them to the size you
+picked.
 
 What gets split, per phase (details in each phase below):
 
-- `plan` — **exploration**: one read-only explorer per area the task touches.
-  You write `plan.md` yourself — a plan is one voice.
+- `plan` — **exploration**: one read-only explorer per area the task touches,
+  when there is more than one area worth exploring. You write `plan.md`
+  yourself — a plan is one voice.
 - `implement` — **the plan's work units**, dispatched in waves of parallel
-  implementers, then one independent verifier over the whole diff.
+  implementers when several units are independent and each is more than a
+  small edit, then one independent verifier over the whole diff.
 - `revise` and `pr` — done by you: one document, one author. Delegate only
   read-only fact-checks against the code.
 
@@ -195,14 +250,16 @@ How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
   round.
 - **Verify, don't forward.** A subagent's output is a claim. Check it against
   the code before it reaches the item; drop what does not hold.
+- **Verify in proportion.** Settle a claim yourself when one read settles it.
+  Send it to a fresh refuting verifier only when refuting it takes real
+  tracing (callers, cross-file invariants, another repo), and batch those per
+  file or area — never one verifier per trivial finding.
 - **Disjoint files.** Two implementers running at the same time never own
   the same file; a unit that needs another's output waits for the next wave.
   Implementers edit code only — no git, no item-directory writes.
-- **Small work stays with you.** A one-file change is not worth a brief. When
-  a phase genuinely does not split, say so in your final message instead of
-  inventing units.
-- **Report the split.** Your final message says how the work was divided and
-  what verification dropped or changed.
+- **Report the split.** Your final message says how you sized the round, how
+  the work was divided (or why it was not), and what verification dropped
+  or changed.
 
 ## Phase: plan
 
@@ -216,12 +273,19 @@ and say so instead of writing a plan.
      any seeded `plan.md`, `review.md` — then restate the task in your own
      words: what is being built, for whom, and what you believe is out of
      scope.
-   - Ask about everything you are not sure of (`AskUserQuestion`, as many
-     rounds as it takes): expected behavior, scope boundaries, edge cases,
-     constraints, what "done" looks like. If the title alone doesn't tell you
-     what the feature *is*, say so and ask the human to describe it before
-     anything else.
-   - Do not explore the repo and do not write a line of `plan.md` until the
+   - Ask about everything you are not sure of — expected behavior, scope
+     boundaries, edge cases, constraints, what "done" looks like — as **one
+     round**: the whole open frontier in one `AskUserQuestion` (calls back to
+     back past 4 questions, or one numbered message when there are many),
+     each question carrying your recommended answer and a one-line why, so
+     the human confirms or corrects instead of composing answers. Then ask
+     follow-ups only for what their answers opened. Finding facts is your
+     job, the decisions are theirs: never ask what reading the code can
+     answer — a quick read to ground a question is fine, the full
+     exploration waits for the confirmation. If the title alone doesn't tell
+     you what the feature *is*, say so and ask the human to describe it
+     before anything else.
+   - Do not explore the repo in depth and do not write a line of `plan.md` until the
      human confirms your restated understanding — their answer is the
      confirmation, not your own confidence.
    - Open `plan.md` with the agreed understanding (goal, confirmed decisions,
@@ -231,17 +295,20 @@ and say so instead of writing a plan.
    and open `plan.md` with an **Assumptions** section listing every call you
    made in place of a question.
 2. Explore the repo as needed to ground the plan in real code. Under `team`,
-   fan it out: one read-only explorer per area the task touches (a subsystem,
-   a repo, the tests), launched together, each returning the `file:line`
-   facts, the existing patterns to reuse and the risks it saw. For a design
-   with real alternatives, one more subagent per candidate approach costs it
-   against the code. Check the facts your plan will rest on yourself.
+   fan it out when the task spans several areas: one read-only explorer per
+   area worth exploring (a subsystem, a repo, the tests), launched together,
+   each returning the `file:line` facts, the existing patterns to reuse and
+   the risks it saw. A task confined to one area you explore yourself. For a
+   design with real alternatives, one more subagent per candidate approach
+   costs it against the code — only when the candidates genuinely differ in
+   the code they touch. Check the facts your plan will rest on yourself.
 3. Write/overwrite `plan.md`: a concrete implementation plan — context, the
    approach, files to touch, ordered steps, testing strategy, risks. Plain
    markdown; the GUI renders it. Write the steps as **work units** — each
    names the files it owns and the units it depends on — so the implement
    phase can dispatch them in parallel waves without re-deriving the split.
-4. Finish: set `meta.json.status = "plan-review"`. Stop — the human reviews.
+4. Finish: write `handoff.md` (see "Hand-off note"), then set
+   `meta.json.status = "plan-review"`. Stop — the human reviews.
 
 ## Phase: revise
 
@@ -259,7 +326,8 @@ Read the **latest** `## Iteration` section of `review.md` first.
 - In `review-only` mode: behave exactly like phase `implement`. Stop reading
   this section.
 - Normally the requested changes concern the **plan**: update `plan.md`
-  accordingly and finish with `status = "plan-review"`.
+  accordingly, write `handoff.md` (see "Hand-off note"), and finish with
+  `status = "plan-review"`.
   - **Edit it in place.** clash froze the previous plan as a version before
     launching you and shows the human a diff of what you changed, so keep every
     section the round did not challenge — wording included. A wholesale rewrite
@@ -287,7 +355,10 @@ describes something else — the human amends it by taking the item back to
    conventions. Run the project's tests/linters. Under `team`:
    - Turn the plan's work units (or the round's requested changes) into
      **waves**: units with no unmet dependency and disjoint files go in the
-     same wave. Dispatch each wave's implementers together.
+     same wave. Dispatch each wave's implementers together. Do small units
+     yourself, and merge units that touch the same few files into one — a
+     one-file change is not worth a brief, and a chain of dependent units
+     gains nothing from a subagent per link.
    - Give every implementer its unit's plan text, the open annotations on its
      files (step 3), the test command that proves it, and the rule that it
      touches only its files and runs no git.
@@ -296,7 +367,8 @@ describes something else — the human amends it by taking the item back to
    - When the last wave lands, launch one **verifier** — read-only, briefed
      with `plan.md`, the round's notes and the open annotations — to check the
      whole diff for what is missing, wrong or unasked-for. Resolve what it
-     confirms before you commit.
+     confirms before you commit. For a small diff, skip it: run the tests and
+     re-read the diff against the plan yourself.
 3. **Address every open annotation**, one by one (under `team`, hand each to
    the implementer that owns its file — you still update `annotations.json`
    yourself). Each is anchored to
@@ -312,8 +384,9 @@ describes something else — the human amends it by taking the item back to
 4. Commit the work (small, reviewable commits are fine). If this item
    already has a PR (`meta.pr.url` is set), push (see Git above) so the PR
    picks up the fixes.
-5. **`review-only`**: push the branch (see Git above), then finish at
-   `"diff-review"` — you are done, skip steps 6–7.
+5. **`review-only`**: push the branch (see Git above), write `handoff.md`
+   (see "Hand-off note"), then finish at `"diff-review"` — you are done, skip
+   steps 6–7.
 6. **Only if the repo clearly works through PRs** — an existing `pr.url` on this
    item, or a repo whose recent history is merge commits from PRs — create the
    draft PR. When the kickoff prompt names a **PR skill**, invoke that skill to
@@ -324,8 +397,8 @@ describes something else — the human amends it by taking the item back to
    (clash fills number/state on its next refresh). Otherwise **skip this**: a
    PR is not required to finish, the human approves the diff either way, and an
    unwanted PR is a chore for them to close. When in doubt, skip it and say so.
-7. Finish: set `status = "diff-review"` — or `"pr-draft"` if you created the
-   PR in step 6. Stop — the human reviews the diff in clash and either
+7. Finish: write `handoff.md` (see "Hand-off note"), then set
+   `status = "diff-review"` — or `"pr-draft"` if you created the PR in step 6. Stop — the human reviews the diff in clash and either
    approves (which may close the item outright) or sends you a new round.
 
 ## Phase: pr
@@ -362,8 +435,8 @@ the human decides whether that becomes a new round.
 4. Push the branch if it is not on the remote, then
    `gh pr create --draft --title "<title>" --body "<body>"` (add `--base` when
    `meta.json.base` is set).
-5. Read-modify-write `meta.json`: set `pr.url` to the created URL and
-   `status = "pr-draft"`. Leave `iteration` and `reviewRound` alone — those are
+5. Write `handoff.md` (see "Hand-off note"), then read-modify-write
+   `meta.json`: set `pr.url` to the created URL and `status = "pr-draft"`. Leave `iteration` and `reviewRound` alone — those are
    clash's.
 
 If the repo clearly does not work through PRs, stop before step 4 and say so

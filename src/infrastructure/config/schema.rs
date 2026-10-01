@@ -329,10 +329,11 @@ pub const PROPS: &[Prop] = &[
     // ── [workflows] ─────────────────────────────────────────────────
     Prop::new(
         "workflows.agent",
-        Kind::Enum(&["claude", "omp"]),
-        Val::Str("claude"),
+        Kind::Enum(&["ask", "claude", "omp"]),
+        Val::Str("ask"),
         "Agent CLI workflow sessions (plan, implement, reviews, explanations, shares) run on: \
-         `claude` or `omp`. An item's ⚙ Settings tab can override it.",
+         `claude`, `omp`, or `ask` to choose at every step. An item's ⚙ Settings tab can \
+         override it.",
     ),
     Prop::new(
         "workflows.omp_model",
@@ -353,14 +354,24 @@ pub const PROPS: &[Prop] = &[
         "workflows.delegation",
         Kind::Enum(&["team", "solo"]),
         Val::Str("team"),
-        "How workflow sessions split their work. `team` makes the lead fan implementation, \
-         exploration and review passes out to parallel subagents and verify what they return; \
-         `solo` does everything in the one session.",
+        "How workflow sessions split their work. `team` lets the lead fan implementation, \
+         exploration and review passes out to parallel subagents — sized to the round, so \
+         small work stays with the lead — and verify what they return; `solo` does \
+         everything in the one session.",
+    ),
+    Prop::new(
+        "workflows.assist",
+        Kind::Enum(&["suggest", "autopilot", "off"]),
+        Val::Str("suggest"),
+        "How much a workflow item's next step is decided for you. `suggest` highlights the \
+         recommended action with its reason; `autopilot` also starts it when it decides \
+         nothing (a review round, applying a round that said apply) and always stops before \
+         an approval; `off` keeps the plain action bar.",
     ),
     Prop::new(
         "workflows.subagent_model",
         Kind::Str,
-        Val::Str("claude-sonnet-5"),
+        Val::Str("claude-sonnet-5-5"),
         "Model the lead's subagents run on under `team` delegation, enforced through \
          `CLAUDE_CODE_SUBAGENT_MODEL`. Empty lets them inherit the lead's model. Claude \
          sessions only — omp picks its task models from its own configuration.",

@@ -323,14 +323,16 @@ manual re-list.
 
 clash runs [OMP](https://omp.sh) (oh-my-pi, `omp`) sessions next to Claude
 Code ones; the choice is made per session (the GUI's new-session dialog, the
-TUI's last new-session prompt, or `:new --agent omp <path>`), and every
-workflow start asks too — a picker for one-click starts, a *Run on* row in the
-review and change-request composers — pre-selecting the item's agent (its
-⚙ Settings tab, else `workflows.agent`) and saving the pick back to it, so a
-relaunch stays on it and an auto-applied round runs on it without asking. An
-agent whose binary does not resolve is greyed out with the reason, in these
-pickers and in the new-session dialog, and the backend refuses it before any
-set-up.
+TUI's last new-session prompt, or `:new --agent omp <path>`). Every workflow
+step — plan, implement, change rounds, reviews, answering PR comments,
+explanations, drift, shares — follows one setting: the item's ⚙ Settings tab,
+else `workflows.agent` (`ask` by default, or `claude` / `omp`). A fixed agent
+runs every step unasked; `ask` asks at every start — a picker for one-click
+starts, a *Run on* row in the review and change-request composers —
+pre-selecting the agent the item last ran on, which is also what a relaunch
+or an auto-applied round uses without asking. An agent whose binary does not
+resolve is greyed out with the reason, in these pickers and in the
+new-session dialog, and the backend refuses it before any set-up.
 An OMP session is the same row as any other — the GUI badges every row
 with its agent (`CC` for Claude Code, `OMP`) — and
 everything built around sessions applies:
@@ -419,7 +421,8 @@ agent = "claude"           # agent CLI workflow sessions run on: claude | omp (p
 omp_model = ""             # --model for OMP workflow sessions; empty = omp's default
 lead_model = "claude-opus-5-5"     # --model for every Claude workflow session (the lead)
 delegation = "team"        # team: lead fans work out to parallel subagents | solo
-subagent_model = "claude-sonnet-5" # model those subagents run on; empty = inherit the lead's
+assist = "suggest"         # suggest: highlight the next step | autopilot: also start it when it decides nothing | off
+subagent_model = "claude-sonnet-5-5" # model those subagents run on; empty = inherit the lead's
 pr_skill = "hivebrite-engineering:github-pr"  # skill the PR phase opens PRs with; "none" disables
 forge = "auto"             # code forge for PR features: auto | github | none
 slack_webhook = ""         # Slack incoming webhook for sharing + notifications
@@ -584,14 +587,26 @@ optional, so approving a diff can close the item outright (plus `abandoned`, and
 (plan-review, diff-review, pr-draft) badge the sidebar and fire a desktop
 notification.
 
+**Suggested next step** — every item's action bar opens with one highlighted
+button and the reason for it: apply the review that came back, answer open
+comments, review the code changed by the last fix round, compare the plan
+with the change, or approve. Reviewers end each round with a `**Next:**`
+recommendation and the workflow agent leaves a `handoff.md` (the **↩ Hand-off**
+tab), but clash's own checks rank first. `workflows.assist = autopilot` also
+starts the suggested step when it decides nothing (reviews, comparisons,
+applying a round that said apply), and always stops before an approval.
+Launching **⇄ Compare plan vs changes** offers to refresh any out-of-date
+explanation alongside it. Details: [docs/workflows.md](docs/workflows.md#next-step-assist).
+
 **Lead and subagents** — every Claude workflow session runs on one pinned
 lead model (`workflows.lead_model`, default `claude-opus-5-5`). With
-`workflows.delegation = team` (the default) the skills *require* the lead to
-split the work across parallel subagents on `workflows.subagent_model`
-(default `claude-sonnet-5`, enforced via `CLAUDE_CODE_SUBAGENT_MODEL`):
+`workflows.delegation = team` (the default) the skills let the lead split the
+work across parallel subagents on `workflows.subagent_model` (default
+`claude-sonnet-5-5`, enforced via `CLAUDE_CODE_SUBAGENT_MODEL`) — sized to the
+round first, so a small change is done by the lead alone and a large one gets
 explorers while planning, implementers in waves of disjoint files plus a
-verifier while implementing, and one reviewer per lens plus a refuting verifier
-per finding in every review round. The lead alone writes the item's files,
+verifier while implementing, and one reviewer per area plus batched refuting
+verifiers in review rounds. The lead alone writes the item's files,
 commits and talks to you. `solo` keeps everything in one session. Settings →
 Workflows · agents. Details: [docs/workflows.md](docs/workflows.md#lead-and-subagents).
 

@@ -1582,6 +1582,7 @@ struct AgentSettings {
     lead_model: String,
     delegation: String,
     subagent_model: String,
+    assist: String,
 }
 
 pub(crate) fn bin_available(bin: &str) -> bool {
@@ -1601,20 +1602,28 @@ fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
         omp_available: bin_available(&cfg.general.omp_bin),
         claude_available: bin_available(&cfg.general.claude_bin),
         omp_bin: cfg.general.omp_bin,
-        workflow_agent: clash::domain::entities::AgentKind::parse(&cfg.workflows.agent)
-            .as_str()
-            .to_string(),
+        workflow_agent: if clash::application::workflow::agent_asks("", &cfg.workflows.agent) {
+            "ask".to_string()
+        } else {
+            clash::domain::entities::AgentKind::parse(&cfg.workflows.agent)
+                .as_str()
+                .to_string()
+        },
         omp_model: cfg.workflows.omp_model,
         lead_model: cfg.workflows.lead_model,
         delegation: if team { "team" } else { "solo" }.to_string(),
         subagent_model: cfg.workflows.subagent_model,
+        assist: match cfg.workflows.assist.as_str() {
+            "autopilot" | "off" => cfg.workflows.assist.clone(),
+            _ => "suggest".to_string(),
+        },
     }
 }
 
 /// Write one agent-CLI setting to the shared `config.toml`. `key` is one of
 /// `general.default_agent`, `general.omp_bin`, `workflows.agent`,
 /// `workflows.omp_model`, `workflows.lead_model`, `workflows.delegation`,
-/// `workflows.subagent_model`; an empty value resets it to the default. An
+/// `workflows.subagent_model`, `workflows.assist`; an empty value resets it to the default. An
 /// absolute `omp_bin` must exist, like `claude_bin`.
 #[tauri::command]
 fn set_agent_setting(
@@ -1624,6 +1633,7 @@ fn set_agent_setting(
 ) -> Result<AgentSettings, String> {
     let value = value.trim();
     let value = match key.as_str() {
+        "workflows.agent" if value.eq_ignore_ascii_case("ask") => "ask".to_string(),
         "general.default_agent" | "workflows.agent" if !value.is_empty() => {
             clash::domain::entities::AgentKind::parse(value)
                 .as_str()
@@ -1639,13 +1649,19 @@ fn set_agent_setting(
         "workflows.delegation" if !value.is_empty() && value != "team" && value != "solo" => {
             return Err(format!("Not a delegation mode: {value}"));
         }
+        "workflows.assist"
+            if !value.is_empty() && !["suggest", "autopilot", "off"].contains(&value) =>
+        {
+            return Err(format!("Not an assist mode: {value}"));
+        }
         "general.default_agent"
         | "workflows.agent"
         | "general.omp_bin"
         | "workflows.omp_model"
         | "workflows.lead_model"
         | "workflows.delegation"
-        | "workflows.subagent_model" => value.to_string(),
+        | "workflows.subagent_model"
+        | "workflows.assist" => value.to_string(),
         other => return Err(format!("Not an agent setting: {other}")),
     };
     let result = if value.is_empty() {

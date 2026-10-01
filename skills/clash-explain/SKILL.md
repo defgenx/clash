@@ -111,15 +111,38 @@ carries on — and clash can always stop tracking the round.
 
 ## Lead and subagents — `Delegation: team`
 
-Under `team` you are the **lead**, and delegating is **required, not a
-suggestion** — clash chose it so the round is faster and so every result is
-checked by someone who did not produce it. Mapping the code is parallel; the documents are yours — an explanation is one voice, and a subagent's summary is not yet a fact. Under `solo`, do
-everything yourself and skip this section.
+Under `team` you are the **lead**: you decide how the round splits, dispatch
+what is worth dispatching, and integrate and verify what comes back. `team` is
+permission to parallelize, not a quota. A subagent costs a brief, a cold start
+that re-reads the code, and your check of its result — it pays only when its
+unit is independent and big enough that doing it yourself would take longer.
+The goal is the best result in the least wall-clock time. Mapping the code is parallel; the documents are yours — an explanation is one voice, and a subagent's summary is not yet a fact. Under
+`solo`, do everything yourself and skip this section.
+
+**Size the round before you split it.** Read the kickoff, the item's files and
+the size of the work (diff stat, plan length, repos and subsystems touched),
+then pick the smallest split that keeps quality:
+
+- **No split** — the work fits in a few reads of your own (roughly a handful
+  of files or a few hundred changed lines, one subsystem, a short plan). Do it
+  yourself, and get the independent check by re-reading each claim against
+  the code before it is written.
+- **By area** — several independent areas (subsystems, repos, PRs, disjoint
+  file groups), each worth its own reading: one subagent per area, covering
+  every concern for that area.
+- **By area and concern** — only for large or `deep` work, where a single
+  reader per area would itself be overloaded.
+
+Never launch more subagents than there are independent units of real work, and
+never one whose whole job is a file read or a grep — do that yourself. The
+waves below describe the split **at full scale**; shrink them to the size you
+picked.
 
 1. **Map** — one read-only mapper per area (a subsystem, a repo, the plan's
    group of actions or the diff's group of files), launched together, each
    returning what exists there: files, symbols, callers, data flow, with
-   `file:line`.
+   `file:line`. An area you can read in a few files is mapped by you, not by
+   a mapper.
 2. **Write** — you write both documents from those maps, and spot-check every
    file and symbol you name before it goes in.
 
@@ -142,8 +165,13 @@ How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
   subagent that writes `meta.json` or commits corrupts the round.
 - **Verify, don't forward.** A subagent's output is a claim. Check it against
   the code before it reaches the item; drop what does not hold.
-- **Report the split.** Your final message says how the work was divided and
-  what verification dropped or changed.
+- **Verify in proportion.** Settle a claim yourself when one read settles it.
+  Send it to a fresh refuting verifier only when refuting it takes real
+  tracing (callers, cross-file invariants, another repo), and batch those per
+  file or area — never one verifier per trivial finding.
+- **Report the split.** Your final message says how you sized the round, how
+  the work was divided (or why it was not), and what verification dropped
+  or changed.
 
 ## Hard rules (violating these corrupts the pipeline)
 
@@ -413,7 +441,8 @@ judgement>
    round's findings are worth a change round, and an explanation is not
    findings. Write no such line — clash never offers to "apply" an explainer,
    and claiming otherwise would put a button on the item that does the wrong
-   thing.
+   thing. Write no `**Next:**` line either: recommending a next step is a
+   judgement, and an explainer judges nothing.
 
 3. Final chat message: two sentences — what the change does and how many
    functional parts the document describes.

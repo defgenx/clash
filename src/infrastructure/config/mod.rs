@@ -229,6 +229,8 @@ pub struct Workflows {
     pub lead_model: String,
     /// `team` (lead + parallel subagents) | `solo`.
     pub delegation: String,
+    /// `suggest` | `autopilot` | `off` — see the `workflows.assist` row.
+    pub assist: String,
     /// Model the lead's subagents run on; empty = inherit the lead's.
     pub subagent_model: String,
     /// Skill the workflow PR phase opens pull requests with; empty means
@@ -273,6 +275,7 @@ impl Default for Workflows {
             omp_model: default_str("workflows.omp_model"),
             lead_model: default_str("workflows.lead_model"),
             delegation: default_str("workflows.delegation"),
+            assist: default_str("workflows.assist"),
             subagent_model: default_str("workflows.subagent_model"),
             pr_skill: default_str("workflows.pr_skill"),
             forge: default_str("workflows.forge"),

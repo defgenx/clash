@@ -390,16 +390,36 @@ test("a pre-authorized round applies itself through the same one mechanism", () 
   assert.match(mech, /launchWfAgent\(fresh, changeRoundPhase\(item\.meta\.status\)/);
   // Exactly one caller composes the note, and both paths use it.
   assert.match(APP, /async function wfApplyReviewNoteFor\(item, round, target\)/);
-  assert.equal((APP.match(/wfRecordAndRevise\(/g) || []).length, 3); // def + 2 callers
+  // def + the button, the pre-authorized hand-back and autopilot.
+  assert.equal((APP.match(/wfRecordAndRevise\(/g) || []).length, 4);
   // The auto path is guarded against a doubled hand-back event, and gated by
   // the pure rule rather than an inline condition.
   assert.match(APP, /const wfAutoApplying = new Set\(\)/);
-  assert.match(APP, /if \(!item \|\| !shouldAutoApply\(item, review\)\) return;/);
-  assert.match(APP, /wfMaybeAutoApplyReview\(project, slug, review\);/);
+  assert.match(APP, /if \(!item \|\| !shouldAutoApply\(item, review\)\) return false;/);
+  // The pre-authorized apply runs first; autopilot only when it did nothing.
+  assert.match(APP, /if \(review && \(await wfMaybeAutoApplyReview\(project, slug, review\)\)\) return;\n\s+await wfAutopilot\(project, slug\);/);
   // And the launch surface passes the checkbox through.
   assert.match(APP, /autoApply: picked\.autoApply,/);
   // …and reaches the backend, alongside the round's focus.
   assert.match(APP, /autoApply,\n\s+focus,\n\s+agent: opts\.agent,\n\s+cols: 120,/);
+});
+
+test("the recommender owns the primary button and only autopilot acts on it", () => {
+  // One owner of "which button is primary": the bar renders, then the
+  // recommender picks among what it rendered.
+  assert.match(APP, /return wfRenderNextStep\(bar, item\);\n\}/);
+  assert.match(APP, /available: new Set\(buttons\.map\(\(b\) => b\.dataset\.act\)\)/);
+  // Every hand-back reaches autopilot, review or not.
+  assert.match(APP, /wfAfterHandBack\(project, slug, review\);/);
+  assert.match(APP, /wfAfterHandBack\(project, slug, null\);/);
+  // Autopilot is bounded, acts only on non-deciding steps, and a human click
+  // resets its budget.
+  assert.match(APP, /if \(!step \|\| !step\.auto\) return;/);
+  assert.match(APP, /runs >= WF_AUTOPILOT_BUDGET/);
+  assert.match(APP, /wfAutopilotRuns\.delete\(wfKey\(item\.project, item\.slug\)\);/);
+  // The recommender is loaded before app.js reads it.
+  const html = fs.readFileSync(path.join(__dirname, "../dist/index.html"), "utf8");
+  assert.ok(html.indexOf("wf-next.js") > 0 && html.indexOf("wf-next.js") < html.indexOf("app.js"));
 });
 
 test("a session share hands off without leaking credentials or the payload's shape", () => {
@@ -834,6 +854,10 @@ test("every workflow start names its agent, and an unavailable one is greyed", (
     const call = APP.slice(at, APP.indexOf("});", at));
     assert.match(call, /\bagent\b/, `${cmd} must pass the picked agent`);
   }
+  // Asked only under `ask`: otherwise every start runs on the set agent.
+  const pick = extractFunction(APP, "pickWfAgent");
+  assert.match(pick, /if \(!wfAgentAsks\(item\.meta\.agentSetting, settings\)\)/);
+  assert.match(extractFunction(APP, "wfAgentSelect"), /\.hidden = !asks;/);
   // Shown, not hidden: the picker disables a missing binary with its reason.
   assert.match(APP, /disabled: !c\.available,/);
   assert.match(APP, /o\.disabled = !c\.available;/);

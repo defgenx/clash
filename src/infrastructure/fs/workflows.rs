@@ -67,6 +67,9 @@ pub const BLUEPRINT_FILE: &str = "blueprint.md";
 pub const DRIFT_FILE: &str = "drift.md";
 pub const DRIFT_HTML: &str = "drift.html";
 pub const ANNOTATIONS_FILE: &str = "annotations.json";
+/// The executor's note to the human at the end of each phase, overwritten
+/// every phase. Agent-written, read-only to clash.
+pub const HANDOFF_FILE: &str = "handoff.md";
 /// clash-only record of the explainer rounds launched alongside the item's
 /// other agents — see `WorkflowExplainer`.
 pub const EXPLAINERS_FILE: &str = "explainers.json";
@@ -212,6 +215,9 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         last_agent_review,
         review_rounds,
         explainers: explainer_states,
+        handoff: crate::application::workflow::parse_handoff(
+            &std::fs::read_to_string(dir.join(HANDOFF_FILE)).unwrap_or_default(),
+        ),
         meta,
     })
 }
@@ -348,7 +354,7 @@ fn doc_path(dir: &Path, doc: &str) -> Result<PathBuf> {
     match doc {
         PLAN_FILE | REVIEW_FILE | AGENT_REVIEW_FILE | EXPLAIN_PLAN_FILE | EXPLAIN_PLAN_HTML
         | EXPLAIN_DIFF_FILE | EXPLAIN_DIFF_HTML | STRUCTURE_FILE | BLUEPRINT_FILE | DRIFT_FILE
-        | DRIFT_HTML => Ok(dir.join(doc)),
+        | DRIFT_HTML | HANDOFF_FILE => Ok(dir.join(doc)),
         _ => Err(parse_err(format!("Not a workflow document: '{}'", doc))),
     }
 }

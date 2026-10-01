@@ -1,10 +1,15 @@
 // node --test gui/tests/ — the workflow launch's agent-choice model.
 //
-// Every start asks which agent runs it, so what is greyed and what is
-// pre-selected is the whole behaviour worth pinning.
+// A start asks which agent runs it only under the `ask` setting; then what is
+// greyed and what is pre-selected is the whole behaviour worth pinning.
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { wfAgentChoices, wfAgentDefault } = require("../dist/wf-agent.js");
+const {
+  wfAgentChoices,
+  wfAgentDefault,
+  wfAgentAsks,
+  wfFixedAgent,
+} = require("../dist/wf-agent.js");
 
 test("an agent whose binary is missing is listed, greyed, with the reason", () => {
   const choices = wfAgentChoices({ claudeAvailable: true, ompAvailable: false, ompBin: "/opt/omp" });
@@ -41,4 +46,24 @@ test("an unavailable preference falls back to one that is available", () => {
   );
   // Nothing available: keep the preference so the refusal names its binary.
   assert.equal(wfAgentDefault("omp", { claudeAvailable: false, ompAvailable: false }), "omp");
+});
+
+test("a start asks only when the item's setting, else the global one, is ask", () => {
+  assert.equal(wfAgentAsks("", { workflowAgent: "ask" }), true);
+  assert.equal(wfAgentAsks("ask", { workflowAgent: "omp" }), true);
+  assert.equal(wfAgentAsks("claude", { workflowAgent: "ask" }), false);
+  assert.equal(wfAgentAsks("", { workflowAgent: "omp" }), false);
+  // Settings that never arrived: the shipped default, which asks.
+  assert.equal(wfAgentAsks("", {}), true);
+});
+
+test("an unasked start runs on the fixed setting", () => {
+  assert.equal(wfFixedAgent("omp", { workflowAgent: "claude" }), "omp");
+  assert.equal(wfFixedAgent("", { workflowAgent: "omp" }), "omp");
+});
+
+test("a global ask pre-selects the last agent, never the word ask", () => {
+  const both = { claudeAvailable: true, ompAvailable: true, workflowAgent: "ask" };
+  assert.equal(wfAgentDefault("omp", both), "omp");
+  assert.equal(wfAgentDefault("", both), "claude");
 });

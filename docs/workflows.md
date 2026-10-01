@@ -28,6 +28,7 @@ workflows are a structured store.
 ├── drift.md           # the plan AGAINST what was built — graded (clash-drift-review)
 ├── drift.html         # …and as one hand-drawn map, every part badged
 ├── annotations.json   # line-level diff comments
+├── handoff.md         # the executor's note to the human (overwritten every phase)
 ├── explainers.json    # explainer rounds running alongside the item (clash-owned)
 ├── history/<NNN>/     # per-iteration snapshots (diff.patch + plan.md + annotations.json)
 └── plan-history/      # every recorded revision of plan.md (index.json + NNNN.md), clash-owned
@@ -36,6 +37,25 @@ workflows are a structured store.
 `review.md` and `agent-review.md` are deliberately two files: the first is
 clash's record of **human** decisions, the second the reviewer's own findings.
 One file would make ownership ambiguous exactly where concurrent writes happen.
+
+`handoff.md` is the **executor's** file: `clash-workflow` overwrites it at the
+end of every phase, before the hand-back status write, and reviewers and
+explainers never write it; clash and the GUI only read it (the item's
+**↩ Hand-off** tab, and the next-step recommender reads its `**Next:**`). Shape, under ~25 lines:
+
+```markdown
+# Hand-off — <phase> · iteration <meta.iteration>
+## Done
+- …
+## Unsure / needs your decision
+- … (or "nothing")
+## Checked
+- tests/linters run and their result, or what could not be run and why
+**Next:** <action> — <one-line reason>
+```
+
+Its `**Next:**` line uses the same vocabulary as a review round's (see *Agent
+review rounds*).
 
 `(project, slug)` — the directory path — is the identity; `meta.json` never
 overrides it. Renaming an item (⚙ Settings, or **Rename…**) rewrites
@@ -246,6 +266,19 @@ pr-draft / pr-ready likewise
   `AgentReviewSummary.apply` — anything not recognizably yes/no stays `None`,
   because clash launches an agent off a `yes` and silence is not consent. The
   explainer writes no such line: an explanation is not findings.
+- **Every reviewer round also recommends a next step**, as
+  `**Next:** <action> — <reason>` on the line after `**Apply:**` (and the
+  executor ends `handoff.md` with the same line). `<action>` is exactly one
+  of: `apply` (worth a change round now), `approve` (nothing material left),
+  `plan-review`, `code-review`, `deep-review` (a risky area: auth,
+  migrations, concurrency, data loss, money, wide blast radius), `drift`
+  (compare plan and diff), `answer-comments` (PR comments waiting on an
+  answer). It must agree with `**Apply:**` — `yes` ⇒ `apply`, unless the
+  reviewer judges `answer-comments` more urgent. It feeds the GUI's suggested
+  next step as a recommendation only: clash's own ordered checks (a pending
+  unapplied round, open comments) rank first, `Next:` is used where they are
+  silent, and an unknown or missing action is ignored. Interactive rounds ask
+  the human to confirm it with the apply call. The explainer writes none.
 - **Auto-apply needs two signatures.** `meta.review.autoApply` is the human's
   pre-authorization from the round composer, carried into the kickoff as
   `Auto-apply: yes|no` so the skill knows whether its own `yes` fires (an
@@ -537,7 +570,7 @@ drift from the agreement, it is the agreement being updated.
 
 **The one remedy clash cannot apply for you is a plan amendment.** An executor
 fix round never writes `plan.md`, so a round whose issues all need the plan
-changed must answer `**Apply:** no` — otherwise clash would spawn an agent that
+changed must answer `**Apply:** no` (with `**Next:** plan-review`) — otherwise clash would spawn an agent that
 finds nothing it is allowed to do. Those entries go under
 `### Plan amendments needed` in the report and in a `## Plan amendments needed`
 section of `drift.md`, and the route is **↩ Move back to… → plan-review**, then
@@ -551,8 +584,12 @@ artifact.
 
 Ground truth is `plan.md` and the diff — **not** `explain-plan.md` and
 `explain-diff.md`. Those are read as context, and `explain-plan.md`'s numbered
-action graph is adopted as the report's spine when it exists (same numbers, so
-the two documents can be read side by side), but comparing two explanations
+action graph is adopted as the report's spine when it is current — its
+`explainers.json` record's `iteration` equals `meta.iteration` and its round
+entry is already in `agent-review.md` — (same numbers, so the two documents
+can be read side by side); a stale one, or one being rewritten alongside the
+drift round, is skipped and the spine numbered from `plan.md`, never waited
+for. Comparing two explanations
 would measure drift between two *documents*: an `explain-diff.md` written three
 rounds ago describes code that no longer exists.
 
@@ -706,6 +743,8 @@ via ↩ Move back to… → plan-review.
   work; `parked` ones are human-owned (kept back from the round) and must
   never be touched, like `addressed`/`wontfix` ones.
 - Read-modify-write `meta.json`; keep unknown fields.
+- Overwrite `handoff.md` at the end of every phase, before the hand-back
+  status write (shape under *Layout*).
 - Never rewrite `review.md` history — it is append-only (clash appends the
   `## Iteration N` sections; the agent only reads it).
 
@@ -926,6 +965,57 @@ flipping it to `implementing` would both advertise work that isn't happening and
 let it re-enter the implement loop. It is also forbidden from changing code — the
 description is the whole deliverable.
 
+## Next-step assist
+
+Every item's action bar opens with a **Suggested next** strip: the one button
+to press now, the reason, and the checks that were already settled on the way
+to it. The pure `wfNextStep` (`gui/dist/wf-next.js`, tests in
+`gui/tests/wf_next.test.js`) walks an ordered list of checks per stage and the
+first one that fires wins, for example at `diff-review`:
+
+1. a review round is waiting to be applied (and did not say `Apply: no`) → **Apply**
+2. comments are still open → **Request changes**
+3. PR threads are waiting on you → **Answer PR comments**
+4. the code has no review at this iteration → **Code review** (`deep` when an
+   agent's `Next:` said `deep-review`)
+5. there is a plan and nothing has compared it with the change yet, or an
+   agent's `Next:` asked for it → **Compare plan vs changes**
+6. otherwise → **Approve** (to the PR stage when a PR exists, else done)
+
+Three properties are the design. The recommender is **the one owner of the
+primary button**: `wfRenderNextStep` runs after the bar is rendered, picks
+among the buttons that are actually there (`data-act`), and moves the
+highlight, so a suggestion is always clickable and the bar's gates stay the
+only gates; the per-stage `primary` classes survive only for `assist = off`.
+**Agents advise, clash ranks**: a round's or a hand-off's `**Next:**` is
+consulted only where clash's own checks are silent, so no agent can recommend
+approving over an unapplied round or an open comment. And "reviewed" means
+**reviewed at this iteration**: every review launch stamps
+`meta.reviewMarks[<target>] = { iteration, round }` (clash-only), and the round
+counts once that target's tally reaches `round`, so a fix round makes its code
+due for review again while a round still in flight does not count. Items
+predating the marks count any past round as current rather than being nagged.
+
+`workflows.assist` (`suggest` | `autopilot` | `off`, default `suggest`)
+decides how far it goes. Under `autopilot`, every agent hand-back (after a
+pre-authorized apply, which keeps precedence) starts the recommended step
+**when it decides nothing**: a plan or code review, a plan-vs-changes round, or
+applying a round that said `Apply: yes` (`AUTO_ACTIONS`). Approvals, PR flips,
+change requests (whose note is yours) and anything posted on GitHub always
+wait. The rounds it starts are autonomous and pre-authorized to apply, so
+review → fix → review continues until a reviewer says there is nothing to
+apply; `WF_AUTOPILOT_BUDGET` (3 steps per item) stops a reviewer that never
+does, and any click on the item's bar resets the budget.
+
+**Explanations follow the comparison.** A plan-vs-changes round is read next
+to the two explanations, so launching one offers to refresh every existing
+explanation written for an older iteration (`staleExplanations`: its
+`explainers.json` record carries the `iteration` it was launched against; no
+record counts as stale). The rows are pre-ticked, and autopilot refreshes them
+without asking. They run **alongside**: the drift round never waits for them,
+because its ground truth is `plan.md` and the diff, and it adopts
+`explain-plan.md`'s numbering only when that explanation is current.
+
 ## Lead and subagents
 
 Every Claude workflow session runs on one pinned **lead model**
@@ -934,18 +1024,31 @@ user last selected, so rounds are reproducible — two review rounds on one item
 are comparable because the reviewer was the same model both times. The lead
 does the thinking: requirements, planning, splitting, integrating, judging.
 
-Under `workflows.delegation = team` (the default) the lead is **required** to
-fan the work out to parallel subagents, which run on `workflows.subagent_model`
-(default `claude-sonnet-5`):
+Under `workflows.delegation = team` (the default) the lead may fan the work out
+to parallel subagents, which run on `workflows.subagent_model` (default
+`claude-sonnet-5-5`). `team` is permission, not a quota: every skill makes the
+lead **size the round first** and pick the smallest split that keeps quality —
+no split when the work fits in a few reads, one subagent per independent area
+(subsystem, repo, PR) otherwise, and a per-concern split only for large or
+`deep` work. A subagent costs a brief, a cold re-read of the code and the
+lead's check of its result, so one whose job is a single file read is slower
+than doing it, and a fixed fan-out (four lenses on a three-line diff) is
+ceremony. The table is the split **at full scale**:
 
 | Skill | Fan-out | Second pass |
 |-------|---------|-------------|
 | `clash-workflow` · `plan` | one explorer per area the task touches | the lead checks the facts the plan rests on |
-| `clash-workflow` · `implement` | the plan's work units, in waves of disjoint files | one verifier over the whole diff |
-| `clash-plan-review` | one reviewer per section (architecture, quality, tests, performance) | one refuting verifier per issue |
-| `clash-code-review` | one reviewer per lens (correctness, tests, conventions, security/perf), per PR | one refuting verifier per finding |
-| `clash-drift-review` | tracers over the plan's actions + one over unexplained hunks | one refuting verifier per divergence |
-| `clash-explain` | one mapper per area | the lead spot-checks every name it writes |
+| `clash-workflow` · `implement` | the plan's non-trivial work units, in waves of disjoint files | one verifier over the whole diff (the lead's own re-read for a small one) |
+| `clash-plan-review` | one reviewer per area, split by section (architecture, quality, tests, performance) only for a large plan | refutation, batched per area |
+| `clash-code-review` | one reviewer per area/PR applying every lens (correctness, tests, conventions, security/perf), split by lens only when large or `deep` | refutation, batched per file or area |
+| `clash-drift-review` | tracers over the plan's actions grouped by area, + one over unexplained hunks for a large diff | refutation, batched per file or area |
+| `clash-explain` | one mapper per area too big to read in a few files | the lead spot-checks every name it writes |
+
+Verification is proportional too: the lead settles a claim itself when one
+read does, and sends it to a fresh refuting verifier only when refuting it
+takes real tracing — never one verifier per trivial finding. The final message
+reports how the round was sized and split, so a round that delegated nothing
+says why.
 
 `revise` and `pr` stay with the lead: each writes one document, and a document
 is one voice. The fan-out is for speed; the second pass is for the findings —
@@ -955,7 +1058,7 @@ review from being a louder one.
 Two halves enforce it. The kickoff always states the choice
 (`Delegation: team (subagents on <model>).` or `Delegation: solo.`, right after
 `Mode:` — the pure `Delegation::clause`), and each skill's *Lead and subagents*
-section makes it mandatory; the subagent model is additionally set as
+section says how to size it; the subagent model is additionally set as
 `CLAUDE_CODE_SUBAGENT_MODEL` in the session's env (`delegation_env`), so it
 does not depend on the lead remembering it — which is why the skills tell the
 lead never to pass a `model` of its own. The lead alone writes the item's

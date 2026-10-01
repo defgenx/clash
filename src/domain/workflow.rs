@@ -632,6 +632,11 @@ pub struct WorkflowExplainer {
     pub session_id: String,
     #[serde(default)]
     pub started_at: i64,
+    /// `meta.iteration` at launch: the explanation describes that iteration's
+    /// plan or diff, and is stale once a change round bumps it. 0 on records
+    /// written before the field existed.
+    #[serde(default)]
+    pub iteration: u32,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
@@ -655,6 +660,8 @@ pub struct ExplainerState {
     pub round: u32,
     pub session_id: String,
     pub started_at: i64,
+    /// See [`WorkflowExplainer::iteration`].
+    pub iteration: u32,
     /// Its round entry is in `agent-review.md`.
     pub finished: bool,
     /// Not finished and its session is alive (or still within the launch
@@ -767,10 +774,15 @@ pub struct WorkflowMeta {
     /// launches that offer no interaction choice of their own.
     #[serde(default)]
     pub interaction_default: String,
-    /// Per-item agent CLI override (item Settings tab): `claude` | `omp`.
-    /// Empty inherits the global `workflows.agent` setting.
+    /// The agent CLI this item last launched on (`claude` | `omp`) — what a
+    /// relaunch or an auto-applied round runs on when the setting is `ask`,
+    /// and what the picker pre-selects. Clash-only.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub agent: String,
+    /// Per-item agent setting (item Settings tab): `claude` | `omp` | `ask`.
+    /// Empty inherits the global `workflows.agent` setting.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent_setting: String,
     /// Jira ticket this item belongs to (`PROJ-123`). Pre-fills the share
     /// dialog's Post-to-Jira prompt and is remembered after the first post;
     /// also editable in the item Settings tab. Empty means "detect from
@@ -809,6 +821,11 @@ pub struct WorkflowMeta {
     /// they used before it existed.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub phase: String,
+    /// Per review target, the iteration its latest round was launched against
+    /// — what lets the GUI tell "the code was reviewed" from "this iteration's
+    /// code was reviewed". Clash-only.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub review_marks: std::collections::BTreeMap<String, ReviewMark>,
     /// Review iteration, starting at 1. Bumped only by clash on
     /// request-changes (never by the agent).
     #[serde(default)]
@@ -973,6 +990,41 @@ pub struct AgentReviewSummary {
     /// because.
     #[serde(default)]
     pub apply_reason: String,
+    /// The round's recommended next step (`**Next:** <action> — <reason>`),
+    /// one of [`crate::application::workflow::NEXT_ACTIONS`]; empty when the
+    /// round declared none or an unknown one. Input to the GUI's next-step
+    /// recommender, never acted on by itself.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub next: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub next_reason: String,
+}
+
+/// The executor's `handoff.md`, parsed at list time — a runtime DTO; the file
+/// is the source of truth and the GUI renders it whole.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffSummary {
+    /// The `# Hand-off — …` heading tail, e.g. `implement · iteration 2`.
+    pub heading: String,
+    /// Same vocabulary and parse as [`AgentReviewSummary::next`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub next: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub next_reason: String,
+}
+
+/// Which iteration a review round on one target was launched against, and the
+/// number it carries. Clash-only, stamped by every review launch into
+/// `meta.reviewMarks[<target>]`; the round counts as done once that target's
+/// tally reaches `round`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewMark {
+    #[serde(default)]
+    pub iteration: u32,
+    #[serde(default)]
+    pub round: u32,
 }
 
 /// Which forms one explanation exists in. Both may be present: the markdown
@@ -1052,6 +1104,9 @@ pub struct WorkflowItem {
     /// The explainer rounds recorded in `explainers.json`, one per target.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub explainers: Vec<ExplainerState>,
+    /// The executor's latest `handoff.md`, when it wrote one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<HandoffSummary>,
 }
 
 /// Resolution state of a diff annotation.

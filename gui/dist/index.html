@@ -103,7 +103,8 @@
         <div class="settings-group">Workflows · agents</div>
         <p class="settings-note">How the agents clash launches for a workflow item behave.</p>
         <label class="setting-row inline">Workflow agent
-          <select id="set-wf-agent" title="Agent CLI workflow sessions (plan, implement, reviews, explanations, shares) run on. An item's ⚙ Settings tab can override it.">
+          <select id="set-wf-agent" title="Agent CLI workflow sessions (plan, implement, reviews, explanations, shares) run on — or ask at every step. An item's ⚙ Settings tab can override it.">
+            <option value="ask">Ask at every step</option>
             <option value="claude">Claude Code</option>
             <option value="omp">OMP</option>
           </select>
@@ -111,14 +112,21 @@
         <label class="setting-row">Lead model
           <input id="set-wf-lead-model" type="text" placeholder="claude-opus-5-5" autocomplete="off" spellcheck="false" title="Model every Claude Code workflow session runs on — the lead that plans, reviews, splits the work and verifies it. Empty resets to the shipped default." />
         </label>
+        <label class="setting-row inline">Next-step assist
+          <select id="set-wf-assist" title="Suggest: every item's action bar highlights the recommended next step and says why. Autopilot: also starts that step when it decides nothing — a review round, or applying a round that said apply — and always stops before an approval or anything that moves the item forward. Off: the plain action bar.">
+            <option value="suggest">Suggest the next step</option>
+            <option value="autopilot">Autopilot until a decision</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
         <label class="setting-row inline">Delegation
-          <select id="set-wf-delegation" title="Team: the lead fans implementation steps, exploration and review passes out to parallel subagents, then verifies what they return. Solo: everything runs in the one session.">
+          <select id="set-wf-delegation" title="Team: the lead sizes each round and fans implementation steps, exploration and review passes out to parallel subagents only where that is faster than doing them itself, then verifies what they return. Solo: everything runs in the one session.">
             <option value="team">Team (lead + subagents)</option>
             <option value="solo">Solo</option>
           </select>
         </label>
         <label class="setting-row" id="set-wf-subagent-row">Subagent model
-          <input id="set-wf-subagent-model" type="text" placeholder="claude-sonnet-5" autocomplete="off" spellcheck="false" title="Model the lead's subagents run on under Team delegation (enforced via CLAUDE_CODE_SUBAGENT_MODEL). Empty resets to the shipped default. Claude Code only — OMP picks its task models from its own configuration." />
+          <input id="set-wf-subagent-model" type="text" placeholder="claude-sonnet-5-5" autocomplete="off" spellcheck="false" title="Model the lead's subagents run on under Team delegation (enforced via CLAUDE_CODE_SUBAGENT_MODEL). Empty resets to the shipped default. Claude Code only — OMP picks its task models from its own configuration." />
         </label>
         <label class="setting-row">OMP model
           <input id="set-wf-omp-model" type="text" placeholder="omp's default" autocomplete="off" spellcheck="false" title="Model OMP workflow sessions launch with (omp's --model, fuzzy-matched). Empty uses omp's own default; Claude Code sessions use the Lead model." />
@@ -379,6 +387,7 @@
   <script src="wf-prs.js"></script>
   <script src="wf-pr-scope.js"></script>
   <script src="wf-plan.js"></script>
+  <script src="wf-next.js"></script>
   <script src="wf-agent.js"></script>
   <script src="attention.js"></script>
   <script src="tour.js"></script>

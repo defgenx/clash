@@ -5483,6 +5483,7 @@ async function buildWorkflowView(el, project, slug) {
   // with no tab to leave it by.
   if (ts.subView === "agentReview" && !(item.hasAgentReview || item.meta.reviewRound))
     ts.subView = "diff";
+  if (ts.subView === "handoff" && !item.handoff) ts.subView = "diff";
   // And for Structure, which only exists once an explain round wrote it.
   // Tab names from a persisted layout written before the pairs existed.
   if (ts.subView === "structure" || ts.subView === "explain") ts.subView = "explainDiff";
@@ -5648,6 +5649,9 @@ async function buildWorkflowView(el, project, slug) {
     // "Review" and "Agent reviews" side by side told you nothing about which
     // was which. One holds your notes, the other the reviewer's findings.
     ["review", `Change requests${item.hasReview ? "" : " ·empty"}`],
+    // The executor's note at the end of its last phase: what it did, what it
+    // is unsure about, what it ran, and what it suggests next.
+    ...(item.handoff ? [["handoff", "↩ Hand-off"]] : []),
     // Agent review rounds accumulate, so the tab counts them — that count is
     // the item's review history and the reason a round is worth repeating.
     ...(item.hasAgentReview || item.meta.reviewRound
@@ -6049,15 +6053,19 @@ async function wfAgentSettings() {
   }
 }
 
-/// Ask which agent a start runs on. Every agent is listed; one whose binary
-/// does not resolve is greyed with the reason. Resolves to the agent, or null
-/// when cancelled.
+/// The agent a start runs on. Asks only under the `ask` setting (the item's,
+/// else the global one) — every agent listed, one whose binary does not
+/// resolve greyed with the reason; otherwise the fixed setting, unasked.
+/// Resolves to the agent, or null when cancelled.
 async function pickWfAgent(item, job) {
   const settings = await wfAgentSettings();
+  if (!wfAgentAsks(item.meta.agentSetting, settings)) {
+    return wfFixedAgent(item.meta.agentSetting, settings);
+  }
   const def = wfAgentDefault(item.meta.agent, settings);
   return uiChoice({
     message: `Run ${wfSessionName(item, job)} on which agent?`,
-    detail: "The pick becomes this item's agent, so a relaunch or an auto-applied round stays on it.",
+    detail: "A relaunch or an auto-applied round stays on the agent picked here.",
     choices: wfAgentChoices(settings).map((c) => ({
       label: c.available ? c.label : `${c.label} (not installed)`,
       value: c.value,
@@ -6070,8 +6078,10 @@ async function pickWfAgent(item, job) {
 
 /// The composers' agent row: a <select> whose unavailable agents are disabled
 /// options carrying the reason. Availability arrives async; a pick made before
-/// it lands is kept unless that agent turned out to be unavailable.
-function wfAgentSelect(item) {
+/// it lands is kept unless that agent turned out to be unavailable. `row` (the
+/// select itself when absent) is hidden unless the agent setting is `ask`,
+/// with the select then holding the fixed agent.
+function wfAgentSelect(item, row = null) {
   const sel = document.createElement("select");
   sel.className = "wf-agent-select";
   sel.title = "Which agent CLI this round runs on";
@@ -6089,10 +6099,17 @@ function wfAgentSelect(item) {
       o.title = c.reason;
       sel.appendChild(o);
     }
+    const asks = wfAgentAsks(item.meta.agentSetting, settings);
+    (row || sel).hidden = !asks;
     const keepOk = keep && choices.some((c) => c.value === keep && c.available);
-    sel.value = keepOk ? keep : wfAgentDefault(item.meta.agent, settings);
+    sel.value = !asks
+      ? wfFixedAgent(item.meta.agentSetting, settings)
+      : keepOk
+        ? keep
+        : wfAgentDefault(item.meta.agent, settings);
   };
-  fill({ workflowAgent: item.meta.agent || "claude" });
+  // Until the settings land, a composer is built as though it asks.
+  fill({ workflowAgent: "ask" });
   wfAgentSettings().then(fill);
   return sel;
 }
@@ -6184,7 +6201,13 @@ async function launchWfAgent(item, phase, root, branch = null, opts = {}) {
 /// Rounds are unbounded by design: the reviewer returns the item to the status
 /// it started in, so this same button is available again the moment it finishes.
 async function launchWfReview(item, root, opts = {}) {
-  const picked = await wfComposeReviewRound(item, opts);
+  // A plan-vs-changes round is read beside the two explanations, so the ones
+  // describing an older iteration are offered for a refresh in the same
+  // dialog — pre-ticked, since three documents that disagree about which
+  // change they describe are worse than one.
+  const refresh =
+    opts.target === "drift" ? staleExplanations(item, (t) => canExplain(item, t)) : [];
+  const picked = await wfComposeReviewRound(item, { ...opts, refresh });
   if (!picked) return;
   await spawnWfReview(item, root, picked.depth, picked.publish, {
     interactive: picked.interactive,
@@ -6195,6 +6218,18 @@ async function launchWfReview(item, root, opts = {}) {
     // to derive plan-vs-diff from the status, which is where that belongs.
     target: opts.target || null,
   });
+  await wfRefreshExplanations(item, root, picked.refresh || [], picked.agent);
+}
+
+/// Start explainer rounds on `targets` alongside whatever the item is doing.
+/// The comparison never waits for them: its ground truth is plan.md and the
+/// diff, and the drift skill ignores an explanation that is not current.
+async function wfRefreshExplanations(item, root, targets, agent) {
+  for (const target of targets) {
+    const fresh = wfItem(item.project, item.slug) || item;
+    if (!canExplain(fresh, target) || runningExplainer(fresh, target)) continue;
+    await spawnWfReview(fresh, root, "standard", "local", { target, agent, interactive: false });
+  }
 }
 
 /// Launch a respond round: the agent reads the PR's review comments, fixes
@@ -6481,12 +6516,12 @@ const wfAutoApplying = new Set();
 /// session opens.
 async function wfMaybeAutoApplyReview(project, slug, review) {
   const key = wfKey(project, slug);
-  if (wfAutoApplying.has(key)) return;
+  if (wfAutoApplying.has(key)) return true;
   await refreshWorkflows();
   const item = wfItem(project, slug);
-  if (!item || !shouldAutoApply(item, review)) return;
+  if (!item || !shouldAutoApply(item, review)) return false;
   const round = pendingReviewRound({ ...item, lastAgentReview: review });
-  if (!round) return;
+  if (!round) return false;
   wfAutoApplying.add(key);
   try {
     const target = item.meta.status === "plan-review" ? "plan" : "diff";
@@ -6500,12 +6535,77 @@ async function wfMaybeAutoApplyReview(project, slug, review) {
     // No question: a pre-authorized apply runs with no clicks, on the agent
     // the item was last started on.
     await wfRecordAndRevise(item, root, note, null);
+    return true;
   } catch (e) {
     // Never silent: the round declared work and clash failed to start it, so
     // the human has to know the button is theirs again.
     uiAlert(`Auto-apply of round ${round.round} failed: ${e}`);
+    return true;
   } finally {
     wfAutoApplying.delete(key);
+  }
+}
+
+// Autopilot's per-item budget: steps it started since a human last pressed a
+// button on that item. Bounded because a reviewer that keeps answering
+// "apply" would otherwise loop review → fix → review with nobody watching.
+const wfAutopilotRuns = new Map();
+const WF_AUTOPILOT_BUDGET = 3;
+
+/// After an agent hands an item back: a pre-authorized apply first (it is the
+/// human's own instruction), then — under `workflows.assist = autopilot` —
+/// the recommended step, when it is one that decides nothing.
+async function wfAfterHandBack(project, slug, review) {
+  if (review && (await wfMaybeAutoApplyReview(project, slug, review))) return;
+  await wfAutopilot(project, slug);
+}
+
+/// Start the recommended next step without a click. Only `step.auto` actions
+/// qualify (reviews, drift, applying a round that said apply — see
+/// AUTO_ACTIONS in wf-next.js); an approval or anything that posts on GitHub
+/// always stops here. The rounds it launches are autonomous and
+/// pre-authorized to apply, so the loop continues until a reviewer says
+/// there is nothing to apply, a decision is due, or the budget runs out.
+async function wfAutopilot(project, slug) {
+  if (state.wfAssist !== "autopilot") return;
+  const key = wfKey(project, slug);
+  if (wfAutoApplying.has(key)) return;
+  await refreshWorkflows();
+  const item = wfItem(project, slug);
+  if (!item) return;
+  const root = state.open.get(`view:workflow:${key}`)?.el || null;
+  // The bar decides what is offered; rendering it off-screen reuses every
+  // gate instead of restating them here.
+  const step = renderWfActions(document.createElement("div"), root, item);
+  if (!step || !step.auto) return;
+  const name = item.meta.title || slug;
+  const runs = wfAutopilotRuns.get(key) || 0;
+  if (runs >= WF_AUTOPILOT_BUDGET) {
+    flashToast(`${name}: autopilot paused after ${runs} steps — your call. Suggested: ${step.reason}`);
+    return;
+  }
+  wfAutopilotRuns.set(key, runs + 1);
+  flashToast(`${name}: autopilot — ${step.reason}`);
+  const auto = { interactive: false, autoApply: true, agent: null };
+  try {
+    if (step.id === "apply-review") {
+      const round = pendingReviewRound(item);
+      const target = item.meta.status === "plan-review" ? "plan" : "diff";
+      wfAutoApplying.add(key);
+      try {
+        await wfRecordAndRevise(item, root, await wfApplyReviewNoteFor(item, round, target), null);
+      } finally {
+        wfAutoApplying.delete(key);
+      }
+    } else if (step.id === "drift") {
+      await spawnWfReview(item, root, "standard", "local", { ...auto, target: "drift" });
+      const stale = staleExplanations(item, (t) => canExplain(item, t)).map((r) => r.target);
+      await wfRefreshExplanations(item, root, stale, null);
+    } else {
+      await spawnWfReview(item, root, step.params.depth || "standard", "local", auto);
+    }
+  } catch (e) {
+    uiAlert(`Autopilot could not start the next step for ${name}: ${e}`);
   }
 }
 
@@ -6797,7 +6897,7 @@ async function wfShareDialog(item) {
 /// `target` overrides the derived one for the rounds that have their own
 /// action button (currently `drift`). Plan/diff stay derived — the backend
 /// ignores an explicit value for them anyway, so asking would be theatre.
-function wfComposeReviewRound(item, { prUrls = null, target = null } = {}) {
+function wfComposeReviewRound(item, { prUrls = null, target = null, refresh = [] } = {}) {
   return new Promise((resolve) => {
     const t = target || wfReviewTarget(item);
     const model = reviewRoundModel({
@@ -6974,10 +7074,32 @@ function wfComposeReviewRound(item, { prUrls = null, target = null } = {}) {
     applyRow.append(applyBox, applyText);
     body.appendChild(applyRow);
 
+    const refreshBoxes = refresh.map((r) => {
+      const row = document.createElement("label");
+      row.className = "wf-review-opt";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = true;
+      box.value = r.target;
+      const text = document.createElement("span");
+      text.className = "wf-review-opt-text";
+      const label = document.createElement("span");
+      label.className = "wf-review-opt-label";
+      label.textContent = `Refresh the ${r.label} alongside`;
+      const detail = document.createElement("span");
+      detail.className = "wf-review-opt-detail";
+      detail.textContent =
+        "It describes an earlier iteration than the one being compared. Runs in parallel — the comparison does not wait for it. Spends tokens.";
+      text.append(label, detail);
+      row.append(box, text);
+      body.appendChild(row);
+      return box;
+    });
+
     const agentRow = document.createElement("label");
     agentRow.className = "wf-review-opt wf-review-agent";
     agentRow.appendChild(document.createTextNode("Run on "));
-    const agentSel = wfAgentSelect(item);
+    const agentSel = wfAgentSelect(item, agentRow);
     agentRow.appendChild(agentSel);
     body.appendChild(agentRow);
 
@@ -7004,6 +7126,7 @@ function wfComposeReviewRound(item, { prUrls = null, target = null } = {}) {
         // Empty = the item's own diff (no PR scope); URLs pin the round to
         // those PRs, however many.
         prUrls: scopeUrls(),
+        refresh: refreshBoxes.filter((b) => b.checked).map((b) => b.value),
       });
     actions.appendChild(cancel);
     actions.appendChild(launch);
@@ -7636,15 +7759,22 @@ function renderWfActions(bar, root, item) {
     bar.appendChild(g);
     zones[key] = { group: g, btns };
   }
-  const add = (label, cls, fn, title = "", zone = "advance") => {
+  // `act` names the action for the next-step recommender (wf-next.js); an
+  // action without one is never recommended.
+  const add = (label, cls, fn, title = "", zone = "advance", act = "") => {
     const b = document.createElement("button");
     b.textContent = label;
     if (cls) b.className = cls;
     if (title) b.title = title;
+    if (act) b.dataset.act = act;
     // Wrapped centrally rather than per-handler so a *new* action cannot ship
     // without feedback: a sync handler settles before paint and never shows the
-    // spinner, an async one shows it for exactly as long as it runs.
-    b.onclick = () => busyButton(b, () => fn());
+    // spinner, an async one shows it for exactly as long as it runs. A human
+    // click also hands the item back from autopilot's step budget.
+    b.onclick = () => {
+      wfAutopilotRuns.delete(wfKey(item.project, item.slug));
+      return busyButton(b, () => fn());
+    };
     zones[zone].btns.appendChild(b);
     return b;
   };
@@ -7740,7 +7870,9 @@ function renderWfActions(bar, root, item) {
             }. You can still apply it. `
           : "") +
         `Turns the findings into the next round's instructions and launches the agent — ` +
-        `${isPlan ? "the plan is versioned" : "the diff is frozen"} first, and you can edit the note before it goes`
+        `${isPlan ? "the plan is versioned" : "the diff is frozen"} first, and you can edit the note before it goes`,
+      "advance",
+      "apply-review"
     );
   };
 
@@ -7782,7 +7914,8 @@ function renderWfActions(bar, root, item) {
       "",
       () => launchWfReviewRespond(item, root),
       answerCommentsTitle(count, prName),
-      "step"
+      "step",
+      "answer-comments"
     );
   };
 
@@ -7883,7 +8016,8 @@ function renderWfActions(bar, root, item) {
       "Spends tokens: an agent reads plan.md and the diff, inventories every divergence and grades each one intended / harmless / a problem. " +
         "Writes a comparison document plus a drawn overview, and files the problems as diff comments you can turn into a fix round. " +
         "Drift it resolves by amending the plan is reported instead — that one goes back through plan-review.",
-      "step"
+      "step",
+      "drift"
     );
   };
 
@@ -7915,7 +8049,8 @@ function renderWfActions(bar, root, item) {
         (target === "diff" && itemPrs(item.meta).length > 1
           ? ". The composer asks which change to read: this repo's own diff, or any of this item's PRs — a cross-repo round reads several"
           : ""),
-      "step"
+      "step",
+      target === "plan" ? "plan-review" : "code-review"
     );
   };
 
@@ -7932,7 +8067,8 @@ function renderWfActions(bar, root, item) {
       itemPrs(item.meta).length > 1
         ? "Open this item's pull requests in the browser panel — the click asks which of them; all are pre-selected"
         : "Open this item's pull request in the browser panel",
-      "step"
+      "step",
+      "open-prs"
     );
   };
 
@@ -7973,7 +8109,9 @@ function renderWfActions(bar, root, item) {
         "▶ Start planning",
         "primary",
         () => launchWfAgent(item, "plan", root),
-        "Spend tokens: launch an agent session that explores the repo and writes plan.md, then hands it back for your review"
+        "Spend tokens: launch an agent session that explores the repo and writes plan.md, then hands it back for your review",
+        "advance",
+        "start-planning"
       );
       abandon();
       break;
@@ -7985,10 +8123,11 @@ function renderWfActions(bar, root, item) {
       const via = r.returnStatus ? wfStatusInfo(r.returnStatus).label : "where it started";
       if (item.agentAlive === false) {
         add("⚠ End review round", "primary", () => cancelWfReview(item, root),
-          "The reviewer session is gone — unlock the item", "step");
+          "The reviewer session is gone — unlock the item", "step", "end-round");
       } else if (item.meta.sessionId) {
         add("Open review session", "primary", () => openSession(item.meta.sessionId),
-          `Review round ${r.round || 1} — ${r.depth || "standard"} ${r.target || ""}`.trim(), "step");
+          `Review round ${r.round || 1} — ${r.depth || "standard"} ${r.target || ""}`.trim(), "step",
+          "open-session");
       }
       add("End round", "", () => cancelWfReview(item, root), `Returns the item to ${via}`, "step");
       abandon();
@@ -8016,7 +8155,8 @@ function renderWfActions(bar, root, item) {
               root
             ),
           "The recorded agent session is gone — spend tokens to start a fresh one on the same phase",
-          "step"
+          "step",
+          "relaunch"
         );
       } else if (item.meta.sessionId) {
         add(
@@ -8024,7 +8164,8 @@ function renderWfActions(bar, root, item) {
           "primary",
           () => openSession(item.meta.sessionId),
           "Open the running agent's terminal — watch it work or answer its questions",
-          "step"
+          "step",
+          "open-session"
         );
       }
       abandon();
@@ -8046,13 +8187,17 @@ function renderWfActions(bar, root, item) {
           const fresh = wfItem(item.project, item.slug) || item;
           if (go === "go") launchWfAgent(fresh, "implement", root);
         },
-        "Accept plan.md as written — the item moves to implementation (you choose whether to launch the agent right away)"
+        "Accept plan.md as written — the item moves to implementation (you choose whether to launch the agent right away)",
+        "advance",
+        "approve-plan"
       );
       add(
         "✎ Request changes…",
         "",
         () => requestChanges("plan"),
-        "Say what should change in your own words — your note becomes the next round's instructions, and the current plan is frozen as a version first"
+        "Say what should change in your own words — your note becomes the next round's instructions, and the current plan is frozen as a version first",
+        "advance",
+        "request-changes"
       );
       reviewButton();
       abandon();
@@ -8069,7 +8214,9 @@ function renderWfActions(bar, root, item) {
         // not derived — `revise` for an item that predates the field, which is
         // what it would have been launched on anyway.
         () => launchWfAgent(item, recordedPhase(item.meta, "revise"), root),
-        "Spend tokens: launch the agent to apply the requested changes — it reads your latest note and every open annotation"
+        "Spend tokens: launch the agent to apply the requested changes — it reads your latest note and every open annotation",
+        "advance",
+        "launch-round"
       );
       // Multi-repo items keep their PRs relevant mid-round (the fix round
       // pushes to them) — keep them one click away while composing.
@@ -8105,7 +8252,9 @@ function renderWfActions(bar, root, item) {
               return;
             wfTransition(item, root, "done");
           },
-          "Accept the diff as it stands and close the item — no PR required"
+          "Accept the diff as it stands and close the item — no PR required",
+          "advance",
+          "approve-done"
         );
 
       if (hasPr) {
@@ -8119,7 +8268,9 @@ function renderWfActions(bar, root, item) {
               if (!(await uiConfirm(`Approve these changes?${openWarning()}`, "Approve"))) return;
               wfTransition(item, root, "pr-draft");
             },
-            "Accept the diff and move to the PR stage — the draft PR becomes the thing under validation"
+            "Accept the diff and move to the PR stage — the draft PR becomes the thing under validation",
+            "advance",
+            "approve-pr-draft"
           );
         }
         approveDone();
@@ -8162,14 +8313,17 @@ function renderWfActions(bar, root, item) {
           } catch (e) {
             uiAlert(wfGhHint(e) || `Create PR failed: ${e}`);
           }
-        }, "Open a draft PR for this branch — from the plan (free, instant) or written by the workflow agent (reads the real diff, spends tokens); you pick next");
+        }, "Open a draft PR for this branch — from the plan (free, instant) or written by the workflow agent (reads the real diff, spends tokens); you pick next",
+        "advance", "create-pr");
       }
       openPrsButton();
       add(
         "✎ Request changes…",
         "",
         requestChanges,
-        "Open the change-request composer — your note + the open annotations become the next fix round, and this iteration's diff is frozen into history first"
+        "Open the change-request composer — your note + the open annotations become the next fix round, and this iteration's diff is frozen into history first",
+        "advance",
+        "request-changes"
       );
       reviewButton();
       answerCommentsButton();
@@ -8194,7 +8348,9 @@ function renderWfActions(bar, root, item) {
           "✓ PR is ready → PR ready",
           reviewPending ? "" : "primary",
           () => wfTransition(item, root, "pr-ready"),
-          "The primary PR is already ready-for-review on GitHub — record that and move the item to PR READY. Nothing changes on the PR; no tokens."
+          "The primary PR is already ready-for-review on GitHub — record that and move the item to PR READY. Nothing changes on the PR; no tokens.",
+          "advance",
+          "pr-is-ready"
         );
       }
       // Gated on having a *draft* to flip, not on having a primary: a
@@ -8208,7 +8364,9 @@ function renderWfActions(bar, root, item) {
           () => wfMarkPrReady(item, root),
           drafts.length > 1
             ? `Flip drafts to ready-for-review on GitHub — the validation step. This item tracks ${drafts.length} drafts across repositories, so the click asks which of them go up: any subset, or all. Only the primary moves this item to PR READY.`
-            : `Flip PR ${drafts[0].number ? `#${drafts[0].number}` : drafts[0].url} from draft to ready-for-review on GitHub — the validation step`
+            : `Flip PR ${drafts[0].number ? `#${drafts[0].number}` : drafts[0].url} from draft to ready-for-review on GitHub — the validation step`,
+          "advance",
+          "mark-ready"
         );
       }
       if (!wfHasPr(item)) {
@@ -8230,7 +8388,9 @@ function renderWfActions(bar, root, item) {
               uiAlert(`Attach failed: ${e}`);
             }
           },
-          "Link an existing GitHub pull request to this item — clash then tracks its state and comments"
+          "Link an existing GitHub pull request to this item — clash then tracks its state and comments",
+          "advance",
+          "attach-pr"
         );
       }
       openPrsButton();
@@ -8245,7 +8405,9 @@ function renderWfActions(bar, root, item) {
           if (!(await uiConfirm("Mark this workflow item as done?", "Done"))) return;
           wfTransition(item, root, "done");
         },
-        "Close the item without going through PR READY — a merged PR closes it automatically on the next refresh"
+        "Close the item without going through PR READY — a merged PR closes it automatically on the next refresh",
+        "advance",
+        "mark-done"
       );
       // Review feedback keeps arriving once a PR exists (agent rounds, GitHub
       // review comments) — without this the findings were a dead end here.
@@ -8253,7 +8415,9 @@ function renderWfActions(bar, root, item) {
         "✎ Request changes…",
         "",
         requestChanges,
-        "Open the change-request composer — your note + the open annotations become the next fix round (the agent pushes, so the PR picks up the fixes)"
+        "Open the change-request composer — your note + the open annotations become the next fix round (the agent pushes, so the PR picks up the fixes)",
+        "advance",
+        "request-changes"
       );
       reviewButton();
       answerCommentsButton();
@@ -8273,7 +8437,9 @@ function renderWfActions(bar, root, item) {
           if (!(await uiConfirm("Mark this workflow item as done?", "Done"))) return;
           wfTransition(item, root, "done");
         },
-        "Close the item — merged PRs close it automatically on the next refresh"
+        "Close the item — merged PRs close it automatically on the next refresh",
+        "advance",
+        "mark-done"
       );
       // Same rationale as pr-draft: a ready PR still gets review comments and
       // agent-round findings; both need a way to become the next fix round.
@@ -8281,7 +8447,9 @@ function renderWfActions(bar, root, item) {
         "✎ Request changes…",
         "",
         requestChanges,
-        "Open the change-request composer — your note + the open annotations become the next fix round (the agent pushes, so the PR picks up the fixes)"
+        "Open the change-request composer — your note + the open annotations become the next fix round (the agent pushes, so the PR picks up the fixes)",
+        "advance",
+        "request-changes"
       );
       reviewButton();
       answerCommentsButton();
@@ -8346,6 +8514,53 @@ function renderWfActions(bar, root, item) {
   for (const { group, btns } of Object.values(zones)) {
     if (!btns.childNodes.length) group.remove();
   }
+
+  return wfRenderNextStep(bar, item);
+}
+
+/// The next-step strip, and the one owner of which button is primary.
+///
+/// The per-stage `primary` classes above are the fallback for `assist =
+/// off`; otherwise the recommender (wf-next.js) picks among the buttons the
+/// bar actually rendered, so the highlight and the strip can never point at
+/// something that is not there. Returns the step (autopilot reads it).
+function wfRenderNextStep(bar, item) {
+  if ((state.wfAssist || "suggest") === "off") return null;
+  const buttons = [...bar.querySelectorAll("button[data-act]")];
+  const step = wfNextStep(item, {
+    available: new Set(buttons.map((b) => b.dataset.act)),
+    pending: pendingReviewRound(item),
+    prs: itemPrs(item.meta),
+    hasPlan: wfHasPlanPhase(item) && !!item.hasPlan,
+  });
+  if (!step) return null;
+  const target = buttons.find((b) => b.dataset.act === step.id);
+  for (const b of bar.querySelectorAll("button.primary")) b.classList.remove("primary");
+  target.classList.add("primary");
+
+  const strip = document.createElement("div");
+  strip.className = "wf-next";
+  const cap = document.createElement("span");
+  cap.className = "wf-actions-caption";
+  cap.textContent = state.wfAssist === "autopilot" && step.auto ? "Next · autopilot" : "Suggested next";
+  const go = document.createElement("button");
+  go.className = "wf-next-go";
+  go.textContent = target.textContent;
+  go.title = target.title;
+  go.onclick = () => target.click();
+  const why = document.createElement("span");
+  why.className = "wf-next-why";
+  why.textContent = step.reason;
+  strip.append(cap, go, why);
+  if (step.settled.length) {
+    const ok = document.createElement("span");
+    ok.className = "wf-next-settled";
+    ok.textContent = step.settled.map((t) => `✓ ${t}`).join("  ·  ");
+    ok.title = "Checked before this suggestion, in order — each one is already settled";
+    strip.appendChild(ok);
+  }
+  bar.prepend(strip);
+  return step;
 }
 
 /// Render a unified diff as coloured lines. Plans are prose, so this is the
@@ -8854,8 +9069,13 @@ async function renderWfSubView(body, root, item, ts) {
   if (ts.subView === "explainPlan") return renderWfExplainView(body, root, item, ts, "plan");
   if (ts.subView === "explainDiff") return renderWfExplainView(body, root, item, ts, "diff");
   if (ts.subView === "drift") return renderWfExplainView(body, root, item, ts, "drift");
-  if (ts.subView === "review" || ts.subView === "agentReview") {
-    const doc = ts.subView === "review" ? "review.md" : "agent-review.md";
+  if (ts.subView === "review" || ts.subView === "agentReview" || ts.subView === "handoff") {
+    const doc =
+      ts.subView === "review"
+        ? "review.md"
+        : ts.subView === "handoff"
+          ? "handoff.md"
+          : "agent-review.md";
     body.innerHTML = "<p class='hint'>loading…</p>";
     let text = "";
     try {
@@ -8873,7 +9093,9 @@ async function renderWfSubView(body, root, item, ts) {
     caption.textContent =
       ts.subView === "review"
         ? "Your change requests, one section per round — written when you press ✎ Request changes, and the first thing the next agent round reads. clash appends; agents only read."
-        : "What the agent review rounds found: verdict, findings and what each round published. Appended by the reviewer, never edited by clash — code findings also arrive as comments on the Diff tab.";
+        : ts.subView === "handoff"
+          ? "The workflow agent's note from the end of its last phase — what it did, what it is unsure about, what it checked, and the step it suggests next. Rewritten every phase; clash only reads it."
+          : "What the agent review rounds found: verdict, findings and what each round published. Appended by the reviewer, never edited by clash — code findings also arrive as comments on the Diff tab.";
     body.appendChild(caption);
 
     const tools = document.createElement("div");
@@ -8899,7 +9121,9 @@ async function renderWfSubView(body, root, item, ts) {
       md.innerHTML = `<p class="hint">${
         ts.subView === "review"
           ? "no review notes yet — they accumulate when you request changes"
-          : "no agent reviews yet — each round appends its findings here"
+          : ts.subView === "handoff"
+            ? "no hand-off yet — the workflow agent writes one at the end of each phase"
+            : "no agent reviews yet — each round appends its findings here"
       }</p>`;
 
     // Rounds accumulate top-down, so a long report opens on round 1 — the one
@@ -9133,7 +9357,7 @@ async function renderWfSubView(body, root, item, ts) {
         : "",
       prSkill: item.meta.prSkill || "",
       jiraTicket: item.meta.jiraTicket || "",
-      agent: item.meta.agent || "",
+      agentSetting: item.meta.agentSetting || "",
       workInPlace: !!item.meta.workInPlace,
     };
     const save = async (patch, revert) => {
@@ -9230,6 +9454,7 @@ async function renderWfSubView(body, root, item, ts) {
     const agentSel = document.createElement("select");
     for (const [v, l] of [
       ["", "inherit global setting"],
+      ["ask", "ask at every step"],
       ["claude", "Claude Code"],
       ["omp", "OMP"],
     ]) {
@@ -9238,11 +9463,11 @@ async function renderWfSubView(body, root, item, ts) {
       o.textContent = l;
       agentSel.appendChild(o);
     }
-    agentSel.value = committed.agent;
+    agentSel.value = committed.agentSetting;
     agentSel.onchange = () =>
-      save({ agent: agentSel.value }, () => (agentSel.value = committed.agent));
+      save({ agentSetting: agentSel.value }, () => (agentSel.value = committed.agentSetting));
     agentSel.title =
-      "Which agent CLI this item's sessions run on — per-item override of Settings → Workflows → Workflow agent. Every start asks and pre-selects this; the pick is saved back here.";
+      "Which agent CLI this item's sessions run on — per-item override of Settings → Workflows → Workflow agent. 'ask' asks at every start, pre-selecting the agent last used.";
     agentRow.appendChild(agentSel);
     agents.appendChild(agentRow);
 
@@ -11028,9 +11253,10 @@ listen("workflow-attention", (event) => {
     flashToast(
       `${title || slug}: review round ${review.round} finished — ${wfShort(review.verdict, 120)}. ${wfShort(posted, 160)}`
     );
-    wfMaybeAutoApplyReview(project, slug, review);
+    wfAfterHandBack(project, slug, review);
   } else {
     flashToast(`${title || slug}: ${wfStatusInfo(status).label} — decision needed`);
+    wfAfterHandBack(project, slug, null);
   }
 });
 
@@ -12042,6 +12268,13 @@ function syncAgentSettingsUi(cfg) {
   $("set-wf-omp-model").value = cfg.ompModel;
   $("set-wf-lead-model").value = cfg.leadModel;
   $("set-wf-delegation").value = cfg.delegation;
+  $("set-wf-assist").value = cfg.assist || "suggest";
+  // Read by the action bar and the hand-back listener; a change repaints the
+  // open items so the strip appears or goes at once.
+  const assist = cfg.assist || "suggest";
+  const repaint = state.wfAssist !== undefined && state.wfAssist !== assist;
+  state.wfAssist = assist;
+  if (repaint) rebuildOpenWorkflowTabs();
   $("set-wf-subagent-model").value = cfg.subagentModel;
   // Solo launches no subagents, so their model is not in play.
   $("set-wf-subagent-row").classList.toggle("setting-inactive", cfg.delegation === "solo");
@@ -12053,6 +12286,7 @@ for (const [id, key] of [
   ["set-wf-omp-model", "workflows.omp_model"],
   ["set-wf-lead-model", "workflows.lead_model"],
   ["set-wf-delegation", "workflows.delegation"],
+  ["set-wf-assist", "workflows.assist"],
   ["set-wf-subagent-model", "workflows.subagent_model"],
 ]) {
   $(id).addEventListener("change", async () => {

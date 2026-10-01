@@ -99,11 +99,14 @@ drift between two *documents*, not between the plan and the code.
    raised and the human dismissed must not come back as new; drift they said
    they would fix must be re-checked, and *closing* it is a result worth
    reporting.
-6. `explain-plan.md`, when it exists — **adopt its numbered action graph as
-   your spine.** Its nodes are `1..n`, the numbers are stable by contract, and
-   the human has already read and decided on them, so "what happened to 4"
-   is a question they can check. Without it, derive your own numbered spine
-   from `plan.md` and say in the document that you did.
+6. `explain-plan.md`, when it is current — **adopt its numbered action graph
+   as your spine.** Its nodes are `1..n`, the numbers are stable by contract,
+   and the human has already read and decided on them, so "what happened to 4"
+   is a question they can check. Current means its `explainers.json` record
+   has `iteration` equal to `meta.iteration` **and** its round entry is
+   already in `agent-review.md`; a stale one, or one an explainer is
+   rewriting right now, does not count — never wait for it. Otherwise derive
+   your own numbered spine from `plan.md` and say in the document that you did.
 7. `explain-diff.md`, when it exists — context for what was built. Never a
    substitute for the diff.
 8. The real code around the change: who calls what was added, what the plan
@@ -112,21 +115,47 @@ drift between two *documents*, not between the plan and the code.
 
 ## Lead and subagents — `Delegation: team`
 
-Under `team` you are the **lead**, and delegating is **required, not a
-suggestion** — clash chose it so the round is faster and so every result is
-checked by someone who did not produce it. Tracing is parallel; grading is yours — a divergence's grade depends on the whole plan, which only you hold. Under `solo`, do
-everything yourself and skip this section.
+Under `team` you are the **lead**: you decide how the round splits, dispatch
+what is worth dispatching, and integrate and verify what comes back. `team` is
+permission to parallelize, not a quota. A subagent costs a brief, a cold start
+that re-reads the code, and your check of its result — it pays only when its
+unit is independent and big enough that doing it yourself would take longer.
+The goal is the best result in the least wall-clock time. Tracing is parallel; grading is yours — a divergence's grade depends on the whole plan, which only you hold. Under
+`solo`, do everything yourself and skip this section.
+
+**Size the round before you split it.** Read the kickoff, the item's files and
+the size of the work (diff stat, plan length, repos and subsystems touched),
+then pick the smallest split that keeps quality:
+
+- **No split** — the work fits in a few reads of your own (roughly a handful
+  of files or a few hundred changed lines, one subsystem, a short plan). Do it
+  yourself, and get the independent check by re-reading each claim against
+  the code before it is written.
+- **By area** — several independent areas (subsystems, repos, PRs, disjoint
+  file groups), each worth its own reading: one subagent per area, covering
+  every concern for that area.
+- **By area and concern** — only for large or `deep` work, where a single
+  reader per area would itself be overloaded.
+
+Never launch more subagents than there are independent units of real work, and
+never one whose whole job is a file read or a grep — do that yourself. The
+waves below describe the split **at full scale**; shrink them to the size you
+picked.
 
 The round runs in two waves:
 
 1. **Trace** — the plan's actions split across read-only tracers launched
-   together (a few actions each), each briefed with those actions verbatim
-   and told to find them in the diff: delivered, `MISSING`, or `DIFFERENT`,
-   with `file:line` evidence. One more tracer walks the diff the other way and
-   lists every hunk that no plan action explains — the `EXTRA` candidates.
-2. **Verify** — one fresh verifier per candidate `MISSING`/`DIFFERENT`/`EXTRA`
-   (or per file's batch), briefed to refute it. Then you grade what survived
-   `INTENDED`/`BENIGN`/`ISSUE` yourself.
+   together, grouped by the area of code they land in, each briefed with its
+   actions verbatim and told to find them in the diff: delivered, `MISSING`,
+   or `DIFFERENT`, with `file:line` evidence. Size the groups so each tracer
+   has a real reading load; a short plan over a small diff needs no tracer at
+   all. The reverse walk — every hunk that no plan action explains, the
+   `EXTRA` candidates — is its own tracer only when the diff is large;
+   otherwise do it yourself.
+2. **Verify** — refute each candidate `MISSING`/`DIFFERENT`/`EXTRA`: yourself
+   when one read settles it, otherwise through fresh verifiers batched per
+   file or area. Then you grade what survived `INTENDED`/`BENIGN`/`ISSUE`
+   yourself.
 
 How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
 
@@ -148,8 +177,13 @@ How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
   round.
 - **Verify, don't forward.** A subagent's output is a claim. Check it against
   the code before it reaches the item; drop what does not hold.
-- **Report the split.** Your final message says how the work was divided and
-  what verification dropped or changed.
+- **Verify in proportion.** Settle a claim yourself when one read settles it.
+  Send it to a fresh refuting verifier only when refuting it takes real
+  tracing (callers, cross-file invariants, another repo), and batch those per
+  file or area — never one verifier per trivial finding.
+- **Report the split.** Your final message says how you sized the round, how
+  the work was divided (or why it was not), and what verification dropped
+  or changed.
 
 ## The comparison — how to actually do it
 
@@ -206,8 +240,11 @@ it as drift.
 Only in interactive rounds, and only these two:
 
 1. **After the inventory, before grading** — present every divergence with your
-   proposed direction, grade and remedy, grouped by grade. The human confirms,
-   regrades or drops each one. Dropped entries go under
+   proposed direction, grade and remedy, grouped by grade, all in one round
+   (`AskUserQuestion` calls back to back, or one numbered message when there
+   are many), each with a one-line why. The human confirms, regrades or drops
+   each one; follow up only on what their answers opened, and never ask what
+   the code or `review.md` can settle. Dropped entries go under
    `### Dismissed in triage` so a later round does not re-raise them.
 2. **Before publishing to a PR** (`Publish: pr-comments` only) — show exactly
    what will be posted. Nothing leaves the machine before the yes.
@@ -438,6 +475,28 @@ The kickoff's **`Auto-apply:`** field says what your answer does:
   under human review, so pushing new commits mid-review is their call.
 - When there are no issues, the answer is **no**, and that is a clean result.
 
+## Recommend the next step
+
+Alongside the apply call, name the one step you would take next, from this
+fixed vocabulary — clash's "suggested next step" reads it, and an unknown or
+missing action is ignored, so never invent one:
+
+- `apply` — the code-remedy issues are worth a fix round now
+- `approve` — the change delivers the plan; the human can approve this stage
+- `plan-review` — the plan needs amending (the route above starts there)
+- `code-review` / `deep-review` — the change delivers the plan but deserves a
+  code review you saw no sign of (`deep-review` for risky areas: auth,
+  migrations, concurrency, data loss, money, wide blast radius)
+- `answer-comments` — the PR has review comments waiting on an answer
+- `drift` — another comparison; rarely right straight after this one
+
+It must agree with `**Apply:**`: `yes` ⇒ `apply`, unless you judge
+`answer-comments` more urgent; all-amendment rounds say `plan-review`. It is a
+recommendation: clash ranks its own checks first (an unapplied round, open
+comments) and uses yours only where those are silent, and the human may ignore
+it. In interactive rounds ask it in the same `AskUserQuestion` call as the
+apply question, with your pick first.
+
 ## Finish — in this order, every run
 
 1. Write/overwrite **`drift.md`** and **`drift.html`**. Both files, every run.
@@ -453,6 +512,8 @@ The kickoff's **`Auto-apply:`** field says what your answer does:
 **Verdict:** <one line — delivers the plan / N issues / needs a decision on X>
 
 **Apply:** yes|no — <one line: why this is or is not worth a fix round>
+
+**Next:** apply|approve|plan-review|… — <one-line reason>
 
 ### Issues
 1. `src/config/layers.rs:88` — MISSING: plan action 4's env override is not
@@ -492,6 +553,8 @@ The kickoff's **`Auto-apply:`** field says what your answer does:
    auto-apply is off, to mark the action as recommended). Anything it cannot
    read as yes/no leaves the call to the human, wasting the judgement you just
    made. Do not hedge it; the reason line is where nuance goes.
+   **`**Next:**` follows it** on its own line: exactly one action from the
+   vocabulary above, then ` — ` and the reason.
 
 4. Read-modify-write `meta.json`: set `status` to the prompt's **`Return to:`**
    value. Change nothing else.

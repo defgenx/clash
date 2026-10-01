@@ -457,6 +457,8 @@ fn parse_round(lines: &[&str], start: usize, end: usize, round: u32) -> AgentRev
     // as `structure` counts toward `explain-diff`'s tally, or the next
     // explainer round on an existing item restarts at 1 and its identity
     // collides with a round already in the file.
+    let (next, next_reason) = parse_next_marker(section);
+
     let target = crate::domain::workflow::ReviewTarget::canonical(
         heading
             .split(['·', ' '])
@@ -472,7 +474,95 @@ fn parse_round(lines: &[&str], start: usize, end: usize, round: u32) -> AgentRev
         published,
         apply,
         apply_reason,
+        next,
+        next_reason,
     }
+}
+
+/// The recommended-next-step vocabulary shared by every `**Next:**` line —
+/// reviewer rounds in `agent-review.md` and the executor's `handoff.md`.
+/// Mirrored by `gui/dist/wf-next.js`; contract in `docs/workflows.md`.
+pub const NEXT_ACTIONS: &[&str] = &[
+    "apply",
+    "approve",
+    "plan-review",
+    "code-review",
+    "deep-review",
+    "drift",
+    "answer-comments",
+];
+
+/// Pure: the `**Next:** <action> — <reason>` marker in `lines`, as
+/// `(action, reason)`. An action outside [`NEXT_ACTIONS`] yields `("", "")`:
+/// the recommender must never act on a word it does not know.
+pub fn parse_next_marker(lines: &[&str]) -> (String, String) {
+    let Some(line) = lines
+        .iter()
+        .find_map(|l| l.trim_start().strip_prefix("**Next:**"))
+    else {
+        return (String::new(), String::new());
+    };
+    let text = line.trim();
+    let action = text
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim_matches(|c: char| "`*.,:;".contains(c))
+        .to_ascii_lowercase();
+    if !NEXT_ACTIONS.contains(&action.as_str()) {
+        return (String::new(), String::new());
+    }
+    let reason = text
+        .split_once(['—', ':'])
+        .map(|(_, r)| r)
+        .or_else(|| text.split_once(" - ").map(|(_, r)| r))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    (action, reason)
+}
+
+/// Pure: parse the executor's `handoff.md`. `None` for an empty file.
+pub fn parse_handoff(md: &str) -> Option<crate::domain::workflow::HandoffSummary> {
+    if md.trim().is_empty() {
+        return None;
+    }
+    let lines: Vec<&str> = md.lines().collect();
+    let heading = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("# "))
+        .map(|h| {
+            h.trim()
+                .trim_start_matches("Hand-off")
+                .trim_start_matches("Handoff")
+                .trim_start()
+                .trim_start_matches(['—', '-'])
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_default();
+    let (next, next_reason) = parse_next_marker(&lines);
+    Some(crate::domain::workflow::HandoffSummary {
+        heading,
+        next,
+        next_reason,
+    })
+}
+
+/// Pure: record that a review round numbered `round` on `target` was launched
+/// against the item's current iteration.
+pub fn stamp_review_mark(
+    meta: &mut crate::domain::workflow::WorkflowMeta,
+    target: &str,
+    round: u32,
+) {
+    meta.review_marks.insert(
+        target.to_string(),
+        crate::domain::workflow::ReviewMark {
+            iteration: meta.iteration,
+            round,
+        },
+    );
 }
 
 /// Pure: the number the next round against `target` should carry.
@@ -872,6 +962,7 @@ pub fn explainer_states(
             round: e.round,
             session_id: e.session_id.clone(),
             started_at: e.started_at,
+            iteration: e.iteration,
             finished: rounds
                 .iter()
                 .any(|r| r.round == e.round && r.target == e.target.as_str()),
@@ -893,11 +984,33 @@ pub fn record_explainer(
 
 // ── PR-skill resolution ─────────────────────────────────────────────────
 
-/// The agent CLI an item's sessions run on: the item's override when set,
-/// else the global `workflows.agent` setting.
-pub fn effective_agent(item_value: &str, global: &str) -> crate::domain::entities::AgentKind {
-    let item = item_value.trim();
-    crate::domain::entities::AgentKind::parse(if item.is_empty() { global } else { item })
+/// Whether a workflow start asks which agent CLI to run on: the item's
+/// setting when set, else the global `workflows.agent`, is `ask`.
+pub fn agent_asks(item_setting: &str, global: &str) -> bool {
+    let item = item_setting.trim();
+    let value = if item.is_empty() { global.trim() } else { item };
+    value.eq_ignore_ascii_case("ask")
+}
+
+/// The agent a workflow launch runs on: the one picked for this start, else
+/// the item's or the global fixed setting, else — under `ask`, for a launch
+/// nobody was asked about (relaunch, auto-applied round) — the agent the item
+/// last ran on.
+pub fn resolve_launch_agent(
+    requested: Option<&str>,
+    item_setting: &str,
+    global: &str,
+    last: &str,
+) -> crate::domain::entities::AgentKind {
+    use crate::domain::entities::AgentKind;
+    if let Some(r) = requested.map(str::trim).filter(|r| !r.is_empty()) {
+        return AgentKind::parse(r);
+    }
+    if agent_asks(item_setting, global) {
+        return AgentKind::parse(last);
+    }
+    let item = item_setting.trim();
+    AgentKind::parse(if item.is_empty() { global } else { item })
 }
 
 /// The `--model` a workflow session is launched with. Claude sessions run on
@@ -1371,10 +1484,10 @@ mod tests {
 
     #[test]
     fn delegation_clause_names_the_subagent_model() {
-        let d = Delegation::from_settings("team", " claude-sonnet-5 ");
+        let d = Delegation::from_settings("team", " claude-sonnet-5-5 ");
         assert_eq!(
             d.clause(),
-            " Delegation: team (subagents on claude-sonnet-5)."
+            " Delegation: team (subagents on claude-sonnet-5-5)."
         );
         assert_eq!(
             Delegation::from_settings("team", "").clause(),
@@ -1389,12 +1502,12 @@ mod tests {
     #[test]
     fn subagent_model_is_enforced_by_env_on_claude_only() {
         use crate::domain::entities::AgentKind;
-        let team = Delegation::from_settings("team", "claude-sonnet-5");
+        let team = Delegation::from_settings("team", "claude-sonnet-5-5");
         assert_eq!(
             delegation_env(AgentKind::Claude, &team),
             vec![(
                 SUBAGENT_MODEL_ENV.to_string(),
-                "claude-sonnet-5".to_string()
+                "claude-sonnet-5-5".to_string()
             )]
         );
         assert!(delegation_env(AgentKind::Omp, &team).is_empty());
@@ -1409,7 +1522,7 @@ mod tests {
 
     #[test]
     fn both_kickoffs_state_the_delegation_right_after_the_mode() {
-        let d = Delegation::from_settings("team", "claude-sonnet-5");
+        let d = Delegation::from_settings("team", "claude-sonnet-5-5");
         let exec = build_agent_prompt(
             "/x/i",
             &ExecutorKickoff {
@@ -1419,14 +1532,47 @@ mod tests {
                 ..ExecutorKickoff::default()
             },
         );
-        assert!(exec.contains("Mode: full. Delegation: team (subagents on claude-sonnet-5)."));
+        assert!(exec.contains("Mode: full. Delegation: team (subagents on claude-sonnet-5-5)."));
         let review = build_review_prompt(
             "/x/i",
             &crate::domain::workflow::WorkflowReview::default(),
             WorkflowMode::Full,
             &d,
         );
-        assert!(review.contains("Mode: full. Delegation: team (subagents on claude-sonnet-5)."));
+        assert!(review.contains("Mode: full. Delegation: team (subagents on claude-sonnet-5-5)."));
+    }
+
+    #[test]
+    fn the_item_agent_setting_overrides_the_global_ask() {
+        assert!(agent_asks("", "ask"));
+        assert!(agent_asks("ask", "claude"));
+        assert!(!agent_asks("omp", "ask"));
+        assert!(!agent_asks("", "claude"));
+    }
+
+    #[test]
+    fn a_launch_runs_on_the_pick_then_the_fixed_setting_then_the_last_agent() {
+        use crate::domain::entities::AgentKind;
+        // A pick made for this start wins over everything.
+        assert_eq!(
+            resolve_launch_agent(Some("omp"), "claude", "claude", ""),
+            AgentKind::Omp
+        );
+        // A fixed setting ignores the last agent.
+        assert_eq!(
+            resolve_launch_agent(None, "", "omp", "claude"),
+            AgentKind::Omp
+        );
+        assert_eq!(
+            resolve_launch_agent(Some(" "), "claude", "omp", "omp"),
+            AgentKind::Claude
+        );
+        // Under `ask`, a launch nobody was asked about stays on the last agent.
+        assert_eq!(resolve_launch_agent(None, "", "ask", "omp"), AgentKind::Omp);
+        assert_eq!(
+            resolve_launch_agent(None, "ask", "omp", ""),
+            AgentKind::Claude
+        );
     }
 
     #[test]
@@ -1981,6 +2127,55 @@ Tighten the API.\n\n\
         assert!(section.contains("### Published"));
         // Round 1's content stays out.
         assert!(!section.contains("ship it"));
+    }
+
+    // ── Next-step markers ───────────────────────────────────────────
+
+    #[test]
+    fn next_marker_reads_known_actions_with_their_reason() {
+        let md = "## Review 1 — diff · standard\n\n**Verdict:** ok\n\n**Apply:** no — nits\n**Next:** deep-review — touches the auth middleware\n";
+        let r = latest_agent_review(md).unwrap();
+        assert_eq!(r.next, "deep-review");
+        assert_eq!(r.next_reason, "touches the auth middleware");
+        assert_eq!(
+            parse_next_marker(&["**Next:** `approve`: nothing material"]),
+            ("approve".into(), "nothing material".into())
+        );
+    }
+
+    #[test]
+    fn an_unknown_next_action_is_ignored_not_guessed() {
+        assert_eq!(
+            parse_next_marker(&["**Next:** merge-it — looks fine"]),
+            (String::new(), String::new())
+        );
+        assert_eq!(
+            parse_next_marker(&["no marker here"]),
+            (String::new(), String::new())
+        );
+    }
+
+    #[test]
+    fn handoff_parses_heading_and_next() {
+        let h = parse_handoff(
+            "# Hand-off — implement · iteration 2\n## Done\n- x\n**Next:** drift — the migration step moved\n",
+        )
+        .unwrap();
+        assert_eq!(h.heading, "implement · iteration 2");
+        assert_eq!(h.next, "drift");
+        assert_eq!(h.next_reason, "the migration step moved");
+        assert!(parse_handoff("  \n").is_none());
+    }
+
+    #[test]
+    fn a_review_mark_records_the_current_iteration() {
+        let mut meta = crate::domain::workflow::WorkflowMeta {
+            iteration: 3,
+            ..Default::default()
+        };
+        stamp_review_mark(&mut meta, "diff", 2);
+        assert_eq!(meta.review_marks["diff"].iteration, 3);
+        assert_eq!(meta.review_marks["diff"].round, 2);
     }
 
     // ── AttentionLedger ─────────────────────────────────────────────
