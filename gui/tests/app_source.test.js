@@ -862,3 +862,10 @@ test("every workflow start names its agent, and an unavailable one is greyed", (
   assert.match(APP, /disabled: !c\.available,/);
   assert.match(APP, /o\.disabled = !c\.available;/);
 });
+
+test("every user-facing reload goes through the busy-session confirm", () => {
+  // `reloadSession` stops the session outright; a menu wired straight to it
+  // drops an in-flight turn with no question asked.
+  assert.doesNotMatch(APP, /action: \(\) => reloadSession\(/);
+  assert.match(APP, /return s \? reloadSessionInteractive\(s\) : reloadSession\(sid\);/);
+});

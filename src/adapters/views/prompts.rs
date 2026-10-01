@@ -44,7 +44,8 @@ impl DetailView for PromptsView {
         vec![prompt]
     }
 
+    // Read-only: a member's prompt is edited with `:member prompt` from a team view.
     fn context_keybindings() -> Vec<Keybinding> {
-        vec![Keybinding::new("e", "Edit prompt")]
+        vec![]
     }
 }

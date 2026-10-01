@@ -19,23 +19,13 @@ pub fn handle_key(key: KeyEvent, state: &AppState) -> Action {
     // (app.rs) before reaching this function.
     match &state.input_mode {
         InputMode::Normal => handle_normal_mode(key, state),
-        InputMode::Command
-        | InputMode::Filter
-        | InputMode::NewSession
-        | InputMode::NewSessionName
-        | InputMode::NewSessionWorktree
-        | InputMode::NewSessionAgent
-        | InputMode::TeamDescription
-        | InputMode::NewMemberName
-        | InputMode::NewMemberType
-        | InputMode::NewMemberModel
-        | InputMode::NewScratchTitle
-        | InputMode::NewScratchDir
-        | InputMode::RenameScratch
-        | InputMode::QueuePrompt => handle_input_mode(key),
+        mode if mode.takes_text() => handle_input_mode(key),
         InputMode::Confirm => handle_confirm_mode(key, state),
         InputMode::Picker => handle_picker_mode(key),
         InputMode::Attached => Action::Noop,
+        // Unreachable while `takes_text` covers every remaining mode; a new
+        // mode lands here (inert) until it is classified.
+        _ => Action::Noop,
     }
 }
 
@@ -762,9 +752,6 @@ fn handle_t_key(state: &AppState) -> Action {
 
 fn handle_message(state: &AppState) -> Action {
     match state.current_view() {
-        ViewKind::Agents | ViewKind::AgentDetail | ViewKind::Inbox => {
-            Action::Ui(UiAction::EnterCommandMode)
-        }
         // On team views, `m` adds a member to the current team.
         ViewKind::Teams | ViewKind::TeamDetail => Action::Ui(UiAction::AddTeamMember),
         // On the Scratch view, `m` moves the selected entry into another folder.

@@ -879,22 +879,7 @@ impl App {
         // motion, word jump, kill-word, kill-line, …) is delegated to
         // `tui-input`'s crossterm handler so we don't have to enumerate every
         // modifier+key combo by hand.
-        if matches!(
-            self.state.input_mode,
-            InputMode::Command
-                | InputMode::Filter
-                | InputMode::NewSession
-                | InputMode::NewSessionName
-                | InputMode::NewSessionWorktree
-                | InputMode::NewSessionAgent
-                | InputMode::TeamDescription
-                | InputMode::NewMemberName
-                | InputMode::NewMemberType
-                | InputMode::NewMemberModel
-                | InputMode::NewScratchTitle
-                | InputMode::NewScratchDir
-                | InputMode::RenameScratch
-        ) {
+        if self.state.input_mode.takes_text() {
             use crate::adapters::input::key_to_input_request;
             use crate::application::actions::UiAction;
 

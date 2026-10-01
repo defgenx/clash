@@ -74,8 +74,9 @@ impl TableView for InboxTable {
         state.inbox_messages.iter().collect()
     }
 
+    // Read-only: clash has no way to send an inbox message yet.
     fn context_keybindings() -> Vec<Keybinding> {
-        vec![Keybinding::new("m", "Send message")]
+        vec![]
     }
 
     fn empty_message() -> &'static str {

@@ -2078,7 +2078,11 @@ function tabContextMenu(ev, sid) {
     {
       label: "Reload (restart on latest agent binary)",
       icon: "reload",
-      action: () => reloadSession(sid),
+      // Same confirm as every other reload when the session is mid-turn.
+      action: () => {
+        const s = state.sessions.find((x) => x.id === sid);
+        return s ? reloadSessionInteractive(s) : reloadSession(sid);
+      },
     },
     { label: "Close tab (stash)", icon: "x", hint: "⌘W", action: () => closeTab(sid) },
     {

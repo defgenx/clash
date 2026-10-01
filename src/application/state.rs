@@ -170,6 +170,31 @@ pub enum InputMode {
     QueuePrompt,
 }
 
+impl InputMode {
+    /// A free-text prompt: keystrokes edit the input line (via `tui-input`)
+    /// and Enter submits it. The one list both the event loop and the key
+    /// router read — a mode missing here swallows every typed character.
+    pub fn takes_text(&self) -> bool {
+        matches!(
+            self,
+            InputMode::Command
+                | InputMode::Filter
+                | InputMode::NewSession
+                | InputMode::NewSessionName
+                | InputMode::NewSessionWorktree
+                | InputMode::NewSessionAgent
+                | InputMode::TeamDescription
+                | InputMode::NewMemberName
+                | InputMode::NewMemberType
+                | InputMode::NewMemberModel
+                | InputMode::NewScratchTitle
+                | InputMode::NewScratchDir
+                | InputMode::RenameScratch
+                | InputMode::QueuePrompt
+        )
+    }
+}
+
 /// A generic picker dialog — list of items with a callback action.
 #[derive(Debug, Clone)]
 pub struct PickerDialog {
@@ -646,6 +671,22 @@ pub fn visible_scratch_indices(notes: &[ScratchNote], expanded: &HashSet<String>
 
 #[cfg(test)]
 mod tests {
+    use super::InputMode;
+
+    #[test]
+    fn the_follow_up_composer_takes_typed_text() {
+        assert!(InputMode::QueuePrompt.takes_text());
+        assert!(InputMode::Command.takes_text());
+        for mode in [
+            InputMode::Normal,
+            InputMode::Confirm,
+            InputMode::Picker,
+            InputMode::Attached,
+        ] {
+            assert!(!mode.takes_text(), "{mode:?}");
+        }
+    }
+
     use super::*;
     use crate::domain::entities::Session;
 
