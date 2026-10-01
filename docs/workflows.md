@@ -332,18 +332,18 @@ Publish rules that earned their place:
   right before finishing**. A round takes long enough that comments routinely
   arrive mid-round; a single early check reported "zero comments" on a PR that
   had two by the time the round published.
-- **"Unanswered" means "waiting on the authenticated user"** — a thread whose
-  *most recent* comment is somebody else's. Both halves of that matter, and
-  clash and the skill must agree on it or the button lies. Counting replyless
-  thread roots instead counted the line comments clash's own `pr-comments`
-  rounds had published: an item advertised "Answer 7 PR comments", spent a
-  session, and the reviewer correctly answered none of them — they were its
-  own. The other half is the reverse case: a thread the user already replied
-  to is waiting on them again the moment somebody answers back, even though
-  its root has a reply. `gh::count_unanswered_review_comments(json, viewer)`
-  is the implementation (viewer from `gh api user`, memoized per process;
-  unknown viewer falls back to replyless roots), and the reviewer skill states
-  the same rule.
+- **A thread is settled only when the authenticated user's reply is its last
+  word; every other thread is open.** That covers the three cases a respond
+  round has: a reviewer's comment nobody answered; a finding clash's own
+  `pr-comments` round published with no decision posted under it (a published
+  finding is a question, not an answer — counting only other people's comments
+  hid seven findings with zero replies behind a button reporting nothing to
+  do); and a thread the user answered that somebody answered back. A root of
+  the user's own is therefore settled only once they reply *under* it.
+  `gh::count_unanswered_review_comments(json, viewer)` is the implementation
+  (viewer from `gh api user`, memoized per process; an unknown viewer falls
+  back to "threads with no reply at all"), and the reviewer skill states the
+  same rule — clash and the skill must agree on it or the button lies.
 - **A reply goes in the thread**, through
   `POST /repos/{owner}/{repo}/pulls/<n>/comments/<root_id>/replies`.
   `gh pr comment` posts a *detached* issue comment: the thread still shows no
@@ -975,7 +975,7 @@ first one that fires wins, for example at `diff-review`:
 
 1. a review round is waiting to be applied (and did not say `Apply: no`) → **Apply**
 2. comments are still open → **Request changes**
-3. PR threads are waiting on you → **Answer PR comments**
+3. PR threads are waiting on you → **Answer PR threads**
 4. the code has no review at this iteration → **Code review** (`deep` when an
    agent's `Next:` said `deep-review`)
 5. there is a plan and nothing has compared it with the change yet, or an

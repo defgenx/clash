@@ -15,35 +15,63 @@
   <a href="#installation">Install</a> &bull;
   <a href="#features">Features</a> &bull;
   <a href="#usage">Usage</a> &bull;
-  <a href="#keybindings">Keys</a>
+  <a href="#gui-primary-mode">GUI</a> &bull;
+  <a href="#workflows-gui">Workflows</a> &bull;
+  <a href="#tui-keybindings">TUI keys</a>
 </p>
 
 ---
 
 ## Features
 
-- **Session management** — list, attach, detach, create, stash, and delete Claude Code sessions
-- **Two agent CLIs** — every new session picks **Claude Code** or **OMP** ([oh-my-pi](https://omp.sh), `omp`); `general.default_agent` decides which is pre-selected. Status, resume, stash/reload, subagents, conversation view, wild-process takeover, queued follow-ups, the embedded skills and every workflow round work on both — see [OMP sessions](#omp-sessions)
-- **Inline terminal** — attach to sessions with a full terminal passthrough, status bar showing session name / project / branch
-- **Real-time status** — instant status detection via hooks, daemon PTY screen analysis, and JSONL parsing (three-layer system)
-- **Animated status icons** — active sessions show animated spinners and pulsing icons for visual feedback
-- **Section-based layout** — sessions are grouped into Active (working), Done (idle/stashed), Fail (errored), and External (wild claude processes started outside clash, kept at the bottom so they don't interleave with clash-managed rows) with stable alphabetical ordering; press `A` to cycle section filter
-- **In-process daemon** — embedded PTY daemon manages sessions without a separate process
-- **Git worktree support** — spawn sessions in isolated worktrees for parallel feature branches (`w` key); worktree column shows `⊟ project/worktree` for project context
-- **Repo config discovery** — auto-detects MCP servers, custom commands, agent definitions, and setup scripts from the project directory
-- **Teams & tasks** — create, rename, configure, and delete teams; manage members (agent type, model, prompt, rename) and see at a glance who's running; full task management (create, cycle status, assign owner, delete); per-agent inboxes. In the GUI, jump straight from a running member to its live session.
-- **Scratches** — keep free-form text notes inside clash (`:scratch`), organized in an IntelliJ-style **"Scratches and Consoles"** tree: create notes and nested folders, rename, delete, and reorganize (move via a folder picker in the TUI, drag-and-drop in the GUI). Each note is a plain file under `~/.claude/clash/scratch/` by default — set `scratch_dir` in `config.toml` (or the GUI **Scratch directory** setting) to store them anywhere. Opening a scratch shows an editor picker: terminal editors (vim/emacs/nano…) open in a tab/pane, GUI editors (VS Code/Cursor/Zed…) launch alongside, like opening a project
-- **Workflows (GUI)** — manage a full plan → plan-review → implement → diff-review → (optional) PR pipeline per feature: launch a planning agent, read the plan, approve or request changes, **annotate the diff with line-level comments** the agent addresses on the next round, then approve straight to done or — if you use PRs — track the draft PR and **mark it ready** once validated — with a full **revision timeline** (every round's note, plan diff, frozen plan and code diff), decision notifications, and a kanban board. Multi-repo work is first-class: **link the PRs from the other repos** to one item and open/track them all together, with a **PR dashboard** across every project. Any item can be **shared or exported** (clipboard, `.md`/`.html` file, Slack/Discord webhook) with a preview of exactly what leaves the machine. Start end-to-end, **from a plan you already have**, or **review-only from an existing PR or branch**. See [Workflows](#workflows-gui)
-- **Queued follow-ups** — type the next instruction while an agent is still working (`f` in the TUI, *Queue follow-up…* in the GUI) and clash delivers it to that session the moment it is idle at its input prompt. The row shows `⧖n` while prompts are pending. A queued prompt is never delivered to a tool-approval question — only to the free-form input prompt
-- **Attention inbox (GUI)** — one ordered list (⌘I) of everything waiting on you across every workspace and project: sessions asking for approval or a next message, workflow items parked on a decision, PRs with unanswered review comments, agents that died mid-round. Blocked work first, longest-waiting first
-- **Subagent tracking** — view subagent trees per session, expand/collapse in the sessions table
-- **Open in IDE** — press `e` to open a session's project in your editor (auto-detects Cursor, VS Code, Zed, JetBrains, nvim, vim; configurable)
-- **Keyboard-driven** — vim-style navigation, command mode (`:`), fuzzy filter (`/`), context help (`?`)
-- **UI state persistence** — restores navigation, selection, filters, and expanded sessions on restart
-- **Multi-instance** — run several clash apps (TUI and/or GUI) side by side; each owns its own sessions via a per-instance daemon socket
-- **Guided tour** — first-launch walkthrough in both frontends: `:tour` replays it in the TUI, *Settings → clash → Show the tour* in the GUI
-- **Debug mode** — `clash --debug` enables verbose logging with a header indicator
-- **Self-updating** — `:update` in the TUI or `clash update` from the CLI
+- **One place for every agent session** — list, start, attach, rename, stash,
+  resume, reload and kill Claude Code and **OMP** ([oh-my-pi](https://omp.sh))
+  sessions, grouped by status (Active / Done / Fail / External) with live
+  three-layer status detection (hooks, PTY screen analysis, transcripts). See
+  [OMP sessions](#omp-sessions).
+- **Two frontends, one core** — a desktop **GUI** (Tauri; the primary mode) and
+  a keyboard-driven **TUI**. Both are backed by the same in-process PTY daemon,
+  and several instances can run side by side.
+- **Desktop workspace (GUI)** — cmux-style workspaces, unlimited resizable split
+  panes, GPU-rendered terminals, shell terminals, embedded **browser tabs**,
+  12 themes, a searchable font picker, and a layout restored exactly on
+  relaunch. See [GUI](#gui-primary-mode).
+- **Workflows (GUI)** — one item per piece of work, taken through plan →
+  review → implement → diff review → (optional) PR by agents, with you approving
+  each step:
+  - line comments on the diff;
+  - repeatable agent review rounds (plan, code, plan-vs-changes);
+  - explanations of the plan and of the change;
+  - a **suggested next step** on every item, with an optional autopilot;
+  - multi-repo PRs and a PR dashboard;
+  - sharing to Slack / Discord / Jira.
+
+  See [Workflows](#workflows-gui).
+- **Attention inbox (GUI)** — one ordered list (`⌘I`) of everything waiting on
+  you: approvals, dead agents, errors, decisions, unanswered PR threads,
+  finished turns.
+- **Queued follow-ups** — type the next instruction while an agent works; clash
+  delivers it the moment the session is idle at its prompt, never to a
+  tool-approval question.
+- **Takeover of outside sessions** — `claude` processes started elsewhere show
+  up as wild rows; one confirm moves their conversation under clash.
+- **Git worktrees** — start a session in an isolated worktree for parallel
+  branches; diffs, PR detection and *open in IDE* (Cursor, VS Code, Zed,
+  JetBrains, vim…) per session.
+- **Open externally** — send one or all sessions to panes / tabs / windows of
+  your terminal (tmux, iTerm2, WezTerm, kitty…) with a planned layout.
+- **Teams & tasks** — create and edit Claude Code agent teams and their members,
+  tasks and per-agent inboxes; jump from a running member to its session.
+- **Scratches** — an IntelliJ-style tree of free-form notes and folders, opened
+  in your editor of choice.
+- **Session presets** — reusable directory / worktree / prompt / setup-script
+  templates, per project or global (Superset-compatible).
+- **Layered configuration** — one `config.toml` shared by both frontends, with
+  project and env overrides, live reload and `clash config` to inspect it.
+- **Self-updating** — `clash update`, `:update` or the GUI's *⟳ Update clash*
+  updates both binaries in place.
+- **Guided tour** in both frontends, `--debug` logging, and UI state persisted
+  across restarts.
 
 ## Installation
 
@@ -52,6 +80,9 @@
 ```bash
 curl -fsSL https://raw.githubusercontent.com/defgenx/clash/main/install.sh | bash
 ```
+
+This installs the **TUI** (`clash`) from the latest release. For the GUI, build
+from a clone with `make install` (below).
 
 Custom install path:
 
@@ -62,7 +93,7 @@ CLASH_INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/defg
 ### Build from source
 
 ```bash
-cargo install --git https://github.com/defgenx/clash.git
+cargo install --git https://github.com/defgenx/clash.git   # the TUI only
 ```
 
 Or from a clone — installs **both** the TUI and the GUI
@@ -84,20 +115,27 @@ as a regular desktop application, discoverable like any other app:
 
 ### Requirements
 
-- Rust 1.75+ (for building from source)
 - Claude Code CLI (`claude`), and/or OMP (`omp`, oh-my-pi) for OMP sessions
+- `git` (worktrees, diffs) and, for every PR feature, the GitHub CLI `gh`
+- Building from source: a recent stable Rust (1.82+); for the GUI on Linux,
+  the webkit2gtk / GTK development packages (see [GUI](#gui-primary-mode))
 
 ## Usage
 
 ```bash
-clash                              # Start (reads from ~/.claude)
+clash                              # Start the TUI (reads from ~/.claude)
+clash-gui                          # Start the GUI
 clash --data-dir ~/.claude         # Custom data directory
 clash --claude-bin /path/to/claude # Custom CLI path
 clash --debug                      # Enable debug logging
-clash update                       # Update to the latest release
+clash update                       # Update clash and clash-gui to the latest release
+clash config [--path|--defaults|--validate|--schema]   # Inspect configuration
+clash attach <session-id>          # Attach to a session owned by a running clash (used by external panes)
+clash daemon                       # Run the session daemon standalone (normally in-process)
+clash --version
 ```
 
-On first launch, clash writes its lifecycle hooks to `~/.claude/clash/hooks/` for instant status detection and shows a guided tour. Replay it anytime with `:tour`. clash passes that hook file to every session it spawns (`claude --settings …`), so it registers nothing in your own settings files — see [docs/hooks.md](docs/hooks.md).
+At every launch, clash (re)writes its lifecycle hooks to `~/.claude/clash/hooks/` (plus the OMP status extension) for instant status detection; the first launch also shows a guided tour. Replay it anytime with `:tour`. clash passes that hook file to every session it spawns (`claude --settings …`), so it registers nothing in your own settings files — see [docs/hooks.md](docs/hooks.md).
 
 ### Session Status
 
@@ -116,6 +154,7 @@ clash detects session status through three layers (in priority order):
 | `○◔◑◕●` | Starting | Session just spawned — filling circle |
 | `✗` | Errored | Session crashed shortly after starting |
 | `○` | Stashed | Exited or inactive |
+| `✓` | Done | A subagent that finished |
 
 ### Session Source Prefixes
 
@@ -123,13 +162,554 @@ Each row in the sessions list may carry a single-character prefix indicating whe
 
 | Prefix | Source | Meaning |
 |--------|--------|---------|
-| (none) | Daemon | clash spawned and manages the PTY — attach with `o` or Enter |
+| (none) | Daemon | clash spawned and manages the PTY — attach inline with `a` |
 | `⊞ `  | External | clash spawned the process in another pane/tab/window via `o`/`O` |
 | `🌿 ` | Wild | A `claude` process started outside clash. Press `a` to take over: one confirm, then clash kills the outside process (SIGTERM, SIGKILL after 2s) and attaches to its conversation under the daemon (`--resume <id>`) |
 
 The Wild detection runs in the background every ~2s. clash surfaces every wild claude PID **that started after this clash launched** under the EXTERNAL section — pre-existing claudes from before clash booted are intentionally hidden, the section is for things spawned during this session. Each wild process is **dynamically associated with a conversation**: exact evidence first (`--resume <id>` / `--session-id <id>` in argv, or — rarely — the `.jsonl` held open as an fd), otherwise the **most recently modified conversation in the process's working directory**. The association is re-evaluated on every scan, so it always tracks the latest conversation. Only a bare `claude` in a directory with no conversation on disk at all (typically the few seconds before a brand-new conversation's JSONL appears) shows as a PID-keyed row with takeover disabled. Press `d` to drop a wild row: clash signals the PID directly (SIGTERM, SIGKILL after 5s if still alive and still claude). The row also disappears on the next scan tick once the process exits, so closed/stopped claudes never linger. List the section in isolation with `:external`. The GUI behaves the same way: clicking a wild row (or its ⚡ button) confirms, takes over, and opens the terminal.
 
-## Keybindings
+## GUI (primary mode)
+
+The GUI is the primary way to use clash; the TUI remains fully supported as the
+terminal-native mode. It is a Tauri 2 desktop app (`gui/`) sharing the TUI's
+core: the session pipeline, the in-process PTY daemon and the protocol. Both
+can run side by side, each instance owning its own sessions. Everything in this
+section except [Workflows](#workflows-gui) also exists in the TUI.
+
+The first launch opens a **guided tour**, a spotlight walkthrough of
+workspaces, starting a session, sessions, the inbox, workflows, scratches,
+teams, tabs and panes, the terminal and settings. Replay it from *Settings →
+▶ Show the tour*.
+
+### Workspaces, panes and tabs
+
+- **Workspaces** (cmux-style) each own a pane layout *and* their sessions:
+  - `⌘N` creates one, `⌘1–9` switches, and `⌘⇧R` or a double-click on the chip renames it.
+  - `⌘⇧W` or the chip's `×` closes it; the last one can't be closed.
+  - The sidebar is scoped to the active workspace, plus an **UNASSIGNED** group
+    for sessions no workspace has claimed (opening one claims it).
+  - Search (`/`, `⌘F`) is global; results from other workspaces carry a `⌘n` badge.
+- **Split panes** form an unlimited balanced grid:
+  - `⌘D` splits and `⌘⇧D` closes the focused pane.
+  - `⌘⇧↩` (or a double-click on the pane title) zooms.
+  - `⌘⌥←/→` cycles focus.
+  - Drag a gutter to resize; the ratios persist per workspace.
+- **Tabs**: the active tab is always the content of the focused pane. The `+`
+  ghost tab opens a shell terminal, a browser tab or a new session; right-click
+  an empty pane for the same menu.
+  - Double-click a label to rename; middle-click or `⌘W` closes.
+  - Closing an agent tab **stashes** the session (stopped, conversation kept
+    resumable); choose *Detach* in the tab menu to leave it running instead.
+- On relaunch clash restores **where you were**: workspace, tabs, layout,
+  focused pane and browser tabs. Stashed sessions resume the moment you click
+  them.
+
+### Sessions
+
+- **Status**: the sidebar shows status sections with animated status labels
+  (PROMPTING / THINKING / RUNNING / WAITING / STARTING / STASHED / ERRORED /
+  DONE), and each tab gets a colored dot. Every row carries a **CC** / **OMP**
+  agent badge.
+  - STASHED means *resumable*: sessions are stashed when clash starts, because
+    a transcript can't say whether its process still lives.
+  - Sessions whose conversation Claude Code has deleted (after ~30 days) stop
+    being listed.
+- **New session** (`＋ New session`, `⌘T`):
+  - pick a directory (prefilled from the default directory or the focused
+    project, with a 📁 picker);
+  - pick a preset, optionally a git worktree, and the agent (Claude Code or
+    OMP; one whose binary doesn't resolve is greyed out).
+- **Session actions**: each row's `⋯` menu (or right-click) offers rename,
+  ⟳ reload, details, stash, kill, open PR, queue or cancel a follow-up, and
+  take over (for wild rows).
+- **External claudes** started outside clash are listed under `⚡ EXTERNAL`.
+  Clicking one takes it over after a confirm: the outside process is killed
+  and its conversation opens under clash.
+- **Section buttons**: every section header has `✕` (kill the whole group, one
+  confirm). The topbar's **⏸ all** stashes every running session.
+- **⟳ Reload** hot-restarts a session on the newest `claude` binary, resuming
+  its latest conversation. It is on rows, tabs and section headers, and `⌘R`
+  reloads the focused session. Busy sessions are skipped by group reloads, and
+  an individual reload asks first.
+- **Details panel** (ⓘ): status, branch, project, CWD and summary, plus *Ports*,
+  *Open in IDE* and *Open in browser* (the PR, the diff on GitHub, or the repo).
+  Conversation, Subagents and Diff open as full tabs.
+- A session whose output mentions a GitHub PR gets a green `⇄ PR #n` chip.
+
+### Terminals
+
+- Terminals are xterm.js with GPU (WebGL) rendering; a lost GL context is
+  reacquired automatically.
+- **Shell terminals**: the topbar button picks among the machine's shells, and
+  `⌘⇧T` reopens the last one. Closing the tab kills the shell.
+- **Keyboard**:
+  - `Shift+Enter` inserts a newline in agent sessions.
+  - `⌘C` / `⌘V` copy and paste (`Ctrl+Shift+C/V` on Linux); plain `Ctrl+C` interrupts.
+  - `⌘K` clears the terminal.
+- **Selecting text**: Claude Code captures the mouse, so **⌥-drag** (Shift on
+  Linux) to select text. Right-click selects a word.
+- **International layouts**: ⌥ composes characters (`{`, `[` on AZERTY).
+  *⌥ sends Esc (Meta)* keeps ⌥+letter as Meta.
+- **Notifications**: a desktop alert fires when a session starts waiting or
+  errors (not while the window is focused). Any process can raise one with
+  `printf '\e]777;notify;Title;Body\a'` (OSC 9 / 777).
+
+### Browser
+
+- Browser tabs are first-class tabs. `⌘⇧B` opens a blank one in its own split.
+- Full chrome: back/forward, reload/stop, an address bar taking URLs or
+  searches, copy URL, open in the system browser and DevTools.
+- While focused: `⌘L` focuses the address bar, `⌘R` reloads, and
+  `⌘+` / `⌘-` / `⌘0` zoom.
+- `target="_blank"` links open a new clash tab.
+
+**How links open** is one setting, *ask* (default), *in clash* or *system
+browser*. It applies to every link clash opens: terminal URLs, PR buttons and
+chips, listening ports, and links in rendered plans and reviews. A link opened
+in clash goes to a new split beside the current session.
+
+### Teams
+
+The TEAMS section lists real, user-managed teams, each with a live `n/m`
+running count; Claude Code's per-session `session-<id>` teams are hidden.
+- A team's panel lists its members with run indicators and model chips. Left-click
+  a running member to jump to its session, or a stopped one to open its inbox.
+- Right-click a member to edit its model, agent type, prompt or name, remove it,
+  or open its inbox. **＋ Add member** adds one.
+- Tasks can be created, have their status cycled (click the badge), get an owner,
+  or be deleted.
+- The name and description are click-to-edit, and the panel live-refreshes.
+
+### Inbox
+
+The **inbox** (sidebar tray icon, `⌘I`) answers "what needs me?" as one list
+across every workspace and project, ordered by urgency, then by how long each
+has waited:
+1. sessions holding a tool-approval prompt;
+2. workflow agents that died mid-round;
+3. errored sessions;
+4. workflow items parked on a decision;
+5. PRs with open review threads;
+6. sessions waiting for your next message.
+
+The count turns red only when something is blocked. Clicking a row jumps to it.
+
+### Queued follow-ups
+
+**Queue follow-up…** (a running session's `⋯` menu, the inbox, or `f` in the
+TUI) delivers a multi-line prompt to that session the moment it is idle at its
+input prompt. `⧖n` on the row shows pending prompts; click it (or `F` in the
+TUI) to review or cancel one.
+
+It is safe to leave running:
+- delivery waits for two consecutive idle samples and never goes to a
+  tool-approval question;
+- the text arrives as one bracketed paste plus one Enter;
+- each session holds at most 20 queued prompts;
+- the queue is in memory for that clash instance;
+- every delivery is announced by a toast.
+
+### Settings
+
+The sidebar's collapsible **SETTINGS** section is grouped and filterable (type
+"cursor" or "font"), and every terminal setting applies live:
+
+| Group | Settings |
+|---|---|
+| **Appearance** | Theme — 12 palettes (below) |
+| **Paths** | default session directory · scratch directory · workflows directory · `claude` binary · OMP binary · default agent (Claude Code / OMP) |
+| **Workflows · agents** | workflow agent (ask / Claude Code / OMP) · lead model · next-step assist (suggest / autopilot / off) · delegation (team / solo) · subagent model · OMP model · PR skill · forge · skill updates |
+| **Workflows · sharing** | who posts to Jira (agent / clash) · Jira skill · Jira site, email, API token · who posts to Slack/Discord (agent / clash) · chat skill · Slack and Discord webhooks |
+| **Workflows · notifications** | notify decisions (off / Slack / Discord) |
+| **Terminal · text** | font family (searchable picker) · size · weight · bold weight · line height · letter spacing |
+| **Terminal · cursor** | style · unfocused style · bar width · blink |
+| **Terminal · colors** | minimum contrast ratio · bold in bright colors |
+| **Terminal · scroll & input** | scrollback · scroll speed · smooth scroll · copy on select · right-click selects word · ⌥ sends Esc · toast on bell |
+| **clash** | how links open · desktop notifications · attention count in the title · confirm before kill · refresh interval · default shell · TUI launcher terminal |
+
+Theme, terminal and link settings are the GUI's own (`gui-state.json`).
+Everything else lives in the shared [`config.toml`](#configuration), so the TUI
+agrees.
+
+**Themes** recolor the chrome and the terminals together:
+
+| Dark | Light |
+|---|---|
+| clash dark *(default)* · Tokyo Night · Catppuccin Mocha · Nord · Dracula · One Dark · Gruvbox Dark · Solarized Dark | clash light · Catppuccin Latte · Solarized Light · GitHub Light |
+
+The **font picker** lists the installed families, each previewed in its own
+face and tagged *mono* or *proportional*. *Monospace only* is on by default, and
+*Custom…* takes a full CSS font stack.
+
+The sidebar and details panel are drag-resizable. The WORKFLOWS / SCRATCHES /
+TEAMS sections have a draggable divider and their own scrollbars.
+
+The **TUI** badge in the sidebar header launches the clash TUI in a detected
+terminal (Terminal, iTerm2, WezTerm, kitty, Alacritty, Ghostty, Warp, GNOME
+Terminal, Konsole, xterm, tmux). It turns gold while a TUI is running.
+
+### Updates
+
+- **⟳ Update clash** (below the settings), like `clash update` and `:update`,
+  updates **both** binaries. Progress shows in the footer version label.
+- A Restart dialog stashes every session, relaunches the new binary, and logs
+  the relaunch in `clash.log`.
+- Symlinked installs are followed. On macOS the binary inside `Clash.app` is
+  replaced, its version bumped and the bundle re-signed.
+
+### Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| `⌘T` / `⌘⇧T` | new session / new shell terminal (last-used shell) |
+| `⌘N` · `⌘1–9` · `⌘⇧R` · `⌘⇧W` | new / switch / rename / close workspace |
+| `⌘D` / `⌘⇧D` | split / close the focused pane |
+| `⌘⇧↩` · `⌘⌥←/→` | zoom pane · cycle pane focus |
+| `⌘W` | close the active tab (agent: stash, shell: kill) |
+| `⌘B` | toggle the sidebar |
+| `⌘⇧B` | new browser tab |
+| `⌘F` or `/` | search |
+| `⌘I` | inbox |
+| `⌘K` | clear the terminal |
+| `⌘R` | reload the focused session (in a browser pane: reload the page) |
+| `⌘L` · `⌘+`/`⌘-`/`⌘0` | browser: address bar · zoom |
+| `Esc` | close the new-session dialog / clear the search |
+
+Text fields support `⌘A` / `⌘C` / `⌘X` / `⌘V` and forward delete (fn+⌫; ⌥ =
+word, ⌘ = to end of line). Dialogs take Enter / Esc, and composers send with
+`⌘↵`.
+
+### Building
+
+```bash
+cargo build --release           # builds BOTH binaries: clash and clash-gui
+./target/release/clash-gui
+```
+
+On Linux the build needs the Tauri system packages:
+`libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev`. The GUI is
+self-contained: there is no external daemon and no node build step, since the
+frontend in `gui/dist/` is vendored and embedded in the binary.
+
+## Workflows (GUI)
+
+A pipeline manager for AI-assisted development: one **item** per piece of work,
+taken from idea to plan to code to PR by Claude Code (or OMP) agents, with you
+approving every step. Everything is plain files, so an item's whole history
+stays readable outside clash. The agent-side file contract and the design
+behind each rule are in [docs/workflows.md](docs/workflows.md). Workflows are
+GUI-only.
+
+### Starting an item
+
+The `+` button on the WORKFLOWS section asks how the item starts:
+
+| Mode | Starts at | Use it when |
+|---|---|---|
+| **Full workflow** | `draft` | you have an idea: an agent plans, you approve, it implements |
+| **From a plan I already have** | `plan-review` | the plan exists: paste it, point at a markdown file, or pick a scratch note. No planning agent runs |
+| **Review only** | `diff-review` | the code is already written: give a **PR** (URL or number) or a **local branch** and get just the review loop |
+
+Give it a title, a project and a repo (picked from your open sessions and
+existing projects, or **Browse…**), and optionally a **description** of the goal.
+The planning agent reads the description first, which saves half the
+requirements questions.
+
+**Review only** resolves the PR through `gh`, checks its branch out (reusing an
+existing worktree of it), and diffs against the PR's own base. A PR URL is
+looked up in its own repository, so a link to another repo is refused by name
+rather than resolved to whatever local PR shares the number. No plan is written
+and no draft-PR stage runs, since the PR isn't clash's.
+
+Planning reads the repo in place. The first round that writes code gets its own
+git worktree and branch, unless the directory isn't a git repository or the
+item is set to work in place.
+
+### The pipeline
+
+`draft → planning → plan-review → changes-requested → implementing →
+diff-review → pr-draft → pr-ready → done`, plus `abandoned` from anywhere and
+`reviewing` while an agent review round runs.
+
+- The **PR stages are optional**: approving a diff can close the item outright,
+  for repos that merge straight to their default branch.
+- A **pipeline stepper** at the top of every item shows the mode's stages,
+  where the item is, and how many rounds it has been through.
+- Decision stages (plan review, diff review, PR draft) badge the sidebar, fire a
+  desktop notification and appear in the [attention inbox](#inbox).
+- An item **follows its primary PR**: merged on GitHub → `done`; flipped to
+  ready for review on GitHub → `pr-ready` on the next refresh.
+
+### The action bar
+
+Every item ends with an action bar in three labeled zones:
+- **This step · stays here** — reviews, explanations, opening the PR or the session.
+- **Continue · moves the item** — the decisions that advance the pipeline.
+- **Item · back, park, share** — the item as a whole.
+
+Above the zones, a **Suggested next** strip names the one button to press now
+and why, along with what it already checked:
+
+1. a review round came back and isn't applied yet → **↻ Apply**
+2. comments are still open → **✎ Request changes…**
+3. PR threads are waiting on you → **⇄ Answer PR threads**
+4. this iteration's plan or code has no review yet → **⌕ Plan review** / **⌕ Code review**
+5. nothing has compared the change with the plan → **⇄ Compare plan vs changes**
+6. otherwise → **Approve**
+
+It only ever points at a button that is on the bar, and it moves the highlight
+there. The agents advise too, through a `**Next:**` line at the end of every
+review round and of the executor's hand-off, but clash's own checks rank first.
+"Reviewed" means reviewed **at this iteration**: after a fix round, the code is
+due for review again.
+
+`workflows.assist` sets how far it goes (*Settings → Workflows · agents*):
+- `suggest` (the default) highlights the step.
+- `autopilot` also starts it after each agent hand-back, but only steps that
+  decide nothing: a review, a plan-vs-changes round, or applying a round that
+  said apply. It stops before every approval, PR flip, change request and
+  GitHub post, and after 3 steps on an item until you click something there.
+- `off` gives the plain bar.
+
+### Reading an item
+
+| Tab | Holds |
+|---|---|
+| **Plan** | the current `plan.md`, rendered; *Edit plan.md* opens it in your editor |
+| **◫ Revisions** | every plan version (one per applied review round), any version's full text, and **⇄ Changes** between any two |
+| **Diff** | the change, with line comments; its source picker can also show a linked PR's diff (view-only) |
+| **Change requests** | *your* notes, one section per round — what the next agent round reads first |
+| **↩ Hand-off** | the workflow agent's note from its last phase: what it did, what it is unsure about, what it tested, what it suggests next |
+| **Agent reviews (n)** | every review round's verdict and findings, with jump chips, opening on the latest |
+| **◫ Plan explained** / **◫ Changes explained** | the explainer's two documents (see below) |
+| **⇄ Plan vs changes** | the latest plan-vs-changes comparison |
+| **Timeline** | one newest-first feed of every change round (your note, the plan diff, the plan as it stood, the code diff) and every review round |
+| **⚙ Settings** | per-item knobs: title, description, diff base, agent CLI, PR skill, default interaction mode, work in place, session-name prefix, Jira ticket — plus the item's facts |
+
+Workflow sessions are named by item and job (`Auth refactor · implement`,
+`· plan review r2`, `· code review r1`, `· explain plan`, `· plan vs changes r1`,
+`· answer PR comments`), so the sessions list says what each agent is doing.
+
+### Reviewing the diff yourself
+
+Hover any diff line and press `+` to leave a GitHub-style comment. Threads
+support reply, edit, resolve, *won't fix* and *park* (kept, but not sent with
+the next round). The ↑/↓ buttons in the diff header step through open comments,
+expanding collapsed files on the way. Comments re-anchor by content when the
+diff moves between iterations, and are never dropped: one that can't be placed
+lands in an orphan tray.
+
+### Requesting changes
+
+**✎ Request changes…** opens a composer. The note is appended verbatim to
+`review.md` and is the first thing the next round reads, so it is effectively
+that round's prompt. The composer offers:
+- a **What to change / Why / Out of scope** template;
+- *Insert review findings…* from any review round;
+- a preview of exactly what will be recorded;
+- the queued comments as rows you can untick (park), jump to or delete;
+- **After recording**: record only, or launch the fix round now, choosing how
+  it runs and, optionally, a different executor skill.
+
+⌘↵ sends, and a dismissed composer keeps its draft.
+
+Recording a round freezes the iteration first (diff, plan and comments under
+`history/`), so every round has a before and after. Where the request lands
+decides what the agent may touch:
+- At **plan review**, the round revises the plan.
+- Everywhere else, it changes the **code** and never rewrites `plan.md`. To
+  amend the plan, use **↩ Move back to… → plan-review** first.
+
+When the item has a PR, the fix round pushes so the PR follows.
+
+### Agent review rounds
+
+**⌕ Plan review** (at plan review) and **⌕ Code review** (diff review and both PR
+stages) hand the item to a reviewer agent. A round is a side trip: the item goes
+to `reviewing` and comes back exactly where it started. Rounds are unbounded,
+and nothing advances until you approve. Rounds are numbered per target, so the
+first code review is *Code review 1* however many plan reviews came before it.
+
+The launch composer shows the round's whole shape before anything spends tokens:
+
+| Choice | Options |
+|---|---|
+| **Which change?** | multi-repo items only: this repo's own diff and/or any of the item's PRs, in one round |
+| **Depth** | code and drift rounds: `deep` (default; traces callers, invariants and existing tests) or `standard` |
+| **Findings** | keep local (default) or also post to the PR — one review with line comments, never an approval; on a draft PR the summary goes as a comment, since GitHub refuses reviews on drafts |
+| **Interaction** | ask when it starts (default), interactive, or autonomous |
+| **Apply when done** | let a round that says "apply" start the fix round by itself |
+
+**Interactive or autonomous is your call.** An interactive round asks its open
+questions in one batch, each with a recommended answer. It then walks you
+through its findings before writing anything: you keep, drop or regrade each
+one, and plan issues come with lettered options. It asks before any trivial fix
+or PR post. An autonomous round decides alone and reports at the end. The
+executor phases start with the same question.
+
+Code findings arrive as **diff comments** graded `BLOCKER`/`RISK`/`GAP`/`NIT`,
+which you triage like your own. The verdict and plan findings go to
+**Agent reviews**. When a round finishes, a toast and a strip on the item say
+what it concluded and what it published. **↗ Post round N to PR** shares an
+existing round later, with no new review. A reviewer may fix only trivial
+mechanical issues, after asking, and never rewrites what it reviews. While a
+round runs, approval and the comment editor are locked. **End round** always
+unlocks them, so a crashed reviewer can't wedge an item; a dead executor gets
+**⚠ Relaunch agent**.
+
+### Applying a round
+
+Every round ends with `**Apply:** yes|no — reason` (are the findings worth a
+revision round?) and `**Next:** <action> — reason`. clash shows the call on the
+button: **↻ Apply plan review 2 → revise plan · recommended** (or *not needed*).
+One click composes the note from the round's findings, records it as the next
+change round and launches the agent. *Edit the note first…* opens the composer
+pre-filled, for "apply 1a and 3b". Until a round is applied, the item header
+says **not applied yet** and the stage's own Approve steps back.
+
+### Explaining
+
+**◫ Explain plan** reads `plan.md` and the code it will land in, and explains
+what the implementation is *going* to do before it exists. **◫ Explain changes**
+reads the diff and explains what the change *did*. Each run writes two forms:
+- a written walk-through with mermaid diagrams;
+- one hand-drawn page of boxes and arrows (the parts, the repos, what is new),
+  rendered sandboxed with scripts off.
+
+The tab opens on the drawing. **◫ Diagram / ☰ Write-up** switches form, and
+**⤢** gives the drawing the whole tab. An explainer judges nothing, runs
+alongside the item's other agents without blocking it, and can be told what to
+focus on.
+
+### Comparing plan vs changes
+
+**⇄ Compare plan vs changes** reads `plan.md` and the diff together, to answer
+the question neither review can: did we build what we agreed to? Every
+divergence has:
+- a direction: **missing**, **extra** or **different**;
+- a grade on consequence, not size: **intended**, **benign** or an **issue**.
+
+A test or migration the plan promised and the change skipped is an issue.
+Issues arrive as diff comments, so ↻ Apply or Request changes turns them into a
+fix round. Drift resolved by amending the plan is reported instead, because a
+fix round never rewrites `plan.md`: move the item back to plan review for that.
+Launching it offers to refresh any explanation written for an older iteration
+alongside it, pre-ticked; it runs in parallel, and the comparison doesn't wait
+for it.
+
+### Going back
+
+**↩ Move back to…** lists the stages behind the current one, with what each is
+for. Clicking a passed stage in the stepper does the same. Only the stage moves:
+the plan, diff, comments, PR and rounds all stay, and no agent runs. A finished
+or abandoned item offers **↩ Reopen at diff review**.
+
+### Pull requests
+
+- **Create draft PR…** offers two ways to write the description: from the plan
+  (free, instant) or by the agent from the real diff (spends tokens). A branch
+  that was never pushed is pushed first.
+- **✓ Mark PR ready** flips the draft once you have validated it. **✓ PR is
+  ready → PR ready** records a PR already flipped on GitHub. **✓ Mark done**
+  closes the item at either PR stage.
+- **⇄ Answer PR threads** launches an agent that reads every review thread,
+  fixes the trivial ones with commits, replies in each thread, and queues the
+  rest as comments for you. The button shows how many threads are open (a
+  thread is settled only when your reply is its last word, so findings clash
+  itself posted count until they get a decision) and says *all answered* when
+  nothing is.
+- **PR skill** (*Settings → Workflows*, default `hivebrite-engineering:github-pr`,
+  `none` disables, per-item override in ⚙ Settings): agent-written PRs go
+  through that skill, so they follow your org's titles, templates and ticket
+  links.
+- **`workflows.forge`** (`auto` | `github` | `none`): `auto` detects GitHub from
+  the origin remote (GitHub Enterprise included). `none` hides every PR feature.
+- A command that needs a PR the item doesn't know asks for its URL, attaches it
+  and retries. A review round can run locally instead.
+
+### Multi-repo work
+
+**🔗 Link a PR…** attaches PRs from other repositories. They show as chips in the
+item header and refresh with the primary. Only the primary PR moves the item's
+status; an item with *only* linked PRs closes when all of them merge. Once an
+item has several PRs, every PR action asks which ones (any subset, with an
+all/none toggle):
+
+| Action | Pre-ticked |
+|---|---|
+| **Open PRs (n)…** — the first in a split pane, the rest as browser tabs | all |
+| **✓ Mark PR ready…** — drafts only; only the primary moves the item | the primary |
+| **↗ Post round N to PR…** | the primary |
+| **⌕ Code review** — one round over several diffs; a linked PR's findings are posted to that PR | this repo's own diff |
+| **⇄ Answer PR threads…** | every PR with open threads |
+
+Every PR chip also has a right-click menu with that PR's actions. The **⇄ PR
+dashboard** (button on the WORKFLOWS section) lists every item holding a PR
+across all projects, decisions first and merged last.
+
+### Share & notifications
+
+**↗ Share…** composes one document from the item (summary, plan, rounds,
+verdicts, open comments, diff) from three presets with per-section checkboxes.
+The preview **is** the payload. It can go to:
+- the clipboard;
+- a `.md` or self-contained `.html` file;
+- Slack or Discord;
+- a Jira ticket as one comment. The key is pre-filled from the item's
+  remembered ticket or detected in its title or branch.
+
+Who posts a share is a per-destination setting (`jira_transport` /
+`chat_transport`):
+- **An agent session** (the default) posts it through a skill you name, or else
+  with whatever tooling that session has connected.
+- **clash itself** posts over HTTPS with the webhook or Jira credentials.
+
+Neither route is a fallback for the other, and each button names its route.
+
+**Notify decisions** (`notify_webhook`, off by default) announces every item an
+*agent* parks at a decision stage on the configured webhook. Your own clicks
+never post.
+
+### Agents, models and skills
+
+- **Agent CLI**: workflow sessions run on Claude Code or OMP. `workflows.agent`
+  defaults to `ask` at every step and can be fixed per item. See
+  [OMP sessions](#omp-sessions).
+- **Lead and subagents**: every Claude workflow session runs on one pinned
+  **lead model** (`workflows.lead_model`, default `claude-opus-5-5`). Under
+  `workflows.delegation = team` (the default), the lead may split work across
+  parallel subagents on `workflows.subagent_model` (default `claude-sonnet-5-5`).
+  It sizes the round first: small work stays with the lead, and large work gets
+  explorers, implementers in waves of disjoint files, or one reviewer per area,
+  followed by verification. `solo` keeps everything in one session.
+  [Details](docs/workflows.md#lead-and-subagents).
+- **Skills**: the agent side is five skills embedded in the binary:
+  - `clash-workflow` — the executor: plans, implements, opens PRs, writes the hand-off;
+  - `clash-plan-review` — the plan reviewer;
+  - `clash-code-review` — the code reviewer;
+  - `clash-explain` — the explainer;
+  - `clash-drift-review` — plan vs changes.
+
+  Startup installs missing skills and refreshes the ones you never edited.
+  clash asks (*Keep my edits* / *Overwrite*) only when an upgrade would replace
+  a skill you edited by hand; `general.skills_update` pins the answer. The ☰
+  button on the WORKFLOWS section lists every installed skill and badges the
+  ones clash manages.
+
+### Storage
+
+`~/.claude/clash/workflows/<project>/<item>/` (or `workflows_dir`) holds:
+- `meta.json` and `plan.md`, with `plan-history/` for its versions;
+- `review.md` (your decisions) and `agent-review.md` (the reviewers' rounds);
+- `annotations.json`;
+- `explain-plan.*`, `explain-diff.*` and `drift.*`;
+- `handoff.md` and `explainers.json`;
+- `history/<NNN>/` round snapshots.
+
+The contract for what agents may write, and when, is
+[docs/workflows.md](docs/workflows.md).
+
+## TUI keybindings
 
 ### Navigation
 
@@ -139,7 +719,13 @@ The Wild detection runs in the background every ~2s. clash surfaces every wild c
 | `g` / `G` | Jump to first / last |
 | `Enter` | Drill in |
 | `Esc` | Go back |
-| `q` | Quit (with confirmation) |
+| `r` | Refresh |
+| `q` / `Ctrl+C` | Quit (with confirmation; `Ctrl+C` again while shutting down force-quits) |
+
+In dialogs: `y` / `n` (or `Esc`) answer a confirmation; pickers take `j`/`k`,
+`Enter`, `Esc`; text fields support the usual readline keys (`Ctrl+A/E/U/K/W`,
+`Alt+B/F/D`). The tour advances with `Enter`/`Space`/`→` and is skipped with
+`Esc`/`q`; the help overlay scrolls with `j`/`k` and closes with `?`/`Esc`/`q`.
 
 ### Modes
 
@@ -153,6 +739,7 @@ The Wild detection runs in the background every ~2s. clash surfaces every wild c
 
 | Key | Action |
 |-----|--------|
+| `Enter` / `i` | Open the session detail |
 | `a` | Attach (inline terminal); on a 🌿 wild row: take over and attach (one confirm) |
 | `p` | View git diff |
 | `e` | Open project in IDE (auto-detect + picker) |
@@ -164,17 +751,16 @@ The Wild detection runs in the background every ~2s. clash surfaces every wild c
 | `s` | Stash / unstash session (stop process, keep in registry) |
 | `w` | Spawn session in a git worktree |
 | `Tab` | Expand / collapse subagents |
-| `A` | Cycle section filter (Active/Done/Fail/External) |
-| `S` | Toggle active / all |
+| `A` | Cycle section filter (All/Active/Done/Fail/External; Fail is skipped under `:active`) |
+| `S` | Stash / unstash ALL sessions (with confirmation) |
 | `d` | Drop session |
 | `D` | Drop ALL sessions |
-| `i` | Inspect (drill into detail) |
 
 ### Teams
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Open team → its members (agents) |
+| `Enter` / `i` | Open the team's detail (its members and tasks from there) |
 | `c` | Create team |
 | `R` | Rename team (moves its config + tasks) |
 | `d` | Delete team |
@@ -189,19 +775,33 @@ A status bar at the bottom shows session name, project, and git branch. The PTY 
 | Key | Action |
 |-----|--------|
 | `Ctrl+B` | Detach (works across all terminal encodings) |
-| Everything else | Forwarded to Claude |
+| Everything else | Forwarded to the session's agent (`claude` or `omp`), mouse scroll included |
 
 ### Session Detail
 
 | Key | Action |
 |-----|--------|
-| `s` | Subagents |
-| `t` | Linked team |
-| `m` | Team members |
+| `j` / `k` | Scroll |
+| `s` / `Enter` | Subagents |
+| `t` | Linked team (the Teams list when none is linked) |
+| `m` | Team members (all agents when no team is linked) |
 | `p` | View git diff |
 | `a` | Attach |
+| `o` | Open in new pane / tab / window |
+| `w` | Spawn a session in a git worktree |
 | `e` | Open in IDE |
 | `d` | Drop |
+
+### Subagents
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Subagent detail |
+| `a` | Attach to the parent session |
+| `o` | Open the parent session in a new pane / tab / window |
+| `e` | Open in IDE |
+| `p` | View git diff |
+| `f` / `F` | Queue / cancel a follow-up for the parent session |
 
 ### Diff View
 
@@ -214,14 +814,15 @@ A status bar at the bottom shows session name, project, and git branch. The PTY 
 
 ### Team Detail
 
-Opening a team scopes the Agents and Tasks views to that team (a `●` dot marks
-members whose session is currently running). Per-member edits are commands run
+Opening a team scopes the Agents and Tasks views to that team. Its member list
+marks members whose session is currently running with `●` (`○` otherwise); the
+Agents view says `active` / `idle`. Per-member edits are commands run
 from a team view — `:member model <name> [model]`, `:member type <name> <type>`,
 `:member prompt <name> <text>`, `:member rename <old> <new>`.
 
 | Key | Action |
 |-----|--------|
-| `Enter` | View agents (team-scoped) |
+| `Enter` / `a` | View agents (team-scoped) |
 | `t` | View tasks (team-scoped) |
 | `s` | View lead session |
 | `e` | Edit team description |
@@ -241,6 +842,9 @@ The Tasks view is scoped to the current team.
 | `s` | Cycle status (pending → in-progress → completed → …) |
 | `a` | Assign owner (picker of the team's members) |
 | `d` | Delete task |
+
+In a task's detail view, `s` cycles its status and `d` deletes it (with
+confirmation).
 
 ### Scratches
 
@@ -291,7 +895,7 @@ manual re-list.
 
 | Command | Action |
 |---------|--------|
-| `:teams` | Navigate to Teams view |
+| `:teams` | Navigate to Teams view (each view name also works singular: `:team`, `:session`, …) |
 | `:sessions` | Navigate to Sessions view |
 | `:agents` | Navigate to Agents view |
 | `:tasks` | Navigate to Tasks view |
@@ -301,23 +905,23 @@ manual re-list.
 | `:scratch` / `:notes` | Navigate to Scratches view |
 | `:create team <name>` | Create a new team |
 | `:rename team <old> <new>` | Rename a team |
-| `:delete team <name>` | Delete a team |
+| `:delete team <name>` | Delete a team (also `:remove team`) |
 | `:member model <member> [model]` | Set a member's model (current team; empty = inherit) |
 | `:member type <member> [type]` | Set a member's agent type (empty = general-purpose) |
 | `:member prompt <member> <text>` | Set a member's system prompt |
 | `:member rename <old> <new>` | Rename a member |
 | `:create task <team> <subject>` | Create a task |
 | `:new [path]` | Spawn a new session (default agent) |
-| `:new --agent <claude\|omp> <path>` | Spawn a new Claude Code or OMP session |
+| `:new --agent <claude\|omp> <path>` | Spawn a new Claude Code or OMP session (the path is required for the agent to stick) |
 | `:new --preset <name>` | Spawn session from a preset |
 | `:diff` | View git diff for current session |
 | `:rename <name>` | Rename session (from detail view) |
-| `:active` / `:all` / `:external` | Filter sessions (active only / all / wild + external only) |
-| `:tour` | Replay guided tour |
+| `:active` / `:all` / `:external` (`:wild`) | Filter sessions (active only / all / wild + external only) |
+| `:tour` (`:guide`) | Replay guided tour |
 | `:config` | Show the `config.toml` path |
-| `:reload` | Re-read `config.toml` now (it is watched, so this is only ever a nudge) |
-| `:update` | Update clash |
-| `:quit` | Exit |
+| `:reload` (`:reload-config`) | Re-read `config.toml` now (it is watched, so this is only ever a nudge) |
+| `:update` (`:upgrade`) | Update clash |
+| `:quit` (`:q`) | Exit |
 
 ### OMP sessions
 
@@ -359,7 +963,7 @@ Settings: `general.omp_bin`, `general.default_agent`, `paths.omp_dir`,
 
 One file, shared by the TUI and the GUI. Find it with `clash config --path`
 (`~/.config/clash/config.toml` on Linux, `~/Library/Application
-Support/clash/config.toml` on macOS).
+Support/clash/config.toml` on macOS, `%APPDATA%\clash\config.toml` on Windows).
 
 ```bash
 clash config                    # the merged config, annotated with where each value came from
@@ -370,6 +974,9 @@ clash config --validate         # check the file; exits non-zero on an error
 clash config --schema           # JSON Schema, for taplo / Even Better TOML completion
 ```
 
+The flags are mutually exclusive. Bare `clash config` exits 1 on a parse error
+(after printing the defaults it fell back to).
+
 ### Layers
 
 Later layers win, key by key:
@@ -378,13 +985,16 @@ Later layers win, key by key:
 |-------|-------|-------|
 | defaults | in the binary | `clash config --defaults` prints them |
 | user | `clash config --path` | what the GUI Settings panel writes |
-| project | `<repo>/.clash/config.toml` | **restricted**: paths only (see below) |
-| environment | `CLASH_<SECTION>_<KEY>` | e.g. `CLASH_SESSIONS_REFRESH_SECS=5` |
+| project | `<repo>/.clash/config.toml` (found by walking up from the cwd) | **restricted** (see below) |
+| environment | `CLASH_<SECTION>_<KEY>` | any key, e.g. `CLASH_SESSIONS_REFRESH_SECS=5` |
 
-A project config may set `[paths]` and nothing else. It deliberately **cannot**
-change `claude_bin` — clash spawns processes, so a cloned repo must not be able
-to decide which binary runs. Rejected keys are reported by
-`clash config --validate`, not silently ignored.
+A project config may set only `paths.claude_dir`, `paths.scratch_dir`,
+`paths.workflows_dir`, `[actions]` and `notifications.hooks`. It deliberately
+**cannot** change `claude_bin`, `omp_bin` or any other key — clash spawns
+processes, so a cloned repo must not be able to decide which binary runs.
+Rejected keys and unknown `CLASH_*` variables are reported by
+`clash config --validate`, not silently ignored (`CLASH_LOG_RETENTION_HOURS`
+is the one `CLASH_*` variable that is not a config key).
 
 ### Settings
 
@@ -393,6 +1003,7 @@ schema_version = 2
 
 [general]
 claude_bin = "claude"      # name on PATH, or an absolute path
+skills_update = "ask"      # when an upgrade ships skills you edited: ask | all | keep
 omp_bin = "omp"            # OMP (oh-my-pi) binary for OMP sessions
 default_agent = "claude"   # agent new sessions pre-select: claude | omp
 debounce_ms = 200          # filesystem-watcher debounce
@@ -417,7 +1028,7 @@ enabled = true
 title_attention = true     # "clash (2!)" in the window title
 
 [workflows]
-agent = "claude"           # agent CLI workflow sessions run on: claude | omp (per-item override)
+agent = "ask"              # agent CLI workflow sessions run on: ask | claude | omp (per-item override)
 omp_model = ""             # --model for OMP workflow sessions; empty = omp's default
 lead_model = "claude-opus-5-5"     # --model for every Claude workflow session (the lead)
 delegation = "team"        # team: lead fans work out to parallel subagents | solo
@@ -431,11 +1042,16 @@ notify_webhook = "off"     # announce decision states: off | slack | discord
 jira_base_url = ""         # Jira site URL for share → Post to Jira; empty disables
 jira_email = ""            # Jira account email (API-token auth)
 jira_api_token = ""        # Jira API token (id.atlassian.com → Security)
+jira_transport = "agent"   # who posts a share to Jira: agent (a session) | clash (direct, with the jira_* keys)
+chat_transport = "agent"   # who posts a share to Slack/Discord: agent | clash (the webhooks)
+jira_skill = ""            # skill the agent Jira route goes through; empty = the session's own tooling
+chat_skill = ""            # skill the agent chat route goes through; empty = the session's own tooling
 
 [[ides]]                   # extra editors offered when opening a project or note
 name = "VS Code"
 command = "code"
 terminal = false
+description = ""           # optional
 ```
 
 The GUI's 20 xterm-rendering settings (font, cursor, scrollback, scroll, link
@@ -446,8 +1062,9 @@ Everything above is read by both.
 
 - **Edits apply live.** The config directory is watched; a change by hand, by
   the GUI, or by another clash instance is picked up without a restart.
-  `:reload` forces it. `general.claude_bin` and `general.debounce_ms` take
-  effect on restart, and clash says so rather than pretending otherwise.
+  `:reload` forces it. `general.claude_bin`, `general.omp_bin`,
+  `general.debounce_ms` and `paths.omp_dir` take effect on restart, and clash
+  says so rather than pretending otherwise.
 - **A typo never loses your settings.** A parse error keeps the last good values
   in memory, reports the failure with `line:column`, and *blocks writes* until
   you fix it — so the next GUI toggle can't overwrite your file with defaults.
@@ -474,12 +1091,16 @@ clash reads directly from Claude Code's filesystem:
 │   └── {session-id}/subagents/        # Subagent transcripts
 ├── teams/{name}/config.json           # Team config + members
 │                                       #   (Claude's auto session-* teams are hidden)
+├── teams/{name}/inboxes/{agent}.json  # Per-agent inboxes
 └── tasks/{team-name}/{id}.json        # Tasks
 ```
 
-clash writes nothing inside `~/.claude/` itself — only its own `~/.claude/clash/`
-subdirectory. Older versions registered their hooks in
-`~/.claude/settings.local.json`; that entry is withdrawn on first launch.
+Outside its own `~/.claude/clash/` directory, clash writes only where you ask
+it to — team configs, inboxes and tasks when you edit them — plus its five
+embedded workflow skills under `~/.claude/skills/<name>/` (with a
+`.clash-skills.json` manifest). It registers nothing in your Claude settings
+files; older versions' entry in `~/.claude/settings.local.json` is withdrawn at
+startup. OMP sessions are read from `~/.omp/agent/sessions/`.
 
 clash also maintains its own state in `~/.claude/clash/`:
 
@@ -487,25 +1108,36 @@ clash also maintains its own state in `~/.claude/clash/`:
 ~/.claude/clash/
 ├── hooks/status-hook.sh               # Lifecycle hook script
 ├── hooks/settings.json                # Hook registration, passed to `claude --settings`
+├── hooks/omp-status.js                # OMP status extension, loaded with `omp -e`
 ├── status/{session-id}                # Instant status from hooks
 ├── names/{session-id}                 # Session display names
 ├── project-names/{encoded-cwd}        # Project-to-name mapping
-├── sessions.json                      # Session registry
+├── sessions.json                      # Session registry (+ sessions.json.bak)
 ├── ui_state.json                      # Persisted UI state (nav, selection, filters) — saved
 │                                       #   continuously so any exit resumes where you were
 ├── scratch/                           # Scratch notes — a nested tree of
 │   ├── {name}.md                       #   free-form text files and
 │   └── {folder}/{name}.md              #   user-created folders
-└── trusted_repos.json                 # SHA256 trust store for repo setup scripts
+├── workflows/<project>/<item>/        # Workflow items (see Workflows → Storage)
+└── share/                             # Payloads handed to share sessions
 ```
 
-Daemon sockets: `~/Library/Application Support/clash/daemon-<pid>.sock` (one
-per running instance; `clash attach` auto-discovers the instance that owns a
-session).
+Outside `~/.claude`, in the platform's config and data directories
+(`~/.config/clash` and `~/.local/share/clash` on Linux, `~/Library/Application
+Support/clash` on macOS):
+
+```
+config.toml                # the shared configuration (see Configuration)
+presets.json               # global session presets
+gui-state.json             # GUI workspaces, layout and GUI-only settings
+clash.log                  # log, rotated after 24h (CLASH_LOG_RETENTION_HOURS)
+daemon-<pid>.sock          # one per running instance; `clash attach` finds the owner
+```
 
 ## Session Presets
 
-Presets are reusable templates for session creation. When presets are available, pressing `n` shows a picker; otherwise the manual 3-step flow is used.
+Presets are reusable templates for session creation. When presets are available, pressing `n` shows a picker; otherwise the manual flow is used (directory →
+name → worktree → agent).
 
 ### Project presets (`.clash/presets.json`)
 
@@ -528,7 +1160,7 @@ Presets are reusable templates for session creation. When presets are available,
 }
 ```
 
-### Global presets (`~/.config/clash/presets.json`)
+### Global presets (`presets.json` in the config directory)
 
 Same format as project presets. Project presets override global presets with the same name.
 
@@ -542,12 +1174,14 @@ If `.superset/config.json` exists, it appears as a synthetic "superset" preset w
 |-------|------|-------------|
 | `description` | string | Shown in the preset picker |
 | `directory` | string | Working directory (relative or absolute) |
-| `prompt` | string | Initial prompt for Claude |
+| `prompt` | string | Initial prompt sent to the session (GUI) |
 | `worktree` | bool? | `true`/`false` = auto, omit = ask |
 | `setup` | string[] | Scripts to run after session creation |
 | `teardown` | string[] | Scripts to run before session drop |
 
-Setup scripts receive `CLASH_ROOT_PATH` and `CLASH_SESSION_ID` env vars. Each script has a 30s timeout.
+Setup scripts receive `CLASH_ROOT_PATH` and `CLASH_SESSION_ID` env vars. Each
+script has a 30s timeout. `setup`/`teardown` run from the TUI; the GUI applies a
+preset's directory, worktree and prompt.
 
 ## Architecture
 
@@ -561,828 +1195,24 @@ User Input → Action → reducer() → (State', Effects) → execute_effects() 
 | Layer | Purpose |
 |-------|---------|
 | **Domain** | Entities, port traits — no dependencies |
-| **Application** | State, actions, effects, pure reducer |
+| **Application** | State, actions, effects, pure reducer, pure workflow/session logic |
 | **Adapters** | Input mapping, view rendering |
-| **Infrastructure** | Event loop, filesystem, daemon, CLI, TUI widgets |
+| **Infrastructure** | Event loop, filesystem, in-process PTY daemon, session refresh, config, hooks, windowing, git/`gh`/forge, skills, self-update, TUI widgets |
+
+Two frontends share that core: the TUI (`src/main.rs`) and the GUI — a Tauri 2
+app (`gui/src-tauri`) whose frontend is plain JS in `gui/dist` with its pure
+modules tested under `gui/tests`. [CLAUDE.md](CLAUDE.md) maps every subsystem.
 
 ## Development
 
 ```bash
-cargo test          # Run all tests
-cargo clippy        # Lint
-cargo fmt --check   # Check formatting
+cargo test --all-targets            # Rust tests
+node --test "gui/tests/*.test.js"    # GUI frontend tests
+cargo clippy -- -D warnings         # Lint (as CI runs it)
+cargo fmt --check                   # Formatting
 ```
 
 Releases are automatic — push with conventional commits (`feat:`, `fix:`) and CI handles the rest.
-
-## Workflows (GUI)
-
-An all-in-one pipeline manager for AI-assisted development, built on plain
-files so the whole history stays consultable outside clash.
-
-**Lifecycle**: `draft → planning → plan-review → changes-requested →
-implementing → diff-review → pr-draft → pr-ready → done` — the `pr-*` stages are
-optional, so approving a diff can close the item outright (plus `abandoned`, and
-`reviewing` for an [agent review round](#workflows-gui)). Decision states
-(plan-review, diff-review, pr-draft) badge the sidebar and fire a desktop
-notification.
-
-**Suggested next step** — every item's action bar opens with one highlighted
-button and the reason for it: apply the review that came back, answer open
-comments, review the code changed by the last fix round, compare the plan
-with the change, or approve. Reviewers end each round with a `**Next:**`
-recommendation and the workflow agent leaves a `handoff.md` (the **↩ Hand-off**
-tab), but clash's own checks rank first. `workflows.assist = autopilot` also
-starts the suggested step when it decides nothing (reviews, comparisons,
-applying a round that said apply), and always stops before an approval.
-Launching **⇄ Compare plan vs changes** offers to refresh any out-of-date
-explanation alongside it. Details: [docs/workflows.md](docs/workflows.md#next-step-assist).
-
-**Lead and subagents** — every Claude workflow session runs on one pinned
-lead model (`workflows.lead_model`, default `claude-opus-5-5`). With
-`workflows.delegation = team` (the default) the skills let the lead split the
-work across parallel subagents on `workflows.subagent_model` (default
-`claude-sonnet-5-5`, enforced via `CLAUDE_CODE_SUBAGENT_MODEL`) — sized to the
-round first, so a small change is done by the lead alone and a large one gets
-explorers while planning, implementers in waves of disjoint files plus a
-verifier while implementing, and one reviewer per area plus batched refuting
-verifiers in review rounds. The lead alone writes the item's files,
-commits and talks to you. `solo` keeps everything in one session. Settings →
-Workflows · agents. Details: [docs/workflows.md](docs/workflows.md#lead-and-subagents).
-
-**Entry modes** — an item does not have to start at the beginning. The `+`
-button asks how it starts:
-
-| Mode | Starts at | Use it when |
-|---|---|---|
-| **Full workflow** | `draft` | you have an idea: an agent plans, you approve, it implements |
-| **From a plan I already have** | `plan-review` | the plan exists — paste it, point at a markdown file, or pick a scratch note; no planning agent runs and you are one *Approve* from implementation |
-| **Review only** | `diff-review` | the feature is already written: give a **PR** (URL or number) or a **local branch** and get just the review loop |
-
-**Review only** is the reviewer's path: clash resolves the PR through `gh`,
-checks the branch out (reusing an existing worktree of it when you already have
-one), and drops you straight into the diff with the PR's own base as the diff
-base. The PR can be given as a full URL (scheme optional, `/files` and other
-sub-pages tolerated) or as a bare number resolved against the item's repo — a
-URL is looked up in *its own* repository, so a link pointing somewhere other
-than the repo you picked is refused by name instead of silently resolving to
-whatever PR shares that number locally. Annotate, *Request changes* → the agent addresses the comments on that
-branch and pushes, you review again; *Approve* closes the item — no plan is
-ever written and no draft-PR ceremony runs, since the PR isn't clash's.
-
-The repo is picked from your open sessions and existing workflow projects, or
-via **Browse…** / the 📁 button on the path prompt — the same native folder
-picker as the new-session modal.
-
-**The loop** (full mode): create an item (title + a free-form **description**
-of the goal/scope — the planning agent's primary source, optional but it
-spares you half the requirements questions; editable later in the ⚙ Settings
-tab + project + repo) → *Start planning*
-spawns a Claude Code session driven by the `clash-workflow` skill (planning
-reads the repo in place; the first round that writes code gets a dedicated git
-worktree + branch — never for a directory that isn't a git repository, or when
-the item's ⚙ Settings say to work in place) → read the rendered plan, *Approve* or *Request
-changes* → during **diff review**, hover any line of the diff
-and press `+` to leave a GitHub-style comment (threads support reply / edit /
-resolve / wontfix); *Request changes* snapshots the iteration (diff + plan +
-annotations frozen under `history/`), appends your note and the open
-comments to the `review.md` audit trail, and hands back to the agent, which
-must address every open comment → *Approve → done* closes the item, or
-*Create draft PR* (via `gh`) first if you want the PR stages, in which case
-*Mark PR ready* flips the draft once you've validated everything — and when
-the item tracks linked draft PRs in other repos, offers to flip them in the
-same step (best-effort; failures are listed, the primary's flip stands). The
-item **follows its primary PR**: a merged PR moves it to done automatically
-(an item with *only linked* PRs closes once all of them merge — it has no
-primary PR to drive it), and a PR flipped to ready-for-review on GitHub moves
-a `pr-draft` item to PR READY on the next refresh — meanwhile the bar offers
-*✓ PR is ready → PR ready* directly, so a stage whose drafts are all gone is
-never a dead end. *✓ Mark done* is available at both PR stages. *Request changes* stays available at
-`pr-draft` and `pr-ready` — review feedback keeps arriving once a PR is up,
-and a fix round on an item with a PR pushes its commits so the PR follows.
-**Reviewing at any stage, draft PR included.** A review round is available
-wherever the item is parked on a decision — plan review, diff review, and both
-PR stages. A draft is exactly what a change is in while it is being reviewed,
-so nothing gates a round on the PR's state; the only difference is that GitHub
-won't accept a formal *review* on a draft, so when the findings are posted to
-the PR the summary goes as a comment instead (line comments are unaffected).
-The composer says which form it will use before you launch, and the local half
-— findings as line-anchored annotations — never depends on the PR at all.
-
-**Round numbers restart per phase.** Plan reviews are numbered among
-themselves and code reviews among themselves, so the first code review of a
-well-planned item is *Code review 1*, not "round 7". The labels name the phase
-for the same reason; the item's total is still on the *Agent reviews (n)* tab.
-
-**Applying a review round.** A review round judges and records; it never edits
-`plan.md` or the code — a reviewer that rewrites what it reviews has reviewed
-nothing. **Every round ends by declaring whether its findings are worth
-applying** (`**Apply:** yes|no — reason` in its report): interactive rounds ask
-you, autonomous ones judge it on materiality — a missing step or a wrong
-ordering is worth a revision round, six wording nits are not. clash shows that
-call on the action (*recommended* / *not needed*) and in the item header.
-
-The round composer's **“Apply the findings when the round finishes”** checkbox
-pre-authorizes acting on it: tick it and a round that answers `yes` starts the
-revision round by itself, with no second trip through the UI — a round that
-answers `no` still applies nothing, because spending tokens to apply nothing is
-exactly what it just advised against. Leave it unticked to read the findings
-and decide yourself.
-
-Turning findings into work by hand is one click: **↻ Apply review rN**
-(offered at every decision state while a round is waiting) composes the note
-from that round's own findings, records it as the next change round — which
-freezes the current plan as a version first — and launches the agent to carry
-it out. The same dialog offers *Edit the note first…*, which opens the
-change-request composer pre-filled, for when you want to narrow it down
-("apply 1a and 3b") or add something of your own. Until a round has been
-applied the item header says **not applied yet** and the stage's own *Approve*
-is demoted, so a review can no longer look like it evaporated. *Request
-changes* remains the path for feedback that is yours rather than the
-reviewer's.
-
-The **Plan** tab always shows the current plan — reading it is the common case,
-and a tab that reopens on last week's comparison is not that. Its history lives
-one click away in **◫ Revisions**.
-
-**Plan revisions — one per applied review.** `v1` is the first plan an agent
-wrote; every applied review round adds exactly one more. Whoever writes the
-plan and however many times they save it, the version for the round in flight
-is *replaced* rather than added to: an agent saving twice while revising is the
-same version still being written, and listing both would number the history by
-accidents of when the file hit disk. The Revisions tab lists them newest first
-with when each was recorded and which round it came from ("the first plan",
-"after the changes requested at iteration 2"), shows any version's full text,
-and **⇄ Changes** diffs it against the previous one — or against any earlier
-version you pick. A round that asked for changes and got none adds nothing, and
-identical content is never a new version, so whitespace churn can't bury the
-real ones. Items created before this store adopt whatever their round snapshots
-preserved on first open, so upgrading doesn't present a multi-round item as
-having no history.
-
-**◫ Explain — two artifacts, two forms, no verdict.** The explainer answers
-"what is this?", and there are two separate questions worth asking, so there
-are two actions and two tabs that never overwrite each other:
-
-- **◫ Explain plan** reads `plan.md` *and the code it will land in*, and says
-  what the implementation is going to do — before any of it exists. That is the
-  document to argue with while arguing is still cheap.
-- **◫ Explain changes** reads the diff and says what the change actually did —
-  fair to ask of an item long after it is finished.
-
-Explaining **never blocks the item**: an explainer runs alongside whatever else
-is going on — explain the plan while a plan review runs or while the agent
-implements it, explain the changes while a code review or drift round runs —
-and the item keeps moving. The action bar shows **◫ Explaining… · open** while
-it works (✕ forgets a round that will never finish) and a toast says when the
-explanation is ready. It only waits when its own artifact is being written: no
-plan explanation while the plan is being (re)written, no changes explanation
-while the code is.
-
-Each round writes **both forms** of its explanation, because they are read
-differently:
-
-- a **written walk-through** (`explain-plan.md` / `explain-diff.md`) — prose
-  and mermaid diagrams, organized by functional part, with the file and symbol
-  names, what attaches to what, and the open questions;
-- a **graphical overview** (`explain-plan.html` / `explain-diff.html`) — one
-  hand-drawn page of boxes and arrows: the parts, the repos and features they
-  live in, what is new versus what already existed, and the blast radius. It is
-  what you look at for fifteen seconds to get the shape. clash renders it in a
-  sandbox with scripts disabled, themed to match the app.
-
-The tab opens on the picture, and a **◫ Diagram / ☰ Write-up** switch at the
-top moves between the two forms. The drawing fills the pane — it is the one
-document read at a glance — and **⤢** hands it the whole tab: the item header,
-the pipeline stepper and the action bar step aside, and **⤡** brings them
-back. Both forms are regenerated on each run, and you can
-name something for the round to concentrate on when you launch it. The
-explainer **judges nothing and decides nothing** — no accept, no
-reject, no gate on the pipeline; it writes its own two documents and nothing
-else.
-
-**⇄ Compare plan vs changes — did we build what we agreed to?** The two
-explanations describe one artifact each; this round reads both `plan.md` and
-the diff and reports the gap between them, because a change can pass a code
-review on its own merits while delivering something else — half a feature, an
-extra subsystem nobody signed off on, a different mechanism than the one you
-authorized. Every divergence gets a direction (**missing** — promised and not
-delivered; **extra** — delivered and never planned; **different** — done by
-other means) and, more importantly, a **grade**: *intended* (deliberate and
-justified — so the plan is now the stale part), *benign* (real, no
-consequence), or an *issue*. Grading is on consequence, not size: a one-line
-deviation that changes an interface other repos call is an issue, a whole
-module written in a different file than planned is benign. A test, migration
-or doc the plan promised and the change skipped is an issue too — it is the
-part of a plan most reliably dropped under pressure and the part a diff review
-cannot see, because you cannot review what is not there.
-
-It writes the same two forms as an explanation — a written comparison and one
-hand-drawn map with every part badged — in its own **⇄ Plan vs changes** tab,
-so you can see both shapes at once instead of diffing two pictures by eye. But
-unlike the explainer it **judges**, so its issues arrive as diff comments like
-any review's: one *Request changes* turns them into a fix round, and *↻ Apply
-review* offers it in one click. The exception is the drift it resolves by
-saying the plan is now wrong — a fix round never rewrites `plan.md`, so those
-are reported instead, and the route is *↩ Move back to… → plan-review*, then
-*Request changes*. The round says which of the two any issue needs. It is
-offered wherever the item has both a plan and an implemented change, and it is
-worth re-running after a fix round to confirm the gap actually closed.
-
-Each document tab says what it holds, because they are easy to confuse:
-**Change requests** is *your* notes — one section per round, written when you
-press *Request changes*, and the first thing the next agent round reads —
-**Agent reviews** is what the review rounds found, appended by the reviewer,
-and the three document tabs are the agents' own writing: two that explain and
-one that judges.
-
-The **Timeline** tab is the item's whole revision record in one newest-first
-feed: every change round as a card carrying the note you wrote (the *why*),
-the *plan diff* of that revision, the full **plan as it stood** at that
-iteration (both open the Revisions tab at that revision), and the *code diff*
-you reviewed — interleaved with every agent
-review round (its verdict and what it published) and the item's creation. So
-"what did that revision actually change in the plan", "why did round 3
-happen" and "what did the second review conclude" all have an answer without
-opening any file. A **pipeline stepper** at the top of every item shows the
-mode's stages, where the item currently is, and how many change/review rounds
-it has been through. Approving never requires a PR — a repo
-that merges straight to its default branch just approves and is done.
-*Create draft PR* on a branch that has never been pushed pushes it first
-(`git push --set-upstream`, `origin` when it exists) and then opens the PR —
-run non-interactively, `gh` otherwise just aborts with "you must first push the
-current branch", and publishing the branch is not a separate decision when the
-whole point of the click is to open a PR from it.
-
-**Requesting changes** — the note you write is not a form field: it is appended
-verbatim to `review.md` and is the first thing the agent reads next round, so it
-is effectively that round's prompt. The composer is the round's whole launchpad:
-*Insert template* scaffolds **What to change / Why / Out of scope**, *Insert
-review findings…* pastes **any** agent review round's findings (not just the
-latest), *Preview* renders exactly what will land in `review.md`, ⌘↵ sends, and
-a dismissed composer keeps your draft. The open diff comments queued for the
-round are listed as **interactive rows**: uncheck one to *park* it (kept and
-reopenable, but the agent won't see it this round — comments used to be swept
-along wholesale), jump to it in the diff, or delete it outright. And **After
-recording** decides what happens next: record only, or launch the fix round
-immediately — choosing how it runs (ask in session / interactive / autonomous)
-and even which executor skill drives it (default `clash-workflow`; a custom
-skill honoring the same file contract works too). The same composer handles
-plan revisions. In the diff itself, ↑/↓ buttons cycle through your open
-comments (expanding collapsed files on the way), so no comment is ever lost in
-a long diff — threads can also be *parked* right there.
-
-**Agent reviews** — you are not the only reviewer. Wherever the pipeline is
-parked on a decision (`plan-review`, `diff-review`, `pr-draft`, `pr-ready`) an
-**⌕ Agent review** button hands the item to a reviewer agent, and the button
-comes back as **⌕ Review again (N)** the moment the round finishes: a round is a
-side-trip that returns the item to exactly where it started, so rounds are
-**unbounded**. Run a deep review, read it, run another, publish the third to the
-PR — nothing advances until *you* approve.
-
-Launching opens **one composer** that shows the round's whole shape before
-anything spends tokens:
-
-| Choice | Options | What changes |
-|---|---|---|
-| **Depth** | `standard` / `deep` (default) | `deep` goes and reads how the code actually works — callers, invariants, existing tests, neighbouring solutions — and checks the artifact against it, so it surfaces things invisible from the plan or diff alone |
-| **Findings** | keep local (default) / also post to the PR | the PR option only appears once the item has one; posting is one review with line comments, never an approval |
-| **Interaction** | ask me when it starts (default) / interactive / autonomous | interactive = the round checks in with you at every decision; autonomous = it decides alone and reports at the end; the default defers the question to the session itself |
-
-The *target* isn't asked — it follows from where you launched: at `plan-review`
-the round reviews `plan.md` (the `clash-plan-review` skill), everywhere else it
-reviews the code (`clash-code-review`).
-
-**Interactive or autonomous is always your call.** Unless you pre-answered it
-in the composer, the reviewer opens its session by asking — and in an
-interactive round it drafts its findings, then walks you through them in the
-session pane before anything is written: you keep, drop or regrade each one
-(plan reviews go further: every issue comes with lettered options and a
-recommendation, and you pick the direction). It asks again before making any
-trivial fix and before anything is posted to the PR. Dropped findings are
-recorded in the round report (so later rounds don't re-raise them) but never
-become annotations. An autonomous round asks nothing and reports everything at
-the end. The executor phases open with the same question: interactive planning
-starts with a requirements discussion — the agent restates what it thinks it
-is building and asks about everything unclear (or for the feature itself when
-the title says too little), writing nothing until you confirm — then proposes
-approaches before writing `plan.md`; an interactive implement round confirms
-plan deviations and `wontfix` calls instead of deciding alone.
-
-**Understanding a change** has its own agent and its own tab: **◫ Explain
-changes** (wherever a diff is parked on a decision) launches the
-`clash-explain` skill, which reads the diff *and the surrounding code*, then
-writes the **Structure** tab — what the change does organized by functional
-part (behavior first, files second), **mermaid diagrams** of how the pieces
-fit (rendered right in the tab), the risks a reviewer should focus on, and a
-suggested reading order for the diff. It explains and never judges — reviews
-stay a separate job — and each run regenerates the document, so re-explain
-after a change round to keep it current. Every workflow session is also named
-by the item's title plus its job (`Auth refactor · implement`,
-`Auth refactor · plan review r2`, `· explain`), so the sessions list says what
-each agent is doing and for what — and each item's **⚙ Settings tab** (right edge of
-the tab bar) holds the per-item configuration — the item's **title** (rename
-it there, with **Rename…** on its card or tab, or by double-clicking the title
-in its header; the item's folder keeps the slug it was created with, and
-sessions launched afterwards carry the new name), its **diff base** (the
-`origin` branch the diff is taken against; empty = the origin default branch),
-session-name prefix on/off, **work in place** (never create a worktree —
-offered until one exists),
-a per-item **PR skill** override (`none` disables), the default **interaction
-mode** for that item's agent rounds (ask at start / interactive / autonomous,
-pre-selected in the review composer and applied to one-click launches) — plus
-the item's facts (mode, repo, branch, worktree). The action bar below
-every item is organized into three labeled zones whose captions carry the rule
-— **This step · stays here** (work on the current artifact: reviews, explain,
-open the PR or the session — none of these moves the item), **Continue · moves
-the item** (the decisions that advance the pipeline) and **Item · back, park,
-share** — so which button moves the workflow forward is legible before you read
-a single label.
-
-**Going back is a move like any other.** From any parked stage — and from a
-finished or abandoned item — **↩ Move back to…** lists the stages behind this
-one (in its own entry mode) with a line saying what each is for, and clicking a
-**passed stage in the pipeline stepper** does the same thing in one click.
-Nothing is deleted or rewritten: the plan, the diff, your annotations, the PR
-and every recorded round stay exactly where they are — only the stage moves, and
-no agent runs. The three agent-owned stages are deliberately not destinations
-(you cannot move an item *into* an agent's hands) and while one of them is
-running there is nothing to move: **End round** or let the agent finish first.
-
-**Applying a round's findings** is the *Request changes* step — a review never
-applies itself, and approving doesn't either (approval means "ship it as it
-stands"). Code findings you kept are already open diff comments, so the next
-change round picks them up automatically; for plan findings, the change-request
-composer's **Insert round N findings** button pastes the latest round into your
-note — which is exactly the next round's prompt.
-
-Answering the PR's existing review comments is a different job and gets its own
-button: **⇄ Answer PR comments** (on any reviewable state with a PR) launches an
-agent that reads every review thread, fixes the trivial ones with commits,
-replies on each thread (in the thread, through GitHub's replies endpoint — a
-detached PR comment is not an answer), and mirrors the rest into the item's
-comment queue for your triage. clash polls the PR while the item is on screen
-and puts the count of threads **waiting on you** right on the button
-(**⇄ Answer 3 PR comments**), so you can see there's work waiting without
-opening GitHub — and when nothing is, the button says so
-(**⇄ Answer PR comments · none waiting**) instead of sending an agent to answer
-nothing. "Waiting on you" means the thread's most recent comment is somebody
-else's: your own comments are not work, *including* the line comments a previous
-review round of this same item published. Code findings
-come back as **real diff annotations** (graded `BLOCKER`/`RISK`/`GAP`/`NIT`,
-authored `agent`) that you triage in the Diff tab exactly like your own, so one
-*Request changes* turns them into the next round of work; plan findings and the
-round's verdict land in an **Agent reviews** tab that accumulates every round
-(with per-round jump chips, opening on the latest). When a round finishes, its
-**verdict and what it published** show up in the hand-back toast and as a
-clickable strip on the item — a round that posted nothing to the PR (say,
-"answer the PR's comments" found none to answer) says so where you can see it,
-not three screens deep in a report. And publishing is never launch-only:
-**↗ Post round N to PR** shares an already-written round as one PR comment,
-no new review needed.
-The reviewer may fix only trivial mechanical issues (typos, unused imports,
-formatting) — after asking you — and must declare them; anything behavioral is
-a finding, not a fix, because a reviewer that rewrites what it reviews has
-reviewed nothing. While a
-round runs the item shows `REVIEWING`, approval is gated and the annotation
-editor is locked; **End round** always unlocks it, so a crashed reviewer can
-never wedge an item.
-
-**Storage**: `~/.claude/clash/workflows/<project>/<item>/` with `meta.json`
-(entry mode, status, branch, diff base, PR, review round),
-`plan.md`, `review.md`, `agent-review.md`, `annotations.json` and
-`history/<NNN>/` snapshots —
-a dedicated root (not the scratch tree), overridable via `workflows_dir` in
-`config.toml` or the GUI Settings. `review.md` is clash's record of *your*
-decisions, `agent-review.md` the reviewer's own append-only rounds — two files so
-ownership stays unambiguous where both sides write. Comments are re-anchored by
-content when the diff drifts between iterations and never dropped (unanchored
-ones land in an orphan tray). The file contract for agents is documented in
-[`docs/workflows.md`](docs/workflows.md).
-
-**Skills**: the agent side is five skills — `clash-workflow` (the executor:
-plans, implements, addresses comments, opens PRs), `clash-plan-review` (the
-interactive plan reviewer), `clash-code-review` (the code/diff reviewer),
-`clash-explain` (the explainer — see ◫ Explain above) and
-`clash-drift-review` (the plan-vs-changes comparison — see ⇄ Compare above) —
-all embedded in the clash binary. Startup keeps them current by itself — missing ones
-install, and ones you never edited are refreshed to the version this clash
-ships (no setup, no popup: nothing of yours is at stake). **clash asks only
-when it detects a diff of your own**: a skill you edited by hand that an
-upgrade would overwrite. Then a startup popup asks once — *Keep my edits* or
-*Overwrite with the new skills*. Prefer it silent? *Settings → Workflows →
-Skill updates* pins one of those answers. The separations
-are deliberate, twice over: executor vs reviewer because reviewing and
-implementing are different jobs, and plan review vs code review because one
-skill doing both describes neither sharply (the old combined `clash-review`
-is retired and removed automatically on upgrade). Installs are **versioned
-and visible**: a manifest records which clash version installed what, and
-when an upgrade rewrites a skill (or overwrites a local edit) the GUI says so
-in a toast instead of doing it silently. The ☰ button on the WORKFLOWS
-section opens a **Skills viewer** listing every installed skill with rendered
-content; clash-managed ones are badged with the installing version (local
-edits to those are overwritten on the next launch).
-
-**PR creation through your own skill**: set *Settings → Workflows → PR skill*
-(e.g. `hivebrite-engineering:github-pr`) and every agent-written PR goes
-through that skill — your org's titles, templates and ticket links — instead
-of a raw `gh pr create`. Empty means the agent follows the repo's own
-conventions.
-
-**Multi-repo work — linked PRs**: one piece of work often lands as several
-PRs (backend + frontend + contracts). **🔗 Link a PR…** on an item attaches
-PRs from *other* repositories: they show as chips in the item header (state,
-draft, merged) and refresh with the same poll as the primary. The PR actions
-follow the item's *whole PR set*: they appear at every decision state whenever
-the item has any PR, including items with only linked PRs and no primary (a
-repo that merges to its default branch while the sibling repos go through
-PRs). Linked PRs never drive the item's status — only the primary PR does
-(with one exception: an item with *only* linked PRs closes when all of them
-merge). The executor agent may record them too (`meta.linkedPrs` in the file
-contract). The **Diff tab's source picker** also lists every linked PR: pick
-one to read its diff fetched from GitHub (`gh pr diff`), view-only — comments
-stay on the item's own diff.
-
-**Which PRs? — per-PR action scope**: once an item has more than one PR, every
-PR action asks which, because there is no honest default — "ready for review"
-is a statement about one repository's change, so flipping three at once is a
-release while flipping one is a step. **The answer is a set**: tick one PR,
-several, or use the all/none toggle. A four-repo change where three repos are
-ready and one is not has no expression as one-or-all, and that is the normal
-shape of the work. A button whose click will ask carries the usual `…`, and
-Confirm stays disabled until something is ticked.
-
-| Action | Choices | Pre-ticked |
-|---|---|---|
-| **Open PRs (n)…** | any subset — the first opens in a split pane, the rest as browser tabs (already-open ones are surfaced, never duplicated) | all (read-only) |
-| **✓ Mark PR ready…** | any subset of the **drafts**. A merged or already-ready PR is never offered. Only the primary moves the item to PR READY; a linked-only flip says the item stayed put | the primary |
-| **↗ Post round n to PR…** | any subset | the primary |
-| **⌕ Code review** | the composer's *Which change?* rows: this repository's own diff, and/or any of the item's PRs. Several PRs is **one round over several diffs** — that is the case that matters, since judging the API PR without the web PR that consumes it leaves the contract between them unchecked. Picking a linked PR reads **that PR's** diff from GitHub and pre-selects posting the findings there (they cannot anchor to files this repo doesn't have) | this repo's own diff |
-| **⇄ Answer PR comments…** | any subset — one round works through every open thread on every PR picked, replying in each | every PR with threads waiting |
-
-The pre-ticked default is the answer the button already promised: right for
-the single-PR case, and — outside *Open* and *Answer PR comments*, whose
-labels promise more — never another repository, since announcing a second repo
-is the thing you tick deliberately.
-
-Every PR chip also has its own right-click menu — in the item header *and* in
-the PR dashboard — with that PR's whole set of actions pre-scoped to it: open,
-copy URL, refresh state, mark ready, code review, answer comments, post the
-latest round, and unlink (linked PRs only). It is the same code as the buttons
-above, so the two can't disagree about what the primary does to the item.
-
-**PR dashboard**: the ⇄ button on the WORKFLOWS section opens one list of
-every item holding a PR across all projects — state chips per PR, unanswered
-review-comment counts, last-touched age — decisions first, merged/closed last.
-Click a row to open the item, a chip to open the PR, right-click a chip to act
-on just that one.
-
-**Share & export**: **↗ Share…** on any item (also in its right-click menu)
-composes a share document from the item's files — summary, plan, change
-rounds, agent-review verdicts, open comments, diff — with three presets
-(*Summary*, *Review packet*, *Full dossier*) and per-section checkboxes. The
-live preview **is** the payload: what you see is exactly what goes to the
-clipboard, a saved `.md`/`.html` file (the HTML is self-contained, diagrams
-included — a colleague without clash can open it), a **Slack / Discord
-webhook** (configure the URLs in *Settings → Workflows*; messages are
-truncated to the service limit with an explicit marker, never silently), or a
-**Jira ticket** — *Post to Jira…* asks for the ticket key (pre-filled from
-the item's remembered ticket, else detected in the title/branch, like
-`PS-1234`) and posts the document as one comment, converted to Jira's wiki
-markup. A successful post remembers the ticket on the item (also editable in
-its ⚙ Settings tab), so the next share is one confirmation away. Share the
-plan to its ticket the moment it's ready — same preview, same one-click send.
-
-**Who posts it is a setting, not a guess.** Per destination family you choose
-one of two, in *Settings → Workflows · sharing*:
-
-- **An agent session** (the default) — through a skill you name (*Jira skill* /
-  *Chat skill*), or, with none named, using whatever tooling that session has
-  connected: an MCP server for the destination, the CLI it would normally use.
-  A named skill that isn't installed in that session falls back to the same
-  tooling rather than dead-ending. This route needs no configuration in clash
-  and spends tokens.
-- **clash itself** — clash posts it over HTTPS with the webhook URL or the Jira
-  site + email + API token. Fast, free, and limited to services clash has a
-  client for.
-
-Neither is a fallback for the other. Pick *clash itself* and leave its
-credentials empty and the destination says so — it will not quietly launch a
-session instead, because which system talks to your tracker isn't something to
-infer from whether a token happens to be filled in. Each button names the route
-it will take, and the fields the other route uses are dimmed so the group reads
-as one decision instead of seven unrelated boxes.
-
-On the session route clash writes the document under `~/.claude/clash/share/`,
-launches the session with the destination stated and the ticket carried (for
-Jira), and opens the tab so you can watch it land. No credentials pass through
-clash there, and the payload is still exactly the markdown you previewed — the
-kickoff says so in as many words: post it as written, adapt only the formatting
-the destination needs, and if nothing in that session can reach the destination,
-say so rather than posting something else.
-
-**Decision notifications on Slack/Discord**: set *Settings → Workflows →
-Notify decisions* and every item an *agent* parks at a decision state
-(plan review, diff review, PR draft) is announced on the configured webhook —
-your own clicks never post, and `off` (the default) sends nothing, ever. This
-one always uses the webhook, never a skill: it fires with nobody watching, and
-a notification you'd have to go read in a session isn't a notification.
-
-Workflows are GUI-only for now; the TUI will grow a read-only view.
-
-## GUI (primary mode)
-
-The GUI is the primary way to use clash — the TUI remains fully supported as
-the terminal-native fallback mode (everything below the [Workflows](#workflows-gui)
-feature exists in both). A cmux-style desktop client lives in `gui/` — a
-Tauri 2 app sharing the same core as the TUI (session pipeline, in-process
-PTY daemon, protocol). Sidebar
-with session sections and status rings; embedded xterm.js terminals
-(GPU-accelerated WebGL rendering; a lost GL context is reacquired
-automatically, falling back to the DOM renderer only after repeated losses —
-and saying so in clash.log) attach to the same sessions the TUI manages.
-
-First launch opens a **guided tour** — a spotlight walkthrough of the window
-(workspaces, sessions, workflows, scratches, tabs & panes, settings). Skip or
-finish it and it never auto-runs again; replay it anytime from *Settings →
-clash → Show the tour*.
-
-### Inbox
-
-With a dozen agents in flight, "what needs me?" is spread across a status
-ring, a sidebar badge, a toast and the workflow board. The **inbox** (the
-sidebar-header tray icon, or `⌘I`) is that question answered as one ordered
-list, across every workspace and project:
-
-- sessions holding a tool-approval prompt (`PROMPTING`), and sessions whose
-  turn has ended and want your next message (`WAITING`);
-- sessions that errored;
-- workflow items parked on a decision (plan review, diff review, draft PR);
-- workflow items whose agent session died mid-round;
-- PRs with review comments nobody has answered.
-
-Blocked work comes first — a held tool call outranks a finished turn no matter
-which happened first — and within a band the longest-waiting row leads, because
-that is the one you forgot about. The header button carries a count that turns
-red when something is actually blocked, so it drops back to a quiet number
-instead of a permanently-high one. Clicking a row jumps to the session or item;
-a session row also offers **Queue follow-up…** inline.
-
-### Queued follow-ups
-
-You don't have to sit and wait for an agent to finish before telling it what
-comes next. **Queue follow-up…** (the session row's `⋯` menu, or the inbox) or
-`f` in the TUI takes a multi-line prompt and delivers it to that session the
-moment it is idle at its input prompt. The row shows `⧖n` while prompts are
-pending — click the chip to review or cancel one; `F` in the TUI does the same (straight through when only one is queued, a picker when several are).
-
-Two rules make it safe to leave running. A queued prompt is delivered only to
-the free-form input prompt, never while Claude is holding a tool-approval
-question (where Enter would accept whatever is highlighted), and only after two
-consecutive refreshes agree the session is idle — the daemon's screen detector
-guesses "idle" after eight silent seconds, so one sample of it can land
-mid-turn. The text goes over as a bracketed paste followed by a single Enter, so
-a prompt with newlines in it arrives as one message instead of one message per
-line. The queue is in-memory and per instance (the clash whose daemon owns the
-PTY): a restart clears it, and delivery is announced by a toast whether it
-succeeded or failed.
-
-GUI features: fuzzy search (`/` or `⌘F`), inline rename (double-click),
-new session via the sidebar's `＋ New session` button (`⌘T`) with preset
-picker and git-worktree option — the directory prefills from the configured
-default directory, falling back to the focused session's project, then home,
-and a 📁 browse button opens the native folder picker to choose where the
-session starts —
-rename/reload/details/stash/kill/take-over from a per-session `⋯` menu (also on
-right-click of the row), full shell terminals inside the GUI — the
-topbar's terminal button picks among the machine's shells (`/etc/shells`
-+ `$SHELL`), `⌘⇧T` reopens with the last-used shell, the terminal starts
-in the focused session's project (then default directory, then home),
-and closing the tab (or `exit`) kills the shell — unlimited split panes
-in a balanced grid (`⌘D`
-splits, `⌘⇧D` closes the focused pane, zoom `⌘⇧↩` or double-click the
-pane title, `⌘⌥←/→` cycles focus; **drag the gutter between panes to
-resize** columns/rows — the split ratios persist per workspace), a full
-**team manager** (the sidebar shows each team with a live `n/m` running
-rollup and a pulsing dot; the detail panel lists members with a pulsing
-run indicator and model chip — **left-click a running member to jump
-straight to its session** — plus tasks you can create, cycle status on by
-clicking the badge, assign an owner, or delete, and per-member edit of
-model / agent type / prompt / name via right-click; the team name and
-description are click-to-edit, and the whole panel **live-refreshes** while
-open. Create via the **+**, rename/delete from the row's right-click menu.
-Claude Code's own per-session teams — the `session-<id>` scaffolding it
-writes for every session with a lone `team-lead` — are hidden from this list
-in both frontends; only real, user-managed teams show),
-`⌘K` clears the active terminal,
-and quit-stash on close. Closing a session tab (the `×`, `⌘W`, or
-middle-click) stashes its session — process stopped, conversation kept
-resumable — so closing a tab and stashing from the sidebar are the same
-linked action whichever way you trigger it; use Detach in the tab's
-right-click menu to leave it running in the background instead. On the
-next launch clash restores **where you were** — the same workspace, open
-tabs, split layout, and the pane you had focused (persisted eagerly on
-focus-loss/close, so nothing is lost to a pending save) — with stashed
-sessions reappearing ready to resume (`claude --resume`) the moment you
-click one. Tabs and panes
-follow one rule: the active tab is always the content of the focused
-pane — clicking a tab fills the focused pane, focusing a pane activates
-its tab, and closing a pane keeps its session reachable as a tab.
-An **empty pane** is a quick-start surface: right-click it (or, on a
-fresh workspace with nothing open, click the welcome screen) to pick
-what to launch straight into it — a terminal, a browser tab, or a new
-session — the same unified menu as the `+` ghost tab. A
-labeled `TUI` badge-button in the sidebar header launches the clash TUI
-alongside the GUI — gold when a TUI is running somewhere, grey when not.
-Clicking it opens a picker of terminals detected on the OS (Terminal,
-iTerm2, WezTerm, kitty, Alacritty, Ghostty, Warp; GNOME Terminal/Konsole/xterm
-on Linux; tmux when inside one) plus an Auto entry (split pane when the
-GUI was started from a pane-capable terminal, else the default
-terminal); the last choice is marked in the menu.
-
-The sidebar footer holds a collapsible **SETTINGS** section (click the header to
-expand; the choice persists), grouped and with a filter box at the top — type
-"cursor" or "font" to narrow the list. Every terminal setting is live-applied to
-open terminals, no restart:
-
-| Group | Settings |
-|---|---|
-| **Appearance** | **Theme** — 12 built-in palettes, 8 dark and 4 light (see below) |
-| **Paths** | Default directory for new sessions · scratch directory · workflows directory (each with a 📁 folder picker) · `claude` binary — a name resolved on PATH or an absolute path, validated on entry, used by the next session you start (📄 file picker) |
-| **Workflows** | PR skill — the skill workflow agents open pull requests with (**default `hivebrite-engineering:github-pr`**; `none` disables and falls back to each repo's own conventions via `gh`; agents also fall back automatically when the skill isn't installed) · Forge — auto-detect (from the repo's origin remote) / GitHub / none · Skill updates — what to do when an upgrade ships a skill you edited by hand (untouched ones are always refreshed): ask at startup (default) / overwrite my edits / keep my edits. PR skill is also overridable per item in its ⚙ Settings tab |
-| **Terminal · text** | Font family (opens a **searchable font picker** — see below) · font size · font weight · bold weight · line height · letter spacing |
-| **Terminal · cursor** | Style (block/bar/underline) · unfocused-pane style (outline/block/bar/underline/hidden) · bar width · blink |
-| **Terminal · colors** | Minimum contrast ratio (1 = off, 4.5 = WCAG AA) · bold text in bright colors |
-| **Terminal · scroll & input** | Scrollback lines · scroll speed · smooth-scroll duration · copy-on-select · right-click selects word · "⌥ sends Esc (Meta)" (off = Option always composes characters — international layouts) · toast on terminal bell |
-| **clash** | How links open — ask each time (default), always in clash's embedded browser, or always the system browser. Applies to *every* link clash opens: terminal hyperlinks, workflow PR buttons and the PR dashboard, session PR/repository rows, listening ports, and links inside a rendered plan or review. Opening an item's several PRs asks once, not once per PR · desktop notifications · attention count in the window title · confirm before killing a session (batch kills always ask) · session-list refresh interval · default shell for in-app terminals · terminal used by the TUI launcher |
-
-**Themes** recolor the chrome *and* the terminals in one move — the sidebar,
-tabs, dialogs, status colors and the xterm palette all come from the same table,
-so nothing is left looking out of place:
-
-| Dark | Light |
-|---|---|
-| clash dark *(default)* · Tokyo Night · Catppuccin Mocha · Nord · Dracula · One Dark · Gruvbox Dark · Solarized Dark | clash light · Catppuccin Latte · Solarized Light · GitHub Light |
-
-Switching is instant and applies to every open terminal. Each theme names about
-a dozen colors; the rest is derived — the session-status palette from the
-theme's semantic colors, the text color on accent-filled buttons from the
-accent's luminance, and the eight bright ANSI slots from the eight base ones
-(lightened on dark themes, deepened on light ones, so bold output stays legible).
-Adding one is a single entry in the `THEMES` table in `gui/dist/app.js`.
-
-The **font picker** replaces blind typing: click the field (or its 🔍 button) for
-a searchable list of the families installed on this machine, each row previewed
-in its own face and tagged *mono* or *proportional*, monospace-only by default
-with a toggle to show everything, and a *Custom…* escape hatch for a full CSS
-stack like `SF Mono, Menlo, monospace`. The list is the union of what AppKit
-enumerates and a curated set probed in the webview — macOS does not enumerate
-`SF Mono` (clash's own default), so neither source alone is complete. The dialog
-opens immediately and fills in as the families arrive, because enumerating them
-hops to AppKit's main thread and can take a moment on a machine with hundreds
-installed.
-
-Below the settings sits an `⟳ Update clash` self-update button — when the update
-lands, a modal offers Restart / Cancel (restarting closes running sessions). The
-restart stashes every session, relaunches the new binary and logs the
-relaunch in `clash.log` (`restart: relaunched … as pid …`), so a restart that
-never came back is diagnosable rather than silent.
-Settings persist in `gui-state.json`, except the three directories and the
-`claude` binary, which live in the shared `config.toml` so the TUI agrees. The sidebar and details panel are
-drag-resizable (widths persist), and the collapsible sidebar sections
-(WORKFLOWS / SCRATCHES / TEAMS, in that order) have a draggable divider on top — drag it to
-trade vertical space with the session list above; the heights persist. Each
-section keeps its own scrollbar with its header pinned in place, so the controls
-on it (collapse, refresh, +) stay reachable however far you scroll, and the
-session list keeps a minimum height rather than being squeezed to nothing when
-all three are open. Group headers inside a scrolling list (ACTIVE / UNASSIGNED /
-⚡ EXTERNAL, and the workflow groups) stick to the top of their list while you
-scroll past them.
-
-Sessions carry the same status vocabulary as the TUI — animated
-PROMPTING / THINKING / RUNNING / WAITING / STARTING / STASHED / ERRORED
-labels in the sidebar and a colored status dot per tab. STASHED means
-*resumable*: a conversation that still exists on disk. Every session is
-stashed when clash starts — a transcript on disk says what a conversation was
-doing, never whether its process is still alive, so a row only reads as
-running while clash's daemon holds its PTY or the process scan can see it.
-Claude Code deletes its transcripts after about 30 days, so a session whose
-conversation is gone (or that was created and never messaged) stops being
-listed instead of lingering as a row that would reopen empty. External claude
-processes (started outside clash) are segregated in their own
-`⚡ EXTERNAL` section at the bottom of the sidebar with distinct styling;
-clicking one (or its ⚡ button) takes it over after a confirm — the
-outside process is killed and its conversation (dynamically associated,
-always the latest in that directory) opens attached under clash.
-Right-click a tab for the context menu:
-rename, reload (restart on latest Claude), close (stash), detach (keep running), stash, kill, details. Every tab — Claude
-session, shell terminal, browser, or view — renames via double-click on
-its label or the context menu; Claude renames go through the registry
-(propagating to the TUI and sidebar), the others are display-only.
-`Shift+Enter` inserts a newline in agent session terminals instead of
-submitting (plain `Enter` still submits; shells are untouched).
-`⌘C` copies the terminal selection and `⌘V` pastes (use `Ctrl+Shift+C`/
-`Ctrl+Shift+V` on Linux); plain `Ctrl+C` still sends an interrupt to the
-running program. Because Claude Code uses the mouse (clicking, scrolling),
-a plain drag goes to it rather than selecting text — hold **⌥ (Option)
-while dragging** to make a text selection you can `⌘C` (the native
-iTerm2/Terminal.app convention; on Linux hold **Shift**). Right-click
-selects the word under the pointer. In the **TUI**, copy/paste is your
-terminal's own — selection and paste work exactly as in any full-screen
-program (e.g. ⌥-drag to select in iTerm2), since attach is raw passthrough.
-The tab strip ends in a `+` ghost tab (same menu as the topbar button):
-a terminal per detected shell, a browser tab, or a new session.
-
-The details panel (ⓘ) is a compact overview — live status, branch,
-project, CWD, summary. Conversation, Subagents, and Diff open as full
-tabs in the main area (closable like terminal tabs); the panel's TOOLS
-row has Ports, Open-in-IDE, and Open-in-browser pickers — the latter
-opens the diff on GitHub (the PR's files view, or a compare view of the
-session branch against the default branch), the session's PR, or the
-repository. (The local diff opens as an in-app tab, not in the browser.)
-
-Browser tabs are first-class tabs (`⌘⇧B` opens a blank one with the
-address bar focused, in its own split pane, also via the `+` new-tab
-menu): each lives in the
-tab strip and panes exactly like a terminal or agent session — split it
-next to a terminal, move it between panes, zoom it, own it per
-workspace. Each browser pane has full chrome: back/forward,
-reload-or-stop (live loading state), an address bar that takes URLs or
-search terms (DuckDuckGo), copy-URL, and open-in-system-browser. While a
-browser pane is focused: `⌘L` focuses the address bar, `⌘R` reloads,
-`⌘+`/`⌘-`/`⌘0` zoom (also in the tab's right-click menu, next to Open
-DevTools). Close with `⌘W`, middle-click, or the tab `×`.
-Links inside a browser page that target a new window (`target="_blank"`,
-`window.open`) open in a new clash browser tab rather than replacing the
-current one. Anything "opened in the browser" opens in a new split pane
-beside the current session rather than taking over the focused pane (the
-session stays visible side-by-side; if the focused pane is empty it is
-used as-is): URLs printed in any terminal are clickable; listening ports
-open `localhost:<port>`;
-and when a session's output mentions a GitHub pull request, a green
-`⇄ PR #n` chip appears on the session (and in the tab's right-click
-menu) that opens the PR in-app. Browser tabs persist across restarts
-(URL and custom name; the page reloads). Notes: the page itself is a
-native overlay — click the chrome strip or the tab to focus a browser
-pane, and context menus opened over the page area may be hidden.
-
-Workspaces (cmux-style): each workspace owns its pane layout AND its
-sessions — `⌘N` new, `⌘1-9` switch, `⌘⇧R` rename, `⌘⇧W` or the chip's
-`×` to close, `⌘B` toggles the sidebar. The sidebar and the tab strip
-are scoped to the active workspace: its sessions in status sections,
-plus an UNASSIGNED group for sessions no workspace has claimed (opening
-one claims it). Tabs owned by another workspace stay hidden until you
-switch back; unassigned tabs are always visible.
-Searching (`/`) is global across workspaces — results from other
-workspaces carry a `⌘n` badge and open in their owning workspace.
-Closing a workspace returns its sessions to the unassigned pool.
-Right-click a workspace chip for its context menu: rename, close, and
-mass-kill all of that workspace's sessions (one confirmation). Every
-section header carries a `✕` button that mass-kills the whole group in
-one confirmation: the status sections (ACTIVE, FAILED, STASHED, DONE),
-UNASSIGNED (sessions no workspace has claimed), and `⚡ EXTERNAL` (all
-associated wild claude processes — each row's dynamically-associated PID
-is signalled).
-
-**Reload (hot-restart on the latest Claude).** Next to that `✕`, each
-managed section header also has a `⟳` button that reloads the whole group;
-every session row and Claude tab carries its own `⟳` too (and it's in the
-session/tab context menus). `⌘R` reloads the focused session pane.
-Reloading a session stops it and reopens it
-resuming its **latest** conversation id — so it comes back on the newest
-`claude` binary without losing the conversation (handy right after
-updating Claude Code). Sessions that are **actively working** (Thinking,
-Prompting, Waiting, Starting) are skipped by the section/row reload to
-protect the in-flight turn, whose newest id may not be persisted yet;
-reloading such a session individually (row `⟳`, `⌘R`) asks for
-confirmation first.
-Layouts and session ownership are saved to disk (`gui-state.json` in the
-clash app-support dir) and survive restarts (running sessions re-attach
-automatically).
-
-Notifications: desktop alerts when a session starts waiting for input or
-errors (suppressed while the window is focused), unread badges in the
-sidebar, plus in-band `OSC 9` / `OSC 777` terminal notification sequences —
-`printf '\e]777;notify;Title;Body\a'` from inside any session raises an
-alert, so agents and scripts can ping you.
-
-```bash
-cargo build --release           # builds BOTH binaries: clash and clash-gui
-./target/release/clash-gui      # run — can run alongside the TUI
-                                # (each instance owns its own sessions)
-```
-
-Release tarballs ship both binaries, and updating from either side
-(`clash update`, `:update`, or the GUI's `⟳ Update clash` button)
-installs/updates both. Existing installs are replaced through their
-symlinks — on macOS the binary inside `Clash.app` is the one updated, the
-bundle's `Info.plist` version is bumped, and the bundle is re-signed, so
-Finder/Dock launches pick up the new version too.
-On Linux, building requires the Tauri system deps (webkit2gtk):
-`libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev`.
-
-The GUI is fully self-contained: no external daemon, no node build step
-(frontend assets in `gui/dist/` are vendored and embedded in the binary).
 
 ## License
 
