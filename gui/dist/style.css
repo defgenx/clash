@@ -884,16 +884,18 @@ html, body, #app {
 
 #content { flex: 1; display: flex; min-height: 0; }
 
-/* Terminal pane grid — the column/row template is computed per pane
-   count by renderPanes() (balanced cols-first grid, no cap). */
+/* Terminal panes — renderPanes() builds the workspace's split tree
+   (pane-layout.js) as nested flex boxes inside one absolutely-placed root. */
 #terminal-host {
   flex: 1;
   position: relative;
   background: var(--bg);
-  display: grid;
-  gap: 1px;
   min-width: 0;
 }
+.pane-root { position: absolute; inset: 0; }
+.pane-split { display: flex; min-width: 0; min-height: 0; }
+.pane-split.row { flex-direction: row; }
+.pane-split.col { flex-direction: column; }
 
 .pane {
   position: relative;
@@ -912,22 +914,35 @@ html, body, #app {
 }
 .pane.focused { border-color: var(--accent); }
 
-/* Draggable split gutters overlaid on the grid track boundaries. A wide,
-   invisible hit area centered on the 1px gap, with a thin accent line on
-   hover/drag. `left`/`top` are set inline by repositionGutters. */
-.pane-gutter { position: absolute; z-index: 6; }
-.pane-gutter.col { top: 0; bottom: 0; width: 7px; margin-left: -3px; cursor: col-resize; }
-.pane-gutter.row { left: 0; right: 0; height: 7px; margin-top: -3px; cursor: row-resize; }
-.pane-gutter::after {
-  content: "";
+/* Draggable split dividers: a 1px in-flow line between a split's kids, with
+   a wider invisible hit area (::before) and an accent line on hover/drag. */
+.pane-gutter { position: relative; flex: 0 0 1px; z-index: 6; transition: background 0.1s; }
+.pane-gutter.col { cursor: col-resize; }
+.pane-gutter.row { cursor: row-resize; }
+.pane-gutter::before { content: ""; position: absolute; }
+.pane-gutter.col::before { top: 0; bottom: 0; left: -3px; right: -3px; }
+.pane-gutter.row::before { left: 0; right: 0; top: -3px; bottom: -3px; }
+.pane-gutter:hover,
+.pane-gutter.dragging { background: var(--accent); }
+
+/* Drag a tab onto a pane: the overlay catches the drop (over terminals and
+   hidden webviews alike), the hint shows where it would land. */
+.pane-drop { position: absolute; inset: 0; z-index: 20; }
+.pane-drop-hint {
   position: absolute;
-  background: transparent;
-  transition: background 0.1s;
+  display: none;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border: 2px solid var(--accent);
+  border-radius: 4px;
 }
-.pane-gutter.col::after { top: 0; bottom: 0; left: 3px; width: 1px; }
-.pane-gutter.row::after { left: 0; right: 0; top: 3px; height: 1px; }
-.pane-gutter:hover::after,
-.pane-gutter.dragging::after { background: var(--accent); }
+.pane-drop-hint[data-zone] { display: block; }
+.pane-drop-hint[data-zone="center"] { inset: 6px; }
+.pane-drop-hint[data-zone="left"] { top: 0; bottom: 0; left: 0; width: 50%; }
+.pane-drop-hint[data-zone="right"] { top: 0; bottom: 0; right: 0; width: 50%; }
+.pane-drop-hint[data-zone="top"] { left: 0; right: 0; top: 0; height: 50%; }
+.pane-drop-hint[data-zone="bottom"] { left: 0; right: 0; bottom: 0; height: 50%; }
+.pane .pane-title[draggable="true"] { cursor: grab; }
 .pane .pane-title {
   font-size: 10px;
   color: var(--fg-dim);

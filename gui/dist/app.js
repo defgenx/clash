@@ -658,8 +658,7 @@ function workspacesJson() {
       name: w.name,
       panes: w.panes,
       sessions: w.sessions,
-      colFracs: w.colFracs,
-      rowFracs: w.rowFracs,
+      layout: w.layout,
       // "Where we were": which pane was focused and whether it was zoomed, so a
       // relaunch restores the exact view — not just the set of open tabs.
       focused: w.focused,
@@ -817,8 +816,10 @@ function applyWorkspacesData(data, { migratable = false } = {}) {
       focused,
       zoomed: !!w.zoomed && panes.length > 1,
       sessions: Array.isArray(w.sessions) ? w.sessions.filter((id) => !isShellTerm(id)) : [],
-      // Pane track sizes; renderPanes resets them if they no longer match the
-      // grid shape (pane count changed since the layout was saved).
+      // Split tree (pane-layout.js); renderPanes falls back to the balanced
+      // grid when it no longer matches the pane count. `colFracs`/`rowFracs`
+      // are the pre-tree grid sizes, read once to seed that fallback.
+      layout: w.layout,
       colFracs: Array.isArray(w.colFracs) ? w.colFracs : undefined,
       rowFracs: Array.isArray(w.rowFracs) ? w.rowFracs : undefined,
     };
@@ -2145,7 +2146,16 @@ function tabSession(id) {
   return id.startsWith("view:") ? id.slice(id.lastIndexOf(":") + 1) : id;
 }
 
+/// The tab/pane drag in flight (see "Drag a tab to split"): `{ sid, dirty }`.
+let paneDrag = null;
+const PANE_DRAG_MIME = "application/x-clash-tab";
+
 function renderTabs() {
+  // Repainting the strip mid-drag would detach the dragged tab (see renderPanes).
+  if (paneDrag) {
+    paneDrag.dirty = true;
+    return;
+  }
   const tabs = $("tabs");
   tabs.innerHTML = "";
   for (const [id, entry] of state.open) {
@@ -2158,6 +2168,8 @@ function renderTabs() {
     tab.className =
       "tab" + (id === state.activeTab ? " active" : "") + (entry.transient ? " transient" : "");
     tab.onclick = () => assignToFocusedPane(id);
+    tab.title = "Drag onto a pane to split it";
+    makePaneDragSource(tab, id);
     tab.oncontextmenu = (ev) => tabContextMenu(ev, id);
     tab.onauxclick = (ev) => {
       // Middle-click closes the tab (Claude → stash), like a browser.
@@ -2236,33 +2248,18 @@ function renderTabs() {
 // ── Panes (split layout) ────────────────────────────────────────
 
 function renderPanes() {
+  // A tab or pane drag is in flight: repainting would detach its source and
+  // the drop overlays, cancelling it. `endPaneDrag` repaints once it lands.
+  if (paneDrag) {
+    paneDrag.dirty = true;
+    return;
+  }
   const host = $("terminal-host");
   const w = ws();
-  const visible = w.zoomed ? [w.panes[w.focused] ?? null] : w.panes;
-  // Balanced grid for any pane count (no fixed cap): columns grow first,
-  // rows follow — 2 → 2x1, 3-4 → 2x2, 5-6 → 3x2, 7-9 → 3x3, …
-  const cols = Math.ceil(Math.sqrt(visible.length));
-  const rows = Math.ceil(visible.length / cols);
-  // When the grid has more cells than panes the shortfall is always confined
-  // to the last row (leftover < cols by construction), so the last pane spans
-  // the unused cells instead of leaving dead space — 3 panes → the third
-  // takes the whole bottom row.
-  const leftover = cols * rows - visible.length;
-  // Resizable grid tracks: per-workspace column/row fractions, reset to equal
-  // whenever the grid shape changes (pane added/removed) or a single cell is
-  // shown (zoom / one pane). Draggable gutters between tracks edit these.
-  const resizable = !w.zoomed && visible.length > 1;
-  if (resizable) {
-    const valid = (a, n) =>
-      Array.isArray(a) && a.length === n && a.every((f) => typeof f === "number" && f > 0);
-    if (!valid(w.colFracs, cols)) w.colFracs = Array(cols).fill(1);
-    if (!valid(w.rowFracs, rows)) w.rowFracs = Array(rows).fill(1);
-    host.style.gridTemplateColumns = w.colFracs.map((f) => f + "fr").join(" ");
-    host.style.gridTemplateRows = w.rowFracs.map((f) => f + "fr").join(" ");
-  } else {
-    host.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-    host.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
-  }
+  w.layout = PaneLayout.ensureLayout(w.layout, w.panes.length, w.colFracs, w.rowFracs);
+  delete w.colFracs;
+  delete w.rowFracs;
+  const multi = w.panes.length > 1;
 
   // Detach term elements first so re-appending doesn't destroy them.
   // Detaching an ancestor of the focused node blurs it, so remember what had
@@ -2271,22 +2268,21 @@ function renderPanes() {
   // silently drops the caret.
   const wasFocused = document.activeElement;
   for (const entry of state.open.values()) entry.el.remove();
-  host.querySelectorAll(".pane, .pane-gutter").forEach((p) => p.remove());
+  host.querySelectorAll(".pane-root").forEach((p) => p.remove());
 
   const anyAssigned = w.panes.some((p) => p);
   // The centered #empty-state welcome overlay spans the whole host, so it only
   // makes sense when there's a single, unfilled pane — otherwise it would paint
   // over (and clutter) the empty-pane placeholders. In every other empty case
   // the per-pane placeholder is the surface instead.
-  const soleEmpty = !anyAssigned && visible.length === 1;
+  const soleEmpty = !anyAssigned && (w.zoomed || !multi);
   $("empty-state").style.display = soleEmpty ? "flex" : "none";
 
-  visible.forEach((sid, vi) => {
-    const i = w.zoomed ? w.focused : vi;
+  const buildPane = (i) => {
+    const sid = w.panes[i] ?? null;
     const pane = document.createElement("div");
     pane.className = "pane" + (i === w.focused ? " focused" : "");
-    if (leftover && vi === visible.length - 1)
-      pane.style.gridColumn = `span ${leftover + 1}`;
+    pane.dataset.pane = String(i);
     // Focus-follows-click, but a click that changes nothing must render
     // nothing: renderPanes detaches every pane element before re-appending it
     // (see the loop above), and detaching an ancestor of the focused node
@@ -2307,12 +2303,13 @@ function renderPanes() {
 
     const entry = sid ? state.open.get(sid) : null;
     if (entry) {
-      if (visible.length > 1 || w.zoomed) {
+      if (multi) {
         const title = document.createElement("div");
         title.className = "pane-title";
         title.textContent = entry.name + (w.zoomed ? "  (zoomed)" : "");
-        title.title = "Double-click to zoom (⌘⇧↩)";
+        title.title = "Drag onto another pane to move it · double-click to zoom (⌘⇧↩)";
         title.ondblclick = toggleZoom;
+        if (!w.zoomed) makePaneDragSource(title, sid);
         pane.appendChild(title);
       }
       pane.appendChild(entry.el);
@@ -2325,7 +2322,7 @@ function renderPanes() {
     } else {
       const empty = document.createElement("div");
       empty.className = "pane-empty";
-      empty.textContent = "click to focus · right-click to start";
+      empty.textContent = "click to focus · right-click to start · drop a tab here";
       // Quick-start: right-clicking an empty pane opens the unified new-tab
       // menu (terminal / browser / Claude session) and whatever you pick lands
       // right here. The menu's actions target the focused pane (via
@@ -2341,10 +2338,26 @@ function renderPanes() {
       };
       pane.appendChild(empty);
     }
-    host.appendChild(pane);
-  });
+    return pane;
+  };
 
-  if (resizable) addPaneGutters(host, w, cols, rows);
+  // The split tree becomes nested flex boxes; each split's `fracs` are its
+  // kids' flex-grow, edited in place by the gutters between them.
+  const build = (node) => {
+    if (typeof node.p === "number") return buildPane(node.p);
+    const box = document.createElement("div");
+    box.className = "pane-split " + node.dir;
+    node.kids.forEach((kid, k) => {
+      if (k > 0) box.appendChild(makeSplitGutter(box, node, k));
+      const el = build(kid);
+      el.style.flex = `${node.fracs[k]} 1 0`;
+      box.appendChild(el);
+    });
+    return box;
+  };
+  const root = w.zoomed && multi ? buildPane(w.focused) : build(w.layout);
+  root.classList.add("pane-root");
+  host.appendChild(root);
 
   // Give focus back to what the detach above blurred — but only when it lives
   // in the pane that still holds focus, so a repaint caused by a pane switch
@@ -2357,78 +2370,34 @@ function renderPanes() {
   fitAll();
 }
 
-/// Add draggable gutters between the grid's column and row tracks. Positioned
-/// (and repositioned on resize) by `repositionGutters` from the fractions, so
-/// no pane layout needs to be read.
-function addPaneGutters(host, w, cols, rows) {
-  for (let k = 1; k < cols; k++) {
-    const g = document.createElement("div");
-    g.className = "pane-gutter col";
-    g.title = "Drag to resize columns";
-    makeGutterDraggable(g, host, w, "col", k);
-    host.appendChild(g);
-  }
-  for (let j = 1; j < rows; j++) {
-    const g = document.createElement("div");
-    g.className = "pane-gutter row";
-    g.title = "Drag to resize rows";
-    makeGutterDraggable(g, host, w, "row", j);
-    host.appendChild(g);
-  }
-  // Place immediately (host is already laid out) to avoid a one-frame flash at
-  // the origin; fitAll's rAF repositions again once terms reflow.
-  repositionGutters(host, w);
-}
-
-/// Place each gutter at its track boundary, computed from the fractions (the
-/// column/row gap is 1px — negligible, so we ignore it). Gutters are appended
-/// in track order, matching the cumulative-fraction walk.
-function repositionGutters(host, w) {
-  const colG = host.querySelectorAll(".pane-gutter.col");
-  const rowG = host.querySelectorAll(".pane-gutter.row");
-  if (!colG.length && !rowG.length) return;
-  const cs = w.colFracs || [];
-  const rs = w.rowFracs || [];
-  const ctot = cs.reduce((a, b) => a + b, 0) || 1;
-  const rtot = rs.reduce((a, b) => a + b, 0) || 1;
-  const width = host.clientWidth;
-  const height = host.clientHeight;
-  let acc = 0;
-  colG.forEach((g, i) => {
-    acc += cs[i] || 0;
-    g.style.left = (acc / ctot) * width + "px";
-  });
-  let accr = 0;
-  rowG.forEach((g, i) => {
-    accr += rs[i] || 0;
-    g.style.top = (accr / rtot) * height + "px";
-  });
-}
-
-/// Wire a gutter to redistribute the fraction between the two tracks it sits
-/// between. `k` is the higher track index (boundary between k-1 and k).
-function makeGutterDraggable(g, host, w, axis, k) {
+/// The draggable divider between kids `k-1` and `k` of split `node`: moves
+/// share between those two only, keeping each at least `MIN_PANE_PX` wide.
+function makeSplitGutter(box, node, k) {
+  const g = document.createElement("div");
+  const col = node.dir === "row"; // a row split is divided by vertical lines
+  g.className = "pane-gutter " + (col ? "col" : "row");
+  g.title = col ? "Drag to resize columns" : "Drag to resize rows";
   g.addEventListener("mousedown", (e) => {
     e.preventDefault();
     e.stopPropagation();
+    const kids = [...box.children].filter((c) => !c.classList.contains("pane-gutter"));
+    const a = kids[k - 1];
+    const b = kids[k];
+    const dim = (el) => (col ? el.getBoundingClientRect().width : el.getBoundingClientRect().height);
+    const pxA = dim(a);
+    const pxTotal = pxA + dim(b);
+    const share = node.fracs[k - 1] + node.fracs[k];
+    const startPos = col ? e.clientX : e.clientY;
+    const MIN_PANE_PX = Math.min(80, pxTotal / 2);
     g.classList.add("dragging");
-    document.body.style.cursor = axis === "col" ? "col-resize" : "row-resize";
-    const fracs = axis === "col" ? w.colFracs : w.rowFracs;
-    const start = [...fracs];
-    const total = start.reduce((a, b) => a + b, 0);
-    const size = axis === "col" ? host.clientWidth : host.clientHeight;
-    const startPos = axis === "col" ? e.clientX : e.clientY;
-    const MIN = 0.15; // keep every track at least ~15% of an equal share
+    document.body.style.cursor = col ? "col-resize" : "row-resize";
     const onMove = (ev) => {
-      const pos = axis === "col" ? ev.clientX : ev.clientY;
-      let d = ((pos - startPos) / size) * total;
-      // Clamp so neither adjacent track shrinks below MIN.
-      d = Math.max(-(start[k - 1] - MIN), Math.min(start[k] - MIN, d));
-      fracs[k - 1] = start[k - 1] + d;
-      fracs[k] = start[k] - d;
-      const tpl = fracs.map((f) => f + "fr").join(" ");
-      if (axis === "col") host.style.gridTemplateColumns = tpl;
-      else host.style.gridTemplateRows = tpl;
+      const pos = col ? ev.clientX : ev.clientY;
+      const nextA = Math.max(MIN_PANE_PX, Math.min(pxTotal - MIN_PANE_PX, pxA + pos - startPos));
+      node.fracs[k - 1] = (share * nextA) / pxTotal;
+      node.fracs[k] = share - node.fracs[k - 1];
+      a.style.flex = `${node.fracs[k - 1]} 1 0`;
+      b.style.flex = `${node.fracs[k]} 1 0`;
       fitAll();
     };
     const onUp = () => {
@@ -2442,6 +2411,129 @@ function makeGutterDraggable(g, host, w, axis, k) {
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   });
+  return g;
+}
+
+// ── Drag a tab to split (iTerm-style) ───────────────────────────
+//
+// A tab from the strip, or a pane's title bar, can be dropped on any pane:
+// its outer quarter splits that pane on that side, the middle replaces its
+// content. The decision is `PaneLayout.dropOnPane`; this half is the DOM.
+
+function makePaneDragSource(el, sid) {
+  el.draggable = true;
+  el.addEventListener("dragstart", (ev) => {
+    ev.stopPropagation();
+    ev.dataTransfer.effectAllowed = "move";
+    // A custom type only: a text/plain payload would be typed into whatever
+    // terminal the drag is released over if the drop missed the overlays.
+    ev.dataTransfer.setData(PANE_DRAG_MIME, sid);
+    paneDrag = { sid, dirty: false };
+    // Native webviews swallow drag events and paint over the overlays.
+    hideBrowserWebviews();
+    // Touching the DOM inside dragstart can cancel the drag in WebKit.
+    setTimeout(showPaneDropTargets, 0);
+  });
+  el.addEventListener("dragend", endPaneDrag);
+}
+
+function showPaneDropTargets() {
+  if (!paneDrag) return;
+  document.body.classList.add("pane-dragging");
+  for (const pane of $("terminal-host").querySelectorAll(".pane")) {
+    const target = Number(pane.dataset.pane);
+    const overlay = document.createElement("div");
+    overlay.className = "pane-drop";
+    const hint = document.createElement("div");
+    hint.className = "pane-drop-hint";
+    overlay.appendChild(hint);
+    const zoneAt = (ev) => {
+      const r = overlay.getBoundingClientRect();
+      return PaneLayout.dropZone(ev.clientX - r.left, ev.clientY - r.top, r.width, r.height);
+    };
+    overlay.addEventListener("dragover", (ev) => {
+      if (!paneDrag) return;
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = "move";
+      hint.dataset.zone = zoneAt(ev);
+    });
+    overlay.addEventListener("dragleave", () => delete hint.dataset.zone);
+    overlay.addEventListener("drop", (ev) => {
+      if (!paneDrag) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const sid = paneDrag.sid;
+      const zone = zoneAt(ev);
+      endPaneDrag();
+      dropTabOnPane(sid, target, zone);
+    });
+    pane.appendChild(overlay);
+  }
+}
+
+/// Clear the drag and repaint whatever it held back. Idempotent: it runs from
+/// the drop, the source's dragend, and the watchdog below.
+function endPaneDrag() {
+  if (!paneDrag) return;
+  const dirty = paneDrag.dirty;
+  paneDrag = null;
+  document.body.classList.remove("pane-dragging");
+  document.querySelectorAll(".pane-drop").forEach((o) => o.remove());
+  if (dirty) {
+    renderPanes();
+    renderTabs();
+  } else fitAll(); // restores the webviews hidden at dragstart
+}
+
+// No mouse events fire while a native drag is in flight, so a buttonless move
+// means it ended — even when its source was detached and its dragend never
+// came. Without this, a lost dragend would freeze the panes and the strip.
+document.addEventListener(
+  "mousemove",
+  (ev) => {
+    if (paneDrag && ev.buttons === 0) endPaneDrag();
+  },
+  true
+);
+
+function dropTabOnPane(sid, target, zone) {
+  const w = ws();
+  const r = PaneLayout.dropOnPane(w.panes, w.layout, sid, target, zone);
+  if (!r) return;
+  w.panes = r.panes;
+  w.layout = r.layout;
+  w.focused = r.focused;
+  w.zoomed = false;
+  syncActiveToFocused();
+  state.unread.delete(sid);
+  saveWorkspaces();
+  renderPanes();
+  renderTabs();
+  renderSidebar();
+  focusTerm(sid);
+}
+
+/// Which side a new split of the focused pane opens on: beside it when the
+/// pane is wider than tall, below it otherwise.
+function autoSplitSide() {
+  const r = $("terminal-host")
+    .querySelector(`.pane[data-pane="${ws().focused}"]`)
+    ?.getBoundingClientRect();
+  return r && r.height > r.width ? "bottom" : "right";
+}
+
+/// Push an empty pane split off the focused one, and focus it.
+function splitFocusedPane() {
+  const w = ws();
+  w.layout = PaneLayout.splitLeaf(
+    PaneLayout.ensureLayout(w.layout, w.panes.length, w.colFracs, w.rowFracs),
+    w.focused,
+    w.panes.length,
+    autoSplitSide()
+  );
+  w.panes.push(null);
+  w.focused = w.panes.length - 1;
+  w.zoomed = false;
 }
 
 function fitAll() {
@@ -2451,7 +2543,6 @@ function fitAll() {
       if (entry && entry.fitAddon) entry.fitAddon.fit();
     }
     if (typeof syncBrowserWebviews === "function") syncBrowserWebviews();
-    repositionGutters($("terminal-host"), ws());
   });
 }
 
@@ -2475,10 +2566,7 @@ function syncActiveToFocused() {
 }
 
 function addPane() {
-  const w = ws();
-  w.panes.push(null);
-  w.focused = w.panes.length - 1;
-  w.zoomed = false;
+  splitFocusedPane();
   syncActiveToFocused();
   saveWorkspaces();
   renderPanes();
@@ -2490,6 +2578,10 @@ function addPane() {
 function removePane() {
   const w = ws();
   if (w.panes.length <= 1) return;
+  w.layout = PaneLayout.removeLeaf(
+    PaneLayout.ensureLayout(w.layout, w.panes.length, w.colFracs, w.rowFracs),
+    w.focused
+  );
   w.panes.splice(w.focused, 1);
   w.focused = Math.min(w.focused, w.panes.length - 1);
   if (w.panes.length === 1) w.zoomed = false;
@@ -12112,12 +12204,7 @@ function makeBrowserEntry(id, url, name, renamed) {
 /// and focus it — so a browser open lands beside the current session
 /// instead of replacing it. No-op when the focused pane is empty.
 function ensureFreePane() {
-  const w = ws();
-  if (w.panes[w.focused] != null) {
-    w.panes.push(null);
-    w.focused = w.panes.length - 1;
-    w.zoomed = false;
-  }
+  if (ws().panes[ws().focused] != null) splitFocusedPane();
 }
 
 /// Open a URL in a clash browser tab. `mode` controls placement:
@@ -12303,7 +12390,6 @@ listen("browser-open-tab", (event) => {
 // open/close, sidebar drag) still move the slots — observe the host.
 new ResizeObserver(() => {
   syncBrowserWebviews();
-  repositionGutters($("terminal-host"), ws());
 }).observe($("terminal-host"));
 
 // ── Panel resizing (sidebar / details) ──────────────────────────

@@ -32,8 +32,8 @@
 - **Two frontends, one core** — a desktop **GUI** (Tauri; the primary mode) and
   a keyboard-driven **TUI**. Both are backed by the same in-process PTY daemon,
   and several instances can run side by side.
-- **Desktop workspace (GUI)** — cmux-style workspaces, unlimited resizable split
-  panes, GPU-rendered terminals, shell terminals, embedded **browser tabs**,
+- **Desktop workspace (GUI)** — cmux-style workspaces, freely nested, drag-to-split
+  resizable panes, GPU-rendered terminals, shell terminals, embedded **browser tabs**,
   12 themes, a searchable font picker, and a layout restored exactly on
   relaunch. See [GUI](#gui-primary-mode).
 - **Workflows (GUI)** — one item per piece of work, taken through plan →
@@ -192,11 +192,15 @@ teams, files, tabs and panes, the terminal and settings. Replay it from *Setting
   - The sidebar is scoped to the active workspace, plus an **UNASSIGNED** group
     for sessions no workspace has claimed (opening one claims it).
   - Search (`/`, `⌘F`) is global; results from other workspaces carry a `⌘n` badge.
-- **Split panes** form an unlimited balanced grid:
-  - `⌘D` splits and `⌘⇧D` closes the focused pane.
+- **Split panes** nest freely, like iTerm:
+  - `⌘D` splits the focused pane (beside it when it is wide, below it when it is
+    tall) and `⌘⇧D` closes it.
+  - Drag a tab — from the strip or a pane's title bar — onto any pane: drop it on
+    an edge to split that pane on that side, or in the middle to show it there
+    (swapping with the pane it came from). Dragging a pane's tab moves the pane.
   - `⌘⇧↩` (or a double-click on the pane title) zooms.
   - `⌘⌥←/→` cycles focus.
-  - Drag a gutter to resize; the ratios persist per workspace.
+  - Drag a divider to resize; the layout persists per workspace.
 - **Tabs**: the active tab is always the content of the focused pane. The `+`
   ghost tab opens a shell terminal, a browser tab or a new session; right-click
   an empty pane for the same menu.
