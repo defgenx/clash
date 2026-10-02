@@ -198,6 +198,9 @@ teams, files, tabs and panes, the terminal and settings. Replay it from *Setting
   - Drag a tab — from the strip or a pane's title bar — onto any pane: drop it on
     an edge to split that pane on that side, or in the middle to show it there
     (swapping with the pane it came from). Dragging a pane's tab moves the pane.
+  - Drop it on the outer edge of the whole pane area instead to get a pane that
+    spans that side — e.g. one full-width pane under several columns.
+  - Closing a tab closes its pane; the neighbouring panes take the space.
   - `⌘⇧↩` (or a double-click on the pane title) zooms.
   - `⌘⌥←/→` cycles focus.
   - Drag a divider to resize; the layout persists per workspace.

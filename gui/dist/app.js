@@ -1833,7 +1833,13 @@ async function reloadSession(sid) {
     if (entry && entry.term) entry.term.writeln(`\x1b[31mReload failed: ${e}\x1b[0m`);
     return;
   }
-  if (wasOpen) dropTerminal(sid);
+  if (wasOpen) {
+    // Reopen in the same pane: openSession fills the focused one.
+    const w = ws();
+    const idx = w.panes.indexOf(sid);
+    dropTerminal(sid, { keepPane: true });
+    if (idx >= 0) w.focused = idx;
+  }
   openSession(sid);
 }
 
@@ -2469,6 +2475,37 @@ function showPaneDropTargets() {
     });
     pane.appendChild(overlay);
   }
+  // The whole area's edges: a pane spanning that side (under every column).
+  const host = $("terminal-host");
+  for (const side of ["top", "bottom", "left", "right"]) {
+    const band = document.createElement("div");
+    band.className = "pane-edge-drop";
+    band.dataset.side = side;
+    const hint = document.createElement("div");
+    hint.className = "pane-edge-hint";
+    hint.dataset.side = side;
+    hint.style.display = "none";
+    band.addEventListener("dragover", (ev) => {
+      if (!paneDrag) return;
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = "move";
+      band.classList.add("over");
+      hint.style.display = "";
+    });
+    band.addEventListener("dragleave", () => {
+      band.classList.remove("over");
+      hint.style.display = "none";
+    });
+    band.addEventListener("drop", (ev) => {
+      if (!paneDrag) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const sid = paneDrag.sid;
+      endPaneDrag();
+      applyPaneDrop(sid, PaneLayout.dropOnEdge(ws().panes, ws().layout, sid, side));
+    });
+    host.append(hint, band);
+  }
 }
 
 /// Clear the drag and repaint whatever it held back. Idempotent: it runs from
@@ -2478,7 +2515,9 @@ function endPaneDrag() {
   const dirty = paneDrag.dirty;
   paneDrag = null;
   document.body.classList.remove("pane-dragging");
-  document.querySelectorAll(".pane-drop").forEach((o) => o.remove());
+  document
+    .querySelectorAll(".pane-drop, .pane-edge-drop, .pane-edge-hint")
+    .forEach((o) => o.remove());
   if (dirty) {
     renderPanes();
     renderTabs();
@@ -2498,7 +2537,11 @@ document.addEventListener(
 
 function dropTabOnPane(sid, target, zone) {
   const w = ws();
-  const r = PaneLayout.dropOnPane(w.panes, w.layout, sid, target, zone);
+  applyPaneDrop(sid, PaneLayout.dropOnPane(w.panes, w.layout, sid, target, zone));
+}
+
+function applyPaneDrop(sid, r) {
+  const w = ws();
   if (!r) return;
   w.panes = r.panes;
   w.layout = r.layout;
@@ -2578,17 +2621,25 @@ function addPane() {
 function removePane() {
   const w = ws();
   if (w.panes.length <= 1) return;
-  w.layout = PaneLayout.removeLeaf(
-    PaneLayout.ensureLayout(w.layout, w.panes.length, w.colFracs, w.rowFracs),
-    w.focused
-  );
-  w.panes.splice(w.focused, 1);
-  w.focused = Math.min(w.focused, w.panes.length - 1);
-  if (w.panes.length === 1) w.zoomed = false;
+  closePaneAt(w, w.focused);
   syncActiveToFocused();
   saveWorkspaces();
   renderPanes();
   renderTabs();
+}
+
+/// Collapse pane `idx` of workspace `w` into its siblings (iTerm's close).
+function closePaneAt(w, idx) {
+  const r = PaneLayout.closePane(
+    w.panes,
+    PaneLayout.ensureLayout(w.layout, w.panes.length, w.colFracs, w.rowFracs),
+    w.focused,
+    idx
+  );
+  w.panes = r.panes;
+  w.layout = r.layout;
+  w.focused = r.focused;
+  if (w.panes.length === 1) w.zoomed = false;
 }
 
 function toggleZoom() {
@@ -3322,14 +3373,18 @@ async function detachSession(sid) {
 }
 
 /// Remove the local terminal/view for a tab (after detach/stash/kill/exit).
-function dropTerminal(sid) {
+/// Its pane closes and the neighbours take the space, as in iTerm;
+/// `keepPane` leaves it empty instead, for a reload that refills it.
+function dropTerminal(sid, { keepPane = false } = {}) {
   const entry = state.open.get(sid);
   if (!entry) return;
   if (entry.term) entry.term.dispose();
   entry.el.remove();
   state.open.delete(sid);
   for (const w of state.workspaces) {
-    w.panes = w.panes.map((p) => (p === sid ? null : p));
+    const idx = w.panes.indexOf(sid);
+    if (idx >= 0 && keepPane) w.panes[idx] = null;
+    else if (idx >= 0) closePaneAt(w, idx);
     // Shell terminals and browser tabs leave ownership on close — the
     // session prune intentionally skips them, so nothing else would.
     if (isShellTerm(sid) || isBrowserTab(sid)) {

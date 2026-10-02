@@ -8,8 +8,11 @@ const {
   leaves,
   splitLeaf,
   removeLeaf,
+  splitRoot,
+  closePane,
   dropZone,
   dropOnPane,
+  dropOnEdge,
 } = require("../dist/pane-layout.js");
 
 test("the default layout reproduces the balanced grid", () => {
@@ -169,4 +172,44 @@ test("a drag in flight is never repainted out from under itself", () => {
   const src = app.slice(app.indexOf("function makePaneDragSource"));
   assert.match(src.slice(0, 800), /setData\(PANE_DRAG_MIME, sid\)/);
   assert.doesNotMatch(src.slice(0, 800), /setData\("text\/plain"/);
+});
+
+test("a root split spans every column", () => {
+  const cols = defaultLayout(2); // A | B
+  assert.deepEqual(splitRoot(cols, 2, "bottom"), {
+    dir: "col",
+    kids: [cols, { p: 2 }],
+    fracs: [1, 1],
+  });
+  // Same direction as the root: flattened, the new pane still takes half.
+  const r = splitRoot(cols, 2, "right");
+  assert.deepEqual(r.kids.map((k) => k.p), [0, 1, 2]);
+  assert.equal(r.fracs[2], r.fracs[0] + r.fracs[1]);
+});
+
+test("dropping a tab on the bottom edge puts it under all the columns", () => {
+  const three = { dir: "row", kids: [{ p: 0 }, { p: 1 }, { p: 2 }], fracs: [1, 1, 1] };
+  const r = dropOnEdge(["a", "b", "c"], three, "d", "bottom");
+  assert.deepEqual(r.panes, ["a", "b", "c", "d"]);
+  assert.deepEqual(r.layout, { dir: "col", kids: [three, { p: 3 }], fracs: [1, 1] });
+  assert.equal(r.focused, 3);
+  // A tab already in a pane moves: its column closes.
+  const m = dropOnEdge(["a", "b", "c"], three, "b", "bottom");
+  assert.deepEqual(m.panes, ["a", "c", "b"]);
+  assert.ok(validLayout(m.layout, 3));
+  assert.equal(m.layout.dir, "col");
+  assert.deepEqual(m.layout.kids[0].kids.map((k) => k.p), [0, 1]);
+  assert.equal(m.focused, 2);
+  // The sole pane onto its own edge changes nothing.
+  assert.equal(dropOnEdge(["a"], { p: 0 }, "a", "bottom"), null);
+});
+
+test("closing a pane gives its space to its siblings", () => {
+  const l = splitLeaf(defaultLayout(2), 1, 2, "bottom"); // A | (B / C)
+  const r = closePane(["a", "b", "c"], l, 2, 1);
+  assert.deepEqual(r.panes, ["a", "c"]);
+  assert.deepEqual(r.layout, { dir: "row", kids: [{ p: 0 }, { p: 1 }], fracs: [1, 1] });
+  assert.equal(r.focused, 1);
+  // The sole pane is emptied, not removed.
+  assert.deepEqual(closePane(["a"], { p: 0 }, 0, 0), { panes: [null], layout: { p: 0 }, focused: 0 });
 });

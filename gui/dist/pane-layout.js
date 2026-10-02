@@ -130,6 +130,28 @@
     return normalize(prune(layout)) || leaf(0);
   }
 
+  /// Put the new leaf `newIdx` along `side` of the whole layout, spanning it
+  /// (a bottom pane under every column). It takes half, like a pane split.
+  function splitRoot(layout, newIdx, side) {
+    if (!SIDES.includes(side)) throw new Error(`bad side: ${side}`);
+    const dir = side === "left" || side === "right" ? "row" : "col";
+    const before = side === "left" || side === "top";
+    const kids = before ? [leaf(newIdx), layout] : [layout, leaf(newIdx)];
+    return normalize({ dir, kids, fracs: [1, 1] });
+  }
+
+  /// Close pane `idx`: its siblings absorb its space. The sole pane is only
+  /// emptied, never removed. `focused` follows the pane it named.
+  function closePane(panes, layout, focused, idx) {
+    if (!(idx >= 0 && idx < panes.length)) return { panes: [...panes], layout, focused };
+    if (panes.length <= 1) return { panes: [null], layout: leaf(0), focused: 0 };
+    const next = [...panes];
+    next.splice(idx, 1);
+    const tree = removeLeaf(ensureLayout(layout, panes.length), idx);
+    const f = focused > idx ? focused - 1 : Math.min(focused, next.length - 1);
+    return { panes: next, layout: tree, focused: f };
+  }
+
   /// Which drop zone a point falls in, relative to a pane's box: the nearest
   /// edge when within the outer quarter of the pane, else its center.
   function dropZone(x, y, width, height) {
@@ -179,15 +201,36 @@
     return { panes: next, layout: tree, focused };
   }
 
+  /// Drop tab `sid` on the `side` edge of the whole pane area: a new pane
+  /// spanning that side. A tab already in a pane moves there. `null` when it
+  /// changes nothing (the sole pane moved onto its own edge).
+  function dropOnEdge(panes, layout, sid, side) {
+    const from = panes.indexOf(sid);
+    if (from >= 0 && panes.length === 1) return null;
+    const next = [...panes];
+    let tree = splitRoot(ensureLayout(layout, panes.length), next.length, side);
+    next.push(sid);
+    let focused = next.length - 1;
+    if (from >= 0) {
+      next.splice(from, 1);
+      tree = removeLeaf(tree, from);
+      focused--;
+    }
+    return { panes: next, layout: tree, focused };
+  }
+
   const api = {
     defaultLayout,
     validLayout,
     ensureLayout,
     leaves,
     splitLeaf,
+    splitRoot,
     removeLeaf,
+    closePane,
     dropZone,
     dropOnPane,
+    dropOnEdge,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else global.PaneLayout = api;

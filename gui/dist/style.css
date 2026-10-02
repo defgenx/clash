@@ -892,7 +892,9 @@ html, body, #app {
   background: var(--bg);
   min-width: 0;
 }
-.pane-root { position: absolute; inset: 0; }
+/* `#terminal-host >` outranks `.pane { position: relative }`: a lone or zoomed
+   pane IS the root, and losing `absolute` shrinks it to its content. */
+#terminal-host > .pane-root { position: absolute; inset: 0; }
 .pane-split { display: flex; min-width: 0; min-height: 0; }
 .pane-split.row { flex-direction: row; }
 .pane-split.col { flex-direction: column; }
@@ -942,6 +944,25 @@ html, body, #app {
 .pane-drop-hint[data-zone="right"] { top: 0; bottom: 0; right: 0; width: 50%; }
 .pane-drop-hint[data-zone="top"] { left: 0; right: 0; top: 0; height: 50%; }
 .pane-drop-hint[data-zone="bottom"] { left: 0; right: 0; bottom: 0; height: 50%; }
+/* Bands along the whole pane area's edges: a drop there spans that side. */
+.pane-edge-drop { position: absolute; z-index: 21; }
+.pane-edge-drop[data-side="top"] { top: 0; left: 0; right: 0; height: 14px; }
+.pane-edge-drop[data-side="bottom"] { bottom: 0; left: 0; right: 0; height: 14px; }
+.pane-edge-drop[data-side="left"] { top: 0; bottom: 0; left: 0; width: 14px; }
+.pane-edge-drop[data-side="right"] { top: 0; bottom: 0; right: 0; width: 14px; }
+.pane-edge-drop.over { background: var(--accent); }
+.pane-edge-hint {
+  position: absolute;
+  z-index: 19;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border: 2px solid var(--accent);
+  border-radius: 4px;
+}
+.pane-edge-hint[data-side="top"] { top: 0; left: 0; right: 0; height: 50%; }
+.pane-edge-hint[data-side="bottom"] { bottom: 0; left: 0; right: 0; height: 50%; }
+.pane-edge-hint[data-side="left"] { top: 0; bottom: 0; left: 0; width: 50%; }
+.pane-edge-hint[data-side="right"] { top: 0; bottom: 0; right: 0; width: 50%; }
 .pane .pane-title[draggable="true"] { cursor: grab; }
 .pane .pane-title {
   font-size: 10px;
