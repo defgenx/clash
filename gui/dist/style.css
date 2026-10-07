@@ -2336,6 +2336,7 @@ button.busy:disabled { opacity: 1; }
 }
 .wf-review-opt:hover { background: var(--bg-hover); }
 .wf-review-opt[hidden],
+.wf-review-group[hidden],
 .wf-agent-select[hidden] { display: none; }
 .wf-review-opt input[type="radio"],
 .wf-review-opt input[type="checkbox"] { margin-top: 2px; }

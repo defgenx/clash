@@ -6700,6 +6700,13 @@ function wfPrMenu(item, pr, root) {
       icon: "inbox",
       action: () => launchWfReviewRespond(item, root, { scope }),
     });
+    if (wfCanSelfReview(item) && prLive(pr)) {
+      entries.push({
+        label: `Self-review ${name}…`,
+        icon: "search",
+        action: () => launchWfSelfReview(item, root, { scope }),
+      });
+    }
   }
   if (item.lastAgentReview) {
     entries.push({
@@ -6898,12 +6905,12 @@ async function pickWfAgent(item, job) {
   });
 }
 
-/// The composers' agent row: a <select> whose unavailable agents are disabled
-/// options carrying the reason. Availability arrives async; a pick made before
-/// it lands is kept unless that agent turned out to be unavailable. `row` (the
-/// select itself when absent) is hidden unless the agent setting is `ask`,
-/// with the select then holding the fixed agent.
-function wfAgentSelect(item, row = null) {
+/// The change-request composer's agent row: a <select> whose unavailable
+/// agents are disabled options carrying the reason. Availability arrives
+/// async; a pick made before it lands is kept unless that agent turned out to
+/// be unavailable. Hidden unless the agent setting is `ask`, the select then
+/// holding the fixed agent.
+function wfAgentSelect(item) {
   const sel = document.createElement("select");
   sel.className = "wf-agent-select";
   sel.title = "Which agent CLI this round runs on";
@@ -6922,7 +6929,7 @@ function wfAgentSelect(item, row = null) {
       sel.appendChild(o);
     }
     const asks = wfAgentAsks(item.meta.agentSetting, settings);
-    (row || sel).hidden = !asks;
+    sel.hidden = !asks;
     const keepOk = keep && choices.some((c) => c.value === keep && c.available);
     sel.value = !asks
       ? wfFixedAgent(item.meta.agentSetting, settings)
@@ -6934,6 +6941,63 @@ function wfAgentSelect(item, row = null) {
   fill({ workflowAgent: "ask" });
   wfAgentSettings().then(fill);
   return sel;
+}
+
+/// The review composer's agent question: a radio group shaped like the
+/// round's other dimensions, so it is asked on the same screen and not
+/// missed as a dropdown below the fold. Same rules as `wfAgentSelect` —
+/// hidden unless the agent setting is `ask`, `value()` then the fixed agent.
+function wfAgentGroup(item) {
+  const fs = document.createElement("fieldset");
+  fs.className = "wf-review-group";
+  const lg = document.createElement("legend");
+  lg.textContent = "Which agent runs it?";
+  fs.appendChild(lg);
+  let touched = false;
+  let fixed = null;
+  fs.addEventListener("change", () => (touched = true));
+  const checked = () => {
+    const el = fs.querySelector("input:checked");
+    return el ? el.value : null;
+  };
+  const fill = (settings) => {
+    const keep = touched ? checked() : null;
+    for (const row of fs.querySelectorAll(".wf-review-opt")) row.remove();
+    const asks = wfAgentAsks(item.meta.agentSetting, settings);
+    fs.hidden = !asks;
+    fixed = asks ? null : wfFixedAgent(item.meta.agentSetting, settings);
+    const choices = wfAgentChoices(settings);
+    const keepOk = keep && choices.some((c) => c.value === keep && c.available);
+    const def = keepOk ? keep : wfAgentDefault(item.meta.agent, settings);
+    for (const c of choices) {
+      const row = document.createElement("label");
+      row.className = "wf-review-opt";
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "wf-review-agent";
+      input.value = c.value;
+      input.disabled = !c.available;
+      input.checked = c.value === def;
+      const text = document.createElement("span");
+      text.className = "wf-review-opt-text";
+      const label = document.createElement("span");
+      label.className = "wf-review-opt-label";
+      label.textContent = c.available ? c.label : `${c.label} (not installed)`;
+      const detail = document.createElement("span");
+      detail.className = "wf-review-opt-detail";
+      detail.textContent = !c.available
+        ? c.reason
+        : (c.value === "omp" ? "oh-my-pi (omp)" : "Claude Code (claude)") +
+          (c.value === item.meta.agent ? " · this item's last agent" : "");
+      text.append(label, detail);
+      row.append(input, text);
+      fs.appendChild(row);
+    }
+  };
+  // Until the settings land, the group is built as though it asks.
+  fill({ workflowAgent: "ask" });
+  wfAgentSettings().then(fill);
+  return { fs, value: () => fixed || checked() || wfAgentDefault(item.meta.agent, {}) };
 }
 
 /// Launch (or relaunch) the workflow agent for a phase and open its session
@@ -7041,6 +7105,24 @@ async function launchWfReview(item, root, opts = {}) {
     target: opts.target || null,
   });
   await wfRefreshExplanations(item, root, picked.refresh || [], picked.agent);
+}
+
+/// Launch a self-review over the PRs you pick — all of the item's open PRs,
+/// or some — through the same scope dialog as every other PR action, then the
+/// round's composer. `scope` lets a caller that already picked (the per-PR
+/// menu) skip the dialog. One open PR asks nothing.
+async function launchWfSelfReview(item, root, { scope = null } = {}) {
+  const sel = scope || (await pickPrScope(item, "selfReview"));
+  if (!sel || !sel.urls.length) return;
+  await launchWfReview(item, root, { target: "self-review", prUrls: sel.urls });
+}
+
+/// Whether a self-review can start: a reviewable stage with a built change
+/// (nothing exists at draft or plan-review) and an open PR to post on.
+function wfCanSelfReview(item) {
+  if (!wfCanReview(item)) return false;
+  if (["draft", "plan-review"].includes(item.meta.status)) return false;
+  return prActionCandidates(itemPrs(item.meta), "selfReview").length > 0;
 }
 
 /// Start explainer rounds on `targets` alongside whatever the item is doing.
@@ -7868,6 +7950,10 @@ function wfComposeReviewRound(item, { prUrls = null, target = null, refresh = []
     // Scope goes first: it decides *what* is reviewed, and the rest of the
     // dialog is how.
     const scope = model.prScope ? buildScope(model.prScope) : null;
+    // Asked second, beside the other dimensions — as a dropdown at the bottom
+    // of a scrolling body it was a question nobody saw being asked.
+    const agentGroup = wfAgentGroup(item);
+    body.appendChild(agentGroup.fs);
     const depthGroup = model.depth ? buildGroup(model.depth, "wf-review-depth") : null;
     const publishGroup = model.publish ? buildGroup(model.publish, "wf-review-publish") : null;
     const interactionGroup = buildGroup(model.interaction, "wf-review-interaction");
@@ -7932,13 +8018,6 @@ function wfComposeReviewRound(item, { prUrls = null, target = null, refresh = []
       return box;
     });
 
-    const agentRow = document.createElement("label");
-    agentRow.className = "wf-review-opt wf-review-agent";
-    agentRow.appendChild(document.createTextNode("Run on "));
-    const agentSel = wfAgentSelect(item, agentRow);
-    agentRow.appendChild(agentSel);
-    body.appendChild(agentRow);
-
     const done = (val) => {
       backdrop.remove();
       resolve(val);
@@ -7960,10 +8039,11 @@ function wfComposeReviewRound(item, { prUrls = null, target = null, refresh = []
         publish: picked(publishGroup, t === "self-review" ? "pr-comments" : "local"),
         interactive: interactiveParam(picked(interactionGroup, "ask")),
         autoApply: applyBox.checked,
-        agent: agentSel.value,
+        agent: agentGroup.value(),
         // Empty = the item's own diff (no PR scope); URLs pin the round to
-        // those PRs, however many.
-        prUrls: scopeUrls(),
+        // those PRs, however many. A self-review's were picked before the
+        // composer opened.
+        prUrls: scope ? scopeUrls() : t === "self-review" ? prUrls || [] : [],
         refresh: refreshBoxes.filter((b) => b.checked).map((b) => b.value),
       });
     actions.appendChild(cancel);
@@ -8865,17 +8945,19 @@ function renderWfActions(bar, root, item) {
   // never approves anything. Needs a built change and a PR to post on; a plan
   // is not needed, so review-only items get it too.
   const selfReviewButton = () => {
-    if (!wfCanReview(item)) return;
-    if (!itemPrs(item.meta).length) return;
-    if (["draft", "plan-review"].includes(st)) return;
+    if (!wfCanSelfReview(item)) return;
     const next = wfNextReviewRound(item, "self-review");
+    const open = prActionCandidates(itemPrs(item.meta), "selfReview").length;
     add(
-      `⚖ Self-review${next > 1 ? ` · round ${next}` : ""}…`,
+      `⚖ Self-review${open > 1 ? ` (${open} PRs)` : ""}${next > 1 ? ` · round ${next}` : ""}…`,
       "",
-      () => launchWfReview(item, root, { target: "self-review" }),
+      () => launchWfSelfReview(item, root),
       "Spends tokens and posts on GitHub: an agent reviews the PR pass after pass until a full pass finds nothing new, " +
         "then posts a verdict — approve or request changes — with line comments and a summary marked as an automated review. " +
-        "The findings also land here as diff comments you can turn into a fix round.",
+        "The findings also land here as diff comments you can turn into a fix round." +
+        (open > 1
+          ? ` The click asks which of this item's ${open} open PRs — all are pre-selected — then which agent runs it.`
+          : ""),
       "step",
       "self-review"
     );

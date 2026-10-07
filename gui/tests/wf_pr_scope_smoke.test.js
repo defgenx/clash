@@ -59,8 +59,10 @@ function sandbox(over = {}) {
     wfGhHint: () => null,
     wfPrRecovery: async () => false,
     wfCanReview: () => true,
+    wfCanSelfReview: () => true,
     launchWfReview: () => {},
     launchWfReviewRespond: () => {},
+    launchWfSelfReview: () => {},
     hideBrowserWebviews: () => {},
     fitAll: () => {},
     setTimeout: () => {},
@@ -259,7 +261,7 @@ test("the per-PR menu builds for every PR without throwing", () => {
   }
 });
 
-test("the review composer opens with a scope group and pre-selects the pick", () => {
+test("the review composer opens with a scope group and pre-selects the pick", async () => {
   const REVIEW = fs.readFileSync(path.join(__dirname, "..", "dist", "wf-review.js"), "utf8");
   const box = sandbox({
     wfNextReviewRound: () => 2,
@@ -269,6 +271,10 @@ test("the review composer opens with a scope group and pre-selects the pick", ()
     renderMarkdown: () => {},
   });
   vm.runInContext(REVIEW, box);
+  // The real agent group, so a dangling reference in it fails here too.
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "dist", "wf-agent.js"), "utf8"), box);
+  vm.runInContext(`wfAgentSettings = async () => ({ workflowAgent: "ask" })`, box);
+  vm.runInContext(`wfAgentGroup = ${extractFunction(APP, "wfAgentGroup")}`, box);
   vm.runInContext(`wfComposeReviewRound = ${extractFunction(APP, "wfComposeReviewRound")}`, box);
 
   // The model is what the dialog renders; assert on it directly for the two
@@ -298,5 +304,14 @@ test("the review composer opens with a scope group and pre-selects the pick", ()
     prUrls: ["https://github.com/o/web/pull/2"],
   });
   p.catch((e) => (rejected = e));
+  // A throw inside the executor rejects asynchronously: let it land.
+  await new Promise((r) => setImmediate(r));
   assert.equal(rejected, null, `the composer must open: ${rejected}`);
+
+  // A self-review opens over a scope picked beforehand: no scope group.
+  let selfRejected = null;
+  box.wfComposeReviewRound(ITEM, { target: "self-review", prUrls: ["https://github.com/o/web/pull/2"] })
+    .catch((e) => (selfRejected = e));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(selfRejected, null, `the self-review composer must open: ${selfRejected}`);
 });

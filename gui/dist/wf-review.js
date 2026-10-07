@@ -49,15 +49,15 @@
     // instead of being left implicit: "leave everything unchecked" is not a
     // thing anyone reads off a dialog.
     const seeded = (prUrls || []).filter((u) => (prs || []).some((p) => p.url === u));
-    // The self-review posts a verdict on a PR, so "this repository's diff"
-    // means this item's own PR there, and the findings' destination is not a
-    // choice.
+    // A self-review's PRs are picked before the composer opens, by the same
+    // scope dialog as every other PR action — so here they are stated, not
+    // asked again.
     const self = target === "self-review";
     // A drift round keeps the scope for the same reason a code round does: a
     // plan split across an API repo and the web repo that consumes it drifts
     // *between* the repos as often as inside one.
     const prScope =
-      target === "plan" || (prs || []).length < 2
+      target === "plan" || self || (prs || []).length < 2
         ? null
         : {
             legend: "Which change?",
@@ -65,10 +65,8 @@
             // saying "read that repository instead of / as well as mine".
             local: {
               value: "",
-              label: self ? "This item's own PR" : "This repository's own diff",
-              detail: self
-                ? "The primary PR — its verdict and line comments are posted there, and its findings also land as diff comments you can triage here."
-                : "Every file on the branch — findings land as diff comments you can triage here.",
+              label: "This repository's own diff",
+              detail: "Every file on the branch — findings land as diff comments you can triage here.",
               checked: seeded.length === 0,
             },
             choices: (prs || []).map((pr) => ({
@@ -85,7 +83,18 @@
     // With a scope choice on screen, naming the primary in the publish option
     // is a lie for most of the answers: it says where the findings go, which
     // is whichever PRs the round is about.
-    const prName = prScope ? "the PRs under review" : prNumber ? `#${prNumber}` : "the PR";
+    const chosen = (prs || []).filter((p) => seeded.includes(p.url));
+    const prName = prScope
+      ? "the PRs under review"
+      : chosen.length > 1
+        ? `${chosen.length} pull requests (${chosen.map(prScopeChipName).join(", ")})`
+        : chosen.length === 1 && !chosen[0].primary
+          ? prScopeChipName(chosen[0])
+          : prNumber
+            ? `#${prNumber}`
+            : "the PR";
+    // Which of them is a draft decides how a verdict can be posted there.
+    const anyDraft = chosen.length ? chosen.some((p) => p.draft) : prDraft;
     const drift = target === "drift";
     return {
       prScope,
@@ -110,8 +119,10 @@
       // its verdict can be posted in two common cases.
       notice: self
         ? `Posts to ${prName} — there is no local-only self-review. ` +
-          (prDraft
-            ? "This PR is a draft, which cannot take a formal review: the verdict is posted as a comment. "
+          (anyDraft
+            ? chosen.length > 1
+              ? "A draft cannot take a formal review: on a draft, the verdict is posted as a comment. "
+              : "This PR is a draft, which cannot take a formal review: the verdict is posted as a comment. "
             : "") +
           "If the PR is yours, GitHub does not let its author approve or request changes, so the verdict is posted as a comment review that states it."
         : null,
@@ -220,13 +231,18 @@
     };
   }
 
+  /// The repo-scoped chip name (`api#42`), with a local fallback so the module
+  /// loads on its own in the node tests.
+  function prScopeChipName(pr) {
+    return typeof prChipLabel === "function"
+      ? prChipLabel(pr)
+      : `${String(pr.repo || "").split("/")[1] || ""}#${pr.number || "?"}`;
+  }
+
   /// Composer row for one PR: the chip name, marked when it is the primary —
   /// the only PR whose state moves the item.
   function prScopeRowLabel(pr) {
-    const chip =
-      typeof prChipLabel === "function"
-        ? prChipLabel(pr)
-        : `${String(pr.repo || "").split("/")[1] || ""}#${pr.number || "?"}`;
+    const chip = prScopeChipName(pr);
     return pr.primary ? `${chip} · primary` : chip;
   }
 

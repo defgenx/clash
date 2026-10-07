@@ -291,13 +291,30 @@ test("a self-review always posts, so it asks no destination and says where it go
   }
 });
 
-test("a multi-repo self-review keeps the scope, its local row naming the item's PR", () => {
+test("a self-review's PRs are picked before the composer, which names them", () => {
+  // The scope is the shared PR-scope dialog's answer (all or some of the
+  // item's open PRs), so the composer must not ask it a second time.
   const prs = [
     { url: "https://github.com/o/api/pull/1", repo: "o/api", number: 1, primary: true },
-    { url: "https://github.com/o/web/pull/2", repo: "o/web", number: 2, primary: false },
+    { url: "https://github.com/o/web/pull/2", repo: "o/web", number: 2, primary: false, draft: true },
   ];
-  const m = reviewRoundModel({ target: "self-review", prs, hasPr: true, prNumber: 1 });
-  assert.ok(m.prScope);
-  assert.match(m.prScope.local.label, /own PR/);
-  assert.equal(m.prScope.choices.length, 2);
+  const both = reviewRoundModel({
+    target: "self-review",
+    prs,
+    prUrls: prs.map((p) => p.url),
+    hasPr: true,
+    prNumber: 1,
+  });
+  assert.equal(both.prScope, null);
+  assert.match(both.notice, /Posts to 2 pull requests \(api#1, web#2\)/);
+  // One of the picks is a draft: said, though the primary is not one.
+  assert.match(both.notice, /on a draft, the verdict is posted as a comment/);
+  const linked = reviewRoundModel({ target: "self-review", prs, prUrls: [prs[1].url], hasPr: true, prNumber: 1 });
+  assert.match(linked.notice, /Posts to web#2/);
+  assert.match(linked.notice, /This PR is a draft/);
+  const primary = reviewRoundModel({ target: "self-review", prs, prUrls: [prs[0].url], hasPr: true, prNumber: 1 });
+  assert.match(primary.notice, /Posts to #1/);
+  assert.doesNotMatch(primary.notice, /draft/);
+  // A code round on the same item still asks its scope in the composer.
+  assert.ok(reviewRoundModel({ target: "diff", prs, hasPr: true }).prScope);
 });

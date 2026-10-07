@@ -54,7 +54,7 @@ test("every action's answer is a set — agent rounds included", () => {
   // concurrency, not on how many PRs one round may read — and a cross-repo
   // review is the case that needs the set most, since judging the API PR
   // without the web PR that consumes it leaves the contract unchecked.
-  for (const action of ["open", "markReady", "post", "review", "respond"]) {
+  for (const action of ["open", "markReady", "post", "respond", "selfReview"]) {
     const m = prScopeModel(THREE, action);
     const candidates = prActionCandidates(THREE, action);
     assert.equal(m.rows.length, candidates.length, `${action} rows`);
@@ -110,6 +110,26 @@ test("the default selection is the answer the button already promised", () => {
     seeded.rows.filter((r) => r.checked).map((r) => r.url),
     [THREE[1].url]
   );
+});
+
+test("a self-review offers every open PR, all of them pre-ticked", () => {
+  // A verdict on a merged PR approves nothing, so settled PRs are not offered;
+  // the rest are the change the item is, so the default is all of it.
+  const m = prScopeModel(THREE, "selfReview");
+  assert.deepEqual(
+    m.rows.map((r) => r.url),
+    [THREE[0].url, THREE[1].url]
+  );
+  assert.ok(m.rows.every((r) => r.checked));
+  assert.match(m.allLabel, /All 2 open pull requests/);
+  assert.equal(m.needed, true);
+  // One open PR left: nothing to ask, and that PR is the answer.
+  const one = prScopeModel([THREE[0], THREE[2]], "selfReview");
+  assert.equal(one.needed, false);
+  assert.deepEqual(one.only.urls, [THREE[0].url]);
+  // None open: no candidates, and the caller is told why.
+  assert.equal(prScopeModel([THREE[2]], "selfReview").candidates.length, 0);
+  assert.equal(prScopeSuffix(THREE, "selfReview"), "…");
 });
 
 test("a respond round pre-ticks the PRs that actually have threads waiting", () => {

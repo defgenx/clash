@@ -24,11 +24,13 @@
 //     is "the answer the button already promised", because that is the right
 //     answer for the single-PR case and the one nobody has to think about. In
 //     practice that means the primary alone (the item's own PR, and the only
-//     one whose state moves the item), with two deliberate exceptions: `open`
-//     is read-only and its label promises every PR, and `respond` advertises
-//     the item's whole unanswered count, so it pre-checks every PR that has
-//     threads waiting. It is never a *linked* repository by default outside
-//     those two — announcing a second repo is what you tick deliberately.
+//     one whose state moves the item), with three deliberate exceptions:
+//     `open` is read-only and its label promises every PR, `respond`
+//     advertises the item's whole unanswered count, so it pre-checks every PR
+//     that has threads waiting, and `selfReview` reviews the change the item
+//     *is* — every open PR of it — before it goes to anyone else. It is never
+//     a *linked* repository by default outside those three — announcing a
+//     second repo is what you tick deliberately.
 //
 // `app.js` holds the dialog; the same shape as `wf-prs.js`, which this module
 // takes its PR records from (`itemPrs`).
@@ -74,14 +76,6 @@
       detail: "The same round comment on each. No agent, no tokens.",
       candidates: () => true,
     },
-    review: {
-      message: "Review which pull requests?",
-      allLabel: (n) => `All ${n} pull requests`,
-      okLabel: "Continue",
-      detail:
-        "One round reads every PR you pick — a cross-repo change is one change, and reviewing half of it misses the contract between the halves.",
-      candidates: () => true,
-    },
     respond: {
       message: "Answer review comments on which pull requests?",
       allLabel: (n) => `All ${n} pull requests`,
@@ -96,6 +90,19 @@
       // A reply is not a release, so there is nothing here to announce
       // accidentally.
       defaultWaiting: true,
+    },
+    selfReview: {
+      message: "Self-review which pull requests?",
+      allLabel: (n) => `All ${n} open pull requests`,
+      okLabel: "Continue",
+      detail:
+        "One round reviews every PR you pick and posts a verdict on each — a cross-repo change is one change, and judging half of it misses the contract between the halves.",
+      // A verdict on a merged or closed PR approves nothing.
+      candidates: prLive,
+      empty: "None of this item's pull requests is still open — there is nothing to post a verdict on.",
+      // The round's subject is the whole change, and its button says how many
+      // PRs that is. Posting is still confirmed: the composer follows.
+      defaultAll: true,
     },
   };
 

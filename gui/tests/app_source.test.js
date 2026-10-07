@@ -603,7 +603,7 @@ test("a review round's PR scope is a row in the composer, not a second dialog", 
   const composer = extractFunction(APP, "wfComposeReviewRound");
   assert.ok(composer.includes("model.prScope"), "the composer must render the scope group");
   assert.ok(composer.includes("prs: itemPrs(item.meta)"), "the model needs the item's PRs");
-  assert.ok(composer.includes("prUrls: scopeUrls()"), "the launch payload must carry the picks");
+  assert.ok(composer.includes("prUrls: scope ? scopeUrls()"), "the launch payload must carry the picks");
   // The scope is a SET — checkboxes, not radios: a cross-repo change is one
   // change, and reviewing the API PR without the web PR that consumes it
   // leaves the contract between them unchecked.
@@ -857,7 +857,8 @@ test("every workflow start names its agent, and an unavailable one is greyed", (
   // Asked only under `ask`: otherwise every start runs on the set agent.
   const pick = extractFunction(APP, "pickWfAgent");
   assert.match(pick, /if \(!wfAgentAsks\(item\.meta\.agentSetting, settings\)\)/);
-  assert.match(extractFunction(APP, "wfAgentSelect"), /\.hidden = !asks;/);
+  assert.match(extractFunction(APP, "wfAgentSelect"), /sel\.hidden = !asks;/);
+  assert.match(extractFunction(APP, "wfAgentGroup"), /fs\.hidden = !asks;/);
   // Shown, not hidden: the picker disables a missing binary with its reason.
   assert.match(APP, /disabled: !c\.available,/);
   assert.match(APP, /o\.disabled = !c\.available;/);
@@ -870,20 +871,40 @@ test("every user-facing reload goes through the busy-session confirm", () => {
   assert.match(APP, /return s \? reloadSessionInteractive\(s\) : reloadSession\(sid\);/);
 });
 
-test("the self-review needs a PR and a built change, and has no local fallback", () => {
+test("the self-review needs an open PR and a built change, and has no local fallback", () => {
+  const gate = extractFunction(APP, "wfCanSelfReview");
+  assert.match(gate, /if \(!wfCanReview\(item\)\) return false;/);
+  assert.match(gate, /\["draft", "plan-review"\]\.includes\(item\.meta\.status\)/);
+  // It posts a verdict, so no open PR means no button — but no plan is fine:
+  // review-only items are its most common customer.
+  assert.match(gate, /prActionCandidates\(itemPrs\(item\.meta\), "selfReview"\)\.length > 0/);
+  assert.doesNotMatch(gate, /hasPlan/);
   const btn = extractFunction(APP, "renderWfActions");
   const self = btn.slice(btn.indexOf("const selfReviewButton ="));
-  assert.match(self, /if \(!wfCanReview\(item\)\) return;/);
-  // It posts a verdict, so no PR means no button — but no plan is fine:
-  // review-only items are its most common customer.
-  assert.match(self, /if \(!itemPrs\(item\.meta\)\.length\) return;/);
-  assert.doesNotMatch(self.slice(0, self.indexOf("add(")), /hasPlan/);
-  assert.match(self, /\["draft", "plan-review"\]\.includes\(st\)/);
-  assert.match(self, /launchWfReview\(item, root, \{ target: "self-review" \}\)/);
+  assert.match(self, /if \(!wfCanSelfReview\(item\)\) return;/);
+  assert.match(self, /launchWfSelfReview\(item, root\)/);
   assert.match(self, /Self-review/);
   assert.equal((APP.match(/^\s*selfReviewButton\(\);$/gm) || []).length, 1);
   // The no-PR recovery must not offer a local self-review: the backend forces
   // it back onto the PR, so that choice would loop.
   const spawn = extractFunction(APP, "spawnWfReview");
   assert.match(spawn, /\.\.\.\(selfReview \? \[\] : \[\{ label: "Run the round locally instead"/);
+});
+
+test("a self-review asks which PRs like every PR action, then which agent", () => {
+  // The scope is the shared dialog's answer — all open PRs, or some — and
+  // reaches the backend as the round's PR set.
+  const launch = extractFunction(APP, "launchWfSelfReview");
+  assert.match(launch, /scope \|\| \(await pickPrScope\(item, "selfReview"\)\)/);
+  assert.match(launch, /target: "self-review", prUrls: sel\.urls/);
+  // Every surface goes through that one launcher, the per-PR menu included.
+  assert.doesNotMatch(APP, /launchWfReview\(item, root, \{ target: "self-review" \}\)/);
+  assert.match(extractFunction(APP, "wfPrMenu"), /launchWfSelfReview\(item, root, \{ scope \}\)/);
+  // The composer carries the picked PRs through, and asks the agent as one of
+  // its groups rather than a dropdown under the fold.
+  const compose = extractFunction(APP, "wfComposeReviewRound");
+  assert.match(compose, /t === "self-review" \? prUrls \|\| \[\] : \[\]/);
+  assert.match(compose, /const agentGroup = wfAgentGroup\(item\);/);
+  assert.match(compose, /agent: agentGroup\.value\(\),/);
+  assert.doesNotMatch(compose, /wfAgentSelect/);
 });

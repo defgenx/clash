@@ -657,6 +657,12 @@ reviewer who raised it, and decisions settled in the discussion are respected.
 Every summary opens with a note saying it is an automated review,
 and every line comment is marked 🤖.
 
+On an item with several PRs, the click asks which of the open ones to review,
+with all of them ticked; one round then posts a verdict on each. A PR's own
+right-click menu offers *Self-review* for that PR alone. Like every review
+composer, it then asks which agent runs the round (Claude Code or OMP) unless
+the agent setting fixes one.
+
 It needs a PR, not a plan, so review-only items get it too. GitHub doesn't let
 a PR's author approve or request changes on it, and a draft takes no review, so
 in those cases the verdict is posted as a comment that states it. The findings
@@ -1011,7 +1017,8 @@ step — plan, implement, change rounds, reviews, answering PR comments,
 explanations, drift, shares — follows one setting: the item's ⚙ Settings tab,
 else `workflows.agent` (`ask` by default, or `claude` / `omp`). A fixed agent
 runs every step unasked; `ask` asks at every start — a picker for one-click
-starts, a *Run on* row in the review and change-request composers —
+starts, a *Which agent runs it?* group in the review composer (code review,
+drift, self-review) and a *Run on* row in the change-request composer —
 pre-selecting the agent the item last ran on, which is also what a relaunch
 or an auto-applied round uses without asking. An agent whose binary does not
 resolve is greyed out with the reason, in these pickers and in the

@@ -612,6 +612,16 @@ human first. Here the post *is* the output, so:
   (never at `draft`/`plan-review`), and at least one PR on the item — but no
   plan (`needs_plan` is false): `review-only` items are its most common
   customer. In practice `diff-review`, `pr-draft`, `pr-ready`.
+- **Its scope is a set of the item's open PRs, asked like every PR action.**
+  The click goes through `pickPrScope(item, "selfReview")` — the same
+  multi-select as *Open PRs* / *Mark ready* / *Answer comments*, with an
+  "All N" toggle — whose candidates are the live PRs (a verdict on a merged
+  one approves nothing) and whose default is **all of them**, because the
+  round's subject is the whole change. One open PR asks nothing. The pick
+  rides `meta.review.pr_urls` and the kickoff's `PR:` line, and the skill
+  posts one verdict per PR; the composer that follows states the set instead
+  of asking it again. Each PR chip's menu offers *Self-review <pr>…* with
+  that PR pre-picked.
 - **It loops.** One reading of a PR finds what that reading looked for, so the
   skill runs a Ralph loop over a ledger **outside the item directory**
   (`$TMPDIR/clash-pr-review/<owner>-<repo>-<n>-<sha7>/ledger.md` — the item
