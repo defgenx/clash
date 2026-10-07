@@ -172,11 +172,12 @@ test("PR-identity errors recover in place instead of dead-ending", () => {
   assert.match(APP, /async function wfPrRecovery\(item, err, retry\)/);
   assert.match(APP, /msg\.startsWith\("pr-number-unknown:"\)/);
   // Every surface that demands a PR identity goes through the recovery:
-  // Mark ready, Post round to PR, and the review-round launcher.
+  // Mark ready, Post round to PR, and a check run's failed pass.
   const uses = APP.match(/await wfPrRecovery\(/g) || [];
   assert.ok(uses.length >= 3, `expected ≥3 wfPrRecovery call sites, got ${uses.length}`);
-  // The launcher's no-pr path offers the local downgrade, not just attach.
-  assert.match(APP, /Run the round locally instead/);
+  // A run's no-pr failure offers the local downgrade, not just attach.
+  assert.match(extractFunction(APP, "wfRunRecover"), /Run it locally instead/);
+  assert.match(extractFunction(APP, "wfRunRecover"), /op: "local", pass: i/);
 });
 
 test("a dismissed composer keeps the draft", () => {
@@ -375,51 +376,81 @@ test("the plan has one version reader, not three views", () => {
   assert.equal(hunks.length, 1, "the unified-diff colouring must exist once");
 });
 
-test("a pre-authorized round applies itself through the same one mechanism", () => {
-  // Two entry points — the button and the hand-back — must not become two
-  // implementations, or one of them ends up skipping the snapshot that
-  // versions the plan.
-  assert.match(APP, /async function wfRecordAndRevise\(item, root, note, agent = undefined\)/);
-  // The no-click path must not stop to ask which agent: it keeps the item's.
-  assert.match(APP, /wfRecordAndRevise\(item, root, note, null\)/);
+test("a check run's findings are applied through the one change-round mechanism", () => {
+  // Two entry points — the button and the pre-authorized run — must not
+  // become two implementations, or one of them ends up skipping the snapshot
+  // that versions the plan.
+  assert.match(
+    APP,
+    /async function wfRecordAndRevise\(item, root, note, agent = undefined, appliedKeys = null\)/
+  );
   const mech = APP.slice(
     APP.indexOf("async function wfRecordAndRevise("),
-    APP.indexOf("// Items whose auto-apply is in flight")
+    APP.indexOf("// ── Check runs (the driver)")
   );
   assert.match(mech, /invoke\("workflow_request_changes"/);
+  // Stamping the run's keys in the request's own meta write is what closes
+  // the run as applied.
+  assert.match(mech, /park: null,\n\s+appliedKeys,/);
   assert.match(mech, /launchWfAgent\(fresh, changeRoundPhase\(item\.meta\.status\)/);
-  // Exactly one caller composes the note, and both paths use it.
-  assert.match(APP, /async function wfApplyReviewNoteFor\(item, round, target\)/);
-  // def + the button, the pre-authorized hand-back and autopilot.
-  assert.equal((APP.match(/wfRecordAndRevise\(/g) || []).length, 4);
-  // The auto path is guarded against a doubled hand-back event, and gated by
-  // the pure rule rather than an inline condition.
-  assert.match(APP, /const wfAutoApplying = new Set\(\)/);
-  assert.match(APP, /if \(!item \|\| !shouldAutoApply\(item, review\)\) return false;/);
-  // The pre-authorized apply runs first; autopilot only when it did nothing.
-  assert.match(APP, /if \(review && \(await wfMaybeAutoApplyReview\(project, slug, review\)\)\) return;\n\s+await wfAutopilot\(project, slug\);/);
-  // And the launch surface passes the checkbox through.
-  assert.match(APP, /autoApply: picked\.autoApply,/);
-  // …and reaches the backend, alongside the round's focus.
-  assert.match(APP, /autoApply,\n\s+focus,\n\s+agent: opts\.agent,\n\s+cols: 120,/);
+  // def + the single-round Apply button + the run's apply.
+  assert.equal((APP.match(/wfRecordAndRevise\(/g) || []).length, 3);
+  const apply = extractFunction(APP, "wfApplyRun");
+  // Claimed before anything is recorded, so two drivers cannot both start the
+  // change round, and handed back to the human when it fails.
+  assert.ok(
+    apply.indexOf('invoke("workflow_run_begin_apply"') < apply.indexOf("wfRecordAndRevise("),
+    "the apply must be claimed before it is recorded"
+  );
+  assert.match(apply, /invoke\("workflow_run_abort_apply"/);
+  assert.match(apply, /combinedApplyNote\(md, keys\)/);
+  // The no-click path keeps the run's agent; only a human click asks.
+  assert.match(apply, /let agent = batch\.agent \|\| null;\n\s+if \(human\) \{/);
+  // Nothing applies from an event any more: a hand-back only advances the
+  // run, which is what makes an apply survive a restart.
+  assert.doesNotMatch(APP, /wfMaybeAutoApplyReview|shouldAutoApply|wfAutoApplying/);
+  // The launch surfaces pass the checkbox through to the run.
+  assert.match(extractFunction(APP, "launchWfReview"), /autoApply: picked\.autoApply,/);
+  assert.match(extractFunction(APP, "wfComposeChecks"), /autoApply: picked\.autoApply,/);
+  assert.match(extractFunction(APP, "wfStartRun"), /invoke\("workflow_run_start", \{[\s\S]*autoApply,/);
 });
 
 test("the recommender owns the primary button and only autopilot acts on it", () => {
   // One owner of "which button is primary": the bar renders, then the
   // recommender picks among what it rendered.
   assert.match(APP, /return wfRenderNextStep\(bar, item\);\n\}/);
-  assert.match(APP, /available: new Set\(buttons\.map\(\(b\) => b\.dataset\.act\)\)/);
-  // Every hand-back reaches autopilot, review or not.
-  assert.match(APP, /wfAfterHandBack\(project, slug, review\);/);
-  assert.match(APP, /wfAfterHandBack\(project, slug, null\);/);
-  // Autopilot is bounded, acts only on non-deciding steps, and a human click
-  // resets its budget.
-  assert.match(APP, /if \(!step \|\| !step\.auto\) return;/);
-  assert.match(APP, /runs >= WF_AUTOPILOT_BUDGET/);
-  assert.match(APP, /wfAutopilotRuns\.delete\(wfKey\(item\.project, item\.slug\)\);/);
-  // The recommender is loaded before app.js reads it.
+  const strip = extractFunction(APP, "wfRenderNextStep");
+  assert.match(strip, /available: new Set\(buttons\.map\(\(b\) => b\.dataset\.act\)\)/);
+  // A run in flight is the next step, and nothing is recommended over it.
+  assert.match(strip, /if \(item\.run\) \{\n\s+bar\.prepend\(wfRunStrip\(item\)\);\n\s+return null;/);
+  // Checks are recommended as a set the strip can untick, never one by one.
+  assert.match(strip, /passes: ctx\.canReview \? new Set\(availablePasses\(ctx\)\) : null/);
+  assert.match(strip, /recommendedSelection\(step, wfStaleExplanations\(item\)\)/);
+  // Every hand-back advances the item's run first, then reaches autopilot.
+  assert.equal((APP.match(/^\s*wfAfterHandBack\(project, slug\);$/gm) || []).length, 2);
+  assert.match(
+    extractFunction(APP, "wfAfterHandBack"),
+    /await wfDriveRun\(project, slug\);\n\s+await wfAutopilot\(project, slug\);/
+  );
+  // Runs resume without an event: every workflow refresh drives the open ones,
+  // and boot refreshes the list even with the Workflows section collapsed.
+  assert.match(extractFunction(APP, "refreshWorkflows"), /wfScheduleRunDrives\(\);/);
+  const boot = APP.slice(APP.indexOf("await restoreWorkspaceSessions();"), APP.indexOf("frontend booted: "));
+  assert.match(boot, /\n\s+await refreshWorkflows\(\);/);
+  // Autopilot is bounded by a budget kept on disk, starts only checks that
+  // post nothing, never while a run is open, and a human click resets it.
+  const auto = extractFunction(APP, "wfAutopilot");
+  assert.match(auto, /if \(!item \|\| item\.run\) return;/);
+  assert.match(auto, /if \(!step \|\| step\.kind !== "check"\) return;/);
+  assert.match(auto, /autopilotSelection\(/);
+  assert.match(auto, /\(item\.autopilotSteps \|\| 0\) >= WF_AUTOPILOT_BUDGET/);
+  assert.match(auto, /autoApply: true,\n\s+agent: null,\n\s+by: "autopilot",/);
+  assert.doesNotMatch(APP, /wfAutopilotRuns/);
+  assert.match(APP, /invoke\("workflow_run_reset_autopilot"/);
+  // The recommender and the catalogue are loaded before app.js reads them.
   const html = fs.readFileSync(path.join(__dirname, "../dist/index.html"), "utf8");
-  assert.ok(html.indexOf("wf-next.js") > 0 && html.indexOf("wf-next.js") < html.indexOf("app.js"));
+  for (const mod of ["wf-next.js", "wf-checks.js"])
+    assert.ok(html.indexOf(mod) > 0 && html.indexOf(mod) < html.indexOf("app.js"), mod);
 });
 
 test("a session share hands off without leaking credentials or the payload's shape", () => {
@@ -451,18 +482,22 @@ test("explain runs alongside other agents, gated only on its own artifact", () =
   // It judges nothing and writes only its own document pair, so neither "is
   // this parked on my decision" nor "is another agent working" is its gate —
   // only canExplain (wf-plan.js, mirroring WorkflowStatus::can_explain).
-  const bar = APP.slice(
-    APP.indexOf("const explainButtons = () => {"),
-    APP.indexOf("const driftButton = () => {")
-  );
-  assert.match(bar, /if \(!canExplain\(item, target\)\) return;/);
-  assert.doesNotMatch(bar, /WF_WORKING|wfCanReview/);
+  const ctx = extractFunction(APP, "wfChecksCtx");
+  assert.match(ctx, /planned && canExplain\(item, "explain-plan"\) && !runningExplainer\(item, "explain-plan"\)/);
+  assert.match(ctx, /canExplainDiff: canExplain\(item, "explain-diff"\) && !runningExplainer\(item, "explain-diff"\)/);
+  // A run in flight still offers them on their own, beside it.
+  assert.match(extractFunction(APP, "wfSoloChecks"), /\.filter\(\(id\) => !item\.run \|\| explains\(id\)\)/);
   // A running explainer is its own button, beside whatever else is offered.
+  const bar = APP.slice(
+    APP.indexOf("const explainRunning = () => {"),
+    APP.indexOf("// The item's PRs are one set")
+  );
   assert.match(bar, /runningExplainer\(item, target\)/);
   assert.match(bar, /openSession\(running\.sessionId\)/);
   assert.match(bar, /endWfExplainer\(item, root, target\)/);
   // Called once, outside the switch — not remembered per case.
-  assert.equal((APP.match(/^\s*explainButtons\(\);$/gm) || []).length, 1);
+  assert.equal((APP.match(/^\s*explainRunning\(\);$/gm) || []).length, 1);
+  assert.equal((APP.match(/^\s*checkButtons\(\);$/gm) || []).length, 1);
   // Its finish changes no status, so the list refresh announces it.
   const refresh = APP.slice(
     APP.indexOf("async function refreshWorkflows() {"),
@@ -513,20 +548,17 @@ test("each workflow document says what it is", () => {
 test("the drift round is gated and applied as a review, never as an explainer", () => {
   // It grades each divergence and files the problems as annotations, so its
   // findings have to reach the executor through the same Request-changes
-  // mechanism as any other round. Gating it like an explainer would offer it
-  // where no decision is parked, and marking it `explains()` would exempt it
-  // from the pending-round machinery that puts "Apply review" on the item.
-  const btn = extractFunction(APP, "renderWfActions");
-  const drift = btn.slice(btn.indexOf("const driftButton ="));
-  assert.match(drift, /if \(!wfCanReview\(item\)\) return;/);
-  // Both sides of the comparison must exist: a review-only item has no plan,
-  // and nothing is built before plan-review hands back.
-  assert.match(drift, /!wfHasPlanPhase\(item\) \|\| !item\.hasPlan/);
-  assert.match(drift, /\["draft", "plan-review"\]\.includes\(st\)/);
-  // It goes through the shared composer with the target pinned, so depth,
-  // publish, interaction and auto-apply are the same four questions as any
-  // other round rather than a second dialog that drifts from it.
-  assert.match(drift, /launchWfReview\(item, root, \{ target: "drift" \}\)/);
+  // mechanism as any other round. Its gates are pinned against the real code
+  // in wf_drift_smoke.test.js; here, only how it launches.
+  //
+  // Standalone it goes through the shared composer with the target pinned,
+  // so depth, publish, interaction and auto-apply are the same questions as
+  // any other round rather than a second dialog that drifts from it.
+  assert.match(extractFunction(APP, "wfSoloChecks"), /drift: \(\) => launchWfReview\(item, root, \{ target: "drift" \}\)/);
+  // …and that composer starts a one-pass check run, the pass named by target.
+  const launch = extractFunction(APP, "launchWfReview");
+  assert.match(launch, /opts\.target === "drift" \|\| opts\.target === "self-review" \? opts\.target : "review"/);
+  assert.match(launch, /await wfStartRun\(item, passes,/);
   // The pure side must not treat it as an explanation.
   const plan = fs.readFileSync(
     path.join(__dirname, "..", "dist", "wf-plan.js"),
@@ -534,8 +566,6 @@ test("the drift round is gated and applied as a review, never as an explainer", 
   );
   const isExplain = extractFunction(plan, "isExplainTarget");
   assert.doesNotMatch(isExplain, /drift/);
-  // Called once, outside the status switch — the same lesson as explain.
-  assert.equal((APP.match(/^\s*driftButton\(\);$/gm) || []).length, 1);
 
   // Its own tab, dispatched from the sub-view router. `renderWfPlanView`
   // shipped defined-but-never-dispatched once and the whole reader was dead
@@ -638,19 +668,16 @@ test("the two explanations are separate, and each has two forms", () => {
   // The plan and the diff are different artifacts: "what this is going to do"
   // and "what it did" are both worth keeping, so a round on one never
   // overwrites the other's documents.
-  const btn = APP.slice(
-    APP.indexOf("const explainButtons = () => {"),
-    APP.indexOf("// Available from every state holding a reviewable artifact")
-  );
-  assert.match(btn, /target: plan \? "explain-plan" : "explain-diff",/);
-  assert.match(btn, /"◫ Explain plan again",\s*"◫ Explain plan",/);
-  assert.match(btn, /"◫ Explain changes again",\s*"◫ Explain changes",/);
+  const solo = extractFunction(APP, "wfSoloChecks");
+  assert.match(solo, /"explain-plan": \(\) => wfLaunchExplain\(item, root, "explain-plan"\)/);
+  assert.match(solo, /"explain-diff": \(\) => wfLaunchExplain\(item, root, "explain-diff"\)/);
+  // Running one again says so.
+  assert.match(solo, /wfExplainAny\(again\[id\]\) \? " again" : ""/);
   // The plan explanation needs a plan; the diff one needs a diff to exist —
   // the latter is canExplain's rule (wf_plan.test.js pins it).
-  assert.match(btn, /wfHasPlanPhase\(item\) && item\.hasPlan/);
-  assert.match(btn, /canExplain\(item, target\)/);
+  assert.match(extractFunction(APP, "wfChecksCtx"), /const planned = wfHasPlanPhase\(item\) && !!item\.hasPlan;/);
   // A focus is asked per run and rides the round — no stored verdict state.
-  assert.match(btn, /focus: focus\.trim\(\) \|\| null,/);
+  assert.match(extractFunction(APP, "wfLaunchExplain"), /spawnWfExplainer\(item, root, target, focus\.trim\(\) \|\| null\)/);
 
   // One tab per artifact, each dispatched from the sub-view router.
   assert.match(APP, /\["explainPlan", "◫ Plan explained"\]/);
@@ -727,9 +754,10 @@ test("a launch narrates its set-up instead of just spinning", () => {
   // for anyone whose branch name was taken.
   assert.match(launch, /return await launchWfAgent\(item, phase, root, name, opts\)/);
 
-  // The other two launches carry the same line — a review round (same
-  // sequence minus the worktree) and a worktree session (the same checkout).
-  for (const fn of ["spawnWfReview", "createSession"]) {
+  // The other launches carry the same line — a check run and an
+  // explanation (same sequence minus the worktree) and a worktree session
+  // (the same checkout).
+  for (const fn of ["wfStartRun", "spawnWfExplainer", "createSession"]) {
     const body = extractFunction(APP, fn);
     assert.match(body, /wfLaunching\.add\(/, `${fn} must report its set-up`);
     assert.match(body, /hideProgress\(\)/, `${fn} must clear its line`);
@@ -773,7 +801,7 @@ test("a second launch of the same item is refused, not reported as a failure", (
   // rebuild in between hands back a fresh, clickable "Start planning". Two
   // agents on one item is what the phase-ownership split forbids, and the
   // second one overwrites the first's sessionId, orphaning a live agent.
-  for (const fn of ["launchWfAgent", "spawnWfReview"]) {
+  for (const fn of ["launchWfAgent", "wfStartRun", "spawnWfExplainer"]) {
     const body = extractFunction(APP, fn);
     assert.match(body, /already-launching:/, `${fn} must recognize the refusal`);
     assert.match(body, /flashToast\(/, `${fn} must say so without alerting`);
@@ -875,20 +903,18 @@ test("the self-review needs an open PR and a built change, and has no local fall
   const gate = extractFunction(APP, "wfCanSelfReview");
   assert.match(gate, /if \(!wfCanReview\(item\)\) return false;/);
   assert.match(gate, /\["draft", "plan-review"\]\.includes\(item\.meta\.status\)/);
-  // It posts a verdict, so no open PR means no button — but no plan is fine:
+  // It posts a verdict, so no open PR means no check — but no plan is fine:
   // review-only items are its most common customer.
   assert.match(gate, /prActionCandidates\(itemPrs\(item\.meta\), "selfReview"\)\.length > 0/);
   assert.doesNotMatch(gate, /hasPlan/);
-  const btn = extractFunction(APP, "renderWfActions");
-  const self = btn.slice(btn.indexOf("const selfReviewButton ="));
-  assert.match(self, /if \(!wfCanSelfReview\(item\)\) return;/);
-  assert.match(self, /launchWfSelfReview\(item, root\)/);
-  assert.match(self, /Self-review/);
-  assert.equal((APP.match(/^\s*selfReviewButton\(\);$/gm) || []).length, 1);
-  // The no-PR recovery must not offer a local self-review: the backend forces
-  // it back onto the PR, so that choice would loop.
-  const spawn = extractFunction(APP, "spawnWfReview");
-  assert.match(spawn, /\.\.\.\(selfReview \? \[\] : \[\{ label: "Run the round locally instead"/);
+  assert.match(extractFunction(APP, "wfChecksCtx"), /canSelfReview: wfCanSelfReview\(item\),/);
+  assert.match(extractFunction(APP, "wfSoloChecks"), /"self-review": \(\) => launchWfSelfReview\(item, root\)/);
+  // The no-PR recovery must not offer a local self-review (or a local reply
+  // to a thread): their output is the post, so that choice would loop.
+  const recover = extractFunction(APP, "wfRunRecover");
+  assert.match(recover, /const local = passIdOf\(p\) === "review" && p\.publish === "pr-comments";/);
+  assert.match(recover, /\.\.\.\(local \? \[\{ label: "Run it locally instead"/);
+  assert.match(recover, /op: "retry", pass: i/);
 });
 
 test("a self-review asks which PRs like every PR action, then which agent", () => {

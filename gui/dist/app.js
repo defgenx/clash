@@ -5346,6 +5346,7 @@ async function refreshWorkflows() {
     );
   }
   renderWorkflows();
+  wfScheduleRunDrives();
 }
 
 function wfItem(project, slug) {
@@ -7092,16 +7093,19 @@ async function launchWfReview(item, root, opts = {}) {
     opts.target === "drift" ? staleExplanations(item, (t) => canExplain(item, t)) : [];
   const picked = await wfComposeReviewRound(item, { ...opts, refresh });
   if (!picked) return;
-  await spawnWfReview(item, root, picked.depth, picked.publish, {
+  // A one-pass check run (plus any explanation refresh ticked alongside), so
+  // a standalone round resumes and applies exactly like a batch of them.
+  const ctx = wfChecksCtx(item);
+  const id = opts.target === "drift" || opts.target === "self-review" ? opts.target : "review";
+  const passes = [
+    passSpec(id, { depth: picked.depth, publish: picked.publish, prUrls: picked.prUrls }, ctx),
+    ...(picked.refresh || []).map((t) => passSpec(t, {}, ctx)),
+  ];
+  await wfStartRun(item, passes, {
     interactive: picked.interactive,
     autoApply: picked.autoApply,
     agent: picked.agent,
-    prUrls: picked.prUrls,
-    // Only set for the rounds with their own button; null leaves the backend
-    // to derive plan-vs-diff from the status, which is where that belongs.
-    target: opts.target || null,
   });
-  await wfRefreshExplanations(item, root, picked.refresh || [], picked.agent);
 }
 
 /// Launch a self-review over the PRs you pick — all of the item's open PRs,
@@ -7120,17 +7124,6 @@ function wfCanSelfReview(item) {
   if (!wfCanReview(item)) return false;
   if (["draft", "plan-review"].includes(item.meta.status)) return false;
   return prActionCandidates(itemPrs(item.meta), "selfReview").length > 0;
-}
-
-/// Start explainer rounds on `targets` alongside whatever the item is doing.
-/// The comparison never waits for them: its ground truth is plan.md and the
-/// diff, and the drift skill ignores an explanation that is not current.
-async function wfRefreshExplanations(item, root, targets, agent) {
-  for (const target of targets) {
-    const fresh = wfItem(item.project, item.slug) || item;
-    if (!canExplain(fresh, target) || runningExplainer(fresh, target)) continue;
-    await spawnWfReview(fresh, root, "standard", "local", { target, agent, interactive: false });
-  }
 }
 
 /// Launch a respond round: the agent reads the PR's review comments, fixes
@@ -7159,9 +7152,7 @@ async function launchWfReviewRespond(item, root, { scope = null } = {}) {
   const known = picked.filter((p) => p.unanswered != null);
   const count = known.length ? known.reduce((n, p) => n + p.unanswered, 0) : null;
   if (!(await uiConfirm(answerCommentsConfirm(prName, count), "Launch"))) return;
-  await spawnWfReview(item, root, "standard", "respond-pr-comments", {
-    prUrls: sel.urls,
-  });
+  await wfStartRun(item, [passSpec("respond", { prUrls: sel.urls }, wfChecksCtx(item))]);
 }
 
 /// Mirror of the backend's `workflow_session_name`: the item title (shortened,
@@ -7173,6 +7164,17 @@ function wfSessionName(item, job) {
   const t = (item.meta.title || "").trim();
   const prefix = t ? (t.length > 28 ? `${t.slice(0, 27)}…` : t) : `wf-${item.slug}`;
   return `${prefix} · ${job}`;
+}
+
+/// Mirrors `application::workflow::review_job` — the tab title for the instant
+/// before the registry name lands, so a spelling of its own shows up as a
+/// flicker of a word nothing else says.
+function wfRoundJob(target, publish) {
+  if (target === "explain-diff") return "explain changes";
+  if (target === "explain-plan") return "explain plan";
+  if (target === "drift") return "plan vs changes";
+  if (target === "self-review") return "self-review";
+  return publish === "respond-pr-comments" ? "answer PR comments" : "review";
 }
 
 /// Recovery for PR-identity errors (`no-pr:` / `pr-number-unknown:` from the
@@ -7205,117 +7207,46 @@ async function wfPrRecovery(item, err, retry) {
   return true;
 }
 
-/// Shared spawn for every review-shaped round (the composer, the "Answer PR
-/// comments" action, and the "Explain changes" structure round), so the
-/// session is registered, named and refreshed identically wherever it starts.
-/// `target` is only ever "structure" — plan/diff stay derived by the backend.
-/// `prUrls` pins the round to those of the item's PRs; empty means the item's
-/// own change (and, for a round that must talk to a forge, its primary PR).
-/// Launch a review round. Everything past `publish` rides an options bag:
-/// `interactive`, `target`, `prUrls`, `autoApply`, `focus` — six positional
-/// arguments with three nulls in the middle told the reader nothing at the
-/// call site.
+/// Launch one explanation round alongside whatever the item is doing, so its
+/// session is registered, named and opened like every other round's. Every
+/// *judging* round goes through a check run instead (`wfStartRun`).
 ///
-/// `focus` is what the round must settle, in the human's words — the
-/// plan explanation's "dive deeper into part 3". Absent, an explainer round
-/// inherits whatever focus the human last recorded, so sending one back for
-/// another look never means retyping it.
-async function spawnWfReview(item, root, depth, publish, opts = {}) {
-  // Same `agent` rule as `launchWfAgent`; resolved once so the recovery
-  // retries below reuse the pick instead of asking again.
-  if (opts.agent === undefined) {
-    const agent = await pickWfAgent(item, opts.target ? "explain" : "review");
-    if (agent === null) return;
-    opts = { ...opts, agent };
-  }
-  const {
-    interactive = null,
-    target = null,
-    prUrls = null,
-    autoApply = false,
-    focus = null,
-  } = opts;
-  // Same status line as the executor launch: a round has the same set-up
-  // sequence minus the worktree, and the spawn alone is long enough that a
-  // bare disabled button reads as nothing happening.
+/// `focus` is what the round must settle, in the human's words — the plan
+/// explanation's "dive deeper into part 3".
+async function spawnWfExplainer(item, root, target, focus) {
+  // Same `agent` rule as `launchWfAgent`.
+  const agent = await pickWfAgent(item, "explain");
+  if (agent === null) return;
+  // Same status line as the executor launch: the spawn alone is long enough
+  // that a bare disabled button reads as nothing happening.
   const key = `${item.project}/${item.slug}`;
   wfLaunching.add(key);
-  showProgress(`Setting up a review round for ${item.meta.title || item.slug}…`);
+  showProgress(`Setting up an explanation for ${item.meta.title || item.slug}…`);
   try {
     const sid = await invoke("start_workflow_review_agent", {
       project: item.project,
       slug: item.slug,
-      depth,
-      publish,
-      interactive,
+      // A focused explanation digs deeper into what it was pointed at.
+      depth: focus ? "deep" : "standard",
+      publish: "local",
+      interactive: null,
       target,
-      prUrls: prUrls && prUrls.length ? prUrls : null,
-      autoApply,
+      prUrls: null,
+      autoApply: false,
       focus,
-      agent: opts.agent,
+      agent,
       cols: 120,
       rows: 40,
     });
-    showProgress("Opening the review session…");
+    showProgress("Opening the explanation session…");
     await refreshSessions();
-    // Mirrors `application::workflow::review_job` — this is the tab title for
-    // the instant before the registry name lands, so a spelling of its own
-    // shows up as a flicker of a word nothing else says.
-    const job =
-      target === "explain-diff"
-        ? "explain changes"
-        : target === "explain-plan"
-          ? "explain plan"
-          : target === "drift"
-            ? "plan vs changes"
-            : target === "self-review"
-              ? "self-review"
-              : publish === "respond-pr-comments"
-                ? "answer PR comments"
-                : "review";
-    await openSession(sid, wfSessionName(item, job));
+    await openSession(sid, wfSessionName(item, wfRoundJob(target, "local")));
     await refreshWorkflows();
     if (root) buildWorkflowView(root, item.project, item.slug);
   } catch (e) {
-    // Over on every branch below — including the ones that open a dialog,
-    // which must not appear over a line claiming the round is still starting.
-    wfLaunching.delete(key);
-    if (!wfLaunching.size) hideProgress();
-    const msg = String(e);
-    if (msg.startsWith("no-pr:")) {
-      // Never a dead end: attach the PR here, downgrade to a local round, or
-      // walk away — the user decides, and work continues either way.
-      // A self-review's output IS the post on the PR, so it has no local
-      // form to fall back to — offering one would launch a round the backend
-      // forces straight back onto the missing PR.
-      const selfReview = target === "self-review";
-      const how = await uiChoice({
-        message: "This item has no pull request recorded, and this round needs one.",
-        detail: selfReview
-          ? "A self-review posts its verdict on the PR — attach it to continue."
-          : "Attach the PR to continue as planned, or keep the findings local for now.",
-        choices: [
-          { label: "Attach PR by URL…", value: "attach", primary: true },
-          ...(selfReview ? [] : [{ label: "Run the round locally instead", value: "local" }]),
-        ],
-      });
-      if (how === "attach") {
-        await wfPrRecovery(item, e, (fresh) =>
-          spawnWfReview(fresh, root, depth, publish, opts)
-        );
-      } else if (how === "local") {
-        // Downgraded to a local round: the PR pick goes with the publish mode
-        // it belonged to.
-        await spawnWfReview(item, root, depth, "local", { ...opts, prUrls: null });
-      }
-      return;
-    }
-    // Nothing failed — a round for this item is already starting.
-    if (msg.includes("already-launching:")) {
-      flashToast("A round for this item is already starting…");
-      return;
-    }
-    uiAlert(`Review launch failed: ${e}`);
+    // Nothing failed — this explanation is already starting.
+    if (String(e).includes("already-launching:")) flashToast("This explanation is already starting…");
+    else uiAlert(`Explanation launch failed: ${e}`);
   } finally {
     wfLaunching.delete(key);
     if (!wfLaunching.size) hideProgress();
@@ -7328,7 +7259,7 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
 /// and reading a plan explanation that shows the wrong shape — that means the
 /// *plan* needs a round, and saying so is the same act as any other change
 /// request, through the same composer and the same snapshotting flow.
-async function wfRequestChanges(item, root, target = "diff", prefill = "") {
+async function wfRequestChanges(item, root, target = "diff", prefill = "", appliedKeys = null) {
   const annotations = target === "plan" ? [] : await wfOpenAnnotations(item);
   const req = await wfComposeChangeRequest({
     item,
@@ -7344,6 +7275,9 @@ async function wfRequestChanges(item, root, target = "diff", prefill = "") {
       slug: item.slug,
       note: req.note || null,
       park: req.park.length ? req.park : null,
+      // A check run's rounds, when the note was composed from them: stamping
+      // them is what closes the run as applied.
+      appliedKeys,
     });
     await refreshWorkflows();
     if (req.launch) {
@@ -7389,7 +7323,7 @@ async function wfApplyReviewNoteFor(item, round, target) {
 /// mechanism behind both ways of applying a review — the button and the
 /// pre-authorized hand-back — so neither can drift into skipping the snapshot
 /// that versions the plan.
-async function wfRecordAndRevise(item, root, note, agent = undefined) {
+async function wfRecordAndRevise(item, root, note, agent = undefined, appliedKeys = null) {
   // Asked before anything is recorded: cancelling must not leave a round
   // queued that nobody launched.
   if (agent === undefined) {
@@ -7401,6 +7335,7 @@ async function wfRecordAndRevise(item, root, note, agent = undefined) {
     slug: item.slug,
     note,
     park: null,
+    appliedKeys,
   });
   await refreshWorkflows();
   const fresh = wfItem(item.project, item.slug) || item;
@@ -7413,109 +7348,577 @@ async function wfRecordAndRevise(item, root, note, agent = undefined) {
   });
 }
 
-// Items whose auto-apply is in flight. The hand-back event can arrive twice
-// for one transition (a refresh racing the watcher), and two executors on one
-// item is two agents editing the same plan.
-const wfAutoApplying = new Set();
+// ── Check runs (the driver) ─────────────────────────────────────────────
+//
+// A run's state is `run.json`; what happens next is recomputed from it by the
+// backend's `workflow_run_step`, which also launches the passes. This half
+// opens the sessions it launched, does the combined apply (its note is
+// composed here, like every apply's) and answers the recoveries that need a
+// human. It is called after every hand-back, at boot and on every workflow
+// refresh, so a run resumes wherever clash stopped. The in-memory sets below
+// only stop this process from doubling a call; the run's own states (and the
+// backend's per-item lock) are what make a crash recoverable.
 
-/// A round that declared `**Apply:** yes` on an item whose launch
-/// pre-authorized it becomes the next change round with no further clicks —
-/// see `shouldAutoApply` for why both signals are required. Loud on purpose:
-/// it spends tokens and moves the item, so it toasts and the executor's
-/// session opens.
-async function wfMaybeAutoApplyReview(project, slug, review) {
-  const key = wfKey(project, slug);
-  if (wfAutoApplying.has(key)) return true;
-  await refreshWorkflows();
-  const item = wfItem(project, slug);
-  if (!item || !shouldAutoApply(item, review)) return false;
-  const round = pendingReviewRound({ ...item, lastAgentReview: review });
-  if (!round) return false;
-  wfAutoApplying.add(key);
+const wfDriving = new Set();
+const wfApplying = new Set();
+// Failed passes whose PR recovery was already offered, so a refresh does not
+// ask again: `<item>#<run>#<pass>#<attempt>`.
+const wfRunAsked = new Set();
+
+/// The bar's own gates, as the check catalogue reads them.
+function wfChecksCtx(item) {
+  const prs = itemPrs(item.meta);
+  const known = prs.filter((p) => p.unanswered != null);
+  const planned = wfHasPlanPhase(item) && !!item.hasPlan;
+  return {
+    status: item.meta.status,
+    canReview: wfCanReview(item),
+    reviewTarget: wfReviewTarget(item),
+    hasPlan: planned,
+    canExplainPlan:
+      planned && canExplain(item, "explain-plan") && !runningExplainer(item, "explain-plan"),
+    canExplainDiff: canExplain(item, "explain-diff") && !runningExplainer(item, "explain-diff"),
+    hasPrs: prs.length > 0,
+    canSelfReview: wfCanSelfReview(item),
+    // Null until some PR's count was fetched: unfetched is not zero.
+    unanswered: known.length ? known.reduce((n, p) => n + p.unanswered, 0) : null,
+  };
+}
+
+/// Explanations describing an older iteration than the item's.
+function wfStaleExplanations(item) {
+  return staleExplanations(item, (t) => canExplain(item, t));
+}
+
+/// Start a check run of `passes` (backend `PassSpec`s). `agent` undefined
+/// asks, like every launch; null keeps the item's.
+async function wfStartRun(item, passes, { interactive = null, autoApply = false, agent, by = "human" } = {}) {
+  if (agent === undefined) {
+    agent = await pickWfAgent(item, "review");
+    if (agent === null) return null;
+  }
+  const key = wfKey(item.project, item.slug);
+  wfLaunching.add(key);
+  const n = passes.length;
+  showProgress(`Starting ${n === 1 ? "a check" : `${n} checks`} on ${item.meta.title || item.slug}…`);
+  let r = null;
   try {
-    const target = item.meta.status === "plan-review" ? "plan" : "diff";
-    flashToast(
-      `${item.meta.title || slug}: round ${round.round} says apply — ${
-        target === "plan" ? "revising the plan" : "starting a fix round"
-      } now`
-    );
-    const note = await wfApplyReviewNoteFor(item, round, target);
-    const root = state.open.get(`view:workflow:${key}`)?.el || null;
-    // No question: a pre-authorized apply runs with no clicks, on the agent
-    // the item was last started on.
-    await wfRecordAndRevise(item, root, note, null);
-    return true;
+    r = await invoke("workflow_run_start", {
+      project: item.project,
+      slug: item.slug,
+      passes,
+      interactive,
+      autoApply,
+      agent: agent || null,
+      by,
+      cols: 120,
+      rows: 40,
+    });
   } catch (e) {
-    // Never silent: the round declared work and clash failed to start it, so
-    // the human has to know the button is theirs again.
-    uiAlert(`Auto-apply of round ${round.round} failed: ${e}`);
-    return true;
+    if (String(e).includes("already-launching:")) flashToast("Checks for this item are already starting…");
+    else uiAlert(`Could not start the checks: ${e}`);
   } finally {
-    wfAutoApplying.delete(key);
+    wfLaunching.delete(key);
+    if (!wfLaunching.size) hideProgress();
+  }
+  if (r) await wfAfterRunStep(item.project, item.slug, r);
+  return r;
+}
+
+/// Advance the item's run, if it has one.
+async function wfDriveRun(project, slug) {
+  const key = wfKey(project, slug);
+  if (wfDriving.has(key)) return;
+  wfDriving.add(key);
+  let r = null;
+  try {
+    r = await invoke("workflow_run_step", { project, slug, cols: 120, rows: 40 });
+  } catch (e) {
+    console.error("workflow_run_step failed:", e);
+  } finally {
+    wfDriving.delete(key);
+  }
+  if (r) await wfAfterRunStep(project, slug, r);
+}
+
+/// Every open run, once the current call stack is done: a workflow refresh
+/// is the cue, and driving from inside it would refresh inside a refresh.
+let wfDrivesQueued = false;
+function wfScheduleRunDrives() {
+  if (wfDrivesQueued) return;
+  wfDrivesQueued = true;
+  setTimeout(() => {
+    wfDrivesQueued = false;
+    for (const it of state.workflows) if (it.run) wfDriveRun(it.project, it.slug);
+  }, 0);
+}
+
+/// Stop, skip, retry or dismiss — `control` is `{ op, pass? }`.
+async function wfRunControl(item, batchId, control) {
+  try {
+    const r = await invoke("workflow_run_control", {
+      project: item.project,
+      slug: item.slug,
+      batch: batchId,
+      control,
+      cols: 120,
+      rows: 40,
+    });
+    await wfAfterRunStep(item.project, item.slug, r);
+  } catch (e) {
+    uiAlert(`The check run could not be updated: ${e}`);
   }
 }
 
-// Autopilot's per-item budget: steps it started since a human last pressed a
-// button on that item. Bounded because a reviewer that keeps answering
-// "apply" would otherwise loop review → fix → review with nobody watching.
-const wfAutopilotRuns = new Map();
+async function wfAfterRunStep(project, slug, r) {
+  if (!r || r.busy) return;
+  const launched = r.launched || [];
+  if (launched.length) {
+    await refreshSessions();
+    const item = wfItem(project, slug) || { slug, meta: {} };
+    for (const l of launched) await openSession(l.sessionId, wfSessionName(item, wfRoundJob(l.target, l.publish)));
+  }
+  if (r.changed || launched.length) {
+    await refreshWorkflows();
+    wfRebuildItemTab(project, slug);
+  }
+  await wfRunRecover(project, slug, r.run && r.run.batch);
+  if (r.action === "apply" && r.run && r.run.batch) await wfApplyRun(project, slug, r.run.batch);
+}
+
+function wfRebuildItemTab(project, slug) {
+  const el = state.open.get(`view:workflow:${wfKey(project, slug)}`)?.el;
+  if (el) buildWorkflowView(el, project, slug);
+}
+
+/// A pass that failed for want of a PR: ask for it and retry, once per
+/// attempt. Any other failure is shown in the strip with Retry / Skip.
+async function wfRunRecover(project, slug, batch) {
+  if (!batch) return;
+  for (const [i, p] of batch.passes.entries()) {
+    if (p.state !== "failed" || !/^(no-pr|pr-number-unknown):/.test(p.error || "")) continue;
+    const ask = `${wfKey(project, slug)}#${batch.id}#${i}#${p.attempts || 0}`;
+    if (wfRunAsked.has(ask)) continue;
+    wfRunAsked.add(ask);
+    const item = wfItem(project, slug);
+    if (!item) return;
+    // Never a dead end: attach the PR and retry, keep the findings local, or
+    // walk away. Only a review that chose to post has a local form — a
+    // self-review's verdict and a reply to a thread *are* the post.
+    const local = passIdOf(p) === "review" && p.publish === "pr-comments";
+    const how = await uiChoice({
+      message: `${passLabel(passIdOf(p), wfChecksCtx(item))} needs a pull request, and this item has none recorded.`,
+      detail: local
+        ? "Attach the PR to continue as planned, or keep this round's findings local."
+        : "Attach the PR to continue — this check exists to talk to it.",
+      choices: [
+        { label: "Attach PR by URL…", value: "attach", primary: true },
+        ...(local ? [{ label: "Run it locally instead", value: "local" }] : []),
+      ],
+    });
+    if (how === "attach") {
+      await wfPrRecovery(item, p.error, (fresh) => wfRunControl(fresh, batch.id, { op: "retry", pass: i }));
+    } else if (how === "local") {
+      await wfRunControl(item, batch.id, { op: "local", pass: i });
+    }
+  }
+}
+
+/// Apply a run's findings as one change round. `human` asks which agent and
+/// offers to edit the note first; the pre-authorized path asks nothing.
+async function wfApplyRun(project, slug, batch, { human = false } = {}) {
+  const key = wfKey(project, slug);
+  if (wfApplying.has(key)) return;
+  const item = wfItem(project, slug);
+  if (!item || !batch.apply || !(batch.apply.keys || []).length) return;
+  wfApplying.add(key);
+  let claimed = false;
+  try {
+    let md = "";
+    try {
+      md = await invoke("get_workflow_doc", { project, slug, doc: "agent-review.md" });
+    } catch (e) {
+      console.error("get_workflow_doc(agent-review.md) failed:", e);
+    }
+    const root = state.open.get(`view:workflow:${key}`)?.el || null;
+    const target = item.meta.status === "plan-review" ? "plan" : "diff";
+    let agent = batch.agent || null;
+    if (human) {
+      const n = batch.apply.keys.length;
+      const pick = await uiChoice({
+        message: `Apply ${n === 1 ? "this check's findings" : `the findings of ${n} checks`}?`,
+        detail:
+          `They become iteration ${(item.meta.iteration || 0) + 1}'s instructions — one change round, ` +
+          `${target === "plan" ? "the plan is versioned first" : "the diff is frozen first"} — and an agent applies them (spends tokens).`,
+        choices: [
+          { label: "Apply now", value: "go", primary: true },
+          { label: "Edit the note first…", value: "edit" },
+        ],
+      });
+      if (!pick) return;
+      if (pick === "edit") {
+        // The composer records it; stamping the keys closes the run as applied.
+        await wfRequestChanges(item, root, target, combinedApplyNote(md, batch.apply.keys), batch.apply.keys);
+        return;
+      }
+      agent = await pickWfAgent(item, changeRoundPhase(item.meta.status));
+      if (agent === null) return;
+    }
+    const keys = await invoke("workflow_run_begin_apply", { project, slug, batch: batch.id });
+    claimed = true;
+    flashToast(
+      `${item.meta.title || slug}: applying ${keys.length === 1 ? "the check's findings" : `${keys.length} checks' findings`} — ${
+        target === "plan" ? "revising the plan" : "starting a fix round"
+      }`
+    );
+    await wfRecordAndRevise(item, root, combinedApplyNote(md, keys), agent, keys);
+  } catch (e) {
+    if (claimed) {
+      await invoke("workflow_run_abort_apply", { project, slug, batch: batch.id, error: String(e) }).catch(
+        () => {}
+      );
+    }
+    uiAlert(`Applying the findings failed: ${e}`);
+  } finally {
+    wfApplying.delete(key);
+  }
+  await wfDriveRun(project, slug);
+}
+
+// Autopilot's per-item budget, kept in run.json so a restart cannot reset it:
+// runs it started since a human last pressed a button on that item. Bounded
+// because a reviewer that keeps answering "apply" would otherwise loop
+// review → fix → review with nobody watching.
 const WF_AUTOPILOT_BUDGET = 3;
 
-/// After an agent hands an item back: a pre-authorized apply first (it is the
-/// human's own instruction), then — under `workflows.assist = autopilot` —
-/// the recommended step, when it is one that decides nothing.
-async function wfAfterHandBack(project, slug, review) {
-  if (review && (await wfMaybeAutoApplyReview(project, slug, review))) return;
+/// After an agent hands an item back: advance its run, then — under
+/// `workflows.assist = autopilot` — start the recommended checks.
+async function wfAfterHandBack(project, slug) {
+  await wfDriveRun(project, slug);
   await wfAutopilot(project, slug);
 }
 
-/// Start the recommended next step without a click. Only `step.auto` actions
-/// qualify (reviews, drift, applying a round that said apply — see
-/// AUTO_ACTIONS in wf-next.js); an approval or anything that posts on GitHub
-/// always stops here. The rounds it launches are autonomous and
-/// pre-authorized to apply, so the loop continues until a reviewer says
-/// there is nothing to apply, a decision is due, or the budget runs out.
+/// Start the recommended checks without a click: the ticked ones that post
+/// nothing, as a run pre-authorized to apply what its rounds say is worth
+/// applying. Approvals, PR flips, change requests and anything posted on
+/// GitHub always wait for a person.
 async function wfAutopilot(project, slug) {
   if (state.wfAssist !== "autopilot") return;
-  const key = wfKey(project, slug);
-  if (wfAutoApplying.has(key)) return;
   await refreshWorkflows();
   const item = wfItem(project, slug);
-  if (!item) return;
-  const root = state.open.get(`view:workflow:${key}`)?.el || null;
+  // A run in flight drives itself.
+  if (!item || item.run) return;
+  const root = state.open.get(`view:workflow:${wfKey(project, slug)}`)?.el || null;
   // The bar decides what is offered; rendering it off-screen reuses every
   // gate instead of restating them here.
   const step = renderWfActions(document.createElement("div"), root, item);
-  if (!step || !step.auto) return;
+  if (!step || step.kind !== "check") return;
+  const picks = autopilotSelection(recommendedSelection(step, wfStaleExplanations(item)));
+  if (!picks.length) return;
   const name = item.meta.title || slug;
-  const runs = wfAutopilotRuns.get(key) || 0;
-  if (runs >= WF_AUTOPILOT_BUDGET) {
-    flashToast(`${name}: autopilot paused after ${runs} steps — your call. Suggested: ${step.reason}`);
+  if ((item.autopilotSteps || 0) >= WF_AUTOPILOT_BUDGET) {
+    flashToast(`${name}: autopilot paused after ${item.autopilotSteps} runs — your call. Suggested: ${step.reason}`);
     return;
   }
-  wfAutopilotRuns.set(key, runs + 1);
-  flashToast(`${name}: autopilot — ${step.reason}`);
-  const auto = { interactive: false, autoApply: true, agent: null };
-  try {
-    if (step.id === "apply-review") {
-      const round = pendingReviewRound(item);
-      const target = item.meta.status === "plan-review" ? "plan" : "diff";
-      wfAutoApplying.add(key);
-      try {
-        await wfRecordAndRevise(item, root, await wfApplyReviewNoteFor(item, round, target), null);
-      } finally {
-        wfAutoApplying.delete(key);
+  const ctx = wfChecksCtx(item);
+  flashToast(`${name}: autopilot — ${picks.map((p) => passLabel(p.id, ctx).toLowerCase()).join(" + ")}`);
+  await wfStartRun(item, picks.map((p) => passSpec(p.id, p.params, ctx)), {
+    interactive: false,
+    autoApply: true,
+    agent: null,
+    by: "autopilot",
+  });
+}
+
+/// Launch one explanation on its own, alongside whatever the item is doing.
+/// Never a check run: an explainer parks nothing and applies nothing, and
+/// `explainers.json` already records it, so there is nothing to resume.
+async function wfLaunchExplain(item, root, target) {
+  const plan = target === "explain-plan";
+  // A focus is optional and per-run: "concentrate on the migration step"
+  // beats re-reading a document that answered everything but that.
+  const focus = await uiPrompt(
+    `Spend tokens: an agent reads ${
+      plan ? "plan.md and the code it will land in" : "the diff and the surrounding code"
+    } and writes two documents — a written explanation with diagrams, and a ` +
+      "graphical HTML overview (boxes, arrows, the repos and features it touches). " +
+      "It runs alongside whatever else this item is doing — nothing is parked or blocked.\n\n" +
+      "Anything specific to concentrate on? (optional)",
+    ""
+  );
+  if (focus === null) return; // cancelled
+  await spawnWfExplainer(item, root, target, focus.trim() || null);
+}
+
+/// The ▾ menu: every check the stage allows, each launched on its own with
+/// its own composer — exactly the standalone round. While a run is in flight
+/// only the explanations, which run alongside it.
+function wfSoloChecks(item, root, ctx) {
+  const launch = {
+    review: () => launchWfReview(item, root),
+    drift: () => launchWfReview(item, root, { target: "drift" }),
+    respond: () => launchWfReviewRespond(item, root),
+    "self-review": () => launchWfSelfReview(item, root),
+    "explain-plan": () => wfLaunchExplain(item, root, "explain-plan"),
+    "explain-diff": () => wfLaunchExplain(item, root, "explain-diff"),
+  };
+  const explains = (id) => id === "explain-plan" || id === "explain-diff";
+  const again = { "explain-plan": item.planExplain, "explain-diff": item.diffExplain };
+  return availablePasses(ctx)
+    .filter((id) => !item.run || explains(id))
+    .map((id) => ({
+      label: `${passLabel(id, ctx)}${explains(id) && wfExplainAny(again[id]) ? " again" : ""}…`,
+      hint: passBadge(id),
+      action: launch[id],
+    }));
+}
+
+/// The PRs a pass reads by default — the same rule the scope dialog
+/// pre-ticks, so a run started from a chip promises what the dialog would.
+function wfDefaultPrUrls(item, action) {
+  const model = prScopeModel(itemPrs(item.meta), action);
+  if (!model.candidates.length) return [];
+  return model.needed ? model.rows.filter((r) => r.checked).map((r) => r.url) : model.only.urls;
+}
+
+/// The checklist: every check the stage allows, the recommended ones ticked
+/// (never one that posts), each with its own options. Any subset runs as one
+/// check run; "only this" runs one row on its own.
+async function wfComposeChecks(item, { preselect = null } = {}) {
+  const ctx = wfChecksCtx(item);
+  const ids = availablePasses(ctx).filter(() => ctx.canReview);
+  if (!ids.length) return;
+  const step = wfNextStep(item, {
+    available: new Set(),
+    passes: new Set(ids),
+    pending: pendingReviewRound(item),
+    prs: itemPrs(item.meta),
+    hasPlan: ctx.hasPlan,
+  });
+  const rec = recommendedSelection(step, wfStaleExplanations(item));
+  const ticked = new Set(preselect || rec.filter((r) => r.ticked).map((r) => r.id));
+  const reasons = Object.fromEntries(rec.map((r) => [r.id, r.reason]));
+  const recParams = Object.fromEntries(rec.map((r) => [r.id, r.params || {}]));
+
+  const picked = await new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "dialog-backdrop";
+    const box = document.createElement("div");
+    box.className = "dialog-box wf-review wf-checks";
+    const msg = document.createElement("p");
+    msg.textContent = `Check “${item.meta.title || item.slug}”`;
+    const intro = document.createElement("p");
+    intro.className = "dialog-detail";
+    intro.textContent =
+      "Ticked checks run as one check run over this iteration: explanations alongside, the rest one after another over the same code. " +
+      "Their findings become one change round. A restart resumes the run where it stopped.";
+    box.append(msg, intro);
+    const body = document.createElement("div");
+    body.className = "wf-review-body";
+    box.appendChild(body);
+
+    const rows = [];
+    const mkSelect = (options, value) => {
+      const sel = document.createElement("select");
+      for (const [v, label] of options) {
+        const o = document.createElement("option");
+        o.value = v;
+        o.textContent = label;
+        sel.appendChild(o);
       }
-    } else if (step.id === "drift") {
-      await spawnWfReview(item, root, "standard", "local", { ...auto, target: "drift" });
-      const stale = staleExplanations(item, (t) => canExplain(item, t)).map((r) => r.target);
-      await wfRefreshExplanations(item, root, stale, null);
-    } else {
-      await spawnWfReview(item, root, step.params.depth || "standard", "local", auto);
+      sel.value = value;
+      return sel;
+    };
+    for (const id of ids) {
+      const row = document.createElement("div");
+      row.className = "wf-check-row";
+      const head = document.createElement("label");
+      head.className = "wf-review-opt";
+      const box2 = document.createElement("input");
+      box2.type = "checkbox";
+      box2.checked = ticked.has(id);
+      const text = document.createElement("span");
+      text.className = "wf-review-opt-text";
+      const label = document.createElement("span");
+      label.className = "wf-review-opt-label";
+      label.textContent = passLabel(id, ctx);
+      const badge = document.createElement("span");
+      badge.className = "wf-check-badge";
+      badge.textContent = passBadge(id);
+      label.appendChild(badge);
+      const detail = document.createElement("span");
+      detail.className = "wf-review-opt-detail";
+      const prs = itemPrs(item.meta);
+      detail.textContent = reasons[id]
+        ? `Suggested — ${reasons[id]}`
+        : id === "respond"
+          ? answerCommentsTitle(ctx.unanswered, prs.length > 1 ? `${prs.length} PRs` : "the PR")
+          : passDetail(id, ctx);
+      text.append(label, detail);
+      head.append(box2, text);
+      const only = document.createElement("button");
+      only.className = "wf-check-only";
+      only.textContent = "Run only this →";
+      head.appendChild(only);
+      row.appendChild(head);
+
+      const opts = document.createElement("div");
+      opts.className = "wf-check-opts";
+      const read = {};
+      if (id === "review") {
+        const depth = mkSelect(
+          [
+            ["standard", "Standard — the artifact and what it names"],
+            ["deep", "Deep — trace the subsystems it touches"],
+          ],
+          recParams.review && recParams.review.depth === "deep" ? "deep" : "standard"
+        );
+        opts.appendChild(depth);
+        read.depth = () => depth.value;
+        if (wfHasPr(item) && ctx.reviewTarget === "diff") {
+          const publish = mkSelect(
+            [
+              ["local", "Findings stay here"],
+              ["pr-comments", "Also post them on the PR"],
+            ],
+            "local"
+          );
+          opts.appendChild(publish);
+          read.publish = () => publish.value;
+        }
+      } else if (id === "explain-plan" || id === "explain-diff") {
+        const focus = document.createElement("input");
+        focus.type = "text";
+        focus.placeholder = "Anything to concentrate on? (optional)";
+        opts.appendChild(focus);
+        read.focus = () => focus.value;
+      } else if (id === "respond" || id === "self-review") {
+        const action = id === "respond" ? "respond" : "selfReview";
+        let urls = wfDefaultPrUrls(item, action);
+        const line = document.createElement("span");
+        line.className = "wf-check-scope";
+        const show = () => (line.textContent = `PRs: ${prScopeSummary({ urls, all: false }, itemPrs(item.meta))}`);
+        show();
+        opts.appendChild(line);
+        if (itemPrs(item.meta).length > 1) {
+          const change = document.createElement("button");
+          change.textContent = "Change…";
+          change.onclick = async () => {
+            const sel = await pickPrScope(item, action, { selected: urls });
+            if (sel && sel.urls.length) {
+              urls = sel.urls;
+              show();
+            }
+          };
+          opts.appendChild(change);
+        }
+        read.prUrls = () => urls;
+      }
+      if (opts.childNodes.length) row.appendChild(opts);
+      const sync = () => {
+        opts.hidden = !box2.checked;
+        row.classList.toggle("on", box2.checked);
+      };
+      box2.addEventListener("change", () => {
+        sync();
+        syncRun();
+      });
+      sync();
+      body.appendChild(row);
+      const spec = () =>
+        passSpec(
+          id,
+          Object.fromEntries(Object.entries(read).map(([k, f]) => [k, f()])),
+          ctx
+        );
+      rows.push({ id, box: box2, spec });
+      only.onclick = (e) => {
+        e.preventDefault();
+        submit([rows.find((r) => r.id === id)]);
+      };
     }
-  } catch (e) {
-    uiAlert(`Autopilot could not start the next step for ${name}: ${e}`);
-  }
+
+    const agentGroup = wfAgentGroup(item);
+    body.appendChild(agentGroup.fs);
+    const how = document.createElement("label");
+    how.className = "wf-check-shared";
+    how.textContent = "How the rounds run ";
+    const interaction = mkSelect(
+      [
+        ["ask", "Ask in each session"],
+        ["interactive", "Interactive — triage with me"],
+        ["autonomous", "Autonomous"],
+      ],
+      ["interactive", "autonomous"].includes(item.meta.interactionDefault)
+        ? item.meta.interactionDefault
+        : "ask"
+    );
+    how.appendChild(interaction);
+    body.appendChild(how);
+    const applyRow = document.createElement("label");
+    applyRow.className = "wf-review-opt wf-review-apply";
+    const applyBox = document.createElement("input");
+    applyBox.type = "checkbox";
+    applyBox.checked = !!(item.meta.review && item.meta.review.autoApply);
+    const applyText = document.createElement("span");
+    applyText.className = "wf-review-opt-text";
+    const applyLabel = document.createElement("span");
+    applyLabel.className = "wf-review-opt-label";
+    applyLabel.textContent = "Apply the findings when the run finishes";
+    const applyDetail = document.createElement("span");
+    applyDetail.className = "wf-review-opt-detail";
+    applyDetail.textContent =
+      "One change round for every round that says its findings are worth applying. Rounds that say nothing or no wait for you.";
+    applyText.append(applyLabel, applyDetail);
+    applyRow.append(applyBox, applyText);
+    body.appendChild(applyRow);
+
+    const done = (val) => {
+      backdrop.remove();
+      resolve(val);
+      if (typeof fitAll === "function") fitAll();
+    };
+    const submit = (chosen) => {
+      if (!chosen.length) return;
+      done({
+        passes: chosen.map((r) => r.spec()),
+        interactive: interactiveParam(interaction.value),
+        autoApply: applyBox.checked,
+        agent: agentGroup.value(),
+      });
+    };
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.onclick = () => done(null);
+    const run = document.createElement("button");
+    run.className = "primary";
+    const syncRun = () => {
+      const n = rows.filter((r) => r.box.checked).length;
+      run.disabled = n === 0;
+      run.textContent = n === 1 ? "Run 1 check" : `Run ${n} checks`;
+    };
+    syncRun();
+    run.onclick = () => submit(rows.filter((r) => r.box.checked));
+    actions.append(cancel, run);
+    box.appendChild(actions);
+    backdrop.appendChild(box);
+    if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
+    document.body.appendChild(backdrop);
+    wireBackdropDismiss(backdrop, () => done(null));
+    backdrop.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") done(null);
+    });
+    setTimeout(() => run.focus(), 0);
+  });
+  if (!picked) return;
+  await wfStartRun(item, picked.passes, {
+    interactive: picked.interactive,
+    autoApply: picked.autoApply,
+    agent: picked.agent,
+  });
 }
 
 /// The share dialog: sections on the left, a live preview on the right, the
@@ -8647,7 +9050,11 @@ function renderWfActions(bar, root, item) {
   // A round that judged its own findings not worth applying is not a reason to
   // demote the stage's approve — there is nothing waiting to be done.
   const pendingRound = pendingReviewRound(item);
-  const reviewPending = !!pendingRound && pendingRound.apply !== false;
+  // A check run whose findings wait for you counts the same way.
+  const runApply = item.run && item.run.apply;
+  const reviewPending =
+    (!!pendingRound && pendingRound.apply !== false) ||
+    !!(runApply && runApply.state === "pending" && !runApply.auto);
   // Three labeled zones instead of one undifferentiated row: actions ON the
   // current step's artifact (reviews, explain, open things — nothing moves),
   // the decisions that ADVANCE the pipeline, and item-lifecycle actions.
@@ -8687,7 +9094,10 @@ function renderWfActions(bar, root, item) {
     // spinner, an async one shows it for exactly as long as it runs. A human
     // click also hands the item back from autopilot's step budget.
     b.onclick = () => {
-      wfAutopilotRuns.delete(wfKey(item.project, item.slug));
+      if (item.autopilotSteps)
+        invoke("workflow_run_reset_autopilot", { project: item.project, slug: item.slug }).catch(
+          () => {}
+        );
       return busyButton(b, () => fn());
     };
     zones[zone].btns.appendChild(b);
@@ -8808,189 +9218,64 @@ function renderWfActions(bar, root, item) {
     );
   };
 
-  // The "read the PR's reviews and deal with them" job, first-class wherever
-  // a reviewable item has a PR. The label carries the unanswered-thread count
-  // from the last PR refresh when it's known, so the button doubles as the
-  // signal that a respond round has work waiting.
-  const answerCommentsButton = () => {
-    // Any PR will do — a linked-only item still has reviewers to answer.
-    const prs = itemPrs(item.meta);
-    if (!wfCanReview(item) || !prs.length) return;
-    const known = prs.filter((p) => p.unanswered != null);
-    const count = known.length ? known.reduce((n, p) => n + p.unanswered, 0) : null;
-    const prName =
-      prs.length > 1
-        ? `${prs.length} PRs (you pick which)`
-        : prs[0].number
-          ? `#${prs[0].number}`
-          : "the PR";
-    add(
-      `⇄ ${answerCommentsLabel(count)}${prScopeSuffix(prs, "respond")}`,
-      "",
-      () => launchWfReviewRespond(item, root),
-      answerCommentsTitle(count, prName),
-      "step",
-      "answer-comments"
-    );
-  };
-
-  // Two explanations, offered separately, because they are about different
-  // artifacts: what the work is *going* to do (from plan.md and the code it
-  // will land in) and what it *did* (from the diff). Each round writes a pair
-  // of documents — a written one and a hand-drawn HTML overview — and never
-  // touches the other artifact's pair.
-  //
-  // Both run ALONGSIDE the item's other agents (a plan review, the
-  // implementation): an explainer never parks the item, so the gate is only
-  // "is my artifact settled" (canExplain), and a running one shows as its own
-  // button next to whatever else the item is doing.
-  const explainButtons = () => {
-    const launch = async (which) => {
-      const plan = which === "plan";
-      // A focus is optional and per-run: "concentrate on the migration step"
-      // beats re-reading a document that answered everything but that.
-      const focus = await uiPrompt(
-        `Spend tokens: an agent reads ${
-          plan ? "plan.md and the code it will land in" : "the diff and the surrounding code"
-        } and writes two documents — a written explanation with diagrams, and a ` +
-          "graphical HTML overview (boxes, arrows, the repos and features it touches). " +
-          "It runs alongside whatever else this item is doing — nothing is parked or blocked.\n\n" +
-          "Anything specific to concentrate on? (optional)",
-        ""
-      );
-      if (focus === null) return; // cancelled
-      await spawnWfReview(item, root, focus.trim() ? "deep" : "standard", "local", {
-        target: plan ? "explain-plan" : "explain-diff",
-        focus: focus.trim() || null,
-      });
-    };
-    const offer = (which, target, forms, again, first, title) => {
-      const running = runningExplainer(item, target);
-      if (running) {
-        const what = which === "plan" ? "plan" : "changes";
-        add(
-          `◫ Explaining ${what}… · open`,
-          "",
-          () => openSession(running.sessionId),
-          `An agent is writing the ${what} explanation alongside this item's other work — open its session. The tab updates when it finishes.`,
-          "step"
-        );
-        add(
-          "✕",
-          "",
-          () => endWfExplainer(item, root, target),
-          `Stop tracking this explanation round (its session is left alone) — use it when the session will never finish, then launch a fresh one`,
-          "step"
-        );
-        return;
-      }
-      if (!canExplain(item, target)) return;
-      add(wfExplainAny(forms) ? again : first, "", () => launch(which), title, "step");
-    };
-    // The plan explanation needs a plan; review-only items have none.
-    if (wfHasPlanPhase(item) && item.hasPlan) {
-      offer(
-        "plan",
-        "explain-plan",
-        item.planExplain,
-        "◫ Explain plan again",
-        "◫ Explain plan",
-        "Explain what this plan is going to do, before it exists: a written walk-through plus a graphical overview of the parts, where they attach and what they touch. Judges nothing and runs alongside a plan review or the implementation. Spends tokens; replaces the plan explanation on each run."
+  // Every agent pass that judges or explains this item without moving it —
+  // the stage's review, plan vs changes, the explanations, answering PR
+  // comments, the self-review — goes through one launcher. `🔍 Check…` runs
+  // any subset as one check run, whose findings become one change round; `▾`
+  // runs one pass on its own. Catalogue and gates: wf-checks.js. The run:
+  // run.json, see docs/workflows.md → Check runs.
+  const checkButtons = () => {
+    const ctx = wfChecksCtx(item);
+    if (ctx.canReview && !item.run) {
+      add(
+        "🔍 Check…",
+        "",
+        () => wfComposeChecks(item),
+        "Pick the agent checks to run on this iteration — any subset. Explanations run alongside, the rest one after another, and their findings become one change round. Spends tokens.",
+        "step",
+        "checks"
       );
     }
-    offer(
-      "diff",
-      "explain-diff",
-      item.diffExplain,
-      "◫ Explain changes again",
-      "◫ Explain changes",
-      "Explain what this change does: a written walk-through by functional part plus a graphical overview. Judges nothing and runs alongside a review round. Spends tokens; replaces the changes explanation on each run."
+    const solo = wfSoloChecks(item, root, ctx);
+    if (!solo.length) return;
+    const menu = add(
+      item.run ? "Run one check ▾" : "▾",
+      "",
+      () => {
+        const r = menu.getBoundingClientRect();
+        showContextMenu(r.left, r.bottom + 2, solo);
+      },
+      item.run
+        ? "A check run is in flight — an explanation can still run alongside it"
+        : "Run one check on its own, with its own options",
+      "step"
     );
   };
 
-  // The comparison: did we build the plan? Its own action rather than a mode
-  // of the code review, because a diff can pass a code review on its own
-  // merits while delivering something else — half a feature, an extra
-  // subsystem, another mechanism than the one that was authorized. Nothing
-  // else in the pipeline reads the plan and the diff together.
-  //
-  // Gated like a review, not like an explainer: it grades each divergence and
-  // writes annotations, so its findings become work through the same
-  // Request-changes mechanism as any other round. It needs both sides of the
-  // comparison — a plan (review-only items have none) and an implemented
-  // change (nothing is built at plan-review).
-  const driftButton = () => {
-    if (!wfCanReview(item)) return;
-    if (!wfHasPlanPhase(item) || !item.hasPlan) return;
-    if (["draft", "plan-review"].includes(st)) return;
-    const next = wfNextReviewRound(item, "drift");
-    add(
-      `⇄ Compare plan vs changes${next > 1 ? ` · round ${next}` : ""}…`,
-      "",
-      () => launchWfReview(item, root, { target: "drift" }),
-      "Spends tokens: an agent reads plan.md and the diff, inventories every divergence and grades each one intended / harmless / a problem. " +
-        "Writes a comparison document plus a drawn overview, and files the problems as diff comments you can turn into a fix round. " +
-        "Drift it resolves by amending the plan is reported instead — that one goes back through plan-review.",
-      "step",
-      "drift"
-    );
-  };
-
-  // The self-review: the one round that ends in a verdict on the PR — approve
-  // or request changes, with line comments — instead of findings for you to
-  // triage first. Its own action because posting is the job: a code review
-  // never approves anything. Needs a built change and a PR to post on; a plan
-  // is not needed, so review-only items get it too.
-  const selfReviewButton = () => {
-    if (!wfCanSelfReview(item)) return;
-    const next = wfNextReviewRound(item, "self-review");
-    const open = prActionCandidates(itemPrs(item.meta), "selfReview").length;
-    add(
-      `⚖ Self-review${open > 1 ? ` (${open} PRs)` : ""}${next > 1 ? ` · round ${next}` : ""}…`,
-      "",
-      () => launchWfSelfReview(item, root),
-      "Spends tokens and posts on GitHub: an agent reviews the PR pass after pass until a full pass finds nothing new, " +
-        "then posts a verdict — approve or request changes — with line comments and a summary marked as an automated review. " +
-        "The findings also land here as diff comments you can turn into a fix round." +
-        (open > 1
-          ? ` The click asks which of this item's ${open} open PRs — all are pre-selected — then which agent runs it.`
-          : ""),
-      "step",
-      "self-review"
-    );
-  };
-
-  // Available from every state holding a reviewable artifact, every time the
-  // item lands back there — that is what makes rounds repeatable. The label
-  // counts past rounds so it is obvious this is round N+1, not a one-shot.
-  const reviewButton = () => {
-    if (!wfCanReview(item)) return;
-    const total = item.meta.reviewRound || 0;
-    // The number counts rounds *of this phase*: how many times the plan was
-    // reviewed says nothing about the code, and one shared counter made the
-    // first code review of a well-planned item read as "round 7".
-    const target = wfReviewTarget(item);
-    const next = wfNextReviewRound(item, target);
-    const phase = target === "plan" ? "Plan review" : "Code review";
-    // Label names the ACTOR (an agent, spending tokens); the sibling "↩ Back to
-    // <stage> review" names a DESTINATION (a free status move). Keep them
-    // distinguishable — the round number is a suffix, not the noun.
-    add(
-      `⌕ ${phase}${next > 1 ? ` · round ${next}` : ""}`,
-      "",
-      () => launchWfReview(item, root),
-      `Spend tokens: launch an agent session to review this item's ${
-        target === "plan" ? "plan" : "code"
-      } and report findings` +
-        (total ? ` (${total} round${total > 1 ? "s" : ""} on this item so far)` : "") +
-        // Multi-repo items choose their round's subject in the composer: the
-        // whole change, or one repository's PR.
-        (target === "diff" && itemPrs(item.meta).length > 1
-          ? ". The composer asks which change to read: this repo's own diff, or any of this item's PRs — a cross-repo round reads several"
-          : ""),
-      "step",
-      target === "plan" ? "plan-review" : "code-review"
-    );
+  // An explainer runs alongside whatever else the item is doing, so a running
+  // one shows as its own button: open its session, or stop tracking it.
+  const explainRunning = () => {
+    for (const [target, what] of [
+      ["explain-plan", "plan"],
+      ["explain-diff", "changes"],
+    ]) {
+      const running = runningExplainer(item, target);
+      if (!running) continue;
+      add(
+        `◫ Explaining ${what}… · open`,
+        "",
+        () => openSession(running.sessionId),
+        `An agent is writing the ${what} explanation alongside this item's other work — open its session. The tab updates when it finishes.`,
+        "step"
+      );
+      add(
+        "✕",
+        "",
+        () => endWfExplainer(item, root, target),
+        "Stop tracking this explanation round (its session is left alone) — use it when the session will never finish, then launch a fresh one",
+        "step"
+      );
+    }
   };
 
   // The item's PRs are one set: multi-repo work means the primary is just one
@@ -9138,7 +9423,6 @@ function renderWfActions(bar, root, item) {
         "advance",
         "request-changes"
       );
-      reviewButton();
       abandon();
       break;
 
@@ -9264,8 +9548,6 @@ function renderWfActions(bar, root, item) {
         "advance",
         "request-changes"
       );
-      reviewButton();
-      answerCommentsButton();
       postRoundButton();
       linkPrButton();
       abandon();
@@ -9358,8 +9640,6 @@ function renderWfActions(bar, root, item) {
         "advance",
         "request-changes"
       );
-      reviewButton();
-      answerCommentsButton();
       postRoundButton();
       linkPrButton();
       abandon();
@@ -9390,8 +9670,6 @@ function renderWfActions(bar, root, item) {
         "advance",
         "request-changes"
       );
-      reviewButton();
-      answerCommentsButton();
       postRoundButton();
       linkPrButton();
       abandon();
@@ -9420,17 +9698,11 @@ function renderWfActions(bar, root, item) {
     "item"
   );
 
-  // Outside the switch on purpose: "what does this do" is worth asking at
-  // every stage, and per-case calls meant it was missing from five of them.
-  explainButtons();
-
-  // Same reasoning, and the same lesson: "did we build the plan?" is worth
-  // asking at every stage that has both a plan and a change, and the gate is
-  // one rule rather than a case per stage.
-  driftButton();
-
-  // Same rule again: wherever a built change has a PR, whatever the stage.
-  selfReviewButton();
+  // Outside the switch on purpose: which checks a stage allows is one rule
+  // (availablePasses), not a case per stage — per-case calls once left the
+  // explanations missing from five of them.
+  explainRunning();
+  checkButtons();
 
   // Going back was two hardcoded buttons at two stages; from everywhere else
   // the pipeline was a one-way street. Same reason it lives outside the
@@ -9467,33 +9739,110 @@ function renderWfActions(bar, root, item) {
 /// bar actually rendered, so the highlight and the strip can never point at
 /// something that is not there. Returns the step (autopilot reads it).
 function wfRenderNextStep(bar, item) {
+  // A run in flight is the next step: its strip says where it is and holds
+  // its controls, and nothing else is recommended over it.
+  if (item.run) {
+    bar.prepend(wfRunStrip(item));
+    return null;
+  }
   if ((state.wfAssist || "suggest") === "off") return null;
   const buttons = [...bar.querySelectorAll("button[data-act]")];
+  const ctx = wfChecksCtx(item);
   const step = wfNextStep(item, {
     available: new Set(buttons.map((b) => b.dataset.act)),
+    passes: ctx.canReview ? new Set(availablePasses(ctx)) : null,
     pending: pendingReviewRound(item),
     prs: itemPrs(item.meta),
-    hasPlan: wfHasPlanPhase(item) && !!item.hasPlan,
+    hasPlan: ctx.hasPlan,
   });
   if (!step) return null;
-  const target = buttons.find((b) => b.dataset.act === step.id);
-  for (const b of bar.querySelectorAll("button.primary")) b.classList.remove("primary");
-  target.classList.add("primary");
 
   const strip = document.createElement("div");
   strip.className = "wf-next";
   const cap = document.createElement("span");
   cap.className = "wf-actions-caption";
   cap.textContent = state.wfAssist === "autopilot" && step.auto ? "Next · autopilot" : "Suggested next";
-  const go = document.createElement("button");
-  go.className = "wf-next-go";
-  go.textContent = target.textContent;
-  go.title = target.title;
-  go.onclick = () => target.click();
   const why = document.createElement("span");
   why.className = "wf-next-why";
   why.textContent = step.reason;
-  strip.append(cap, go, why);
+
+  if (step.kind === "check") {
+    // The strip IS the before-launch decision: untick a chip and the run
+    // shrinks, no dialog. Options… opens the full checklist with this pick.
+    for (const b of bar.querySelectorAll("button.primary")) b.classList.remove("primary");
+    const sel = recommendedSelection(step, wfStaleExplanations(item));
+    const chips = document.createElement("span");
+    chips.className = "wf-next-chips";
+    const go = document.createElement("button");
+    go.className = "wf-next-go primary";
+    const picked = () => sel.filter((p) => p.ticked);
+    const sync = () => {
+      const on = picked();
+      go.disabled = !on.length;
+      go.textContent =
+        on.length === 1 ? `▶ Run ${passLabel(on[0].id, ctx).toLowerCase()}` : `▶ Run ${on.length} checks`;
+    };
+    for (const p of sel) {
+      const chip = document.createElement("button");
+      chip.className = "wf-chip";
+      const paint = () => {
+        chip.classList.toggle("on", p.ticked);
+        chip.setAttribute("aria-pressed", String(p.ticked));
+        chip.textContent = `${p.ticked ? "✓ " : ""}${passLabel(p.id, ctx)}`;
+      };
+      chip.title =
+        `${p.reason}${p.reason ? " — " : ""}${passBadge(p.id)}` +
+        (p.ticked ? "" : ". Starts unticked: it posts on GitHub in your name.");
+      chip.onclick = () => {
+        p.ticked = !p.ticked;
+        paint();
+        sync();
+      };
+      paint();
+      chips.appendChild(chip);
+    }
+    go.title = "Run the ticked checks as one check run — spends tokens";
+    go.onclick = () =>
+      busyButton(go, () =>
+        wfStartRun(
+          item,
+          picked().map((p) =>
+            passSpec(
+              p.id,
+              {
+                ...p.params,
+                prUrls:
+                  p.id === "respond" || p.id === "self-review"
+                    ? wfDefaultPrUrls(item, p.id === "respond" ? "respond" : "selfReview")
+                    : [],
+              },
+              ctx
+            )
+          ),
+          {
+            interactive: interactiveParam(item.meta.interactionDefault || "ask"),
+            autoApply: !!(item.meta.review && item.meta.review.autoApply),
+          }
+        )
+      );
+    const more = document.createElement("button");
+    more.className = "wf-next-more";
+    more.textContent = "Options…";
+    more.title = "Open the checklist with this pick: depth, focus, PRs, how the rounds run";
+    more.onclick = () => wfComposeChecks(item, { preselect: picked().map((p) => p.id) });
+    sync();
+    strip.append(cap, chips, go, more, why);
+  } else {
+    const target = buttons.find((b) => b.dataset.act === step.id);
+    for (const b of bar.querySelectorAll("button.primary")) b.classList.remove("primary");
+    target.classList.add("primary");
+    const go = document.createElement("button");
+    go.className = "wf-next-go";
+    go.textContent = target.textContent;
+    go.title = target.title;
+    go.onclick = () => target.click();
+    strip.append(cap, go, why);
+  }
   if (step.settled.length) {
     const ok = document.createElement("span");
     ok.className = "wf-next-settled";
@@ -9503,6 +9852,83 @@ function wfRenderNextStep(bar, item) {
   }
   bar.prepend(strip);
   return step;
+}
+
+const WF_PASS_GLYPH = { queued: "○", launching: "◌", running: "◌", done: "✓", failed: "✕", skipped: "–" };
+
+/// A check run in flight: one chip per pass, the line that says where it is,
+/// and every control it needs — the human's decisions *during* the run.
+function wfRunStrip(item) {
+  const batch = item.run;
+  const ctx = wfChecksCtx(item);
+  const sum = runSummary(batch, ctx);
+  const strip = document.createElement("div");
+  strip.className = "wf-next wf-run";
+  const cap = document.createElement("span");
+  cap.className = "wf-actions-caption";
+  cap.textContent = batch.by === "autopilot" ? "Check run · autopilot" : "Check run";
+  const chips = document.createElement("span");
+  chips.className = "wf-next-chips";
+  for (const r of sum.rows) {
+    const chip = document.createElement("span");
+    chip.className = `wf-chip state-${r.state}`;
+    chip.textContent = `${WF_PASS_GLYPH[r.state] || "?"} ${r.label}`;
+    chip.title = r.error ? `${r.state}: ${r.error}` : r.state;
+    chips.appendChild(chip);
+  }
+  const why = document.createElement("span");
+  why.className = "wf-next-why";
+  why.textContent = sum.text;
+  strip.append(cap, chips, why);
+
+  const btn = (label, cls, title, fn) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.title = title;
+    b.onclick = () => busyButton(b, fn);
+    strip.appendChild(b);
+    return b;
+  };
+  const control = (c) => wfRunControl(item, batch.id, c);
+  const running = batch.passes.find(
+    (p) => p.sessionId && ["launching", "running"].includes(p.state)
+  );
+  if (running) btn("Open session", "", "Open the running check's session", () => openSession(running.sessionId));
+  if (sum.canStop) {
+    btn("Skip next", "", `Skip ${sum.next.label.toLowerCase()} — the rest still run`, () =>
+      control({ op: "skip", pass: sum.next.index })
+    );
+    btn("Stop after this one", "", "Let the running check finish, skip the rest", () => control({ op: "stop" }));
+  }
+  for (const f of sum.failed) {
+    btn(`↻ Retry ${f.label.toLowerCase()}`, "primary", f.error || "Launch it again", () =>
+      control({ op: "retry", pass: f.index })
+    );
+    btn(`Skip ${f.label.toLowerCase()}`, "", "Carry on without it", () => control({ op: "skip", pass: f.index }));
+  }
+  if (sum.apply.state === "pending" && !sum.apply.auto) {
+    const n = (sum.apply.keys || []).length;
+    btn(
+      `↻ Apply ${n === 1 ? "the findings" : `${n} rounds' findings`}`,
+      "primary",
+      (sum.apply.error ? `The last attempt failed: ${sum.apply.error}. ` : "") +
+        "One change round for every round of this run worth applying — you can edit the note first",
+      () => wfApplyRun(item.project, item.slug, batch, { human: true })
+    );
+  }
+  if (sum.apply.error) {
+    const err = document.createElement("span");
+    err.className = "wf-next-settled";
+    err.textContent = `apply failed: ${sum.apply.error}`;
+    strip.appendChild(err);
+  }
+  btn("✕", "", "Close this run. A round already running keeps running on its own; nothing is applied.", async () => {
+    if (!(await uiConfirm("Close this check run? Rounds already running carry on on their own; nothing is applied.", "Close run")))
+      return;
+    await control({ op: "dismiss" });
+  });
+  return strip;
 }
 
 /// Render a unified diff as coloured lines. Plans are prose, so this is the
@@ -12207,10 +12633,10 @@ listen("workflow-attention", (event) => {
     flashToast(
       `${title || slug}: review round ${review.round} finished — ${wfShort(review.verdict, 120)}. ${wfShort(posted, 160)}`
     );
-    wfAfterHandBack(project, slug, review);
+    wfAfterHandBack(project, slug);
   } else {
     flashToast(`${title || slug}: ${wfStatusInfo(status).label} — decision needed`);
-    wfAfterHandBack(project, slug, null);
+    wfAfterHandBack(project, slug);
   }
 });
 
@@ -13828,6 +14254,9 @@ function restartSessionPoll() {
   await refreshSessions();
   await restoreWorkspaceSessions();
   restartSessionPoll();
+  // Check runs resume at boot whether or not the Workflows section is open:
+  // the list refresh is what drives them (wfScheduleRunDrives).
+  await refreshWorkflows();
   // First launch only: walk the window once the layout has settled. Skipping
   // or finishing persists the flag; Settings → clash → "Show the tour" reruns.
   if (!tourSeen) setTimeout(startGuiTour, 800);

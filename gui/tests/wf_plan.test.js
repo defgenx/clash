@@ -11,7 +11,6 @@ const {
   pendingReviewRound,
   reviewAppliedState,
   wfNextReviewRound,
-  shouldAutoApply,
   planVersionForIteration,
   isExplainTarget,
   canonicalTarget,
@@ -273,57 +272,21 @@ test("the header says applied only once a change round carried that round", () =
   assert.equal(reviewAppliedState({ meta: {} }), "");
 });
 
-test("auto-apply needs the human's authorization AND the round's yes", () => {
-  const base = (over = {}) => ({
-    lastAgentReview: { round: 2, apply: true },
-    meta: {
-      status: "plan-review",
-      appliedReviewKey: "",
-      review: { target: "plan", autoApply: true },
-      ...(over.meta || {}),
-    },
-    ...over,
+test("a check run owns its rounds, and the run's key list counts as applied", () => {
+  const item = (meta = {}, extra = {}) => ({
+    lastAgentReview: { round: 2, target: "diff", apply: true },
+    meta: { status: "diff-review", ...meta },
+    ...extra,
   });
-  assert.equal(shouldAutoApply(base()), true);
-  // The human did not pre-authorize: the round's yes is a recommendation.
+  assert.ok(pendingReviewRound(item()));
+  // The run applies its rounds together and offers it in its own strip.
+  assert.equal(pendingReviewRound(item({}, { run: { id: 1, passes: [] } })), null);
+  // A combined apply stamps the list; the single key may name another round.
   assert.equal(
-    shouldAutoApply(base({ meta: { review: { target: "plan", autoApply: false } } })),
-    false
+    pendingReviewRound(item({ appliedReviewKeys: ["drift:1", "diff:2"], appliedReviewKey: "drift:1" })),
+    null
   );
-  // Pre-authorized, but the round found nothing worth a round — spending
-  // tokens to apply nothing is exactly what the reviewer just advised against.
-  assert.equal(shouldAutoApply(base({ lastAgentReview: { round: 2, apply: false } })), false);
-  // A round that declared nothing (older report, or a hedge) never fires.
-  assert.equal(shouldAutoApply(base({ lastAgentReview: { round: 2 } })), false);
-  // Already applied.
-  assert.equal(
-    shouldAutoApply(
-      base({
-        meta: {
-          appliedReviewKey: "plan:2",
-          review: { target: "plan", autoApply: true },
-        },
-      })
-    ),
-    false
-  );
-  // An explainer round is not applyable however it was launched.
-  assert.equal(
-    shouldAutoApply(base({ meta: { review: { target: "structure", autoApply: true } } })),
-    false
-  );
-  assert.equal(shouldAutoApply(null), false);
-});
-
-test("the hand-back's own summary outranks the item's stale one", () => {
-  // The attention event arrives before the item list refreshes, so the round
-  // passed in is the fresher of the two.
-  const item = {
-    lastAgentReview: { round: 1, apply: false },
-    meta: { status: "plan-review", review: { target: "plan", autoApply: true } },
-  };
-  assert.equal(shouldAutoApply(item), false);
-  assert.equal(shouldAutoApply(item, { round: 2, apply: true }), true);
+  assert.equal(reviewAppliedState(item({ appliedReviewKeys: ["diff:2"] })), "applied");
 });
 
 test("the browser branch publishes every name app.js calls", () => {
@@ -344,7 +307,6 @@ test("the browser branch publishes every name app.js calls", () => {
     "pendingReviewRound",
     "reviewAppliedState",
     "wfNextReviewRound",
-    "shouldAutoApply",
     "planVersionForIteration",
     "canExplain",
     "runningExplainer",

@@ -31,6 +31,7 @@ workflows are a structured store.
 ├── annotations.json   # line-level diff comments
 ├── handoff.md         # the executor's note to the human (overwritten every phase)
 ├── explainers.json    # explainer rounds running alongside the item (clash-owned)
+├── run.json           # the check run in flight + finished runs (clash-owned)
 ├── history/<NNN>/     # per-iteration snapshots (diff.patch + plan.md + annotations.json)
 └── plan-history/      # every recorded revision of plan.md (index.json + NNNN.md), clash-owned
 ```
@@ -280,15 +281,14 @@ pr-draft / pr-ready likewise
   unapplied round, open comments) rank first, `Next:` is used where they are
   silent, and an unknown or missing action is ignored. Interactive rounds ask
   the human to confirm it with the apply call. The explainer writes none.
-- **Auto-apply needs two signatures.** `meta.review.autoApply` is the human's
-  pre-authorization from the round composer, carried into the kickoff as
-  `Auto-apply: yes|no` so the skill knows whether its own `yes` fires (an
-  interactive round is about to tell the human what happens next, and "I'll
-  apply it" is a lie when clash is only going to recommend it). The pure
-  `shouldAutoApply` requires the flag *and* `apply == true` *and* the
-  pending-round rules (stage/target agreement, not already applied); the
-  hand-back listener then runs the same `wfRecordAndRevise` the button does,
-  guarded against a doubled event. Neither signal alone spawns anything.
+- **Auto-apply needs two signatures.** The check run's `autoApply` is the
+  human's pre-authorization from the composer, carried into each round's
+  kickoff as `Auto-apply: yes|no` so the skill knows whether its own `yes`
+  fires (an interactive round is about to tell the human what happens next,
+  and "I'll apply it" is a lie when clash is only going to recommend it). The
+  run applies only the rounds that said `apply == true`, and only once every
+  judging pass has settled — see *Check runs*. Neither signal alone spawns
+  anything.
 - Round *outcomes* are read from `agent-review.md`, not from meta: the pure
   `application::workflow::latest_agent_review` parses the last `## Review <n>`
   section (verdict + `### Published` lines) into
@@ -822,8 +822,8 @@ via ↩ Move back to… → plan-review.
   commit follows the same rule — the branch is published, and a fix round that
   only commits locally leaves the PR silently stale. An unpublished branch
   (`full`/`from-plan`, no PR) is still never pushed.
-- Never touch `history/`, `plan-history/` or `explainers.json`, and never
-  change `iteration`, `reviewRound`, `appliedReviewKey` or `phase` — clash
+- Never touch `history/`, `plan-history/`, `explainers.json` or `run.json`,
+  and never change `iteration`, `reviewRound`, `appliedReviewKey(s)` or `phase` — clash
   owns all of them (of the fields, the first two are written atomically by the
   request-changes flow, the third by the review launcher, the last by
   whichever of the two started the round).
@@ -1055,13 +1055,80 @@ flipping it to `implementing` would both advertise work that isn't happening and
 let it re-enter the implement loop. It is also forbidden from changing code — the
 description is the whole deliverable.
 
+## Check runs
+
+Every agent pass that judges or explains an item **without moving it** — the
+stage's review, plan vs changes, the two explanations, answering PR comments,
+the self-review — is launched through one entry point on the action bar:
+**🔍 Check…** opens a checklist (any subset, each row with its own options:
+depth, findings destination, focus, PRs; shared: agent, interaction mode,
+auto-apply), and **▾** runs one pass on its own through that pass's own
+composer. A pick runs as one **check run**, recorded in the item's clash-only
+`run.json`:
+
+- **Explainers start at once and run alongside**; they never park the item and
+  never block the run.
+- **Judging passes run one after another**, in a fixed order whatever was
+  ticked first (`workflow_run::pass_rank`: plan review → code review → plan vs
+  changes → answer comments → self-review, the self-review last because its
+  verdict should include everything found before it). Only one judging agent
+  owns an item at a time, which is why they cannot run in parallel.
+- **Every pass judges the same iteration.** Nothing is applied between them,
+  even when a round says `Apply: yes`. A run whose iteration moves under it
+  (someone requested changes) or whose stage changes (someone approved) closes.
+- **Then at most one change round.** When every judging pass has settled, the
+  rounds that are worth applying become one change-request note
+  (`combinedApplyNote` in `gui/dist/wf-checks.js`, one section per round) —
+  one fix round instead of one per check. With auto-apply on, clash applies
+  the rounds that said `Apply: yes` itself; otherwise the strip offers
+  **↻ Apply** (apply now, or edit the note first in the change composer). A
+  run whose rounds all said `Apply: no` closes with nothing to apply.
+
+One ticked pass is exactly the standalone round, so "run all", "run some" and
+"run one" are one mechanism. Every round still writes its own
+`## Review N — <target>` entry, with its own per-target number.
+
+**`run.json` records what clash intended; everything that happened is read
+back from the files the agents and clash already write.** That is what makes a
+run resumable. The pure `application::workflow_run::reconcile` compares the two
+on every step and settles each pass:
+
+| Recorded | Seen on disk | Decision |
+|---|---|---|
+| pass `launching` | `meta.review` of its target, started after the launch | `running`, with its round and session |
+| pass `launching` | nothing, past the 2-minute grace, no launch in flight | queued again (failed after 3 attempts) |
+| pass `running`, item parked again | that target's round count reached the pass's round | `done` |
+| pass `running`, item parked again | no round entry | `failed` — the round ended without a report; the run pauses |
+| apply `pending`/`applying` | `meta.appliedReviewKeys` holds every key | closed as applied |
+| apply `applying` | keys absent, past the grace | `pending` again |
+| any | `meta.iteration` moved, or the item left the run's stage | closed |
+
+Write order is the launchers' own: a pass is marked `launching` **before** its
+spawn, and the apply is claimed (`workflow_run_begin_apply`, refused unless one
+is pending) **before** `workflow_request_changes`, which stamps the run's keys
+into `meta.appliedReviewKeys` in the same meta write that bumps the iteration —
+that stamp is the proof the apply happened. The backend command
+`workflow_run_step` holds a per-item lock, reconciles, writes `run.json` only on
+a real change and launches what the reconcile asks for through the same
+`launch_review` a click uses. The GUI calls it after every hand-back, at boot
+and on every workflow refresh, so a run closed mid-way by a restart resumes on
+the next launch; while clash is closed, nothing advances.
+
+The human decides **before** (the checklist, or the strip's chips) and
+**during**: the strip shows `Checks · 1 of 2 done · code review running · next:
+plan vs changes` with **Skip next**, **Stop after this one**, **Retry** /
+**Skip** on a failed pass, **↻ Apply** when findings wait, and **✕** to close
+the run (a round already running carries on as an ordinary round). A pass that
+failed for want of a PR asks for it and retries; a code review that was to post
+its findings can run locally instead (`local` control) — a self-review or a
+reply to a thread cannot, because their output is the post.
+
 ## Next-step assist
 
-Every item's action bar opens with a **Suggested next** strip: the one button
-to press now, the reason, and the checks that were already settled on the way
-to it. The pure `wfNextStep` (`gui/dist/wf-next.js`, tests in
-`gui/tests/wf_next.test.js`) walks an ordered list of checks per stage and the
-first one that fires wins, for example at `diff-review`:
+Every item's action bar opens with a **Suggested next** strip: what to do now,
+the reason, and the checks that were already settled on the way to it. The pure
+`wfNextStep` (`gui/dist/wf-next.js`, tests in `gui/tests/wf_next.test.js`)
+walks an ordered list of checks per stage, for example at `diff-review`:
 
 1. a review round is waiting to be applied (and did not say `Apply: no`) → **Apply**
 2. comments are still open → **Request changes**
@@ -1072,11 +1139,21 @@ first one that fires wins, for example at `diff-review`:
    agent's `Next:` asked for it → **Compare plan vs changes**
 6. otherwise → **Approve** (to the PR stage when a PR exists, else done)
 
+The first that fires wins, except that **every check pass that is due is
+recommended together**: when the winner is a check (3–5), the strip shows all
+due checks as chips with one **▶ Run N checks** button, plus a refresh of any
+explanation describing an older iteration when the comparison is among them.
+Passes that post on GitHub (answering threads, the self-review) are shown
+unticked. Unticking a chip shrinks the run before it starts; **Options…** opens
+the checklist with that pick. A run in flight replaces the recommendation with
+its own strip (see *Check runs*).
+
 Three properties are the design. The recommender is **the one owner of the
 primary button**: `wfRenderNextStep` runs after the bar is rendered, picks
-among the buttons that are actually there (`data-act`), and moves the
-highlight, so a suggestion is always clickable and the bar's gates stay the
-only gates; the per-stage `primary` classes survive only for `assist = off`.
+among the buttons that are actually there (`data-act`) or the checks the stage
+allows, and moves the highlight, so a suggestion is always clickable and the
+bar's gates stay the only gates; the per-stage `primary` classes survive only
+for `assist = off`.
 **Agents advise, clash ranks**: a round's or a hand-off's `**Next:**` is
 consulted only where clash's own checks are silent, so no agent can recommend
 approving over an unapplied round or an open comment. And "reviewed" means
@@ -1087,22 +1164,23 @@ due for review again while a round still in flight does not count. Items
 predating the marks count any past round as current rather than being nagged.
 
 `workflows.assist` (`suggest` | `autopilot` | `off`, default `suggest`)
-decides how far it goes. Under `autopilot`, every agent hand-back (after a
-pre-authorized apply, which keeps precedence) starts the recommended step
-**when it decides nothing**: a plan or code review, a plan-vs-changes round, or
-applying a round that said `Apply: yes` (`AUTO_ACTIONS`). Approvals, PR flips,
-change requests (whose note is yours) and anything posted on GitHub always
-wait. The rounds it starts are autonomous and pre-authorized to apply, so
-review → fix → review continues until a reviewer says there is nothing to
-apply; `WF_AUTOPILOT_BUDGET` (3 steps per item) stops a reviewer that never
-does, and any click on the item's bar resets the budget.
+decides how far it goes. Under `autopilot`, every agent hand-back (after the
+item's own run, if any, has advanced) starts the recommended checks **that post
+nothing** as a check run: reviews, plan vs changes, explanation refreshes.
+Approvals, PR flips, change requests (whose note is yours) and anything posted
+on GitHub always wait. The runs it starts are autonomous and pre-authorized to
+apply, so review → one fix round → review continues until the reviewers say
+there is nothing to apply; `WF_AUTOPILOT_BUDGET` (3 runs per item, counted in
+`run.json` so a restart cannot reset it) stops a reviewer that never does, and
+any click on the item's bar resets the budget. Autopilot never starts a run
+while one is open.
 
 **Explanations follow the comparison.** A plan-vs-changes round is read next
 to the two explanations, so launching one offers to refresh every existing
 explanation written for an older iteration (`staleExplanations`: its
 `explainers.json` record carries the `iteration` it was launched against; no
-record counts as stale). The rows are pre-ticked, and autopilot refreshes them
-without asking. They run **alongside**: the drift round never waits for them,
+record counts as stale). The rows are pre-ticked and join the run as explainer
+passes, and autopilot includes them without asking. They run **alongside**: the drift round never waits for them,
 because its ground truth is `plan.md` and the diff, and it adopts
 `explain-plan.md`'s numbering only when that explanation is current.
 

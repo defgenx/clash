@@ -73,6 +73,8 @@ pub const HANDOFF_FILE: &str = "handoff.md";
 /// clash-only record of the explainer rounds launched alongside the item's
 /// other agents — see `WorkflowExplainer`.
 pub const EXPLAINERS_FILE: &str = "explainers.json";
+/// clash-only record of the check run in flight — see `RunBatch`.
+pub const RUN_FILE: &str = "run.json";
 pub const HISTORY_DIR: &str = "history";
 /// Per-item plan revision store: `plan-history/index.json` + `NNNN.md`.
 pub const PLAN_HISTORY_DIR: &str = "plan-history";
@@ -167,6 +169,7 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
     };
     let has_agent_review = has_content(&dir.join(AGENT_REVIEW_FILE));
     let explainers = read_explainers_in(&dir);
+    let run = read_run_in(&dir);
     // A finished item still reads the report while it has explainers on
     // record: explaining a done item is allowed, and its round entry is what
     // says the explainer finished.
@@ -218,6 +221,8 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         handoff: crate::application::workflow::parse_handoff(
             &std::fs::read_to_string(dir.join(HANDOFF_FILE)).unwrap_or_default(),
         ),
+        run: run.batch,
+        autopilot_steps: run.autopilot_steps,
         meta,
     })
 }
@@ -492,6 +497,44 @@ pub fn write_explainers(
     let dir = existing_item_dir(root, project, slug)?;
     write_atomic(
         &dir.join(EXPLAINERS_FILE),
+        serde_json::to_string_pretty(file)?.as_bytes(),
+    )
+    .map_err(DomainError::from)
+}
+
+// ── Check runs (run.json) ───────────────────────────────────────────────
+
+/// Missing reads as empty. Malformed also reads as empty, with a warning: the
+/// file records what clash intended, and the rounds it launched are still on
+/// record in meta.json and agent-review.md.
+fn read_run_in(dir: &Path) -> crate::domain::workflow::RunFile {
+    let path = dir.join(RUN_FILE);
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return Default::default();
+    };
+    serde_json::from_str(&raw).unwrap_or_else(|e| {
+        tracing::warn!("malformed {}: {}", path.display(), e);
+        Default::default()
+    })
+}
+
+pub fn read_run(
+    root: &Path,
+    project: &str,
+    slug: &str,
+) -> Result<crate::domain::workflow::RunFile> {
+    Ok(read_run_in(&existing_item_dir(root, project, slug)?))
+}
+
+pub fn write_run(
+    root: &Path,
+    project: &str,
+    slug: &str,
+    file: &crate::domain::workflow::RunFile,
+) -> Result<()> {
+    let dir = existing_item_dir(root, project, slug)?;
+    write_atomic(
+        &dir.join(RUN_FILE),
         serde_json::to_string_pretty(file)?.as_bytes(),
     )
     .map_err(DomainError::from)

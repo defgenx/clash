@@ -16,6 +16,9 @@ pub mod store;
 /// workflows view. (Diff parsing lives in `diff`, which the TUI does use.)
 #[allow(dead_code)]
 pub mod workflow;
+/// Same allowance: check runs are driven by the GUI's Tauri commands in v1.
+#[allow(dead_code)]
+pub mod workflow_run;
 /// Same allowance as `workflow`: consumed only through the lib crate (GUI
 /// share/export commands) in v1.
 #[allow(dead_code)]

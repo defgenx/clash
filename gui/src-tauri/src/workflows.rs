@@ -988,6 +988,7 @@ pub(crate) async fn workflow_request_changes(
     slug: String,
     note: Option<String>,
     park: Option<Vec<String>>,
+    applied_keys: Option<Vec<String>>,
 ) -> Result<clash::domain::workflow::WorkflowMeta, String> {
     let mut meta = state
         .backend
@@ -1084,7 +1085,15 @@ pub(crate) async fn workflow_request_changes(
     ) {
         meta.applied_review_key =
             clash::application::workflow::review_round_key(&latest.target, latest.round);
+        let latest_key = meta.applied_review_key.clone();
+        clash::application::workflow_run::stamp_applied_keys(&mut meta, &[latest_key]);
     }
+    // A check run's combined apply carries several rounds; it is complete
+    // once these keys are stamped, in this same meta write.
+    clash::application::workflow_run::stamp_applied_keys(
+        &mut meta,
+        &applied_keys.unwrap_or_default(),
+    );
     // Which phase the round this just queued must run in — decided here,
     // from the stage the request was made at, because that is the only place
     // that still knows. `changes-requested` does not say which artifact the
@@ -1717,10 +1726,67 @@ pub(crate) async fn start_workflow_review_agent(
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
+    launch_review(
+        &app,
+        &state,
+        ReviewLaunch {
+            project,
+            slug,
+            depth,
+            publish,
+            interactive,
+            target,
+            pr_urls,
+            auto_apply,
+            focus,
+            agent,
+            cols,
+            rows,
+        },
+    )
+    .await
+}
+
+/// `start_workflow_review_agent`'s arguments, shared with the check-run
+/// driver so a pass launches exactly like a click.
+pub(crate) struct ReviewLaunch {
+    pub project: String,
+    pub slug: String,
+    pub depth: ReviewDepth,
+    pub publish: ReviewPublish,
+    pub interactive: Option<bool>,
+    pub target: Option<ReviewTarget>,
+    pub pr_urls: Option<Vec<String>>,
+    pub auto_apply: Option<bool>,
+    pub focus: Option<String>,
+    pub agent: Option<String>,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+pub(crate) async fn launch_review(
+    app: &tauri::AppHandle,
+    state: &GuiState,
+    launch: ReviewLaunch,
+) -> Result<String, String> {
+    let ReviewLaunch {
+        project,
+        slug,
+        depth,
+        publish,
+        interactive,
+        target,
+        pr_urls,
+        auto_apply,
+        focus,
+        agent,
+        cols,
+        rows,
+    } = launch;
     if let Some(t) = target.filter(|t| t.explains()) {
         return start_explainer(
-            &app,
-            &state,
+            app,
+            state,
             ExplainerLaunch {
                 project,
                 slug,
@@ -1737,9 +1803,9 @@ pub(crate) async fn start_workflow_review_agent(
     }
     // Same claim as the executor launch: a round is one agent parked on one
     // item, so a doubled click must not become two of them.
-    let _claim = claim_launch(&state, &project, &slug)?;
+    let _claim = claim_launch(state, &project, &slug)?;
     let key = item_key(&project, &slug);
-    crate::launch_stage(&app, &key, "read", None);
+    crate::launch_stage(app, &key, "read", None);
     let mut meta = state
         .backend
         .load_workflow_meta(&project, &slug)
@@ -1747,7 +1813,7 @@ pub(crate) async fn start_workflow_review_agent(
     if meta.repo_path.trim().is_empty() {
         return Err("This item has no repository path — set repoPath in meta.json".to_string());
     }
-    launch_agent(&state, agent.as_deref(), &mut meta)?;
+    launch_agent(state, agent.as_deref(), &mut meta)?;
     // A `drift` round is deliberately gated here and not with the explainers:
     // it grades divergences and writes annotations, like every other review.
     if !meta.status.can_request_review() {
@@ -1798,7 +1864,7 @@ pub(crate) async fn start_workflow_review_agent(
     {
         return Err("no-pr: this item has no pull request yet".to_string());
     }
-    if target.needs_plan() && !has_plan_content(&state, &project, &slug) {
+    if target.needs_plan() && !has_plan_content(state, &project, &slug) {
         return Err("This item has no plan yet — there is nothing to read".to_string());
     }
     // A drift round measures the plan against what was built from it, so at
@@ -1870,7 +1936,7 @@ pub(crate) async fn start_workflow_review_agent(
     // "End round" / the agent-gone cross-check; a live reviewer writing
     // `annotations.json` on an item that isn't in `reviewing` (approval open,
     // annotations unlocked, cancel refusing) has no recovery path.
-    crate::launch_stage(&app, &key, "record", None);
+    crate::launch_stage(app, &key, "record", None);
     let rollback = meta.clone();
     meta.session_id = Some(session_id.clone());
     // The item-wide total keeps climbing — it is what "Agent reviews (n)" and
@@ -1889,11 +1955,11 @@ pub(crate) async fn start_workflow_review_agent(
         .backend
         .write_workflow_meta(&project, &slug, &meta)
         .map_err(e2s)?;
-    seed_local(&state, &project, &slug, meta.status);
+    seed_local(state, &project, &slug, meta.status);
 
-    crate::launch_stage(&app, &key, "spawn", None);
+    crate::launch_stage(app, &key, "spawn", None);
     let spawned = spawn_item_session(
-        &state,
+        state,
         ItemSessionSpawn {
             project: &project,
             slug: &slug,
@@ -1934,7 +2000,7 @@ pub(crate) async fn start_workflow_review_agent(
                 e2
             );
         } else {
-            seed_local(&state, &project, &slug, rollback.status);
+            seed_local(state, &project, &slug, rollback.status);
         }
         return Err(e);
     }
@@ -3382,6 +3448,409 @@ pub(crate) fn get_skill(state: State<'_, GuiState>, name: String) -> Result<Stri
     std::fs::read_to_string(&path).map_err(|e| format!("Cannot read {}: {}", path.display(), e))
 }
 
+// ── Check runs ──────────────────────────────────────────────────────────
+//
+// Several review/explain rounds over one iteration, then one change round for
+// all of them, recorded in the item's clash-only `run.json` so a restart
+// resumes them. The decisions are `clash::application::workflow_run`; these
+// commands read the disk for it, persist its answer and launch what it asks
+// for. The combined apply is the frontend's half: its note is composed from
+// the rounds' findings there, like every other apply. Contract:
+// docs/workflows.md → Check runs.
+
+/// One pass this step launched, so the frontend can open its session.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LaunchedPass {
+    session_id: String,
+    target: ReviewTarget,
+    publish: ReviewPublish,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RunStepResult {
+    run: clash::domain::workflow::RunFile,
+    /// `none` | `apply`.
+    action: &'static str,
+    /// The rounds to apply, for `apply`.
+    keys: Vec<String>,
+    launched: Vec<LaunchedPass>,
+    /// Another step on this item is running; this one did nothing.
+    busy: bool,
+    /// This step wrote `run.json` or launched something — the frontend's cue
+    /// to refresh, and the reason a refresh-driven step cannot loop.
+    changed: bool,
+}
+
+/// The run lock: one step per item at a time, so two drivers (a hand-back and
+/// a refresh) can never both launch the same queued pass.
+fn claim_run<'a>(state: &'a GuiState, project: &str, slug: &str) -> Option<LaunchClaim<'a>> {
+    claim_launch_key(state, format!("{}!run", item_key(project, slug))).ok()
+}
+
+/// Read the run against the disk, persist what changed, and launch what it
+/// asks for. Bounded: a launch settles in the next reconcile, which may then
+/// ask for the following one.
+async fn run_step(
+    app: &tauri::AppHandle,
+    state: &GuiState,
+    project: &str,
+    slug: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<RunStepResult, String> {
+    use clash::application::workflow_run as wr;
+    let Some(_lock) = claim_run(state, project, slug) else {
+        return Ok(RunStepResult {
+            busy: true,
+            ..Default::default()
+        });
+    };
+    let key = item_key(project, slug);
+    let mut launched = Vec::new();
+    let mut changed = false;
+    for _ in 0..4 {
+        let run = state
+            .backend
+            .load_workflow_run(project, slug)
+            .map_err(e2s)?;
+        if run.batch.is_none() {
+            return Ok(RunStepResult {
+                run,
+                action: "none",
+                launched,
+                changed,
+                ..Default::default()
+            });
+        }
+        let meta = state
+            .backend
+            .load_workflow_meta(project, slug)
+            .map_err(e2s)?;
+        let md = state
+            .backend
+            .read_workflow_doc(
+                project,
+                slug,
+                clash::infrastructure::fs::workflows::AGENT_REVIEW_FILE,
+            )
+            .unwrap_or_default();
+        let rounds = clash::application::workflow::all_agent_reviews(&md);
+        let explainers = clash::application::workflow::explainer_states(
+            &state
+                .backend
+                .load_workflow_explainers(project, slug)
+                .unwrap_or_default(),
+            &rounds,
+        );
+        let applied = wr::applied_keys(&meta);
+        let (item_claimed, explainers_claimed) = {
+            let held = state.launching.lock().unwrap();
+            let explaining: Vec<ReviewTarget> = ReviewTarget::ALL
+                .iter()
+                .copied()
+                .filter(|t| t.explains() && held.contains(&format!("{}#{}", key, t)))
+                .collect();
+            (held.contains(&key), explaining)
+        };
+        let (next, action) = wr::reconcile(
+            &run,
+            &wr::RunInput {
+                status: meta.status,
+                iteration: meta.iteration,
+                review: meta.review.as_ref(),
+                session_id: meta.session_id.as_deref(),
+                rounds: &rounds,
+                explainers: &explainers,
+                applied_keys: &applied,
+                item_claimed,
+                explainers_claimed: &explainers_claimed,
+                now: now_ms(),
+            },
+        );
+        let mut run = next;
+        if run
+            != state
+                .backend
+                .load_workflow_run(project, slug)
+                .map_err(e2s)?
+        {
+            {
+                state
+                    .backend
+                    .write_workflow_run(project, slug, &run)
+                    .map_err(e2s)?;
+                changed = true;
+            }
+        }
+        let indices = match action {
+            wr::RunAction::None => {
+                return Ok(RunStepResult {
+                    run,
+                    action: "none",
+                    launched,
+                    changed,
+                    ..Default::default()
+                })
+            }
+            wr::RunAction::Apply(keys) => {
+                return Ok(RunStepResult {
+                    run,
+                    action: "apply",
+                    keys,
+                    launched,
+                    changed,
+                    ..Default::default()
+                })
+            }
+            wr::RunAction::Launch(indices) => indices,
+        };
+        let Some(batch) = run.batch.clone() else {
+            break;
+        };
+        for i in indices {
+            // Recorded before the spawn: a crash between the two is what the
+            // lost-launch rule recovers.
+            let pass = wr::begin_launch(&mut run, batch.id, i, now_ms())?;
+            {
+                state
+                    .backend
+                    .write_workflow_run(project, slug, &run)
+                    .map_err(e2s)?;
+                changed = true;
+            }
+            let result = launch_review(
+                app,
+                state,
+                ReviewLaunch {
+                    project: project.to_string(),
+                    slug: slug.to_string(),
+                    depth: pass.depth,
+                    publish: pass.publish,
+                    interactive: batch.interactive,
+                    // `plan`/`diff` are derived again by the launcher.
+                    target: Some(pass.target),
+                    pr_urls: Some(pass.pr_urls.clone()),
+                    auto_apply: Some(batch.auto_apply),
+                    focus: Some(pass.focus.clone()),
+                    agent: Some(batch.agent.clone()).filter(|a| !a.is_empty()),
+                    cols,
+                    rows,
+                },
+            )
+            .await;
+            match result {
+                Ok(session_id) => launched.push(LaunchedPass {
+                    session_id,
+                    target: pass.target,
+                    publish: pass.publish,
+                }),
+                Err(e) if e.starts_with(ALREADY_LAUNCHING) => {
+                    wr::requeue_launch(&mut run, batch.id, i)?;
+                    {
+                        state
+                            .backend
+                            .write_workflow_run(project, slug, &run)
+                            .map_err(e2s)?;
+                        changed = true;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("check run {}: pass {} failed to launch: {}", key, i, e);
+                    wr::fail_launch(&mut run, batch.id, i, &e)?;
+                    {
+                        state
+                            .backend
+                            .write_workflow_run(project, slug, &run)
+                            .map_err(e2s)?;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    Ok(RunStepResult {
+        run: state
+            .backend
+            .load_workflow_run(project, slug)
+            .map_err(e2s)?,
+        action: "none",
+        launched,
+        changed,
+        ..Default::default()
+    })
+}
+
+/// Start a check run over the item's current iteration and launch its first
+/// passes.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub(crate) async fn workflow_run_start(
+    app: tauri::AppHandle,
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    passes: Vec<clash::application::workflow_run::PassSpec>,
+    interactive: Option<bool>,
+    auto_apply: bool,
+    agent: Option<String>,
+    by: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<RunStepResult, String> {
+    {
+        let Some(_lock) = claim_run(&state, &project, &slug) else {
+            return Err(format!(
+                "{}{}",
+                ALREADY_LAUNCHING,
+                item_key(&project, &slug)
+            ));
+        };
+        let meta = state
+            .backend
+            .load_workflow_meta(&project, &slug)
+            .map_err(e2s)?;
+        let mut run = state
+            .backend
+            .load_workflow_run(&project, &slug)
+            .map_err(e2s)?;
+        clash::application::workflow_run::start_batch(
+            &mut run,
+            passes,
+            clash::application::workflow_run::BatchStart {
+                status: meta.status,
+                iteration: meta.iteration,
+                by: by.unwrap_or_else(|| "human".to_string()),
+                interactive,
+                auto_apply,
+                agent: agent.unwrap_or_default(),
+                now: now_ms(),
+            },
+        )?;
+        state
+            .backend
+            .write_workflow_run(&project, &slug, &run)
+            .map_err(e2s)?;
+    }
+    run_step(&app, &state, &project, &slug, cols, rows).await
+}
+
+/// Advance the item's check run: called after every hand-back, at startup and
+/// whenever the item's files change.
+#[tauri::command]
+pub(crate) async fn workflow_run_step(
+    app: tauri::AppHandle,
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    cols: u16,
+    rows: u16,
+) -> Result<RunStepResult, String> {
+    run_step(&app, &state, &project, &slug, cols, rows).await
+}
+
+/// Stop, skip, retry or dismiss — then advance, so a retry launches at once.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub(crate) async fn workflow_run_control(
+    app: tauri::AppHandle,
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    batch: u32,
+    control: clash::application::workflow_run::RunControl,
+    cols: u16,
+    rows: u16,
+) -> Result<RunStepResult, String> {
+    {
+        let Some(_lock) = claim_run(&state, &project, &slug) else {
+            return Err("busy: the check run is being updated — try again".to_string());
+        };
+        let mut run = state
+            .backend
+            .load_workflow_run(&project, &slug)
+            .map_err(e2s)?;
+        clash::application::workflow_run::control(&mut run, batch, control, now_ms())?;
+        state
+            .backend
+            .write_workflow_run(&project, &slug, &run)
+            .map_err(e2s)?;
+    }
+    run_step(&app, &state, &project, &slug, cols, rows).await
+}
+
+/// Claim the run's pending apply; returns the round keys it covers.
+#[tauri::command]
+pub(crate) fn workflow_run_begin_apply(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    batch: u32,
+) -> Result<Vec<String>, String> {
+    let Some(_lock) = claim_run(&state, &project, &slug) else {
+        return Err("busy: the check run is being updated — try again".to_string());
+    };
+    let mut run = state
+        .backend
+        .load_workflow_run(&project, &slug)
+        .map_err(e2s)?;
+    let keys = clash::application::workflow_run::begin_apply(&mut run, batch, now_ms())?;
+    state
+        .backend
+        .write_workflow_run(&project, &slug, &run)
+        .map_err(e2s)?;
+    Ok(keys)
+}
+
+/// The change round did not start: hand the apply back to the human, with why.
+#[tauri::command]
+pub(crate) fn workflow_run_abort_apply(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    batch: u32,
+    error: String,
+) -> Result<(), String> {
+    let Some(_lock) = claim_run(&state, &project, &slug) else {
+        return Err("busy: the check run is being updated — try again".to_string());
+    };
+    let mut run = state
+        .backend
+        .load_workflow_run(&project, &slug)
+        .map_err(e2s)?;
+    clash::application::workflow_run::abort_apply(&mut run, batch, &error)?;
+    state
+        .backend
+        .write_workflow_run(&project, &slug, &run)
+        .map_err(e2s)
+}
+
+/// A human acted on the item: autopilot's budget starts over. Writes only
+/// when there is something to reset, so a click never wakes the watcher.
+#[tauri::command]
+pub(crate) fn workflow_run_reset_autopilot(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+) -> Result<(), String> {
+    let Some(_lock) = claim_run(&state, &project, &slug) else {
+        return Ok(());
+    };
+    let mut run = state
+        .backend
+        .load_workflow_run(&project, &slug)
+        .map_err(e2s)?;
+    if run.autopilot_steps == 0 {
+        return Ok(());
+    }
+    run.autopilot_steps = 0;
+    state
+        .backend
+        .write_workflow_run(&project, &slug, &run)
+        .map_err(e2s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::plan_pr_jobs;
@@ -3476,13 +3945,21 @@ mod tests {
     fn every_agent_launch_claims_the_item_first() {
         const SRC: &str = include_str!("workflows.rs");
 
-        for cmd in [
-            "pub(crate) async fn start_workflow_agent(",
-            "pub(crate) async fn start_workflow_review_agent(",
+        // The review command is a thin wrapper: its body is `launch_review`,
+        // which the check-run driver also calls, so every pass claims too.
+        for (cmd, claim_call) in [
+            (
+                "pub(crate) async fn start_workflow_agent(",
+                "claim_launch(&state, &project, &slug)?",
+            ),
+            (
+                "pub(crate) async fn launch_review(",
+                "claim_launch(state, &project, &slug)?",
+            ),
         ] {
             let body = SRC.split_once(cmd).expect(cmd).1;
             let claim = body
-                .find("claim_launch(&state, &project, &slug)?")
+                .find(claim_call)
                 .unwrap_or_else(|| panic!("{} must claim the launch", cmd));
             assert!(
                 body[..claim].contains("let _claim ="),

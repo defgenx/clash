@@ -253,6 +253,25 @@ pub trait WorkflowRepository: Send + Sync {
         Ok(())
     }
 
+    /// Read `run.json` (missing or malformed reads as empty).
+    fn load_workflow_run(
+        &self,
+        _project: &str,
+        _slug: &str,
+    ) -> Result<crate::domain::workflow::RunFile> {
+        Ok(Default::default())
+    }
+
+    /// Persist `run.json` atomically.
+    fn write_workflow_run(
+        &self,
+        _project: &str,
+        _slug: &str,
+        _file: &crate::domain::workflow::RunFile,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Snapshot the current iteration's diff + annotations into
     /// `history/{iteration:03}/`. Returns the snapshotted iteration. Never
     /// bumps `iteration` — the caller owns the follow-up meta write.

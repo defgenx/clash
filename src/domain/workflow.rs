@@ -693,6 +693,192 @@ pub struct ExplainerState {
     pub running: bool,
 }
 
+/// Where one pass of a check run stands. See [`RunBatch`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PassState {
+    /// Waiting for its turn.
+    #[default]
+    Queued,
+    /// clash recorded the launch and has not seen its round start yet — the
+    /// state a crash between the two leaves behind.
+    Launching,
+    /// Its round is under way (`round` / `session_id` say which).
+    Running,
+    /// Its round entry landed in `agent-review.md`.
+    Done,
+    /// The launch failed or the round ended without a report. Pauses the run.
+    Failed,
+    /// Skipped by the human, or by a stop.
+    Skipped,
+    #[serde(other)]
+    Unknown,
+}
+
+impl PassState {
+    /// Nothing more will happen to this pass.
+    pub fn is_settled(&self) -> bool {
+        matches!(
+            self,
+            Self::Done | Self::Failed | Self::Skipped | Self::Unknown
+        )
+    }
+}
+
+/// One pass of a check run: the arguments of one review/explain round.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunPass {
+    /// `plan`/`diff` stand for "the stage's own review" and are derived again
+    /// at launch, like every review; the other targets are their own actions.
+    #[serde(default)]
+    pub target: ReviewTarget,
+    #[serde(default)]
+    pub depth: ReviewDepth,
+    #[serde(default)]
+    pub publish: ReviewPublish,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pr_urls: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub focus: String,
+    #[serde(default)]
+    pub state: PassState,
+    /// The round number it runs as — known once it is running.
+    #[serde(default)]
+    pub round: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub session_id: String,
+    /// Epoch ms clash recorded the launch: a round whose `startedAt` is older
+    /// belongs to someone else.
+    #[serde(default)]
+    pub launched_at: i64,
+    /// Launch attempts so far; bounds the relaunch-after-crash loop.
+    #[serde(default)]
+    pub attempts: u32,
+    /// Why it failed, in words the strip can show.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// Where the run's combined change round stands.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ApplyState {
+    /// The judging passes are not all settled yet.
+    #[default]
+    None,
+    /// Findings are waiting to be applied — by clash when `auto` is set,
+    /// otherwise by the human.
+    Pending,
+    /// clash recorded the apply and has not seen `workflow_request_changes`
+    /// stamp its keys yet.
+    Applying,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunApply {
+    #[serde(default)]
+    pub state: ApplyState,
+    /// The rounds the apply covers, as `"<target>:<round>"`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<String>,
+    /// clash applies without a click (the run was pre-authorized and every
+    /// key's round said `Apply: yes`). False waits for the human.
+    #[serde(default)]
+    pub auto: bool,
+    #[serde(default)]
+    pub started_at: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
+}
+
+/// A check run in flight: several review/explain rounds over one iteration,
+/// then at most one change round for all of them. Stored in the item's
+/// clash-only `run.json`, so a restart resumes it — see
+/// `application::workflow_run` and `docs/workflows.md` → *Check runs*.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunBatch {
+    #[serde(default)]
+    pub id: u32,
+    /// `meta.iteration` at start: every pass judges this iteration's
+    /// artifact, and the run is stale once something else moves it.
+    #[serde(default)]
+    pub iteration: u32,
+    /// The parked stage it started at.
+    #[serde(default)]
+    pub stage: WorkflowStatus,
+    /// `human` | `autopilot`.
+    #[serde(default)]
+    pub by: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interactive: Option<bool>,
+    /// Pre-authorizes the combined apply of the rounds that say `Apply: yes`.
+    #[serde(default)]
+    pub auto_apply: bool,
+    /// The agent CLI every pass runs on; empty = the item's own rule.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent: String,
+    /// In launch order (see `application::workflow_run::pass_rank`).
+    #[serde(default)]
+    pub passes: Vec<RunPass>,
+    #[serde(default)]
+    pub apply: RunApply,
+    /// Stop after the judging pass under way: the rest are skipped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopping: bool,
+    /// A pass failed: nothing more launches until it is retried or skipped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paused: bool,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// A finished run, kept for the record.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunRecord {
+    #[serde(default)]
+    pub id: u32,
+    #[serde(default)]
+    pub iteration: u32,
+    #[serde(default)]
+    pub by: String,
+    /// One `"<target>:<round>"` or `"<target>:<state>"` per pass.
+    #[serde(default)]
+    pub passes: Vec<String>,
+    /// Why it closed, in one phrase.
+    #[serde(default)]
+    pub outcome: String,
+    #[serde(default)]
+    pub closed_at: i64,
+}
+
+/// Shape of `run.json`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch: Option<RunBatch>,
+    /// Steps autopilot started since a human last acted on the item.
+    #[serde(default)]
+    pub autopilot_steps: u32,
+    #[serde(default)]
+    pub next_id: u32,
+    /// Newest last, capped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<RunRecord>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
 /// PR block inside a workflow item's `meta.json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -826,6 +1012,11 @@ pub struct WorkflowMeta {
     /// written by the agent.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub applied_review_key: String,
+    /// Every round key a change round has carried, newest last and capped —
+    /// [`Self::applied_review_key`] names one round, while a check run's
+    /// combined apply carries several. Clash-only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applied_review_keys: Vec<String>,
     /// The executor phase of the round clash launched, or queued: `plan` |
     /// `revise` | `implement` | `pr`. Written on every executor launch and by
     /// request-changes (which queues a round before any launch); clash-only,
@@ -1130,6 +1321,12 @@ pub struct WorkflowItem {
     /// The executor's latest `handoff.md`, when it wrote one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff: Option<HandoffSummary>,
+    /// The check run in flight, from `run.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<RunBatch>,
+    /// `run.json`'s autopilot step count.
+    #[serde(default)]
+    pub autopilot_steps: u32,
 }
 
 /// Resolution state of a diff annotation.

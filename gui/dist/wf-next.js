@@ -260,21 +260,67 @@
     ];
   }
 
-  /// The recommendation for `item`: `{ id, reason, auto, params, settled }`,
-  /// or null when the stage has nothing to recommend (a finished item).
+  /// The checks a check run answers, by the pass that answers them (the
+  /// catalogue in `wf-checks.js`).
+  const CHECK_PASS = {
+    "plan-review": "review",
+    "code-review": "review",
+    drift: "drift",
+    "answer-comments": "respond",
+    "self-review": "self-review",
+  };
+
+  /// The recommendation for `item`, or null when the stage has nothing to
+  /// recommend (a finished item). Two kinds:
+  ///
+  /// - `{ kind: "action", id, reason, auto, params, settled }` — press this
+  ///   button of the bar;
+  /// - `{ kind: "check", id, reason, passes, auto, settled }` — run these
+  ///   checks. Every check pass that is due, not just the first: passes that
+  ///   judge the same iteration belong in one run, so their findings become
+  ///   one change round instead of one each. `id`/`reason` are the first's.
   ///
   /// `facts` carries what the action bar already knows:
   /// - `available` — Set of action ids the bar rendered;
+  /// - `passes` — Set of check-run pass ids the stage allows; absent, checks
+  ///   are recommended as buttons like any other action;
   /// - `pending` — `pendingReviewRound(item)`;
   /// - `prs` — `itemPrs(item.meta)`;
   /// - `hasPlan` — the item has a plan phase and a written plan.
   function wfNextStep(item, facts) {
     if (!item || !item.meta) return null;
     const available = (facts && facts.available) || new Set();
+    const passes = (facts && facts.passes) || null;
     const settled = [];
-    for (const c of checks(item, facts || {})) {
+    const list = checks(item, facts || {});
+    const asPass = (c) => (passes && CHECK_PASS[c.id] && passes.has(CHECK_PASS[c.id]) ? CHECK_PASS[c.id] : null);
+    for (let k = 0; k < list.length; k++) {
+      const c = list[k];
+      if (c.fires && asPass(c)) {
+        const set = [];
+        for (const d of list.slice(k)) {
+          const pass = d.fires && asPass(d);
+          if (!pass || set.some((p) => p.id === pass)) continue;
+          set.push({
+            id: pass,
+            reason: d.reason,
+            params: d.params || {},
+            auto: !!d.auto && AUTO_ACTIONS.has(d.id),
+          });
+        }
+        return {
+          kind: "check",
+          id: c.id,
+          reason: c.reason,
+          passes: set,
+          auto: set.some((p) => p.auto),
+          params: {},
+          settled,
+        };
+      }
       if (c.fires && available.has(c.id)) {
         return {
+          kind: "action",
           id: c.id,
           reason: c.reason,
           auto: !!c.auto && AUTO_ACTIONS.has(c.id),
@@ -311,7 +357,14 @@
     return out;
   }
 
-  const api = { NEXT_ACTIONS, AUTO_ACTIONS, wfNextStep, reviewedThisIteration, staleExplanations };
+  const api = {
+    NEXT_ACTIONS,
+    AUTO_ACTIONS,
+    CHECK_PASS,
+    wfNextStep,
+    reviewedThisIteration,
+    staleExplanations,
+  };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else Object.assign(window, api);

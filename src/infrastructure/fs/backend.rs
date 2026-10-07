@@ -1805,6 +1805,23 @@ impl crate::domain::ports::WorkflowRepository for FsBackend {
         super::workflows::write_explainers(&self.workflows_dir(), project, slug, file)
     }
 
+    fn load_workflow_run(
+        &self,
+        project: &str,
+        slug: &str,
+    ) -> Result<crate::domain::workflow::RunFile> {
+        super::workflows::read_run(&self.workflows_dir(), project, slug)
+    }
+
+    fn write_workflow_run(
+        &self,
+        project: &str,
+        slug: &str,
+        file: &crate::domain::workflow::RunFile,
+    ) -> Result<()> {
+        super::workflows::write_run(&self.workflows_dir(), project, slug, file)
+    }
+
     fn snapshot_workflow_iteration(&self, project: &str, slug: &str, diff: &str) -> Result<u32> {
         super::workflows::snapshot_iteration(&self.workflows_dir(), project, slug, diff)
     }

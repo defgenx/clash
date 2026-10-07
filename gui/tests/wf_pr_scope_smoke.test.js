@@ -15,6 +15,7 @@ const { extractFunction, stubEl } = require("./extract-fn.js");
 const APP = fs.readFileSync(path.join(__dirname, "..", "dist", "app.js"), "utf8");
 const SCOPE = fs.readFileSync(path.join(__dirname, "..", "dist", "wf-pr-scope.js"), "utf8");
 const PRS = fs.readFileSync(path.join(__dirname, "..", "dist", "wf-prs.js"), "utf8");
+const CHECKS = fs.readFileSync(path.join(__dirname, "..", "dist", "wf-checks.js"), "utf8");
 
 const ITEM = {
   project: "p",
@@ -72,6 +73,7 @@ function sandbox(over = {}) {
   vm.createContext(box);
   vm.runInContext(PRS, box);
   vm.runInContext(SCOPE, box);
+  vm.runInContext(CHECKS, box);
   return box;
 }
 
@@ -131,7 +133,7 @@ test("a respond round takes the whole picked set, in one round", async () => {
   // Answering the reviewers of a cross-repo change is one pass, not one pass
   // per repository — and the confirmation counts the threads of exactly the
   // PRs picked, not of the item.
-  const spawned = [];
+  const started = [];
   const confirms = [];
   const box = sandbox({
     uiCheckChoice: async (args) => args.items.map((i) => i.value),
@@ -139,7 +141,9 @@ test("a respond round takes the whole picked set, in one round", async () => {
       confirms.push(m);
       return true;
     },
-    spawnWfReview: async (...args) => spawned.push(args),
+    // A one-pass check run, so a standalone round resumes like any other.
+    wfStartRun: async (...args) => started.push(args),
+    wfChecksCtx: () => ({ reviewTarget: "diff" }),
     answerCommentsConfirm: (name, count) => `answer ${count} on ${name}?`,
     prChipLabel: (pr) => `chip${pr.number}`,
   });
@@ -158,10 +162,11 @@ test("a respond round takes the whole picked set, in one round", async () => {
   };
   await box.launchWfReviewRespond(withThreads, null);
   assert.match(confirms[0], /answer 5 on 2 pull requests\?/);
-  const [, , depth, publish, opts] = spawned[0];
-  assert.equal(depth, "standard");
-  assert.equal(publish, "respond-pr-comments");
-  assert.deepEqual([...opts.prUrls], [
+  const [, passes] = started[0];
+  assert.equal(passes.length, 1);
+  assert.equal(passes[0].depth, "standard");
+  assert.equal(passes[0].publish, "respond-pr-comments");
+  assert.deepEqual([...passes[0].prUrls], [
     "https://github.com/o/api/pull/1",
     "https://github.com/o/web/pull/2",
   ]);

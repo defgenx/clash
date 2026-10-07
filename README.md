@@ -489,12 +489,13 @@ diff-review → pr-draft → pr-ready → done`, plus `abandoned` from anywhere 
 ### The action bar
 
 Every item ends with an action bar in three labeled zones:
-- **This step · stays here** — reviews, explanations, opening the PR or the session.
+- **This step · stays here** — **🔍 Check…** and **▾** (every review and
+  explanation, see *Check runs*), opening the PR or the session.
 - **Continue · moves the item** — the decisions that advance the pipeline.
 - **Item · back, park, share** — the item as a whole.
 
-Above the zones, a **Suggested next** strip names the one button to press now
-and why, along with what it already checked:
+Above the zones, a **Suggested next** strip says what to do now and why, along
+with what it already checked:
 
 1. a review round came back and isn't applied yet → **↻ Apply**
 2. comments are still open → **✎ Request changes…**
@@ -504,18 +505,22 @@ and why, along with what it already checked:
 6. a ready PR has no self-review verdict for this iteration → **⚖ Self-review**
 7. otherwise → **Approve**
 
-It only ever points at a button that is on the bar, and it moves the highlight
-there. The agents advise too, through a `**Next:**` line at the end of every
+Due checks (3–6) are suggested **together**, as chips with one **▶ Run N
+checks** button: untick a chip to leave it out, or **Options…** for the full
+checklist. Checks that post on GitHub start unticked. Anything else points at a
+button that is on the bar and moves the highlight there. While a check run is
+in flight, the strip shows its progress instead. The agents advise too, through a `**Next:**` line at the end of every
 review round and of the executor's hand-off, but clash's own checks rank first.
 "Reviewed" means reviewed **at this iteration**: after a fix round, the code is
 due for review again.
 
 `workflows.assist` sets how far it goes (*Settings → Workflows · agents*):
 - `suggest` (the default) highlights the step.
-- `autopilot` also starts it after each agent hand-back, but only steps that
-  decide nothing: a review, a plan-vs-changes round, or applying a round that
-  said apply. It stops before every approval, PR flip, change request and
-  GitHub post, and after 3 steps on an item until you click something there.
+- `autopilot` also starts the suggested checks after each agent hand-back, as
+  a check run allowed to apply what its rounds say is worth applying — only
+  checks that post nothing. It stops before every approval, PR flip, change
+  request and GitHub post, and after 3 runs on an item until you click
+  something there (the count survives a restart).
 - `off` gives the plain bar.
 
 ### Reading an item
@@ -569,10 +574,36 @@ decides what the agent may touch:
 
 When the item has a PR, the fix round pushes so the PR follows.
 
+### Check runs
+
+Every review and explanation starts from one place on the action bar:
+
+- **🔍 Check…** opens a checklist of every check the stage allows (plan or
+  code review, plan vs changes, explain plan, explain changes, answer PR
+  comments, self-review), the suggested ones ticked. Each row has its own
+  options (depth, where findings go, focus, which PRs) and a **Run only this →**
+  link; at the bottom, which agent, how the rounds run, and whether to apply the
+  findings when the run finishes.
+- **▾** runs one check on its own, through that check's own dialog.
+
+A pick runs as one **check run**:
+- explanations start at once, alongside everything else;
+- the other checks run one after another over the same code, in a fixed order
+  (the self-review last);
+- then at most **one** change round for every round worth applying, instead of
+  one fix round per check — automatically if you allowed it, otherwise through
+  **↻ Apply** on the strip (apply now, or edit the note first).
+
+While it runs, the strip shows `Checks · 1 of 2 done · code review running ·
+next: plan vs changes`, with **Skip next**, **Stop after this one**, **Retry** /
+**Skip** for a failed check, and **✕** to close the run. The run is saved in
+the item's `run.json`, so quitting clash or an update restart doesn't lose it:
+it picks up where it stopped on the next launch.
+
 ### Agent review rounds
 
 **⌕ Plan review** (at plan review) and **⌕ Code review** (diff review and both PR
-stages) hand the item to a reviewer agent. A round is a side trip: the item goes
+stages) — from **🔍 Check…** or **▾** — hand the item to a reviewer agent. A round is a side trip: the item goes
 to `reviewing` and comes back exactly where it started. Rounds are unbounded,
 and nothing advances until you approve. Rounds are numbered per target, so the
 first code review is *Code review 1* however many plan reviews came before it.

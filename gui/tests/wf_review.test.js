@@ -149,7 +149,10 @@ test("the browser branch publishes every name app.js calls", () => {
   const win = {};
   vm.runInNewContext(src, { window: win });
 
-  const app = fs.readFileSync(path.join(__dirname, "..", "dist", "app.js"), "utf8");
+  // Read by app.js, or by wf-checks.js (which labels the respond pass).
+  const app =
+    fs.readFileSync(path.join(__dirname, "..", "dist", "app.js"), "utf8") +
+    fs.readFileSync(path.join(__dirname, "..", "dist", "wf-checks.js"), "utf8");
   const used = [
     "reviewRoundModel",
     "interactiveParam",
@@ -159,7 +162,7 @@ test("the browser branch publishes every name app.js calls", () => {
   ];
   for (const name of used) {
     assert.equal(typeof win[name], "function", `${name} must be on window`);
-    assert.ok(app.includes(name), `app.js is expected to use ${name}`);
+    assert.ok(app.includes(name), `app.js or wf-checks.js is expected to use ${name}`);
   }
 
   const html = fs.readFileSync(path.join(__dirname, "..", "dist", "index.html"), "utf8");

@@ -152,9 +152,12 @@
     if (!r || !r.round) return null;
     const meta = (item && item.meta) || {};
     if (meta.status === "reviewing") return null; // still running
+    // A check run owns its rounds: it applies them together, and its strip
+    // is where that is offered.
+    if (item.run) return null;
     // Identity, not order: round numbers restart per target, so "3 plan rounds
     // applied" must not read as "code round 1 applied".
-    if (meta.appliedReviewKey && roundKeyMatches(meta.appliedReviewKey, r)) return null;
+    if (appliedKeys(meta).some((k) => roundKeyMatches(k, r))) return null;
     // The round's own heading says what it judged. `meta.review` is only the
     // fallback — for a heading without a target — because explainers no
     // longer write it and a reviewer's block may predate the round shown.
@@ -193,8 +196,8 @@
   function reviewAppliedState(item) {
     if (pendingReviewRound(item)) return "pending";
     const r = item && item.lastAgentReview;
-    const applied = (item && item.meta && item.meta.appliedReviewKey) || "";
-    if (r && r.round && applied && roundKeyMatches(applied, r)) return "applied";
+    const applied = appliedKeys((item && item.meta) || {});
+    if (r && r.round && applied.some((k) => roundKeyMatches(k, r))) return "applied";
     return "";
   }
 
@@ -212,6 +215,15 @@
     if (t === "structure") return "explain-diff";
     if (t === "blueprint") return "explain-plan";
     return t;
+  }
+
+  /// Every round key a change round has carried: the list a check run's
+  /// combined apply stamps, plus the single key every change round stamps.
+  /// Mirrors `workflow_run::applied_keys`.
+  function appliedKeys(meta) {
+    const keys = Array.isArray(meta.appliedReviewKeys) ? [...meta.appliedReviewKeys] : [];
+    if (meta.appliedReviewKey && !keys.includes(meta.appliedReviewKey)) keys.push(meta.appliedReviewKey);
+    return keys;
   }
 
   /// Does a stored `appliedReviewKey` name this round?
@@ -236,31 +248,6 @@
   function wfNextReviewRound(item, target) {
     const tally = (item && item.reviewRounds) || {};
     return (tally[target] || 0) + 1;
-  }
-
-  /// May clash turn this finished round into a change round with no further
-  /// clicks? Both signals have to agree, and they answer different questions:
-  ///
-  /// - `meta.review.autoApply` is the human's pre-authorization, given in the
-  ///   composer when the round was launched;
-  /// - the round's own `**Apply:** yes` is the reviewer's judgement that there
-  ///   is something worth applying.
-  ///
-  /// An undeclared or negative call never fires. A reviewer that found nothing
-  /// material must not spend tokens on an executor to apply nothing, and a
-  /// round from before the declaration contract existed has said nothing at
-  /// all — silence is not consent in either direction.
-  ///
-  /// `review` is the summary from the hand-back event when there is one (it
-  /// arrives before the item list refreshes), else the item's own.
-  function shouldAutoApply(item, review) {
-    const meta = (item && item.meta) || {};
-    if (!(meta.review && meta.review.autoApply)) return false;
-    const r = review || (item && item.lastAgentReview);
-    if (!r || r.apply !== true) return false;
-    // Stage/target agreement and "not already applied" are exactly the
-    // pending-round rules, so ask the one function that owns them.
-    return !!pendingReviewRound({ ...item, lastAgentReview: r });
   }
 
   /// Mirrors `WorkflowStatus::can_explain` — may an explainer on `target`
@@ -326,7 +313,6 @@
     pendingReviewRound,
     reviewAppliedState,
     wfNextReviewRound,
-    shouldAutoApply,
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
