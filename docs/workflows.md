@@ -4,7 +4,8 @@ The Workflows feature manages a plan → review → implement → PR pipeline pe
 item. clash's GUI renders and mutates the files below; Claude Code agents co-edit
 them — the executor (`clash-workflow` skill) does the work, the reviewers
 (`clash-plan-review` for plans, `clash-code-review` for diffs) judge it, and
-`clash-drift-review` judges the two against each other. This
+`clash-drift-review` judges the two against each other, and `clash-pr-review`
+reviews the PR for a verdict it posts (the **Self-review** round). This
 document is the contract all sides follow.
 
 ## Layout
@@ -402,6 +403,7 @@ describable on its own.
 | `diff` | `clash-code-review` (embedded skill) |
 | `explain-diff` / `explain-plan` | `clash-explain` (embedded skill — explains, never judges) |
 | `drift` | `clash-drift-review` (embedded skill — compares the plan with what was built, and grades the gap) |
+| `self-review` | `clash-pr-review` (embedded skill — loops until a pass finds nothing new, then approves or requests changes on the PR) |
 
 Every engine is a skill clash itself installs, so a review round needs no
 third-party plugin present. A unit test asserts any skill named by
@@ -592,6 +594,77 @@ drift round, is skipped and the spine numbered from `plan.md`, never waited
 for. Comparing two explanations
 would measure drift between two *documents*: an `explain-diff.md` written three
 rounds ago describes code that no longer exists.
+
+### Self-review rounds (clash-pr-review skill)
+
+A **self-review** (`⚖ Self-review`, `Target: self-review`) reviews the PR the
+way a human reviewer would and **posts a verdict on it** — `APPROVE` or
+`REQUEST_CHANGES`, one GitHub review carrying line comments on the code
+concerned and a summary. It is the only round allowed to approve or request
+changes: every other reviewer is forbidden to, because its findings go to the
+human first. Here the post *is* the output, so:
+
+- **It always publishes.** `ReviewTarget::publishes()` makes the launcher force
+  `Publish: pr-comments` whatever the caller sent, and refuse an item with no
+  PR before spawning (`no-pr:` — whose recovery offers only *Attach PR*, since
+  a local self-review would be bounced straight back to the missing PR).
+- **Gated like a code review, plus a PR.** `can_request_review`, `needs_diff`
+  (never at `draft`/`plan-review`), and at least one PR on the item — but no
+  plan (`needs_plan` is false): `review-only` items are its most common
+  customer. In practice `diff-review`, `pr-draft`, `pr-ready`.
+- **It loops.** One reading of a PR finds what that reading looked for, so the
+  skill runs a Ralph loop over a ledger **outside the item directory**
+  (`$TMPDIR/clash-pr-review/<owner>-<repo>-<n>-<sha7>/ledger.md` — the item
+  tree is watched and its files are a contract). Pass 1 is breadth; every
+  later pass re-reads the ledger and takes the thinnest angle (hunks read
+  least, beyond the diff, clusters around verified findings, adversarial
+  inputs, cross-file/cross-repo contracts, tests). Every new candidate is
+  refuted against the code before it counts. The loop stops when a pass
+  verifies nothing new, every hunk has been read (twice from different angles
+  at `deep`), and the minimum ran (`standard` 2 / `deep` 3); the cap is 5 / 8,
+  and hitting it while still finding `BLOCKER`/`RISK`s means *request
+  changes*.
+- **The PR's discussion is an input, not background.** Every review thread
+  (with its resolved/outdated state, via GraphQL), every review, the
+  conversation (bots included) and the commits are read, and each item gets a
+  *verified* outcome against the code at the PR head: fixed, **not fixed**
+  (resolved or "fixed in <sha>", but the problem is still there), still open,
+  decided (a settled trade-off whose reasoning holds — respected, not
+  re-raised), decided-but-wrong, or no longer applies. Outdated is not
+  resolved, and resolved is a claim. Items still needing work become findings
+  credited to the reviewer who raised them; the loop does not stop while an
+  item is unverified, the discussion is fetched again before posting, and the
+  summary reports what the earlier review came to — including any human
+  reviewer whose change request is still outstanding. `### Prior discussion` is
+  the report's record of it and is left out of pasted findings.
+- **The decision rule**: request changes on an open `BLOCKER`, a `RISK` a real
+  input triggers, a claimed fix that is not in the code, a reviewer's blocker
+  still open, CI failing because of the change, or a change that does not
+  do what its description (or `plan.md`) says; approve otherwise, with the
+  rest posted as non-blocking comments.
+- **Every summary opens with an "automated review" preamble** (behind a
+  `<!-- clash-pr-review -->` marker later runs use to avoid re-posting a
+  finding), and every line comment starts with `🤖` and its grade.
+- **GitHub's two refusals are stated, not hidden.** A PR's author cannot
+  approve or request changes on it — the usual case for an item's own PR — so
+  the review goes out as `COMMENT` with the verdict stated first; a draft takes
+  no review at all, so line comments and a summary comment are posted instead.
+  The composer says both before launch; the round's `### Published` names the
+  event actually sent.
+- **It fixes nothing**: a verdict is about one commit. The findings on the
+  primary PR also land as `annotations.json` entries (`"author": "agent"`), so
+  a change-request verdict becomes a fix round through *Request changes* /
+  `↻ Apply review` like any code review (`meta.appliedReviewKey` =
+  `self-review:<n>`), and `### Passes` (the loop record) is omitted from the
+  pasted findings.
+- **Next-step assist** suggests it at `pr-ready` once per iteration, and never
+  runs it on autopilot — it posts on GitHub.
+
+The skill is written as an **extension of `clash-code-review`**: it reads that
+skill's grades, depth, delegation and diff-reading rules and overrides publish,
+fixing and the single pass. It also runs **outside workflows** — "review PR
+<url>" or `/clash-pr-review 123` on anyone's PR — where it writes nothing but
+its ledger and reports in chat.
 
 ## Entry modes
 
@@ -1042,6 +1115,7 @@ ceremony. The table is the split **at full scale**:
 | `clash-plan-review` | one reviewer per area, split by section (architecture, quality, tests, performance) only for a large plan | refutation, batched per area |
 | `clash-code-review` | one reviewer per area/PR applying every lens (correctness, tests, conventions, security/perf), split by lens only when large or `deep` | refutation, batched per file or area |
 | `clash-drift-review` | tracers over the plan's actions grouped by area, + one over unexplained hunks for a large diff | refutation, batched per file or area |
+| `clash-pr-review` | a fresh wave of reviewers **per pass**, each briefed with the pass's angle and the ledger's findings as "already found" | refutation of every new candidate, every pass |
 | `clash-explain` | one mapper per area too big to read in a few files | the lead spot-checks every name it writes |
 
 Verification is proportional too: the lead settles a claim itself when one
@@ -1070,8 +1144,8 @@ configuration (the kickoff clause still applies — omp delegates through its
 
 ## Embedded skills — install as a decision
 
-The five skills (`clash-workflow`, `clash-plan-review`, `clash-code-review`,
-`clash-explain`, `clash-drift-review`) are compiled into both binaries. Installing them under
+The six skills (`clash-workflow`, `clash-plan-review`, `clash-code-review`,
+`clash-explain`, `clash-drift-review`, `clash-pr-review`) are compiled into both binaries. Installing them under
 `<claude_dir>/skills/` becomes a **decision only where it could lose work**:
 
 - `sync_unattended` runs at every startup and needs no permission: it

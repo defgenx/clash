@@ -22,6 +22,7 @@ const ALL = new Set([
   "apply-review", "plan-review", "code-review", "drift", "request-changes",
   "answer-comments", "approve-plan", "approve-pr-draft", "approve-done",
   "create-pr", "pr-is-ready", "mark-ready", "attach-pr", "mark-done", "open-prs",
+  "self-review",
 ]);
 
 const item = (status, extra = {}, meta = {}) => ({
@@ -193,4 +194,23 @@ test("the browser branch publishes every global app.js reads", () => {
   vm.runInNewContext(src, { window: win });
   for (const name of ["wfNextStep", "staleExplanations", "reviewedThisIteration", "AUTO_ACTIONS"])
     assert.ok(win[name], name);
+});
+
+test("a PR in human hands is offered a self-review once per iteration, never on autopilot", () => {
+  const reviewed = {
+    reviewRounds: { diff: 1, drift: 1 },
+  };
+  const marks = { reviewMarks: { diff: { iteration: 1, round: 1 }, drift: { iteration: 1, round: 1 } } };
+  const step = wfNextStep(item("pr-ready", reviewed, marks), facts());
+  assert.equal(step.id, "self-review");
+  // It posts on GitHub, so it waits for a click.
+  assert.equal(step.auto, false);
+  // Once this iteration has a verdict, the PR is just waiting on merge.
+  const done = item(
+    "pr-ready",
+    { reviewRounds: { diff: 1, drift: 1, "self-review": 1 } },
+    { reviewMarks: { ...marks.reviewMarks, "self-review": { iteration: 1, round: 1 } } }
+  );
+  assert.equal(wfNextStep(done, facts()).id, "open-prs");
+  assert.ok(!AUTO_ACTIONS.has("self-review"));
 });

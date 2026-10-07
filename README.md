@@ -195,11 +195,15 @@ teams, files, tabs and panes, the terminal and settings. Replay it from *Setting
 - **Split panes** nest freely, like iTerm:
   - `⌘D` splits the focused pane (beside it when it is wide, below it when it is
     tall) and `⌘⇧D` closes it.
-  - Drag a tab — from the strip or a pane's title bar — onto any pane: drop it on
-    an edge to split that pane on that side, or in the middle to show it there
-    (swapping with the pane it came from). Dragging a pane's tab moves the pane.
+  - Drag a tab — from the strip or a pane's title bar — onto any pane: like
+    iTerm, the half under the cursor (picked by the pane's diagonals) is where
+    the split opens, and the highlight shows it. Dragging a pane's title moves
+    the pane; its neighbours take the space it leaves. Dropping on an empty
+    pane fills it, and on a pane's title bar swaps the two.
   - Drop it on the outer edge of the whole pane area instead to get a pane that
     spans that side — e.g. one full-width pane under several columns.
+  - Drop a pane's title on the tab strip to unsplit it back into a plain tab.
+    `Esc` cancels a drag.
   - Closing a tab closes its pane; the neighbouring panes take the space.
   - `⌘⇧↩` (or a double-click on the pane title) zooms.
   - `⌘⌥←/→` cycles focus.
@@ -497,7 +501,8 @@ and why, along with what it already checked:
 3. PR threads are waiting on you → **⇄ Answer PR threads**
 4. this iteration's plan or code has no review yet → **⌕ Plan review** / **⌕ Code review**
 5. nothing has compared the change with the plan → **⇄ Compare plan vs changes**
-6. otherwise → **Approve**
+6. a ready PR has no self-review verdict for this iteration → **⚖ Self-review**
+7. otherwise → **Approve**
 
 It only ever points at a button that is on the bar, and it moves the highlight
 there. The agents advise too, through a `**Next:**` line at the end of every
@@ -639,6 +644,27 @@ Launching it offers to refresh any explanation written for an older iteration
 alongside it, pre-ticked; it runs in parallel, and the comparison doesn't wait
 for it.
 
+### Self-review
+
+**⚖ Self-review** reviews the PR like a human reviewer and posts the verdict on
+it: **approve** or **request changes**, as one GitHub review with line comments
+on the code concerned and a summary. It reviews in a loop, pass after pass, each
+pass hunting for what the earlier ones missed, and stops when a full pass finds
+nothing new. It reads everything already on the PR (review threads, comments,
+reviews and fix commits) and checks each claimed fix against the code. A thread
+marked resolved whose problem is still there becomes a finding credited to the
+reviewer who raised it, and decisions settled in the discussion are respected.
+Every summary opens with a note saying it is an automated review,
+and every line comment is marked 🤖.
+
+It needs a PR, not a plan, so review-only items get it too. GitHub doesn't let
+a PR's author approve or request changes on it, and a draft takes no review, so
+in those cases the verdict is posted as a comment that states it. The findings
+also land as diff comments, so a change request can become a fix round.
+
+The skill behind it, `clash-pr-review`, works outside workflows too: ask Claude
+Code to "review PR <url>" (or run `/clash-pr-review 123`) on any PR.
+
 ### Going back
 
 **↩ Move back to…** lists the stages behind the current one, with what each is
@@ -725,12 +751,13 @@ never post.
   explorers, implementers in waves of disjoint files, or one reviewer per area,
   followed by verification. `solo` keeps everything in one session.
   [Details](docs/workflows.md#lead-and-subagents).
-- **Skills**: the agent side is five skills embedded in the binary:
+- **Skills**: the agent side is six skills embedded in the binary:
   - `clash-workflow` — the executor: plans, implements, opens PRs, writes the hand-off;
   - `clash-plan-review` — the plan reviewer;
   - `clash-code-review` — the code reviewer;
   - `clash-explain` — the explainer;
-  - `clash-drift-review` — plan vs changes.
+  - `clash-drift-review` — plan vs changes;
+  - `clash-pr-review` — the self-review: loops over a PR, then approves or requests changes (also usable on its own).
 
   Startup installs missing skills and refreshes the ones you never edited.
   clash asks (*Keep my edits* / *Overwrite*) only when an upgrade would replace

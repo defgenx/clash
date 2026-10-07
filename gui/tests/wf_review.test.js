@@ -263,3 +263,41 @@ test("a drift round keeps the PR scope, because drift happens between repos", ()
   assert.equal(reviewRoundModel({ target: "plan", prs }).prScope, null);
   assert.equal(reviewRoundModel({ target: "drift", prs: [prs[0]] }).prScope, null);
 });
+
+test("a self-review always posts, so it asks no destination and says where it goes", () => {
+  const m = reviewRoundModel({ target: "self-review", round: 2, hasPr: true, prNumber: 41 });
+  assert.match(m.title, /Self-review — round 2/);
+  // The loop and the verdict are the round's whole shape.
+  assert.match(m.intro, /until a full pass finds nothing new/);
+  assert.match(m.intro, /approve or request changes/);
+  assert.match(m.intro, /automated review/);
+  // No "keep local": the post is the output.
+  assert.equal(m.publish, null);
+  assert.match(m.notice, /Posts to #41/);
+  // GitHub refuses an author's own approval — the common case for an item's
+  // PR — and the composer says so before the round is launched.
+  assert.match(m.notice, /author approve or request changes/);
+  assert.doesNotMatch(m.notice, /draft/);
+  assert.match(
+    reviewRoundModel({ target: "self-review", hasPr: true, prDraft: true }).notice,
+    /draft/
+  );
+  assert.ok(m.depth, "a self-review has a depth");
+  assert.match(m.depth.choices.find((c) => c.value === "deep").detail, /passes/);
+  assert.match(m.autoApply.label, /verdict requests changes/);
+  // The other rounds carry no notice.
+  for (const target of ["plan", "diff", "drift"]) {
+    assert.equal(reviewRoundModel({ target, hasPr: true }).notice, null, target);
+  }
+});
+
+test("a multi-repo self-review keeps the scope, its local row naming the item's PR", () => {
+  const prs = [
+    { url: "https://github.com/o/api/pull/1", repo: "o/api", number: 1, primary: true },
+    { url: "https://github.com/o/web/pull/2", repo: "o/web", number: 2, primary: false },
+  ];
+  const m = reviewRoundModel({ target: "self-review", prs, hasPr: true, prNumber: 1 });
+  assert.ok(m.prScope);
+  assert.match(m.prScope.local.label, /own PR/);
+  assert.equal(m.prScope.choices.length, 2);
+});

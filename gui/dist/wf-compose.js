@@ -164,6 +164,7 @@
     // A drift round judges, so "Review N" would not be a lie — but it would
     // hide which two things were compared, which is the round's whole point.
     if (t === "drift") return `Plan vs changes ${n}`;
+    if (t === "self-review") return `Self-review ${n}`;
     return `Review ${n}`;
   }
 
@@ -214,6 +215,12 @@
       "### Plan amendments needed",
       // The drift reviewer's own escape hatch for things that are not drift.
       "### Noticed outside the comparison",
+      // The self-review's records: how many passes ran, and what the PR's
+      // earlier discussion came to. Every discussion item that still needs
+      // work is also listed as a graded finding, so pasting this would
+      // duplicate it.
+      "### Passes",
+      "### Prior discussion",
     ]);
     const out = [];
     let skipping = false;

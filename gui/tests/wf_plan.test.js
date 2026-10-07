@@ -474,3 +474,19 @@ test("the pending round is judged by its own heading, not the last meta.review",
   };
   assert.equal(pendingReviewRound(item).round, 1);
 });
+
+test("a self-review round is pending at the code stages, never at plan-review", () => {
+  // Its findings land as annotations on the PR's diff, so a change request
+  // verdict can become a fix round like any code review's.
+  const item = (status) => ({
+    meta: { status, review: { target: "self-review" } },
+    lastAgentReview: { round: 1, target: "self-review", verdict: "REQUEST CHANGES", apply: true },
+  });
+  for (const status of ["diff-review", "pr-draft", "pr-ready"]) {
+    assert.ok(pendingReviewRound(item(status)), `${status} must offer it`);
+  }
+  assert.equal(pendingReviewRound(item("plan-review")), null);
+  const applied = item("pr-ready");
+  applied.meta.appliedReviewKey = "self-review:1";
+  assert.equal(pendingReviewRound(applied), null);
+});

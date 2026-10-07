@@ -49,6 +49,10 @@
     // instead of being left implicit: "leave everything unchecked" is not a
     // thing anyone reads off a dialog.
     const seeded = (prUrls || []).filter((u) => (prs || []).some((p) => p.url === u));
+    // The self-review posts a verdict on a PR, so "this repository's diff"
+    // means this item's own PR there, and the findings' destination is not a
+    // choice.
+    const self = target === "self-review";
     // A drift round keeps the scope for the same reason a code round does: a
     // plan split across an API repo and the web repo that consumes it drifts
     // *between* the repos as often as inside one.
@@ -61,9 +65,10 @@
             // saying "read that repository instead of / as well as mine".
             local: {
               value: "",
-              label: "This repository's own diff",
-              detail:
-                "Every file on the branch — findings land as diff comments you can triage here.",
+              label: self ? "This item's own PR" : "This repository's own diff",
+              detail: self
+                ? "The primary PR — its verdict and line comments are posted there, and its findings also land as diff comments you can triage here."
+                : "Every file on the branch — findings land as diff comments you can triage here.",
               checked: seeded.length === 0,
             },
             choices: (prs || []).map((pr) => ({
@@ -86,14 +91,30 @@
       prScope,
       // Named for the question it answers. "Agent review — round 3" on a
       // drift round would put two different jobs behind one heading.
-      title: drift ? `Plan vs changes — round ${round}` : `Agent review — round ${round}`,
+      title: drift
+        ? `Plan vs changes — round ${round}`
+        : self
+          ? `Self-review — round ${round}`
+          : `Agent review — round ${round}`,
       intro:
         (target === "plan"
           ? "Reviews this item's plan against the real codebase, then returns the item here."
           : drift
             ? "Compares this item's plan with the change that was built from it, grades every divergence as intended, harmless or a problem, then returns the item here."
-            : "Reviews this item's code diff, then returns the item here.") +
+            : self
+              ? "Reviews the PR pass after pass until a full pass finds nothing new, then posts a verdict — approve or request changes — with line comments and a summary marked as an automated review. Then returns the item here."
+              : "Reviews this item's code diff, then returns the item here.") +
         " Findings land in this item either way. Spends tokens.",
+      // Said where the round is shaped, because it is the part that leaves the
+      // machine: a self-review has no "keep local", and GitHub changes how
+      // its verdict can be posted in two common cases.
+      notice: self
+        ? `Posts to ${prName} — there is no local-only self-review. ` +
+          (prDraft
+            ? "This PR is a draft, which cannot take a formal review: the verdict is posted as a comment. "
+            : "") +
+          "If the PR is yours, GitHub does not let its author approve or request changes, so the verdict is posted as a comment review that states it."
+        : null,
       launchLabel: `Launch round ${round}`,
       depth:
         target === "plan"
@@ -107,18 +128,24 @@
                   label: drift ? "Deep comparison" : "Deep review",
                   detail: drift
                     ? "Traces every planned action into the code that implements it, instead of matching plan bullets against file names."
-                    : "Traces every subsystem the change touches — callers, invariants, existing tests — before judging it.",
+                    : self
+                      ? "At least three passes, every hunk read from two angles, up to eight passes — callers, invariants and tests traced before the verdict."
+                      : "Traces every subsystem the change touches — callers, invariants, existing tests — before judging it.",
                 },
                 {
                   value: "standard",
                   label: drift ? "Standard comparison" : "Standard review",
                   detail: drift
                     ? "Walks the plan against the diff in context. Faster, lighter."
-                    : "Reviews the diff in context. Faster, lighter.",
+                    : self
+                      ? "At least two passes, up to five, each hunk read at least once. Faster, lighter."
+                      : "Reviews the diff in context. Faster, lighter.",
                 },
               ],
             },
-      publish: !hasPr
+      // A self-review always posts (the backend forces it), so there is no
+      // destination to pick.
+      publish: !hasPr || self
         ? null
         : {
             legend: "Where do the findings go?",
@@ -172,7 +199,9 @@
         label:
           target === "plan"
             ? "Apply the findings to the plan when the round finishes"
-            : "Start a fix round when this one finishes",
+            : self
+              ? "Start a fix round when the verdict requests changes"
+              : "Start a fix round when this one finishes",
         detail:
           "The round decides whether its findings are worth it — cosmetic ones are reported, not applied. " +
           (target === "plan"

@@ -881,6 +881,7 @@ pub fn review_job(review: &crate::domain::workflow::WorkflowReview) -> String {
         // Named for the comparison, not the file: "drift" alone in a sessions
         // sidebar says nothing about which two things are being compared.
         ReviewTarget::Drift => format!("plan vs changes r{}", review.round.max(1)),
+        ReviewTarget::SelfReview => format!("self-review r{}", review.round.max(1)),
         ReviewTarget::Plan => format!("plan review r{}", review.round.max(1)),
         ReviewTarget::Diff | ReviewTarget::Unknown => {
             format!("code review r{}", review.round.max(1))
@@ -1269,6 +1270,10 @@ pub fn review_engine_for(target: crate::domain::workflow::ReviewTarget) -> &'sta
         // different questions, and one skill answering both answers neither
         // sharply.
         ReviewTarget::Drift => "clash-drift-review",
+        // The PR reviewer: an extension of the code reviewer that loops until
+        // a pass finds nothing new and ends in a posted verdict. Its own skill
+        // because it is also used outside workflows, on anyone's PR.
+        ReviewTarget::SelfReview => "clash-pr-review",
         // Unknown degrades to the code reviewer: every mode has a diff to
         // read, while a plan may not exist at all.
         ReviewTarget::Diff | ReviewTarget::Unknown => "clash-code-review",
@@ -1607,6 +1612,37 @@ mod tests {
         // The drift reviewer is its own skill: "is this code good" and "is
         // this the code we agreed to" are different questions.
         assert_eq!(review_engine_for(ReviewTarget::Drift), "clash-drift-review");
+        assert_eq!(
+            review_engine_for(ReviewTarget::SelfReview),
+            "clash-pr-review"
+        );
+    }
+
+    /// The self-review kickoff names the PR reviewer and carries the forced
+    /// publish, so the skill knows the verdict goes to the PR before it reads
+    /// anything — and the return status, since it is still a workflow round.
+    #[test]
+    fn a_self_review_kickoff_names_the_pr_reviewer() {
+        use crate::domain::workflow::{ReviewDepth, ReviewPublish, ReviewTarget, WorkflowReview};
+        let review = WorkflowReview {
+            target: ReviewTarget::SelfReview,
+            depth: ReviewDepth::Deep,
+            publish: ReviewPublish::PrComments,
+            round: 1,
+            return_status: WorkflowStatus::PrReady,
+            ..Default::default()
+        };
+        let p = build_review_prompt(
+            "/items/x",
+            &review,
+            WorkflowMode::ReviewOnly,
+            &Delegation::default(),
+        );
+        assert!(p.contains("Use the clash-pr-review skill"), "{p}");
+        assert!(p.contains("Target: self-review."), "{p}");
+        assert!(p.contains("Publish: pr-comments."), "{p}");
+        assert!(p.contains("Return to: pr-ready."), "{p}");
+        assert_eq!(review_job(&review), "self-review r1");
     }
 
     /// Every target's session name says what the agent is doing. `drift`

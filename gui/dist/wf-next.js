@@ -245,6 +245,14 @@
     return [
       ...code,
       {
+        // The PR is in human hands now; an automated verdict on it is the
+        // cheapest reviewer it will get. Never autopilot: it posts on GitHub.
+        id: "self-review",
+        fires: !reviewedThisIteration(item, "self-review"),
+        reason: "No self-review verdict has been posted for this iteration of the PR",
+        settled: "the PR has a self-review verdict for this iteration",
+      },
+      {
         id: "open-prs",
         fires: true,
         reason: "Waiting on merge — the item closes itself when the PR merges",

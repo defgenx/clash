@@ -363,6 +363,15 @@ pub enum ReviewTarget {
     /// because a divergence is only arguable once you can see both shapes side
     /// by side.
     Drift,
+    /// The PR as a reviewer would judge it, ending in a verdict posted on the
+    /// forge — an approval or a change request, with line comments. The
+    /// "Self-review" action.
+    ///
+    /// The one round that may approve or request changes: every other
+    /// reviewer is forbidden to, because their findings go to the human first.
+    /// Here posting the verdict *is* the job, so it always talks to the PR
+    /// (see [`Self::publishes`]) and is offered only where one exists.
+    SelfReview,
     #[serde(other)]
     Unknown,
 }
@@ -378,6 +387,7 @@ impl ReviewTarget {
         Self::ExplainDiff,
         Self::ExplainPlan,
         Self::Drift,
+        Self::SelfReview,
         Self::Unknown,
     ];
 
@@ -388,6 +398,7 @@ impl ReviewTarget {
             Self::ExplainDiff => "explain-diff",
             Self::ExplainPlan => "explain-plan",
             Self::Drift => "drift",
+            Self::SelfReview => "self-review",
             Self::Unknown => "unknown",
         }
     }
@@ -420,7 +431,16 @@ impl ReviewTarget {
     /// diff-review could equally want a code review, an explanation or a drift
     /// comparison, and only the human knows which.
     pub fn requestable(&self) -> bool {
-        self.explains() || matches!(self, Self::Drift)
+        self.explains() || matches!(self, Self::Drift | Self::SelfReview)
+    }
+
+    /// Does a round on this target always post to the PR, whatever publish
+    /// mode it was launched with? Only the self-review: its verdict exists to
+    /// be read on the forge, so a "local" self-review is a round with no
+    /// output. The launcher forces `pr-comments` and refuses an item with no
+    /// PR before spawning.
+    pub fn publishes(&self) -> bool {
+        matches!(self, Self::SelfReview)
     }
 
     /// Does a round on this target need `plan.md` to exist?
@@ -439,7 +459,10 @@ impl ReviewTarget {
     /// `plan-review`: nothing has been built yet, so there is no divergence
     /// from the plan to measure — only a plan.
     pub fn needs_diff(&self) -> bool {
-        matches!(self, Self::Diff | Self::ExplainDiff | Self::Drift)
+        matches!(
+            self,
+            Self::Diff | Self::ExplainDiff | Self::Drift | Self::SelfReview
+        )
     }
 
     /// Normalize a target string off disk — a `meta.review.target` or an
@@ -1223,6 +1246,7 @@ mod tests {
                 ReviewTarget::ExplainDiff => ReviewTarget::ExplainDiff,
                 ReviewTarget::ExplainPlan => ReviewTarget::ExplainPlan,
                 ReviewTarget::Drift => ReviewTarget::Drift,
+                ReviewTarget::SelfReview => ReviewTarget::SelfReview,
                 ReviewTarget::Unknown => ReviewTarget::Unknown,
             };
             assert_eq!(&named, t);
@@ -1261,6 +1285,28 @@ mod tests {
             serde_json::from_str::<ReviewTarget>(&json).unwrap(),
             ReviewTarget::Drift
         );
+    }
+
+    /// The self-review posts a verdict, so it is requestable by name, always
+    /// publishes, and needs a built change — but not a plan: review-only
+    /// items, which have none, are its most common customer.
+    #[test]
+    fn self_review_always_publishes_and_needs_no_plan() {
+        let t = ReviewTarget::SelfReview;
+        assert!(!t.explains());
+        assert!(t.requestable());
+        assert!(t.publishes());
+        assert!(t.needs_diff());
+        assert!(!t.needs_plan());
+        assert_eq!(t.as_str(), "self-review");
+        let json = serde_json::to_string(&t).unwrap();
+        assert_eq!(json, "\"self-review\"");
+        assert_eq!(serde_json::from_str::<ReviewTarget>(&json).unwrap(), t);
+        // Nothing else forces a publish: every other round's destination is
+        // the human's choice.
+        for other in ReviewTarget::ALL.iter().filter(|o| **o != t) {
+            assert!(!other.publishes(), "{other} must not force a publish");
+        }
     }
 
     /// `plan` and `diff` stay derived from the launch status. A launcher that

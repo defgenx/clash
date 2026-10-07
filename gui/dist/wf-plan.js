@@ -170,6 +170,8 @@
     // where the plan is the artifact. Its plan-side outcome travels the other
     // route, by design: a code fix round may not write plan.md.
     if (target === "drift" && stagePlan) return null;
+    // Same for a self-review: its findings are annotations on the PR's diff.
+    if (target === "self-review" && stagePlan) return null;
     return r;
   }
 

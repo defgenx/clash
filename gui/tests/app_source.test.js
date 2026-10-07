@@ -869,3 +869,21 @@ test("every user-facing reload goes through the busy-session confirm", () => {
   assert.doesNotMatch(APP, /action: \(\) => reloadSession\(/);
   assert.match(APP, /return s \? reloadSessionInteractive\(s\) : reloadSession\(sid\);/);
 });
+
+test("the self-review needs a PR and a built change, and has no local fallback", () => {
+  const btn = extractFunction(APP, "renderWfActions");
+  const self = btn.slice(btn.indexOf("const selfReviewButton ="));
+  assert.match(self, /if \(!wfCanReview\(item\)\) return;/);
+  // It posts a verdict, so no PR means no button — but no plan is fine:
+  // review-only items are its most common customer.
+  assert.match(self, /if \(!itemPrs\(item\.meta\)\.length\) return;/);
+  assert.doesNotMatch(self.slice(0, self.indexOf("add(")), /hasPlan/);
+  assert.match(self, /\["draft", "plan-review"\]\.includes\(st\)/);
+  assert.match(self, /launchWfReview\(item, root, \{ target: "self-review" \}\)/);
+  assert.match(self, /Self-review/);
+  assert.equal((APP.match(/^\s*selfReviewButton\(\);$/gm) || []).length, 1);
+  // The no-PR recovery must not offer a local self-review: the backend forces
+  // it back onto the PR, so that choice would loop.
+  const spawn = extractFunction(APP, "spawnWfReview");
+  assert.match(spawn, /\.\.\.\(selfReview \? \[\] : \[\{ label: "Run the round locally instead"/);
+});

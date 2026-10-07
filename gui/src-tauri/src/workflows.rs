@@ -1782,6 +1782,22 @@ pub(crate) async fn start_workflow_review_agent(
             .map(|p| p.url)
             .collect()
     };
+    // Plan/diff stay DERIVED from the launch status (a plan review at
+    // diff-review has nothing to read); the targets with their own action
+    // button may be requested explicitly — the two ◫ Explain rounds, the
+    // ⇄ drift comparison and the self-review, none of which the status
+    // implies. Any other explicit value is ignored rather than trusted.
+    let target = match target {
+        Some(t) if t.requestable() => t,
+        _ => ReviewTarget::for_status(meta.status, meta.mode),
+    };
+    // A self-review's verdict exists to be read on the PR, so whatever mode
+    // the caller sent, it publishes.
+    let publish = if target.publishes() {
+        ReviewPublish::PrComments
+    } else {
+        publish
+    };
     // Fail before spawning rather than letting the agent discover it: a round
     // that talks to the forge needs a PR to talk to. An explicit pick IS that
     // PR, even when the item has no primary (linked-only items).
@@ -1789,15 +1805,6 @@ pub(crate) async fn start_workflow_review_agent(
     {
         return Err("no-pr: this item has no pull request yet".to_string());
     }
-    // Plan/diff stay DERIVED from the launch status (a plan review at
-    // diff-review has nothing to read); the targets with their own action
-    // button may be requested explicitly — the two ◫ Explain rounds and the
-    // ⇄ drift comparison, none of which the status implies. Any other explicit
-    // value is ignored rather than trusted.
-    let target = match target {
-        Some(t) if t.requestable() => t,
-        _ => ReviewTarget::for_status(meta.status, meta.mode),
-    };
     if target.needs_plan() && !has_plan_content(&state, &project, &slug) {
         return Err("This item has no plan yet — there is nothing to read".to_string());
     }
@@ -1812,8 +1819,13 @@ pub(crate) async fn start_workflow_review_agent(
         )
     {
         return Err(format!(
-            "Nothing is implemented yet ('{}') — there is no change to compare the plan against",
-            meta.status
+            "Nothing is implemented yet ('{}') — there is no change to {}",
+            meta.status,
+            if target == ReviewTarget::Drift {
+                "compare the plan against"
+            } else {
+                "review"
+            }
         ));
     }
 

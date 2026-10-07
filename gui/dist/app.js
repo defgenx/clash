@@ -7132,9 +7132,11 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
           ? "explain plan"
           : target === "drift"
             ? "plan vs changes"
-            : publish === "respond-pr-comments"
-              ? "answer PR comments"
-              : "review";
+            : target === "self-review"
+              ? "self-review"
+              : publish === "respond-pr-comments"
+                ? "answer PR comments"
+                : "review";
     await openSession(sid, wfSessionName(item, job));
     await refreshWorkflows();
     if (root) buildWorkflowView(root, item.project, item.slug);
@@ -7147,12 +7149,18 @@ async function spawnWfReview(item, root, depth, publish, opts = {}) {
     if (msg.startsWith("no-pr:")) {
       // Never a dead end: attach the PR here, downgrade to a local round, or
       // walk away — the user decides, and work continues either way.
+      // A self-review's output IS the post on the PR, so it has no local
+      // form to fall back to — offering one would launch a round the backend
+      // forces straight back onto the missing PR.
+      const selfReview = target === "self-review";
       const how = await uiChoice({
         message: "This item has no pull request recorded, and this round needs one.",
-        detail: "Attach the PR to continue as planned, or keep the findings local for now.",
+        detail: selfReview
+          ? "A self-review posts its verdict on the PR — attach it to continue."
+          : "Attach the PR to continue as planned, or keep the findings local for now.",
         choices: [
           { label: "Attach PR by URL…", value: "attach", primary: true },
-          { label: "Run the round locally instead", value: "local" },
+          ...(selfReview ? [] : [{ label: "Run the round locally instead", value: "local" }]),
         ],
       });
       if (how === "attach") {
@@ -7660,7 +7668,7 @@ async function wfShareDialog(item) {
 /// publish question and the depth question on the same screen. Pure model in
 /// wf-review.js. Resolves { depth, publish } or null on cancel.
 /// `target` overrides the derived one for the rounds that have their own
-/// action button (currently `drift`). Plan/diff stay derived — the backend
+/// action button (`drift`, `self-review`). Plan/diff stay derived — the backend
 /// ignores an explicit value for them anyway, so asking would be theatre.
 function wfComposeReviewRound(item, { prUrls = null, target = null, refresh = [] } = {}) {
   return new Promise((resolve) => {
@@ -7698,6 +7706,12 @@ function wfComposeReviewRound(item, { prUrls = null, target = null, refresh = []
     intro.className = "dialog-detail";
     intro.textContent = model.intro;
     box.appendChild(intro);
+    if (model.notice) {
+      const notice = document.createElement("p");
+      notice.className = "dialog-detail";
+      notice.textContent = model.notice;
+      box.appendChild(notice);
+    }
     // The choices scroll, the actions don't: a multi-repo item adds a scope
     // group with a row per PR, and the fourth group was enough to push
     // "Launch round" off the bottom of a short window.
@@ -7884,7 +7898,9 @@ function wfComposeReviewRound(item, { prUrls = null, target = null, refresh = []
     launch.onclick = () =>
       done({
         depth: picked(depthGroup, "standard"),
-        publish: picked(publishGroup, "local"),
+        // No group = one real answer: local, except for a self-review, which
+        // always posts (the backend forces it either way).
+        publish: picked(publishGroup, t === "self-review" ? "pr-comments" : "local"),
         interactive: interactiveParam(picked(interactionGroup, "ask")),
         autoApply: applyBox.checked,
         agent: agentSel.value,
@@ -8786,6 +8802,28 @@ function renderWfActions(bar, root, item) {
     );
   };
 
+  // The self-review: the one round that ends in a verdict on the PR — approve
+  // or request changes, with line comments — instead of findings for you to
+  // triage first. Its own action because posting is the job: a code review
+  // never approves anything. Needs a built change and a PR to post on; a plan
+  // is not needed, so review-only items get it too.
+  const selfReviewButton = () => {
+    if (!wfCanReview(item)) return;
+    if (!itemPrs(item.meta).length) return;
+    if (["draft", "plan-review"].includes(st)) return;
+    const next = wfNextReviewRound(item, "self-review");
+    add(
+      `⚖ Self-review${next > 1 ? ` · round ${next}` : ""}…`,
+      "",
+      () => launchWfReview(item, root, { target: "self-review" }),
+      "Spends tokens and posts on GitHub: an agent reviews the PR pass after pass until a full pass finds nothing new, " +
+        "then posts a verdict — approve or request changes — with line comments and a summary marked as an automated review. " +
+        "The findings also land here as diff comments you can turn into a fix round.",
+      "step",
+      "self-review"
+    );
+  };
+
   // Available from every state holding a reviewable artifact, every time the
   // item lands back there — that is what makes rounds repeatable. The label
   // counts past rounds so it is obvious this is round N+1, not a one-shot.
@@ -9254,6 +9292,9 @@ function renderWfActions(bar, root, item) {
   // asking at every stage that has both a plan and a change, and the gate is
   // one rule rather than a case per stage.
   driftButton();
+
+  // Same rule again: wherever a built change has a PR, whatever the stage.
+  selfReviewButton();
 
   // Going back was two hardcoded buttons at two stages; from everywhere else
   // the pipeline was a one-way street. Same reason it lives outside the

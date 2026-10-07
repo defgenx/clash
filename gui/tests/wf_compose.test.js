@@ -240,6 +240,7 @@ test("a round's label names its phase, since the number alone cannot", () => {
   // The drift round judges, so "Review 2" would not be a lie — but it would
   // hide which two things were compared, which is the round's whole point.
   assert.equal(roundLabel({ round: 2, target: "drift" }), "Plan vs changes 2");
+  assert.equal(roundLabel({ round: 3, target: "self-review" }), "Self-review 3");
   // An unlabelled round (a report predating the target in its heading) still
   // reads sensibly rather than claiming a phase it never named.
   assert.equal(roundLabel({ round: 4, target: "" }), "Review 4");
@@ -389,4 +390,24 @@ test("the latest findings skip an explanation that landed after the review", () 
   assert.match(got.text, /two bugs/);
   assert.doesNotMatch(got.text, /the shape/);
   assert.equal(latestAgentRoundFindings("## Review 1 — structure\n\n**Verdict:** x\n"), null);
+});
+
+test("a self-review's records are not pasted as findings", () => {
+  const md = [
+    "## Review 1 — self-review · deep · 2026-10-07 10:00",
+    "**Verdict:** REQUEST CHANGES — one claimed fix is not in the code",
+    "### Passes",
+    "| 1 | breadth | 3 |",
+    "### Blockers",
+    "1. `src/auth.rs:42` — still `==` (raised by @alice)",
+    "### Prior discussion",
+    "- 3 threads: 1 claimed fixed but not (→ finding 1)",
+    "### Published",
+    "- PR #4: COMMENT review",
+  ].join("\n");
+  const f = roundFindingsAt(md, 0);
+  assert.match(f.text, /still `==`/);
+  assert.doesNotMatch(f.text, /breadth/);
+  assert.doesNotMatch(f.text, /3 threads/);
+  assert.doesNotMatch(f.text, /COMMENT review/);
 });
