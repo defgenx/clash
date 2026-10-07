@@ -86,9 +86,10 @@
       title: "Tabs & panes",
       body:
         "Sessions, terminals and browser tabs live up here. ⌘D splits the view into " +
-        "panes, or drag a tab onto a pane's edge to split it there — or onto the outer " +
-        "edge of the whole area for a pane spanning that side (drag the dividers " +
-        "to resize). ⌘⇧T opens a shell, ⌘⇧B a browser tab.",
+        "panes, or drag a tab onto a pane: the highlighted half is where it splits, " +
+        "the outer edge of the whole area spans that side, and the tab strip " +
+        "unsplits a pane (drag the dividers to resize). ⌘⇧T opens a shell, ⌘⇧B a " +
+        "browser tab.",
     },
     {
       id: "terminal",

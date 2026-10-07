@@ -10,7 +10,11 @@ const {
   removeLeaf,
   splitRoot,
   closePane,
-  dropZone,
+  canonical,
+  splitPane,
+  halfAt,
+  dropTarget,
+  dropHintRect,
   dropOnPane,
   dropOnEdge,
 } = require("../dist/pane-layout.js");
@@ -97,17 +101,96 @@ test("removing a leaf renumbers the rest and collapses lone kids", () => {
   });
 });
 
-test("drop zones: outer quarter is an edge, the rest is the center", () => {
-  assert.equal(dropZone(50, 50, 100, 100), "center");
-  assert.equal(dropZone(5, 50, 100, 100), "left");
-  assert.equal(dropZone(95, 50, 100, 100), "right");
-  assert.equal(dropZone(50, 3, 100, 100), "top");
-  assert.equal(dropZone(50, 99, 100, 100), "bottom");
-  // Corner: the nearer edge wins.
-  assert.equal(dropZone(2, 10, 100, 100), "left");
-  assert.equal(dropZone(10, 2, 100, 100), "top");
-  assert.equal(dropZone(0, 0, 0, 0), "center");
+test("every point of a pane picks a half, by its diagonals (iTerm2)", () => {
+  assert.equal(halfAt(5, 50, 100, 100), "left");
+  assert.equal(halfAt(95, 50, 100, 100), "right");
+  assert.equal(halfAt(50, 3, 100, 100), "top");
+  assert.equal(halfAt(50, 99, 100, 100), "bottom");
+  // Far from any edge, not an "edge band": still a half.
+  assert.equal(halfAt(30, 45, 100, 100), "left");
+  // Relative to the pane's size: a wide pane's left third is still "left".
+  assert.equal(halfAt(150, 50, 1000, 200), "left");
+  // The center keeps whatever was there — nothing yet means nothing.
+  assert.equal(halfAt(50, 50, 100, 100), null);
+  assert.equal(halfAt(50, 50, 100, 100, "top"), "top");
+  // Hysteresis: just across the diagonal does not flip yet; well across does.
+  assert.equal(halfAt(20, 18, 100, 100, "left"), "left");
+  assert.equal(halfAt(30, 5, 100, 100, "left"), "top");
 });
+
+const twoCols = {
+  width: 1000,
+  height: 600,
+  panes: [
+    { p: 0, left: 0, top: 0, width: 500, height: 600, titleHeight: 16 },
+    { p: 1, left: 500, top: 0, width: 500, height: 600, titleHeight: 16 },
+  ],
+};
+
+test("a drop target is a half of the pane under the cursor", () => {
+  assert.deepEqual(dropTarget(twoCols, 250, 550), { kind: "pane", target: 0, zone: "bottom" });
+  assert.deepEqual(dropTarget(twoCols, 600, 300), { kind: "pane", target: 1, zone: "left" });
+  // The previous half sticks only within the same pane: dead center of pane 1
+  // after pane 0's top half is no half at all, but keeps pane 1's own.
+  assert.equal(dropTarget(twoCols, 750, 300, { kind: "pane", target: 0, zone: "top" }), null);
+  const own = { kind: "pane", target: 1, zone: "top" };
+  assert.deepEqual(dropTarget(twoCols, 750, 300, own), own);
+  assert.equal(dropTarget(twoCols, 2000, 300), null);
+});
+
+test("an empty pane is filled and a title bar swaps", () => {
+  const g = { ...twoCols, panes: [{ ...twoCols.panes[0], empty: true }, twoCols.panes[1]] };
+  assert.deepEqual(dropTarget(g, 250, 300), { kind: "pane", target: 0, zone: "center" });
+  assert.deepEqual(dropTarget(twoCols, 750, 8), { kind: "pane", target: 1, zone: "center" });
+});
+
+test("the area's outer band spans a side only where that differs from a pane split", () => {
+  // Under two columns: the bottom band spans both.
+  assert.deepEqual(dropTarget(twoCols, 250, 590), { kind: "edge", side: "bottom" });
+  // The left column already spans the full height: its left half is the same split.
+  assert.deepEqual(dropTarget(twoCols, 5, 300), { kind: "pane", target: 0, zone: "left" });
+  // A sole pane has nothing to span.
+  const one = { width: 100, height: 100, panes: [{ p: 0, left: 0, top: 0, width: 100, height: 100 }] };
+  assert.deepEqual(dropTarget(one, 50, 98), { kind: "pane", target: 0, zone: "bottom" });
+});
+
+test("the hint is the box the dropped tab would occupy", () => {
+  assert.deepEqual(dropHintRect(twoCols, { kind: "pane", target: 1, zone: "bottom" }), {
+    left: 500, top: 300, width: 500, height: 300,
+  });
+  assert.deepEqual(dropHintRect(twoCols, { kind: "edge", side: "bottom" }), {
+    left: 0, top: 300, width: 1000, height: 300,
+  });
+  assert.deepEqual(dropHintRect(twoCols, { kind: "pane", target: 0, zone: "center" }), {
+    left: 0, top: 0, width: 500, height: 600,
+  });
+  assert.equal(dropHintRect(twoCols, null), null);
+});
+
+test("pane order follows reading order after every mutation", () => {
+  // (A / C) | B with C created last: C reads second.
+  const l = { dir: "row", kids: [{ dir: "col", kids: [{ p: 0 }, { p: 2 }], fracs: [1, 1] }, { p: 1 }], fracs: [1, 1] };
+  const c = canonical(["a", "b", "c"], l, 2);
+  assert.deepEqual(c.panes, ["a", "c", "b"]);
+  assert.deepEqual(leaves(c.layout), [0, 1, 2]);
+  assert.equal(c.focused, 1);
+  // Splitting the first of two columns: the new pane is second, and focused.
+  const s = splitPane(["a", "b"], defaultLayout(2), 0, "bottom");
+  assert.deepEqual(s.panes, ["a", null, "b"]);
+  assert.equal(s.focused, 1);
+});
+
+test("columns fold into rows by dragging, as in iTerm", () => {
+  // A | B | C → drag B under A, then C under B: one stack.
+  const three = { dir: "row", kids: [{ p: 0 }, { p: 1 }, { p: 2 }], fracs: [1, 1, 1] };
+  const r1 = dropOnPane(["a", "b", "c"], three, "b", 0, "bottom");
+  assert.deepEqual(r1.panes, ["a", "b", "c"]);
+  const r2 = dropOnPane(r1.panes, r1.layout, "c", 1, "bottom");
+  assert.equal(r2.layout.dir, "col");
+  assert.deepEqual(leaves(r2.layout), [0, 1, 2]);
+  assert.deepEqual(r2.panes, ["a", "b", "c"]);
+});
+
 
 test("dropping a tab on an edge opens it in a new pane there", () => {
   const r = dropOnPane(["a"], { p: 0 }, "b", 0, "right");
@@ -167,11 +250,6 @@ test("a drag in flight is never repainted out from under itself", () => {
     const body = app.slice(app.indexOf(fn), app.indexOf(fn) + 400);
     assert.match(body, /if \(paneDrag\) \{\s*paneDrag\.dirty = true;\s*return;/, fn);
   }
-  // The payload must not be text: a drop that misses the overlays would type
-  // it into the terminal underneath.
-  const src = app.slice(app.indexOf("function makePaneDragSource"));
-  assert.match(src.slice(0, 800), /setData\(PANE_DRAG_MIME, sid\)/);
-  assert.doesNotMatch(src.slice(0, 800), /setData\("text\/plain"/);
 });
 
 test("a root split spans every column", () => {

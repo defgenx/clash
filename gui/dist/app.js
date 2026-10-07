@@ -2152,9 +2152,8 @@ function tabSession(id) {
   return id.startsWith("view:") ? id.slice(id.lastIndexOf(":") + 1) : id;
 }
 
-/// The tab/pane drag in flight (see "Drag a tab to split"): `{ sid, dirty }`.
+/// The tab/pane drag in flight (see "Drag a tab to split"), or null.
 let paneDrag = null;
-const PANE_DRAG_MIME = "application/x-clash-tab";
 
 function renderTabs() {
   // Repainting the strip mid-drag would detach the dragged tab (see renderPanes).
@@ -2313,9 +2312,12 @@ function renderPanes() {
         const title = document.createElement("div");
         title.className = "pane-title";
         title.textContent = entry.name + (w.zoomed ? "  (zoomed)" : "");
-        title.title = "Drag onto another pane to move it · double-click to zoom (⌘⇧↩)";
+        title.title = "Drag onto another pane to move it, or onto the tab strip to unsplit · double-click to zoom (⌘⇧↩)";
         title.ondblclick = toggleZoom;
-        if (!w.zoomed) makePaneDragSource(title, sid);
+        if (!w.zoomed) {
+          title.classList.add("draggable");
+          makePaneDragSource(title, sid);
+        }
         pane.appendChild(title);
       }
       pane.appendChild(entry.el);
@@ -2423,121 +2425,175 @@ function makeSplitGutter(box, node, k) {
 // ── Drag a tab to split (iTerm-style) ───────────────────────────
 //
 // A tab from the strip, or a pane's title bar, can be dropped on any pane:
-// its outer quarter splits that pane on that side, the middle replaces its
-// content. The decision is `PaneLayout.dropOnPane`; this half is the DOM.
+// the half under the cursor splits that pane (iTerm's diagonals), an empty
+// pane or a title bar takes it whole, the area's outer band spans a side, and
+// the tab strip turns a pane back into a plain tab. The decisions are
+// `PaneLayout.dropTarget` and its `dropOn*`; this half is the DOM.
+//
+// Pointer-driven, not HTML5 drag-and-drop: native webviews and WebKit's drag
+// session dropped drops, and over a terminal with mouse tracking on, the move
+// would be reported to the agent. The drag layer covers the panes instead.
+
+const PANE_DRAG_THRESHOLD_PX = 5;
 
 function makePaneDragSource(el, sid) {
-  el.draggable = true;
-  el.addEventListener("dragstart", (ev) => {
-    ev.stopPropagation();
-    ev.dataTransfer.effectAllowed = "move";
-    // A custom type only: a text/plain payload would be typed into whatever
-    // terminal the drag is released over if the drop missed the overlays.
-    ev.dataTransfer.setData(PANE_DRAG_MIME, sid);
-    paneDrag = { sid, dirty: false };
-    // Native webviews swallow drag events and paint over the overlays.
-    hideBrowserWebviews();
-    // Touching the DOM inside dragstart can cancel the drag in WebKit.
-    setTimeout(showPaneDropTargets, 0);
-  });
-  el.addEventListener("dragend", endPaneDrag);
-}
-
-function showPaneDropTargets() {
-  if (!paneDrag) return;
-  document.body.classList.add("pane-dragging");
-  for (const pane of $("terminal-host").querySelectorAll(".pane")) {
-    const target = Number(pane.dataset.pane);
-    const overlay = document.createElement("div");
-    overlay.className = "pane-drop";
-    const hint = document.createElement("div");
-    hint.className = "pane-drop-hint";
-    overlay.appendChild(hint);
-    const zoneAt = (ev) => {
-      const r = overlay.getBoundingClientRect();
-      return PaneLayout.dropZone(ev.clientX - r.left, ev.clientY - r.top, r.width, r.height);
+  el.addEventListener("mousedown", (ev) => {
+    if (ev.button !== 0 || ev.target.closest(".close, .reload")) return;
+    const x0 = ev.clientX;
+    const y0 = ev.clientY;
+    const onMove = (e) => {
+      // Released outside the window: no mouseup ever reached us.
+      if (e.buttons === 0) return onUp(e);
+      if (!paneDrag) {
+        if (Math.hypot(e.clientX - x0, e.clientY - y0) < PANE_DRAG_THRESHOLD_PX) return;
+        beginPaneDrag(sid);
+      }
+      e.preventDefault();
+      updatePaneDrag(e.clientX, e.clientY);
     };
-    overlay.addEventListener("dragover", (ev) => {
-      if (!paneDrag) return;
-      ev.preventDefault();
-      ev.dataTransfer.dropEffect = "move";
-      hint.dataset.zone = zoneAt(ev);
-    });
-    overlay.addEventListener("dragleave", () => delete hint.dataset.zone);
-    overlay.addEventListener("drop", (ev) => {
-      if (!paneDrag) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      const sid = paneDrag.sid;
-      const zone = zoneAt(ev);
-      endPaneDrag();
-      dropTabOnPane(sid, target, zone);
-    });
-    pane.appendChild(overlay);
-  }
-  // The whole area's edges: a pane spanning that side (under every column).
+    const onUp = (e) => {
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("mouseup", onUp, true);
+      if (paneDrag && paneDrag.sid === sid) finishPaneDrag(e.clientX, e.clientY);
+    };
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("mouseup", onUp, true);
+  });
+}
+
+function beginPaneDrag(sid) {
   const host = $("terminal-host");
-  for (const side of ["top", "bottom", "left", "right"]) {
-    const band = document.createElement("div");
-    band.className = "pane-edge-drop";
-    band.dataset.side = side;
-    const hint = document.createElement("div");
-    hint.className = "pane-edge-hint";
-    hint.dataset.side = side;
-    hint.style.display = "none";
-    band.addEventListener("dragover", (ev) => {
-      if (!paneDrag) return;
-      ev.preventDefault();
-      ev.dataTransfer.dropEffect = "move";
-      band.classList.add("over");
-      hint.style.display = "";
-    });
-    band.addEventListener("dragleave", () => {
-      band.classList.remove("over");
-      hint.style.display = "none";
-    });
-    band.addEventListener("drop", (ev) => {
-      if (!paneDrag) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      const sid = paneDrag.sid;
+  const layer = document.createElement("div");
+  layer.className = "pane-drag-layer";
+  const hint = document.createElement("div");
+  hint.className = "pane-drag-hint";
+  const ghost = document.createElement("div");
+  ghost.className = "pane-drag-ghost";
+  ghost.textContent = state.open.get(sid)?.name || sid;
+  host.append(layer, hint);
+  document.body.appendChild(ghost);
+  const onKey = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
       endPaneDrag();
-      applyPaneDrop(sid, PaneLayout.dropOnEdge(ws().panes, ws().layout, sid, side));
-    });
-    host.append(hint, band);
+    }
+  };
+  window.addEventListener("keydown", onKey, true);
+  paneDrag = { sid, dirty: false, drop: null, layer, hint, ghost, onKey };
+  window.getSelection()?.removeAllRanges();
+  document.body.classList.add("pane-dragging");
+  // Native webviews paint over every DOM element, the hint included.
+  hideBrowserWebviews();
+}
+
+/// The pane area's geometry for `PaneLayout.dropTarget`, relative to the host.
+function paneDragGeometry() {
+  const host = $("terminal-host");
+  const h = host.getBoundingClientRect();
+  const w = ws();
+  const panes = [...host.querySelectorAll(".pane[data-pane]")].map((el) => {
+    const r = el.getBoundingClientRect();
+    const p = Number(el.dataset.pane);
+    return {
+      p,
+      left: r.left - h.left,
+      top: r.top - h.top,
+      width: r.width,
+      height: r.height,
+      empty: !w.panes[p],
+      titleHeight: el.querySelector(".pane-title")?.getBoundingClientRect().height || 0,
+    };
+  });
+  return { left: h.left, top: h.top, width: h.width, height: h.height, panes };
+}
+
+const overTabStrip = (x, y) => {
+  const r = $("tabs").getBoundingClientRect();
+  return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+};
+
+/// What releasing at (x, y) would do: `{ drop, result }`, `result` being the
+/// new panes/layout/focus, or null when the drop would change nothing.
+function paneDropAt(x, y) {
+  const w = ws();
+  const sid = paneDrag.sid;
+  if (overTabStrip(x, y)) {
+    const from = w.panes.indexOf(sid);
+    const drop = { kind: "strip" };
+    if (from < 0 || w.panes.length <= 1) return { drop, result: null };
+    return { drop, result: PaneLayout.closePane(w.panes, w.layout, w.focused, from) };
+  }
+  const geom = paneDragGeometry();
+  const drop = PaneLayout.dropTarget(geom, x - geom.left, y - geom.top, paneDrag.drop);
+  const result = !drop
+    ? null
+    : drop.kind === "edge"
+      ? PaneLayout.dropOnEdge(w.panes, w.layout, sid, drop.side)
+      : PaneLayout.dropOnPane(w.panes, w.layout, sid, drop.target, drop.zone);
+  return { drop, result, geom };
+}
+
+function updatePaneDrag(x, y) {
+  const { drop, result, geom } = paneDropAt(x, y);
+  paneDrag.drop = drop;
+  paneDrag.ghost.style.transform = `translate(${x + 12}px, ${y + 10}px)`;
+  $("tabs").classList.toggle("pane-drop-target", drop?.kind === "strip" && !!result);
+  const rect = result && geom ? PaneLayout.dropHintRect(geom, drop) : null;
+  const hint = paneDrag.hint;
+  hint.style.display = rect ? "block" : "none";
+  if (rect) {
+    hint.style.left = `${rect.left}px`;
+    hint.style.top = `${rect.top}px`;
+    hint.style.width = `${rect.width}px`;
+    hint.style.height = `${rect.height}px`;
   }
 }
 
-/// Clear the drag and repaint whatever it held back. Idempotent: it runs from
-/// the drop, the source's dragend, and the watchdog below.
+function finishPaneDrag(x, y) {
+  const sid = paneDrag.sid;
+  const { drop, result } = paneDropAt(x, y);
+  endPaneDrag();
+  // The release lands a click on whatever is under it (the tab itself, for a
+  // drag that came back): it must not also assign or focus.
+  const swallow = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+  };
+  window.addEventListener("click", swallow, { capture: true, once: true });
+  setTimeout(() => window.removeEventListener("click", swallow, true), 0);
+  if (!result) return;
+  if (drop.kind === "strip") {
+    const w = ws();
+    w.panes = result.panes;
+    w.layout = result.layout;
+    w.focused = result.focused;
+    if (w.panes.length === 1) w.zoomed = false;
+    syncActiveToFocused();
+    saveWorkspaces();
+    renderPanes();
+    renderTabs();
+    renderSidebar();
+    return;
+  }
+  applyPaneDrop(sid, result);
+}
+
+/// Clear the drag and repaint whatever it held back. Idempotent.
 function endPaneDrag() {
   if (!paneDrag) return;
-  const dirty = paneDrag.dirty;
+  const { dirty, layer, hint, ghost, onKey } = paneDrag;
   paneDrag = null;
+  layer.remove();
+  hint.remove();
+  ghost.remove();
+  window.removeEventListener("keydown", onKey, true);
   document.body.classList.remove("pane-dragging");
-  document
-    .querySelectorAll(".pane-drop, .pane-edge-drop, .pane-edge-hint")
-    .forEach((o) => o.remove());
+  $("tabs").classList.remove("pane-drop-target");
   if (dirty) {
     renderPanes();
     renderTabs();
-  } else fitAll(); // restores the webviews hidden at dragstart
-}
-
-// No mouse events fire while a native drag is in flight, so a buttonless move
-// means it ended — even when its source was detached and its dragend never
-// came. Without this, a lost dragend would freeze the panes and the strip.
-document.addEventListener(
-  "mousemove",
-  (ev) => {
-    if (paneDrag && ev.buttons === 0) endPaneDrag();
-  },
-  true
-);
-
-function dropTabOnPane(sid, target, zone) {
-  const w = ws();
-  applyPaneDrop(sid, PaneLayout.dropOnPane(w.panes, w.layout, sid, target, zone));
+  } else fitAll(); // restores the webviews hidden at drag start
 }
 
 function applyPaneDrop(sid, r) {
@@ -2568,14 +2624,15 @@ function autoSplitSide() {
 /// Push an empty pane split off the focused one, and focus it.
 function splitFocusedPane() {
   const w = ws();
-  w.layout = PaneLayout.splitLeaf(
+  const r = PaneLayout.splitPane(
+    w.panes,
     PaneLayout.ensureLayout(w.layout, w.panes.length, w.colFracs, w.rowFracs),
     w.focused,
-    w.panes.length,
     autoSplitSide()
   );
-  w.panes.push(null);
-  w.focused = w.panes.length - 1;
+  w.panes = r.panes;
+  w.layout = r.layout;
+  w.focused = r.focused;
   w.zoomed = false;
 }
 
