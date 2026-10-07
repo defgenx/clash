@@ -13099,8 +13099,10 @@ function syncAgentSettingsUi(cfg) {
   state.wfAssist = assist;
   if (repaint) rebuildOpenWorkflowTabs();
   $("set-wf-subagent-model").value = cfg.subagentModel;
-  // Solo launches no subagents, so their model is not in play.
-  $("set-wf-subagent-row").classList.toggle("setting-inactive", cfg.delegation === "solo");
+  $("set-wf-omp-subagent-model").value = cfg.ompSubagentModel || "";
+  // Solo launches no subagents, so their model is not in play — on either harness.
+  for (const row of ["set-wf-subagent-row", "set-wf-omp-subagent-row"])
+    $(row).classList.toggle("setting-inactive", cfg.delegation === "solo");
 }
 for (const [id, key] of [
   ["set-omp-bin", "general.omp_bin"],
@@ -13111,6 +13113,7 @@ for (const [id, key] of [
   ["set-wf-delegation", "workflows.delegation"],
   ["set-wf-assist", "workflows.assist"],
   ["set-wf-subagent-model", "workflows.subagent_model"],
+  ["set-wf-omp-subagent-model", "workflows.omp_subagent_model"],
 ]) {
   $(id).addEventListener("change", async () => {
     try {

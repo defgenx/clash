@@ -1462,6 +1462,7 @@ mod tests {
             source_branch: None,
             previous_ids: Vec::new(),
             agent: Default::default(),
+            workflow: false,
         }
     }
 

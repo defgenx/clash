@@ -231,8 +231,10 @@ pub struct Workflows {
     pub delegation: String,
     /// `suggest` | `autopilot` | `off` — see the `workflows.assist` row.
     pub assist: String,
-    /// Model the lead's subagents run on; empty = inherit the lead's.
+    /// Model a Claude Code lead's subagents run on; empty = inherit the lead's.
     pub subagent_model: String,
+    /// Model an OMP lead's subagents run on; empty = omp's own `task` role.
+    pub omp_subagent_model: String,
     /// Skill the workflow PR phase opens pull requests with; empty means
     /// "follow the repo's own conventions with `gh`".
     pub pr_skill: String,
@@ -277,6 +279,7 @@ impl Default for Workflows {
             delegation: default_str("workflows.delegation"),
             assist: default_str("workflows.assist"),
             subagent_model: default_str("workflows.subagent_model"),
+            omp_subagent_model: default_str("workflows.omp_subagent_model"),
             pr_skill: default_str("workflows.pr_skill"),
             forge: default_str("workflows.forge"),
             slack_webhook: default_str("workflows.slack_webhook"),
@@ -378,13 +381,21 @@ impl Config {
         std::time::Duration::from_millis(self.general.debounce_ms)
     }
 
-    /// How workflow sessions split their work — see `Delegation`. GUI-only,
-    /// like `workflow_pr_skill`.
+    /// How a workflow session on `agent` splits its work — see `Delegation`.
+    /// The subagent model is per harness: a Claude model id means nothing to
+    /// the provider an omp session may be configured with, and vice versa.
+    /// GUI-only, like `workflow_pr_skill`.
     #[allow(dead_code)]
-    pub fn workflow_delegation(&self) -> crate::application::workflow::Delegation<'_> {
+    pub fn workflow_delegation(
+        &self,
+        agent: crate::domain::entities::AgentKind,
+    ) -> crate::application::workflow::Delegation<'_> {
         crate::application::workflow::Delegation::from_settings(
             &self.workflows.delegation,
-            &self.workflows.subagent_model,
+            match agent {
+                crate::domain::entities::AgentKind::Claude => &self.workflows.subagent_model,
+                crate::domain::entities::AgentKind::Omp => &self.workflows.omp_subagent_model,
+            },
         )
     }
 

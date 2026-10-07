@@ -142,9 +142,13 @@ How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
 - **Parallel means one message.** Launch every independent subagent of a wave
   in a single response with several tool calls; one call per message runs
   them one after another.
-- **Never pass a `model`.** clash pins the subagents' model (the kickoff names
-  it; `CLAUDE_CODE_SUBAGENT_MODEL` enforces it). Your own model is for
-  splitting, integrating and judging.
+- **Never pass a `model`, and use the general-purpose agent.** clash pins the
+  subagents' model (the kickoff names it): under Claude Code it is forced for
+  every agent type except the built-in `Explore`, which keeps a model of its
+  own — so brief `general-purpose` subagents, never `Explore`, for work that
+  must run on the pinned model. Under OMP the pin is the `task` role, which the
+  default `task` agent uses; other bundled agents (`sonic`, …) run elsewhere.
+  Your own model is for splitting, integrating and judging.
 - **Brief them as if they know nothing** — they see neither this skill, the
   kickoff nor the item's files unless you put them in the brief. Each brief
   states the goal, the exact files or area it covers, the relevant excerpts

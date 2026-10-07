@@ -633,10 +633,17 @@ human first. Here the post *is* the output, so:
   re-raised), decided-but-wrong, or no longer applies. Outdated is not
   resolved, and resolved is a claim. Items still needing work become findings
   credited to the reviewer who raised them; the loop does not stop while an
-  item is unverified, the discussion is fetched again before posting, and the
-  summary reports what the earlier review came to — including any human
-  reviewer whose change request is still outstanding. `### Prior discussion` is
-  the report's record of it and is left out of pasted findings.
+  item is unverified, and the discussion is fetched again before posting.
+  `### Prior discussion` is the report's record of it and is left out of
+  pasted findings.
+- **The post says only what must change.** Verdict line, *Must change*,
+  *Could change*, *Outside the diff* — and, for a `COMMENT` verdict, what could
+  not be reviewed. No description of the change, no praise, no history of the
+  earlier discussion, no pass count: those live in the ledger and the item's
+  report. An approval with nothing to change is the verdict line alone.
+- **Three verdicts.** `APPROVE`, `REQUEST_CHANGES`, or `COMMENT` when neither
+  is honest (part of the change could not be read, or what is open is a
+  question only the author can answer).
 - **The decision rule**: request changes on an open `BLOCKER`, a `RISK` a real
   input triggers, a claimed fix that is not in the code, a reviewer's blocker
   still open, CI failing because of the change, or a change that does not
@@ -1091,15 +1098,17 @@ because its ground truth is `plan.md` and the diff, and it adopts
 
 ## Lead and subagents
 
-Every Claude workflow session runs on one pinned **lead model**
-(`workflows.lead_model`, default `claude-opus-5-5`) rather than whatever the
-user last selected, so rounds are reproducible — two review rounds on one item
+Every workflow session runs on one pinned **lead model** per harness —
+`workflows.lead_model` (default `claude-opus-5-5`) under Claude Code,
+`workflows.omp_model` (default empty: omp's own) under OMP — rather than
+whatever the user last selected, so rounds are reproducible — two review rounds on one item
 are comparable because the reviewer was the same model both times. The lead
 does the thinking: requirements, planning, splitting, integrating, judging.
 
 Under `workflows.delegation = team` (the default) the lead may fan the work out
 to parallel subagents, which run on `workflows.subagent_model` (default
-`claude-sonnet-5-5`). `team` is permission, not a quota: every skill makes the
+`claude-sonnet-5-5`) under Claude Code and `workflows.omp_subagent_model`
+(default empty: omp's own `task` role) under OMP. `team` is permission, not a quota: every skill makes the
 lead **size the round first** and pick the smallest split that keeps quality —
 no split when the work fits in a few reads, one subagent per independent area
 (subsystem, repo, PR) otherwise, and a per-concern split only for large or
@@ -1132,15 +1141,40 @@ review from being a louder one.
 Two halves enforce it. The kickoff always states the choice
 (`Delegation: team (subagents on <model>).` or `Delegation: solo.`, right after
 `Mode:` — the pure `Delegation::clause`), and each skill's *Lead and subagents*
-section says how to size it; the subagent model is additionally set as
-`CLAUDE_CODE_SUBAGENT_MODEL` in the session's env (`delegation_env`), so it
-does not depend on the lead remembering it — which is why the skills tell the
-lead never to pass a `model` of its own. The lead alone writes the item's
-files, runs git, posts to PRs, asks the human and changes the status; every
-brief says so. An empty `subagent_model` lets subagents inherit the lead's
-model; OMP sessions keep `workflows.omp_model` and omp's own task-model
-configuration (the kickoff clause still applies — omp delegates through its
-`task` tool).
+section says how to size it; the models themselves are pinned by the launch,
+not left to the lead (`Agents::with_workflow_models`, pure rules in
+`delegation_env` / `omp_subagent_overlay`):
+
+| | Lead | Subagents |
+|---|---|---|
+| Claude Code | `--model <lead_model>` | `CLAUDE_CODE_SUBAGENT_MODEL=<subagent_model>` **and** `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` |
+| OMP | `--model <omp_model>` | `PI_CONFIG_FILES` += a clash-written overlay (`<clash data>/omp/workflow-models.yml`) setting `modelRoles.task` and `task.agentModelOverrides.task` |
+
+Both pins exist because the obvious one is not binding. Claude Code reads
+`CLAUDE_CODE_SUBAGENT_MODEL` only as a *fallback*: a per-call `model`, an agent
+definition's `model:` frontmatter and the built-in Explore agent all beat it,
+so without the force flag the lead or any custom agent could land elsewhere —
+with it, everything but Explore runs on the pin. omp resolves a subagent's
+model as per-call model → `task.agentModelOverrides[<agent>]` → the agent's own
+`model` (the general-purpose `task` agent's is the `@task` role) → the session
+model, so the overlay sets both the role and the override; overlays deep-merge
+over the user's own `config.yml` (theirs → project → overlays), so their other
+roles survive, and an existing `PI_CONFIG_FILES` is appended to, never
+replaced. The skills therefore tell the lead never to pass a `model`, and to
+brief the general-purpose agent (`general-purpose`, never `Explore`; omp's
+`task`).
+
+**Every relaunch re-applies them.** `claude --resume` and `omp --resume` keep
+none of the first launch's flags or env, and a workflow session is resumed on
+every clash restart (updates included), every ⟳ reload and every stashed
+session brought back — so pinning only the first launch meant most workflow
+sessions ran on the agent's default model with unpinned subagents. A workflow
+session's registry entry carries `"workflow": true`, and `Agents::relaunch_with`
+applies the same `with_workflow_models` for it, from the *current* settings.
+The lead alone writes the item's files, runs git, posts to PRs, asks the
+human and changes the status; every brief says so. An empty subagent model
+leaves the harness's own choice (Claude: inherit the lead's; omp: its `task`
+role).
 
 ## Embedded skills — install as a decision
 

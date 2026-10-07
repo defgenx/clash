@@ -1158,7 +1158,7 @@ impl App {
                 None,
                 size.width,
                 size.height,
-                HashMap::new(),
+                launch.env.clone(),
                 true, // TUI: Claude sets its own termios
             )
             .await;
@@ -1600,6 +1600,7 @@ impl App {
                         &cwd,
                         source_branch.as_deref(),
                         agent,
+                        false,
                     );
                     self.registry_cache.invalidate();
                 }
@@ -1759,7 +1760,7 @@ impl App {
                             name,
                             cols,
                             rows,
-                            HashMap::new(),
+                            launch.env.clone(),
                             true, // TUI: the agent sets its own termios
                         )
                         .await
@@ -1853,7 +1854,7 @@ impl App {
                             name,
                             cols,
                             rows,
-                            HashMap::new(),
+                            launch.env.clone(),
                             true, // TUI: Claude sets its own termios
                         )
                         .await
@@ -2051,6 +2052,7 @@ impl App {
                                 &wt_str,
                                 src_branch,
                                 agent,
+                                false,
                             );
                             self.registry_cache.invalidate();
                             // Save session name
@@ -2085,7 +2087,7 @@ impl App {
                                     Some(name.clone()),
                                     size.width,
                                     size.height,
-                                    HashMap::new(),
+                                    launch.env.clone(),
                                     true, // TUI: Claude sets its own termios
                                 )
                                 .await

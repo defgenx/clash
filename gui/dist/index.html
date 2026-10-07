@@ -109,9 +109,6 @@
             <option value="omp">OMP</option>
           </select>
         </label>
-        <label class="setting-row">Lead model
-          <input id="set-wf-lead-model" type="text" placeholder="claude-opus-5-5" autocomplete="off" spellcheck="false" title="Model every Claude Code workflow session runs on — the lead that plans, reviews, splits the work and verifies it. Empty resets to the shipped default." />
-        </label>
         <label class="setting-row inline">Next-step assist
           <select id="set-wf-assist" title="Suggest: every item's action bar highlights the recommended next step and says why. Autopilot: also starts that step when it decides nothing — a review round, or applying a round that said apply — and always stops before an approval or anything that moves the item forward. Off: the plain action bar.">
             <option value="suggest">Suggest the next step</option>
@@ -124,12 +121,6 @@
             <option value="team">Team (lead + subagents)</option>
             <option value="solo">Solo</option>
           </select>
-        </label>
-        <label class="setting-row" id="set-wf-subagent-row">Subagent model
-          <input id="set-wf-subagent-model" type="text" placeholder="claude-sonnet-5-5" autocomplete="off" spellcheck="false" title="Model the lead's subagents run on under Team delegation (enforced via CLAUDE_CODE_SUBAGENT_MODEL). Empty resets to the shipped default. Claude Code only — OMP picks its task models from its own configuration." />
-        </label>
-        <label class="setting-row">OMP model
-          <input id="set-wf-omp-model" type="text" placeholder="omp's default" autocomplete="off" spellcheck="false" title="Model OMP workflow sessions launch with (omp's --model, fuzzy-matched). Empty uses omp's own default; Claude Code sessions use the Lead model." />
         </label>
         <label class="setting-row">PR skill
           <input id="set-wf-pr-skill" type="text" placeholder="myorg:github-pr" autocomplete="off" spellcheck="false" title="Skill workflow agents open pull requests with, so your org's PR conventions come along. Empty resets to the shipped default; 'none' disables it and the agent follows the repo's own conventions with gh. An item can override this in its ⚙ Settings tab." />
@@ -147,6 +138,24 @@
             <option value="all">Overwrite my edits</option>
             <option value="keep">Keep my edits</option>
           </select>
+        </label>
+
+        <div class="settings-group">Models · Claude Code</div>
+        <p class="settings-note">What a workflow session launched on Claude Code runs on. Applied at launch <em>and</em> every time the session is resumed.</p>
+        <label class="setting-row">Lead model
+          <input id="set-wf-lead-model" type="text" placeholder="claude-opus-5-5" autocomplete="off" spellcheck="false" title="Model every Claude Code workflow session runs on — the lead that plans, reviews, splits the work and verifies it (claude --model). Empty resets to the shipped default." />
+        </label>
+        <label class="setting-row" id="set-wf-subagent-row">Subagent model
+          <input id="set-wf-subagent-model" type="text" placeholder="claude-sonnet-5-5" autocomplete="off" spellcheck="false" title="Model the lead's subagents run on under Team delegation — forced (CLAUDE_CODE_SUBAGENT_MODEL + CLAUDE_CODE_SUBAGENT_MODEL_FORCE), so neither an agent definition nor the lead can pick another. Claude Code's built-in Explore agent keeps its own model. Empty resets to the shipped default." />
+        </label>
+
+        <div class="settings-group">Models · OMP</div>
+        <p class="settings-note">What a workflow session launched on OMP runs on — names are matched by omp, against the providers you configured there. Applied at launch and on every resume.</p>
+        <label class="setting-row">Lead model
+          <input id="set-wf-omp-model" type="text" placeholder="omp's default" autocomplete="off" spellcheck="false" title="Model OMP workflow sessions run on (omp --model, fuzzy-matched). Empty uses omp's own default model." />
+        </label>
+        <label class="setting-row" id="set-wf-omp-subagent-row">Subagent model
+          <input id="set-wf-omp-subagent-model" type="text" placeholder="omp's task model" autocomplete="off" spellcheck="false" title="Model the lead's subagents run on under Team delegation — pinned through a per-run omp config overlay that sets the task model role (your own config.yml is left alone). Empty leaves omp's own task model." />
         </label>
 
         <div class="settings-group">Workflows · sharing</div>

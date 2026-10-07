@@ -712,27 +712,71 @@ impl<'a> Delegation<'a> {
     }
 }
 
-/// Env var Claude Code reads for the model of every subagent a session
-/// launches — the enforcement half; the kickoff clause is the instruction half.
+/// Env var Claude Code reads for the model of the subagents a session
+/// launches. On its own it is only a *fallback*: a per-call `model`, an agent
+/// definition's frontmatter and the built-in Explore agent all win over it.
 pub const SUBAGENT_MODEL_ENV: &str = "CLAUDE_CODE_SUBAGENT_MODEL";
+/// Makes [`SUBAGENT_MODEL_ENV`] binding: frontmatter and per-call models are
+/// ignored (Explore keeps its own model — Claude Code's one exception).
+pub const SUBAGENT_MODEL_FORCE_ENV: &str = "CLAUDE_CODE_SUBAGENT_MODEL_FORCE";
+/// Path list of extra `config.yml` overlays omp layers over the user's own
+/// config for one run — how clash pins an OMP session's task model.
+pub const OMP_CONFIG_FILES_ENV: &str = "PI_CONFIG_FILES";
 
-/// Pure: the env a workflow session is spawned with. Claude-only: omp picks
-/// its task models from its own configuration.
+/// Pure: the env a workflow session is spawned with, which is what pins its
+/// subagents' model. Claude Code: the model plus the force flag. OMP: the
+/// overlay written from [`omp_subagent_overlay`] (`omp_overlay`), appended to
+/// any overlays the user already passes (`inherited_omp_overlays`), since the
+/// variable is a list and replacing it would drop theirs.
 pub fn delegation_env(
     agent: crate::domain::entities::AgentKind,
     delegation: &Delegation,
+    omp_overlay: Option<&str>,
+    inherited_omp_overlays: &str,
 ) -> Vec<(String, String)> {
+    use crate::domain::entities::AgentKind;
+    if !delegation.team || delegation.subagent_model.is_empty() {
+        return Vec::new();
+    }
     match agent {
-        crate::domain::entities::AgentKind::Claude
-            if delegation.team && !delegation.subagent_model.is_empty() =>
-        {
-            vec![(
+        AgentKind::Claude => vec![
+            (
                 SUBAGENT_MODEL_ENV.to_string(),
                 delegation.subagent_model.to_string(),
-            )]
+            ),
+            (SUBAGENT_MODEL_FORCE_ENV.to_string(), "1".to_string()),
+        ],
+        AgentKind::Omp => {
+            let Some(overlay) = omp_overlay.filter(|o| !o.is_empty()) else {
+                return Vec::new();
+            };
+            let sep = if cfg!(windows) { ";" } else { ":" };
+            let inherited = inherited_omp_overlays.trim_matches(|c| c == ':' || c == ';');
+            let value = if inherited.is_empty() {
+                overlay.to_string()
+            } else {
+                format!("{inherited}{sep}{overlay}")
+            };
+            vec![(OMP_CONFIG_FILES_ENV.to_string(), value)]
         }
-        _ => Vec::new(),
     }
+}
+
+/// Pure: the omp config overlay pinning an OMP session's subagents to
+/// `model`. omp resolves a subagent's model as: a per-call model, then
+/// `task.agentModelOverrides[<agent>]`, then the agent's own `model` (the
+/// general-purpose `task` agent's is the `@task` role), then the session's
+/// model — so both the role and the override for `task` are set. Overlays
+/// deep-merge over the user's `config.yml`, so their other roles survive.
+pub fn omp_subagent_overlay(model: &str) -> String {
+    // A JSON string is a valid YAML scalar, and model ids carry `:` and `/`.
+    let m = serde_json::to_string(model.trim()).unwrap_or_else(|_| "\"\"".into());
+    format!(
+        "# Written by clash from workflows.omp_subagent_model — regenerated on every\n\
+         # workflow launch, so edits here are overwritten.\n\
+         modelRoles:\n  task: {m}\n\
+         task:\n  agentModelOverrides:\n    task: {m}\n"
+    )
 }
 
 /// Phases that do not move the item into a working status when launched.
@@ -1504,24 +1548,56 @@ mod tests {
         );
     }
 
+    /// The env var alone is a fallback that frontmatter and per-call models
+    /// beat, so a Claude pin always carries the force flag with it.
     #[test]
-    fn subagent_model_is_enforced_by_env_on_claude_only() {
+    fn a_claude_subagent_pin_is_forced_not_a_fallback() {
         use crate::domain::entities::AgentKind;
         let team = Delegation::from_settings("team", "claude-sonnet-5-5");
         assert_eq!(
-            delegation_env(AgentKind::Claude, &team),
-            vec![(
-                SUBAGENT_MODEL_ENV.to_string(),
-                "claude-sonnet-5-5".to_string()
-            )]
+            delegation_env(AgentKind::Claude, &team, Some("/x.yml"), ""),
+            vec![
+                (
+                    SUBAGENT_MODEL_ENV.to_string(),
+                    "claude-sonnet-5-5".to_string()
+                ),
+                (SUBAGENT_MODEL_FORCE_ENV.to_string(), "1".to_string()),
+            ]
         );
-        assert!(delegation_env(AgentKind::Omp, &team).is_empty());
         // Solo launches no subagents; an empty model means "inherit the lead".
+        for d in [
+            Delegation::from_settings("solo", "m"),
+            Delegation::from_settings("team", ""),
+        ] {
+            assert!(delegation_env(AgentKind::Claude, &d, None, "").is_empty());
+            assert!(delegation_env(AgentKind::Omp, &d, Some("/x.yml"), "").is_empty());
+        }
+    }
+
+    /// OMP is pinned through a config overlay, appended to the user's own
+    /// overlays rather than replacing them.
+    #[test]
+    fn an_omp_subagent_pin_rides_a_config_overlay() {
+        use crate::domain::entities::AgentKind;
+        let team = Delegation::from_settings("team", "openrouter/z-ai/glm-5:high");
+        assert_eq!(
+            delegation_env(AgentKind::Omp, &team, Some("/c/omp.yml"), ""),
+            vec![(OMP_CONFIG_FILES_ENV.to_string(), "/c/omp.yml".to_string())]
+        );
+        assert_eq!(
+            delegation_env(AgentKind::Omp, &team, Some("/c/omp.yml"), "/mine.yml:")[0].1,
+            "/mine.yml:/c/omp.yml"
+        );
+        // No overlay could be written: no pin, never a broken path.
+        assert!(delegation_env(AgentKind::Omp, &team, None, "").is_empty());
+        let y = omp_subagent_overlay(" openrouter/z-ai/glm-5:high ");
         assert!(
-            delegation_env(AgentKind::Claude, &Delegation::from_settings("solo", "m")).is_empty()
+            y.contains("modelRoles:\n  task: \"openrouter/z-ai/glm-5:high\"\n"),
+            "{y}"
         );
         assert!(
-            delegation_env(AgentKind::Claude, &Delegation::from_settings("team", "")).is_empty()
+            y.contains("task:\n  agentModelOverrides:\n    task: \"openrouter/z-ai/glm-5:high\"\n"),
+            "{y}"
         );
     }
 

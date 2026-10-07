@@ -1451,6 +1451,8 @@ async fn spawn_item_session(
         cwd,
         Some(meta.branch.as_str()).filter(|b| !b.is_empty()),
         agent,
+        // Marks it for every relaunch to re-apply the workflow models.
+        true,
     );
     clash::infrastructure::hooks::save_session_name(
         state.backend.base_dir(),
@@ -1473,24 +1475,13 @@ async fn spawn_item_session(
         .into_owned();
     let prompt = prompt(&item_dir);
 
-    // `--model` is the lead model, pinned rather than inherited so two rounds
-    // on one item are comparable; `workflow::launch_model` says what an OMP
-    // session gets. It precedes the prompt, the positional arg.
-    let launch = state.agents().fresh(agent, session_id, cwd);
-    let args = clash::infrastructure::agent::with_prompt(
-        launch.args,
-        clash::application::workflow::launch_model(
-            agent,
-            &cfg.workflows.lead_model,
-            &cfg.workflows.omp_model,
-        ),
-        &prompt,
-    );
-    // The subagent model is enforced by env, not left to the skill's say-so.
-    let env: std::collections::HashMap<String, String> =
-        clash::application::workflow::delegation_env(agent, &cfg.workflow_delegation())
-            .into_iter()
-            .collect();
+    // The lead model (`--model`) and the subagent pin (env), per harness —
+    // the same call every relaunch of this session makes, so a resume after a
+    // restart comes back on the same models. The prompt goes last.
+    let agents = state.agents();
+    let launch = agents.with_workflow_models(agent, agents.fresh(agent, session_id, cwd));
+    let args = clash::infrastructure::agent::with_prompt(launch.args, &prompt);
+    let env = launch.env;
     let mut control = state.control.lock().await;
     crate::ensure_connected(&mut control).await;
     control
@@ -1657,7 +1648,9 @@ pub(crate) async fn start_workflow_agent(
                     pr_skill: pr_skill.as_deref(),
                     skill: skill.as_deref(),
                     interactive,
-                    delegation: state.config.get().workflow_delegation(),
+                    delegation: state.config.get().workflow_delegation(
+                        clash::domain::entities::AgentKind::parse(&meta.agent),
+                    ),
                     workspace: work_dir.kickoff_field(),
                 },
             )
@@ -1920,7 +1913,10 @@ pub(crate) async fn start_workflow_review_agent(
                 item_dir,
                 &review,
                 mode,
-                &state.config.get().workflow_delegation(),
+                &state
+                    .config
+                    .get()
+                    .workflow_delegation(clash::domain::entities::AgentKind::parse(&meta.agent)),
             )
         },
     )
@@ -2102,7 +2098,10 @@ async fn start_explainer(
                 item_dir,
                 &review,
                 meta.mode,
-                &state.config.get().workflow_delegation(),
+                &state
+                    .config
+                    .get()
+                    .workflow_delegation(clash::domain::entities::AgentKind::parse(&meta.agent)),
             )
         },
     )

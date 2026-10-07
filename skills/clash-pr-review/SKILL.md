@@ -88,9 +88,9 @@ Interactive runs have two checkpoints, both **after** the loop has converged:
    Free-text answers ("downgrade 3 to NIT") are instructions — apply them.
 2. **Verdict** — show the verdict, the summary and every line comment exactly
    as they will be posted, and ask: **Post as shown** / **Change the verdict** /
-   **Don't post**. The human may overrule your verdict; post what they chose,
-   and say in the summary that the verdict was set by the person who launched
-   the review.
+   **Don't post**. The human may overrule your verdict; post what they chose
+   (the preamble's "confirmed before posting" already says a person signed
+   off).
 
 Blocking on a question is safe — in a workflow the item is parked in
 `reviewing` and clash offers "End round" — so never time out and decide for
@@ -113,8 +113,8 @@ For each PR under review (`<n>` its number, `--repo <owner/repo>` from its URL):
    `gh api repos/<o>/<r>/contents/<path>?ref=<headRefOid>`. Never check out,
    reset, stash or edit anything — the checkout belongs to whoever is using it.
    In a workflow round whose local `HEAD` is ahead of the PR head, you review
-   the PR head (that is what the verdict is posted on) and say in the summary
-   that the unpushed commits are not covered.
+   the PR head (that is what the verdict is posted on) and say in your final
+   message that the unpushed commits are not covered.
 4. **Everything already said and done on the PR** — review threads, reviews,
    the conversation, and the commits that answered them. This is not
    background: it is half of what you are reviewing. See "The PR's
@@ -168,7 +168,7 @@ state (unresolved / resolved / outdated), the outcome the discussion claims
 
 | Verified outcome | Means | What it becomes |
 |---|---|---|
-| **fixed** | the code at the PR head does what the fix claimed, and the concern no longer holds | nothing — counted in the summary |
+| **fixed** | the code at the PR head does what the fix claimed, and the concern no longer holds | nothing — recorded in the ledger |
 | **not fixed** | the thread says fixed, or was resolved, but the code still has the problem (or the fix broke something else) | a finding, graded by the original concern — usually at least a `RISK`, since a reviewer already believes it is handled |
 | **still open** | nobody answered, or the answer did not settle it, and the concern holds | a finding at its own grade, credited to the reviewer who raised it |
 | **decided** | the author and reviewer settled it (intentional, out of scope, deferred) and the reasoning holds against the code | nothing — respected, not re-raised |
@@ -182,20 +182,21 @@ Rules that keep this honest:
 - **Resolved is a claim**, exactly like "fixed in abc1234". Verify it the
   same way you verify your own candidates: find the line, the input, the
   caller.
-- **Credit, don't duplicate.** A finding that came from the discussion says
-  so in its body (`raised by @reviewer in <thread url>`) and is never posted
-  as if you had found it. If the thread's lines are still in the diff, the
-  line comment goes on the same line so the two sit together.
+- **Don't duplicate.** A finding the discussion already raised is posted once,
+  as what to change — if its thread's lines are still in the diff, the line
+  comment goes on the same line so the two sit together. Who raised it and
+  what was said is recorded in the ledger, not repeated on the PR.
 - **Respect decisions; don't relitigate taste.** Overturn a settled thread
   only with a concrete failure, never because you would have chosen otherwise.
 - **Outstanding change requests.** A human reviewer whose latest review is
-  `CHANGES_REQUESTED` has not been satisfied yet; say in the summary which of
-  their points you verified as fixed and which still hold. Your approval never
-  claims to settle their review for them.
+  `CHANGES_REQUESTED` has not been satisfied yet: their points that still hold
+  are **Must change** items like any other. Your approval never claims to
+  settle their review for them.
 - **Earlier automated reviews** carry the marker `<!-- clash-pr-review -->`
   (and line comments starting with `🤖`). Their findings are discussion items
-  like any other: verify each, never post the same finding twice — one that
-  still holds is listed under **Still open** with a link to its comment.
+  like any other: verify each, and never post the same line comment twice —
+  one that still holds goes under **Must change** with a link to its existing
+  comment instead of a new one.
 
 **Every pass reads the `## Discussion` table first**, and its findings join
 the same verification and dedupe as your own. The loop does not stop (see
@@ -286,9 +287,10 @@ those files are a contract. It holds:
 
 **Hard cap:** `standard` 5 passes, `deep` 8. Reaching the cap while passes
 still verify new `BLOCKER` or `RISK` findings means the change is not
-converging: stop, say so in the summary, and request changes — a change that
-keeps yielding real defects on every reading is not ready. Reaching it with
-only new `NIT`s is convergence; say so and continue.
+converging: stop and request changes — a change that keeps yielding real
+defects on every reading is not ready; its findings are the **Must change**
+list, and the non-convergence goes in the ledger and your final message, not on
+the PR. Reaching the cap with only new `NIT`s is convergence; continue.
 
 **Under `Delegation: team`**, each pass's find step is a fresh wave of
 read-only subagents (fresh eyes are the point of a new pass — never reuse the
@@ -301,7 +303,7 @@ rules as there. Only you write the ledger.
 reviewing, run one more pass over `git diff <old>..<new>` (or the compare
 API), re-verify every finding whose lines it touched, and post on the new
 commit. Do this at most twice; if it is still moving, post on the latest
-commit you fully read and say which one in the summary.
+commit you fully read — `commit_id` pins the review to it.
 
 ## The verdict
 
@@ -320,13 +322,21 @@ Decide on what survived verification (and triage, in an interactive run):
   holds;
 - the loop hit its cap still finding real defects.
 
-**APPROVE** otherwise. `GAP`s, `NIT`s and minor `RISK`s are posted as
-non-blocking comments alongside an approval, and the summary says they are
-non-blocking.
+**APPROVE** when none of the above holds and nothing stops you from vouching
+for the change. `GAP`s, `NIT`s and minor `RISK`s are posted as non-blocking
+comments alongside an approval, and the summary says they are non-blocking.
 
-**No verdict** only when you could not review the change — the diff could not
-be fetched, a file it depends on could not be read. Say exactly what was not
-covered, post as a comment, and never approve what you did not read.
+**COMMENT** — neither — when the review cannot honestly end in either:
+- you could not review all of it (the diff could not be fetched, a file it
+  depends on could not be read) — never approve what you did not read;
+- what is open is a **question only the author can answer** (which of two
+  behaviours is intended, whether a trade-off was deliberate), so you can
+  neither vouch for the change nor name a defect to fix.
+
+Say which of the two it is and exactly what is uncovered or unanswered. This
+is a real third outcome, not a hedge: when the code gives you a concrete
+failure, request changes; when it gives you none and you read it all,
+approve.
 
 Judge by severity, never by count: one timing-attack `BLOCKER` requests
 changes; twenty `NIT`s do not.
@@ -340,8 +350,7 @@ an automated review as a person's:
 
 ```markdown
 <!-- clash-pr-review -->
-> 🤖 **Automated review** — written by an AI reviewer (clash `clash-pr-review`), not by a person. It read this change in <P> passes, stopping when a full pass found nothing new.
-> <one of:> Launched by @<login> and confirmed before posting. | Launched by @<login> and posted without confirmation.
+> 🤖 **Automated review** — written by an AI reviewer (clash `clash-pr-review`), not by a person. <one of:> Launched by @<login> and confirmed before posting. | Launched by @<login> and posted without confirmation.
 ```
 
 The HTML comment is the marker later runs look for — keep it the first line.
@@ -349,34 +358,38 @@ Every **line comment** starts with `🤖 ` and the grade
 (`🤖 **BLOCKER** — …`), because a line comment is read alone in "Files
 changed", far from the summary.
 
-### The summary
+### The summary — only what must change
+
+The posted review exists to tell the author **what to change**. It says
+nothing else: no description of the change, no praise for what was done well,
+no history of the earlier discussion, no pass count or how the review was run.
+All of that stays in the ledger (and, in a workflow round, in the item's
+report), never on the PR.
 
 After the preamble:
 
-1. `**Verdict: APPROVE**` or `**Verdict: REQUEST CHANGES**`, then one sentence
-   saying why.
-2. Two to four sentences on what the change does and how it was judged.
-3. **Blocking** — every finding that drives a change request, one line each
-   with a link to its line comment. Then **Non-blocking**, the same way.
+1. `**Verdict: APPROVE**`, `**Verdict: REQUEST CHANGES**` or
+   `**Verdict: COMMENT**`, then one sentence saying why.
+2. **Must change** — every finding that drives the verdict, most severe first,
+   one line each: what to change and why, linked to its line comment. A
+   finding the discussion already raised and that still holds is simply one of
+   these — state the change, not the thread's history. A failing CI check this
+   change caused belongs here too.
+3. **Could change** — non-blocking findings, the same way. Omit when empty.
 4. **Outside the diff** — findings on lines GitHub cannot anchor a comment to
-   (unchanged code the change breaks, a missing file). Never dropped for having
-   no line to sit on.
-5. **Prior review discussion** — what the PR's earlier review settled and
-   whether it holds: `<k> threads verified fixed · <m> claimed fixed but not ·
-   <p> still open · <q> decided and respected`, then one line per thread that
-   is *not fixed* or *still open*, with its link and who raised it. Name any
-   human reviewer whose change request is still outstanding, and which of
-   their points still hold.
-6. **Still open** — findings of an earlier automated review that still hold.
-7. **CI** — passing / failing (and whether it is this change's fault) / pending.
-8. **Not covered** — anything you did not read, and why. Omit when empty.
-9. One line: `Passes: <P> — <new verified per pass, e.g. 5 · 2 · 1 · 0>`.
+   (unchanged code the change breaks, a missing file), in the same shape.
+   Never dropped for having no line to sit on.
+5. **Not reviewed** — only for a `COMMENT` verdict that rests on it: what you
+   could not read, or the question only the author can answer.
+
+An approval with nothing to change is the verdict line and nothing else.
 
 ### Line comments
 
 On the exact line concerned (`side: RIGHT` for added or kept lines, `LEFT`
 for a removed one; `start_line` + `line` for a range). Each says the grade,
-the concrete failure, and the fix. Use a ` ```suggestion ` block only when the
+the concrete failure, and the fix — nothing more: no compliments, no
+recap of who said it before. Use a ` ```suggestion ` block only when the
 fix is small and certainly right.
 
 ### How to post
@@ -408,7 +421,9 @@ Three cases change the `event`, and each must be **said in the summary**,
 right under the verdict line, or the review misstates what was decided:
 
 - **Your own PR** (`author.login` = your login): GitHub refuses
-  `APPROVE` and `REQUEST_CHANGES` from a PR's author. Post with
+  `APPROVE` and `REQUEST_CHANGES` from a PR's author — server-side, for every
+  client and token of that account (HTTP 422), so there is nothing to retry and
+  no flag to try; only a different account can leave a green check. Post with
   `"event": "COMMENT"`; the verdict line stays as decided, followed by
   *(posted as a comment: GitHub does not let a PR's author approve or request
   changes on it)*. This is the common case for a workflow item — the item's
@@ -418,7 +433,8 @@ right under the verdict line, or the review misstates what was decided:
   `path`, `line`, `side`, `body`), then the summary with
   `gh pr comment <n> --repo <o/r> --body-file <file>`, noting *(a draft cannot
   take a formal review — run it again once the PR is ready)*.
-- **No verdict**: `"event": "COMMENT"`.
+- **A COMMENT verdict**: `"event": "COMMENT"` — nothing to restate, the event
+  is the verdict.
 
 A later `APPROVE` from the same account supersedes an earlier
 `REQUEST_CHANGES` on GitHub, so re-running after fixes needs no clean-up.
@@ -446,7 +462,7 @@ In addition to the post, as `clash-code-review` does it:
 ```markdown
 ## Review <round> — self-review · <depth> · <YYYY-MM-DD HH:MM>
 
-**Verdict:** REQUEST CHANGES — <one line> | APPROVE — <one line>
+**Verdict:** REQUEST CHANGES | APPROVE | COMMENT — <one line>
 
 **Apply:** yes|no — <one line>
 

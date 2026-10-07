@@ -525,7 +525,7 @@ async fn open_session(
                 name,
                 cols,
                 rows,
-                HashMap::new(),
+                launch.env.clone(),
                 true, // TUI: Claude sets its own termios
             )
             .await
@@ -1050,7 +1050,14 @@ async fn create_new_session(
         name.to_string()
     };
 
-    clash::infrastructure::hooks::registry::register(&session_id, &derived_name, cwd, None, agent);
+    clash::infrastructure::hooks::registry::register(
+        &session_id,
+        &derived_name,
+        cwd,
+        None,
+        agent,
+        false,
+    );
     clash::infrastructure::hooks::save_session_name(
         state.backend.base_dir(),
         &session_id,
@@ -1714,6 +1721,7 @@ struct AgentSettings {
     lead_model: String,
     delegation: String,
     subagent_model: String,
+    omp_subagent_model: String,
     assist: String,
 }
 
@@ -1728,7 +1736,9 @@ pub(crate) fn bin_available(bin: &str) -> bool {
 #[tauri::command]
 fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
     let cfg = state.config.get();
-    let team = cfg.workflow_delegation().team;
+    let team = cfg
+        .workflow_delegation(clash::domain::entities::AgentKind::Claude)
+        .team;
     AgentSettings {
         default_agent: cfg.default_agent().as_str().to_string(),
         omp_available: bin_available(&cfg.general.omp_bin),
@@ -1745,6 +1755,7 @@ fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
         lead_model: cfg.workflows.lead_model,
         delegation: if team { "team" } else { "solo" }.to_string(),
         subagent_model: cfg.workflows.subagent_model,
+        omp_subagent_model: cfg.workflows.omp_subagent_model,
         assist: match cfg.workflows.assist.as_str() {
             "autopilot" | "off" => cfg.workflows.assist.clone(),
             _ => "suggest".to_string(),
@@ -1755,7 +1766,8 @@ fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
 /// Write one agent-CLI setting to the shared `config.toml`. `key` is one of
 /// `general.default_agent`, `general.omp_bin`, `workflows.agent`,
 /// `workflows.omp_model`, `workflows.lead_model`, `workflows.delegation`,
-/// `workflows.subagent_model`, `workflows.assist`; an empty value resets it to the default. An
+/// `workflows.subagent_model`, `workflows.omp_subagent_model`, `workflows.assist`; an empty
+/// value resets it to the default. An
 /// absolute `omp_bin` must exist, like `claude_bin`.
 #[tauri::command]
 fn set_agent_setting(
@@ -1793,6 +1805,7 @@ fn set_agent_setting(
         | "workflows.lead_model"
         | "workflows.delegation"
         | "workflows.subagent_model"
+        | "workflows.omp_subagent_model"
         | "workflows.assist" => value.to_string(),
         other => return Err(format!("Not an agent setting: {other}")),
     };
@@ -2328,6 +2341,7 @@ async fn create_worktree_session(
         &wt_str,
         Some(git_branch.as_str()),
         agent,
+        false,
     );
     clash::infrastructure::hooks::save_session_name(
         state.backend.base_dir(),
@@ -2353,7 +2367,7 @@ async fn create_worktree_session(
             Some(name),
             cols,
             rows,
-            HashMap::new(),
+            launch.env.clone(),
             true, // TUI: Claude sets its own termios
         )
         .await
@@ -2463,7 +2477,7 @@ async fn takeover_wild(
             None,
             cols,
             rows,
-            HashMap::new(),
+            launch.env.clone(),
             true, // TUI: Claude sets its own termios
         )
         .await

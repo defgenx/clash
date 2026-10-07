@@ -10,6 +10,10 @@
 //!
 //! Status hooks are injected by the daemon at spawn (`daemon::session`), not
 //! here, so a bare `claude`/`omp` from any caller still gets them.
+//!
+//! A **workflow** session's models are applied here too
+//! ([`Agents::with_workflow_models`]) — at its first launch *and* at every
+//! relaunch, since a resume keeps none of the original command line or env.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,11 +23,23 @@ use crate::infrastructure::config::Config;
 use crate::infrastructure::hooks::registry::{self, ClashSession};
 use crate::infrastructure::omp;
 
-/// Binary + argv for one daemon spawn.
-#[derive(Debug, Clone, PartialEq)]
+/// Binary, argv and extra env for one daemon spawn.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Launch {
     pub bin: String,
     pub args: Vec<String>,
+    pub env: HashMap<String, String>,
+}
+
+/// The `workflows.*` model settings, per harness — what a workflow session
+/// is launched with.
+#[derive(Debug, Clone, Default)]
+pub struct WorkflowModels {
+    pub delegation: String,
+    pub claude_lead: String,
+    pub claude_subagent: String,
+    pub omp_lead: String,
+    pub omp_subagent: String,
 }
 
 /// Where each agent lives on this machine, from config.
@@ -35,6 +51,9 @@ pub struct Agents {
     pub claude_projects_dir: PathBuf,
     /// `~/.omp/agent` — OMP sessions and skills.
     pub omp_dir: PathBuf,
+    pub workflow: WorkflowModels,
+    /// Where the OMP subagent overlay is written (clash's data dir).
+    pub omp_overlay_path: PathBuf,
 }
 
 // ── Pure argv ────────────────────────────────────────────────────────
@@ -55,17 +74,13 @@ pub fn resume_args(agent: AgentKind, conversation: &str, omp_file: &Path) -> Vec
     }
 }
 
-/// Append a model and an initial prompt. Both agents take the prompt as the
-/// last positional argument; an empty model leaves the agent's own default.
+/// Append an initial prompt. Both agents take it as the last positional
+/// argument, so it goes after every flag (`--model` included).
 ///
 /// `dead_code` is allowed because the only caller is the sibling `clash-gui`
 /// crate (workflow launchers); the TUI launches no prompted sessions.
 #[allow(dead_code)]
-pub fn with_prompt(mut args: Vec<String>, model: Option<&str>, prompt: &str) -> Vec<String> {
-    if let Some(m) = model.map(str::trim).filter(|m| !m.is_empty()) {
-        args.push("--model".into());
-        args.push(m.into());
-    }
+pub fn with_prompt(mut args: Vec<String>, prompt: &str) -> Vec<String> {
     args.push(prompt.into());
     args
 }
@@ -77,7 +92,73 @@ impl Agents {
             omp_bin: cfg.general.omp_bin.clone(),
             claude_projects_dir: cfg.claude_dir().join("projects"),
             omp_dir: cfg.omp_dir(),
+            workflow: WorkflowModels {
+                delegation: cfg.workflows.delegation.clone(),
+                claude_lead: cfg.workflows.lead_model.clone(),
+                claude_subagent: cfg.workflows.subagent_model.clone(),
+                omp_lead: cfg.workflows.omp_model.clone(),
+                omp_subagent: cfg.workflows.omp_subagent_model.clone(),
+            },
+            omp_overlay_path: Config::clash_data_dir()
+                .join("omp")
+                .join("workflow-models.yml"),
         }
+    }
+
+    /// Apply the workflow models for `agent` to `launch`: the lead model as
+    /// `--model`, and the subagent pin as env (Claude Code: model + force
+    /// flag; OMP: a config overlay setting its `task` role). Called for a
+    /// workflow session's first launch and for every relaunch of one.
+    pub fn with_workflow_models(&self, agent: AgentKind, mut launch: Launch) -> Launch {
+        use crate::application::workflow::{delegation_env, launch_model, Delegation};
+        let w = &self.workflow;
+        if let Some(m) = launch_model(agent, &w.claude_lead, &w.omp_lead) {
+            launch.args.push("--model".into());
+            launch.args.push(m.to_string());
+        }
+        let delegation = Delegation::from_settings(
+            &w.delegation,
+            match agent {
+                AgentKind::Claude => &w.claude_subagent,
+                AgentKind::Omp => &w.omp_subagent,
+            },
+        );
+        let overlay = match agent {
+            AgentKind::Omp if delegation.team && !delegation.subagent_model.is_empty() => {
+                self.write_omp_overlay(delegation.subagent_model)
+            }
+            _ => None,
+        };
+        let inherited =
+            std::env::var(crate::application::workflow::OMP_CONFIG_FILES_ENV).unwrap_or_default();
+        launch.env.extend(delegation_env(
+            agent,
+            &delegation,
+            overlay.as_deref(),
+            &inherited,
+        ));
+        launch
+    }
+
+    /// Write the OMP subagent overlay when its content changed; `None` when it
+    /// cannot be written, which costs the pin and never the session (omp
+    /// refuses to start on a missing `PI_CONFIG_FILES` entry).
+    fn write_omp_overlay(&self, model: &str) -> Option<String> {
+        let path = &self.omp_overlay_path;
+        let body = crate::application::workflow::omp_subagent_overlay(model);
+        if std::fs::read_to_string(path).ok().as_deref() != Some(body.as_str()) {
+            let written = path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|_| {
+                    crate::infrastructure::fs::atomic::write_atomic(path, body.as_bytes())
+                });
+            if let Err(e) = written {
+                tracing::warn!("omp subagent overlay not written ({}): {e}", path.display());
+                return None;
+            }
+        }
+        Some(path.to_string_lossy().into_owned())
     }
 
     pub fn bin(&self, agent: AgentKind) -> String {
@@ -96,6 +177,7 @@ impl Agents {
         Launch {
             bin: self.bin(agent),
             args: fresh_args(agent, id, &omp_file),
+            ..Launch::default()
         }
     }
 
@@ -143,12 +225,13 @@ impl Agents {
             session_id,
         );
         registry::record_resumed_conversation(session_id, &conversation);
-        match agent {
+        let launch = match agent {
             AgentKind::Claude => {
                 if claude_has_transcript(&conversation) {
                     Launch {
                         bin: self.bin(agent),
                         args: resume_args(agent, &conversation, Path::new("")),
+                        ..Launch::default()
                     }
                 } else {
                     self.fresh(agent, session_id, cwd)
@@ -158,9 +241,18 @@ impl Agents {
                 Some(file) => Launch {
                     bin: self.bin(agent),
                     args: resume_args(agent, &conversation, &file),
+                    ..Launch::default()
                 },
                 None => self.fresh(agent, session_id, cwd),
             },
+        };
+        // A resume keeps none of the first launch's flags or env, so a
+        // workflow session would otherwise come back on the agent's default
+        // model with its subagents unpinned.
+        if registry::is_workflow_session(registry, session_id) {
+            self.with_workflow_models(agent, launch)
+        } else {
+            launch
         }
     }
 }
@@ -212,16 +304,99 @@ mod tests {
     }
 
     #[test]
-    fn prompt_is_last_and_an_empty_model_is_omitted() {
-        let base = vec!["--session-id".to_string(), "X".to_string()];
-        assert_eq!(
-            with_prompt(base.clone(), Some("opus"), "do it"),
-            ["--session-id", "X", "--model", "opus", "do it"]
+    fn the_prompt_is_the_last_argument() {
+        let base = vec!["--model".to_string(), "opus".to_string()];
+        assert_eq!(with_prompt(base, "do it"), ["--model", "opus", "do it"]);
+    }
+
+    fn agents_with(dir: &Path, w: WorkflowModels) -> Agents {
+        Agents {
+            claude_bin: "claude".into(),
+            omp_bin: "omp".into(),
+            claude_projects_dir: dir.join("projects"),
+            omp_dir: dir.join("omp"),
+            workflow: w,
+            omp_overlay_path: dir.join("clash").join("workflow-models.yml"),
+        }
+    }
+
+    fn models() -> WorkflowModels {
+        WorkflowModels {
+            delegation: "team".into(),
+            claude_lead: "claude-opus-5-5".into(),
+            claude_subagent: "claude-sonnet-5-5".into(),
+            omp_lead: "glm-5".into(),
+            omp_subagent: "glm-5-flash".into(),
+        }
+    }
+
+    /// Each harness gets its own lead and its own subagent pin.
+    #[test]
+    fn workflow_models_are_applied_per_harness() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = agents_with(dir.path(), models());
+        let c = a.with_workflow_models(AgentKind::Claude, Launch::default());
+        assert_eq!(c.args, ["--model", "claude-opus-5-5"]);
+        assert_eq!(c.env["CLAUDE_CODE_SUBAGENT_MODEL"], "claude-sonnet-5-5");
+        assert_eq!(c.env["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1");
+
+        let o = a.with_workflow_models(AgentKind::Omp, Launch::default());
+        assert_eq!(o.args, ["--model", "glm-5"]);
+        let overlay = &o.env["PI_CONFIG_FILES"];
+        assert!(overlay.ends_with("workflow-models.yml"), "{overlay}");
+        let body = std::fs::read_to_string(overlay).unwrap();
+        assert!(body.contains("task: \"glm-5-flash\""), "{body}");
+        assert!(!o.env.contains_key("CLAUDE_CODE_SUBAGENT_MODEL"));
+
+        // Solo pins nothing, empty leads leave the agent's own default.
+        let bare = agents_with(
+            dir.path(),
+            WorkflowModels {
+                delegation: "solo".into(),
+                ..WorkflowModels::default()
+            },
         );
-        assert_eq!(
-            with_prompt(base, Some("  "), "do it"),
-            ["--session-id", "X", "do it"]
-        );
+        for agent in [AgentKind::Claude, AgentKind::Omp] {
+            assert_eq!(
+                bare.with_workflow_models(agent, Launch::default()),
+                Launch::default()
+            );
+        }
+    }
+
+    /// The regression: a resumed workflow session got a bare `--resume`.
+    #[test]
+    fn a_relaunched_workflow_session_gets_its_models_back_and_others_do_not() {
+        use crate::infrastructure::hooks::registry::ClashSession;
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = agents_with(dir.path(), models());
+        let entry = |id: &str, workflow: bool| ClashSession {
+            session_id: id.into(),
+            name: id.into(),
+            cwd: "/p".into(),
+            claude_session_id: id.into(),
+            created_at: String::new(),
+            source_branch: None,
+            previous_ids: Vec::new(),
+            agent: AgentKind::Claude,
+            workflow,
+        };
+        let reg: HashMap<String, ClashSession> = [
+            ("wf".to_string(), entry("wf", true)),
+            ("plain".to_string(), entry("plain", false)),
+        ]
+        .into();
+        let wf = a.relaunch_with(&reg, "wf", Some("/p"), |_| true);
+        assert_eq!(wf.args, ["--resume", "wf", "--model", "claude-opus-5-5"]);
+        assert_eq!(wf.env["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1");
+        // Starting fresh because the transcript is gone still pins them.
+        let fresh = a.relaunch_with(&reg, "wf", Some("/p"), |_| false);
+        assert!(fresh
+            .args
+            .ends_with(&["--model".into(), "claude-opus-5-5".into()]));
+        let plain = a.relaunch_with(&reg, "plain", Some("/p"), |_| true);
+        assert_eq!(plain.args, ["--resume", "plain"]);
+        assert!(plain.env.is_empty());
     }
 
     #[test]
@@ -248,6 +423,8 @@ mod tests {
             omp_bin: "/opt/omp".into(),
             claude_projects_dir: PathBuf::from("/nope"),
             omp_dir: PathBuf::from("/omp-agent"),
+            workflow: WorkflowModels::default(),
+            omp_overlay_path: PathBuf::from("/nope/overlay.yml"),
         };
         let home = dirs::home_dir().unwrap();
         let cwd = home.join("some-project-that-does-not-exist");

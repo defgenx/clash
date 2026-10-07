@@ -743,10 +743,20 @@ never post.
 - **Agent CLI**: workflow sessions run on Claude Code or OMP. `workflows.agent`
   defaults to `ask` at every step and can be fixed per item. See
   [OMP sessions](#omp-sessions).
-- **Lead and subagents**: every Claude workflow session runs on one pinned
-  **lead model** (`workflows.lead_model`, default `claude-opus-5-5`). Under
-  `workflows.delegation = team` (the default), the lead may split work across
-  parallel subagents on `workflows.subagent_model` (default `claude-sonnet-5-5`).
+- **Lead and subagents**: every workflow session runs on one pinned **lead
+  model**, and under `workflows.delegation = team` (the default) the lead may
+  split work across parallel subagents on a pinned **subagent model**. Each
+  harness has its own pair, in Settings → *Models · Claude Code* and *Models ·
+  OMP*:
+  - Claude Code: `workflows.lead_model` (default `claude-opus-5-5`) and
+    `workflows.subagent_model` (default `claude-sonnet-5-5`), forced on every
+    subagent except Claude Code's built-in Explore agent;
+  - OMP: `workflows.omp_model` and `workflows.omp_subagent_model` (both empty
+    by default, meaning omp's own choice), the subagent one pinned through a
+    per-run omp config overlay that leaves your `config.yml` alone.
+
+  The models are applied at launch and again every time the session is
+  resumed (after a restart, an update or a reload).
   It sizes the round first: small work stays with the lead, and large work gets
   explorers, implementers in waves of disjoint files, or one reviewer per area,
   followed by verification. `solo` keeps everything in one session.
@@ -1023,10 +1033,12 @@ everything built around sessions applies:
   before every OMP workflow launch, so an omp installed since startup still
   has the skills its kickoff names.
 - **Workflows.** OMP workflow sessions launch with `workflows.omp_model`
-  (empty = omp's own default model) instead of `workflows.lead_model`.
+  (empty = omp's own default model) instead of `workflows.lead_model`, and
+  their subagents run on `workflows.omp_subagent_model` (empty = omp's own
+  `task` model) instead of `workflows.subagent_model`.
 
 Settings: `general.omp_bin`, `general.default_agent`, `paths.omp_dir`,
-`workflows.agent`, `workflows.omp_model`. Details: [docs/hooks.md](docs/hooks.md#omp-sessions).
+`workflows.agent`, `workflows.omp_model`, `workflows.omp_subagent_model`. Details: [docs/hooks.md](docs/hooks.md#omp-sessions).
 
 ## Configuration
 
@@ -1102,7 +1114,8 @@ omp_model = ""             # --model for OMP workflow sessions; empty = omp's de
 lead_model = "claude-opus-5-5"     # --model for every Claude workflow session (the lead)
 delegation = "team"        # team: lead fans work out to parallel subagents | solo
 assist = "suggest"         # suggest: highlight the next step | autopilot: also start it when it decides nothing | off
-subagent_model = "claude-sonnet-5-5" # model those subagents run on; empty = inherit the lead's
+subagent_model = "claude-sonnet-5-5" # model those subagents run on (Claude Code); empty = inherit the lead's
+omp_subagent_model = ""    # model those subagents run on (OMP); empty = omp's own task model
 pr_skill = "hivebrite-engineering:github-pr"  # skill the PR phase opens PRs with; "none" disables
 forge = "auto"             # code forge for PR features: auto | github | none
 slack_webhook = ""         # Slack incoming webhook for sharing + notifications

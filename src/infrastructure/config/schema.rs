@@ -372,9 +372,18 @@ pub const PROPS: &[Prop] = &[
         "workflows.subagent_model",
         Kind::Str,
         Val::Str("claude-sonnet-5-5"),
-        "Model the lead's subagents run on under `team` delegation, enforced through \
-         `CLAUDE_CODE_SUBAGENT_MODEL`. Empty lets them inherit the lead's model. Claude \
-         sessions only — omp picks its task models from its own configuration.",
+        "Model a Claude Code lead's subagents run on under `team` delegation, forced through \
+         `CLAUDE_CODE_SUBAGENT_MODEL` + `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` (Claude Code's \
+         built-in Explore agent keeps its own model). Empty lets them inherit the lead's \
+         model. OMP sessions use `workflows.omp_subagent_model`.",
+    ),
+    Prop::new(
+        "workflows.omp_subagent_model",
+        Kind::Str,
+        Val::Str(""),
+        "Model an OMP lead's subagents run on under `team` delegation (omp's fuzzy match), \
+         pinned through a per-run config overlay that sets omp's `task` model role. Empty \
+         leaves omp's own task model. Claude Code sessions use `workflows.subagent_model`.",
     ),
     Prop::new(
         "workflows.pr_skill",

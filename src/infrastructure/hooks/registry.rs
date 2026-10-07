@@ -73,6 +73,11 @@ pub struct ClashSession {
     /// which were all Claude Code.
     #[serde(default)]
     pub agent: AgentKind,
+    /// Launched by a workflow (an executor, reviewer or explainer round), so
+    /// every relaunch re-applies the workflow models — `claude --resume` /
+    /// `omp --resume` keep none of the original command line.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub workflow: bool,
 }
 
 /// Path to the session registry file.
@@ -262,6 +267,7 @@ pub fn register(
     cwd: &str,
     source_branch: Option<&str>,
     agent: AgentKind,
+    workflow: bool,
 ) {
     let Some(mut registry) = load_for_mutation("register") else {
         return;
@@ -277,6 +283,7 @@ pub fn register(
             source_branch: source_branch.map(|s| s.to_string()),
             previous_ids: Vec::new(),
             agent,
+            workflow,
         },
     );
     save_checked(&registry, "register", false);
@@ -315,6 +322,13 @@ pub fn registered_agent(
         .iter()
         .find(|(k, v)| entry_answers_to(k, v, session_id))
         .map(|(_, v)| v.agent)
+}
+
+/// Was `session_id` (under any of its ids) launched by a workflow?
+pub fn is_workflow_session(registry: &HashMap<String, ClashSession>, session_id: &str) -> bool {
+    registry
+        .iter()
+        .any(|(k, v)| v.workflow && entry_answers_to(k, v, session_id))
 }
 
 /// Resolve a possibly-stale session ID to the Claude session ID that should
@@ -629,6 +643,7 @@ mod tests {
                 source_branch: None,
                 previous_ids: Vec::new(),
                 agent: Default::default(),
+                workflow: false,
             },
         );
 
@@ -668,6 +683,7 @@ mod tests {
             source_branch: None,
             previous_ids: Vec::new(),
             agent: Default::default(),
+            workflow: false,
         }
     }
 
@@ -790,6 +806,7 @@ mod tests {
                 source_branch: Some("main".to_string()),
                 previous_ids: Vec::new(),
                 agent: Default::default(),
+                workflow: false,
             },
         );
 
@@ -808,6 +825,7 @@ mod tests {
             source_branch: None,
             previous_ids: Vec::new(),
             agent: Default::default(),
+            workflow: false,
         }
     }
 
