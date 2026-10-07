@@ -1837,7 +1837,7 @@ async function reloadSession(sid) {
     // Reopen in the same pane: openSession fills the focused one.
     const w = ws();
     const idx = w.panes.indexOf(sid);
-    dropTerminal(sid, { keepPane: true });
+    dropTerminal(sid);
     if (idx >= 0) w.focused = idx;
   }
   openSession(sid);
@@ -3430,18 +3430,15 @@ async function detachSession(sid) {
 }
 
 /// Remove the local terminal/view for a tab (after detach/stash/kill/exit).
-/// Its pane closes and the neighbours take the space, as in iTerm;
-/// `keepPane` leaves it empty instead, for a reload that refills it.
-function dropTerminal(sid, { keepPane = false } = {}) {
+/// Its pane stays, empty, so the layout survives; closing a pane is its own act.
+function dropTerminal(sid) {
   const entry = state.open.get(sid);
   if (!entry) return;
   if (entry.term) entry.term.dispose();
   entry.el.remove();
   state.open.delete(sid);
   for (const w of state.workspaces) {
-    const idx = w.panes.indexOf(sid);
-    if (idx >= 0 && keepPane) w.panes[idx] = null;
-    else if (idx >= 0) closePaneAt(w, idx);
+    w.panes = w.panes.map((p) => (p === sid ? null : p));
     // Shell terminals and browser tabs leave ownership on close — the
     // session prune intentionally skips them, so nothing else would.
     if (isShellTerm(sid) || isBrowserTab(sid)) {

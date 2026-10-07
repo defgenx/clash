@@ -204,7 +204,7 @@ teams, files, tabs and panes, the terminal and settings. Replay it from *Setting
     spans that side — e.g. one full-width pane under several columns.
   - Drop a pane's title on the tab strip to unsplit it back into a plain tab.
     `Esc` cancels a drag.
-  - Closing a tab closes its pane; the neighbouring panes take the space.
+  - Closing a tab leaves its pane in place, empty, ready for the next tab.
   - `⌘⇧↩` (or a double-click on the pane title) zooms.
   - `⌘⌥←/→` cycles focus.
   - Drag a divider to resize; the layout persists per workspace.
