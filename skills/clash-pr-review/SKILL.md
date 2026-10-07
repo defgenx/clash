@@ -454,7 +454,9 @@ In addition to the post, as `clash-code-review` does it:
 
 - **Annotations** — every posted finding on the **primary** PR's diff becomes
   an `annotations.json` entry with `"author": "agent"`, grade first in `body`,
-  so *Request changes* can turn the set into a fix round. A linked PR's
+  so *Request changes* can turn the set into a fix round. The file is one
+  object, `{"annotations": [ … ]}` — append inside that array, never write a
+  bare array. A linked PR's
   findings stay on that PR only (they would anchor to nothing in this item).
 - **`agent-review.md`** — appended in one shell append, never by rewriting the
   file:

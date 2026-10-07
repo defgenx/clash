@@ -1426,6 +1426,24 @@ pub struct AnnotationsFile {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
+impl AnnotationsFile {
+    /// Parse `annotations.json`: the canonical `{"annotations": [...]}`, or a
+    /// bare array of annotations — the shape an agent writes when it leaves the
+    /// wrapper off. That is the same data, so refusing it would wedge the item
+    /// (no Apply, no Diff view, zero open comments) over a missing pair of
+    /// braces; the next write restores the canonical shape. Anything else is
+    /// still an error, so a blind save never overwrites review data.
+    pub fn parse(raw: &str) -> serde_json::Result<Self> {
+        match serde_json::from_str::<serde_json::Value>(raw)? {
+            serde_json::Value::Array(items) => Ok(Self {
+                annotations: serde_json::from_value(serde_json::Value::Array(items))?,
+                ..Self::default()
+            }),
+            other => serde_json::from_value(other),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1968,6 +1986,20 @@ mod tests {
         // Empty file is valid too.
         let empty: AnnotationsFile = serde_json::from_str("{}").unwrap();
         assert!(empty.annotations.is_empty());
+    }
+
+    #[test]
+    fn annotations_parse_accepts_a_bare_array_and_nothing_else() {
+        let wrapped = AnnotationsFile::parse(r#"{"annotations":[{"id":"a","body":"x"}]}"#).unwrap();
+        assert_eq!(wrapped.annotations.len(), 1);
+        // The wrapper an agent left off: same data.
+        let bare = AnnotationsFile::parse(r#"[{"id":"a","body":"x"},{"id":"b"}]"#).unwrap();
+        assert_eq!(bare.annotations.len(), 2);
+        assert_eq!(bare.annotations[1].id, "b");
+        // Still errors: a blind save must never replace these with nothing.
+        assert!(AnnotationsFile::parse("{not json").is_err());
+        assert!(AnnotationsFile::parse(r#"[1, 2]"#).is_err());
+        assert!(AnnotationsFile::parse(r#""annotations""#).is_err());
     }
 
     // ── Agent review rounds ─────────────────────────────────────────

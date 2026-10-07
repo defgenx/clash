@@ -287,6 +287,11 @@ rather than writing annotations that cannot be triaged.
 
 Append to `annotations.json` (read-modify-write, keep every existing entry):
 
+**The file is one JSON object, `{"annotations": [ … ]}`** — the entry below goes
+inside that array. Never write a bare array or a single entry as the whole file:
+clash reads the object, so a file without it costs the item its open-comment
+count and its *Request changes* until clash rewrites it.
+
 ```json
 {
   "id": "r<round>-<n>",

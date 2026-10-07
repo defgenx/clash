@@ -263,6 +263,11 @@ it enters the triage loop the human already uses and one *Request changes* turns
 the whole set into an executor round. Read the file, append, write it back
 whole — never overwrite entries you did not create.
 
+**The file is one JSON object, `{"annotations": [ … ]}`** — the entry below goes
+inside that array. Never write a bare array or a single entry as the whole file:
+clash reads the object, so a file without it costs the item its open-comment
+count and its *Request changes* until clash rewrites it.
+
 ```json
 {
   "id": "r<round>-<n>",

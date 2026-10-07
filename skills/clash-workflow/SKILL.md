@@ -128,7 +128,8 @@ findings into `agent-review.md` and `annotations.json` and never touch
   you implement.
 - Write `annotations.json` **only while** `meta.json.status` is
   `changes-requested` or `implementing`. During review phases the file
-  belongs to the human's GUI.
+  belongs to the human's GUI. It is one object, `{"annotations": [ … ]}`:
+  edit entries inside that array, never write a bare array.
 - Every `meta.json` write is a **read-modify-write**: re-read the file, edit
   only your fields (`status`, `pr.url`, `linkedPrs` appends), keep every
   field you don't understand. Never rewrite it from a template.

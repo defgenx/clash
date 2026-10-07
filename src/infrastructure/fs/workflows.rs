@@ -132,7 +132,7 @@ fn count_open_annotations(dir: &Path) -> usize {
     let Ok(raw) = std::fs::read_to_string(&path) else {
         return 0;
     };
-    match serde_json::from_str::<AnnotationsFile>(&raw) {
+    match AnnotationsFile::parse(&raw) {
         Ok(file) => file
             .annotations
             .iter()
@@ -445,7 +445,7 @@ pub fn append_review_iteration(
 pub fn read_annotations(root: &Path, project: &str, slug: &str) -> Result<AnnotationsFile> {
     let dir = existing_item_dir(root, project, slug)?;
     match std::fs::read_to_string(dir.join(ANNOTATIONS_FILE)) {
-        Ok(raw) => Ok(serde_json::from_str(&raw)?),
+        Ok(raw) => Ok(AnnotationsFile::parse(&raw)?),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AnnotationsFile::default()),
         Err(e) => Err(e.into()),
     }
@@ -1309,6 +1309,24 @@ mod tests {
         let items = load_items(&root).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].open_annotations, 0);
+    }
+
+    #[test]
+    fn an_agent_written_bare_array_reads_as_the_same_annotations() {
+        let (_g, root) = root();
+        let item = create_item(&root, &req("p", "item", "")).unwrap();
+        std::fs::write(
+            Path::new(&item.path).join(ANNOTATIONS_FILE),
+            r#"[{"id":"r1-1","status":"open","author":"agent"},{"id":"r1-2","status":"addressed"}]"#,
+        )
+        .unwrap();
+        assert_eq!(load_items(&root).unwrap()[0].open_annotations, 1);
+        let file = read_annotations(&root, "p", "item").unwrap();
+        assert_eq!(file.annotations.len(), 2);
+        // The next write restores the canonical shape.
+        write_annotations(&root, "p", "item", &file).unwrap();
+        let raw = std::fs::read_to_string(Path::new(&item.path).join(ANNOTATIONS_FILE)).unwrap();
+        assert!(raw.trim_start().starts_with('{'));
     }
 
     #[test]

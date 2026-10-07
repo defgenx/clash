@@ -28,7 +28,7 @@ workflows are a structured store.
 │                      #   (structure.md / blueprint.md: the pre-pair names, still read)
 ├── drift.md           # the plan AGAINST what was built — graded (clash-drift-review)
 ├── drift.html         # …and as one hand-drawn map, every part badged
-├── annotations.json   # line-level diff comments
+├── annotations.json   # line-level diff comments: {"annotations": [ … ]}
 ├── handoff.md         # the executor's note to the human (overwritten every phase)
 ├── explainers.json    # explainer rounds running alongside the item (clash-owned)
 ├── run.json           # the check run in flight + finished runs (clash-owned)
@@ -39,6 +39,14 @@ workflows are a structured store.
 `review.md` and `agent-review.md` are deliberately two files: the first is
 clash's record of **human** decisions, the second the reviewer's own findings.
 One file would make ownership ambiguous exactly where concurrent writes happen.
+
+`annotations.json` is one object, `{"annotations": [ … ]}`. clash also reads a
+bare array of annotations — the shape an agent writes when it drops the
+wrapper — and restores the object on its next write (`AnnotationsFile::parse`).
+Refusing it wedged the item over a missing pair of braces: zero open comments,
+no Diff view, and *Apply* failing with `expected struct AnnotationsFile`. Any
+other malformed content is still an error, so a blind save never replaces
+review data with nothing.
 
 `handoff.md` is the **executor's** file: `clash-workflow` overwrites it at the
 end of every phase, before the hand-back status write, and reviewers and
