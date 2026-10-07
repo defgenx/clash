@@ -934,3 +934,34 @@ test("a self-review asks which PRs like every PR action, then which agent", () =
   assert.match(compose, /agent: agentGroup\.value\(\),/);
   assert.doesNotMatch(compose, /wfAgentSelect/);
 });
+
+test("the action bar's handlers take the click, so none is a bare function reference", () => {
+  // `add()` hands its handler the click event, because a button that opens a
+  // menu must stop that click — otherwise it reaches the document listener
+  // that closes every menu, and the menu closes in the same click it opened
+  // in. A bare reference would receive the event as its first argument:
+  // `requestChanges(target = "diff")` would take it for the target.
+  const bar = extractFunction(APP, "renderWfActions");
+  assert.match(bar, /b\.onclick = \(ev\) => \{[\s\S]*?busyButton\(b, \(\) => fn\(ev\)\)/);
+  const bare = [];
+  for (const m of bar.matchAll(/\badd\(/g)) {
+    let depth = 1;
+    let i = m.index + m[0].length;
+    const args = [];
+    let cur = "";
+    for (; i < bar.length && depth; i++) {
+      const c = bar[i];
+      if ("([{".includes(c)) depth++;
+      else if (")]}".includes(c)) depth--;
+      if (depth === 1 && c === ",") {
+        args.push(cur.trim());
+        cur = "";
+      } else if (depth > 0) cur += c;
+    }
+    args.push(cur.trim());
+    if (args.length >= 3 && /^[A-Za-z_$][\w$.]*$/.test(args[2])) bare.push(args[2]);
+  }
+  assert.deepEqual(bare, [], "wrap each handler in an arrow function");
+  // The ▾ menu stops its click (wf_drift_smoke.test.js runs it).
+  assert.match(bar, /ev\.stopPropagation\(\); \/\/ the same click would bubble to hideContextMenu/);
+});

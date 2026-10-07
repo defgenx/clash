@@ -78,7 +78,11 @@ function run(item, { status } = {}) {
   const open = () => {
     const m = added.find((b) => b.label === "▾" || b.label === "Run one check ▾");
     if (!m) return [];
-    m.fn();
+    // A real click: the handler must stop it, or the document listener that
+    // closes every menu closes this one in the same click.
+    let stopped = false;
+    m.fn({ stopPropagation: () => (stopped = true) });
+    assert.ok(stopped, "the ▾ menu must stop its click from reaching hideContextMenu");
     return menu;
   };
   return { added, launched, open };

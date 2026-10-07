@@ -9093,12 +9093,14 @@ function renderWfActions(bar, root, item) {
     // without feedback: a sync handler settles before paint and never shows the
     // spinner, an async one shows it for exactly as long as it runs. A human
     // click also hands the item back from autopilot's step budget.
-    b.onclick = () => {
+    // `fn` gets the click: a handler that opens a menu must stop it, or the
+    // same click reaches the document listener that closes every menu.
+    b.onclick = (ev) => {
       if (item.autopilotSteps)
         invoke("workflow_run_reset_autopilot", { project: item.project, slug: item.slug }).catch(
           () => {}
         );
-      return busyButton(b, () => fn());
+      return busyButton(b, () => fn(ev));
     };
     zones[zone].btns.appendChild(b);
     return b;
@@ -9186,7 +9188,7 @@ function renderWfActions(bar, root, item) {
     add(
       `↻ Apply ${roundLabel(round).toLowerCase()} → ${isPlan ? "revise plan" : "fix round"}${says}`,
       round.apply === false ? "" : "primary",
-      applyReview,
+      () => applyReview(),
       (round.apply === true
         ? `Round ${round.round} recommends applying${round.applyReason ? `: ${round.applyReason}` : ""}. `
         : round.apply === false
@@ -9241,7 +9243,8 @@ function renderWfActions(bar, root, item) {
     const menu = add(
       item.run ? "Run one check ▾" : "▾",
       "",
-      () => {
+      (ev) => {
+        ev.stopPropagation(); // the same click would bubble to hideContextMenu
         const r = menu.getBoundingClientRect();
         showContextMenu(r.left, r.bottom + 2, solo);
       },
@@ -9543,7 +9546,7 @@ function renderWfActions(bar, root, item) {
       add(
         "✎ Request changes…",
         "",
-        requestChanges,
+        () => requestChanges(),
         "Open the change-request composer — your note + the open annotations become the next fix round, and this iteration's diff is frozen into history first",
         "advance",
         "request-changes"
@@ -9635,7 +9638,7 @@ function renderWfActions(bar, root, item) {
       add(
         "✎ Request changes…",
         "",
-        requestChanges,
+        () => requestChanges(),
         "Open the change-request composer — your note + the open annotations become the next fix round (the agent pushes, so the PR picks up the fixes)",
         "advance",
         "request-changes"
@@ -9665,7 +9668,7 @@ function renderWfActions(bar, root, item) {
       add(
         "✎ Request changes…",
         "",
-        requestChanges,
+        () => requestChanges(),
         "Open the change-request composer — your note + the open annotations become the next fix round (the agent pushes, so the PR picks up the fixes)",
         "advance",
         "request-changes"
