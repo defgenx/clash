@@ -505,6 +505,10 @@ pub struct Session {
     /// Which preset was used to create this session (for teardown lookup).
     #[serde(default)]
     pub preset_name: Option<String>,
+    /// `<project>/<slug>` of the workflow item that launched it (from clash
+    /// registry).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_item: Option<String>,
     /// Repo-level configuration discovered from the session's cwd (lazy-loaded, not serialized).
     #[serde(skip)]
     pub repo_config: Option<RepoConfig>,

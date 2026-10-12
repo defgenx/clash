@@ -206,9 +206,10 @@ pub fn build_session_list(input: &RefreshInput<'_>) -> Vec<Session> {
         input.previous_sessions,
     );
 
-    // Phase 5.8: the registry records which agent a clash session runs; rows
-    // built from the daemon or the registry alone carry no transcript to
-    // say so, and a relaunch reads the agent off the row.
+    // Phase 5.8: the registry records which agent a clash session runs (and
+    // which workflow item launched it); rows built from the daemon or the
+    // registry alone carry no transcript to say so, and a relaunch reads the
+    // agent off the row.
     stamp_registered_agents(&mut sessions, &input.registry);
 
     // Phase 6: Resolve names from daemon infos and saved names
@@ -1191,6 +1192,8 @@ fn stamp_registered_agents(sessions: &mut [Session], registry: &HashMap<String, 
         {
             s.agent = agent;
         }
+        s.workflow_item =
+            crate::infrastructure::hooks::registry::registered_workflow_item(registry, &s.id);
     }
 }
 
@@ -1463,6 +1466,7 @@ mod tests {
             previous_ids: Vec::new(),
             agent: Default::default(),
             workflow: false,
+            workflow_item: None,
         }
     }
 
@@ -1491,6 +1495,38 @@ mod tests {
             wild_processes: Vec::new(),
             externally_opened: HashSet::new(),
         }
+    }
+
+    // ── Phase 5.8: registry fields on the row ────────────────────
+
+    /// The GUI keeps a workflow item's sessions with its tab by this key, so
+    /// it must survive a `/clear` re-key — the live row keeps the PTY's id.
+    #[test]
+    fn a_workflow_session_row_names_its_item_under_any_of_its_ids() {
+        let mut entry = make_registry_entry("new-conv", "Auth · implement", "/home/user/proj");
+        entry.previous_ids = vec!["old-conv".to_string()];
+        entry.workflow = true;
+        entry.workflow_item = Some("proj/auth".to_string());
+        let mut input = empty_input(&[]);
+        input.registry = HashMap::from([("new-conv".to_string(), entry)]);
+        input.disk_sessions = vec![
+            make_disk_session("new-conv", "proj", "after the clear"),
+            make_disk_session("plain", "proj", "not a workflow session"),
+        ];
+        input.daemon_infos = Some(vec![make_daemon_info(
+            "old-conv",
+            "/home/user/proj",
+            "thinking",
+            true,
+        )]);
+        let list = build_session_list(&input);
+        let item = |id: &str| {
+            list.iter()
+                .find(|s| s.id == id)
+                .and_then(|s| s.workflow_item.clone())
+        };
+        assert_eq!(item("old-conv").as_deref(), Some("proj/auth"));
+        assert_eq!(item("plain"), None);
     }
 
     // ── Phase 5.75: one row per registry entry ───────────────────

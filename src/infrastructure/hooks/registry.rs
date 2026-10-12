@@ -78,6 +78,10 @@ pub struct ClashSession {
     /// `omp --resume` keep none of the original command line.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub workflow: bool,
+    /// `<project>/<slug>` of the workflow item that launched it, so the GUI
+    /// can keep every round's session with the item's tab across workspaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_item: Option<String>,
 }
 
 /// Path to the session registry file.
@@ -267,7 +271,7 @@ pub fn register(
     cwd: &str,
     source_branch: Option<&str>,
     agent: AgentKind,
-    workflow: bool,
+    workflow_item: Option<&str>,
 ) {
     let Some(mut registry) = load_for_mutation("register") else {
         return;
@@ -283,7 +287,8 @@ pub fn register(
             source_branch: source_branch.map(|s| s.to_string()),
             previous_ids: Vec::new(),
             agent,
-            workflow,
+            workflow: workflow_item.is_some(),
+            workflow_item: workflow_item.map(str::to_string),
         },
     );
     save_checked(&registry, "register", false);
@@ -322,6 +327,18 @@ pub fn registered_agent(
         .iter()
         .find(|(k, v)| entry_answers_to(k, v, session_id))
         .map(|(_, v)| v.agent)
+}
+
+/// The workflow item (`<project>/<slug>`) that launched `session_id`, under
+/// any of its ids.
+pub fn registered_workflow_item(
+    registry: &HashMap<String, ClashSession>,
+    session_id: &str,
+) -> Option<String> {
+    registry
+        .iter()
+        .find(|(k, v)| entry_answers_to(k, v, session_id))
+        .and_then(|(_, v)| v.workflow_item.clone())
 }
 
 /// Was `session_id` (under any of its ids) launched by a workflow?
@@ -644,6 +661,7 @@ mod tests {
                 previous_ids: Vec::new(),
                 agent: Default::default(),
                 workflow: false,
+                workflow_item: None,
             },
         );
 
@@ -684,6 +702,7 @@ mod tests {
             previous_ids: Vec::new(),
             agent: Default::default(),
             workflow: false,
+            workflow_item: None,
         }
     }
 
@@ -807,6 +826,7 @@ mod tests {
                 previous_ids: Vec::new(),
                 agent: Default::default(),
                 workflow: false,
+                workflow_item: None,
             },
         );
 
@@ -826,6 +846,7 @@ mod tests {
             previous_ids: Vec::new(),
             agent: Default::default(),
             workflow: false,
+            workflow_item: None,
         }
     }
 

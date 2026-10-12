@@ -195,8 +195,14 @@ teams, files, tabs and panes, the terminal and settings. Replay it from *Setting
   - **Move to new workspace** / **Move to workspace…** in the menu of a tab, a
     pane title or a sidebar session moves that session, terminal, browser or
     view tab to a fresh or existing workspace, and switches there. A session's
-    own conversation/diff tabs go with it. A view tab that every workspace used
-    to show (inbox, workflows) belongs only to the workspace you moved it to.
+    own conversation/diff tabs go with it, and a workflow item's tab takes every
+    agent session of that item (any round, running or stashed). A view tab that
+    every workspace used to show (inbox, workflows) belongs only to the
+    workspace you moved it to.
+  - A workflow agent joins the workspace its launch was clicked in, even if you
+    switched away while it set up — it opens there on your next visit. Agents
+    nobody clicked for (check runs, autopilot, auto-applied rounds) join the
+    workspace holding the item's tab or its earlier agents.
 - **Split panes** nest freely, like iTerm:
   - `⌘D` splits the focused pane (beside it when it is wide, below it when it is
     tall) and `⌘⇧D` closes it.

@@ -249,6 +249,18 @@ test("place: false only reassigns ownership (a closed session)", () => {
   assert.deepEqual(wss[1], { panes: ["y"], focused: 0, sessions: ["y", "a"] });
 });
 
+test("along ids change owner with the tab and leave their old panes", () => {
+  // A workflow tab takes every agent session of its item, open or stashed.
+  const wss = [
+    { panes: ["view:workflow:p/s", "agent-1"], focused: 0, sessions: ["view:workflow:p/s", "agent-1", "agent-2", "x"] },
+    { panes: ["y"], focused: 0, sessions: ["y", "agent-2"] },
+  ];
+  moveTabToWorkspace(wss, "view:workflow:p/s", 1, { along: ["agent-1", "agent-2"] });
+  assert.deepEqual(wss[0], { panes: [null, null], focused: 0, sessions: ["x"] });
+  assert.deepEqual(wss[1].panes, ["view:workflow:p/s"]);
+  assert.deepEqual(wss[1].sessions, ["y", "agent-2", "view:workflow:p/s", "agent-1"]);
+});
+
 test("an unknown target workspace changes nothing", () => {
   const wss = [{ panes: ["a"], focused: 0, sessions: ["a"] }];
   assert.equal(moveTabToWorkspace(wss, "a", 3), false);

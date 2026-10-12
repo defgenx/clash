@@ -1093,6 +1093,18 @@ function renderWorkspaceBar() {
 function switchWorkspace(i) {
   if (i < 0 || i >= state.workspaces.length) return;
   state.activeWs = i;
+  // Sessions launched for this workspace while it was in the background sit
+  // in its panes unopened (see openSession's `home`); open them now.
+  ws().panes.forEach((sid, pi) => {
+    if (!sid || !pendingOpens.has(sid)) return;
+    const label = pendingOpens.get(sid);
+    pendingOpens.delete(sid);
+    if (state.open.has(sid)) return;
+    // Killed meanwhile: opening it would resume it. Finished: a placeholder.
+    const s = state.sessions.find((x) => x.id === sid);
+    if (!s) ws().panes[pi] = null;
+    else openSession(sid, label, { defer: !s.is_running });
+  });
   syncActiveToFocused();
   const sid = ws().panes[ws().focused];
   saveWorkspaces();
@@ -1133,10 +1145,15 @@ function tabWorkspace(id) {
 /// there. The session's own view tabs go with it unless they were moved apart.
 function moveToWorkspace(id, to) {
   if (to === "new") to = createWorkspace();
-  const follows = (p) => p !== id && sessionWorkspace(p) === -1 && tabSession(p) === id;
+  // A workflow tab takes every agent session of its item, any round, open or
+  // stashed — they would otherwise stay listed in the workspace it left.
+  const item = id.startsWith("view:workflow:") ? id.slice("view:workflow:".length) : null;
+  const along = item ? state.sessions.filter((s) => s.workflow_item === item).map((s) => s.id) : [];
+  const carried = new Set([id, ...along]);
+  const follows = (p) => !carried.has(p) && sessionWorkspace(p) === -1 && carried.has(tabSession(p));
   // Only a tab that is open can sit in a pane; a closed session is just owned.
   const place = state.open.has(id);
-  if (!moveTabToWorkspace(state.workspaces, id, to, { follows, place })) return;
+  if (!moveTabToWorkspace(state.workspaces, id, to, { follows, place, along })) return;
   switchWorkspace(to);
   flashToast(`Moved to workspace "${state.workspaces[to].name}"`);
 }
@@ -1174,12 +1191,34 @@ function moveToWorkspaceItems(id) {
   ];
 }
 
-/// Claim a session for the active workspace if no workspace owns it yet.
-function claimSession(sid) {
+/// Claim a session for workspace `i` (the active one by default) if no
+/// workspace owns it yet.
+function claimSession(sid, i = state.activeWs) {
   if (sessionWorkspace(sid) === -1) {
-    ws().sessions.push(sid);
+    state.workspaces[i].sessions.push(sid);
     saveWorkspaces();
   }
+}
+
+/// Sessions placed in a background workspace's pane, opened on its next visit
+/// (sid → tab label). In-memory: a restart opens every pane anyway.
+const pendingOpens = new Map();
+
+/// Where a workflow item's agents go when no click says otherwise: the
+/// workspace its tab was moved to, else the one holding one of its agents.
+function wfHomeWs(project, slug) {
+  const key = wfKey(project, slug);
+  const latest = wfItem(project, slug)?.meta?.sessionId;
+  const ids = [
+    `view:workflow:${key}`,
+    ...(latest ? [latest] : []),
+    ...state.sessions.filter((s) => s.workflow_item === key).map((s) => s.id),
+  ];
+  for (const id of ids) {
+    const i = sessionWorkspace(id);
+    if (i >= 0) return state.workspaces[i];
+  }
+  return null;
 }
 
 async function renameWorkspace(i) {
@@ -2521,6 +2560,10 @@ const PANE_DRAG_THRESHOLD_PX = 5;
 function makePaneDragSource(el, sid, { fromStrip = false } = {}) {
   el.addEventListener("mousedown", (ev) => {
     if (ev.button !== 0 || ev.target.closest(".close, .reload")) return;
+    // The press would otherwise start a text selection that the drag extends
+    // over everything it crosses; `user-select: none` on the strip does not
+    // stop WebKit from extending it into selectable content.
+    ev.preventDefault();
     const x0 = ev.clientX;
     const y0 = ev.clientY;
     const onMove = (e) => {
@@ -3263,10 +3306,22 @@ function attachWebgl(term, label, attempt = 0) {
 
 async function openSession(sid, label, opts = {}) {
   // Sessions are workspace-scoped: owned elsewhere → switch there first;
-  // unowned → the active workspace claims it.
+  // unowned → `opts.home` (the workspace a launch was clicked in) claims it,
+  // else the active workspace.
   const owner = sessionWorkspace(sid);
+  const home = opts.home ? state.workspaces.indexOf(opts.home) : -1;
+  if (owner === -1 && home >= 0 && home !== state.activeWs) {
+    // The user left that workspace while the launch ran: the session goes
+    // there without pulling them back, and opens on their next visit.
+    moveTabToWorkspace(state.workspaces, sid, home, { place: true });
+    pendingOpens.set(sid, label);
+    saveWorkspaces();
+    renderSidebar();
+    flashToast(`${label || "Session"} started in workspace "${opts.home.name}"`);
+    return;
+  }
   if (owner >= 0 && owner !== state.activeWs) switchWorkspace(owner);
-  claimSession(sid);
+  claimSession(sid, home >= 0 ? home : state.activeWs);
 
   // `defer`: restore a stashed session as a placeholder tab (no process)
   // that resumes on first focus — see resumeDeferred / focusTerm.
@@ -7134,6 +7189,9 @@ function wfAgentGroup(item) {
 /// again is exactly what a silent minute invites and two agents on one item is
 /// the one thing the phase split forbids.
 async function launchWfAgent(item, phase, root, branch = null, opts = {}) {
+  // `home`: the workspace the session belongs to — where the click happened,
+  // read before anything awaits; automatic launches pass the item's.
+  opts = { ...opts, home: opts.home || ws() };
   // `agent`: undefined asks; null keeps the item's (relaunch, auto-apply).
   if (opts.agent === undefined) {
     const agent = await pickWfAgent(item, phase);
@@ -7159,7 +7217,7 @@ async function launchWfAgent(item, phase, root, branch = null, opts = {}) {
     });
     showProgress(`Opening ${wfSessionName(item, phase)}…`);
     await refreshSessions();
-    await openSession(sid, wfSessionName(item, phase));
+    await openSession(sid, wfSessionName(item, phase), { home: opts.home });
     await refreshWorkflows();
     if (root) buildWorkflowView(root, item.project, item.slug);
   } catch (e) {
@@ -7335,6 +7393,7 @@ async function wfPrRecovery(item, err, retry) {
 /// `focus` is what the round must settle, in the human's words — the plan
 /// explanation's "dive deeper into part 3".
 async function spawnWfExplainer(item, root, target, focus) {
+  const home = ws();
   // Same `agent` rule as `launchWfAgent`.
   const agent = await pickWfAgent(item, "explain");
   if (agent === null) return;
@@ -7361,7 +7420,7 @@ async function spawnWfExplainer(item, root, target, focus) {
     });
     showProgress("Opening the explanation session…");
     await refreshSessions();
-    await openSession(sid, wfSessionName(item, wfRoundJob(target, "local")));
+    await openSession(sid, wfSessionName(item, wfRoundJob(target, "local")), { home });
     await refreshWorkflows();
     if (root) buildWorkflowView(root, item.project, item.slug);
   } catch (e) {
@@ -7381,6 +7440,7 @@ async function spawnWfExplainer(item, root, target, focus) {
 /// *plan* needs a round, and saying so is the same act as any other change
 /// request, through the same composer and the same snapshotting flow.
 async function wfRequestChanges(item, root, target = "diff", prefill = "", appliedKeys = null) {
+  const home = ws();
   const annotations = target === "plan" ? [] : await wfOpenAnnotations(item);
   const req = await wfComposeChangeRequest({
     item,
@@ -7410,7 +7470,7 @@ async function wfRequestChanges(item, root, target = "diff", prefill = "", appli
         changeRoundPhase(item.meta.status),
         root,
         null,
-        req.launch
+        { ...req.launch, home }
       );
     } else {
       buildWorkflowView(root, item.project, item.slug);
@@ -7444,7 +7504,7 @@ async function wfApplyReviewNoteFor(item, round, target) {
 /// mechanism behind both ways of applying a review — the button and the
 /// pre-authorized hand-back — so neither can drift into skipping the snapshot
 /// that versions the plan.
-async function wfRecordAndRevise(item, root, note, agent = undefined, appliedKeys = null) {
+async function wfRecordAndRevise(item, root, note, agent = undefined, appliedKeys = null, home = ws()) {
   // Asked before anything is recorded: cancelling must not leave a round
   // queued that nobody launched.
   if (agent === undefined) {
@@ -7466,6 +7526,7 @@ async function wfRecordAndRevise(item, root, note, agent = undefined, appliedKey
   await launchWfAgent(fresh, changeRoundPhase(item.meta.status), root, null, {
     interactive: interactiveParam(item.meta.interactionDefault),
     agent,
+    home,
   });
 }
 
@@ -7513,7 +7574,11 @@ function wfStaleExplanations(item) {
 
 /// Start a check run of `passes` (backend `PassSpec`s). `agent` undefined
 /// asks, like every launch; null keeps the item's.
-async function wfStartRun(item, passes, { interactive = null, autoApply = false, agent, by = "human" } = {}) {
+async function wfStartRun(
+  item,
+  passes,
+  { interactive = null, autoApply = false, agent, by = "human", home = ws() } = {}
+) {
   if (agent === undefined) {
     agent = await pickWfAgent(item, "review");
     if (agent === null) return null;
@@ -7542,7 +7607,7 @@ async function wfStartRun(item, passes, { interactive = null, autoApply = false,
     wfLaunching.delete(key);
     if (!wfLaunching.size) hideProgress();
   }
-  if (r) await wfAfterRunStep(item.project, item.slug, r);
+  if (r) await wfAfterRunStep(item.project, item.slug, r, home);
   return r;
 }
 
@@ -7576,6 +7641,7 @@ function wfScheduleRunDrives() {
 
 /// Stop, skip, retry or dismiss — `control` is `{ op, pass? }`.
 async function wfRunControl(item, batchId, control) {
+  const home = ws();
   try {
     const r = await invoke("workflow_run_control", {
       project: item.project,
@@ -7585,19 +7651,22 @@ async function wfRunControl(item, batchId, control) {
       cols: 120,
       rows: 40,
     });
-    await wfAfterRunStep(item.project, item.slug, r);
+    await wfAfterRunStep(item.project, item.slug, r, home);
   } catch (e) {
     uiAlert(`The check run could not be updated: ${e}`);
   }
 }
 
-async function wfAfterRunStep(project, slug, r) {
+/// `home`: where its sessions open — the click's workspace, else the item's.
+async function wfAfterRunStep(project, slug, r, home = null) {
   if (!r || r.busy) return;
+  home = home || wfHomeWs(project, slug);
   const launched = r.launched || [];
   if (launched.length) {
     await refreshSessions();
     const item = wfItem(project, slug) || { slug, meta: {} };
-    for (const l of launched) await openSession(l.sessionId, wfSessionName(item, wfRoundJob(l.target, l.publish)));
+    for (const l of launched)
+      await openSession(l.sessionId, wfSessionName(item, wfRoundJob(l.target, l.publish)), { home });
   }
   if (r.changed || launched.length) {
     await refreshWorkflows();
@@ -7648,6 +7717,7 @@ async function wfRunRecover(project, slug, batch) {
 /// Apply a run's findings as one change round. `human` asks which agent and
 /// offers to edit the note first; the pre-authorized path asks nothing.
 async function wfApplyRun(project, slug, batch, { human = false } = {}) {
+  const home = human ? ws() : wfHomeWs(project, slug);
   const key = wfKey(project, slug);
   if (wfApplying.has(key)) return;
   const item = wfItem(project, slug);
@@ -7692,7 +7762,7 @@ async function wfApplyRun(project, slug, batch, { human = false } = {}) {
         target === "plan" ? "revising the plan" : "starting a fix round"
       }`
     );
-    await wfRecordAndRevise(item, root, combinedApplyNote(md, keys), agent, keys);
+    await wfRecordAndRevise(item, root, combinedApplyNote(md, keys), agent, keys, home);
   } catch (e) {
     if (claimed) {
       await invoke("workflow_run_abort_apply", { project, slug, batch: batch.id, error: String(e) }).catch(
@@ -7748,6 +7818,8 @@ async function wfAutopilot(project, slug) {
     autoApply: true,
     agent: null,
     by: "autopilot",
+    // Nobody clicked: the item's own workspace, not whichever is on screen.
+    home: wfHomeWs(item.project, item.slug),
   });
 }
 
@@ -8048,6 +8120,7 @@ async function wfComposeChecks(item, { preselect = null } = {}) {
 /// (the backend's pure builder composes it), so nothing leaves the machine
 /// unseen. Section presets + availability are the pure model in wf-share.js.
 async function wfShareDialog(item) {
+  const home = ws();
   let settings = { slackWebhook: "", discordWebhook: "", notifyWebhook: "off" };
   try {
     settings = await invoke("get_workflow_share_settings");
@@ -8254,7 +8327,7 @@ async function wfShareDialog(item) {
             await refreshSessions();
             // Open it: the session is doing something outward-facing on your
             // behalf, and a post you cannot watch is a post you cannot check.
-            await openSession(sid, wfSessionName(item, `share to ${d.id}`));
+            await openSession(sid, wfSessionName(item, `share to ${d.id}`), { home });
             flashToast(
               d.skill
                 ? `Handed the share to ${d.skill} — watch the session`

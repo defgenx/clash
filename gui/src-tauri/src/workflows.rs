@@ -1460,8 +1460,9 @@ async fn spawn_item_session(
         cwd,
         Some(meta.branch.as_str()).filter(|b| !b.is_empty()),
         agent,
-        // Marks it for every relaunch to re-apply the workflow models.
-        true,
+        // Marks it for every relaunch to re-apply the workflow models, and
+        // ties it to its item for the GUI's workspace ownership.
+        Some(format!("{}/{}", project, slug).as_str()),
     );
     clash::infrastructure::hooks::save_session_name(
         state.backend.base_dir(),

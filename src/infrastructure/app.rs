@@ -1600,7 +1600,7 @@ impl App {
                         &cwd,
                         source_branch.as_deref(),
                         agent,
-                        false,
+                        None,
                     );
                     self.registry_cache.invalidate();
                 }
@@ -2052,7 +2052,7 @@ impl App {
                                 &wt_str,
                                 src_branch,
                                 agent,
-                                false,
+                                None,
                             );
                             self.registry_cache.invalidate();
                             // Save session name

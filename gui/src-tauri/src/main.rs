@@ -1056,7 +1056,7 @@ async fn create_new_session(
         cwd,
         None,
         agent,
-        false,
+        None,
     );
     clash::infrastructure::hooks::save_session_name(
         state.backend.base_dir(),
@@ -2341,7 +2341,7 @@ async fn create_worktree_session(
         &wt_str,
         Some(git_branch.as_str()),
         agent,
-        false,
+        None,
     );
     clash::infrastructure::hooks::save_session_name(
         state.backend.base_dir(),

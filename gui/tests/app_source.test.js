@@ -382,7 +382,7 @@ test("a check run's findings are applied through the one change-round mechanism"
   // that versions the plan.
   assert.match(
     APP,
-    /async function wfRecordAndRevise\(item, root, note, agent = undefined, appliedKeys = null\)/
+    /async function wfRecordAndRevise\(item, root, note, agent = undefined, appliedKeys = null, home = ws\(\)\)/
   );
   const mech = APP.slice(
     APP.indexOf("async function wfRecordAndRevise("),
@@ -964,4 +964,21 @@ test("the action bar's handlers take the click, so none is a bare function refer
   assert.deepEqual(bare, [], "wrap each handler in an arrow function");
   // The ▾ menu stops its click (wf_drift_smoke.test.js runs it).
   assert.match(bar, /ev\.stopPropagation\(\); \/\/ the same click would bubble to hideContextMenu/);
+});
+
+test("a workflow launch opens its session in the workspace it was clicked in", () => {
+  // A launch can take a minute (worktree checkout); a session claimed by
+  // whichever workspace is on screen when it lands is in the wrong one.
+  for (const fn of ["launchWfAgent", "spawnWfExplainer", "wfAfterRunStep", "wfShareDialog"]) {
+    const body = extractFunction(APP, fn);
+    const opens = body.match(/openSession\([^;]*\);/g) || [];
+    assert.ok(opens.length, `${fn} opens a session`);
+    for (const o of opens) assert.match(o, /\{ home(: opts\.home)? \}/, `${fn}: ${o}`);
+  }
+});
+
+test("dragging a tab never starts a text selection", () => {
+  const src = extractFunction(APP, "makePaneDragSource");
+  const press = src.slice(src.indexOf('"mousedown"'), src.indexOf("const onMove"));
+  assert.match(press, /ev\.preventDefault\(\);/);
 });

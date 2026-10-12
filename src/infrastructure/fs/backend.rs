@@ -562,6 +562,7 @@ impl FsBackend {
             cwd: None,
             source_branch: None,
             preset_name: None,
+            workflow_item: None,
             repo_config: None,
             source: crate::domain::entities::SessionSource::default(),
             wild_pid: None,

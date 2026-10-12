@@ -391,6 +391,7 @@ mod tests {
             previous_ids: Vec::new(),
             agent: AgentKind::Claude,
             workflow,
+            workflow_item: None,
         };
         let reg: HashMap<String, ClashSession> = [
             ("wf".to_string(), entry("wf", true)),

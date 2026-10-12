@@ -117,18 +117,21 @@
   /// session's own conversation/diff views). The target takes ownership and,
   /// with `place` (an open tab), shows it in its focused pane when that is
   /// empty, else in its first empty pane, else in the focused pane (whose
-  /// previous content stays a tab). Returns false when `to` is not a workspace.
-  function moveTabToWorkspace(workspaces, id, to, { follows = () => false, place = true } = {}) {
+  /// previous content stays a tab). `along` are ids that change owner with it
+  /// but are never placed (a workflow item's agent sessions). Returns false
+  /// when `to` is not a workspace.
+  function moveTabToWorkspace(workspaces, id, to, { follows = () => false, place = true, along = [] } = {}) {
     const target = workspaces[to];
     if (!target || !id) return false;
-    const goes = (p) => !!p && (p === id || follows(p));
+    const owned = new Set([id, ...along]);
+    const goes = (p) => !!p && (owned.has(p) || follows(p));
     workspaces.forEach((w, i) => {
       if (i === to) return;
       w.panes = (w.panes || []).map((p) => (goes(p) ? null : p));
-      w.sessions = (w.sessions || []).filter((x) => x !== id);
+      w.sessions = (w.sessions || []).filter((x) => !owned.has(x));
     });
     target.sessions = target.sessions || [];
-    if (!target.sessions.includes(id)) target.sessions.push(id);
+    for (const x of owned) if (!target.sessions.includes(x)) target.sessions.push(x);
     if (!place) return true;
     if (!target.panes || !target.panes.length) target.panes = [null];
     const at = target.panes.indexOf(id);
