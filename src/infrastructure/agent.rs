@@ -4,7 +4,7 @@
 //!
 //! | | Claude Code | OMP |
 //! |---|---|---|
-//! | new session under clash id `X` | `--session-id X` | `--resume <bucket>/<ts>_X.jsonl` (omp creates it there) |
+//! | new session under clash id `X` | `--session-id X` | `--resume <bucket>/<ts>_X.jsonl` (clash seeds the file; omp resumes it) |
 //! | resume | `--resume <conversation>` (forks; chased in the registry) | `--resume <file>` (appends in place) |
 //! | initial prompt | positional | positional |
 //!
@@ -171,7 +171,18 @@ impl Agents {
     /// A brand-new session under clash id `id`, started in `cwd`.
     pub fn fresh(&self, agent: AgentKind, id: &str, cwd: &str) -> Launch {
         let omp_file = match agent {
-            AgentKind::Omp => omp::new_session_path(&self.omp_dir, cwd, id),
+            AgentKind::Omp => {
+                let file = omp::new_session_path(&self.omp_dir, cwd, id);
+                // omp 18 no longer materializes a session at a `--resume`
+                // path that does not exist — it errors out instead — so the
+                // file has to exist before the spawn. Seeding it is what puts
+                // the clash id in omp's hands: filename suffix, header id and
+                // session picker all resolve to the row clash lists.
+                if let Err(e) = omp::seed_new_session_file(&file, id, cwd) {
+                    tracing::warn!("omp session file not seeded ({}): {}", file.display(), e);
+                }
+                file
+            }
             AgentKind::Claude => PathBuf::new(),
         };
         Launch {
@@ -418,11 +429,12 @@ mod tests {
 
     #[test]
     fn omp_fresh_launch_creates_the_file_in_omps_bucket_for_the_cwd() {
+        let dir = tempfile::TempDir::new().unwrap();
         let agents = Agents {
             claude_bin: "claude".into(),
             omp_bin: "/opt/omp".into(),
             claude_projects_dir: PathBuf::from("/nope"),
-            omp_dir: PathBuf::from("/omp-agent"),
+            omp_dir: dir.path().join("omp-agent"),
             workflow: WorkflowModels::default(),
             omp_overlay_path: PathBuf::from("/nope/overlay.yml"),
         };
@@ -432,10 +444,48 @@ mod tests {
         assert_eq!(l.bin, "/opt/omp");
         assert_eq!(l.args[0], "--resume");
         let p = Path::new(&l.args[1]);
-        assert!(p.starts_with("/omp-agent/sessions"));
+        assert!(p.starts_with(dir.path().join("omp-agent").join("sessions")));
         assert_eq!(
             omp::session_id_from_file_name(p.file_name().unwrap().to_str().unwrap()),
             Some("abc")
         );
+    }
+
+    /// The regression: omp 18 refuses `--resume` on a session file that does
+    /// not exist ("Session … not found. Run `omp --resume` without an
+    /// argument…"), so a fresh OMP launch must seed the file it names before
+    /// the spawn resumes it — with the clash id inside, or omp's picker and
+    /// `--resume <id-prefix>` could never agree with the row clash lists.
+    #[test]
+    fn fresh_omp_launches_seed_the_session_file_the_spawn_resumes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let omp_dir = dir.path().join("agent");
+        let agents = Agents {
+            claude_bin: "claude".into(),
+            omp_bin: "omp".into(),
+            claude_projects_dir: PathBuf::from("/nope"),
+            omp_dir: omp_dir.clone(),
+            workflow: WorkflowModels::default(),
+            omp_overlay_path: PathBuf::from("/nope/overlay.yml"),
+        };
+        let cwd = dir.path().join("proj");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let l = agents.fresh(AgentKind::Omp, "abc", &cwd.to_string_lossy());
+        let file = Path::new(&l.args[1]);
+        assert!(file.exists(), "{}", file.display());
+
+        let body = std::fs::read_to_string(file).unwrap();
+        let header: serde_json::Value =
+            serde_json::from_str(body.lines().nth(1).expect("seed has a header")).unwrap();
+        assert_eq!(header["type"], "session");
+        assert_eq!(header["id"], "abc");
+        assert_eq!(header["cwd"], cwd.to_string_lossy().as_ref());
+
+        // Listed under the clash id, like any omp transcript.
+        assert!(omp::find_session_file(&omp_dir, "abc").is_some());
+
+        // Claude launches touch nothing — no omp bucket is created for them.
+        agents.fresh(AgentKind::Claude, "xyz", &cwd.to_string_lossy());
+        assert!(omp::find_session_file(&omp_dir, "xyz").is_none());
     }
 }

@@ -183,16 +183,20 @@ The `ask` rows exist because omp's `ask` tool (the `AskUserQuestion`
 equivalent) blocks on the human exactly like a tool approval does — the
 prompt queue must not type into it.
 
-**Identity.** omp has no `--session-id`. What it has is `--resume <path>` on
-a file that does not exist yet, which it materializes at exactly that path.
-clash therefore creates every OMP session at
+**Identity.** omp has no `--session-id`. What it has is `--resume <path>` —
+which, since omp 18, refuses a path that does not exist (`Session "<path>"
+not found`) instead of materializing one there. clash therefore **seeds**
+every OMP session itself: `Agents::fresh` writes omp's own new-session shape
+— the fixed-width title slot plus the session header — at
 `<omp_dir>/sessions/<bucket>/<timestamp>_<clash-uuid>.jsonl` (bucket = omp's
-own cwd encoding, `omp::encode_session_dir_name`), and the uuid **suffix of
-the file name** — not the header's `id`, which omp mints itself — is the
-session id everywhere: registry key, status file, wild-scan evidence. The
-extension derives it from `sessionManager.getSessionFile()` the same way.
-Sessions omp creates on its own (`/new`) follow the same naming with omp's
-uuid, so the rule holds for them too.
+own cwd encoding, `omp::encode_session_dir_name`), and the spawn resumes it.
+The header carries the clash uuid too, so omp's session picker and
+`--resume <id-prefix>` agree with the row clash lists. The uuid **suffix of
+the file name** is still the session id everywhere: registry key, status
+file, wild-scan evidence. The extension derives it from
+`sessionManager.getSessionFile()` the same way. Sessions omp creates on its
+own (`/new`) follow the same naming with omp's uuid, so the rule holds for
+them too.
 
 **Conversation switches.** `/new` and `/resume` inside omp fire
 `session_switch` with the previous file. The extension re-keys the registry

@@ -2,13 +2,17 @@
 //! detection — the counterpart of the Claude Code transcript model in
 //! `fs::backend`. Parsers are pure; the thin IO wrappers sit at the bottom.
 //!
-//! Identity: every OMP session clash spawns is created by
-//! `omp --resume <path>` on a file that does not exist yet, which omp
-//! materializes at exactly that path. clash names the file
+//! Identity: every OMP session clash spawns resumes a file clash itself
+//! seeded at a path it chose — omp 18 stopped materializing a session at a
+//! `--resume` path that does not exist ("Session … not found"), so the seed
+//! (omp's own `newSession()` shape: title slot + session header, written by
+//! [`new_session_seed`]) is what puts the file there. clash names the file
 //! `<timestamp>_<clash-uuid>.jsonl`, so the uuid suffix — not the header id —
 //! is the session id everywhere in clash, the same role `claude --session-id`
-//! plays. Sessions omp creates itself (`/new`) follow the same naming with
-//! omp's own uuid. See docs/hooks.md ("OMP sessions").
+//! plays; the header carries the same uuid, so omp's picker and
+//! `--resume <id-prefix>` agree with clash's row. Sessions omp creates itself
+//! (`/new`) follow the same naming with omp's own uuid. See docs/hooks.md
+//! ("OMP sessions").
 
 use std::path::{Path, PathBuf};
 
@@ -74,6 +78,59 @@ pub fn encode_session_dir_name(cwd: &Path, home: &Path, tmp: &Path) -> String {
         abs.trim_start_matches(['/', '\\'])
             .replace(['/', '\\', ':'], "-")
     )
+}
+
+/// Width of omp's fixed-width title slot: 255 bytes of JSON padded with
+/// spaces, plus the newline — every current session file physically begins
+/// with exactly this many bytes.
+const TITLE_SLOT_BYTES: usize = 256;
+
+/// The 256-byte title slot omp writes for an untitled session:
+/// `{"type":"title","v":1,"title":"","updatedAt":"<ts>","pad":"…"}` with the
+/// pad filling the line to exactly 255 bytes. `title:""` keeps it the
+/// *initial* slot — omp auto-generates a title later and rewrites the slot,
+/// which only works on the fixed-width line it expects to replace.
+fn title_slot(updated_at: &str) -> String {
+    let mut line = String::with_capacity(TITLE_SLOT_BYTES);
+    line.push_str(r#"{"type":"title","v":1,"title":"","updatedAt":""#);
+    line.push_str(updated_at);
+    line.push_str(r#"","pad":""#);
+    // The slot is fixed-width: room for the closing `"}"` decides the pad.
+    let pad = TITLE_SLOT_BYTES - 1 - line.len() - 2;
+    line.push_str(&" ".repeat(pad));
+    line.push_str(r#""}"#);
+    line.push('\n');
+    line
+}
+
+/// Bytes of a brand-new session file: omp's own `newSession()` shape — the
+/// title slot followed by the session header, and nothing else.
+///
+/// omp 18 refuses `--resume` on a file that does not exist (`Session "<path>"
+/// not found. Run `omp --resume` without an argument…`) instead of
+/// materializing one there, so the file clash names has to exist before the
+/// spawn — this seed is what exists. The header id is the clash session id
+/// and the header cwd is the spawn cwd, so omp's session picker,
+/// `--resume <id-prefix>` and its recorded-cwd re-rooting all agree with the
+/// row clash lists. Loading a seeded file is also the one shape omp must keep
+/// accepting: its loaders already read legacy files that begin directly with
+/// the header, and every `/new` writes the slot + header before any entry
+/// exists (upstream `docs/session.md`).
+pub fn new_session_seed(id: &str, cwd: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    let ts = now.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    let mut seed = title_slot(&ts);
+    seed.push_str(
+        &serde_json::json!({
+            "type": "session",
+            "version": 3,
+            "id": id,
+            "timestamp": ts,
+            "cwd": cwd,
+        })
+        .to_string(),
+    );
+    seed.push('\n');
+    seed
 }
 
 // ── Pure: transcript parsing ─────────────────────────────────────────
@@ -248,6 +305,22 @@ pub fn new_session_path(agent_dir: &Path, cwd: &str, id: &str) -> PathBuf {
     session_dir_for(agent_dir, cwd).join(session_file_name(id, chrono::Utc::now()))
 }
 
+/// Write the [`new_session_seed`] for a brand-new session to `path`, unless
+/// a file already sits there — a retried spawn resumes what it seeded, and a
+/// transcript omp has written is never replaced. The write is atomic, so a
+/// spawn can never resume a half-written header. Best-effort by design: a
+/// caller that cannot seed still spawns, and omp's own error is what the
+/// user sees.
+pub fn seed_new_session_file(path: &Path, id: &str, cwd: &str) -> std::io::Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    crate::infrastructure::fs::atomic::write_atomic(
+        path,
+        new_session_seed(id, cwd, chrono::Utc::now()).as_bytes(),
+    )
+}
+
 /// Every top-level session file under `agent_dir`, as `(id, path)`.
 pub fn list_session_files(agent_dir: &Path) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
@@ -341,6 +414,62 @@ pub fn subagent_files(session_file: &Path) -> Vec<(String, PathBuf)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_seed_is_omps_newsession_shape() {
+        let t = chrono::DateTime::parse_from_rfc3339("2026-09-29T09:17:29.844Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let seed = new_session_seed("0199aaaa-bbbb-7ccc-8ddd-eeeeffff0001", "/work/p", t);
+        let mut lines = seed.lines();
+        let title = lines.next().unwrap();
+        let header = lines.next().unwrap();
+        assert!(lines.next().is_none(), "{seed}");
+
+        // The slot is exactly the 256 fixed-width bytes omp's own writer
+        // produces (measured on omp 18: `head -1 <its file> | wc -c` == 256),
+        // or its title rewriter would replace the wrong span later.
+        assert_eq!(title.len(), 255);
+        assert_eq!(seed.as_bytes()[255], b'\n');
+        let slot: serde_json::Value = serde_json::from_str(title).unwrap();
+        assert_eq!(slot["type"], "title");
+        assert_eq!(slot["v"], 1);
+        assert_eq!(slot["title"], "");
+        assert_eq!(slot["updatedAt"], "2026-09-29T09:17:29.844Z");
+        assert!(slot["pad"].as_str().unwrap().chars().all(|c| c == ' '));
+
+        // The header names the clash session id and the spawn cwd, so omp's
+        // picker and `--resume <id-prefix>` resolve to the row clash lists.
+        let hdr: serde_json::Value = serde_json::from_str(header).unwrap();
+        assert_eq!(hdr["type"], "session");
+        assert_eq!(hdr["version"], 3);
+        assert_eq!(hdr["id"], "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0001");
+        assert_eq!(hdr["timestamp"], "2026-09-29T09:17:29.844Z");
+        assert_eq!(hdr["cwd"], "/work/p");
+
+        // clash's own readers see what omp will see: a session with no
+        // turns, parked at its prompt in the recorded cwd.
+        let meta = parse_meta(seed.lines());
+        assert_eq!(meta.cwd, "/work/p");
+        assert_eq!(meta.title, "");
+        assert_eq!(detect_status(seed.lines()), SessionStatus::Waiting);
+    }
+
+    #[test]
+    fn seeding_never_replaces_what_is_already_on_disk() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("sessions").join("-work-p");
+        seed_new_session_file(&path, "abc", "/work/p").unwrap();
+        let first = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(first.lines().count(), 2);
+
+        // A retried spawn must resume what it seeded, not rewrite it (omp
+        // has already adopted the file by then).
+        std::fs::write(&path, format!("{first}{{\"type\":\"model_change\"}}\n")).unwrap();
+        let grown = std::fs::read_to_string(&path).unwrap();
+        seed_new_session_file(&path, "abc", "/work/p").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), grown);
+    }
 
     #[test]
     fn id_is_the_uuid_suffix_of_the_file_name() {

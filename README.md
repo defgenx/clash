@@ -1064,10 +1064,13 @@ An OMP session is the same row as any other — the GUI badges every row
 with its agent (`CC` for Claude Code, `OMP`) — and
 everything built around sessions applies:
 
-- **Identity and resume.** clash creates the transcript itself with
-  `omp --resume ~/.omp/agent/sessions/<bucket>/<timestamp>_<id>.jsonl`, so the
-  file's uuid is the session id exactly like `claude --session-id`. A resume
-  reopens that file (omp appends in place — no fork to chase).
+- **Identity and resume.** clash **seeds** the transcript itself — omp's own
+  new-session shape, title slot plus session header — at
+  `~/.omp/agent/sessions/<bucket>/<timestamp>_<id>.jsonl` and resumes it with
+  `omp --resume <that path>` (omp 18 refuses a `--resume` path that does not
+  exist), so the file's uuid is the session id exactly like
+  `claude --session-id`. A resume reopens that file (omp appends in place —
+  no fork to chase).
 - **Status.** A clash-owned extension (`~/.claude/clash/hooks/omp-status.js`,
   loaded with `omp -e`) writes the same status files as the Claude hook, from
   omp's own events — a tool-approval prompt or an `ask` question reads as
