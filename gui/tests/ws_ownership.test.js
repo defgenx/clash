@@ -14,6 +14,7 @@ const {
   remapWorkspaceIds,
   ownershipTransfers,
   pruneOwnership,
+  moveTabToWorkspace,
 } = require("../dist/ws-ownership.js");
 
 // Mirrors app.js's isRealSessionId.
@@ -181,4 +182,75 @@ test("transfer never claims an unowned row of a different session", () => {
     ["other"]
   );
   assert.equal(moved.size, 0);
+});
+
+// ── moveTabToWorkspace: the user's own reassignment of a tab ──
+
+test("moving a tab transfers ownership and empties its old pane", () => {
+  const wss = [
+    { panes: ["a", "b"], focused: 0, sessions: ["a", "b"] },
+    { panes: [null], focused: 0, sessions: [] },
+  ];
+  assert.equal(moveTabToWorkspace(wss, "a", 1), true);
+  assert.deepEqual(wss[0], { panes: [null, "b"], focused: 0, sessions: ["b"] });
+  assert.deepEqual(wss[1], { panes: ["a"], focused: 0, sessions: ["a"] });
+});
+
+test("an unowned tab (browser, view) becomes owned by the target only", () => {
+  const wss = [
+    { panes: ["view:inbox"], focused: 0, sessions: [] },
+    { panes: [null], focused: 0, sessions: [] },
+  ];
+  moveTabToWorkspace(wss, "view:inbox", 1);
+  assert.deepEqual(wss[0].panes, [null]);
+  assert.deepEqual(wss[1].sessions, ["view:inbox"]);
+});
+
+test("the target fills its focused pane, else the first empty, else replaces focus", () => {
+  const empty = [{ panes: [], sessions: [] }, { panes: ["x", null, null], focused: 2, sessions: [] }];
+  moveTabToWorkspace(empty, "a", 1);
+  assert.deepEqual(empty[1].panes, ["x", null, "a"]);
+  assert.equal(empty[1].focused, 2);
+
+  const firstEmpty = [{ panes: [], sessions: [] }, { panes: ["x", null], focused: 0, sessions: [] }];
+  moveTabToWorkspace(firstEmpty, "a", 1);
+  assert.deepEqual(firstEmpty[1].panes, ["x", "a"]);
+  assert.equal(firstEmpty[1].focused, 1);
+
+  const full = [{ panes: [], sessions: [] }, { panes: ["x", "y"], focused: 1, sessions: [] }];
+  moveTabToWorkspace(full, "a", 1);
+  assert.deepEqual(full[1].panes, ["x", "a"]);
+});
+
+test("a tab already shown in the target only gains focus", () => {
+  const wss = [{ panes: ["a"], focused: 0, sessions: [] }, { panes: ["a", "b"], focused: 1, sessions: [] }];
+  moveTabToWorkspace(wss, "a", 1);
+  assert.deepEqual(wss[1].panes, ["a", "b"]);
+  assert.equal(wss[1].focused, 0);
+  assert.deepEqual(wss[1].sessions, ["a"]);
+});
+
+test("follows() carries a session's own view tabs out of other panes", () => {
+  const wss = [
+    { panes: ["a", "view:conv:a", "view:conv:b"], focused: 0, sessions: ["a"] },
+    { panes: [null], focused: 0, sessions: [] },
+  ];
+  moveTabToWorkspace(wss, "a", 1, { follows: (p) => p === "view:conv:a" });
+  assert.deepEqual(wss[0].panes, [null, null, "view:conv:b"]);
+});
+
+test("place: false only reassigns ownership (a closed session)", () => {
+  const wss = [
+    { panes: ["x"], focused: 0, sessions: ["a", "x"] },
+    { panes: ["y"], focused: 0, sessions: ["y"] },
+  ];
+  moveTabToWorkspace(wss, "a", 1, { place: false });
+  assert.deepEqual(wss[0].sessions, ["x"]);
+  assert.deepEqual(wss[1], { panes: ["y"], focused: 0, sessions: ["y", "a"] });
+});
+
+test("an unknown target workspace changes nothing", () => {
+  const wss = [{ panes: ["a"], focused: 0, sessions: ["a"] }];
+  assert.equal(moveTabToWorkspace(wss, "a", 3), false);
+  assert.deepEqual(wss[0], { panes: ["a"], focused: 0, sessions: ["a"] });
 });

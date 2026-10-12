@@ -666,6 +666,8 @@ function workspacesJson() {
     })),
     browserTabs,
     viewTabs,
+    // Tab strip order (drag to reorder); shell terminals don't survive a relaunch.
+    tabOrder: [...state.open.keys()].filter((id) => !isShellTerm(id)),
     active: state.activeWs,
     // Only the GUI-local settings. The cross-frontend ones live in config.toml
     // from the migration onward; keeping a copy here would let this blob — or
@@ -801,6 +803,12 @@ function applyWorkspacesData(data, { migratable = false } = {}) {
   // persisted from the previous run. Browser tabs survive: their URLs
   // are persisted and the webviews are recreated lazily.
   const livePane = (p) => (p && isShellTerm(p) ? null : p);
+  // Ownership of a tab that won't come back would linger forever: only the
+  // view tabs listed in `viewTabs` are rebuilt (see restoreWorkspaceSessions).
+  const views = new Set(
+    (Array.isArray(data.viewTabs) ? data.viewTabs : []).map((t) => t && t.id)
+  );
+  const restorable = (id) => !isShellTerm(id) && (!id.startsWith("view:") || views.has(id));
   state.workspaces = data.workspaces.map((w) => {
     const panes =
       Array.isArray(w.panes) && w.panes.length ? w.panes.map(livePane) : [null];
@@ -815,7 +823,7 @@ function applyWorkspacesData(data, { migratable = false } = {}) {
       panes,
       focused,
       zoomed: !!w.zoomed && panes.length > 1,
-      sessions: Array.isArray(w.sessions) ? w.sessions.filter((id) => !isShellTerm(id)) : [],
+      sessions: Array.isArray(w.sessions) ? w.sessions.filter(restorable) : [],
       // Split tree (pane-layout.js); renderPanes falls back to the balanced
       // grid when it no longer matches the pane count. `colFracs`/`rowFracs`
       // are the pre-tree grid sizes, read once to seed that fallback.
@@ -826,11 +834,13 @@ function applyWorkspacesData(data, { migratable = false } = {}) {
   });
   pendingBrowserTabs = Array.isArray(data.browserTabs) ? data.browserTabs : [];
   pendingWorkflowTabs = Array.isArray(data.viewTabs) ? data.viewTabs : [];
+  pendingTabOrder = Array.isArray(data.tabOrder) ? data.tabOrder : [];
   state.activeWs = Math.min(data.active || 0, state.workspaces.length - 1);
   return true;
 }
 
 let pendingWorkflowTabs = []; // persisted workflow tabs awaiting restore at boot
+let pendingTabOrder = []; // persisted tab strip order, applied once tabs are restored
 
 async function loadWorkspaces() {
   try {
@@ -942,6 +952,7 @@ async function restoreWorkspaceSessions() {
         if (resolved[i] && resolved[i] !== id) remap.set(id, resolved[i]);
       });
       if (remapWorkspaceIds(state.workspaces, remap)) saveWorkspaces();
+      pendingTabOrder = pendingTabOrder.map((id) => remap.get(id) || id);
     } catch (e) {
       console.error("resolve_session_ids failed:", e);
     }
@@ -988,6 +999,8 @@ async function restoreWorkspaceSessions() {
     }
   }
   pendingWorkflowTabs = [];
+  reorderOpenTabs(TabOrder.applyOrder([...state.open.keys()], pendingTabOrder));
+  pendingTabOrder = [];
   state.activeWs = savedActive;
   // Restore the focused pane we left off on (clamped), without focusing the
   // terminal — focusing a deferred/stashed tab would auto-resume it, and resume
@@ -1087,7 +1100,8 @@ function switchWorkspace(i) {
   if (sid) focusTerm(sid);
 }
 
-function newWorkspace() {
+/// Append an empty workspace and return its index (without switching to it).
+function createWorkspace() {
   state.workspaces.push({
     name: `ws-${state.workspaces.length + 1}`,
     panes: [null],
@@ -1095,12 +1109,69 @@ function newWorkspace() {
     zoomed: false,
     sessions: [],
   });
-  switchWorkspace(state.workspaces.length - 1);
+  return state.workspaces.length - 1;
+}
+
+function newWorkspace() {
+  switchWorkspace(createWorkspace());
 }
 
 /// Index of the workspace owning a session, or -1 if unassigned.
 function sessionWorkspace(sid) {
   return state.workspaces.findIndex((w) => w.sessions.includes(sid));
+}
+
+/// Index of the workspace a tab belongs to, or -1 when every workspace shows it.
+/// A tab owned under its own key wins (a moved view tab); otherwise a view tab
+/// follows its session (`view:conv:<sid>` lives wherever `<sid>` does).
+function tabWorkspace(id) {
+  const own = sessionWorkspace(id);
+  return own !== -1 ? own : sessionWorkspace(tabSession(id));
+}
+
+/// Move a tab or session to workspace `to` (`"new"` creates one), then switch
+/// there. The session's own view tabs go with it unless they were moved apart.
+function moveToWorkspace(id, to) {
+  if (to === "new") to = createWorkspace();
+  const follows = (p) => p !== id && sessionWorkspace(p) === -1 && tabSession(p) === id;
+  // Only a tab that is open can sit in a pane; a closed session is just owned.
+  const place = state.open.has(id);
+  if (!moveTabToWorkspace(state.workspaces, id, to, { follows, place })) return;
+  switchWorkspace(to);
+  flashToast(`Moved to workspace "${state.workspaces[to].name}"`);
+}
+
+/// Context-menu entries moving `id` to a new or another existing workspace.
+function moveToWorkspaceItems(id) {
+  const here = tabWorkspace(id);
+  const others = state.workspaces
+    .map((w, i) => ({ w, i }))
+    .filter(({ i }) => i !== here);
+  return [
+    { label: "Move to new workspace", icon: "plus", action: () => moveToWorkspace(id, "new") },
+    ...(others.length
+      ? [
+          {
+            label: "Move to workspace…",
+            icon: "arrow-right",
+            action: async () => {
+              const to = await uiListChoice({
+                message: "Move to workspace:",
+                items: [
+                  ...others.map(({ w, i }) => ({
+                    label: w.name,
+                    detail: `⌘${i + 1}`,
+                    value: i,
+                  })),
+                  { label: "New workspace", value: "new" },
+                ],
+              });
+              if (to !== null) moveToWorkspace(id, to);
+            },
+          },
+        ]
+      : []),
+  ];
 }
 
 /// Claim a session for the active workspace if no workspace owns it yet.
@@ -1526,6 +1597,8 @@ function sessionMenu(s, x, y) {
     ...(s.source === "Wild" && !s.id.startsWith("wild-pid-")
       ? [{ label: "Take over wild claude", icon: "zap", action: () => adoptWild(s) }]
       : []),
+    // A wild row's id is the process's, not a session's — take it over first.
+    ...(s.source !== "Wild" ? [null, ...moveToWorkspaceItems(s.id)] : []),
     null,
     ...(s.is_running
       ? [
@@ -1676,8 +1749,8 @@ async function refreshSessions() {
     const vanished = new Set();
     for (const w of state.workspaces) {
       for (const id of [...w.sessions]) {
-        // Shell terminals and browser tabs are never in the session list
-        if (isShellTerm(id) || isBrowserTab(id)) continue;
+        // Shell terminals, browser and view tabs are never in the session list
+        if (!isRealSessionId(id)) continue;
         if (known.has(id)) {
           state.missingStreak.delete(id);
           continue;
@@ -2040,6 +2113,7 @@ function tabContextMenu(ev, sid) {
   if (isShellTerm(sid)) {
     showContextMenu(ev.clientX, ev.clientY, [
       { label: "Rename terminal…", icon: "pencil", action: () => renameTabDialog(sid) },
+      ...moveToWorkspaceItems(sid),
       { label: "Close terminal", icon: "x", action: () => detachSession(sid) },
     ]);
     return;
@@ -2060,6 +2134,7 @@ function tabContextMenu(ev, sid) {
       null,
       { label: "Open DevTools", icon: "terminal", action: () => invoke("browser_devtools", { tab: entry.tabId }).catch(() => {}) },
       null,
+      ...moveToWorkspaceItems(sid),
       { label: "Close tab", icon: "x", hint: "⌘W", action: () => detachSession(sid) },
     ]);
     return;
@@ -2069,6 +2144,7 @@ function tabContextMenu(ev, sid) {
     // A workflow tab is named after its item, so renaming it renames the item.
     showContextMenu(ev.clientX, ev.clientY, [
       { label: "Rename workflow…", icon: "pencil", action: () => renameWorkflowItem(wfItem) },
+      ...moveToWorkspaceItems(sid),
       { label: "Close tab", icon: "x", action: () => dropTerminal(sid) },
     ]);
     return;
@@ -2077,6 +2153,7 @@ function tabContextMenu(ev, sid) {
     // Content tab (conversation/subagents/diff) — renamable + closable
     showContextMenu(ev.clientX, ev.clientY, [
       { label: "Rename tab…", icon: "pencil", action: () => renameTabDialog(sid) },
+      ...moveToWorkspaceItems(sid),
       { label: "Close tab", icon: "x", action: () => dropTerminal(sid) },
     ]);
     return;
@@ -2102,6 +2179,8 @@ function tabContextMenu(ev, sid) {
     ...(pr
       ? [{ label: `Open PR #${pr.split("/").pop()}`, icon: "pr", action: () => openLink(pr) }]
       : []),
+    null,
+    ...moveToWorkspaceItems(sid),
     null,
     {
       label: "Stash (stop, keep resumable)",
@@ -2167,14 +2246,15 @@ function renderTabs() {
     // The tab strip is scoped to the active workspace (like the sidebar):
     // tabs owned by another workspace stay hidden until you switch back.
     // Unassigned sessions remain visible so they're always reachable.
-    const owner = sessionWorkspace(tabSession(id));
+    const owner = tabWorkspace(id);
     if (owner !== -1 && owner !== state.activeWs) continue;
     const tab = document.createElement("div");
     tab.className =
       "tab" + (id === state.activeTab ? " active" : "") + (entry.transient ? " transient" : "");
     tab.onclick = () => assignToFocusedPane(id);
-    tab.title = "Drag onto a pane to split it";
-    makePaneDragSource(tab, id);
+    tab.title = "Drag along the strip to reorder, onto a pane to split it";
+    tab.dataset.tab = id;
+    makePaneDragSource(tab, id, { fromStrip: true });
     tab.oncontextmenu = (ev) => tabContextMenu(ev, id);
     tab.onauxclick = (ev) => {
       // Middle-click closes the tab (Claude → stash), like a browser.
@@ -2314,6 +2394,7 @@ function renderPanes() {
         title.textContent = entry.name + (w.zoomed ? "  (zoomed)" : "");
         title.title = "Drag onto another pane to move it, or onto the tab strip to unsplit · double-click to zoom (⌘⇧↩)";
         title.ondblclick = toggleZoom;
+        title.oncontextmenu = (ev) => tabContextMenu(ev, sid);
         if (!w.zoomed) {
           title.classList.add("draggable");
           makePaneDragSource(title, sid);
@@ -2427,8 +2508,9 @@ function makeSplitGutter(box, node, k) {
 // A tab from the strip, or a pane's title bar, can be dropped on any pane:
 // the half under the cursor splits that pane (iTerm's diagonals), an empty
 // pane or a title bar takes it whole, the area's outer band spans a side, and
-// the tab strip turns a pane back into a plain tab. The decisions are
-// `PaneLayout.dropTarget` and its `dropOn*`; this half is the DOM.
+// the tab strip turns a pane back into a plain tab at the insertion point (a
+// tab dragged along the strip only reorders). The decisions are
+// `PaneLayout.dropTarget`/`dropOn*` and `TabOrder`; this half is the DOM.
 //
 // Pointer-driven, not HTML5 drag-and-drop: native webviews and WebKit's drag
 // session dropped drops, and over a terminal with mouse tracking on, the move
@@ -2436,7 +2518,7 @@ function makeSplitGutter(box, node, k) {
 
 const PANE_DRAG_THRESHOLD_PX = 5;
 
-function makePaneDragSource(el, sid) {
+function makePaneDragSource(el, sid, { fromStrip = false } = {}) {
   el.addEventListener("mousedown", (ev) => {
     if (ev.button !== 0 || ev.target.closest(".close, .reload")) return;
     const x0 = ev.clientX;
@@ -2446,7 +2528,7 @@ function makePaneDragSource(el, sid) {
       if (e.buttons === 0) return onUp(e);
       if (!paneDrag) {
         if (Math.hypot(e.clientX - x0, e.clientY - y0) < PANE_DRAG_THRESHOLD_PX) return;
-        beginPaneDrag(sid);
+        beginPaneDrag(sid, fromStrip);
       }
       e.preventDefault();
       updatePaneDrag(e.clientX, e.clientY);
@@ -2461,7 +2543,7 @@ function makePaneDragSource(el, sid) {
   });
 }
 
-function beginPaneDrag(sid) {
+function beginPaneDrag(sid, fromStrip) {
   const host = $("terminal-host");
   const layer = document.createElement("div");
   layer.className = "pane-drag-layer";
@@ -2480,7 +2562,7 @@ function beginPaneDrag(sid) {
     }
   };
   window.addEventListener("keydown", onKey, true);
-  paneDrag = { sid, dirty: false, drop: null, layer, hint, ghost, onKey };
+  paneDrag = { sid, fromStrip, dirty: false, drop: null, layer, hint, ghost, onKey };
   window.getSelection()?.removeAllRanges();
   document.body.classList.add("pane-dragging");
   // Native webviews paint over every DOM element, the hint included.
@@ -2519,10 +2601,20 @@ function paneDropAt(x, y) {
   const w = ws();
   const sid = paneDrag.sid;
   if (overTabStrip(x, y)) {
-    const from = w.panes.indexOf(sid);
-    const drop = { kind: "strip" };
-    if (from < 0 || w.panes.length <= 1) return { drop, result: null };
-    return { drop, result: PaneLayout.closePane(w.panes, w.layout, w.focused, from) };
+    const visible = [...$("tabs").querySelectorAll(".tab[data-tab]")].map((el) => {
+      const r = el.getBoundingClientRect();
+      return { id: el.dataset.tab, left: r.left, width: r.width };
+    });
+    const before = TabOrder.dropBefore(visible, x);
+    const drop = { kind: "strip", before };
+    const order = TabOrder.moveKey([...state.open.keys()], sid, before);
+    // A pane title dropped on the strip also unsplits its pane.
+    const from = paneDrag.fromStrip ? -1 : w.panes.indexOf(sid);
+    const unsplit =
+      from >= 0 && w.panes.length > 1
+        ? PaneLayout.closePane(w.panes, w.layout, w.focused, from)
+        : null;
+    return { drop, result: order || unsplit ? { order, unsplit } : null };
   }
   const geom = paneDragGeometry();
   const drop = PaneLayout.dropTarget(geom, x - geom.left, y - geom.top, paneDrag.drop);
@@ -2538,7 +2630,9 @@ function updatePaneDrag(x, y) {
   const { drop, result, geom } = paneDropAt(x, y);
   paneDrag.drop = drop;
   paneDrag.ghost.style.transform = `translate(${x + 12}px, ${y + 10}px)`;
-  $("tabs").classList.toggle("pane-drop-target", drop?.kind === "strip" && !!result);
+  const strip = drop?.kind === "strip" ? result : null;
+  $("tabs").classList.toggle("pane-drop-target", !!strip?.unsplit);
+  markTabDrop(strip ? drop.before : undefined);
   const rect = result && geom ? PaneLayout.dropHintRect(geom, drop) : null;
   const hint = paneDrag.hint;
   hint.style.display = rect ? "block" : "none";
@@ -2564,11 +2658,14 @@ function finishPaneDrag(x, y) {
   setTimeout(() => window.removeEventListener("click", swallow, true), 0);
   if (!result) return;
   if (drop.kind === "strip") {
+    if (result.order) reorderOpenTabs(result.order);
     const w = ws();
-    w.panes = result.panes;
-    w.layout = result.layout;
-    w.focused = result.focused;
-    if (w.panes.length === 1) w.zoomed = false;
+    if (result.unsplit) {
+      w.panes = result.unsplit.panes;
+      w.layout = result.unsplit.layout;
+      w.focused = result.unsplit.focused;
+      if (w.panes.length === 1) w.zoomed = false;
+    }
     syncActiveToFocused();
     saveWorkspaces();
     renderPanes();
@@ -2590,10 +2687,31 @@ function endPaneDrag() {
   window.removeEventListener("keydown", onKey, true);
   document.body.classList.remove("pane-dragging");
   $("tabs").classList.remove("pane-drop-target");
+  markTabDrop(undefined);
   if (dirty) {
     renderPanes();
     renderTabs();
   } else fitAll(); // restores the webviews hidden at drag start
+}
+
+/// Rebuild `state.open` in `order` (its own keys, permuted) — the strip's order.
+function reorderOpenTabs(order) {
+  const entries = order.map((k) => [k, state.open.get(k)]);
+  state.open.clear();
+  for (const [k, e] of entries) state.open.set(k, e);
+}
+
+/// Show where a strip drop lands: a bar in front of tab `before`, or after the
+/// last tab when `before` is null; `undefined` clears it.
+function markTabDrop(before) {
+  const tabs = $("tabs");
+  for (const el of tabs.querySelectorAll(".drop-before, .drop-after")) {
+    el.classList.remove("drop-before", "drop-after");
+  }
+  if (before === undefined) return;
+  const all = tabs.querySelectorAll(".tab[data-tab]");
+  const el = before === null ? all[all.length - 1] : [...all].find((t) => t.dataset.tab === before);
+  if (el) el.classList.add(before === null ? "drop-after" : "drop-before");
 }
 
 function applyPaneDrop(sid, r) {
@@ -3439,9 +3557,9 @@ function dropTerminal(sid) {
   state.open.delete(sid);
   for (const w of state.workspaces) {
     w.panes = w.panes.map((p) => (p === sid ? null : p));
-    // Shell terminals and browser tabs leave ownership on close — the
+    // Shell terminals, browser and view tabs leave ownership on close — the
     // session prune intentionally skips them, so nothing else would.
-    if (isShellTerm(sid) || isBrowserTab(sid)) {
+    if (!isRealSessionId(sid)) {
       w.sessions = w.sessions.filter((x) => x !== sid);
     }
   }
@@ -3456,6 +3574,9 @@ function dropTerminal(sid) {
 
 /// Open (or focus) a non-terminal content tab. `build(el)` fills it.
 function openViewTab(key, name, build) {
+  // A view tab moved to another workspace opens there, like a session.
+  const owner = sessionWorkspace(key);
+  if (owner >= 0 && owner !== state.activeWs) switchWorkspace(owner);
   if (state.open.has(key)) {
     // Rebuild content so reopening shows fresh data
     const entry = state.open.get(key);

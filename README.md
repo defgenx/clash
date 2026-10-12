@@ -192,6 +192,11 @@ teams, files, tabs and panes, the terminal and settings. Replay it from *Setting
   - The sidebar is scoped to the active workspace, plus an **UNASSIGNED** group
     for sessions no workspace has claimed (opening one claims it).
   - Search (`/`, `⌘F`) is global; results from other workspaces carry a `⌘n` badge.
+  - **Move to new workspace** / **Move to workspace…** in the menu of a tab, a
+    pane title or a sidebar session moves that session, terminal, browser or
+    view tab to a fresh or existing workspace, and switches there. A session's
+    own conversation/diff tabs go with it. A view tab that every workspace used
+    to show (inbox, workflows) belongs only to the workspace you moved it to.
 - **Split panes** nest freely, like iTerm:
   - `⌘D` splits the focused pane (beside it when it is wide, below it when it is
     tall) and `⌘⇧D` closes it.
@@ -202,8 +207,8 @@ teams, files, tabs and panes, the terminal and settings. Replay it from *Setting
     pane fills it, and on a pane's title bar swaps the two.
   - Drop it on the outer edge of the whole pane area instead to get a pane that
     spans that side — e.g. one full-width pane under several columns.
-  - Drop a pane's title on the tab strip to unsplit it back into a plain tab.
-    `Esc` cancels a drag.
+  - Drop a pane's title on the tab strip to unsplit it back into a plain tab,
+    at the spot the accent bar marks. `Esc` cancels a drag.
   - Closing a tab leaves its pane in place, empty, ready for the next tab.
   - `⌘⇧↩` (or a double-click on the pane title) zooms.
   - `⌘⌥←/→` cycles focus.
@@ -211,6 +216,7 @@ teams, files, tabs and panes, the terminal and settings. Replay it from *Setting
 - **Tabs**: the active tab is always the content of the focused pane. The `+`
   ghost tab opens a shell terminal, a browser tab or a new session; right-click
   an empty pane for the same menu.
+  - Drag a tab along the strip to reorder it; the order survives a relaunch.
   - Double-click a label to rename; middle-click or `⌘W` closes.
   - Closing an agent tab **stashes** the session (stopped, conversation kept
     resumable); choose *Detach* in the tab menu to leave it running instead.

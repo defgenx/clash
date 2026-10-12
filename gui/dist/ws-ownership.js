@@ -11,7 +11,8 @@
 // If ownership isn't carried across that rename, the old id is pruned as
 // "gone" and the current id — owned by nobody — surfaces under UNASSIGNED on
 // every relaunch, for a session the user never launched anew. These helpers
-// are the two halves of keeping ownership pinned to the session:
+// are the two halves of keeping ownership pinned to the session (the third,
+// `moveTabToWorkspace`, is the user's own reassignment of any tab):
 //   • restore: resolve every persisted id forward before matching the list
 //   • refresh: transfer ownership instead of pruning when an id merely moved
 //
@@ -110,11 +111,45 @@
     return changed;
   }
 
+  /// Move tab `id` (a session, shell, browser or view tab) to workspace `to`,
+  /// in place: every other workspace drops its ownership and empties the panes
+  /// holding it — or holding any tab `follows(paneId)` says goes with it (a
+  /// session's own conversation/diff views). The target takes ownership and,
+  /// with `place` (an open tab), shows it in its focused pane when that is
+  /// empty, else in its first empty pane, else in the focused pane (whose
+  /// previous content stays a tab). Returns false when `to` is not a workspace.
+  function moveTabToWorkspace(workspaces, id, to, { follows = () => false, place = true } = {}) {
+    const target = workspaces[to];
+    if (!target || !id) return false;
+    const goes = (p) => !!p && (p === id || follows(p));
+    workspaces.forEach((w, i) => {
+      if (i === to) return;
+      w.panes = (w.panes || []).map((p) => (goes(p) ? null : p));
+      w.sessions = (w.sessions || []).filter((x) => x !== id);
+    });
+    target.sessions = target.sessions || [];
+    if (!target.sessions.includes(id)) target.sessions.push(id);
+    if (!place) return true;
+    if (!target.panes || !target.panes.length) target.panes = [null];
+    const at = target.panes.indexOf(id);
+    if (at >= 0) {
+      target.focused = at;
+      return true;
+    }
+    const f = Number.isInteger(target.focused) && target.focused < target.panes.length ? target.focused : 0;
+    const empty = target.panes.indexOf(null);
+    const slot = target.panes[f] == null ? f : empty >= 0 ? empty : f;
+    target.panes[slot] = id;
+    target.focused = slot;
+    return true;
+  }
+
   const api = {
     persistedSessionIds,
     remapWorkspaceIds,
     ownershipTransfers,
     pruneOwnership,
+    moveTabToWorkspace,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else Object.assign(global, api);
