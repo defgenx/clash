@@ -191,14 +191,16 @@ teams, files, tabs and panes, the terminal and settings. Replay it from *Setting
   - `⌘⇧W` or the chip's `×` closes it; the last one can't be closed.
   - The sidebar is scoped to the active workspace, plus an **UNASSIGNED** group
     for sessions no workspace has claimed (opening one claims it).
+  - Every tab — agent session, shell, browser, workflow item, inbox, board —
+    belongs to exactly one workspace: the one it was opened in. Other
+    workspaces never show it in their strip or panes; opening it again from
+    elsewhere switches to its workspace.
   - Search (`/`, `⌘F`) is global; results from other workspaces carry a `⌘n` badge.
   - **Move to new workspace** / **Move to workspace…** in the menu of a tab, a
     pane title or a sidebar session moves that session, terminal, browser or
     view tab to a fresh or existing workspace, and switches there. A session's
     own conversation/diff tabs go with it, and a workflow item's tab takes every
-    agent session of that item (any round, running or stashed). A view tab that
-    every workspace used to show (inbox, workflows) belongs only to the
-    workspace you moved it to.
+    agent session of that item (any round, running or stashed).
   - A workflow agent joins the workspace its launch was clicked in, even if you
     switched away while it set up — it opens there on your next visit. Agents
     nobody clicked for (check runs, autopilot, auto-applied rounds) join the

@@ -92,20 +92,25 @@
   }
 
   /// Apply a prune pass in place: every id in `gone` is replaced by its
-  /// `moved` target (ownership transfer) or dropped (dead session). Returns
-  /// true when any workspace's ownership changed.
-  function pruneOwnership(workspaces, gone, moved) {
+  /// `moved` target (ownership transfer) or dropped (dead session). An id
+  /// `keep` holds (an open tab) stays owned beside its target. Returns true
+  /// when any workspace's ownership changed.
+  function pruneOwnership(workspaces, gone, moved, keep = () => false) {
     let changed = false;
     for (const w of workspaces) {
       const sessions = w.sessions || [];
       if (!sessions.some((id) => gone.has(id))) continue;
-      w.sessions = [
+      const next = [
         ...new Set(
-          sessions.flatMap((id) =>
-            gone.has(id) ? (moved.has(id) ? [moved.get(id)] : []) : [id]
-          )
+          sessions.flatMap((id) => {
+            if (!gone.has(id)) return [id];
+            const kept = keep(id) ? [id] : [];
+            return moved.has(id) ? [...kept, moved.get(id)] : kept;
+          })
         ),
       ];
+      if (String(next) === String(sessions)) continue;
+      w.sessions = next;
       changed = true;
     }
     return changed;

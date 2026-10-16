@@ -966,15 +966,37 @@ test("the action bar's handlers take the click, so none is a bare function refer
   assert.match(bar, /ev\.stopPropagation\(\); \/\/ the same click would bubble to hideContextMenu/);
 });
 
-test("a workflow launch opens its session in the workspace it was clicked in", () => {
+test("a launch opens its session in the workspace it was clicked in", () => {
   // A launch can take a minute (worktree checkout); a session claimed by
   // whichever workspace is on screen when it lands is in the wrong one.
-  for (const fn of ["launchWfAgent", "spawnWfExplainer", "wfAfterRunStep", "wfShareDialog"]) {
+  for (const fn of [
+    "launchWfAgent",
+    "spawnWfExplainer",
+    "wfAfterRunStep",
+    "wfShareDialog",
+    "openShellAt",
+    "openShellTerminal",
+  ]) {
     const body = extractFunction(APP, fn);
     const opens = body.match(/openSession\([^;]*\);/g) || [];
     assert.ok(opens.length, `${fn} opens a session`);
     for (const o of opens) assert.match(o, /\{ home(: opts\.home)? \}/, `${fn}: ${o}`);
   }
+});
+
+test("tabs never mix across workspaces", () => {
+  // An unowned tab used to be drawn in every workspace's strip, and view tabs
+  // (workflow items, inbox, board) were never claimed — so they all were.
+  const strip = extractFunction(APP, "renderTabs");
+  assert.match(strip, /enforceTabOwnership\(\);/);
+  assert.match(strip, /if \(tabWorkspace\(id\) !== state\.activeWs\) continue;/);
+  assert.match(extractFunction(APP, "renderPanes"), /enforceTabOwnership\(\);/);
+  // Every way a tab comes into being claims it for a workspace.
+  assert.match(extractFunction(APP, "openViewTab"), /claimSession\(key\)/);
+  assert.match(extractFunction(APP, "openSession"), /claimSession\(sid,/);
+  assert.match(extractFunction(APP, "openBrowserTab"), /claimSession\(id\)/);
+  // An open tab keeps its owner through a session-list prune.
+  assert.match(APP, /pruneOwnership\(state\.workspaces, gone, moved, isOpen\)/);
 });
 
 test("dragging a tab never starts a text selection", () => {

@@ -142,6 +142,18 @@ test("prune keeps ownership in the workspace that held the old id", () => {
   assert.deepEqual(wss[1].sessions, ["untouched"]);
 });
 
+test("prune keeps an id `keep` holds, beside its transfer target", () => {
+  const wss = [{ panes: ["open"], sessions: ["open", "openDead", "closed"] }];
+  const keep = (id) => id === "open" || id === "openDead";
+  pruneOwnership(wss, new Set(["open", "openDead", "closed"]), new Map([["open", "new"]]), keep);
+  assert.deepEqual(wss[0].sessions, ["open", "new", "openDead"]);
+});
+
+test("prune reports no change when every gone id is kept", () => {
+  const wss = [{ panes: ["a"], sessions: ["a"] }];
+  assert.equal(pruneOwnership(wss, new Set(["a"]), new Map(), () => true), false);
+});
+
 test("full reopen scenario: resumed session stays in its workspace", () => {
   // Session "pre" was owned but closed; a resume forked it to "post", which the
   // backend healed into the registry. On reopen list_sessions reports "post".

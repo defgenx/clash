@@ -1101,8 +1101,10 @@ function switchWorkspace(i) {
     pendingOpens.delete(sid);
     if (state.open.has(sid)) return;
     // Killed meanwhile: opening it would resume it. Finished: a placeholder.
+    // A shell is never in the session list; its PTY is already running.
     const s = state.sessions.find((x) => x.id === sid);
-    if (!s) ws().panes[pi] = null;
+    if (isShellTerm(sid)) openSession(sid, label);
+    else if (!s) ws().panes[pi] = null;
     else openSession(sid, label, { defer: !s.is_running });
   });
   syncActiveToFocused();
@@ -1133,12 +1135,33 @@ function sessionWorkspace(sid) {
   return state.workspaces.findIndex((w) => w.sessions.includes(sid));
 }
 
-/// Index of the workspace a tab belongs to, or -1 when every workspace shows it.
+/// Index of the workspace a tab belongs to, or -1 when nobody owns it yet.
 /// A tab owned under its own key wins (a moved view tab); otherwise a view tab
 /// follows its session (`view:conv:<sid>` lives wherever `<sid>` does).
 function tabWorkspace(id) {
   const own = sessionWorkspace(id);
   return own !== -1 ? own : sessionWorkspace(tabSession(id));
+}
+
+/// Every open tab — session, shell, browser, view — belongs to exactly one
+/// workspace, and only that workspace's panes may show it. Repairs any path
+/// that opened a tab without claiming it: an orphan goes to the workspace
+/// whose pane holds it, else the active one. Run before every strip/pane paint.
+function enforceTabOwnership() {
+  let changed = false;
+  for (const id of state.open.keys()) {
+    if (tabWorkspace(id) !== -1) continue;
+    const shown = state.workspaces.findIndex((w) => w.panes.includes(id));
+    moveTabToWorkspace(state.workspaces, id, shown >= 0 ? shown : state.activeWs, { place: false });
+    changed = true;
+  }
+  state.workspaces.forEach((w, i) => {
+    const panes = w.panes.map((p) => (p && state.open.has(p) && tabWorkspace(p) !== i ? null : p));
+    if (String(panes) === String(w.panes)) return;
+    w.panes = panes;
+    changed = true;
+  });
+  if (changed) saveWorkspaces();
 }
 
 /// Move a tab or session to workspace `to` (`"new"` creates one), then switch
@@ -1794,9 +1817,16 @@ async function refreshSessions() {
           state.missingStreak.delete(id);
           continue;
         }
-        missing.push(id);
         const streak = (state.missingStreak.get(id) || 0) + 1;
         state.missingStreak.set(id, streak);
+        // An open tab stays owned while it is open — losing its owner would
+        // show it in whichever workspace is on screen. It still gets its three
+        // ticks to transfer; closing the tab is what lets it be dropped.
+        if (state.open.has(id)) {
+          if (streak <= 3) missing.push(id);
+          continue;
+        }
+        missing.push(id);
         if (streak >= 3) vanished.add(id);
       }
     }
@@ -1814,7 +1844,8 @@ async function refreshSessions() {
     // `ownershipTransfers`).
     //
     // The probe is bounded: an id is either transferred or dropped within
-    // three ticks, so `missing` cannot keep asking forever. A failed resolve
+    // three ticks (an open tab just stops being asked about), so `missing`
+    // cannot keep asking forever. A failed resolve
     // defers everything to the next tick rather than guessing "dead".
     const unowned = sessions
       .filter((s) => s.source !== "Wild" && !owned.includes(s.id))
@@ -1836,8 +1867,9 @@ async function refreshSessions() {
         // dropped. `pruneOwnership` replaces a `gone` id by its target, so
         // the union is exactly "rewrite the renamed, remove the expired".
         const gone = new Set([...vanished, ...moved.keys()]);
-        if (pruneOwnership(state.workspaces, gone, moved)) saveWorkspaces();
-        for (const id of gone) state.missingStreak.delete(id);
+        const isOpen = (id) => state.open.has(id);
+        if (pruneOwnership(state.workspaces, gone, moved, isOpen)) saveWorkspaces();
+        for (const id of gone) if (!isOpen(id)) state.missingStreak.delete(id);
       } catch (e) {
         console.error("resolve_session_ids failed:", e);
       }
@@ -2279,14 +2311,13 @@ function renderTabs() {
     paneDrag.dirty = true;
     return;
   }
+  enforceTabOwnership();
   const tabs = $("tabs");
   tabs.innerHTML = "";
   for (const [id, entry] of state.open) {
     // The tab strip is scoped to the active workspace (like the sidebar):
     // tabs owned by another workspace stay hidden until you switch back.
-    // Unassigned sessions remain visible so they're always reachable.
-    const owner = tabWorkspace(id);
-    if (owner !== -1 && owner !== state.activeWs) continue;
+    if (tabWorkspace(id) !== state.activeWs) continue;
     const tab = document.createElement("div");
     tab.className =
       "tab" + (id === state.activeTab ? " active" : "") + (entry.transient ? " transient" : "");
@@ -2378,6 +2409,7 @@ function renderPanes() {
     paneDrag.dirty = true;
     return;
   }
+  enforceTabOwnership();
   const host = $("terminal-host");
   const w = ws();
   w.layout = PaneLayout.ensureLayout(w.layout, w.panes.length, w.colFracs, w.rowFracs);
@@ -3629,9 +3661,11 @@ function dropTerminal(sid) {
 
 /// Open (or focus) a non-terminal content tab. `build(el)` fills it.
 function openViewTab(key, name, build) {
-  // A view tab moved to another workspace opens there, like a session.
-  const owner = sessionWorkspace(key);
+  // A view tab owned elsewhere (moved there, or following its session) opens
+  // there, like a session; a new one belongs to the workspace it opened in.
+  const owner = tabWorkspace(key);
   if (owner >= 0 && owner !== state.activeWs) switchWorkspace(owner);
+  if (owner === -1) claimSession(key);
   if (state.open.has(key)) {
     // Rebuild content so reopening shows fresh data
     const entry = state.open.get(key);
@@ -4845,6 +4879,7 @@ function fileContextMenu(row, x, y) {
 }
 
 async function openShellAt(cwd) {
+  const home = ws();
   try {
     const sid = await invoke("create_terminal", {
       shell: state.settings.termShell || null,
@@ -4852,7 +4887,7 @@ async function openShellAt(cwd) {
       cols: 120,
       rows: 40,
     });
-    await openSession(sid, `$ ${cwd.split("/").pop()}`);
+    await openSession(sid, `$ ${cwd.split("/").pop()}`, { home });
   } catch (e) {
     uiAlert(`New terminal failed: ${e}`);
   }
@@ -14091,6 +14126,7 @@ async function openShellTerminal(shell) {
   const cur = state.sessions.find((x) => x.id === state.activeTab);
   const cwd =
     (cur && (cur.cwd || cur.project_path)) || state.settings.defaultCwd || null;
+  const home = ws();
   try {
     const sid = await invoke("create_terminal", {
       shell: shell || null,
@@ -14099,7 +14135,7 @@ async function openShellTerminal(shell) {
       rows: 40,
     });
     const base = (shell || detectedShells[0] || "shell").split("/").pop();
-    await openSession(sid, `$ ${base}`);
+    await openSession(sid, `$ ${base}`, { home });
   } catch (e) {
     uiAlert(`New terminal failed: ${e}`);
   }
