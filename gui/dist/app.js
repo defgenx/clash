@@ -8748,6 +8748,50 @@ async function endWfExplainer(item, root, target) {
   }
 }
 
+/// Ids of the running agent sessions working on `item`: its recorded agent,
+/// its running explainers, and any session the registry ties to it. The
+/// recorded agent counts while the item says it is alive, which covers a
+/// launch the session list has not caught up with yet.
+function wfLiveAgents(item) {
+  const key = `${item.project}/${item.slug}`;
+  const ids = new Set((item.explainers || []).filter((e) => e.running).map((e) => e.sessionId));
+  const working = ["planning", "implementing", "reviewing"].includes(item.meta.status);
+  if (working && item.agentAlive && item.meta.sessionId) ids.add(item.meta.sessionId);
+  for (const s of state.sessions)
+    if (s.is_running && s.workflow_item === key) ids.add(s.id);
+  return [...ids];
+}
+
+/// Stop every running agent of `item`, each kept resumable. A stash, never a
+/// kill: a kill unregisters the session the item still records, and reopening
+/// it then has nothing to resume.
+async function wfStopAgents(item, root) {
+  const agents = wfLiveAgents(item);
+  if (!agents.length) return;
+  const one = agents.length === 1 && state.sessions.find((s) => s.id === agents[0]);
+  const what = one
+    ? `“${displayName(one)}”`
+    : agents.length === 1
+      ? "this item's agent"
+      : `${agents.length} agent sessions`;
+  if (
+    !(await uiConfirm(
+      `Stop ${what}? The item stays where it is and the conversation is kept — Resume picks it up where it left off.`,
+      "Stop"
+    ))
+  )
+    return;
+  const results = await Promise.allSettled(
+    agents.map((sid) => invoke("stash_session", { sessionId: sid, wait: true }))
+  );
+  for (const sid of agents) dropTerminal(sid);
+  const failed = results.filter((r) => r.status === "rejected").length;
+  if (failed) uiAlert(`${failed} of ${agents.length} agents could not be stopped.`);
+  await refreshSessions();
+  await refreshWorkflows();
+  if (root) buildWorkflowView(root, item.project, item.slug);
+}
+
 async function cancelWfReview(item, root) {
   if (
     !(await uiConfirm(
@@ -9577,7 +9621,11 @@ function renderWfActions(bar, root, item) {
       // agent finishing, ending the round, or abandoning the item.
       const r = item.meta.review || {};
       const via = r.returnStatus ? wfStatusInfo(r.returnStatus).label : "where it started";
-      if (item.agentAlive === false) {
+      if (item.agentResumable) {
+        add("▶ Resume reviewer", "primary", () => openSession(item.meta.sessionId),
+          "The reviewer was stopped — resume its session where it left off", "step",
+          "open-session");
+      } else if (item.agentAlive === false) {
         add("⚠ End review round", "primary", () => cancelWfReview(item, root),
           "The reviewer session is gone — unlock the item", "step", "end-round");
       } else if (item.meta.sessionId) {
@@ -9592,10 +9640,20 @@ function renderWfActions(bar, root, item) {
 
     case "planning":
     case "implementing":
+      if (item.agentResumable) {
+        add(
+          "▶ Resume agent",
+          "primary",
+          () => openSession(item.meta.sessionId),
+          "The agent was stopped — resume its conversation where it left off",
+          "step",
+          "open-session"
+        );
+      }
       if (item.agentAlive === false) {
         add(
           "⚠ Relaunch agent",
-          "primary",
+          item.agentResumable ? "" : "primary",
           () =>
             launchWfAgent(
               item,
@@ -9610,7 +9668,9 @@ function renderWfActions(bar, root, item) {
               recordedPhase(item.meta, st === "planning" ? "plan" : "implement"),
               root
             ),
-          "The recorded agent session is gone — spend tokens to start a fresh one on the same phase",
+          item.agentResumable
+            ? "Start over: spend tokens on a fresh session on the same phase — the stopped one's conversation is not carried over"
+            : "The recorded agent session is gone — spend tokens to start a fresh one on the same phase",
           "step",
           "relaunch"
         );
@@ -9935,6 +9995,22 @@ function renderWfActions(bar, root, item) {
   // explanations missing from five of them.
   explainRunning();
   checkButtons();
+
+  // Any agent working on this item — executor, reviewer, explainer — can be
+  // stopped here and kept resumable. Without it the only stop was Kill, which
+  // unregisters the session the item still records.
+  {
+    const live = wfLiveAgents(item);
+    if (live.length) {
+      add(
+        live.length > 1 ? `■ Stop agents (${live.length})` : "■ Stop agent",
+        "",
+        () => wfStopAgents(item, root),
+        "Stop this item's running agent — the item stays where it is and the conversation is kept, so Resume picks it up later",
+        "step"
+      );
+    }
+  }
 
   // Going back was two hardcoded buttons at two stages; from everywhere else
   // the pipeline was a one-way street. Same reason it lives outside the

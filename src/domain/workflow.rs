@@ -1306,6 +1306,10 @@ pub struct WorkflowItem {
     /// alive while the item claims an agent is working (planning /
     /// implementing). Computed by the GUI layer against live sessions.
     pub agent_alive: bool,
+    /// The dead agent is still a listed (stopped) session, so opening it
+    /// resumes its conversation instead of a relaunch starting over.
+    #[serde(default)]
+    pub agent_resumable: bool,
     /// Latest *judging* round parsed from `agent-review.md`, when one exists
     /// — explanation rounds are skipped, since they land whenever they finish.
     #[serde(default, skip_serializing_if = "Option::is_none")]

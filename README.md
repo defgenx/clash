@@ -647,7 +647,11 @@ existing round later, with no new review. A reviewer may fix only trivial
 mechanical issues, after asking, and never rewrites what it reviews. While a
 round runs, approval and the comment editor are locked. **End round** always
 unlocks them, so a crashed reviewer can't wedge an item; a dead executor gets
-**⚠ Relaunch agent**.
+**⚠ Relaunch agent**. **■ Stop agent** stops any agent running on the item
+(executor, reviewer or explainer) without moving the item and keeps the
+conversation, so **▶ Resume agent** carries on where it left off. Stop a
+workflow agent this way rather than with *Kill session*, which removes the
+session the item still records.
 
 ### Applying a round
 

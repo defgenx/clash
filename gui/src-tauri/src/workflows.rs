@@ -56,6 +56,13 @@ pub(crate) async fn list_workflow_items(
     // forever: cross-reference against the last session list (the
     // `rebuild_all_members` liveness precedent).
     let live = live_session_ids(&state);
+    let listed: HashSet<String> = state
+        .previous
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| s.id.clone())
+        .collect();
     let now = now_ms();
     for item in &mut items {
         for e in &mut item.explainers {
@@ -80,6 +87,12 @@ pub(crate) async fn list_workflow_items(
                 item.meta.updated_at,
                 now,
             );
+            item.agent_resumable = !item.agent_alive
+                && item
+                    .meta
+                    .session_id
+                    .as_ref()
+                    .is_some_and(|sid| listed.contains(sid));
         }
     }
 

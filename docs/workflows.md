@@ -207,6 +207,12 @@ pr-draft / pr-ready likewise
 - While `reviewing`, clash **gates approval** and locks the annotation editor
   (the reviewer writes annotations). The GUI always offers "End round", and
   abandon stays available, so a dead reviewer can never wedge an item.
+- **■ Stop agent** stashes every running agent of the item (recorded agent,
+  explainers, any session whose registry `workflow_item` names it) and moves
+  nothing. A stopped recorded agent is `agentResumable` — still a listed
+  session — so the bar offers **▶ Resume** (act `open-session`, which resumes
+  the same conversation) ahead of Relaunch / End round. A stopped round stays
+  `running` in a check run until the item parks, so nothing relaunches it.
 - `meta.json.review` records the round: `target`, `depth`, `publish`,
   `returnStatus`, `round`, `startedAt`. `meta.json.reviewRound` is the
   clash-owned *total* (like `iteration` — the agent never writes it).

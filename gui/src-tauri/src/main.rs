@@ -697,9 +697,15 @@ async fn close_session(state: State<'_, GuiState>, session_id: String) -> Result
 }
 
 /// Stash a session: stop its process but keep it resumable (same semantics
-/// as the TUI's `s` — daemon kill + hook status "idle").
+/// as the TUI's `s` — daemon kill + hook status "idle"). `wait` returns only
+/// once the process is gone, so a caller that repaints from liveness (a
+/// workflow item's agent state) doesn't read the dying process as running.
 #[tauri::command]
-async fn stash_session(state: State<'_, GuiState>, session_id: String) -> Result<(), String> {
+async fn stash_session(
+    state: State<'_, GuiState>,
+    session_id: String,
+    wait: Option<bool>,
+) -> Result<(), String> {
     {
         let mut attached = state.attached.lock().await;
         attached.remove(&session_id);
@@ -708,6 +714,9 @@ async fn stash_session(state: State<'_, GuiState>, session_id: String) -> Result
         let mut control = state.control.lock().await;
         ensure_connected(&mut control).await;
         let _ = control.kill_session(&session_id).await;
+    }
+    if wait == Some(true) {
+        wait_until_dead(&state, &session_id).await;
     }
     clash::infrastructure::hooks::write_session_status(
         state.backend.base_dir(),
@@ -791,6 +800,28 @@ async fn kill_session(state: State<'_, GuiState>, session_id: String) -> Result<
     Ok(())
 }
 
+/// Poll until the daemon reports the session's process dead — re-locking each
+/// round so refresh isn't blocked. ~8s hard cap covers the kill's SIGKILL
+/// escalation (6s); Claude normally exits on `/exit` well under 1s.
+async fn wait_until_dead(state: &GuiState, session_id: &str) {
+    for _ in 0..40 {
+        let alive = {
+            let mut control = state.control.lock().await;
+            ensure_connected(&mut control).await;
+            match control.list_sessions().await {
+                Ok(infos) => infos
+                    .iter()
+                    .any(|i| i.session_id == session_id && i.is_alive),
+                Err(_) => false,
+            }
+        };
+        if !alive {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
 /// Reload a session: stop its current process (graceful, kept resumable) and
 /// wait until the daemon reports it gone, so the follow-up `open_session`
 /// resumes a FRESH `claude` — picking up a newer binary — instead of
@@ -815,25 +846,7 @@ async fn reload_session(state: State<'_, GuiState>, session_id: String) -> Resul
         ensure_connected(&mut control).await;
         let _ = control.kill_session(&session_id).await;
     }
-    // Poll until the daemon reports the process dead — re-locking each round so
-    // refresh isn't blocked. ~8s hard cap covers the kill's SIGKILL escalation
-    // (6s); Claude normally exits on `/exit` well under 1s.
-    for _ in 0..40 {
-        let alive = {
-            let mut control = state.control.lock().await;
-            ensure_connected(&mut control).await;
-            match control.list_sessions().await {
-                Ok(infos) => infos
-                    .iter()
-                    .any(|i| i.session_id == session_id && i.is_alive),
-                Err(_) => false,
-            }
-        };
-        if !alive {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
+    wait_until_dead(&state, &session_id).await;
     // Keep it resumable and clear stale status so the resume's Starting/Running
     // takes effect in reconciliation (mirrors `stash_session`).
     clash::infrastructure::hooks::write_session_status(

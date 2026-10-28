@@ -158,6 +158,13 @@ test("working and wedged agents get their own recommendation", () => {
   assert.equal(wfNextStep(item("changes-requested"), facts()).id, "launch-round");
 });
 
+test("a stopped agent is resumed, not relaunched", () => {
+  const stopped = { agentAlive: false, agentResumable: true };
+  assert.equal(wfNextStep(item("implementing", stopped), facts()).id, "open-session");
+  assert.equal(wfNextStep(item("planning", stopped), facts()).id, "open-session");
+  assert.equal(wfNextStep(item("reviewing", stopped), facts()).id, "open-session");
+});
+
 test("pr-draft prefers recording a PR already flipped on GitHub", () => {
   const reviewed = item("pr-draft", { reviewRounds: { diff: 1 } }, { reviewMarks: { diff: { iteration: 1, round: 1 } } });
   assert.equal(wfNextStep(reviewed, facts({ hasPlan: false })).id, "pr-is-ready");

@@ -101,25 +101,33 @@
         return [
           {
             id: "relaunch",
-            fires: item.agentAlive === false,
+            fires: item.agentAlive === false && !item.agentResumable,
             reason: "The agent's session is gone — start a fresh one on the same phase",
             settled: "the agent is running",
           },
           {
             id: "open-session",
             fires: true,
-            reason: "An agent is working — watch it, or answer its questions",
+            reason: item.agentResumable
+              ? "The agent was stopped — resume its conversation where it left off"
+              : "An agent is working — watch it, or answer its questions",
           },
         ];
       case "reviewing":
         return [
           {
             id: "end-round",
-            fires: item.agentAlive === false,
+            fires: item.agentAlive === false && !item.agentResumable,
             reason: "The reviewer's session is gone — end the round to unlock the item",
             settled: "the reviewer is running",
           },
-          { id: "open-session", fires: true, reason: "A review round is running" },
+          {
+            id: "open-session",
+            fires: true,
+            reason: item.agentResumable
+              ? "The reviewer was stopped — resume it, or end the round"
+              : "A review round is running",
+          },
         ];
       case "changes-requested":
         return [
