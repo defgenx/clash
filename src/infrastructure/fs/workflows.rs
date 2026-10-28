@@ -179,7 +179,20 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         String::new()
     };
     let rounds = crate::application::workflow::all_agent_reviews(&md);
-    let explainer_states = crate::application::workflow::explainer_states(&explainers, &rounds);
+    // Dives finish by writing their level, so the trees are read only while
+    // one is on record.
+    let mut dive_targets: Vec<crate::domain::workflow::ReviewTarget> = Vec::new();
+    for e in explainers.explainers.iter().filter(|e| !e.node.is_empty()) {
+        if !dive_targets.contains(&e.target) {
+            dive_targets.push(e.target);
+        }
+    }
+    let dives: Vec<_> = dive_targets
+        .into_iter()
+        .map(|t| (t, read_explain_levels_in(&dir, t)))
+        .collect();
+    let explainer_states =
+        crate::application::workflow::explainer_states(&explainers, &rounds, &dives);
     // The latest judging round's verdict/published lines, so the GUI can say
     // what a finished round concluded without the user opening the whole
     // report.
@@ -479,6 +492,137 @@ fn read_explainers_in(dir: &Path) -> crate::domain::workflow::ExplainersFile {
         tracing::warn!("malformed {}: {}", path.display(), e);
         Default::default()
     })
+}
+
+// ── Drill-down explanation trees ────────────────────────────────────────
+//
+// `explain-<target>.json` indexes the overview; every zoomed-in part has its
+// own `explain-<target>/<id>.{md,html,json}`. Agent-written; read here, and
+// what is expanded or stale is derived by `application::explain_tree`.
+
+fn mtime_ms(path: &Path) -> Option<i64> {
+    let t = std::fs::metadata(path).ok()?.modified().ok()?;
+    let d = t.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(d.as_millis() as i64)
+}
+
+/// The overview's markdown/html file names for a tree's stem — the files the
+/// item has always had (`explain-diff.md`, `drift.html`, …).
+fn root_forms(dir: &Path, stem: &str) -> (bool, bool) {
+    let legacy = match stem {
+        "explain-diff" => STRUCTURE_FILE,
+        "explain-plan" => BLUEPRINT_FILE,
+        _ => "",
+    };
+    let md = has_content(&dir.join(format!("{stem}.md")))
+        || (!legacy.is_empty() && has_content(&dir.join(legacy)));
+    (md, has_content(&dir.join(format!("{stem}.html"))))
+}
+
+/// Every level of one target's tree that has an index, overview included.
+/// A level without its `.json` is a dive still being written, so it is left
+/// out until it lands.
+pub(crate) fn read_explain_levels_in(
+    dir: &Path,
+    target: crate::domain::workflow::ReviewTarget,
+) -> Vec<crate::application::explain_tree::RawLevel> {
+    use crate::application::explain_tree::{tree_dir, valid_node_id, RawLevel};
+    let Some(stem) = tree_dir(target) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let root_json = dir.join(format!("{stem}.json"));
+    if let (Ok(json), Some(at)) = (std::fs::read_to_string(&root_json), mtime_ms(&root_json)) {
+        let (md, html) = root_forms(dir, stem);
+        out.push(RawLevel {
+            node: String::new(),
+            json,
+            written_at: at,
+            md,
+            html,
+        });
+    }
+    let sub = dir.join(stem);
+    let Ok(entries) = std::fs::read_dir(&sub) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(id) = name.strip_suffix(".json") else {
+            continue;
+        };
+        if !valid_node_id(id) {
+            continue;
+        }
+        let path = entry.path();
+        let (Ok(json), Some(at)) = (std::fs::read_to_string(&path), mtime_ms(&path)) else {
+            continue;
+        };
+        out.push(RawLevel {
+            node: id.to_string(),
+            json,
+            written_at: at,
+            md: has_content(&sub.join(format!("{id}.md"))),
+            html: has_content(&sub.join(format!("{id}.html"))),
+        });
+    }
+    out
+}
+
+pub fn read_explain_levels(
+    root: &Path,
+    project: &str,
+    slug: &str,
+    target: crate::domain::workflow::ReviewTarget,
+) -> Result<Vec<crate::application::explain_tree::RawLevel>> {
+    Ok(read_explain_levels_in(
+        &existing_item_dir(root, project, slug)?,
+        target,
+    ))
+}
+
+/// Read one level's markdown or HTML (`form` = `md` | `html`). The overview
+/// is `node = ""` and reads the item's existing documents. Missing reads as
+/// empty, like every item document.
+pub fn read_explain_node_doc(
+    root: &Path,
+    project: &str,
+    slug: &str,
+    target: crate::domain::workflow::ReviewTarget,
+    node: &str,
+    form: &str,
+) -> Result<String> {
+    use crate::application::explain_tree::{tree_dir, valid_node_id};
+    let dir = existing_item_dir(root, project, slug)?;
+    let stem =
+        tree_dir(target).ok_or_else(|| parse_err(format!("{} has no drill-down", target)))?;
+    if form != "md" && form != "html" {
+        return Err(parse_err(format!("Not an explanation form: '{}'", form)));
+    }
+    let path = if node.is_empty() {
+        let main = dir.join(format!("{stem}.{form}"));
+        let legacy = match (stem, form) {
+            ("explain-diff", "md") => Some(dir.join(STRUCTURE_FILE)),
+            ("explain-plan", "md") => Some(dir.join(BLUEPRINT_FILE)),
+            _ => None,
+        };
+        match legacy {
+            Some(l) if !has_content(&main) => l,
+            _ => main,
+        }
+    } else if valid_node_id(node) {
+        dir.join(stem).join(format!("{node}.{form}"))
+    } else {
+        return Err(parse_err(format!(
+            "Not a part of the explanation: '{}'",
+            node
+        )));
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e.into()),
+    }
 }
 
 pub fn read_explainers(

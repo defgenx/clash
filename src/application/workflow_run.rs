@@ -37,6 +37,9 @@ pub struct PassSpec {
     pub pr_urls: Vec<String>,
     #[serde(default)]
     pub focus: String,
+    /// An explainer's detail; absent = the setting at launch.
+    #[serde(default)]
+    pub detail: Option<crate::domain::workflow::ExplainDetail>,
 }
 
 /// Everything about a new run that is not its passes.
@@ -112,6 +115,7 @@ pub fn start_batch(
             publish: spec.publish,
             pr_urls: spec.pr_urls,
             focus: spec.focus.trim().to_string(),
+            detail: spec.detail,
             ..Default::default()
         });
     }
@@ -268,7 +272,11 @@ pub fn reconcile(run: &RunFile, input: &RunInput) -> (RunFile, RunAction) {
     let stale = |p: &RunPass| input.now - p.launched_at > LAUNCH_GRACE_MS;
     for p in batch.passes.iter_mut() {
         if p.target.explains() {
-            let rec = input.explainers.iter().find(|e| e.target == p.target);
+            // A dive is not a pass: only the top-level round answers for one.
+            let rec = input
+                .explainers
+                .iter()
+                .find(|e| e.target == p.target && e.node.is_empty());
             match p.state {
                 PassState::Launching => {
                     if let Some(e) = rec.filter(|e| e.started_at >= p.launched_at) {

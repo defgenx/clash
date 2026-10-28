@@ -30,14 +30,20 @@ function docPairs() {
   return sandbox.out;
 }
 
-function sandboxFor(docs) {
+function sandboxFor(docs, tree = []) {
   const calls = [];
   const sandbox = {
     invoke: async (cmd, args) => {
       calls.push([cmd, args]);
       if (cmd === "get_workflow_doc") return docs[args.doc] ?? "";
+      if (cmd === "get_workflow_explain_tree") return tree;
+      if (cmd === "get_workflow_explain_node")
+        return docs[`${args.target}/${args.node}.${args.form}`] ?? "";
       throw new Error(`unexpected command ${cmd}`);
     },
+    setInterval: () => 0,
+    clearInterval: () => {},
+    ...require("../dist/wf-explain-tree.js"),
     document: { createElement: (t) => stubEl(t), createTextNode: () => stubEl("text") },
     console,
     Object,
@@ -57,6 +63,8 @@ function sandboxFor(docs) {
   vm.runInContext(APP.slice(start, APP.indexOf("\n};", start) + 3), sandbox);
   vm.runInContext(extractFunction(APP, "wfExplainFormsFor"), sandbox);
   vm.runInContext(extractFunction(APP, "renderWfExplainView"), sandbox);
+  for (const fn of ["renderWfExplainNav", "wfWatchExplainFrame", "wfMarkExplainHeadings", "wfExplainGo"])
+    vm.runInContext(extractFunction(APP, fn), sandbox);
   sandbox.__calls = calls;
   return sandbox;
 }
@@ -187,4 +195,68 @@ test("a pair with no legacy name never fetches `undefined` as a document", async
     legacy.__calls.some(([c, a]) => c === "get_workflow_doc" && a.doc === "structure.md"),
     "the diff pair must still read its pre-rename filename"
   );
+});
+
+// ── Drill-down ──────────────────────────────────────────────────────────
+
+const TREE = [
+  {
+    node: "",
+    title: "Overview",
+    stale: false,
+    md: true,
+    html: true,
+    nodes: [
+      { id: "1", title: "Parser", critical: true, why: "every read", expanded: true, diveable: true, stale: false },
+      { id: "2", title: "Cache", critical: true, why: "invalidation", expanded: false, diveable: true, stale: false },
+      { id: "3", title: "Docs", critical: false, expanded: false, diveable: false, stale: false },
+    ],
+    edges: [],
+  },
+  { node: "1", title: "Parser", stale: false, md: true, html: true, nodes: [], edges: [] },
+];
+
+test("an explanation with a tree shows its parts, each a way down", async () => {
+  const sandbox = sandboxFor({ "explain-diff.html": "<h1>map</h1>" }, TREE);
+  const body = stubEl();
+  await sandbox.renderWfExplainView(body, stubEl(), ITEM, {}, "diff");
+  const all = descendants(body);
+  assert.ok(all.some((e) => (e.className || "").includes("wf-explain-nav")), "the strip renders");
+  const chips = all.filter((e) => /(^| )wf-explain-part( |$)/.test(e.className || ""));
+  assert.equal(chips.length, 3);
+  // Open, dive, and a leaf that offers nothing.
+  assert.match(chips[0].className, /\bopen\b/);
+  assert.match(chips[1].className, /\bdive\b/);
+  assert.ok(chips[2].disabled, "a leaf is not clickable");
+  // Only the critical part not yet written is offered as a batch.
+  const batch = all.find((e) => (e.className || "").includes("wf-explain-critical"));
+  assert.ok(batch && /\(1\)/.test(batch.textContent), "one critical part to dive");
+  // The page stays inert at every level.
+  const frame = all.find((e) => (e.className || "").includes("wf-explain-frame"));
+  assert.equal(frame.attrs.sandbox, "allow-same-origin");
+});
+
+test("a part's level is read from its own files, never the overview's", async () => {
+  const sandbox = sandboxFor({ "explain-diff/1.html": "<h1>inside the parser</h1>" }, TREE);
+  const body = stubEl();
+  await sandbox.renderWfExplainView(body, stubEl(), ITEM, { explainNodes: { diff: "1" } }, "diff");
+  const nodeReads = sandbox.__calls.filter(([c]) => c === "get_workflow_explain_node");
+  assert.deepEqual(
+    nodeReads.map(([, a]) => [a.target, a.node, a.form]),
+    [["explain-diff", "1", "html"]]
+  );
+  assert.ok(!sandbox.__calls.some(([c]) => c === "get_workflow_doc"), "the overview is not fetched");
+  const all = descendants(body);
+  const frame = all.find((e) => (e.className || "").includes("wf-explain-frame"));
+  assert.match(frame.srcdoc, /inside the parser/);
+  // The edit button names the part's file.
+  assert.ok(all.some((e) => (e.innerHTML || "").includes("Edit explain-diff/1.html")));
+});
+
+test("a level that vanished falls back to the overview", async () => {
+  const sandbox = sandboxFor({ "explain-diff.md": "# overview" }, TREE);
+  const ts = { explainNodes: { diff: "9" }, explainView: "text" };
+  await sandbox.renderWfExplainView(stubEl(), stubEl(), ITEM, ts, "diff");
+  assert.equal(ts.explainNodes.diff, "");
+  assert.ok(sandbox.__calls.some(([c, a]) => c === "get_workflow_doc" && a.doc === "explain-diff.md"));
 });

@@ -787,6 +787,31 @@ pub(crate) async fn create_workflow_review(
     Ok(item)
 }
 
+/// One local repository and the `owner/repo` its origin points at.
+#[derive(serde::Serialize)]
+pub(crate) struct RepoOrigin {
+    path: String,
+    origin: String,
+}
+
+/// The origin `owner/repo` of each candidate checkout — what lets "Explain a
+/// PR…" find the repository a pasted URL belongs to instead of asking. A path
+/// that is not a repository, or has no recognizable origin, is left out.
+#[tauri::command]
+pub(crate) async fn repo_origin_slugs(paths: Vec<String>) -> Vec<RepoOrigin> {
+    let mut out = Vec::new();
+    for path in paths {
+        let dir = crate::expand_tilde(path.trim());
+        if !dir.is_dir() {
+            continue;
+        }
+        if let Some(origin) = clash::infrastructure::git::review::origin_repo_slug(&dir).await {
+            out.push(RepoOrigin { path, origin });
+        }
+    }
+    out
+}
+
 /// Local branches of a repo, newest first — the picker for "review a branch".
 #[tauri::command]
 pub(crate) async fn list_repo_branches(
@@ -1736,6 +1761,7 @@ pub(crate) async fn start_workflow_review_agent(
     pr_urls: Option<Vec<String>>,
     auto_apply: Option<bool>,
     focus: Option<String>,
+    detail: Option<clash::domain::workflow::ExplainDetail>,
     agent: Option<String>,
     cols: u16,
     rows: u16,
@@ -1753,6 +1779,7 @@ pub(crate) async fn start_workflow_review_agent(
             pr_urls,
             auto_apply,
             focus,
+            detail,
             agent,
             cols,
             rows,
@@ -1773,6 +1800,8 @@ pub(crate) struct ReviewLaunch {
     pub pr_urls: Option<Vec<String>>,
     pub auto_apply: Option<bool>,
     pub focus: Option<String>,
+    /// An explainer's detail; `None` = the `workflows.explain_detail` setting.
+    pub detail: Option<clash::domain::workflow::ExplainDetail>,
     pub agent: Option<String>,
     pub cols: u16,
     pub rows: u16,
@@ -1793,6 +1822,7 @@ pub(crate) async fn launch_review(
         pr_urls,
         auto_apply,
         focus,
+        detail,
         agent,
         cols,
         rows,
@@ -1808,6 +1838,7 @@ pub(crate) async fn launch_review(
                 depth,
                 interactive,
                 focus,
+                detail,
                 agent,
                 cols,
                 rows,
@@ -2031,6 +2062,7 @@ struct ExplainerLaunch {
     depth: ReviewDepth,
     interactive: Option<bool>,
     focus: Option<String>,
+    detail: Option<clash::domain::workflow::ExplainDetail>,
     agent: Option<String>,
     cols: u16,
     rows: u16,
@@ -2055,6 +2087,7 @@ async fn start_explainer(
         depth,
         interactive,
         focus,
+        detail,
         agent,
         cols,
         rows,
@@ -2108,9 +2141,10 @@ async fn start_explainer(
     let busy = clash::application::workflow::explainer_states(
         &file,
         &clash::application::workflow::all_agent_reviews(&report),
+        &[],
     )
     .iter()
-    .any(|e| e.target == target && explainer_running(e, &live, now_ms()));
+    .any(|e| e.target == target && e.node.is_empty() && explainer_running(e, &live, now_ms()));
     if busy {
         return Err(format!(
             "{}{}#{} — this explanation is already being written",
@@ -2127,6 +2161,13 @@ async fn start_explainer(
         interactive: interactive
             .or_else(|| clash::application::workflow::interaction_param(&meta.interaction_default)),
         focus: focus.map(|f| f.trim().to_string()).unwrap_or_default(),
+        detail: detail
+            .filter(|d| *d != clash::domain::workflow::ExplainDetail::Unknown)
+            .unwrap_or_else(|| {
+                clash::domain::workflow::ExplainDetail::parse(
+                    &state.config.get().workflows.explain_detail,
+                )
+            }),
         started_at: now_ms(),
         ..Default::default()
     };
@@ -2190,7 +2231,9 @@ async fn start_explainer(
         // Drop only this launch's record, re-read so a record written since
         // (the other target's) survives.
         if let Ok(mut fresh) = state.backend.load_workflow_explainers(&project, &slug) {
-            fresh.explainers.retain(|x| x.session_id != session_id);
+            fresh
+                .explainers
+                .retain(|x| !(x.session_id == session_id && x.node.is_empty()));
             if let Err(e2) = state
                 .backend
                 .write_workflow_explainers(&project, &slug, &fresh)
@@ -2212,16 +2255,302 @@ pub(crate) fn end_workflow_explainer(
     project: String,
     slug: String,
     target: ReviewTarget,
+    node: Option<String>,
 ) -> Result<(), String> {
+    let node = node.unwrap_or_default();
     let mut file = state
         .backend
         .load_workflow_explainers(&project, &slug)
         .map_err(e2s)?;
-    file.explainers.retain(|e| e.target != target);
+    file.explainers
+        .retain(|e| !(e.target == target && e.node == node));
     state
         .backend
         .write_workflow_explainers(&project, &slug, &file)
         .map_err(e2s)
+}
+
+// ── Drill-down explanations ─────────────────────────────────────────────
+
+/// Every level of one explanation tree, with what is expanded, stale and
+/// diveable derived. See `application::explain_tree`.
+#[tauri::command]
+pub(crate) fn get_workflow_explain_tree(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    target: ReviewTarget,
+) -> Result<Vec<clash::domain::workflow::ExplainLevel>, String> {
+    let raw = clash::infrastructure::fs::workflows::read_explain_levels(
+        &state.backend.workflows_dir(),
+        &project,
+        &slug,
+        target,
+    )
+    .map_err(e2s)?;
+    Ok(clash::application::explain_tree::build_tree(&raw))
+}
+
+/// One level's markdown or HTML (`form` = `md` | `html`); `node` empty is the
+/// overview.
+#[tauri::command]
+pub(crate) fn get_workflow_explain_node(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    target: ReviewTarget,
+    node: String,
+    form: String,
+) -> Result<String, String> {
+    clash::infrastructure::fs::workflows::read_explain_node_doc(
+        &state.backend.workflows_dir(),
+        &project,
+        &slug,
+        target,
+        &node,
+        &form,
+    )
+    .map_err(e2s)
+}
+
+/// How a dive was started: queued into a session that already holds the
+/// code (`warm`), or a fresh one.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DiveStart {
+    session_id: String,
+    warm: bool,
+}
+
+/// The live session that drew `target`'s overview and is idle now — the
+/// warm path for a dive. An explainer's is its finished top-level record; a
+/// drift round's is the reviewer session once it has handed the item back.
+fn warm_dive_session(
+    meta: &clash::domain::workflow::WorkflowMeta,
+    target: ReviewTarget,
+    states: &[clash::domain::workflow::ExplainerState],
+    live: &HashSet<String>,
+) -> Option<String> {
+    let sid = if target == ReviewTarget::Drift {
+        let review = meta.review.as_ref()?;
+        if review.target != ReviewTarget::Drift || meta.status == WorkflowStatus::Reviewing {
+            return None;
+        }
+        meta.session_id.clone()?
+    } else {
+        let top = states
+            .iter()
+            .find(|e| e.target == target && e.node.is_empty() && e.finished)?;
+        top.session_id.clone()
+    };
+    (!sid.is_empty() && live.contains(&sid)).then_some(sid)
+}
+
+/// Explain one more level of an explanation: the part `node` of `target`'s
+/// tree. Writes only that part's three files and appends no round, so it
+/// never touches the item's status or its other agents.
+///
+/// The follow-up goes into the explainer session that drew the overview when
+/// it is still alive and idle — it has already read the code, which is the
+/// whole cost of a dive — and into a fresh session otherwise.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub(crate) async fn start_workflow_dive(
+    app: tauri::AppHandle,
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    target: ReviewTarget,
+    node: String,
+    focus: Option<String>,
+    agent: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<DiveStart, String> {
+    let node = node.trim().to_string();
+    let key = item_key(&project, &slug);
+    let _claim = claim_launch_key(&state, format!("{}#{}#{}", key, target, node))?;
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    if meta.repo_path.trim().is_empty() {
+        return Err("This item has no repository path — set repoPath in meta.json".to_string());
+    }
+    // A drift dive reads the plan and the change: settled like a diff's.
+    let artifact = if target == ReviewTarget::Drift {
+        ReviewTarget::ExplainDiff
+    } else {
+        target
+    };
+    if !meta.status.can_explain(
+        artifact,
+        &meta.phase,
+        meta.review.as_ref().map(|r| r.return_status),
+    ) {
+        return Err(format!(
+            "What this explains is being rewritten right now ('{}') — dive once it settles",
+            meta.status
+        ));
+    }
+    let root = state.backend.workflows_dir();
+    let raw =
+        clash::infrastructure::fs::workflows::read_explain_levels(&root, &project, &slug, target)
+            .map_err(e2s)?;
+    clash::application::explain_tree::can_dive(
+        target,
+        &node,
+        &clash::application::explain_tree::build_tree(&raw),
+    )?;
+
+    let report = state
+        .backend
+        .read_workflow_doc(
+            &project,
+            &slug,
+            clash::infrastructure::fs::workflows::AGENT_REVIEW_FILE,
+        )
+        .unwrap_or_default();
+    let mut file = state
+        .backend
+        .load_workflow_explainers(&project, &slug)
+        .map_err(e2s)?;
+    let live = live_session_ids(&state);
+    let now = now_ms();
+    let states = clash::application::workflow::explainer_states(
+        &file,
+        &clash::application::workflow::all_agent_reviews(&report),
+        &[(target, raw)],
+    );
+    if states
+        .iter()
+        .any(|e| e.target == target && e.node == node && explainer_running(e, &live, now))
+    {
+        return Err(format!(
+            "{}{}#{}#{} — this part is already being explained",
+            ALREADY_LAUNCHING, key, target, node
+        ));
+    }
+    // The overview round itself may be writing the critical parts' levels.
+    if target != ReviewTarget::Drift
+        && states
+            .iter()
+            .any(|e| e.target == target && e.node.is_empty() && explainer_running(e, &live, now))
+    {
+        return Err(format!(
+            "{}{}#{} — the overview is still being drawn; dive once it lands",
+            ALREADY_LAUNCHING, key, target
+        ));
+    }
+
+    let item_dir = root
+        .join(&project)
+        .join(&slug)
+        .to_string_lossy()
+        .into_owned();
+    let cfg = state.config.get();
+    let delegation =
+        cfg.workflow_delegation(clash::domain::entities::AgentKind::parse(&meta.agent));
+    let focus = focus.map(|f| f.trim().to_string()).unwrap_or_default();
+    let prompt = clash::application::workflow::build_dive_prompt(
+        &item_dir,
+        target,
+        &node,
+        &focus,
+        meta.mode,
+        &delegation,
+    );
+    let iteration = meta.iteration;
+    let record = |session_id: &str| clash::domain::workflow::WorkflowExplainer {
+        target,
+        session_id: session_id.to_string(),
+        started_at: now,
+        iteration,
+        node: node.clone(),
+        ..Default::default()
+    };
+
+    if let Some(sid) = warm_dive_session(&meta, target, &states, &live) {
+        clash::application::workflow::record_explainer(&mut file, record(&sid));
+        state
+            .backend
+            .write_workflow_explainers(&project, &slug, &file)
+            .map_err(e2s)?;
+        let queued = state.prompt_queue.lock().unwrap().enqueue(&sid, &prompt);
+        if queued.is_ok() {
+            tracing::info!(
+                "explain dive {}#{}#{} queued into {}",
+                key,
+                target,
+                node,
+                sid
+            );
+            return Ok(DiveStart {
+                session_id: sid,
+                warm: true,
+            });
+        }
+        // A full queue falls through to a fresh session.
+        file.explainers
+            .retain(|e| !(e.target == target && e.node == node));
+    }
+
+    launch_agent(&state, agent.as_deref(), &mut meta)?;
+    let cwd = meta
+        .worktree
+        .clone()
+        .filter(|w| !w.is_empty())
+        .unwrap_or_else(|| meta.repo_path.clone());
+    let session_id = uuid::Uuid::now_v7().to_string();
+    crate::launch_stage(&app, &key, "record", None);
+    clash::application::workflow::record_explainer(&mut file, record(&session_id));
+    state
+        .backend
+        .write_workflow_explainers(&project, &slug, &file)
+        .map_err(e2s)?;
+    crate::launch_stage(&app, &key, "spawn", None);
+    let spawned = spawn_item_session(
+        &state,
+        ItemSessionSpawn {
+            project: &project,
+            slug: &slug,
+            session_id: &session_id,
+            name: &clash::application::workflow::workflow_session_name(
+                &meta,
+                &slug,
+                &format!("explain part {}", node),
+            ),
+            meta: &meta,
+            cwd: &cwd,
+            cols,
+            rows,
+        },
+        |_| prompt.clone(),
+    )
+    .await;
+    if let Err(e) = spawned {
+        if let Ok(mut fresh) = state.backend.load_workflow_explainers(&project, &slug) {
+            fresh.explainers.retain(|x| x.session_id != session_id);
+            if let Err(e2) = state
+                .backend
+                .write_workflow_explainers(&project, &slug, &fresh)
+            {
+                tracing::warn!("dive rollback failed for {}/{}: {}", project, slug, e2);
+            }
+        }
+        return Err(e);
+    }
+    tracing::info!(
+        "explain dive {}#{}#{} spawned as {}",
+        key,
+        target,
+        node,
+        session_id
+    );
+    Ok(DiveStart {
+        session_id,
+        warm: false,
+    })
 }
 
 /// True when `plan.md` has something in it — a plan review with no plan would
@@ -3557,6 +3886,8 @@ async fn run_step(
                 .load_workflow_explainers(project, slug)
                 .unwrap_or_default(),
             &rounds,
+            // A run's passes are top-level rounds; dives never join one.
+            &[],
         );
         let applied = wr::applied_keys(&meta);
         let (item_claimed, explainers_claimed) = {
@@ -3648,6 +3979,7 @@ async fn run_step(
                     pr_urls: Some(pass.pr_urls.clone()),
                     auto_apply: Some(batch.auto_apply),
                     focus: Some(pass.focus.clone()),
+                    detail: pass.detail,
                     agent: Some(batch.agent.clone()).filter(|a| !a.is_empty()),
                     cols,
                     rows,

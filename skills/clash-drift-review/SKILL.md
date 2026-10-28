@@ -304,10 +304,11 @@ No code edits, no commits, no pushes — not even the trivial fixes
 would be reporting on its own work, and the human would lose the one document
 that says what was agreed versus what arrived.
 
-Your writable surface is exactly four files: **`drift.md`**, **`drift.html`**
-(write/overwrite — living documents, regenerated per round), **`annotations.json`**
+Your writable surface is exactly five files: **`drift.md`**, **`drift.html`**,
+**`drift.json`** (write/overwrite — living documents, regenerated per round), **`annotations.json`**
 (append) and **`agent-review.md`** (append). You never write `plan.md`,
-`review.md`, `explain-*.*`, `history/`, `iteration` or `reviewRound`. The only
+`review.md`, `explain-*.*`, the `drift/` directory (dives into the report are
+the explainer's), `history/`, `iteration` or `reviewRound`. The only
 status you may write is the prompt's `Return to:` value, as your final act.
 
 ## The written document — `drift.md`
@@ -429,6 +430,35 @@ launched to do for them. One map with every node badged is the whole point.
 Write `drift.md` first — it is the thinking — then the page, which is its
 summary. A page that disagrees with the document is worse than no page.
 
+Wrap each map box in a link to its spine number — `<a href="#node-3">…</a>` —
+so a click on the drawing opens that area one level deeper.
+
+## The index — `drift.json`
+
+The report is the top of a tree a reader can zoom into: clicking an area asks
+the explainer (`clash-explain`, dive mode) for that area's own level, which
+explains the divergence without re-grading it. The tree needs the overview's
+index, which you write after `drift.html`:
+
+```json
+{
+  "title": "Plan vs changes",
+  "basis": { "iteration": 2, "head": "<git rev-parse HEAD>" },
+  "nodes": [
+    { "id": "3", "title": "Retry wrapper", "summary": "DIFFERENT · ISSUE — one line",
+      "critical": true, "why": "the plan's backoff cap is missing",
+      "files": ["src/http/retry.rs:40"], "isNew": false, "leaf": false }
+  ],
+  "edges": [ { "from": "1", "to": "3", "label": "" } ]
+}
+```
+
+One node per spine area, numbered as in `drift.md` and on the map. `critical`
+is `true` exactly for the areas holding an ISSUE, and `why` names it. `leaf:
+true` for an area with nothing to explain beyond its row (as planned, no
+divergence). The same shape as the explainer's index; see `clash-explain` →
+*The tree* for the full contract.
+
 ## Publish
 
 - **`local`** — the drift stays in the item. Nothing leaves the machine.
@@ -508,7 +538,8 @@ apply question, with your pick first.
 
 ## Finish — in this order, every run
 
-1. Write/overwrite **`drift.md`** and **`drift.html`**. Both files, every run.
+1. Write/overwrite **`drift.md`**, **`drift.html`** and **`drift.json`**. All
+   three, every run.
 2. Append your ISSUE annotations to **`annotations.json`** (read-modify-write).
 3. **Append** your round to `agent-review.md`. Never rewrite earlier rounds.
    Append it in one shell append (`cat >> agent-review.md <<'EOF'` … `EOF`),

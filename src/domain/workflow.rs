@@ -527,6 +527,50 @@ impl std::fmt::Display for ReviewDepth {
     }
 }
 
+/// How much of an explanation's tree a top-level explain round writes up
+/// front — the cost knob. Every level below what it writes stays a *dive*,
+/// written only when someone asks for it. See `docs/workflows.md` →
+/// *Drill-down explanations*.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExplainDetail {
+    /// The overview and its index only; every part is a dive.
+    Overview,
+    /// The overview, plus the inside of the parts it flags critical.
+    #[default]
+    Critical,
+    /// The overview, plus the inside of every part that has one.
+    Full,
+    #[serde(other)]
+    Unknown,
+}
+
+impl ExplainDetail {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Overview => "overview",
+            Self::Critical => "critical",
+            Self::Full => "full",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// A setting value off disk; anything unrecognized is the default.
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "overview" => Self::Overview,
+            "full" => Self::Full,
+            _ => Self::Critical,
+        }
+    }
+}
+
+impl std::fmt::Display for ExplainDetail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// What the round does with its findings beyond writing them into the item.
 /// Chosen per round, because the answer genuinely changes over the life of an
 /// item: early rounds stay local, a round before handing the PR to reviewers
@@ -631,6 +675,10 @@ pub struct WorkflowReview {
     /// whole artifact, which is the common case.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub focus: String,
+    /// How much of the explanation tree an explain round writes up front.
+    /// Read only by explainers; every other round ignores it.
+    #[serde(default)]
+    pub detail: ExplainDetail,
     #[serde(default)]
     pub started_at: i64,
     #[serde(flatten)]
@@ -660,12 +708,17 @@ pub struct WorkflowExplainer {
     /// written before the field existed.
     #[serde(default)]
     pub iteration: u32,
+    /// The node a **dive** explains (`3`, `3.2`, `3.2.1`); empty for the
+    /// top-level round. A dive writes only that node's files and appends no
+    /// round, so it is finished once its `<node>.json` lands.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub node: String,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
 
-/// Shape of `explainers.json`: at most one record per explainer target (a
-/// launch replaces that target's previous record).
+/// Shape of `explainers.json`: at most one record per explainer target and
+/// node (a launch replaces that pair's previous record).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExplainersFile {
@@ -685,7 +738,11 @@ pub struct ExplainerState {
     pub started_at: i64,
     /// See [`WorkflowExplainer::iteration`].
     pub iteration: u32,
-    /// Its round entry is in `agent-review.md`.
+    /// See [`WorkflowExplainer::node`]; empty for the top-level round.
+    #[serde(default)]
+    pub node: String,
+    /// Its round entry is in `agent-review.md` — or, for a dive, its node's
+    /// index was written after it launched.
     pub finished: bool,
     /// Not finished and its session is alive (or still within the launch
     /// grace). Computed by the GUI layer against live sessions, like
@@ -741,6 +798,10 @@ pub struct RunPass {
     pub pr_urls: Vec<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub focus: String,
+    /// An explainer pass's detail; absent means the `workflows.explain_detail`
+    /// setting at launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<ExplainDetail>,
     #[serde(default)]
     pub state: PassState,
     /// The round number it runs as — known once it is running.
@@ -1260,6 +1321,110 @@ impl ExplainForms {
     pub fn any(&self) -> bool {
         self.md || self.html
     }
+}
+
+/// What one explanation level was drawn from: the plan iteration and, for a
+/// change, the head commit. A level drawn from a different basis than its
+/// parent describes something else.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplainBasis {
+    #[serde(default)]
+    pub iteration: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub head: String,
+}
+
+/// One part of an explanation level, as its agent wrote it in the level's
+/// `.json` index.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplainNode {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub summary: String,
+    /// Where a reader's attention pays — not a grade.
+    #[serde(default)]
+    pub critical: bool,
+    /// Why it is critical, in one line.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub why: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub is_new: bool,
+    /// Nothing below this part is worth a level of its own.
+    #[serde(default)]
+    pub leaf: bool,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// One relationship between two parts of a level.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplainEdge {
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub to: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+}
+
+/// Shape of a level's `.json` index — the overview's `explain-<target>.json`
+/// or a node's `explain-<target>/<id>.json`. Lenient like every agent-written
+/// file.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplainIndex {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub basis: ExplainBasis,
+    #[serde(default)]
+    pub nodes: Vec<ExplainNode>,
+    #[serde(default)]
+    pub edges: Vec<ExplainEdge>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// A part of a level as the GUI shows it: what the agent wrote plus what is
+/// derived from the files on disk.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplainNodeView {
+    #[serde(flatten)]
+    pub node: ExplainNode,
+    /// Its own level exists.
+    pub expanded: bool,
+    /// A level can be written for it: a well-formed id within the depth cap,
+    /// not a leaf.
+    pub diveable: bool,
+    /// Its level exists but was drawn before this one, or from another basis.
+    pub stale: bool,
+}
+
+/// One level of an explanation tree. `node` is empty for the overview.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplainLevel {
+    pub node: String,
+    pub title: String,
+    pub basis: ExplainBasis,
+    /// Epoch ms the level's index was written.
+    pub written_at: i64,
+    pub md: bool,
+    pub html: bool,
+    /// Drawn before its parent level, from another basis, or for a part its
+    /// parent no longer has.
+    pub stale: bool,
+    pub nodes: Vec<ExplainNodeView>,
+    pub edges: Vec<ExplainEdge>,
 }
 
 /// A workflow item as listed to the frontends — a runtime DTO like

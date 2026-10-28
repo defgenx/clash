@@ -409,6 +409,21 @@ test("an explainer runs alongside other agents, gated only on its artifact", () 
   assert.ok(!canExplain(at("diff-review"), "drift"));
 });
 
+test("a dive is not the overview's explainer, and is announced as its own part", () => {
+  const item = (explainers) => ({ project: "p", slug: "a", meta: {}, explainers });
+  // A dive in flight never blocks (or stands in for) the overview's button.
+  const dive = { target: "explain-diff", node: "3", sessionId: "s1", running: true };
+  assert.equal(runningExplainer(item([dive]), "explain-diff"), null);
+  // A warm dive shares the overview's session: both finish separately.
+  const top = { target: "explain-diff", node: "", sessionId: "s1", round: 1 };
+  const prev = [item([{ ...top, finished: true }, dive])];
+  const next = [item([{ ...top, finished: true }, { ...dive, running: false, finished: true }])];
+  assert.deepEqual(
+    explainersFinished(prev, next).map((d) => [d.target, d.node]),
+    [["explain-diff", "3"]]
+  );
+});
+
 test("a running explainer is found by target and announced once it finishes", () => {
   const e = (over) => ({ target: "explain-plan", round: 1, sessionId: "s1", ...over });
   const item = (explainers) => ({ project: "p", slug: "a", meta: {}, explainers });

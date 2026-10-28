@@ -996,9 +996,17 @@ pub fn agent_alive(
 
 /// Pure: the listing view of an item's recorded explainers. `running` is
 /// left false — only the GUI layer knows which sessions are alive.
+///
+/// `dives` is each target's tree as read off disk: a dive appends no round,
+/// so it is finished once its node's index lands (see
+/// [`crate::application::explain_tree::dive_finished`]).
 pub fn explainer_states(
     file: &crate::domain::workflow::ExplainersFile,
     rounds: &[AgentReviewSummary],
+    dives: &[(
+        crate::domain::workflow::ReviewTarget,
+        Vec<crate::application::explain_tree::RawLevel>,
+    )],
 ) -> Vec<crate::domain::workflow::ExplainerState> {
     file.explainers
         .iter()
@@ -1008,22 +1016,35 @@ pub fn explainer_states(
             session_id: e.session_id.clone(),
             started_at: e.started_at,
             iteration: e.iteration,
-            finished: rounds
-                .iter()
-                .any(|r| r.round == e.round && r.target == e.target.as_str()),
+            node: e.node.clone(),
+            finished: if e.node.is_empty() {
+                rounds
+                    .iter()
+                    .any(|r| r.round == e.round && r.target == e.target.as_str())
+            } else {
+                dives.iter().any(|(t, raw)| {
+                    *t == e.target
+                        && crate::application::explain_tree::dive_finished(
+                            raw,
+                            &e.node,
+                            e.started_at,
+                        )
+                })
+            },
             running: false,
         })
         .collect()
 }
 
-/// Pure: record a launched explainer, replacing that target's previous
-/// record — one explainer per target is the most that can be meaningfully
-/// in flight, since both would overwrite the same document pair.
+/// Pure: record a launched explainer, replacing that target and node's
+/// previous record — one explainer per level is the most that can be
+/// meaningfully in flight, since both would overwrite the same files.
 pub fn record_explainer(
     file: &mut crate::domain::workflow::ExplainersFile,
     explainer: crate::domain::workflow::WorkflowExplainer,
 ) {
-    file.explainers.retain(|e| e.target != explainer.target);
+    file.explainers
+        .retain(|e| !(e.target == explainer.target && e.node == explainer.node));
     file.explainers.push(explainer);
 }
 
@@ -1382,9 +1403,15 @@ pub fn build_review_prompt(
     } else {
         format!(" Return to: {}.", review.return_status)
     };
+    // How much of the tree to write up front — the explainer's cost knob.
+    let detail = if review.target.explains() {
+        format!(" Detail: {}.", review.detail)
+    } else {
+        String::new()
+    };
     format!(
         "Use the {} skill. Workflow item directory: {}. \
-         Target: {}. Depth: {}. Publish: {}. Round: {}.{} Mode: {}.{}{}{}{}{}",
+         Target: {}. Depth: {}. Publish: {}. Round: {}.{}{} Mode: {}.{}{}{}{}{}",
         engine,
         item_dir,
         review.target,
@@ -1392,12 +1419,46 @@ pub fn build_review_prompt(
         review.publish,
         review.round.max(1),
         return_to,
+        detail,
         mode,
         delegation.clause(),
         pr,
         focus,
         interactive,
         auto_apply
+    )
+}
+
+/// Pure: the kickoff of a **dive** — one more level of an explanation tree,
+/// written by the explainer for one part (`Node:`). `target` is the tree's
+/// (`explain-diff`, `explain-plan` or `drift`): a drift dive still runs the
+/// explainer, because it explains a divergence and never re-grades it.
+///
+/// The same text serves a fresh session and a follow-up queued into the
+/// explainer session that drew the overview, which already holds the code
+/// in its context — that reuse is the point of the warm path.
+pub fn build_dive_prompt(
+    item_dir: &str,
+    target: crate::domain::workflow::ReviewTarget,
+    node: &str,
+    focus: &str,
+    mode: WorkflowMode,
+    delegation: &Delegation,
+) -> String {
+    let focus = if focus.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" Focus: {}.", focus.trim())
+    };
+    format!(
+        "Use the clash-explain skill. Workflow item directory: {}. \
+         Target: {}. Node: {}. Depth: deep. Publish: local. Mode: {}.{} Interactive: no.{}",
+        item_dir,
+        target,
+        node,
+        mode,
+        delegation.clause(),
+        focus
     )
 }
 
@@ -1509,7 +1570,7 @@ mod tests {
 
 **Verdict:** legacy spelling of explain-diff
 ";
-        let states = explainer_states(&file, &all_agent_reviews(md));
+        let states = explainer_states(&file, &all_agent_reviews(md), &[]);
         let plan = states
             .iter()
             .find(|s| s.target == ReviewTarget::ExplainPlan)
@@ -1521,6 +1582,84 @@ mod tests {
         assert!(!plan.finished && plan.round == 2);
         assert!(diff.finished);
         assert!(states.iter().all(|s| !s.running));
+    }
+
+    #[test]
+    fn a_dive_is_its_own_record_finished_by_its_level() {
+        use crate::application::explain_tree::RawLevel;
+        use crate::domain::workflow::{ExplainersFile, ReviewTarget, WorkflowExplainer};
+        let rec = |node: &str, at| WorkflowExplainer {
+            target: ReviewTarget::ExplainDiff,
+            round: 1,
+            session_id: "s".to_string(),
+            started_at: at,
+            node: node.to_string(),
+            ..Default::default()
+        };
+        let mut file = ExplainersFile::default();
+        record_explainer(&mut file, rec("", 1));
+        record_explainer(&mut file, rec("3", 50));
+        record_explainer(&mut file, rec("4", 50));
+        // A re-dive replaces only that node's record.
+        record_explainer(&mut file, rec("3", 60));
+        assert_eq!(file.explainers.len(), 3);
+        let dives = vec![(
+            ReviewTarget::ExplainDiff,
+            vec![RawLevel {
+                node: "3".to_string(),
+                written_at: 70,
+                ..Default::default()
+            }],
+        )];
+        let states = explainer_states(&file, &[], &dives);
+        let by = |n: &str| states.iter().find(|s| s.node == n).unwrap();
+        assert!(by("3").finished);
+        assert!(!by("4").finished);
+        // The top-level round still needs its round entry.
+        assert!(!by("").finished);
+    }
+
+    #[test]
+    fn an_explain_round_states_its_detail_and_a_dive_its_node() {
+        use crate::domain::workflow::{ExplainDetail, ReviewTarget, WorkflowReview};
+        let review = WorkflowReview {
+            target: ReviewTarget::ExplainDiff,
+            detail: ExplainDetail::Overview,
+            ..Default::default()
+        };
+        let p = build_review_prompt(
+            "/x/i",
+            &review,
+            WorkflowMode::ReviewOnly,
+            &Delegation::default(),
+        );
+        assert!(p.contains("Detail: overview."), "{p}");
+        // Judging rounds have no tree to size.
+        let p = build_review_prompt(
+            "/x/i",
+            &WorkflowReview {
+                target: ReviewTarget::Diff,
+                ..review
+            },
+            WorkflowMode::Full,
+            &Delegation::default(),
+        );
+        assert!(!p.contains("Detail:"), "{p}");
+        // The default is the critical parts only.
+        assert_eq!(WorkflowReview::default().detail, ExplainDetail::Critical);
+
+        let p = build_dive_prompt(
+            "/x/i",
+            ReviewTarget::Drift,
+            "3.2",
+            " the retry ",
+            WorkflowMode::Full,
+            &Delegation::default(),
+        );
+        assert!(p.starts_with("Use the clash-explain skill."), "{p}");
+        assert!(p.contains("Target: drift. Node: 3.2."), "{p}");
+        assert!(p.contains("Focus: the retry."), "{p}");
+        assert!(!p.contains("Round:") && !p.contains("Return to:"), "{p}");
     }
 
     #[test]

@@ -677,6 +677,32 @@ The tab opens on the drawing. **◫ Diagram / ☰ Write-up** switches form, and
 alongside the item's other agents without blocking it, and can be told what to
 focus on.
 
+**Zoom into any part.** An explanation is a tree, not one page: the overview
+lists its parts, and each part can have a level of its own — what is inside it,
+then the mechanism, then the annotated code (three levels at most). The strip
+above the document is a breadcrumb back to the overview plus one chip per part:
+- **▸** opens a part that is already explained;
+- **⊕** explains it one level deeper (an agent round you pay for only when you
+  click);
+- **●** marks a part the explainer flagged critical, with the reason on hover;
+- **⟳** marks a level drawn before the one above it was redrawn.
+
+Clicking a box in the drawing, or **⊕ explain deeper** next to a section of the
+write-up, does the same. A dive goes into the session that drew the overview
+when it is still open, because that session already has the code in context.
+
+**How much is written up front** is a choice per launch, defaulting to
+Settings → Workflows → *Explanation detail*:
+- **Critical parts**: the overview plus the inside of what it flags critical.
+  This is the default.
+- **Overview only**: the cheapest.
+- **Every part**: costs the most.
+
+**◫ Explain a PR…** (the ◫ button on the WORKFLOWS header, or the PR dashboard)
+explains anyone's pull request. Paste the URL, and clash finds your local
+checkout of that repository, opens a review-only item for the PR and starts the
+explanation. A review or self-review of the same PR is then one click away.
+
 ### Comparing plan vs changes
 
 **⇄ Compare plan vs changes** reads `plan.md` and the diff together, to answer

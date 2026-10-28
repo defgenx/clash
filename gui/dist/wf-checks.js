@@ -131,7 +131,10 @@
       case "explain-diff": {
         const focus = String(opts.focus || "").trim();
         // A focused explanation digs deeper into what it was pointed at.
-        return { target: id, depth: focus ? "deep" : "standard", publish: "local", prUrls: [], focus };
+        // `detail` absent = the backend applies the `workflows.explain_detail` setting.
+        const spec = { target: id, depth: focus ? "deep" : "standard", publish: "local", prUrls: [], focus };
+        if (opts.detail) spec.detail = opts.detail;
+        return spec;
       }
       case "respond":
         return { target: own, depth: "standard", publish: "respond-pr-comments", prUrls: urls, focus: "" };

@@ -1,6 +1,6 @@
 ---
 name: clash-explain
-description: Explain a clash Workflow item in depth — one of two artifacts, in two forms. `Target: explain-plan` reads plan.md and the real code and explains what the implementation is *going to do*, before any of it exists (explain-plan.md + explain-plan.html); `Target: explain-diff` reads the diff and explains what the change *did* (explain-diff.md + explain-diff.html). Each round writes a written walk-through with mermaid diagrams AND a self-contained HTML page — boxes, arrows, repos, features — that gives a graphical high-level overview. Judges nothing, changes nothing but its own two documents, and runs alongside the item's other agents without touching its status. Triggers on "Use the clash-explain skill", "Target: explain-diff" or "Target: explain-plan" in a clash kickoff prompt, or a request to explain what a PR, diff or plan does.
+description: Explain a clash Workflow item in depth — one of two artifacts, in two forms, as a tree you can zoom into. `Target: explain-plan` reads plan.md and the real code and explains what the implementation is *going to do*, before any of it exists (explain-plan.md + explain-plan.html); `Target: explain-diff` reads the diff and explains what the change *did* (explain-diff.md + explain-diff.html). Each round writes a written walk-through with mermaid diagrams AND a self-contained HTML page — boxes, arrows, repos, features — that gives a graphical high-level overview, plus a JSON index of its parts so a reader can open any part one level deeper (`Node:` dives, up to three levels). Judges nothing, changes nothing but its own two documents, and runs alongside the item's other agents without touching its status. Triggers on "Use the clash-explain skill", "Target: explain-diff" or "Target: explain-plan" in a clash kickoff prompt, or a request to explain what a PR, diff or plan does.
 ---
 
 # clash-explain — one explainer round per run
@@ -58,8 +58,14 @@ The kickoff prompt gives you:
 - **Focus** — optional: what the human wants this pass to concentrate on, in
   their words. Lead with it — see "When the kickoff carries `Focus:`".
 - **Target** — `explain-diff` or `explain-plan`, and it decides which direction you
-  are explaining (see below). Anything else belongs to a reviewer; if you get
-  one, stop and say so
+  are explaining (see below). `drift` is accepted **only with `Node:`** — a dive
+  into one divergence of the drift report (see "Dive mode"). Anything else
+  belongs to a reviewer; if you get one, stop and say so
+- **Detail** — `overview` | `critical` | `full`: how much of the tree a
+  top-level round writes up front. See "The tree".
+- **Node** — present only on a **dive**: the one part (`3`, `3.2`, `3.2.1`) this
+  run explains one level deeper. A dive has no `Round:` and appends no round
+  entry. See "Dive mode".
 - **Depth** — advisory; err toward reading enough real code that the
   explanation is grounded, not paraphrased from the diff
 - **Publish** — normally `local`; this skill never posts to the PR itself
@@ -83,8 +89,9 @@ full file contract is in the clash repo at `docs/workflows.md`.
 - **The field is absent → ask.** One `AskUserQuestion`, first thing:
   1. **Autonomous** (recommended) — read everything, write the whole document.
   2. **Interactive** — propose the functional-part breakdown first and let the
-     human reorder it, merge parts, or name the ones that deserve the deepest
-     treatment before you write.
+     human reorder it, merge parts, and confirm the critical set — the parts
+     whose inside you write up front under `Detail: critical` — before you
+     write.
 
 Blocking on a question is safe: nothing waits on you — the item's other work
 carries on — and clash can always stop tracking the round.
@@ -182,10 +189,14 @@ How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
 - **Change nothing**: no code edits, no commits, no pushes. You also never
   write `plan.md`, `review.md`, `annotations.json`, `history/`, `iteration`
   or `reviewRound`.
-- Your writable surface is exactly two files: **the target's own document**
-  (the target's `explain-*.md` and `explain-*.html` — write/overwrite; each is a living
-  document, regenerated per round, not an append log) and **`agent-review.md`**
-  (append your round entry — see Finish). Never write the *other* target's
+- Your writable surface is **the target's own tree** and **`agent-review.md`**:
+  - a top-level round writes the overview (`explain-<target>.md`, `.html`,
+    `.json`), the levels its `Detail:` asks for under `explain-<target>/`, and
+    appends its round entry to `agent-review.md` (see Finish);
+  - a dive writes **only** its node's three files
+    (`<tree>/<node>.md`, `.html`, `.json`) and appends nothing.
+
+  Every file is a living document, overwritten per round, not an append log. Never write the *other* target's
   document: an `explain-plan` round that overwrote `explain-diff.*` would
   erase what the change actually did, and an `explain-diff` round that overwrote
   `explain-plan.*` would erase the picture the human read before authorizing
@@ -198,6 +209,112 @@ How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
   <<'EOF'` … `EOF`), never by rewriting the file: a reviewer running beside
   you may be appending its own round at the same moment, and a whole-file
   write from an older read would erase it.
+
+## The tree — levels you can zoom into
+
+An explanation is not one page. It is an **overview plus a level per part**,
+so a reader can open the part they care about instead of paying for the whole
+change at full depth. The model is the C4 one: each zoom level has its own
+altitude, and "deeper" means a *different* altitude, never the parent redrawn
+bigger.
+
+| Level | Id | Shows | Size |
+|---|---|---|---|
+| Overview | — | the parts of the change, grouped by repo/subsystem (the documents below) | 5–12 parts |
+| L1 — a part | `3` | inside one part: its components, functions and types, the data/control flow between them, and the contract at its boundary with sibling parts | 3–8 parts |
+| L2 — a component | `3.2` | the mechanism: key functions, state transitions, invariants, edge cases, with `file:line` | 3–6 parts |
+| L3 — code | `3.2.1` | an annotated walk-through of one function or hunk, with short excerpts. A leaf: lists no parts | — |
+
+Files, for `Target: explain-diff` (`explain-plan` and `drift` are the same with
+their own stem):
+
+```
+explain-diff.md / .html / .json     the overview
+explain-diff/3.md / .html / .json   part 3, one level in
+explain-diff/3.2.md / …             part 3.2
+explain-diff/3.2.1.md / …           part 3.2.1 (a leaf)
+```
+
+**Every level writes its `.json` index**, the overview included — it is what
+clash builds the breadcrumb, the parts strip and the dive buttons from:
+
+```json
+{
+  "title": "Retry wrapper",
+  "basis": { "iteration": 2, "head": "<git rev-parse HEAD>" },
+  "nodes": [
+    { "id": "3.1", "title": "Backoff policy", "summary": "one line",
+      "critical": true, "why": "every outbound call goes through it",
+      "files": ["src/http/retry.rs:40"], "isNew": true, "leaf": false }
+  ],
+  "edges": [ { "from": "3.1", "to": "3.2", "label": "attempt count" } ]
+}
+```
+
+- **Ids are the numbers the documents already use.** A level's parts are its
+  own id plus one segment: the overview lists `1`..`n`, part `3` lists `3.1`..,
+  never deeper than three segments. The overview's numbered nodes *are* its
+  parts — the graph, the `### 3.` headings and the index agree.
+- **`basis`** — `iteration` from `meta.json`, `head` from `git rev-parse HEAD`
+  (omit `head` for a plan explanation). clash marks a level drawn from another
+  basis, or before its parent was redrawn, as *out of date*.
+- **`critical`** marks where a reader's attention pays — blast radius, a
+  subtle mechanism, a cross-repo contract, a migration, concurrency, a
+  security edge. It is not a grade, and `why` says it in one line. At most
+  **3** critical parts in the overview and **2** per level below it.
+- **`leaf: true`** on a part with nothing worth a level of its own (a rename,
+  a config line). Parts at the third level are leaves by definition.
+- **Write order:** a level's `.md` and `.html` first, its `.json` **last** —
+  for a dive the index landing is how clash knows you finished. A top-level
+  round writes the overview's index *before* the levels under it, so they
+  read as current.
+
+**`Detail:`** decides what a top-level round writes up front — the rest stays
+a dive someone pays for only by clicking it:
+
+- `overview` — the overview and its index only.
+- `critical` (the default) — plus the L1 level of each part flagged critical.
+- `full` — plus the L1 level of every part that is not a leaf.
+
+L2 and L3 are never written up front. Under `team` delegation, the L1 levels
+are good subagent units: one mapper per critical part.
+
+**In the HTML page**, wrap each drawn part in a link to its id so a click on
+the drawing opens it: `<a href="#node-3"><g>…</g></a>` in SVG, or
+`<a href="#node-3" class="box">…</a>` in HTML. That is a plain fragment link —
+the page still runs no script; clash follows the fragment from outside.
+
+## Dive mode — the kickoff carries `Node:`
+
+A dive explains **one part one level deeper**. Often it arrives as a
+follow-up in the session that drew the overview — you have already read the
+code, so do not re-read what you know; read only what the part needs.
+
+1. Read the parent level first: its `.json` (the part's title, summary,
+   files and its siblings) and its `.md`. The overview's parent is
+   `explain-<target>.md/.json`; part `3.2`'s parent is `explain-<target>/3.json`.
+2. Read the code under that part — deeper than the parent did. That is the
+   only reason the level exists.
+3. Write `explain-<target>/<node>.md`, then `.html`, then `.json`, at the
+   altitude the table gives for that depth. Its parts are `<node>.1`, `<node>.2`…
+   (none at the third level). Keep the parent's words for the part: the
+   breadcrumb uses them.
+4. **Append nothing to `agent-review.md`** and touch no other level — not the
+   parent, not a sibling. A dive is not a round.
+5. Final chat message: one sentence — what the part does, and how many parts
+   it lists. Then stop and wait: the next dive may be queued into this
+   session.
+
+The dive's `.md` follows the shape of the explain-diff document scaled to one
+part (what / where / how, a diagram when it earns its place, the parts as
+`### <id>. <title>` sections); its `.html` is one picture of that part. Honour
+`Focus:` the same way as a round: lead with it.
+
+**A drift dive** (`Target: drift` with `Node:`) explains one area of the drift
+report: what the plan said, what the code does, and the mechanism that makes
+them differ — in `drift/<node>.*`. You still judge nothing: the drift round's
+grades stand, and a dive writes no annotations and changes no grade. Read
+`drift.md`/`drift.json` for the parent level.
 
 ## The written document — `explain-plan.md` (`Target: explain-plan`)
 
@@ -407,10 +524,11 @@ Sketch of the shape (yours will differ — this is the altitude, not a template)
 
 ## Finish — in this order, every run
 
-1. Write/overwrite **the target's pair** — `explain-plan.md` +
-   `explain-plan.html` on `Target: explain-plan`, `explain-diff.md` +
-   `explain-diff.html` on `Target: explain-diff`. Both files, never the other
-   target's.
+1. Write/overwrite **the target's overview** — `explain-plan.md` +
+   `explain-plan.html` + `explain-plan.json` on `Target: explain-plan`,
+   `explain-diff.{md,html,json}` on `Target: explain-diff` — then the levels
+   `Detail:` asks for (see "The tree"). Never the other target's files. (A
+   dive follows "Dive mode" instead and skips step 2.)
 2. **Append** your round to `agent-review.md` — one shell append, never a
    rewrite (see Hard rules). This entry is also how clash learns you are
    done, so write it last and write it even when the round went badly. The

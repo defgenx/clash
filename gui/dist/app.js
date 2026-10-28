@@ -5551,9 +5551,12 @@ async function refreshWorkflows() {
   }
   // An explainer finishes without a status change — it ran alongside the
   // item's other agents — so there is no workflow-attention event to say so.
-  for (const { item, target } of explainersFinished(prev, state.workflows)) {
+  for (const { item, target, node } of explainersFinished(prev, state.workflows)) {
+    const what = target === "explain-plan" ? "plan" : target === "drift" ? "plan vs changes" : "changes";
     flashToast(
-      `${item.meta.title || item.slug}: ${target === "explain-plan" ? "plan" : "changes"} explanation ready`
+      node
+        ? `${item.meta.title || item.slug}: part ${node} of the ${what} explanation is ready`
+        : `${item.meta.title || item.slug}: ${what} explanation ready`
     );
   }
   renderWorkflows();
@@ -5795,10 +5798,11 @@ const repoBaseName = (p) => baseName(String(p || "").replace(/[\\/]+$/, ""));
 /// Pick the repo + project an item belongs to (from existing workflow projects
 /// and open sessions, browsed for, else typed in). Resolves to
 /// `{ project, repoPath }`, or null when cancelled. Shared by every entry mode.
-async function pickWorkflowRepo() {
-  // Candidate repos, deduped by path (two repos can share a basename —
-  // dedupe by name silently dropped one of them).
-  const candidates = new Map(); // repo path -> project name
+/// Repositories clash already knows about — every workflow item's repo, then
+/// every session's cwd — as path → project name, deduped by path (two repos
+/// can share a basename — dedupe by name silently dropped one of them).
+function wfRepoCandidates() {
+  const candidates = new Map();
   for (const w of state.workflows) {
     const dir = w.meta.repoPath || "";
     if (dir && !candidates.has(dir)) candidates.set(dir, w.project);
@@ -5808,6 +5812,11 @@ async function pickWorkflowRepo() {
     const name = repoBaseName(dir);
     if (dir && name && !candidates.has(dir)) candidates.set(dir, name);
   }
+  return candidates;
+}
+
+async function pickWorkflowRepo() {
+  const candidates = wfRepoCandidates();
   let project;
   let repoPath = "";
   if (candidates.size === 0) {
@@ -5962,6 +5971,63 @@ async function newReviewWorkflow({ project, repoPath }) {
   } catch (e) {
     uiAlert(wfGhHint(e) || `Could not start the review: ${e}`);
   }
+}
+
+/// ◫ Explain a PR… — a peer's pull request explained in one step: paste the
+/// URL, pick how much to open up front, and clash finds the local checkout
+/// whose origin is that repository, creates the review-only item and starts
+/// the explanation. The item is an ordinary review-only one, so a review or a
+/// self-review of the same PR is one click away afterwards.
+async function explainPrFlow() {
+  if (!state.wfOpen) await toggleWorkflows();
+  const url = ((await uiPrompt("Pull request to explain — paste its URL")) || "").trim();
+  if (!url) return;
+  const pr = parsePrUrl(url);
+  if (!pr) {
+    uiAlert(`Not a pull request URL: ${url}`);
+    return;
+  }
+  const setting = (await wfAgentSettings()).explainDetail || "critical";
+  const detail = await uiListChoice({
+    message: "How much should the explanation open up front?",
+    items: explainDetailChoices(setting),
+  });
+  if (detail === null) return;
+
+  const candidates = wfRepoCandidates();
+  let repo = null;
+  if (candidates.size) {
+    const origins = await invoke("repo_origin_slugs", { paths: [...candidates.keys()] }).catch(
+      () => []
+    );
+    const hit = matchRepoForPr(pr.repo, origins);
+    if (hit) repo = { project: candidates.get(hit.path), repoPath: hit.path };
+  }
+  if (!repo) {
+    flashToast(`Pick the local checkout of ${pr.repo}`);
+    repo = await pickWorkflowRepo();
+  }
+  if (!repo) return;
+
+  flashToast(`Checking out ${pr.repo}#${pr.number}…`);
+  let item;
+  try {
+    item = await invoke("create_workflow_review", {
+      project: repo.project,
+      repoPath: repo.repoPath,
+      pr: url,
+      branch: null,
+      title: null,
+    });
+  } catch (e) {
+    uiAlert(wfGhHint(e) || `Could not check the PR out: ${e}`);
+    return;
+  }
+  await refreshWorkflows();
+  // Open straight on the explanation it is about to receive.
+  wfTabState.set(wfKey(item.project, item.slug), { subView: "explainDiff", iteration: null });
+  openWorkflowTab(item);
+  await spawnWfExplainer(wfItem(item.project, item.slug) || item, null, "explain-diff", null, detail);
 }
 
 /// New-item flow: entry mode → repo/project → whatever that mode needs.
@@ -6260,6 +6326,13 @@ function renderWorkflowPrDashboard(el) {
   head.innerHTML = `<h4>PULL REQUESTS</h4><span class="dim">${rows.length} item${
     rows.length === 1 ? "" : "s"
   } across all projects</span>`;
+  // A peer's PR is not an item yet; this is how it becomes one.
+  const explain = document.createElement("button");
+  explain.className = "wf-prs-explain";
+  explain.textContent = "◫ Explain a PR…";
+  explain.title = "Paste any pull request URL — clash checks it out and explains what it does";
+  explain.onclick = () => explainPrFlow();
+  head.appendChild(explain);
   wrap.appendChild(head);
   if (!rows.length) {
     const empty = document.createElement("p");
@@ -7427,7 +7500,7 @@ async function wfPrRecovery(item, err, retry) {
 ///
 /// `focus` is what the round must settle, in the human's words — the plan
 /// explanation's "dive deeper into part 3".
-async function spawnWfExplainer(item, root, target, focus) {
+async function spawnWfExplainer(item, root, target, focus, detail = null) {
   const home = ws();
   // Same `agent` rule as `launchWfAgent`.
   const agent = await pickWfAgent(item, "explain");
@@ -7449,6 +7522,8 @@ async function spawnWfExplainer(item, root, target, focus) {
       prUrls: null,
       autoApply: false,
       focus,
+      // null = the `workflows.explain_detail` setting.
+      detail,
       agent,
       cols: 120,
       rows: 40,
@@ -7863,6 +7938,14 @@ async function wfAutopilot(project, slug) {
 /// `explainers.json` already records it, so there is nothing to resume.
 async function wfLaunchExplain(item, root, target) {
   const plan = target === "explain-plan";
+  // How much of the tree to write up front — the cost knob. The setting's
+  // value comes first; every part it leaves closed is a click away later.
+  const setting = (await wfAgentSettings()).explainDetail || "critical";
+  const detail = await uiListChoice({
+    message: "How much should this explanation open up front?",
+    items: explainDetailChoices(setting),
+  });
+  if (detail === null) return;
   // A focus is optional and per-run: "concentrate on the migration step"
   // beats re-reading a document that answered everything but that.
   const focus = await uiPrompt(
@@ -7875,7 +7958,7 @@ async function wfLaunchExplain(item, root, target) {
     ""
   );
   if (focus === null) return; // cancelled
-  await spawnWfExplainer(item, root, target, focus.trim() || null);
+  await spawnWfExplainer(item, root, target, focus.trim() || null, detail);
 }
 
 /// The ▾ menu: every check the stage allows, each launched on its own with
@@ -7916,6 +7999,7 @@ async function wfComposeChecks(item, { preselect = null } = {}) {
   const ctx = wfChecksCtx(item);
   const ids = availablePasses(ctx).filter(() => ctx.canReview);
   if (!ids.length) return;
+  const detailDefault = (await wfAgentSettings()).explainDetail || "critical";
   const step = wfNextStep(item, {
     available: new Set(),
     passes: new Set(ids),
@@ -8015,6 +8099,12 @@ async function wfComposeChecks(item, { preselect = null } = {}) {
           read.publish = () => publish.value;
         }
       } else if (id === "explain-plan" || id === "explain-diff") {
+        const detail = mkSelect(
+          explainDetailChoices(detailDefault).map((c) => [c.value, `${c.label} — ${c.detail}`]),
+          detailDefault
+        );
+        opts.appendChild(detail);
+        read.detail = () => detail.value;
         const focus = document.createElement("input");
         focus.type = "text";
         focus.placeholder = "Anything to concentrate on? (optional)";
@@ -10546,7 +10636,8 @@ const WF_DOC_PAIRS = {
 };
 
 /// Render one of the item's document pairs: the graphical page or the prose,
-/// with a toggle when both exist.
+/// with a toggle when both exist — at whichever level of its drill-down tree
+/// the tab is on (`ts.explainNodes[which]`, empty for the overview).
 ///
 /// The **HTML page** is the agent's own hand-drawn overview — boxes, arrows,
 /// the repos and features the work touches — so it is rendered in a sandboxed
@@ -10555,32 +10646,62 @@ const WF_DOC_PAIRS = {
 /// page runs (inline handlers and `<img onerror>` included), and same-origin so
 /// this side can measure the content and size the frame to it. Injecting the
 /// same markup with `innerHTML` would put generated content in the same DOM as
-/// the Tauri bridge.
+/// the Tauri bridge. The drill-down controls therefore live outside the frame
+/// (`renderWfExplainNav`); a part drawn as `<a href="#node-3">` is followed by
+/// watching the frame's fragment, which needs no script inside it.
 ///
 /// The **markdown** form goes through the normal renderer, so its mermaid
 /// fences render exactly like every other document's.
 async function renderWfExplainView(body, root, item, ts, which) {
   const { project, slug } = item;
-  const forms = wfExplainFormsFor(item, which) || {};
+  const pair = WF_DOC_PAIRS[which] || WF_DOC_PAIRS.diff;
+  const target = explainTreeTarget(which);
+
+  body.innerHTML = "<p class='hint'>loading…</p>";
+  // The tree is optional: an explanation written before drill-down existed
+  // has no index, and is simply the overview.
+  let tree = [];
+  try {
+    tree = (await invoke("get_workflow_explain_tree", { project, slug, target })) || [];
+  } catch (_) {
+    tree = [];
+  }
+  ts.explainNodes = ts.explainNodes || {};
+  let node = ts.explainNodes[which] || "";
+  let level = explainLevel(tree, node);
+  if (node && !level) {
+    node = "";
+    ts.explainNodes[which] = "";
+    level = explainLevel(tree, "");
+  }
   // Legacy single-file items report `md` with no `explain-*.md` on disk; the
   // backend reads the old name for the same doc, so the fallback is a name.
-  const pair = WF_DOC_PAIRS[which] || WF_DOC_PAIRS.diff;
-  const mdDoc = pair.md;
-  const legacy = pair.legacy;
-  const htmlDoc = pair.html;
+  const forms = node ? { md: level.md, html: level.html } : wfExplainFormsFor(item, which) || {};
+  const mdDoc = node ? `${target}/${node}.md` : pair.md;
+  const htmlDoc = node ? `${target}/${node}.html` : pair.html;
+  const legacy = node ? null : pair.legacy;
   // The picture is the headline when there is one — that is what it is for.
   const view = ts.explainView === "text" || !forms.html ? "text" : "graphic";
 
-  body.innerHTML = "<p class='hint'>loading…</p>";
   let text = "";
   try {
-    text = await invoke("get_workflow_doc", {
-      project,
-      slug,
-      doc: view === "graphic" ? htmlDoc : mdDoc,
-    });
-    if (view === "text" && !text.trim() && legacy) {
-      text = await invoke("get_workflow_doc", { project, slug, doc: legacy });
+    if (node) {
+      text = await invoke("get_workflow_explain_node", {
+        project,
+        slug,
+        target,
+        node,
+        form: view === "graphic" ? "html" : "md",
+      });
+    } else {
+      text = await invoke("get_workflow_doc", {
+        project,
+        slug,
+        doc: view === "graphic" ? htmlDoc : mdDoc,
+      });
+      if (view === "text" && !text.trim() && legacy) {
+        text = await invoke("get_workflow_doc", { project, slug, doc: legacy });
+      }
     }
   } catch (e) {
     body.innerHTML = `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
@@ -10657,10 +10778,14 @@ async function renderWfExplainView(body, root, item, ts, which) {
   bar.appendChild(edit);
   body.appendChild(bar);
 
+  if (level) body.appendChild(renderWfExplainNav(root, item, ts, which, target, tree, node));
+
   if (!text.trim()) {
     body.insertAdjacentHTML(
       "beforeend",
-      `<p class="hint">nothing written yet — ${escapeHtml(pair.action)} writes it</p>`
+      node
+        ? `<p class="hint">nothing written for part ${escapeHtml(node)} yet</p>`
+        : `<p class="hint">nothing written yet — ${escapeHtml(pair.action)} writes it</p>`
     );
     return;
   }
@@ -10677,6 +10802,7 @@ async function renderWfExplainView(body, root, item, ts, which) {
     frame.setAttribute("sandbox", "allow-same-origin");
     frame.srcdoc = wfExplainFrameDoc(text);
     body.appendChild(frame);
+    if (level) wfWatchExplainFrame(frame, root, item, ts, which, target, tree);
     return;
   }
 
@@ -10684,6 +10810,7 @@ async function renderWfExplainView(body, root, item, ts, which) {
   md.className = "wf-md wf-structure";
   renderMarkdown(md, text);
   renderMermaidIn(md);
+  if (level) wfMarkExplainHeadings(md, root, item, ts, which, target, tree, level);
   const heads = [...md.querySelectorAll("h2")];
   if (heads.length > 1) {
     const nav = document.createElement("div");
@@ -10697,6 +10824,211 @@ async function renderWfExplainView(body, root, item, ts, which) {
     body.appendChild(nav);
   }
   body.appendChild(md);
+}
+
+/// The drill-down strip above an explanation: where you are (a breadcrumb
+/// back to the overview) and the parts of this level, each one a way down —
+/// open when its level exists, a dive when it can be written.
+function renderWfExplainNav(root, item, ts, which, target, tree, node) {
+  const level = explainLevel(tree, node);
+  const nav = document.createElement("div");
+  nav.className = "wf-explain-nav";
+
+  const crumbs = document.createElement("div");
+  crumbs.className = "wf-explain-crumbs";
+  const trail = explainBreadcrumb(tree, node);
+  trail.forEach((c, i) => {
+    if (i) crumbs.appendChild(Object.assign(document.createElement("span"), { textContent: "›" }));
+    const b = document.createElement("button");
+    b.textContent = c.label;
+    if (c.node === node) b.classList.add("on");
+    else b.onclick = () => wfExplainGo(root, item, ts, which, c.node);
+    crumbs.appendChild(b);
+  });
+  if (level.stale) {
+    const stale = document.createElement("button");
+    stale.className = "wf-explain-stale";
+    stale.textContent = "⟳ out of date — redraw";
+    stale.title =
+      "This level was drawn before the level above it was redrawn, or from an older plan or commit. It may describe parts that no longer exist.";
+    stale.onclick = () => wfDive(item, root, target, [{ id: node, title: level.title }]);
+    if (node) crumbs.appendChild(stale);
+  }
+  nav.appendChild(crumbs);
+
+  const parts = document.createElement("div");
+  parts.className = "wf-explain-parts";
+  for (const part of level.nodes || []) {
+    const st = explainPartState(item, target, part);
+    const chip = document.createElement("button");
+    chip.className = `wf-explain-part ${st}${part.critical ? " critical" : ""}`;
+    const mark = { open: "▸", stale: "⟳", diving: "…", dive: "⊕", none: "" }[st];
+    chip.textContent = `${part.critical ? "● " : ""}${part.id} ${part.title || ""}${mark ? ` ${mark}` : ""}`;
+    chip.title = [
+      part.summary,
+      part.critical && part.why ? `Critical: ${part.why}` : "",
+      {
+        open: "Open this part's own level.",
+        stale: "Open this part's level — drawn before the level above was redrawn. ⇧-click to redraw it.",
+        diving: "Being explained right now.",
+        dive: "Explain this part one level deeper (spends tokens).",
+        none: "Nothing below this part.",
+      }[st],
+    ]
+      .filter(Boolean)
+      .join("\n");
+    chip.disabled = st === "none" || st === "diving";
+    chip.onclick = (ev) => {
+      if (st === "dive" || (st === "stale" && ev.shiftKey)) wfDive(item, root, target, [part]);
+      else wfExplainGo(root, item, ts, which, part.id);
+    };
+    parts.appendChild(chip);
+  }
+  const critical = criticalToDive(item, target, level);
+  if (critical.length) {
+    const all = document.createElement("button");
+    all.className = "wf-explain-critical";
+    all.textContent = `⊕ Explain the critical parts (${critical.length})`;
+    all.title = critical.map((p) => `${p.id} ${p.title || ""} — ${p.why || "critical"}`).join("\n");
+    all.onclick = () => wfDive(item, root, target, critical);
+    parts.appendChild(all);
+  }
+  if (parts.children.length) nav.appendChild(parts);
+  return nav;
+}
+
+/// Move the tab to another level of the tree (`""` = the overview).
+function wfExplainGo(root, item, ts, which, node) {
+  ts.explainNodes = ts.explainNodes || {};
+  ts.explainNodes[which] = node || "";
+  buildWorkflowView(root, item.project, item.slug);
+}
+
+/// A part reached from the drawing or the write-up: open its level when it
+/// has one, otherwise offer to write it.
+function wfExplainActivate(root, item, ts, which, target, tree, id) {
+  if (explainLevel(tree, id)) return wfExplainGo(root, item, ts, which, id);
+  const parent = explainLevel(tree, explainParentOf(id));
+  const part = parent && (parent.nodes || []).find((n) => n.id === id);
+  if (!part) return flashToast(`The explanation lists no part ${id}`);
+  const st = explainPartState(item, target, part);
+  if (st === "dive") return wfDive(item, root, target, [part]);
+  if (st === "diving") return flashToast(`Part ${id} is being explained…`);
+  flashToast(`Nothing below part ${id}`);
+}
+
+/// Follow `<a href="#node-3">` links inside the drawn page. The frame runs no
+/// script, so its clicks can't be listened to from inside; a followed link
+/// changes the frame's fragment, which this side can read (same origin)
+/// without anything executing in the page.
+function wfWatchExplainFrame(frame, root, item, ts, which, target, tree) {
+  // The last fragment acted on: if clearing it fails, the same part is not
+  // re-opened every tick.
+  let seen = "";
+  const poll = setInterval(() => {
+    if (!frame.isConnected) return clearInterval(poll);
+    let w = null;
+    try {
+      w = frame.contentWindow;
+    } catch (_) {
+      return;
+    }
+    const hash = (w && w.location && w.location.hash) || "";
+    if (hash === seen) return;
+    seen = hash;
+    const id = fragmentPartId(hash);
+    if (!id) return;
+    // Clear it so a second click on the same part (after a cancelled dive)
+    // is seen again; the scroll position is kept.
+    try {
+      w.history.replaceState(null, "", w.location.href.split("#")[0]);
+      seen = "";
+    } catch (_) {
+      /* kept in `seen` instead */
+    }
+    wfExplainActivate(root, item, ts, which, target, tree, id);
+  }, 250);
+}
+
+/// Tie the write-up's `### 3. …` sections to their parts: each gets the same
+/// way down as its chip in the strip.
+function wfMarkExplainHeadings(md, root, item, ts, which, target, tree, level) {
+  for (const h of md.querySelectorAll("h3")) {
+    const id = headingPartId(h.textContent);
+    const part = id && (level.nodes || []).find((n) => n.id === id);
+    if (!part) continue;
+    const st = explainPartState(item, target, part);
+    if (st === "none") continue;
+    const b = document.createElement("button");
+    b.className = "wf-explain-inline";
+    b.textContent = {
+      open: "▸ inside",
+      stale: "▸ inside (out of date)",
+      diving: "… being explained",
+      dive: "⊕ explain deeper",
+    }[st];
+    b.disabled = st === "diving";
+    b.onclick = () => wfExplainActivate(root, item, ts, which, target, tree, id);
+    h.appendChild(b);
+  }
+}
+
+/// Explain one or more parts one level deeper. Each dive writes only that
+/// part's level; when the session that drew the overview is still open the
+/// backend queues the dive into it (it already holds the code), otherwise it
+/// starts a fresh session.
+async function wfDive(item, root, target, parts) {
+  const home = ws();
+  const names = parts.map((p) => `${p.id} ${p.title || ""}`.trim());
+  const cost =
+    "Spends tokens: the explainer reads that code and writes one more level — a write-up, a drawing and its parts. " +
+    "When the session that drew the overview is still open the follow-up goes there, since it already has the code in context.";
+  let focus = "";
+  if (parts.length === 1) {
+    const f = await uiPrompt(
+      `Explain part ${names[0]} one level deeper?\n\n${cost}\n\nAnything specific to concentrate on? (optional)`,
+      ""
+    );
+    if (f === null) return;
+    focus = f.trim();
+  } else if (
+    !(await uiConfirm(`Explain ${parts.length} parts one level deeper?\n\n${names.join("\n")}\n\n${cost}`, "Explain"))
+  ) {
+    return;
+  }
+  const agent = await pickWfAgent(item, "explain");
+  if (agent === null) return;
+  let warm = 0;
+  for (const part of parts) {
+    try {
+      const r = await invoke("start_workflow_dive", {
+        project: item.project,
+        slug: item.slug,
+        target,
+        node: part.id,
+        focus: focus || null,
+        agent,
+        cols: 120,
+        rows: 40,
+      });
+      if (r.warm) warm++;
+      else {
+        await refreshSessions();
+        await openSession(r.sessionId, wfSessionName(item, `explain part ${part.id}`), { home });
+      }
+    } catch (e) {
+      if (String(e).includes("already-launching:")) flashToast(String(e).replace(/^.*? — /, ""));
+      else uiAlert(`Could not explain part ${part.id}: ${e}`);
+    }
+  }
+  if (warm)
+    flashToast(
+      warm === 1
+        ? "Queued into the explanation session — it already has the code in context"
+        : `${warm} parts queued into the explanation session`
+    );
+  await refreshWorkflows();
+  if (root) buildWorkflowView(root, item.project, item.slug);
 }
 
 /// Wrap the agent's HTML page in a document that inherits the app's theme.
@@ -10728,6 +11060,9 @@ function wfExplainFrameDoc(html) {
       border-radius: 8px; padding: 8px 10px;
       background: ${v("--bg-raised", "#1a1a1a")};
     }
+    /* A part drawn as a link opens its own level (see wfWatchExplainFrame). */
+    a[href^="#node-"] { color: inherit; text-decoration: none; cursor: pointer; }
+    a[href^="#node-"]:hover > * { filter: brightness(1.25); }
   `;
   const head = `<meta charset="utf-8"><style>${style}</style>`;
   // A full page keeps its own <head>; a fragment gets one.
@@ -12848,6 +13183,10 @@ $("wf-prs-btn").onclick = (e) => {
   e.stopPropagation();
   openWorkflowPrDashboardTab();
 };
+$("wf-explain-pr-btn").onclick = (e) => {
+  e.stopPropagation();
+  explainPrFlow();
+};
 $("wf-skills-btn").innerHTML = svgIcon("zap", 13);
 $("wf-skills-btn").onclick = (e) => {
   e.stopPropagation();
@@ -13962,6 +14301,7 @@ function syncAgentSettingsUi(cfg) {
   $("set-wf-lead-model").value = cfg.leadModel;
   $("set-wf-delegation").value = cfg.delegation;
   $("set-wf-assist").value = cfg.assist || "suggest";
+  $("set-wf-explain-detail").value = cfg.explainDetail || "critical";
   // Read by the action bar and the hand-back listener; a change repaints the
   // open items so the strip appears or goes at once.
   const assist = cfg.assist || "suggest";
@@ -13982,6 +14322,7 @@ for (const [id, key] of [
   ["set-wf-lead-model", "workflows.lead_model"],
   ["set-wf-delegation", "workflows.delegation"],
   ["set-wf-assist", "workflows.assist"],
+  ["set-wf-explain-detail", "workflows.explain_detail"],
   ["set-wf-subagent-model", "workflows.subagent_model"],
   ["set-wf-omp-subagent-model", "workflows.omp_subagent_model"],
 ]) {

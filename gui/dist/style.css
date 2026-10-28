@@ -1215,6 +1215,72 @@ body.pane-dragging, body.pane-dragging * { cursor: grabbing !important; user-sel
   flex: none;
 }
 .wf-explain-bar .wf-round-nav { margin: 0; }
+/* Drill-down: where you are in the explanation tree, and its parts — each
+   one a way down. Outside the frame, which runs no script. */
+.wf-explain-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 10px 8px;
+  flex: none;
+}
+.wf-explain-crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+.wf-explain-crumbs button {
+  background: none;
+  border: none;
+  padding: 1px 4px;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+}
+.wf-explain-crumbs button.on { color: var(--fg); font-weight: 600; cursor: default; }
+.wf-explain-crumbs .wf-explain-stale { color: var(--fg-dim); font-style: italic; }
+.wf-explain-parts { display: flex; flex-wrap: wrap; gap: 6px; }
+.wf-explain-part {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-raised);
+  color: var(--fg);
+  font-size: 11px;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+.wf-explain-part:hover:not(:disabled) { border-color: var(--accent); }
+.wf-explain-part.dive { border-style: dashed; color: var(--fg-dim); }
+.wf-explain-part.stale { opacity: 0.7; font-style: italic; }
+.wf-explain-part.diving { opacity: 0.6; cursor: progress; }
+.wf-explain-part.none { opacity: 0.55; cursor: default; }
+.wf-explain-part.critical { border-color: var(--accent); }
+.wf-explain-critical,
+.wf-prs-explain {
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: none;
+  color: var(--accent);
+  font-size: 11px;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+.wf-prs-explain { margin-left: auto; }
+.wf-explain-inline {
+  margin-left: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: none;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: normal;
+  padding: 1px 7px;
+  vertical-align: middle;
+  cursor: pointer;
+}
 /* Segmented control — for a switch between two views of the same thing, where
    which one you are on has to be readable at a glance. Distinct from
    `.wf-round-nav` (a jump-nav over a document's headings, deliberately small

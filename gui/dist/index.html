@@ -31,6 +31,7 @@
         <div class="section-label collapsible" id="wf-toggle">WORKFLOWS <span id="wf-caret">▸</span><span id="wf-badge" class="wf-badge hidden"></span>
           <button id="wf-board-btn" class="icon-btn mini" title="Open workflow board">⊞</button>
           <button id="wf-prs-btn" class="icon-btn mini" title="PR dashboard — every workflow item with a pull request, across all projects">⇄</button>
+          <button id="wf-explain-pr-btn" class="icon-btn mini" title="Explain a PR… — paste any pull request URL; clash checks it out and explains what it does">◫</button>
           <button id="wf-skills-btn" class="icon-btn mini" title="Skills — view the agent skills clash ships"></button>
           <button id="refresh-wf-btn" class="icon-btn mini" title="Refresh workflows"></button>
           <button id="new-wf-btn" class="icon-btn mini" title="New workflow item">+</button>
@@ -114,6 +115,13 @@
             <option value="suggest">Suggest the next step</option>
             <option value="autopilot">Autopilot until a decision</option>
             <option value="off">Off</option>
+          </select>
+        </label>
+        <label class="setting-row inline">Explanation detail
+          <select id="set-wf-explain-detail" title="How much a ◫ Explain round writes up front. Every part it leaves closed is a dive you start by clicking the part — that is where the cost goes. Each launch can override this.">
+            <option value="critical">Critical parts (overview + what it flags critical)</option>
+            <option value="overview">Overview only (cheapest)</option>
+            <option value="full">Every part (costs the most)</option>
           </select>
         </label>
         <label class="setting-row inline">Delegation
@@ -413,6 +421,7 @@
   <script src="wf-prs.js"></script>
   <script src="wf-pr-scope.js"></script>
   <script src="wf-plan.js"></script>
+  <script src="wf-explain-tree.js"></script>
   <script src="wf-next.js"></script>
   <script src="wf-checks.js"></script>
   <script src="wf-agent.js"></script>

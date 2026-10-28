@@ -231,6 +231,8 @@ pub struct Workflows {
     pub delegation: String,
     /// `suggest` | `autopilot` | `off` — see the `workflows.assist` row.
     pub assist: String,
+    /// `overview` | `critical` | `full` — see the `workflows.explain_detail` row.
+    pub explain_detail: String,
     /// Model a Claude Code lead's subagents run on; empty = inherit the lead's.
     pub subagent_model: String,
     /// Model an OMP lead's subagents run on; empty = omp's own `task` role.
@@ -278,6 +280,7 @@ impl Default for Workflows {
             lead_model: default_str("workflows.lead_model"),
             delegation: default_str("workflows.delegation"),
             assist: default_str("workflows.assist"),
+            explain_detail: default_str("workflows.explain_detail"),
             subagent_model: default_str("workflows.subagent_model"),
             omp_subagent_model: default_str("workflows.omp_subagent_model"),
             pr_skill: default_str("workflows.pr_skill"),

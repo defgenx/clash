@@ -1754,6 +1754,8 @@ struct AgentSettings {
     subagent_model: String,
     omp_subagent_model: String,
     assist: String,
+    /// `overview` | `critical` | `full`: what an explain round writes up front.
+    explain_detail: String,
 }
 
 pub(crate) fn bin_available(bin: &str) -> bool {
@@ -1791,13 +1793,19 @@ fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
             "autopilot" | "off" => cfg.workflows.assist.clone(),
             _ => "suggest".to_string(),
         },
+        explain_detail: clash::domain::workflow::ExplainDetail::parse(
+            &cfg.workflows.explain_detail,
+        )
+        .as_str()
+        .to_string(),
     }
 }
 
 /// Write one agent-CLI setting to the shared `config.toml`. `key` is one of
 /// `general.default_agent`, `general.omp_bin`, `workflows.agent`,
 /// `workflows.omp_model`, `workflows.lead_model`, `workflows.delegation`,
-/// `workflows.subagent_model`, `workflows.omp_subagent_model`, `workflows.assist`; an empty
+/// `workflows.subagent_model`, `workflows.omp_subagent_model`, `workflows.assist`,
+/// `workflows.explain_detail`; an empty
 /// value resets it to the default. An
 /// absolute `omp_bin` must exist, like `claude_bin`.
 #[tauri::command]
@@ -1829,6 +1837,11 @@ fn set_agent_setting(
         {
             return Err(format!("Not an assist mode: {value}"));
         }
+        "workflows.explain_detail"
+            if !value.is_empty() && !["overview", "critical", "full"].contains(&value) =>
+        {
+            return Err(format!("Not an explanation detail: {value}"));
+        }
         "general.default_agent"
         | "workflows.agent"
         | "general.omp_bin"
@@ -1837,7 +1850,8 @@ fn set_agent_setting(
         | "workflows.delegation"
         | "workflows.subagent_model"
         | "workflows.omp_subagent_model"
-        | "workflows.assist" => value.to_string(),
+        | "workflows.assist"
+        | "workflows.explain_detail" => value.to_string(),
         other => return Err(format!("Not an agent setting: {other}")),
     };
     let result = if value.is_empty() {
@@ -3754,6 +3768,10 @@ fn main() {
             workflows::workflow_run_reset_autopilot,
             workflows::cancel_workflow_review,
             workflows::end_workflow_explainer,
+            workflows::get_workflow_explain_tree,
+            workflows::get_workflow_explain_node,
+            workflows::start_workflow_dive,
+            workflows::repo_origin_slugs,
             workflows::workflow_create_pr,
             workflows::refresh_workflow_pr,
             workflows::mark_workflow_pr_ready,

@@ -676,8 +676,11 @@ test("the two explanations are separate, and each has two forms", () => {
   // The plan explanation needs a plan; the diff one needs a diff to exist —
   // the latter is canExplain's rule (wf_plan.test.js pins it).
   assert.match(extractFunction(APP, "wfChecksCtx"), /const planned = wfHasPlanPhase\(item\) && !!item\.hasPlan;/);
-  // A focus is asked per run and rides the round — no stored verdict state.
-  assert.match(extractFunction(APP, "wfLaunchExplain"), /spawnWfExplainer\(item, root, target, focus\.trim\(\) \|\| null\)/);
+  // A focus is asked per run and rides the round — no stored verdict state —
+  // and so does the detail, the round's cost knob, offered setting-first.
+  const launch = extractFunction(APP, "wfLaunchExplain");
+  assert.match(launch, /spawnWfExplainer\(item, root, target, focus\.trim\(\) \|\| null, detail\)/);
+  assert.match(launch, /explainDetailChoices\(setting\)/);
 
   // One tab per artifact, each dispatched from the sub-view router.
   assert.match(APP, /\["explainPlan", "◫ Plan explained"\]/);

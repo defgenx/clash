@@ -369,6 +369,15 @@ pub const PROPS: &[Prop] = &[
          an approval; `off` keeps the plain action bar.",
     ),
     Prop::new(
+        "workflows.explain_detail",
+        Kind::Enum(&["overview", "critical", "full"]),
+        Val::Str("critical"),
+        "How much of an explanation a ◫ Explain round writes up front — the cost knob. \
+         `overview` draws the overview only; `critical` also opens the parts it flags \
+         critical; `full` opens every part. Everything deeper is a dive you start by \
+         clicking a part. Each launch can override it.",
+    ),
+    Prop::new(
         "workflows.subagent_model",
         Kind::Str,
         Val::Str("claude-sonnet-5-5"),

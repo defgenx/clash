@@ -357,7 +357,7 @@
     ]) {
       if (!(forms && (forms.md || forms.html))) continue;
       if (canExplainFn && !canExplainFn(target)) continue;
-      const rec = ((item && item.explainers) || []).find((e) => e.target === target);
+      const rec = ((item && item.explainers) || []).find((e) => e.target === target && !e.node);
       if (rec && rec.running) continue;
       if (rec && rec.finished && (rec.iteration || 0) === it) continue;
       out.push({ target, label });

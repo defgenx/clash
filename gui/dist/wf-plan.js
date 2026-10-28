@@ -275,25 +275,31 @@
     return false;
   }
 
-  /// The explainer on `target` that is in flight, or null.
+  /// The top-level explainer on `target` that is in flight, or null. A dive
+  /// (a record with a `node`) explains one part and never blocks the
+  /// overview's own button.
   function runningExplainer(item, target) {
     const list = (item && item.explainers) || [];
-    return list.find((e) => canonicalTarget(e.target) === target && e.running) || null;
+    return (
+      list.find((e) => canonicalTarget(e.target) === target && !e.node && e.running) || null
+    );
   }
 
   /// Explainers that were running in `prev` and have since written their round
   /// — what the "explanation ready" toast announces. An explainer whose session
   /// died unfinished is not in the list: nothing is ready.
   function explainersFinished(prev, next) {
+    // A warm dive shares its session with the overview, so the node is part
+    // of the identity.
+    const key = (it, e) => `${it.project}/${it.slug}#${e.sessionId}#${e.node || ""}`;
     const was = new Set();
     for (const it of prev || [])
-      for (const e of it.explainers || [])
-        if (e.running) was.add(`${it.project}/${it.slug}#${e.sessionId}`);
+      for (const e of it.explainers || []) if (e.running) was.add(key(it, e));
     const out = [];
     for (const it of next || [])
       for (const e of it.explainers || [])
-        if (e.finished && was.has(`${it.project}/${it.slug}#${e.sessionId}`))
-          out.push({ item: it, target: canonicalTarget(e.target) });
+        if (e.finished && was.has(key(it, e)))
+          out.push({ item: it, target: canonicalTarget(e.target), node: e.node || "" });
     return out;
   }
 

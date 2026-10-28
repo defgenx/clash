@@ -1,6 +1,9 @@
 pub mod actions;
 pub mod diff;
 pub mod effects;
+/// Same allowance as `workflow`: drill-down explanations are GUI-only in v1.
+#[allow(dead_code)]
+pub mod explain_tree;
 /// Consumed only through the lib crate (the GUI's Files panel); the binary's
 /// private-`mod` compilation would otherwise flag it as dead code.
 #[allow(dead_code)]

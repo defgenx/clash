@@ -93,6 +93,9 @@ test("the stage's review names the target the launcher derives", () => {
   assert.equal(passSpec("self-review", {}, ctx()).publish, "pr-comments");
   assert.equal(passSpec("explain-diff", { focus: " the cache " }, ctx()).depth, "deep");
   assert.equal(passSpec("explain-diff", {}, ctx()).depth, "standard");
+  // The detail rides the spec when picked; absent, the backend's setting applies.
+  assert.equal(passSpec("explain-diff", { detail: "full" }, ctx()).detail, "full");
+  assert.ok(!("detail" in passSpec("explain-diff", {}, ctx())));
 });
 
 test("a recorded pass maps back to its catalogue id", () => {

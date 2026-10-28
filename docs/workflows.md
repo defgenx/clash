@@ -26,8 +26,12 @@ workflows are a structured store.
 ├── explain-diff.md    # what the change DID — prose + mermaid (clash-explain overwrites)
 ├── explain-diff.html  # …and as one hand-drawn page
 │                      #   (structure.md / blueprint.md: the pre-pair names, still read)
+├── explain-*.json     # the overview's parts — the index the drill-down is built from
+├── explain-diff/      # one level per zoomed-in part: <id>.md / .html / .json
+├── explain-plan/      #   (ids 3, 3.2, 3.2.1) — see Drill-down explanations
 ├── drift.md           # the plan AGAINST what was built — graded (clash-drift-review)
 ├── drift.html         # …and as one hand-drawn map, every part badged
+├── drift.json         # its areas as a drill-down index; drift/<id>.* are dives
 ├── annotations.json   # line-level diff comments: {"annotations": [ … ]}
 ├── handoff.md         # the executor's note to the human (overwritten every phase)
 ├── explainers.json    # explainer rounds running alongside the item (clash-owned)
@@ -471,6 +475,70 @@ finished. Rounds are unbounded like every side-trip: regenerate after each
 change round. `Focus:` (optional, asked at launch) names what the round should
 concentrate on.
 
+### Drill-down explanations
+
+An explanation is a **tree**: the overview (`explain-<target>.{md,html,json}`)
+and one level per part someone zoomed into (`explain-<target>/<id>.{md,html,json}`,
+ids `3` → `3.2` → `3.2.1`, three levels at most). Each level has its own
+altitude — the C4 model's rule, so "deeper" is never the parent redrawn bigger:
+
+| Level | Id | Shows |
+|---|---|---|
+| overview | — | the parts of the change (5–12) |
+| part | `3` | its components and the flow between them, and its boundary contract |
+| component | `3.2` | the mechanism: functions, states, invariants, `file:line` |
+| code | `3.2.1` | an annotated walk-through of one function or hunk — a leaf |
+
+Every level writes a `.json` index (`title`, `basis {iteration, head}`,
+`nodes[]` with `id/title/summary/critical/why/files/isNew/leaf`, `edges[]`),
+`.md` and `.html` first and the index **last**. Everything else is derived, by
+the pure `application::explain_tree::build_tree`:
+
+- **expanded**: a part's own index exists;
+- **stale**: a level was drawn before its parent was redrawn, from another
+  basis, or for a part its parent no longer lists (and everything under a
+  stale level is stale). Nothing is deleted — a stale level is labelled and
+  can be redrawn;
+- **diveable**: a well-formed child id within the cap, not `leaf`. Ids are
+  validated (`valid_node_id`) before they become a path.
+
+**Cost is the human's choice.** A top-level explain round carries
+`Detail: overview | critical | full` (setting `workflows.explain_detail`,
+default `critical`, overridable per launch):
+- `overview` writes the overview only;
+- `critical` adds the first level of the parts the agent flags `critical`
+  (at most 3 — "where attention pays", with a one-line `why`, never a grade);
+- `full` adds the first level of every non-leaf part.
+
+Deeper levels are always **dives**: `start_workflow_dive` launches one part
+with a kickoff carrying `Node: <id>` (`build_dive_prompt`). A dive:
+- writes only that part's three files and appends **nothing** to
+  `agent-review.md`, so round tallies, the Timeline and "latest round" are
+  untouched;
+- is recorded in `explainers.json` with its `node`, and is finished once that
+  node's index is written after its launch (`dive_finished`);
+- claims `<item>#<target>#<node>`, so dives into different parts run side by
+  side. It is refused while the overview it hangs under is still being drawn.
+
+**The warm path.** When the explainer session that drew the overview is still
+alive and finished, the dive is queued into it through the prompt queue — it
+already holds the code, which is most of a dive's cost — otherwise a fresh
+session starts. For the drift report, the warm session is the drift reviewer's
+once it has handed the item back. A drift dive always runs `clash-explain`: it
+explains a divergence and never re-grades it, so `drift.md`'s grades and
+annotations stay the drift round's.
+
+The GUI builds the breadcrumb, the parts strip and the dive buttons from the
+index, **outside** the sandboxed frame. A part drawn as `<a href="#node-3">`
+is followed by watching the frame's fragment from the parent
+(`wfWatchExplainFrame`), so the page still runs no script.
+
+**◫ Explain a PR…** turns any PR URL into a review-only item
+(`create_workflow_review`) and launches `explain-diff` on it with the chosen
+detail. The local checkout is found by origin (`repo_origin_slugs` +
+`matchRepoForPr`: an exact, unambiguous `owner/repo` match, else the repo
+picker).
+
 ### Parallel rounds
 
 A judging or writing agent — the executor, a plan/code reviewer, a drift round
@@ -494,6 +562,8 @@ What still stops one is its own artifact being written, or not existing yet
   review round launched from `plan-review`, `changes-requested` queued as
   `revise`);
 - one explainer per target at a time — two would overwrite the same pair.
+  Dives are per part (`<item>#<target>#<node>`), so several run at once; a
+  dive waits for the overview it hangs under to finish.
 
 The gate is checked at launch only. An executor may still be launched while an
 explainer runs (that is the point); an explanation of a diff that then moves
