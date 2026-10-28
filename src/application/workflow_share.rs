@@ -228,6 +228,51 @@ pub fn build_share_markdown(input: &ShareInput, sections: &ShareSections) -> Str
     out.trim_end().to_string() + "\n"
 }
 
+/// The export's file name without extension: `clash-<project>-<slug>`, ASCII
+/// only, so nothing in an item's name can become a path separator.
+pub fn share_file_stem(project: &str, slug: &str) -> String {
+    let clean = |s: &str| -> String {
+        s.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect()
+    };
+    format!("clash-{}-{}", clean(project), clean(slug))
+}
+
+/// The path a save dialog returned, made safe to export to: absolute, no
+/// `..`, a real file name, ending in `.<ext>` (appended when it does not).
+/// Whether the folder exists is the writer's check.
+pub fn validate_export_path(path: &str, ext: &str) -> Result<std::path::PathBuf, String> {
+    let p = std::path::Path::new(path.trim());
+    if !p.is_absolute() {
+        return Err(format!("Not an absolute path: {}", path));
+    }
+    if p.components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!("Refusing a path with '..': {}", path));
+    }
+    let name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| !n.trim().is_empty())
+        .ok_or_else(|| format!("No file name in {}", path))?;
+    if name
+        .rsplit_once('.')
+        .is_some_and(|(_, e)| e.eq_ignore_ascii_case(ext))
+    {
+        Ok(p.to_path_buf())
+    } else {
+        Ok(p.with_file_name(format!("{}.{}", name, ext)))
+    }
+}
+
 /// The kickoff for a share handed to a Claude Code session.
 ///
 /// Pure and tested because it is the whole instruction: clash is delegating an
@@ -471,6 +516,48 @@ mod tests {
         assert!(md.contains("open one"));
         assert!(!md.contains("parked one"));
         assert!(!md.contains("done one"));
+    }
+
+    #[test]
+    fn clash_bookkeeping_never_reaches_a_share() {
+        // The session id lives in meta.json; nothing the document is built
+        // from may carry it out, whatever is selected.
+        let mut m = meta();
+        m.session_id = Some("0199-secret-session".into());
+        let all = ShareSections {
+            summary: true,
+            plan: true,
+            timeline: true,
+            reviews: true,
+            annotations: true,
+            diff: true,
+        };
+        let md = build_share_markdown(&input(&m), &all);
+        assert!(!md.contains("0199-secret-session"));
+    }
+
+    #[test]
+    fn export_names_and_paths() {
+        assert_eq!(
+            share_file_stem("Update Ruby SDK", "a/../b"),
+            "clash-Update-Ruby-SDK-a----b"
+        );
+        let ok = |p: &str, ext: &str| validate_export_path(p, ext).unwrap();
+        assert_eq!(
+            ok("/tmp/out/item", "html"),
+            std::path::PathBuf::from("/tmp/out/item.html")
+        );
+        assert_eq!(
+            ok("/tmp/out/item.HTML", "html"),
+            std::path::PathBuf::from("/tmp/out/item.HTML")
+        );
+        assert_eq!(
+            ok("/tmp/x.md", "html"),
+            std::path::PathBuf::from("/tmp/x.md.html")
+        );
+        assert!(validate_export_path("relative.html", "html").is_err());
+        assert!(validate_export_path("/tmp/../etc/x.html", "html").is_err());
+        assert!(validate_export_path("/", "html").is_err());
     }
 
     // ── share_prompt ─────────────────────────────────────────────────

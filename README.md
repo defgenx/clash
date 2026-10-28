@@ -827,7 +827,12 @@ show **⚠ stack unclear** with the reason and are treated as unstacked.
 verdicts, open comments, diff) from three presets with per-section checkboxes.
 The preview **is** the payload. It can go to:
 - the clipboard;
-- a `.md` or self-contained `.html` file;
+- a `.md` file, or a self-contained `.html` page to send to someone without
+  clash. The page opens offline by double-click. With **Explanations** set to
+  a depth, it also carries the item's explanation drawings and write-ups,
+  linked from overview to part to sub-part. The drawings stay sandboxed.
+  Both saves use the system save dialog, then offer **Reveal in Finder** and
+  **Copy path**;
 - Slack or Discord;
 - a Jira ticket as one comment. The key is pre-filled from the item's
   remembered ticket or detected in its title or branch.

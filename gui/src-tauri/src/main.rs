@@ -3790,6 +3790,7 @@ fn main() {
             workflows::share_workflow_jira,
             workflows::share_workflow_via_agent,
             workflows::export_workflow_share,
+            workflows::default_share_export_path,
             workflows::get_workflow_pr_skill,
             workflows::set_workflow_pr_skill,
             workflows::get_workflow_forge,

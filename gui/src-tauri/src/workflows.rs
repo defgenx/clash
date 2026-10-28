@@ -3754,53 +3754,64 @@ pub(crate) async fn share_workflow_via_agent(
     Ok(session_id)
 }
 
-/// Write an export (`.md` / `.html`) to `dir` (the folder the user picked;
-/// their Downloads folder when omitted). The filename is clash-derived —
-/// never caller-supplied, so this stays an export command rather than a
-/// generic write-any-file hole. An existing file gets `-2`, `-3`, … instead
-/// of being overwritten. Returns the written path.
-#[tauri::command]
-pub(crate) fn export_workflow_share(
-    project: String,
-    slug: String,
-    format: String,
-    content: String,
-    dir: Option<String>,
-) -> Result<String, String> {
-    let ext = match format.as_str() {
-        "md" | "html" => format.as_str(),
-        other => return Err(format!("Unknown export format '{}'", other)),
-    };
-    let dir = match dir.map(|d| d.trim().to_string()).filter(|d| !d.is_empty()) {
-        Some(d) => crate::expand_tilde(&d),
-        None => dirs::download_dir()
-            .or_else(dirs::home_dir)
-            .ok_or_else(|| "Cannot resolve a folder to export into".to_string())?,
-    };
-    if !dir.is_dir() {
-        return Err(format!("Not a directory: {}", dir.display()));
+fn export_ext(format: &str) -> Result<&str, String> {
+    match format {
+        "md" | "html" => Ok(format),
+        other => Err(format!("Unknown export format '{}'", other)),
     }
-    // project/slug come from the item listing (directory names), but stay
-    // defensive: a path separator in the filename would escape `dir`.
-    let clean = |s: &str| {
-        s.chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                    c
-                } else {
-                    '-'
-                }
-            })
-            .collect::<String>()
-    };
-    let base = format!("clash-{}-{}", clean(&project), clean(&slug));
+}
+
+/// `<Downloads>/clash-<project>-<slug>.<ext>`, or `-2`, `-3`, … when taken.
+/// The name is clash-derived, never caller-supplied.
+fn free_export_path(project: &str, slug: &str, ext: &str) -> Result<std::path::PathBuf, String> {
+    let dir = dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| "Cannot resolve a folder to export into".to_string())?;
+    let base = clash::application::workflow_share::share_file_stem(project, slug);
     let mut path = dir.join(format!("{}.{}", base, ext));
     let mut n = 2;
     while path.exists() {
         path = dir.join(format!("{}-{}.{}", base, n, ext));
         n += 1;
     }
-    std::fs::write(&path, content)
+    Ok(path)
+}
+
+/// The path the export's save dialog opens on.
+#[tauri::command]
+pub(crate) fn default_share_export_path(
+    project: String,
+    slug: String,
+    format: String,
+) -> Result<String, String> {
+    let ext = export_ext(&format)?;
+    Ok(free_export_path(&project, &slug, ext)?
+        .to_string_lossy()
+        .into_owned())
+}
+
+/// Write an export (`.md` / `.html`) to `path`, the file the native save
+/// dialog returned (which asked about overwriting); a fresh clash-named file
+/// in Downloads when omitted. The path is checked (`validate_export_path`)
+/// and gets the format's extension, so this stays an export command rather
+/// than a generic write-any-file hole. Returns the written path.
+#[tauri::command]
+pub(crate) fn export_workflow_share(
+    project: String,
+    slug: String,
+    format: String,
+    content: String,
+    path: Option<String>,
+) -> Result<String, String> {
+    let ext = export_ext(&format)?;
+    let path = match path.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => clash::application::workflow_share::validate_export_path(p, ext)?,
+        None => free_export_path(&project, &slug, ext)?,
+    };
+    if !path.parent().is_some_and(Path::is_dir) {
+        return Err(format!("Not a folder: {}", path.display()));
+    }
+    clash::infrastructure::fs::atomic::write_atomic(&path, content.as_bytes())
         .map_err(|e| format!("Cannot write {}: {}", path.display(), e))?;
     Ok(path.to_string_lossy().into_owned())
 }

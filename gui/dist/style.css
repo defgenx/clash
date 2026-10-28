@@ -856,6 +856,33 @@ html, body, #app {
   transform: translateX(-50%) translateY(0);
 }
 
+/* The toast with buttons (flashActionToast): same place, takes clicks. */
+#gui-action-toast {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  z-index: 401;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 80vw;
+  padding: 6px 8px 6px 16px;
+  background: var(--bg-raised);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  box-shadow: var(--shadow-soft);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+#gui-action-toast.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+#gui-action-toast > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#gui-action-toast button { font-size: 12px; padding: 3px 10px; }
+#gui-action-toast button.x { border: 0; background: none; color: var(--fg-dim); padding: 3px 6px; }
+
 /* Sticky sibling of the toast, one line higher so both can be up at once —
    long work (a worktree checkout) reports itself here while flashToast keeps
    the transient confirmations. */
@@ -2500,6 +2527,9 @@ button.busy:disabled { opacity: 1; }
   min-height: 220px;
 }
 .wf-share-actions { flex-wrap: wrap; }
+.wf-share-explain { cursor: default; border-top: 1px solid var(--border); margin-top: 4px; padding-top: 8px; }
+.wf-share-explain select { margin: 4px 0 2px; font-size: 12px; }
+.wf-share-outline { font-size: 11px; }
 
 /* ── PR dashboard ─────────────────────────────────────────────── */
 .wf-prs { padding: 14px 18px; max-width: 980px; display: flex; flex-direction: column; gap: 6px; }

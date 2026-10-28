@@ -17,7 +17,142 @@ const {
   sectionsFromChecks,
   shareHtmlDocument,
   detectTicketKey,
+  SHARE_EXPLAIN_PAIRS,
+  explainLevelsToShare,
+  shareAnchor,
+  shareExplanationEntries,
+  explainOutline,
 } = require("../dist/wf-share.js");
+const { extractFunction } = require("./extract-fn.js");
+const APP = fs.readFileSync(path.join(__dirname, "..", "dist", "app.js"), "utf8");
+
+// A tree as `get_workflow_explain_tree` returns it: overview, part 1 opened,
+// its sub-part 1.1 opened, part 2 never opened.
+const TREE = [
+  {
+    node: "",
+    nodes: [
+      { id: "1", title: "Retry", summary: "wraps calls", critical: true },
+      { id: "2", title: "Docs" },
+    ],
+  },
+  { node: "1", stale: true, nodes: [{ id: "1.1", title: "Backoff" }] },
+  { node: "1.1", nodes: [] },
+];
+const DIFF = SHARE_EXPLAIN_PAIRS.find((p) => p.which === "diff");
+
+test("the explanation depth cuts the tree, and a part goes only with its parent", () => {
+  const ids = (d) => explainLevelsToShare(TREE, d, true).map((l) => l.node);
+  assert.deepEqual(ids("all"), ["", "1", "1.1"]);
+  assert.deepEqual(ids("parts"), ["", "1"]);
+  assert.deepEqual(ids("overview"), [""]);
+  assert.deepEqual(ids("none"), []);
+  // An orphaned level (its parent missing) stays out.
+  assert.deepEqual(explainLevelsToShare([TREE[0], TREE[2]], "all", true).map((l) => l.node), [""]);
+  // Written before drill-down: no index, so the overview alone.
+  assert.deepEqual(explainLevelsToShare([], "all", true).map((l) => l.node), [""]);
+  assert.deepEqual(explainLevelsToShare([], "all", false), []);
+});
+
+test("entries carry breadcrumbs and link only the parts the page holds", () => {
+  const levels = explainLevelsToShare(TREE, "parts", true);
+  const [root, one] = shareExplanationEntries(DIFF, levels, { "": { bodyHtml: "<p>w</p>", frameHtml: "<div>d</div>" } });
+  assert.equal(root.anchor, "x-explain-diff");
+  assert.equal(root.title, "Changes explained");
+  assert.equal(root.parts[0].anchor, "x-explain-diff-1");
+  assert.equal(root.parts[1].anchor, null, "never opened");
+  assert.equal(one.title, "1 Retry");
+  assert.equal(one.stale, true);
+  assert.equal(one.parts[0].anchor, null, "1.1 was cut at this depth");
+  assert.deepEqual(one.crumbs.map((c) => c.anchor), ["x-explain-diff", "x-explain-diff-1"]);
+  assert.equal(shareAnchor("drift", "3.2.1"), "x-drift-3-2-1");
+  assert.deepEqual(explainOutline([{ label: "Changes explained", entries: [root, one] }]), [
+    "Changes explained — overview + 1 part",
+  ]);
+});
+
+test("the saved page sandboxes the drawings and stays script-free", () => {
+  const levels = explainLevelsToShare(TREE, "all", true);
+  const drawn = '<div onclick="x()">drawn "page"</div><script>alert(1)</script>';
+  const entries = shareExplanationEntries(DIFF, levels, {
+    "": { bodyHtml: "<p>write-up</p>", frameHtml: drawn },
+    1: { bodyHtml: "<p>inside</p>", frameHtml: "" },
+  });
+  const html = shareHtmlDocument("T", "<p>doc</p>", [{ label: "Changes explained", entries }]);
+  // The agent's page is an escaped srcdoc of a script-less sandbox — never
+  // markup of the page itself.
+  assert.match(html, /<iframe sandbox="allow-same-origin" title="Changes explained" srcdoc="[^"]*&lt;script&gt;alert\(1\)/);
+  assert.ok(!html.includes(drawn));
+  assert.ok(!/allow-scripts/.test(html));
+  assert.ok(!/<script/.test(html), "no script of the page's own");
+  assert.ok(!/\b(src|href)\s*=\s*["'](https?:)?\/\//.test(html), "external reference found");
+  // Navigation is anchors: a contents line, and each level's own section.
+  assert.match(html, /<nav class="toc"><a href="#x-document">Document<\/a> · <a href="#x-explain-diff">/);
+  for (const id of ["x-explain-diff", "x-explain-diff-1", "x-explain-diff-1-1"]) assert.ok(html.includes(`id="${id}"`), id);
+  assert.match(html, /<a href="#x-explain-diff-1"><b>1 Retry<\/b> →<\/a>/);
+  // With a drawing the write-up folds under it; without one it is the body.
+  assert.match(html, /<details class="writeup"><summary>Write-up<\/summary><p>write-up<\/p>/);
+  assert.ok(html.includes("<p>inside</p>") && !html.includes("<summary>Write-up</summary><p>inside"));
+  // No explanations: the page is the old export, plus nothing.
+  assert.ok(!shareHtmlDocument("T", "<p>doc</p>").includes('class="toc"'));
+});
+
+test("the page export reads explanations only through the document readers", () => {
+  const fn = extractFunction(APP, "wfShareExplanations");
+  const cmds = [...fn.matchAll(/invoke\("([a-z_]+)"/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(cmds)].sort(), ["get_workflow_doc", "get_workflow_explain_node", "get_workflow_explain_tree"]);
+  assert.match(fn, /renderMarkdownForExport\(md\)/);
+  // Saves go through the native save dialog seeded with the backend's name,
+  // then a toast that reveals the file or copies its path.
+  const dialog = extractFunction(APP, "wfShareDialog");
+  assert.match(dialog, /invoke\("default_share_export_path"/);
+  assert.match(dialog, /await pickSavePath\(\s*seed/);
+  assert.doesNotMatch(dialog, /pickDirectory\(/);
+  assert.match(dialog, /invoke\("explorer_reveal", \{ path: written \}\)/);
+  assert.match(dialog, /copyText\(written, "path"\)/);
+  assert.match(extractFunction(APP, "pickSavePath"), /plugin:dialog\|save/);
+});
+
+test("smoke: gathering explanations for the page, with the legacy fallback", async () => {
+  const docs = {
+    "structure.md": "# legacy write-up",
+    "explain-diff.html": "<div>drawn</div>",
+  };
+  const sandbox = {
+    ...require("../dist/wf-share.js"),
+    invoke: async (cmd, args) => {
+      if (cmd === "get_workflow_explain_tree") return args.target === "explain-diff" ? TREE : [];
+      if (cmd === "get_workflow_doc") return docs[args.doc] || "";
+      if (cmd === "get_workflow_explain_node") return `${args.node}.${args.form}`;
+      throw new Error(`unexpected ${cmd}`);
+    },
+    renderMarkdownForExport: async (md) => `<rendered>${md}</rendered>`,
+  };
+  const pairs = APP.slice(APP.indexOf("const WF_DOC_PAIRS = {"), APP.indexOf("\n};", APP.indexOf("const WF_DOC_PAIRS = {")) + 3);
+  vm.createContext(sandbox);
+  vm.runInContext(
+    `${pairs}\n${extractFunction(APP, "wfExplainFormsFor")}\n${extractFunction(APP, "wfShareExplanations")}\nthis.fn = wfShareExplanations;`,
+    sandbox
+  );
+  const item = { project: "p", slug: "s", diffExplain: { md: true, html: true } };
+  // Across the vm realm, compare plain data.
+  const groups = JSON.parse(JSON.stringify(await sandbox.fn(item, "all", true)));
+  assert.deepEqual(groups.map((g) => g.label), ["Changes explained"]);
+  const [root, one] = groups[0].entries;
+  assert.equal(root.bodyHtml, "<rendered># legacy write-up</rendered>");
+  assert.equal(root.frameHtml, "<div>drawn</div>");
+  assert.equal(one.frameHtml, "1.html");
+  assert.equal((await sandbox.fn(item, "none", false)).length, 0);
+});
+
+test("an export renders its diagrams on an attached stage", () => {
+  // renderMermaidIn skips a detached node, so the export used to ship its
+  // mermaid fences as bare code.
+  const fn = extractFunction(APP, "renderMarkdownForExport");
+  assert.match(fn, /document\.body\.appendChild\(stage\)/);
+  assert.match(fn, /stage\.remove\(\)/);
+  assert.match(fn, /renderMermaidIn\(stage, \{ theme: "default" \}\)/);
+});
 
 test("presets are honest sizes: summary ⊂ packet ⊂ dossier", () => {
   const ids = (p) => SHARE_PRESETS.find((x) => x.id === p).sections;
@@ -163,6 +298,11 @@ test("browser branch publishes every global app.js reads", () => {
     "sectionsFromChecks",
     "shareHtmlDocument",
     "detectTicketKey",
+    "SHARE_EXPLAIN_PAIRS",
+    "SHARE_EXPLAIN_DEPTHS",
+    "explainLevelsToShare",
+    "shareExplanationEntries",
+    "explainOutline",
   ]) {
     assert.ok(name in sandbox.window, `${name} must be published to window`);
   }

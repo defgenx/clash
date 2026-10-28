@@ -2152,6 +2152,43 @@ function flashToast(msg) {
   _toastTimer = setTimeout(() => el.classList.remove("show"), 1600);
 }
 
+/// A toast with buttons (`[{ label, run }]`), up long enough to reach for.
+/// Its own element: a flashToast landing meanwhile must not replace the
+/// buttons with plain text. Any button click, or ✕, dismisses it.
+let _actionToastTimer = null;
+function flashActionToast(msg, actions = []) {
+  let el = $("gui-action-toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "gui-action-toast";
+    document.body.appendChild(el);
+  }
+  el.innerHTML = "";
+  const hide = () => {
+    el.classList.remove("show");
+    if (_actionToastTimer) clearTimeout(_actionToastTimer);
+  };
+  el.appendChild(Object.assign(document.createElement("span"), { textContent: msg }));
+  for (const a of actions) {
+    const b = document.createElement("button");
+    b.textContent = a.label;
+    b.onclick = () => {
+      hide();
+      a.run();
+    };
+    el.appendChild(b);
+  }
+  const x = document.createElement("button");
+  x.className = "x";
+  x.textContent = "✕";
+  x.title = "Dismiss";
+  x.onclick = hide;
+  el.appendChild(x);
+  el.classList.add("show");
+  if (_actionToastTimer) clearTimeout(_actionToastTimer);
+  _actionToastTimer = setTimeout(hide, 9000);
+}
+
 /// A toast that stays up: for work that takes long enough that its absence
 /// reads as a hang. Its own element rather than a pinned `#gui-toast`, so a
 /// flashToast landing mid-progress can't overwrite the line the user is
@@ -3877,14 +3914,16 @@ let wfMermaidSeq = 0;
 /// Render ```mermaid fences inside an element renderMarkdown just filled —
 /// the explain documents carry architecture/flow diagrams, and any other may.
 /// Each failure leaves that fence as visible code instead of a blank hole.
-async function renderMermaidIn(el) {
+/// `theme` overrides the app's — exports draw on a light card whatever the
+/// app theme is.
+async function renderMermaidIn(el, { theme = null } = {}) {
   const blocks = el.querySelectorAll("pre > code.language-mermaid");
   if (!blocks.length) return;
   if (!(await ensureMermaid())) return;
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: "strict",
-    theme: document.documentElement.classList.contains("theme-light") ? "default" : "dark",
+    theme: theme || (document.documentElement.classList.contains("theme-light") ? "default" : "dark"),
   });
   for (const code of blocks) {
     if (!el.isConnected) return; // the tab was rebuilt while we loaded
@@ -3897,6 +3936,23 @@ async function renderMermaidIn(el) {
     } catch (e) {
       dlog(`mermaid render failed: ${e}`);
     }
+  }
+}
+
+/// Markdown → standalone HTML for a file that leaves the app: sanitized like
+/// every render, mermaid drawn to inline SVG. The stage is attached off-screen
+/// while it renders — `renderMermaidIn` skips a detached node, so a detached
+/// stage exported its diagrams as bare code.
+async function renderMarkdownForExport(md) {
+  const stage = document.createElement("div");
+  stage.style.cssText = "position:fixed;left:-10000px;top:0;width:900px;visibility:hidden";
+  document.body.appendChild(stage);
+  try {
+    renderMarkdown(stage, md);
+    await renderMermaidIn(stage, { theme: "default" });
+    return stage.innerHTML;
+  } finally {
+    stage.remove();
   }
 }
 
@@ -8405,6 +8461,50 @@ async function wfShareDialog(item) {
   }
   side.appendChild(sizeNote);
 
+  // The explanation trees travel in the saved page only: the drawings need a
+  // page to sit in, and every other destination carries the markdown.
+  let explainDepth = "none";
+  const explained = SHARE_EXPLAIN_PAIRS.some((p) => {
+    const f = wfExplainFormsFor(item, p.which);
+    return f && (f.md || f.html);
+  });
+  if (explained) {
+    explainDepth = "all";
+    const row = document.createElement("label");
+    row.className = "wf-share-section wf-share-explain";
+    const text = document.createElement("span");
+    text.innerHTML =
+      `<span class="wf-share-section-label">Explanations</span>` +
+      `<span class="dim">Drawings and write-ups, linked overview → part — in the saved .html only</span>`;
+    const sel = document.createElement("select");
+    for (const d of SHARE_EXPLAIN_DEPTHS) {
+      const o = document.createElement("option");
+      o.value = d.value;
+      o.textContent = d.label;
+      if (d.value === explainDepth) o.selected = true;
+      sel.appendChild(o);
+    }
+    const outline = document.createElement("span");
+    outline.className = "dim wf-share-outline";
+    const showOutline = async () => {
+      try {
+        const groups = await wfShareExplanations(item, explainDepth, false);
+        const lines = explainOutline(groups);
+        outline.textContent = lines.length ? lines.join(" · ") : "nothing at this depth";
+      } catch (e) {
+        outline.textContent = `failed: ${e}`;
+      }
+    };
+    sel.onchange = () => {
+      explainDepth = sel.value;
+      showOutline();
+    };
+    text.append(sel, outline);
+    row.append(text);
+    side.appendChild(row);
+    showOutline();
+  }
+
   const done = () => {
     backdrop.remove();
     if (typeof fitAll === "function") fitAll();
@@ -8435,28 +8535,50 @@ async function wfShareDialog(item) {
             await invoke("clipboard_write_text", { text: current });
             flashToast("Markdown copied");
           } else if (d.id === "md" || d.id === "html") {
-            const dir = await pickDirectory(
-              state.settings.defaultCwd || state.homeDir || "",
-              "Choose a folder for the export"
+            const seed = await invoke("default_share_export_path", {
+              project: item.project,
+              slug: item.slug,
+              format: d.id,
+            });
+            const path = await pickSavePath(
+              seed,
+              d.id === "html" ? "Save the share page" : "Save the share document",
+              d.id === "html"
+                ? [{ name: "Web page", extensions: ["html"] }]
+                : [{ name: "Markdown", extensions: ["md"] }]
             );
-            if (!dir) return;
+            if (!path) return;
             let content = current;
             if (d.id === "html") {
-              // Render (markdown + mermaid → inline SVG) in a detached node,
-              // then wrap in the self-contained shell — no scripts ride along.
-              const stage = document.createElement("div");
-              renderMarkdown(stage, current);
-              await renderMermaidIn(stage);
-              content = shareHtmlDocument(item.meta.title || item.slug, stage.innerHTML);
+              // One self-contained page: the document (markdown + mermaid →
+              // inline SVG) plus the chosen explanation levels. No script.
+              let explanations = [];
+              try {
+                showProgress("Rendering the page…");
+                explanations = await wfShareExplanations(item, explainDepth, true);
+                content = shareHtmlDocument(
+                  item.meta.title || item.slug,
+                  await renderMarkdownForExport(current),
+                  explanations
+                );
+              } finally {
+                hideProgress();
+              }
             }
-            const path = await invoke("export_workflow_share", {
+            const written = await invoke("export_workflow_share", {
               project: item.project,
               slug: item.slug,
               format: d.id,
               content,
-              dir,
+              path,
             });
-            flashToast(`Saved ${path}`);
+            flashActionToast(`Saved ${written.split("/").pop()}`, [
+              {
+                label: navigator.platform.startsWith("Mac") ? "Reveal in Finder" : "Show in folder",
+                run: () => invoke("explorer_reveal", { path: written }).catch((e) => uiAlert(`${e}`)),
+              },
+              { label: "Copy path", run: () => copyText(written, "path") },
+            ]);
           } else if (d.route === "agent") {
             // clash hands the document to a Claude session and stops there —
             // through the named skill when there is one, otherwise through
@@ -8572,6 +8694,55 @@ async function wfShareDialog(item) {
   });
   setTimeout(() => closeBtn.focus(), 0);
   rebuild();
+}
+
+/// The explanation trees for the saved share page, as `[{ label, entries }]`
+/// (`shareExplanationEntries`). Reads only through the explanation readers,
+/// which serve whitelisted documents — nothing of clash's own bookkeeping can
+/// come through here. `render` fetches and renders each level's two forms;
+/// without it only the outline is known.
+async function wfShareExplanations(item, depth, render) {
+  const groups = [];
+  for (const pair of SHARE_EXPLAIN_PAIRS) {
+    const forms = wfExplainFormsFor(item, pair.which);
+    const hasOverview = !!(forms && (forms.md || forms.html));
+    let tree = [];
+    try {
+      tree = (await invoke("get_workflow_explain_tree", { project: item.project, slug: item.slug, target: pair.target })) || [];
+    } catch (_) {
+      tree = [];
+    }
+    const levels = explainLevelsToShare(tree, depth, hasOverview);
+    if (!levels.length) continue;
+    const docs = {};
+    if (render) {
+      const files = WF_DOC_PAIRS[pair.which];
+      for (const l of levels) {
+        const read = async (form) => {
+          if (l.node)
+            return invoke("get_workflow_explain_node", {
+              project: item.project,
+              slug: item.slug,
+              target: pair.target,
+              node: l.node,
+              form,
+            });
+          const doc = form === "html" ? files.html : files.md;
+          const text = await invoke("get_workflow_doc", { project: item.project, slug: item.slug, doc });
+          if (form === "md" && !text.trim() && files.legacy)
+            return invoke("get_workflow_doc", { project: item.project, slug: item.slug, doc: files.legacy });
+          return text;
+        };
+        const md = (await read("md")) || "";
+        docs[l.node] = {
+          bodyHtml: md.trim() ? await renderMarkdownForExport(md) : "",
+          frameHtml: (await read("html")) || "",
+        };
+      }
+    }
+    groups.push({ label: pair.label, entries: shareExplanationEntries(pair, levels, docs) });
+  }
+  return groups;
 }
 
 /// The review-round composer: one dialog holding the whole shape of the round
@@ -12400,6 +12571,20 @@ async function pickFile(defaultPath, title = "Choose a file", filters = null) {
     return typeof picked === "string" ? picked : null;
   } catch (e) {
     console.error("file picker failed:", e);
+    return null;
+  }
+}
+
+/// Native save dialog. `defaultPath` is a full path the backend named;
+/// returns the chosen path or null when cancelled.
+async function pickSavePath(defaultPath, title, filters = null) {
+  try {
+    const picked = await invoke("plugin:dialog|save", {
+      options: { defaultPath: defaultPath || undefined, title, ...(filters ? { filters } : {}) },
+    });
+    return typeof picked === "string" ? picked : null;
+  } catch (e) {
+    console.error("save dialog failed:", e);
     return null;
   }
 }

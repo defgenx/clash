@@ -1170,6 +1170,34 @@ Jira ticket as one comment (`workflows.jira_base_url` / `jira_email` /
 `jira_api_token`; the markdown is converted to Jira wiki markup and the
 ticket key is prompted per send, pre-filled from the item's title/branch).
 
+The `.html` export is the one destination that carries more than the
+markdown: it is a single self-contained page meant to be sent to people
+without clash. It works offline and opens by double-click, with no server,
+no sidecar files and no script. The dialog's **Explanations** picker (`Every
+level` / `Overview + parts` / `Overview only` / `None`) adds the explanation
+trees (*Drill-down explanations* above) as one section per level. Each
+section has a breadcrumb, its parts list linking to the parts' own sections,
+the drawn page and the write-up. A part's level is included only with the
+level above it, so every link leads somewhere. Three rules keep the page
+safe and honest:
+
+- the agent's drawn `.html` goes into an `<iframe sandbox="allow-same-origin"
+  srcdoc>` with no `allow-scripts`, exactly like the GUI's tab, and never into
+  the page's own markup;
+- the levels are read only through the explanation readers
+  (`get_workflow_explain_tree` / `_node`, `get_workflow_doc`), which serve
+  whitelisted documents. clash's own files (`meta.json`, `explainers.json`,
+  `run.json`) and session ids have no way in, and a test pins both readers
+  and the markdown builder;
+- markdown is rendered in the webview (sanitized, mermaid as inline SVG on an
+  attached off-screen stage), so what is saved is what the GUI renders.
+
+Saves go through the native save dialog, seeded with a clash-derived name
+(`default_share_export_path`: `clash-<project>-<slug>.<ext>` in Downloads). The
+returned path is checked by `workflow_share::validate_export_path`: absolute,
+no `..`, extension forced. The page is pure functions in `gui/dist/wf-share.js`
+(`explainLevelsToShare`, `shareExplanationEntries`, `shareHtmlDocument`).
+
 Who posts each destination is a setting, not a fallback chain:
 `workflows.jira_transport` / `workflows.chat_transport` are `agent` (the
 default) or `clash`. On `agent` the document is written under
