@@ -622,18 +622,34 @@ pub fn session_aliases(registry: &HashMap<String, ClashSession>, session_id: &st
     out
 }
 
+/// Key of the entry answering to `session_id`: an exact key/conversation match
+/// first, else the entry holding it in its lineage.
+///
+/// A live row keeps its PTY's id after a `/clear` or resume fork, and that id
+/// lives only in `previous_ids` — `find_entry` alone misses it.
+fn entry_key_for(registry: &HashMap<String, ClashSession>, session_id: &str) -> Option<String> {
+    find_entry(registry, session_id)
+        .or_else(|| {
+            registry
+                .iter()
+                .find(|(k, v)| entry_answers_to(k, v, session_id))
+        })
+        .map(|(k, _)| k.clone())
+}
+
 /// Rename a session in the registry.
 pub fn rename(session_id: &str, new_name: &str) {
     let Some(mut registry) = load_for_mutation("rename") else {
         return;
     };
-    let key = find_entry(&registry, session_id).map(|(k, _)| k.clone());
-    if let Some(key) = key {
-        if let Some(entry) = registry.get_mut(&key) {
-            entry.name = new_name.to_string();
-        }
-        save_checked(&registry, "rename", false);
+    let Some(key) = entry_key_for(&registry, session_id) else {
+        tracing::warn!("rename: no registry entry answers to {}", session_id);
+        return;
+    };
+    if let Some(entry) = registry.get_mut(&key) {
+        entry.name = new_name.to_string();
     }
+    save_checked(&registry, "rename", false);
 }
 
 /// Remove all sessions from the registry. The one operation allowed to empty
@@ -669,6 +685,36 @@ mod tests {
         let loaded: HashMap<String, ClashSession> = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded["test-1"].name, "my-session");
         assert_eq!(loaded["test-1"].cwd, "/tmp/project");
+    }
+
+    /// The GUI renames a live row by its PTY id, which a `/clear` or resume
+    /// fork has moved into the entry's lineage.
+    #[test]
+    fn rename_finds_the_entry_by_a_lineage_id() {
+        let entry = |key: &str, previous: &[&str]| ClashSession {
+            session_id: key.to_string(),
+            name: format!("clash-{key}"),
+            cwd: String::new(),
+            claude_session_id: key.to_string(),
+            created_at: String::new(),
+            source_branch: None,
+            previous_ids: previous.iter().map(|p| p.to_string()).collect(),
+            agent: Default::default(),
+            workflow: false,
+            workflow_item: None,
+        };
+        let mut reg = HashMap::new();
+        reg.insert("new".to_string(), entry("new", &["pty", "older"]));
+        reg.insert("other".to_string(), entry("other", &[]));
+
+        assert_eq!(entry_key_for(&reg, "new").as_deref(), Some("new"));
+        assert_eq!(entry_key_for(&reg, "pty").as_deref(), Some("new"));
+        assert_eq!(entry_key_for(&reg, "older").as_deref(), Some("new"));
+        assert_eq!(entry_key_for(&reg, "unknown"), None);
+
+        // An exact match outranks a stale lineage mention elsewhere.
+        reg.insert("stale".to_string(), entry("stale", &["other"]));
+        assert_eq!(entry_key_for(&reg, "other").as_deref(), Some("other"));
     }
 
     /// An unusable file must never decode to "zero sessions": every mutation is
