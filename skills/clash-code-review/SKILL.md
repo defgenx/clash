@@ -84,7 +84,8 @@ Three checkpoints, in order:
 
 1. **Findings triage** — after the review is done and the findings are
    drafted, *before writing anything*: print the findings (numbered, graded,
-   one line + the concrete failure each), then ask which to keep.
+   one line + the concrete failure + the confidence and its basis each), then
+   ask which to keep.
    Put the whole set to them in one round: `AskUserQuestion` holds at most 4
    options per question, so batch — one multiSelect question per batch,
    issued together, options labeled by finding number and grade and carrying
@@ -233,6 +234,37 @@ Grade every finding:
 Rank findings most-severe first. A round that finds nothing says so plainly —
 inventing a `NIT` to look productive wastes the human's next round.
 
+### Confidence — on every finding
+
+Every finding also states how sure you are that it is real, graded by the
+**evidence you hold**, never by feel. It is orthogonal to the grade: a `low`
+confidence `BLOCKER` is the finding the human should dig into first, not the
+one to skip.
+
+| Confidence | The evidence |
+|---|---|
+| `high` | Verified against the code: you read the exact path, traced the caller, or ran it (a test, a repro, a command) and saw it fail. |
+| `medium` | Strong evidence with one link not verified — the faulty line is read, but one caller, config value or runtime condition it depends on was not traced. |
+| `low` | Plausible, unverified — inferred from naming, a pattern or a doc. Worth a look before anyone acts on it. |
+
+Each carries a one-line **basis** naming that evidence ("traced every caller
+of `check_token`: api.rs:120, ws.rs:44" / "inferred from naming, not traced").
+For `medium` and `low` the basis also says **what would raise it** — the read
+or the run that would settle it.
+
+- Before writing, try to raise every `low` with one cheap read; a refutation
+  attempt that fails against the exact path is what makes a finding `high`.
+- Never drop a finding for being `low`, and never inflate one to make it look
+  actionable: report it, with what would raise it.
+- Confidence never changes the grade. "Probably a blocker" is a `BLOCKER` at
+  `medium` or `low`, not a `RISK`.
+
+One shape everywhere: in `agent-review.md`, the finding's last line is
+`**Confidence:** <level> — <basis>`; in `annotations.json`, the entry's
+`"confidence"` and `"confidenceBasis"` fields; on a PR line comment,
+`[confidence: <level>]` right after the grade, with `Confidence basis: <basis>`
+as the comment's last line.
+
 ### Depth
 
 - **`standard`** — review the diff in context: read enough of each touched
@@ -300,6 +332,8 @@ count and its *Request changes* until clash rewrites it.
   "line": 42,
   "lineContent": "<the exact source line, untrimmed>",
   "body": "BLOCKER — token compared with `==`: not constant-time, so response timing leaks the prefix. Use a constant-time compare.",
+  "confidence": "high",
+  "confidenceBasis": "traced every caller of check_token (src/api.rs:120, src/ws.rs:44)",
   "status": "open",
   "author": "agent",
   "iteration": <meta.iteration>,
@@ -309,7 +343,9 @@ count and its *Request changes* until clash rewrites it.
 
 Leave `lineContentHash` out — clash computes it on its next read and uses it to
 re-anchor your annotation when the diff drifts. Put the grade at the start of
-`body` so it survives into every view.
+`body` so it survives into every view. `confidence` (`high`|`medium`|`low`)
+and `confidenceBasis` are required on every finding you write (see
+"Confidence" above); keep them out of `body`, clash shows them as a badge.
 
 ## The one thing you may fix
 
@@ -352,7 +388,8 @@ instead.
   rounds show the human exactly what will be posted first (checkpoint 3). Post
   **one** review per round. Never `--approve` and never `--request-changes` —
   approval is the human's call, not yours. Findings you already published in an
-  earlier round must not be posted twice.
+  earlier round must not be posted twice. Each line comment carries its
+  confidence: `BLOCKER [confidence: medium] — …`, basis on the last line.
 
   **A draft PR cannot take a review.** GitHub rejects `gh pr review` on a draft
   ("Draft pull requests cannot be reviewed"), so check first —
@@ -495,6 +532,12 @@ and its reason: **Start the fix round now** or **Not yet**.
 Judge by *severity*, never by count: one timing-attack blocker is worth a
 round, nine nits are not.
 
+**Weigh confidence too.** When every material finding is `low`, answer `no`
+unless the reason says why applying anyway is right: the next step is to
+verify them (`deep-review`, or the human reading the basis), not to have an
+executor "fix" something that may not be broken. A `medium` blocker can be
+applied — the apply note tells the executor to verify it first.
+
 ## Recommend the next step
 
 Alongside the apply call, name the one step you would take next, from this
@@ -538,9 +581,11 @@ the same `AskUserQuestion` call as the apply question, with your pick first.
 ### Blockers
 1. `src/auth.rs:42` — token compared with `==`, so response timing leaks the
    prefix. Fails for any attacker who can time requests.
+   **Confidence:** high — traced every caller of `check_token` (src/api.rs:120, src/ws.rs:44).
 
 ### Risks
-2. ...
+2. `src/watch.rs:88` — the debounce may drop the last event of a burst.
+   **Confidence:** low — inferred from the timer's reset; a burst test would settle it.
 
 ### Gaps
 3. ...

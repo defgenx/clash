@@ -14,6 +14,10 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { extractFunction, stubEl } = require("./extract-fn.js");
 
+// The pure helpers the dialog reads, taken from their real module.
+const COMPOSE = require("../dist/wf-compose.js");
+const pickPure = (...names) => Object.fromEntries(names.map((n) => [n, COMPOSE[n]]));
+
 const APP = fs.readFileSync(path.join(__dirname, "..", "dist", "app.js"), "utf8");
 
 test("the change-request composer opens without throwing", async () => {
@@ -37,6 +41,7 @@ test("the change-request composer opens without throwing", async () => {
     noteCaption: () => "Note",
     submitLabel: () => "Record round",
     annotationsMarkdown: () => "",
+    ...pickPure("annotationConfidence", "confidenceLabel", "confidenceTooltip"),
     canSubmitChangeRequest: () => ({ ok: true }),
     agentReviewRounds: () => [],
     roundFindings: () => null,
@@ -58,12 +63,17 @@ test("the change-request composer opens without throwing", async () => {
   // The scrim-dismissal helper is shared by every dialog builder: run the real
   // one rather than stubbing it, so a rename there still fails here.
   vm.runInContext(extractFunction(APP, "wireBackdropDismiss"), sandbox);
+  vm.runInContext(extractFunction(APP, "wfConfidenceBadge"), sandbox);
   vm.runInContext(`opened = ${src}`, sandbox);
 
   // The open path must not throw for any target / annotation mix — a
   // rejection here is the "button silently does nothing" bug.
   for (const [target, annotations] of [
     ["diff", [{ id: "a1", file: "f.rs", line: 3, body: "x", status: "open" }]],
+    [
+      "diff",
+      [{ id: "a2", file: "f.rs", line: 4, body: "y", status: "open", author: "agent", confidence: "low" }],
+    ],
     ["diff", []],
     ["plan", []],
   ]) {

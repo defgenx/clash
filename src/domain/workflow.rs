@@ -1525,6 +1525,69 @@ pub enum DiffSide {
     New,
 }
 
+/// How sure a reviewer is that a finding is real, graded by the evidence
+/// behind it and orthogonal to its severity. Contract: `docs/workflows.md` →
+/// *Finding confidence*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingConfidence {
+    /// Verified against the code: the exact path read, traced or run.
+    High,
+    /// Strong evidence with one link not verified.
+    Medium,
+    /// Plausible and unverified — worth a look before acting on it.
+    Low,
+    /// A value clash does not know; kept so the finding still loads.
+    Unknown,
+}
+
+impl FindingConfidence {
+    /// Case-insensitive; anything unrecognized is `Unknown`, never an error.
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "high" => Self::High,
+            "medium" | "med" => Self::Medium,
+            "low" => Self::Low,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// `confidence` is agent-written: a non-string must cost the field, not the
+/// whole `annotations.json`.
+fn lenient_confidence<'de, D>(d: D) -> Result<Option<FindingConfidence>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) if s.trim().is_empty() => None,
+        serde_json::Value::String(s) => Some(FindingConfidence::parse(&s)),
+        _ => Some(FindingConfidence::Unknown),
+    })
+}
+
+/// Same leniency for the agent-written basis line.
+fn lenient_string<'de, D>(d: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::String(s) => s,
+        other => other.to_string(),
+    })
+}
+
 /// A reply on an annotation thread.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1572,6 +1635,21 @@ pub struct Annotation {
     /// "user" | "agent".
     #[serde(default)]
     pub author: String,
+    /// A reviewer's confidence in the finding; absent on human comments and
+    /// on findings written before the field existed.
+    #[serde(
+        default,
+        deserialize_with = "lenient_confidence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub confidence: Option<FindingConfidence>,
+    /// One line naming the evidence behind `confidence`.
+    #[serde(
+        default,
+        deserialize_with = "lenient_string",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub confidence_basis: String,
     /// Iteration the annotation was written against.
     #[serde(default)]
     pub iteration: u32,
@@ -2169,6 +2247,46 @@ mod tests {
         assert!(AnnotationsFile::parse("{not json").is_err());
         assert!(AnnotationsFile::parse(r#"[1, 2]"#).is_err());
         assert!(AnnotationsFile::parse(r#""annotations""#).is_err());
+    }
+
+    #[test]
+    fn a_finding_confidence_loads_leniently_and_round_trips() {
+        let raw = r#"{"annotations":[
+            {"id":"a","confidence":"high","confidenceBasis":"traced the caller at x.rs:120"},
+            {"id":"b","confidence":"Medium"},
+            {"id":"c","confidence":"very sure","confidenceBasis":3},
+            {"id":"d","confidence":2},
+            {"id":"e","confidence":null},
+            {"id":"f","confidence":""},
+            {"id":"g"}
+        ]}"#;
+        let f = AnnotationsFile::parse(raw).unwrap();
+        let c: Vec<_> = f.annotations.iter().map(|a| a.confidence).collect();
+        assert_eq!(
+            c,
+            vec![
+                Some(FindingConfidence::High),
+                Some(FindingConfidence::Medium),
+                Some(FindingConfidence::Unknown),
+                Some(FindingConfidence::Unknown),
+                None,
+                None,
+                None,
+            ]
+        );
+        assert_eq!(
+            f.annotations[0].confidence_basis,
+            "traced the caller at x.rs:120"
+        );
+        assert_eq!(f.annotations[2].confidence_basis, "3");
+
+        // Typed fields, not extras: they come back under their own names, and
+        // a human comment without one writes neither key.
+        let back = serde_json::to_string(&f).unwrap();
+        assert!(back.contains(r#""confidence":"high""#));
+        assert!(back.contains(r#""confidenceBasis":"traced the caller at x.rs:120""#));
+        let human = serde_json::to_string(&Annotation::default()).unwrap();
+        assert!(!human.contains("confidence"));
     }
 
     // ── Agent review rounds ─────────────────────────────────────────

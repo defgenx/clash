@@ -392,6 +392,45 @@ record-keeping tails: `### Published`, `### Fixed in this round`,
 is the next round's prompt. Approving never applies findings — approval is
 "ship it as it stands".
 
+### Finding confidence
+
+Every finding of every reviewer (`clash-plan-review`, `clash-code-review`,
+`clash-drift-review`, `clash-pr-review`) carries a **confidence** — how sure
+the reviewer is that it is real — so the human knows which findings to
+believe and which to dig into. It is graded by evidence, and it is
+orthogonal to severity: a `low`-confidence blocker is the one to look at
+first, not the one to skip.
+
+| Level | Evidence |
+|---|---|
+| `high` | verified against the code: the exact path read, traced or run |
+| `medium` | strong evidence, one link not verified |
+| `low` | plausible, unverified — worth a look before acting on it |
+
+Each comes with a one-line **basis** naming the evidence; below `high`, the
+basis also says what would raise it. Low findings are reported, never
+dropped. One shape per surface:
+
+| Surface | Shape |
+|---|---|
+| `agent-review.md` | the finding's last line: `**Confidence:** <level> — <basis>` |
+| `annotations.json` | `"confidence": "high"\|"medium"\|"low"` and `"confidenceBasis": "<basis>"` on the entry; both optional, absent on human comments |
+| PR line comment | `[confidence: <level>]` after the grade, `Confidence basis: <basis>` as the last line |
+| `review.md` digest | ` [confidence: <level> — <basis>]` after the body (`annotation_digest_line`) |
+
+clash reads it leniently: `FindingConfidence` is case-insensitive, an
+unrecognized value loads as `unknown` and a non-string one costs the field,
+never the file — so old annotations and rounds load unchanged. The GUI badges
+it (diff threads, the composer's queued comments, the Agent reviews tab, the
+insert-findings picker's per-round tally); the apply note
+(`applyReviewNote`) adds the round's tally and tells the executor to verify
+`low`/`medium` findings before acting, and the executor's skill says the same
+for annotations. Confidence weighs on `**Apply:**`: a round whose only
+material findings are `low` answers `no` unless its reason says why applying
+anyway is right, and `clash-pr-review` never requests changes on a `low`
+finding alone. A drift round's `INTENDED` grade needs `high` confidence in
+the authorization; anything less is an `ISSUE` for the human to decide.
+
 ### The review agent contract (clash-plan-review / clash-code-review skills)
 
 `Use the <clash-plan-review|clash-code-review> skill. Workflow item directory: <abs path>. Target: <plan|diff>. Depth: <standard|deep>. Publish: <local|pr-comments|respond-pr-comments>. Round: <n>. Return to: <status>. Mode: <mode>.`

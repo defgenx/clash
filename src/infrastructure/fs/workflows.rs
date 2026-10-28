@@ -446,7 +446,8 @@ pub fn append_review_iteration(
     if !open_annotations.is_empty() {
         out.push_str("\n### Open annotations\n\n");
         for a in open_annotations {
-            out.push_str(&format!("- `{}:{}` — {}\n", a.file, a.line, a.body.trim()));
+            out.push_str(&crate::application::workflow::annotation_digest_line(a));
+            out.push('\n');
         }
     }
     write_doc(root, project, slug, REVIEW_FILE, &out)

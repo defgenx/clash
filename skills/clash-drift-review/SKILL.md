@@ -233,6 +233,20 @@ Three rules keep the grades honest:
   the one failure of this round that leaves no trace: it silently closes the
   question forever.
 
+**Confidence** — how sure you are the divergence is real and graded right,
+by evidence. Every divergence carries one, independent of its grade:
+
+| Confidence | The evidence |
+|---|---|
+| `high` | Both sides read: the plan passage and the code that delivers or fails it — for a `MISSING`, you searched everywhere it would be (the symbol, the test name, the config key) and it is not there. |
+| `medium` | One link not verified — the code is read but one caller or path was not traced, or the search for a missing piece was not exhaustive. |
+| `low` | Plausible, unverified — inferred from names or the diff stat. Reported anyway, with what would raise it. |
+
+Give it a one-line basis naming that evidence. An `INTENDED` grade needs
+`high` confidence in the **authorization** (found in `review.md`, or the
+constraint is visible in the code); anything less is an `ISSUE` with the
+remedy "the human decides", per the rule above.
+
 **Scope.** You judge delivery against the plan — not code quality. A genuine
 bug in code that matches the plan exactly is `clash-code-review`'s finding, not
 yours. If you trip over something serious, note it in one line under
@@ -244,7 +258,7 @@ it as drift.
 Only in interactive rounds, and only these two:
 
 1. **After the inventory, before grading** — present every divergence with your
-   proposed direction, grade and remedy, grouped by grade, all in one round
+   proposed direction, grade, confidence and remedy, grouped by grade, all in one round
    (`AskUserQuestion` calls back to back, or one numbered message when there
    are many), each with a one-line why. The human confirms, regrades or drops
    each one; follow up only on what their answers opened, and never ask what
@@ -276,6 +290,8 @@ count and its *Request changes* until clash rewrites it.
   "line": 88,
   "lineContent": "<the exact source line, untrimmed>",
   "body": "DRIFT · MISSING · ISSUE — plan action 4 promised the env layer would override the project file; this merge stops at the project layer, so CLASH_* is silently ignored. Plan: `plan.md` §Layering.",
+  "confidence": "high",
+  "confidenceBasis": "read merge() end to end; no env layer anywhere in config/",
   "status": "open",
   "author": "agent",
   "iteration": <meta.iteration>,
@@ -287,7 +303,9 @@ Leave `lineContentHash` out — clash computes it and uses it to re-anchor your
 annotation when the diff drifts. Start `body` with
 `DRIFT · <direction> · <grade> —` so the entry is legible in a diff view that
 shows no other context, and name the plan section it comes from: an annotation
-that cannot be traced back to the promise cannot be argued with.
+that cannot be traced back to the promise cannot be argued with. Set
+`confidence` (`high`|`medium`|`low`) and `confidenceBasis` on every entry;
+clash shows them as a badge, so keep them out of `body`.
 
 **A `MISSING` entry has no line to anchor to.** Anchor it to the nearest place
 the missing thing *should* be — the function that should have called it, the
@@ -343,11 +361,11 @@ shape of the drift without reading a word of the table below.
 legitimate and welcome outcome — write "No drift found." and keep the
 sections below.>
 
-| # | Direction | Grade | Planned | Delivered | Consequence | Remedy |
-|---|---|---|---|---|---|---|
-| 1 | MISSING | ISSUE | action 4: env layer overrides the project file | merge stops at the project layer (`layers.rs:88`) | `CLASH_*` is silently ignored — the documented override does nothing | fix the code |
-| 2 | DIFFERENT | INTENDED | a new `Forge` trait method | reused `comment()` with a `repo` param | none; simpler, authorized in review.md iteration 3 | amend the plan |
-| 3 | EXTRA | BENIGN | — | `wf-pr-scope.js` split out of `app.js` | none; the logic needed a test seam | none |
+| # | Direction | Grade | Confidence | Planned | Delivered | Consequence | Remedy |
+|---|---|---|---|---|---|---|---|
+| 1 | MISSING | ISSUE | high | action 4: env layer overrides the project file | merge stops at the project layer (`layers.rs:88`) | `CLASH_*` is silently ignored — the documented override does nothing | fix the code |
+| 2 | DIFFERENT | INTENDED | high | a new `Forge` trait method | reused `comment()` with a `repo` param | none; simpler, authorized in review.md iteration 3 | amend the plan |
+| 3 | EXTRA | BENIGN | medium | — | `wf-pr-scope.js` split out of `app.js` | none; the logic needed a test seam | none |
 
 ## The issues in detail
 <One block per ISSUE, in table order. Skip the section when there are none.>
@@ -360,6 +378,7 @@ sections below.>
 - **Remedy**: `fix the code` (and what the fix is), or `amend the plan` (and
   what the plan should now say), or `the human decides` (and what the two
   options are).
+- **Confidence**: the level and its basis; below `high`, what would raise it.
 - **Annotation**: `r<round>-<n>`, or why there is none.
 
 ## Plan amendments needed
@@ -465,8 +484,9 @@ divergence). The same shape as the explainer's index; see `clash-explain` →
 - **`pr-comments`** — also post this round to the PR as a review: the verdict,
   the tally and the issues.
   `gh pr review <n> --comment --body-file <file>` for the summary, and `gh api`
-  on `/repos/{owner}/{repo}/pulls/<n>/comments` for the line-anchored issues.
-  Post **one** review per round. Never `--approve` and never
+  on `/repos/{owner}/{repo}/pulls/<n>/comments` for the line-anchored issues,
+  each starting `DRIFT · <direction> · <grade> [confidence: <level>] —` with
+  `Confidence basis: …` as its last line. Post **one** review per round. Never `--approve` and never
   `--request-changes` — approval is the human's call, not yours.
 
   **A draft PR cannot take a review.** GitHub rejects `gh pr review` on a draft
@@ -510,6 +530,8 @@ The kickoff's **`Auto-apply:`** field says what your answer does:
 - **Do not apply** when a remedy is `the human decides` — two valid readings of
   the agreement, or a deviation only they can authorize. An executor cannot
   ask; it will pick.
+- **Do not apply** when every code-remedy issue is `low` confidence, unless
+  the reason says why applying anyway is right — verify them first.
 - **Do not apply** when the item is at `pr-ready`: the branch is published and
   under human review, so pushing new commits mid-review is their call.
 - When there are no issues, the answer is **no**, and that is a clean result.
@@ -558,13 +580,16 @@ apply question, with your pick first.
 ### Issues
 1. `src/config/layers.rs:88` — MISSING: plan action 4's env override is not
    implemented, so `CLASH_*` is silently ignored. Remedy: fix the code.
+   **Confidence:** high — read `merge()` end to end; no env layer anywhere in `config/`.
 
 ### Intended deviations
 2. `Forge::comment` reused instead of a new trait method — authorized in
    review.md iteration 3. Remedy: amend the plan.
+   **Confidence:** high — the authorization is review.md iteration 3's note.
 
 ### Benign
 3. `wf-pr-scope.js` split out of `app.js` — unplanned, no consequence.
+   **Confidence:** medium — callers read in app.js; the dashboard's not traced.
 
 ### Plan amendments needed
 - §Layering still describes a `Forge` trait method that was deliberately not

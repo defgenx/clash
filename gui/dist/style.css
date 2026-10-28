@@ -1622,6 +1622,21 @@ button.busy:disabled { opacity: 1; }
 .wf-ann-state.addressed { color: var(--green); border-color: var(--green); }
 .wf-ann-state.wontfix { color: var(--fg-dim); }
 .wf-ann-state.parked { color: var(--purple, #b58cd8); border-color: var(--purple, #b58cd8); }
+/* A reviewer's confidence in a finding — how verified it is, not how severe. */
+.wf-conf {
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+  cursor: help;
+}
+.wf-conf.high { color: var(--green); border-color: var(--green); }
+.wf-conf.medium { color: var(--blue); border-color: var(--blue); }
+.wf-conf.low { color: var(--accent); border-color: var(--accent); }
+.wf-conf.unknown { color: var(--fg-dim); }
 /* The ⚙ Settings tab is meta, not content — it hugs the right edge. */
 .wf-subtab-end { margin-left: auto; }
 

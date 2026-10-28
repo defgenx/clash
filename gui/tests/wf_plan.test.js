@@ -113,6 +113,32 @@ test("the apply note carries the findings, not a pointer to them", () => {
   assert.match(note, /say so in your summary rather than skipping it silently/);
 });
 
+test("the apply note tells the executor to verify what the reviewer only inferred", () => {
+  const text = [
+    "### Blockers",
+    "1. `src/auth.rs:42` — token compared with `==`.",
+    "   **Confidence:** high — traced every caller.",
+    "2. `src/watch.rs:88` — debounce may drop the last event.",
+    "   **Confidence:** low — inferred from naming.",
+  ].join("\n");
+  const note = applyReviewNote({ round: 2 }, { round: 2, text }, "diff");
+  // The per-finding lines ride along verbatim…
+  assert.match(note, /\*\*Confidence:\*\* low — inferred from naming\./);
+  // …and the note says what to do with them, with the round's tally.
+  assert.match(note, /reviewer's confidence \(1 high · 1 low\)/);
+  assert.match(note, /Verify `low` and `medium` findings against the code before changing anything/);
+  // A round written before confidence existed gets no such sentence.
+  const old = applyReviewNote({ round: 1 }, { round: 1, text: "1. `a.rs:1` — x" }, "diff");
+  assert.doesNotMatch(old, /confidence/);
+});
+
+test("wf-plan.js reads its confidence helpers from wf-compose.js, loaded first", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const html = fs.readFileSync(path.join(__dirname, "..", "dist", "index.html"), "utf8");
+  assert.ok(html.indexOf("wf-compose.js") < html.indexOf("wf-plan.js"));
+});
+
 test("a findings-free round records its verdict instead of an empty note", () => {
   // "No changes needed" is a real outcome; the note is the item's only record
   // of why the round happened, so it must not be blank.

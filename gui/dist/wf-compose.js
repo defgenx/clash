@@ -90,8 +90,68 @@
     return "What should change, and why?\n\nMarkdown. This becomes the agent's instructions for the next round.";
   }
 
+  /// A reviewer's confidence level as clash spells it — `FindingConfidence`
+  /// in the Rust domain: absent is "", anything unrecognized is "unknown".
+  /// Contract: docs/workflows.md → Finding confidence.
+  function normalizeConfidence(raw) {
+    if (raw == null) return "";
+    const s = String(raw).trim().toLowerCase();
+    if (!s) return "";
+    if (s === "med") return "medium";
+    return ["high", "medium", "low"].includes(s) ? s : "unknown";
+  }
+
+  /// An annotation's confidence as `{ level, basis }`, or null when it carries
+  /// none (every human comment, and findings written before the field).
+  function annotationConfidence(a) {
+    const level = normalizeConfidence(a && a.confidence);
+    if (!level) return null;
+    return { level, basis: String((a && a.confidenceBasis) || "").trim() };
+  }
+
+  /// The text after an agent-review.md `**Confidence:**` marker —
+  /// `high — traced the caller` — as `{ level, basis }`, or null.
+  function parseConfidenceText(text) {
+    const m = /^[\s*`]*([A-Za-z]+)[*`]*\s*[—–:-]?\s*(.*)$/s.exec(String(text || ""));
+    if (!m) return null;
+    const level = normalizeConfidence(m[1]);
+    return level ? { level, basis: (m[2] || "").replace(/\s+/g, " ").trim() } : null;
+  }
+
+  /// How many findings of a round's text sit at each confidence level, from
+  /// its `**Confidence:**` lines. All zero for a round written before them.
+  function findingConfidenceCounts(text) {
+    const counts = { high: 0, medium: 0, low: 0, unknown: 0 };
+    const re = /\*\*Confidence:\*\*([^\n]*)/gi;
+    let m;
+    while ((m = re.exec(String(text || "")))) {
+      const c = parseConfidenceText(m[1]);
+      counts[c ? c.level : "unknown"] += 1;
+    }
+    return counts;
+  }
+
+  /// `2 high · 1 low` — the non-zero levels, strongest first; "" when none.
+  function confidenceTally(counts) {
+    return ["high", "medium", "low", "unknown"]
+      .filter((k) => counts && counts[k] > 0)
+      .map((k) => `${counts[k]} ${k}`)
+      .join(" · ");
+  }
+
+  /// Badge text and tooltip for a confidence, shared by every view that shows one.
+  function confidenceLabel(level) {
+    return level === "unknown" ? "confidence ?" : `${level} confidence`;
+  }
+  function confidenceTooltip(c) {
+    if (!c) return "";
+    const head = `Reviewer confidence: ${c.level}`;
+    return c.basis ? `${head} — ${c.basis}` : `${head} (no basis given)`;
+  }
+
   /// The open annotations as a markdown list, matching how
-  /// `append_review_iteration` will render them into `review.md`.
+  /// `append_review_iteration` will render them into `review.md`
+  /// (`annotation_digest_line` in Rust, confidence suffix included).
   ///
   /// Shown read-only beside the composer: the count alone ("3 comments will be
   /// sent") tells you nothing about whether your note duplicates them.
@@ -102,7 +162,9 @@
         const file = a && a.file ? String(a.file) : "?";
         const line = a && (a.line || a.line === 0) ? a.line : "?";
         const body = a && a.body ? String(a.body).trim() : "";
-        return `- \`${file}:${line}\` — ${body}`;
+        const c = annotationConfidence(a);
+        const tag = c ? ` [confidence: ${c.level}${c.basis ? ` — ${c.basis}` : ""}]` : "";
+        return `- \`${file}:${line}\` — ${body}${tag}`;
       })
       .join("\n");
   }
@@ -282,6 +344,13 @@
     submitLabel,
     composerPlaceholder,
     annotationsMarkdown,
+    normalizeConfidence,
+    annotationConfidence,
+    parseConfidenceText,
+    findingConfidenceCounts,
+    confidenceTally,
+    confidenceLabel,
+    confidenceTooltip,
     canSubmitChangeRequest,
     draftKey,
     agentReviewRounds,

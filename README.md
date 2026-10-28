@@ -640,7 +640,11 @@ or PR post. An autonomous round decides alone and reports at the end. The
 executor phases start with the same question.
 
 Code findings arrive as **diff comments** graded `BLOCKER`/`RISK`/`GAP`/`NIT`,
-which you triage like your own. The verdict and plan findings go to
+which you triage like your own. Every finding also carries a **confidence**
+badge — `high` (verified in the code), `medium` (one link not traced) or `low`
+(plausible, unverified) — with the evidence in its tooltip, so you know which
+ones to believe and which to dig into first; applying a round tells the agent
+to verify the low ones before acting. The verdict and plan findings go to
 **Agent reviews**. When a round finishes, a toast and a strip on the item say
 what it concluded and what it published. **↗ Post round N to PR** shares an
 existing round later, with no new review. A reviewer may fix only trivial

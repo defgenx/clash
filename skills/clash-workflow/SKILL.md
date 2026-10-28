@@ -98,7 +98,11 @@ point they may answer "continue autonomously" — from then on, stop asking.
 4. `annotations.json` — every annotation with `"status": "open"` is work you
    MUST address this run (see phase `implement`). Ones with
    `"author": "agent"` came from a review round; treat them exactly like the
-   human's.
+   human's — except that one may carry `"confidence": "medium"|"low"` (and a
+   `confidenceBasis`): verify it against the code before changing anything
+   for it, and when it does not hold, mark it `wontfix` with a reply saying
+   what you checked. Findings in `agent-review.md` carry the same as a
+   `**Confidence:**` line.
 5. `agent-review.md` — the review rounds run on this item, if any. Read the
    latest; its open findings are work.
 6. The latest `history/<NNN>/diff.patch` if present — what the human last

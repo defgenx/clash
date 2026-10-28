@@ -9130,11 +9130,19 @@ function wfComposeChangeRequest({ item, target, annotations, onJump, prefill = "
         if (rounds.length > 1) {
           const picked = await uiChoice({
             message: "Insert which review round's findings?",
-            choices: [...rounds].reverse().map((r, i) => ({
-              label: `${roundLabel(r)}${r.heading ? ` — ${r.heading}` : ""}`,
-              value: String(r.index),
-              primary: i === 0,
-            })),
+            choices: [...rounds].reverse().map((r, i) => {
+              // How sure the round was, so a pick can favour the verified one.
+              const tally = confidenceTally(
+                findingConfidenceCounts((roundFindingsAt(md, r.index) || {}).text)
+              );
+              return {
+                label:
+                  `${roundLabel(r)}${r.heading ? ` — ${r.heading}` : ""}` +
+                  (tally ? ` · ${tally} confidence` : ""),
+                value: String(r.index),
+                primary: i === 0,
+              };
+            }),
           });
           if (!picked) return;
           index = Number(picked);
@@ -9223,7 +9231,8 @@ function wfComposeChangeRequest({ item, target, annotations, onJump, prefill = "
             uiAlert(`Delete failed: ${e}`);
           }
         };
-        row.append(cb, text, jump, del);
+        const conf = wfConfidenceBadge(annotationConfidence(a));
+        row.append(...[cb, conf, text, jump, del].filter(Boolean));
         list.appendChild(row);
       }
       annosWrap.appendChild(list);
@@ -11126,6 +11135,7 @@ async function renderWfSubView(body, root, item, ts) {
     md.className = "wf-md";
     if (text.trim()) {
       renderMarkdown(md, text);
+      if (ts.subView === "agentReview") wfDecorateConfidence(md);
       // Structure documents carry mermaid diagrams; other docs may too.
       renderMermaidIn(md);
     } else
@@ -11891,6 +11901,33 @@ function wfRenderOrphans(container, files, anchored, opts) {
   container.appendChild(tray);
 }
 
+/// A finding's confidence (`{ level, basis }`) as a small badge, the basis as
+/// its tooltip. Null when there is none, so callers can append it blindly.
+function wfConfidenceBadge(c) {
+  if (!c) return null;
+  const b = document.createElement("span");
+  b.className = `wf-conf ${c.level}`;
+  b.textContent = confidenceLabel(c.level);
+  b.title = confidenceTooltip(c);
+  return b;
+}
+
+/// Badge every `**Confidence:** <level> — <basis>` line of a rendered round
+/// report: the level becomes a badge, the basis stays readable after it.
+function wfDecorateConfidence(root) {
+  for (const strong of root.querySelectorAll("strong")) {
+    if (strong.textContent.trim() !== "Confidence:") continue;
+    const text = strong.nextSibling;
+    if (!text || text.nodeType !== Node.TEXT_NODE) continue;
+    const c = parseConfidenceText(text.textContent);
+    if (!c) continue;
+    const badge = wfConfidenceBadge(c);
+    // The badge carries the level; the text keeps only the basis.
+    text.textContent = c.basis ? ` ${c.basis}` : "";
+    strong.replaceWith(badge);
+  }
+}
+
 /// Thread rendering + composer land in the next commit; the read-only view
 /// shows existing comments inline.
 function wfBuildThread(a, opts) {
@@ -11907,6 +11944,8 @@ function wfBuildThread(a, opts) {
       ann.status
     )}</span><span class="wf-ann-author">${escapeHtml(ann.author || "user")}</span>` +
     `<span class="dim">it.${ann.iteration || 1}</span>${moved}</div>`;
+  const conf = wfConfidenceBadge(annotationConfidence(ann));
+  if (conf) t.querySelector(".wf-ann-author").after(conf);
   const bodyEl = document.createElement("div");
   bodyEl.className = "wf-thread-body wf-md";
   renderMarkdown(bodyEl, ann.body || "");

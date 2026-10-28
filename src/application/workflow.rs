@@ -616,6 +616,25 @@ pub fn latest_agent_review_section(md: &str) -> Option<(u32, String)> {
     Some((round, lines[start..end].join("\n").trim_end().to_string()))
 }
 
+/// Pure: one line of the `### Open annotations` digest that request-changes
+/// appends to `review.md` — the list the next change round works from. A
+/// finding's confidence rides along so the executor knows which to verify
+/// before acting. Mirrored by `annotationsMarkdown` in `gui/dist/wf-compose.js`.
+pub fn annotation_digest_line(a: &Annotation) -> String {
+    let mut line = format!("- `{}:{}` — {}", a.file, a.line, a.body.trim());
+    if let Some(c) = a.confidence {
+        line.push_str(" [confidence: ");
+        line.push_str(c.as_str());
+        let basis = a.confidence_basis.trim();
+        if !basis.is_empty() {
+            line.push_str(" — ");
+            line.push_str(basis);
+        }
+        line.push(']');
+    }
+    line
+}
+
 // ── review.md iteration parsing ─────────────────────────────────────────
 
 /// Pure: every `## Iteration <n>` section of `review.md`, in file order.
@@ -2333,6 +2352,38 @@ not landing in the branch: the commit message still ships a MAJOR.\n\n\
     }
 
     // ── parse_review_iterations ─────────────────────────────────────
+
+    #[test]
+    fn a_digest_line_carries_the_findings_confidence() {
+        use crate::domain::workflow::FindingConfidence;
+        let mut a = Annotation {
+            file: "src/auth.rs".into(),
+            line: 42,
+            body: " BLOCKER — timing leak \n".into(),
+            ..Annotation::default()
+        };
+        // A human comment: unchanged shape.
+        assert_eq!(
+            annotation_digest_line(&a),
+            "- `src/auth.rs:42` — BLOCKER — timing leak"
+        );
+        a.confidence = Some(FindingConfidence::Low);
+        assert_eq!(
+            annotation_digest_line(&a),
+            "- `src/auth.rs:42` — BLOCKER — timing leak [confidence: low]"
+        );
+        a.confidence_basis = " inferred from naming, not traced ".into();
+        let line = annotation_digest_line(&a);
+        assert_eq!(
+            line,
+            "- `src/auth.rs:42` — BLOCKER — timing leak [confidence: low — inferred from naming, not traced]"
+        );
+        // Still one digest entry when parsed back.
+        let md = format!("## Iteration 2 — x\n\n### Open annotations\n\n{line}\n");
+        let it = parse_review_iterations(&md);
+        assert_eq!(it[0].annotations.len(), 1);
+        assert!(it[0].annotations[0].ends_with("not traced]"));
+    }
 
     #[test]
     fn review_iterations_parse_notes_and_annotation_digests() {

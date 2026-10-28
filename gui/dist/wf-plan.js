@@ -18,6 +18,10 @@
 (function () {
   "use strict";
 
+  const node = typeof module !== "undefined" && module.exports;
+  const deps = node ? require("./wf-compose.js") : null;
+  const dep = (name) => (deps ? deps[name] : window[name]);
+
   /// Chip label for a revision: `v3`, and `v3 · current` for the newest — the
   /// newest revision *is* the live plan, so it needs both its number (to be
   /// referred to) and its role (to be found).
@@ -119,7 +123,15 @@
         : "Work through the findings below. Where one is wrong, already handled, or " +
           "not worth doing, say so in your summary rather than skipping it silently.";
     const body = (findings && findings.text ? findings.text : "").trim();
-    if (body) return `${head}\n\n${how}\n\n${body}\n`;
+    // Each finding's `**Confidence:**` line is in `body` verbatim; this says
+    // what to do with it, so a guess is checked before an executor builds on it.
+    const tally = dep("confidenceTally")(dep("findingConfidenceCounts")(body));
+    const verify = tally
+      ? `\n\nEach finding states the reviewer's confidence (${tally}) and its basis. ` +
+        "Verify `low` and `medium` findings against the code before changing anything " +
+        "for them, most severe first; one that does not hold is reported, not implemented."
+      : "";
+    if (body) return `${head}\n\n${how}${verify}\n\n${body}\n`;
     const verdict = ((round && round.verdict) || "").trim();
     return verdict
       ? `${head}\n\nThe round reported no separate findings. Verdict: ${verdict}\n`

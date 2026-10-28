@@ -210,13 +210,27 @@ with nothing wrong gets one line saying so — padding it dilutes the rest.
 3. For each option: implementation effort, risk, blast radius on other code, and
    maintenance burden.
 4. Name your recommended option and tie the reason to a preference above.
-5. **Then ask** (interactive rounds). After presenting a section's issues (or
+5. State your **confidence** that the issue is real, by evidence (it is
+   orthogonal to how much the issue matters — a `low` architectural issue is
+   the one to dig into first):
+   - `high` — verified against the code: you read the function, schema or
+     caller the plan relies on and it does not behave as the plan assumes;
+   - `medium` — strong evidence, one link not verified (the code read, one
+     caller or config value not traced);
+   - `low` — plausible, unverified: inferred from the plan's wording, naming
+     or a doc. Never dropped for being low — reported, with what would raise
+     it.
+   Give it as `**Confidence:** <level> — <basis>`, the basis naming the
+   evidence (and, below `high`, the read that would settle it). Try one cheap
+   read to raise a `low` before writing it.
+6. **Then ask** (interactive rounds). After presenting a section's issues (or
    the whole batch, in batched mode), put them to the human with
    `AskUserQuestion` — one question per issue, the whole open set at once
    (at most 4 per call, so issue the calls back to back rather than one issue
    per turn). Label every option with the issue number and option letter
    (`3b — extract the shared helper`), put your recommended option **first**
-   with its one-line why, and always include a "Dismiss — not an issue"
+   with its one-line why, put the issue's confidence in the question text so
+   the human knows how much to trust it, and always include a "Dismiss — not an issue"
    option, so the human confirms or corrects instead of composing an answer.
    Follow up only on what their answers opened. A free-text answer is an
    instruction: fold it into the record. Autonomous rounds skip the asking
@@ -278,6 +292,10 @@ own recommendation and the reason for it:
 Judge by *materiality*, never by count: one missing migration step is worth a
 round, six wording nits are not.
 
+**Weigh confidence too.** When every material issue is `low` confidence,
+answer `no` unless the reason says why revising anyway is right — the next
+step is to verify them, not to rewrite the plan around a guess.
+
 ## Recommend the next step
 
 Alongside the apply call, name the one step you would take next, from this
@@ -316,6 +334,7 @@ changes / needs rework before implementation>
 
 ### Architecture
 1. <issue> — options a/b/c, recommended <x>.
+   **Confidence:** high|medium|low — <the evidence; below high, what would raise it>
    **Decision:** accepted 1a | dismissed — <their words> | unreviewed (autonomous round)
 
 ### Code quality
@@ -347,7 +366,9 @@ changes / needs rework before implementation>
    number the kickoff gave you (`Round:`), and dropping the target would
    make two different rounds indistinguishable.
 
-   Every issue carries a `**Decision:**` line. Dismissed issues stay in the
+   Every issue carries a `**Confidence:**` line (clash badges it and the
+   apply note tells the executor to verify the low ones first) and a
+   `**Decision:**` line. Dismissed issues stay in the
    report (that is what stops a future round from re-raising them) but never
    become annotations. The `### Accepted changes` list is how the review turns
    into applied work: clash's change-request composer pastes it into the note

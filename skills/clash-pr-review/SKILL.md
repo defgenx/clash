@@ -20,8 +20,9 @@ or **REQUEST CHANGES**.
 Read `../clash-code-review/SKILL.md` (installed next to this skill) before
 starting. These sections of it apply **as written**:
 
-- **What "review" means here** — every finding needs a concrete failure, and
-  is graded `BLOCKER` / `RISK` / `GAP` / `NIT`;
+- **What "review" means here** — every finding needs a concrete failure, is
+  graded `BLOCKER` / `RISK` / `GAP` / `NIT`, and carries a confidence
+  (`high` / `medium` / `low`, by evidence) with its basis;
 - **Depth** — `standard` vs `deep`;
 - **Lead and subagents** — how a round is sized and split under
   `Delegation: team`, and the rule that only the lead writes, posts and asks;
@@ -233,10 +234,10 @@ those files are a contract. It holds:
 | T1 | @alice | src/auth.rs:40 | token compared with `==` | resolved | fixed in 3f2a1c9 | not fixed — `==` moved to verify.rs:12 → F1 |
 
 ## Findings
-| id | grade | where | failure | status | pass |
-|---|---|---|---|---|---|
-| F1 | BLOCKER | src/auth.rs:42 | `==` on tokens leaks timing | verified | 1 |
-| F2 | RISK | src/watch.rs:88 | … | dropped — debounced upstream (watch.rs:12) | 2 |
+| id | grade | confidence | where | failure | status | pass |
+|---|---|---|---|---|---|---|
+| F1 | BLOCKER | high — traced both callers | src/auth.rs:42 | `==` on tokens leaks timing | verified | 1 |
+| F2 | RISK | — | src/watch.rs:88 | … | dropped — debounced upstream (watch.rs:12) | 2 |
 
 ## Passes
 | pass | angle | new candidates | new verified | regraded |
@@ -272,8 +273,10 @@ those files are a contract. It holds:
    unless you have a new failure for it.
 4. **Verify every new candidate** by trying to refute it against the code:
    the input that triggers it, the line that mishandles it, the caller that
-   reaches it. Keep it only if the refutation fails. Regrade earlier findings
-   when this pass learned something that changes them.
+   reaches it. Keep it only if the refutation fails, and record its
+   confidence: `high` once the refutation read the exact path. Regrade
+   earlier findings — and raise their confidence — when this pass learned
+   something that changes them.
 5. Append the pass to the ledger: angle, coverage, candidates, what was
    verified, dropped and regraded.
 
@@ -341,6 +344,10 @@ approve.
 Judge by severity, never by count: one timing-attack `BLOCKER` requests
 changes; twenty `NIT`s do not.
 
+Only a `high` or `medium` confidence finding drives REQUEST CHANGES. A `low`
+one is either verified in another pass or posted under **Could change** with
+what would confirm it — never the sole reason for a verdict.
+
 ## Post — one review per PR
 
 ### The preamble
@@ -354,9 +361,10 @@ an automated review as a person's:
 ```
 
 The HTML comment is the marker later runs look for — keep it the first line.
-Every **line comment** starts with `🤖 ` and the grade
-(`🤖 **BLOCKER** — …`), because a line comment is read alone in "Files
-changed", far from the summary.
+Every **line comment** starts with `🤖 `, the grade and the confidence
+(`🤖 **BLOCKER** [confidence: high] — …`, with `Confidence basis: …` as its
+last line), because a line comment is read alone in "Files changed", far
+from the summary.
 
 ### The summary — only what must change
 
@@ -407,7 +415,7 @@ gh api --method POST repos/<o>/<r>/pulls/<n>/reviews --input review.json
   "event": "APPROVE | REQUEST_CHANGES | COMMENT",
   "body": "<preamble + summary>",
   "comments": [
-    { "path": "src/auth.rs", "line": 42, "side": "RIGHT", "body": "🤖 **BLOCKER** — …" }
+    { "path": "src/auth.rs", "line": 42, "side": "RIGHT", "body": "🤖 **BLOCKER** [confidence: high] — …" }
   ]
 }
 ```
@@ -453,8 +461,9 @@ with its `path:line`) in your final message so it can be posted by hand.
 In addition to the post, as `clash-code-review` does it:
 
 - **Annotations** — every posted finding on the **primary** PR's diff becomes
-  an `annotations.json` entry with `"author": "agent"`, grade first in `body`,
-  so *Request changes* can turn the set into a fix round. The file is one
+  an `annotations.json` entry with `"author": "agent"`, grade first in `body`
+  and `confidence` / `confidenceBasis` set, so *Request changes* can turn the
+  set into a fix round. The file is one
   object, `{"annotations": [ … ]}` — append inside that array, never write a
   bare array. A linked PR's
   findings stay on that PR only (they would anchor to nothing in this item).
@@ -479,6 +488,7 @@ In addition to the post, as `clash-code-review` does it:
 
 ### Blockers
 1. `src/auth.rs:42` — …
+   **Confidence:** high — <the evidence>
 
 ### Risks
 ### Gaps

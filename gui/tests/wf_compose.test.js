@@ -12,6 +12,13 @@ const {
   submitLabel,
   composerPlaceholder,
   annotationsMarkdown,
+  normalizeConfidence,
+  annotationConfidence,
+  parseConfidenceText,
+  findingConfidenceCounts,
+  confidenceTally,
+  confidenceLabel,
+  confidenceTooltip,
   canSubmitChangeRequest,
   draftKey,
   agentReviewRounds,
@@ -284,6 +291,12 @@ test("the browser branch publishes every name app.js calls", () => {
     "agentReviewRounds",
     "roundFindingsAt",
     "roundLabel",
+    "annotationConfidence",
+    "parseConfidenceText",
+    "findingConfidenceCounts",
+    "confidenceTally",
+    "confidenceLabel",
+    "confidenceTooltip",
   ];
   for (const name of used) {
     assert.equal(typeof win[name], "function", `${name} must be on window`);
@@ -410,4 +423,109 @@ test("a self-review's records are not pasted as findings", () => {
   assert.doesNotMatch(f.text, /breadth/);
   assert.doesNotMatch(f.text, /3 threads/);
   assert.doesNotMatch(f.text, /COMMENT review/);
+});
+
+// ── Finding confidence ────────────────────────────────────────────────
+
+test("confidence levels normalize like the Rust domain: absent, known, unknown", () => {
+  assert.equal(normalizeConfidence(undefined), "");
+  assert.equal(normalizeConfidence(null), "");
+  assert.equal(normalizeConfidence("  "), "");
+  assert.equal(normalizeConfidence("High"), "high");
+  assert.equal(normalizeConfidence("med"), "medium");
+  assert.equal(normalizeConfidence("low"), "low");
+  assert.equal(normalizeConfidence("very sure"), "unknown");
+  assert.equal(normalizeConfidence(3), "unknown");
+});
+
+test("an annotation's confidence comes with its basis; a human comment has none", () => {
+  assert.equal(annotationConfidence({ body: "x" }), null);
+  assert.equal(annotationConfidence(null), null);
+  assert.deepEqual(
+    annotationConfidence({ confidence: "medium", confidenceBasis: " read the handler " }),
+    { level: "medium", basis: "read the handler" }
+  );
+  assert.deepEqual(annotationConfidence({ confidence: "LOW" }), { level: "low", basis: "" });
+});
+
+test("the composer's digest carries confidence exactly like annotation_digest_line", () => {
+  // Same strings as the Rust test, so the preview is what review.md will hold.
+  const md = annotationsMarkdown([
+    { file: "src/auth.rs", line: 42, body: " BLOCKER — timing leak \n" },
+    { file: "src/auth.rs", line: 42, body: "BLOCKER — timing leak", confidence: "low" },
+    {
+      file: "src/auth.rs",
+      line: 42,
+      body: "BLOCKER — timing leak",
+      confidence: "low",
+      confidenceBasis: " inferred from naming, not traced ",
+    },
+  ]).split("\n");
+  assert.deepEqual(md, [
+    "- `src/auth.rs:42` — BLOCKER — timing leak",
+    "- `src/auth.rs:42` — BLOCKER — timing leak [confidence: low]",
+    "- `src/auth.rs:42` — BLOCKER — timing leak [confidence: low — inferred from naming, not traced]",
+  ]);
+});
+
+test("a **Confidence:** marker's text splits into level and basis", () => {
+  assert.deepEqual(parseConfidenceText(" high — traced every caller (api.rs:120)"), {
+    level: "high",
+    basis: "traced every caller (api.rs:120)",
+  });
+  assert.deepEqual(parseConfidenceText("`medium`: one link\n   not traced"), {
+    level: "medium",
+    basis: "one link not traced",
+  });
+  assert.deepEqual(parseConfidenceText(" **low**"), { level: "low", basis: "" });
+  assert.equal(parseConfidenceText(""), null);
+  assert.equal(parseConfidenceText("   "), null);
+});
+
+const CONF_ROUND = [
+  "## Review 2 — diff · deep · 2026-10-28 10:00",
+  "",
+  "**Verdict:** 1 blocker",
+  "",
+  "**Apply:** yes — the blocker is real",
+  "",
+  "### Blockers",
+  "1. `src/auth.rs:42` — token compared with `==`.",
+  "   **Confidence:** high — traced every caller of `check_token`.",
+  "",
+  "### Risks",
+  "2. `src/watch.rs:88` — debounce may drop the last event.",
+  "   **Confidence:** low — inferred from the timer's name; would need a run to confirm.",
+  "3. `src/lib.rs:3` — retry loop unbounded.",
+  "   **Confidence:** maybe",
+  "",
+  "### Published",
+  "- Nothing — local round by request.",
+].join("\n");
+
+test("round findings keep every finding's confidence line verbatim", () => {
+  const found = roundFindingsAt(CONF_ROUND, 0);
+  assert.match(found.text, /\*\*Confidence:\*\* high — traced every caller/);
+  assert.match(found.text, /\*\*Confidence:\*\* low — inferred from the timer's name/);
+  assert.doesNotMatch(found.text, /### Published/);
+});
+
+test("a round's confidence tally counts each finding once, unknowns included", () => {
+  const counts = findingConfidenceCounts(roundFindingsAt(CONF_ROUND, 0).text);
+  assert.deepEqual(counts, { high: 1, medium: 0, low: 1, unknown: 1 });
+  assert.equal(confidenceTally(counts), "1 high · 1 low · 1 unknown");
+  // A round written before the field: nothing to say, so nothing is said.
+  assert.equal(confidenceTally(findingConfidenceCounts("1. `a.rs:1` — x")), "");
+  assert.equal(confidenceTally(null), "");
+});
+
+test("the badge names the level and its tooltip the evidence", () => {
+  assert.equal(confidenceLabel("low"), "low confidence");
+  assert.equal(confidenceLabel("unknown"), "confidence ?");
+  assert.equal(
+    confidenceTooltip({ level: "medium", basis: "read the handler" }),
+    "Reviewer confidence: medium — read the handler"
+  );
+  assert.equal(confidenceTooltip({ level: "high", basis: "" }), "Reviewer confidence: high (no basis given)");
+  assert.equal(confidenceTooltip(null), "");
 });
