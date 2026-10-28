@@ -6368,9 +6368,9 @@ function renderWorkflowPrDashboard(el) {
       chip.className = `wf-prs-chip${stateBit ? ` pr-${stateBit}` : ""}`;
       chip.innerHTML = `${svgIcon("pr", 11)}<span>${escapeHtml(prChipLabel(pr))}${
         stateBit && stateBit !== "open" ? ` · ${escapeHtml(stateBit)}` : ""
-      }</span>`;
+      }${pr.stack ? ` · ${prStackLabel(pr)}` : ""}</span>`;
       chip.title =
-        `${pr.url} (${pr.primary ? "primary" : "linked"})` +
+        `${pr.url} (${pr.primary ? "primary" : "linked"})${wfPrStackHint(pr)}` +
         " — right-click for this PR's own actions";
       chip.onclick = (ev) => {
         ev.stopPropagation();
@@ -6387,6 +6387,7 @@ function renderWorkflowPrDashboard(el) {
       };
       chips.appendChild(chip);
     }
+    if (r.stackIssue) chips.appendChild(wfStackIssueChip(r.stackIssue));
     row.appendChild(chips);
     wrap.appendChild(row);
   }
@@ -6660,16 +6661,17 @@ async function buildWorkflowView(el, project, slug) {
   // PR's own action menu — on a multi-repo item the per-repo decisions have
   // to live somewhere, and the PR itself is the only surface that identifies
   // which repository they are about.
-  for (const pr of itemPrs(item.meta)) {
+  // A stacked item lists its PRs base → tip, each with its layer.
+  for (const pr of itemPrs(item.meta, item.prStack)) {
     const prBtn = document.createElement("button");
     prBtn.className = "icon-btn wide" + (pr.primary ? "" : " wf-linked-pr");
     const label = pr.primary ? `#${pr.number || "PR"}` : prChipLabel(pr);
     const stateBit = prStateLabel(pr);
     prBtn.innerHTML = `${svgIcon("pr", 12)}<span>${escapeHtml(label)}${
       stateBit && stateBit !== "open" ? ` ${escapeHtml(stateBit)}` : ""
-    }</span>`;
+    }${pr.stack ? ` <span class="dim">${prStackLabel(pr)}</span>` : ""}</span>`;
     prBtn.title =
-      `${pr.url} — ${pr.primary ? "primary PR" : "linked PR"}` +
+      `${pr.url} — ${pr.primary ? "primary PR" : "linked PR"}${wfPrStackHint(pr)}` +
       "; right-click for this PR's own actions";
     prBtn.onclick = () => openLink(pr.url);
     prBtn.oncontextmenu = (ev) => {
@@ -6679,6 +6681,7 @@ async function buildWorkflowView(el, project, slug) {
     };
     head.appendChild(prBtn);
   }
+  if (item.prStackIssue) head.appendChild(wfStackIssueChip(item.prStackIssue));
   if (!bigDrawing) el.appendChild(head);
 
   // ── Pipeline stepper ──
@@ -6882,7 +6885,7 @@ async function buildWorkflowView(el, project, slug) {
 /// Resolves `{ all, urls }`, or null when the user cancelled or the action
 /// has nothing to act on.
 async function pickPrScope(item, action, opts = {}) {
-  const prs = itemPrs(item.meta);
+  const prs = itemPrs(item.meta, item.prStack);
   const model = prScopeModel(prs, action, opts);
   if (!model.candidates.length) {
     if (opts.quiet !== true) uiAlert(model.empty);
@@ -6918,6 +6921,22 @@ async function pickPrScope(item, action, opts = {}) {
 /// Every entry pre-picks the scope and then goes through the *same* action as
 /// the bar's button — a second implementation of "mark ready" is how the two
 /// end up disagreeing about what the primary does to the item's status.
+/// Title fragment naming a PR's stack layer and what it builds on.
+function wfPrStackHint(pr) {
+  if (!pr.stack) return "";
+  const parent = pr.stack.parent ? `, on ${prChipLabel({ url: pr.stack.parent })}` : ", the stack's base";
+  return ` · stack layer ${prStackLabel(pr)}${parent}`;
+}
+
+/// The "stacking is on but these PRs do not order" warning, with the reason.
+function wfStackIssueChip(issue) {
+  const chip = document.createElement("span");
+  chip.className = "wf-meta wf-stack-issue";
+  chip.textContent = "⚠ stack unclear";
+  chip.title = `PR stacking is on, but ${issue}. PR actions and reviews treat the PRs as unstacked until this is fixed.`;
+  return chip;
+}
+
 function wfPrMenu(item, pr, root) {
   const scope = { all: false, urls: [pr.url] };
   const name = prChipLabel(pr);
@@ -7987,7 +8006,7 @@ function wfSoloChecks(item, root, ctx) {
 /// The PRs a pass reads by default — the same rule the scope dialog
 /// pre-ticks, so a run started from a chip promises what the dialog would.
 function wfDefaultPrUrls(item, action) {
-  const model = prScopeModel(itemPrs(item.meta), action);
+  const model = prScopeModel(itemPrs(item.meta, item.prStack), action);
   if (!model.candidates.length) return [];
   return model.needed ? model.rows.filter((r) => r.checked).map((r) => r.url) : model.only.urls;
 }
@@ -8540,12 +8559,16 @@ function wfComposeReviewRound(item, { prUrls = null, target = null, refresh = []
       // Which changes the round reads is a dimension of the round on a
       // multi-repo item, so it belongs in this dialog rather than in a second
       // one nobody would find.
-      prs: itemPrs(item.meta),
+      prs: itemPrs(item.meta, item.prStack),
       // A launch that already named its PRs (a per-PR menu, a re-open) opens
       // with those rows checked — the dialog still shows the choice, so the
       // scope of the round is never something the human has to remember
-      // having picked.
-      prUrls,
+      // having picked. A stacked item's code round reads the whole stack.
+      prUrls:
+        prUrls ||
+        (t === "diff" || t === "drift"
+          ? prStackUrls(itemPrs(item.meta, item.prStack))
+          : null),
       interactionDefault: item.meta.interactionDefault || "",
       // Remember the last round's answer for this item: someone who wants the
       // loop hands-off wants it every round, and someone who reads findings
@@ -11380,6 +11403,7 @@ async function renderWfSubView(body, root, item, ts) {
       jiraTicket: item.meta.jiraTicket || "",
       agentSetting: item.meta.agentSetting || "",
       workInPlace: !!item.meta.workInPlace,
+      prStacking: item.meta.prStacking || "",
     };
     const save = async (patch, revert) => {
       try {
@@ -11530,6 +11554,41 @@ async function renderWfSubView(body, root, item, ts) {
       save({ prSkill: prInput.value.trim() }, () => (prInput.value = committed.prSkill));
     prRow.appendChild(prInput);
     agents.appendChild(prRow);
+
+    const stackRow = document.createElement("label");
+    stackRow.className = "wf-settings-row";
+    stackRow.appendChild(document.createTextNode("PR stacking "));
+    const stackSel = document.createElement("select");
+    for (const [v, l] of [
+      ["", "inherit global setting"],
+      ["on", "on — order the PRs into a stack"],
+      ["off", "off"],
+    ]) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = l;
+      stackSel.appendChild(o);
+    }
+    stackSel.value = committed.prStacking;
+    stackSel.onchange = () =>
+      save({ prStacking: stackSel.value }, () => (stackSel.value = committed.prStacking));
+    stackSel.title =
+      "Per-item override of Settings → Workflows → PR stacking. On GitHub, PRs whose base branch is another's head are ordered base → tip: chips show the layer, PR actions default to the whole stack and reviews read each layer against its parent.";
+    stackRow.appendChild(stackSel);
+    agents.appendChild(stackRow);
+    if (item.prStacking) {
+      const stackHint = document.createElement("p");
+      stackHint.className = "hint";
+      stackHint.textContent = item.prStack
+        ? `Stack: ${itemPrs(item.meta, item.prStack)
+            .filter((p) => p.stack)
+            .map((p) => prChipLabel(p))
+            .join(" → ")}`
+        : item.prStackIssue
+          ? `Stack unclear: ${item.prStackIssue}.`
+          : "No stack: none of this item's PRs builds on another (branches are read on each PR refresh).";
+      agents.appendChild(stackHint);
+    }
     wrap.appendChild(agents);
 
     // Where the agents work. Once a worktree exists it is the item's checkout,
@@ -14405,6 +14464,20 @@ $("set-wf-forge").addEventListener("change", async () => {
   }
 });
 
+/// PR stacking lives in config.toml (shared with the TUI); items override it.
+$("set-wf-pr-stacking").addEventListener("change", async () => {
+  const el = $("set-wf-pr-stacking");
+  try {
+    el.value = (await invoke("set_workflow_pr_stacking", { enabled: el.value === "on" })) ? "on" : "off";
+  } catch (e) {
+    uiAlert(`PR stacking: ${e}`);
+    try {
+      el.value = (await invoke("get_workflow_pr_stacking")) ? "on" : "off";
+    } catch (_) {}
+  }
+  await refreshWorkflows();
+});
+
 /// Share/notify webhooks live in config.toml (shared with the TUI). Each
 /// field patches its own key; the backend validates the URL / enum and echoes
 /// the effective values back. Nothing is ever posted without an explicit
@@ -14844,6 +14917,9 @@ function restartSessionPoll() {
     .catch(() => {});
   invoke("get_workflow_forge")
     .then((f) => ($("set-wf-forge").value = f || "auto"))
+    .catch(() => {});
+  invoke("get_workflow_pr_stacking")
+    .then((on) => ($("set-wf-pr-stacking").value = on ? "on" : "off"))
     .catch(() => {});
   invoke("get_skills_update_mode")
     // `untouched` predates the split and now says exactly what `keep` says:

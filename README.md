@@ -800,6 +800,24 @@ Every PR chip also has a right-click menu with that PR's actions. The **⇄ PR
 dashboard** (button on the WORKFLOWS section) lists every item holding a PR
 across all projects, decisions first and merged last.
 
+### PR stacks
+
+With **PR stacking** on (*Settings → Workflows*, off by default; per-item
+override in ⚙ Settings), an item whose linked PRs build on each other on
+GitHub — each one's base branch is another's head — is treated as a stack:
+
+- chips list the PRs base → tip and show each layer (`2/3`);
+- code reviews and *Answer PR threads* pre-tick the whole stack;
+- the item's diff is taken against its parent PR's branch;
+- review rounds are told the order (`Stack:` in the kickoff) and review each
+  layer against its parent, checking the other layers before calling anything
+  missing. In an interactive round the reviewer first asks whether to review
+  the whole stack or which layers. Run on its own, `/clash-pr-review` finds
+  the stack itself.
+
+PRs that don't order into one chain (a fork, a loop, a missing middle layer)
+show **⚠ stack unclear** with the reason and are treated as unstacked.
+
 ### Share & notifications
 
 **↗ Share…** composes one document from the item (summary, plan, rounds,

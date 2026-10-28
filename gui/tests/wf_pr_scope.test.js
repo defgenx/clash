@@ -231,6 +231,61 @@ test("an unknown action acts on nothing rather than on everything", () => {
   assert.deepEqual(prActionCandidates(undefined, "open"), []);
 });
 
+// A stack of three in one repo, listed out of order, plus an unrelated PR.
+const STACKED = (() => {
+  const { itemPrs } = require("../dist/wf-prs.js");
+  const u = (r, n) => `https://github.com/o/${r}/pull/${n}`;
+  const meta = {
+    pr: { url: u("api", 2), number: 2 },
+    linkedPrs: [
+      { url: u("web", 9), number: 9, unansweredComments: 0 },
+      { url: u("api", 3), number: 3 },
+      { url: u("api", 1), number: 1, unansweredComments: 4 },
+    ],
+  };
+  const stack = { layers: [1, 2, 3].map((n) => ({ url: u("api", n) })) };
+  return itemPrs(meta, stack);
+})();
+
+test("a stacked item's scope rows run base to tip", () => {
+  const model = prScopeModel(STACKED, "open");
+  assert.deepEqual(
+    model.rows.map((r) => r.url.split("/").slice(-3).join("/")),
+    ["api/pull/1", "api/pull/2", "api/pull/3", "web/pull/9"]
+  );
+  assert.match(model.rows[1].label, /primary · stack 2\/3/);
+  assert.match(model.rows[1].detail, /on api#1/);
+  // A selection follows the rows, so a fan-out walks parent before child.
+  const sel = prScopeSelection(model, [model.rows[2].url, model.rows[0].url]);
+  assert.deepEqual(sel.urls, [model.rows[0].url, model.rows[2].url]);
+});
+
+test("answering comments pre-ticks the whole stack plus what has threads waiting", () => {
+  const model = prScopeModel(STACKED, "respond");
+  assert.deepEqual(
+    model.rows.filter((r) => r.checked).map((r) => r.url.split("/").pop()),
+    ["1", "2", "3"]
+  );
+  // Mark-ready keeps its own rule: the primary only, never a whole stack.
+  const ready = prScopeModel(
+    STACKED.map((p) => ({ ...p, draft: true })),
+    "markReady"
+  );
+  assert.deepEqual(
+    ready.rows.filter((r) => r.checked).map((r) => r.url.split("/").pop()),
+    ["2"]
+  );
+});
+
+test("a review reads the stack's URLs, base to tip, and nothing without one", () => {
+  const { prStackUrls } = require("../dist/wf-pr-scope.js");
+  assert.deepEqual(
+    prStackUrls(STACKED).map((u) => u.split("/").pop()),
+    ["1", "2", "3"]
+  );
+  assert.deepEqual(prStackUrls(THREE), []);
+});
+
 test("the browser branch publishes every name app.js calls", () => {
   // app.js is a plain script that reads these off `window`, so a rename here
   // (or a missing `<script>` tag) fails at click time, not at boot — the
@@ -253,6 +308,7 @@ test("the browser branch publishes every name app.js calls", () => {
     "prActionCandidates",
     "prLive",
     "primaryPrReady",
+    "prStackUrls",
   ]) {
     assert.equal(typeof win[name], "function", `${name} must be on window`);
     assert.ok(app.includes(name), `app.js is expected to use ${name}`);

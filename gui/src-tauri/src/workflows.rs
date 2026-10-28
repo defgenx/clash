@@ -68,6 +68,12 @@ pub(crate) async fn list_workflow_items(
         for e in &mut item.explainers {
             e.running = explainer_running(e, &live, now);
         }
+        let (stacking, stack) = item_stack(&state, &item.meta);
+        item.pr_stacking = stacking;
+        match stack {
+            Ok(s) => item.pr_stack = s,
+            Err(issue) => item.pr_stack_issue = Some(issue),
+        }
         // `Reviewing` is included so a dead reviewer surfaces the same "the
         // agent is gone" affordance — without it a crashed round would leave
         // the item gated with no visible way out.
@@ -254,10 +260,20 @@ pub(crate) async fn workflow_diff_text(
         }
         None => return Ok(String::new()),
     };
-    let base = if meta.base.trim().is_empty() {
-        crate::origin_default_branch(&dir).await
-    } else {
+    // A stacked PR's own change starts at its parent layer's head; measured
+    // from the trunk it would include every layer below it.
+    let stacked_base = match (&meta.pr, item_stack(state, &meta).1) {
+        (Some(pr), Ok(Some(stack))) => {
+            clash::application::pr_stack::stack_parent_head(&stack, &pr.url).map(str::to_string)
+        }
+        _ => None,
+    };
+    let base = if !meta.base.trim().is_empty() {
         meta.base.clone()
+    } else if let Some(parent) = stacked_base {
+        parent
+    } else {
+        crate::origin_default_branch(&dir).await
     };
     clash::infrastructure::git::git_diff(
         Path::new(&dir),
@@ -418,6 +434,26 @@ pub(crate) fn set_workflow_forge(
     Ok(state.config.get().workflows.forge)
 }
 
+/// The global PR stacking setting, for the Settings field.
+#[tauri::command]
+pub(crate) fn get_workflow_pr_stacking(state: State<'_, GuiState>) -> bool {
+    state.config.get().workflows.pr_stacking
+}
+
+/// Turn PR stacking on or off globally (`workflows.pr_stacking` in the shared
+/// `config.toml`); items with their own override keep it.
+#[tauri::command]
+pub(crate) fn set_workflow_pr_stacking(
+    state: State<'_, GuiState>,
+    enabled: bool,
+) -> Result<bool, String> {
+    state
+        .config
+        .set_json(&[("workflows.pr_stacking", serde_json::Value::Bool(enabled))])
+        .map_err(|e| e.to_string())?;
+    Ok(state.config.get().workflows.pr_stacking)
+}
+
 /// Patch the per-item settings (the item ⚙ Settings tab). Every field is
 /// optional: `Some` sets, `None` leaves the current value — one command for
 /// the whole tab, so it grows without new commands per knob.
@@ -435,6 +471,7 @@ pub(crate) fn set_workflow_forge(
 ///   `workflows.agent`.
 /// - `work_in_place`: never create a worktree; refused once one exists,
 ///   since the recorded worktree is the item's checkout from then on.
+/// - `pr_stacking`: `on` | `off`; empty inherits `workflows.pr_stacking`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn set_workflow_item_settings(
@@ -450,6 +487,7 @@ pub(crate) fn set_workflow_item_settings(
     title: Option<String>,
     base: Option<String>,
     work_in_place: Option<bool>,
+    pr_stacking: Option<String>,
 ) -> Result<clash::domain::workflow::WorkflowMeta, String> {
     let mut meta = state
         .backend
@@ -501,6 +539,13 @@ pub(crate) fn set_workflow_item_settings(
             return Err(format!("Unknown agent '{}'", agent));
         }
         meta.agent_setting = agent;
+    }
+    if let Some(stacking) = pr_stacking {
+        let stacking = stacking.trim().to_ascii_lowercase();
+        if !["", "on", "off"].contains(&stacking.as_str()) {
+            return Err(format!("Unknown PR stacking setting '{}'", stacking));
+        }
+        meta.pr_stacking = stacking;
     }
     state
         .backend
@@ -1961,6 +2006,12 @@ pub(crate) async fn launch_review(
         interactive,
         auto_apply,
         pr_urls,
+        // Context, not scope: the reviewer reads each layer against its parent
+        // whichever PRs it was pointed at. An unorderable stack is no stack.
+        stack: match item_stack(state, &meta).1 {
+            Ok(Some(s)) => s.layers.into_iter().map(|l| l.url).collect(),
+            _ => Vec::new(),
+        },
         // What this pass must concentrate on, when the human said so at launch.
         focus: focus.map(|f| f.trim().to_string()).unwrap_or_default(),
         started_at: now_ms(),
@@ -2666,18 +2717,79 @@ fn merge_pr_view(
     view: &clash::domain::forge::ChangeView,
 ) -> bool {
     let pr = meta.pr.get_or_insert_with(Default::default);
-    let changed = pr.url != view.url
-        || pr.number != view.number
-        || pr.draft != view.draft
-        || pr.state != view.state.as_str();
-    if changed {
+    let moved = pr.url != view.url;
+    if moved {
         pr.url = view.url.clone();
+    }
+    fold_pr_view(pr, view) || moved
+}
+
+/// Fold a forge view into one PR record, primary or linked. True when
+/// anything besides the check timestamp changed.
+fn fold_pr_view(
+    pr: &mut clash::domain::workflow::WorkflowPr,
+    view: &clash::domain::forge::ChangeView,
+) -> bool {
+    let state_str = view.state.as_str();
+    let changed = pr.number != view.number
+        || pr.draft != view.draft
+        || pr.state != state_str
+        || pr.head_ref != view.head_ref
+        || pr.base_ref != view.base_ref;
+    if changed {
         pr.number = view.number;
         pr.draft = view.draft;
-        pr.state = view.state.as_str().to_string();
+        pr.state = state_str.to_string();
+        pr.head_ref = view.head_ref.clone();
+        pr.base_ref = view.base_ref.clone();
         pr.last_checked_at = now_ms();
     }
     changed
+}
+
+/// The item's PR stack: whether stacking is on (item override over the
+/// global setting, GitHub only) and, when it is, the ordered stack or why the
+/// PRs do not order into one. Reads only recorded branches — no forge call,
+/// so a stale record degrades to "no stack" rather than failing anything.
+fn item_stack(
+    state: &GuiState,
+    meta: &clash::domain::workflow::WorkflowMeta,
+) -> (
+    bool,
+    Result<Option<clash::domain::workflow::PrStack>, String>,
+) {
+    use clash::application::pr_stack;
+    let has_prs = meta
+        .pr
+        .iter()
+        .chain(&meta.linked_prs)
+        .any(|p| !p.url.is_empty());
+    let global = state.config.get().workflows.pr_stacking;
+    // Decided before the forge is resolved, so an item that could never
+    // stack costs no remote lookup.
+    let wanted = match meta.pr_stacking.as_str() {
+        "on" => true,
+        "off" => false,
+        _ => global,
+    };
+    let Ok(dir) = pr_dir(meta) else {
+        return (false, Ok(None));
+    };
+    if !has_prs
+        || !wanted
+        || !pr_stack::stacking_enabled(&meta.pr_stacking, global, state.forge_for_dir(&dir).kind())
+    {
+        return (false, Ok(None));
+    }
+    let inputs = pr_stack::stack_inputs(meta, |url| {
+        clash::infrastructure::gh::parse_pr_url(url)
+            .map(|(repo, _)| repo)
+            .unwrap_or_default()
+    });
+    (
+        true,
+        pr_stack::order_stack(&inputs).map_err(|e| e.to_string()),
+    )
 }
 
 /// Create a draft PR for the item's branch via `gh pr create --draft`,
@@ -2854,14 +2966,7 @@ pub(crate) async fn refresh_workflow_pr(
         let Some(pr) = meta.linked_prs.get_mut(i) else {
             continue;
         };
-        let state_str = view.state.as_str();
-        if pr.number != view.number || pr.draft != view.draft || pr.state != state_str {
-            pr.number = view.number;
-            pr.draft = view.draft;
-            pr.state = state_str.to_string();
-            pr.last_checked_at = now_ms();
-            changed = true;
-        }
+        changed |= fold_pr_view(pr, &view);
         if let Some(n) = unanswered {
             if pr.unanswered_comments != Some(n) {
                 pr.unanswered_comments = Some(n);
@@ -3245,10 +3350,7 @@ pub(crate) async fn attach_workflow_linked_pr(
         .await
         {
             if let Some(pr) = meta.linked_prs.iter_mut().find(|p| p.url == url) {
-                pr.number = view.number;
-                pr.draft = view.draft;
-                pr.state = view.state.as_str().to_string();
-                pr.last_checked_at = now_ms();
+                fold_pr_view(pr, &view);
                 state
                     .backend
                     .write_workflow_meta(&project, &slug, &meta)

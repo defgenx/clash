@@ -47,6 +47,11 @@ The kickoff prompt gives you:
   repo, not that one. The one thing that *is* an annotation on the item's own
   diff is work a linked PR implies **here** — "this repo's caller needs the
   new field too" is a finding about your own files.
+- **Stack** — optional; `Stack: <url1> > <url2> > <url3>`, the item's PRs
+  ordered as a GitHub stack, **base → tip** (also in `meta.review.stack`).
+  Present only when PR stacking is on and the PRs order into one chain. See
+  "A PR stack" below — it changes what each diff is measured against and what
+  counts as missing.
 - **Interactive** — optional; see the opening question below.
 - **Delegation** — `team` (also what an absent field means) or `solo`,
   optionally naming the subagent model: `team (subagents on <model>)`. See
@@ -346,6 +351,62 @@ re-anchor your annotation when the diff drifts. Put the grade at the start of
 `body` so it survives into every view. `confidence` (`high`|`medium`|`low`)
 and `confidenceBasis` are required on every finding you write (see
 "Confidence" above); keep them out of `body`, clash shows them as a badge.
+
+### A PR stack
+
+`Stack:` lists PRs in **one repository** where each PR's base branch is the
+previous PR's head: `api#1 > api#2 > api#3` means #2 targets #1's branch and
+#3 targets #2's. Each layer merges on its own, bottom first, so each is
+reviewed as its own change — on top of the layers below it, ahead of the ones
+above it.
+
+**Which PRs.** A stack is reviewed whole: with no `PR:` field, review **every
+layer**; with `PR:` naming some of them, those. In an **interactive** round,
+ask right after the opening question, in one `AskUserQuestion` with
+`multiSelect: true`: *Whole stack* (recommended) plus one option per layer
+(`api#2 — layer 2/3, on api#1`), the `PR:` set pre-recommended when there is
+one. Autonomous rounds take the rule above without asking.
+
+**Each layer's diff is against its parent, never the trunk.** Measured from
+`main`, layer 3's diff contains layers 1 and 2, and every finding in them is
+reported against the wrong PR.
+
+- A layer's PR diff: `gh pr diff <n> --repo <owner/repo>` — GitHub already
+  diffs a PR against its base, which is the parent's head.
+- The item's own branch locally: `git diff origin/<parent head>...HEAD`
+  (`baseRefName` of the item's PR). clash diffs the item the same way when
+  `meta.base` is empty; when `meta.base` names something else, use it and
+  say so.
+- `gh pr view <n> --repo <owner/repo> --json baseRefName,headRefName` is the
+  ground truth; if it disagrees with `Stack:` (a layer was retargeted since
+  launch), follow GitHub and say so in the report.
+
+**Before reporting anything as missing, wrong or unused, check the sibling
+layers.** Read the diffs of the layers below (already in this branch's
+history) and above (not yet) first:
+
+- Something introduced by a lower layer is not this layer's change — do not
+  review it again here, and do not grade this layer for it.
+- Something this layer leaves out that a **higher** layer adds (the caller,
+  the test, the migration, the docs) is not missing. Mention it only when
+  useful, as "lands in layer N", never as a finding.
+- It **is** a finding when a layer is unsafe to merge without the ones above:
+  it does not build, breaks behaviour, or ships a half-migrated state that
+  would reach users if the stack stopped there. Grade it on that consequence.
+- Contradictions between layers (layer 3 reverts or reworks what layer 2
+  introduced) are findings on the layer that should change — usually the
+  lower one, so the history does not ship churn.
+
+**Report per PR, in stack order**, under the round's usual headings: name
+the layer (`api#2 · 2/3`) on every finding. Findings on the item's own PR are
+annotations as usual; findings on any other layer — same repository, but a
+different branch than your checkout — follow the linked-PR rule above: line
+comments on that PR when the publish mode posts, otherwise in the report with
+`file:line`, never as annotations.
+
+No `Stack:` field means stacking is off or the PRs do not order. A PR whose
+base is not the default branch is still reviewed against that base
+(`gh pr diff` does it); say in the report that it looks stacked.
 
 ## The one thing you may fix
 

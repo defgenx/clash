@@ -9,6 +9,9 @@ pub mod explain_tree;
 #[allow(dead_code)]
 pub mod explorer;
 pub mod nav;
+/// Same allowance as `workflow`: PR stacks are consumed by the GUI in v1.
+#[allow(dead_code)]
+pub mod pr_stack;
 pub mod prompt_queue;
 pub mod reducer;
 pub mod state;

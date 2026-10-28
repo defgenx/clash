@@ -3794,6 +3794,8 @@ fn main() {
             workflows::set_workflow_pr_skill,
             workflows::get_workflow_forge,
             workflows::set_workflow_forge,
+            workflows::get_workflow_pr_stacking,
+            workflows::set_workflow_pr_stacking,
             workflows::set_workflow_item_settings,
             workflows::get_skills_plan,
             workflows::apply_skills_decision,

@@ -32,6 +32,12 @@
 //     a *linked* repository by default outside those three — announcing a
 //     second repo is what you tick deliberately.
 //
+// **A stack is one change, too.** When the item's PRs order into a GitHub
+// stack (`itemPrs(meta, item.prStack)`), the rows come in stack order — base
+// first — and the rounds that read or answer PRs (review, respond) pre-tick
+// the whole stack: reviewing one layer alone is how "X is missing" gets
+// reported about an X that sits in the layer below.
+//
 // `app.js` holds the dialog; the same shape as `wf-prs.js`, which this module
 // takes its PR records from (`itemPrs`).
 (function () {
@@ -90,6 +96,8 @@
       // A reply is not a release, so there is nothing here to announce
       // accidentally.
       defaultWaiting: true,
+      // A thread on one layer is often answered by a commit on another.
+      defaultStack: true,
     },
     selfReview: {
       message: "Self-review which pull requests?",
@@ -129,6 +137,7 @@
     // have any: an unfetched count is not zero, and falling back to the
     // primary beats opening a dialog with nothing ticked.
     const waiting = rule.defaultWaiting && candidates.some((p) => p.unanswered > 0);
+    const stacked = rule.defaultStack && candidates.some((p) => p.stack);
     const rows = candidates.map((pr) => ({
       url: pr.url,
       label: prRowLabel(pr, opts),
@@ -137,8 +146,8 @@
         ? seed.includes(pr.url)
         : rule.defaultAll
           ? true
-          : waiting
-            ? pr.unanswered > 0
+          : waiting || stacked
+            ? (waiting && pr.unanswered > 0) || (stacked && !!pr.stack)
             : !!pr.primary,
     }));
     return {
@@ -161,6 +170,7 @@
   /// — the primary first, then the linked PRs as the item records them, so a
   /// fan-out never depends on the order the boxes were clicked in.
   function prScopeSelection(model, urls) {
+    // Rows are in `itemPrs` order, which is stack order for a stacked item.
     const want = new Set(urls || []);
     const picked = model.rows.filter((r) => want.has(r.url)).map((r) => r.url);
     return { all: picked.length === model.rows.length && picked.length > 0, urls: picked };
@@ -171,7 +181,14 @@
   /// the linked ones.
   function prRowLabel(pr, opts = {}) {
     const name = typeof opts.chipLabel === "function" ? opts.chipLabel(pr) : prScopeChip(pr);
-    return pr.primary ? `${name} · primary` : name;
+    const layer = pr.stack ? ` · stack ${pr.stack.pos}/${pr.stack.of}` : "";
+    return pr.primary ? `${name} · primary${layer}` : `${name}${layer}`;
+  }
+
+  /// The URLs of the item's stack, base → tip; empty when it has none. What a
+  /// review round reads by default on a stacked item.
+  function prStackUrls(prs) {
+    return (prs || []).filter((p) => p.stack).map((p) => p.url);
   }
 
   /// Row detail: state, unanswered threads and the URL — everything needed to
@@ -181,6 +198,7 @@
     const st = prScopeState(pr);
     if (st) bits.push(st);
     if (pr.unanswered) bits.push(`${pr.unanswered} unanswered`);
+    if (pr.stack && pr.stack.parent) bits.push(`on ${parentChip(pr.stack.parent)}`);
     bits.push(pr.url);
     return bits.join(" · ");
   }
@@ -191,6 +209,12 @@
     if (typeof prChipLabel === "function") return prChipLabel(pr);
     const name = String(pr.repo || "").split("/")[1] || "";
     return name ? `${name}#${pr.number || "?"}` : `#${pr.number || "?"}`;
+  }
+
+  function parentChip(url) {
+    const n = Number(String(url).split("/").pop()) || 0;
+    const m = /github\.com\/[^/]+\/([^/]+)\/pull\//.exec(String(url));
+    return prScopeChip({ url, number: n, repo: m ? `_/${m[1]}` : "" });
   }
 
   function prScopeState(pr) {
@@ -242,6 +266,7 @@
     prScopeSelection,
     prScopeSummary,
     prScopeSuffix,
+    prStackUrls,
     primaryPrReady,
   };
 

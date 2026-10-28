@@ -243,6 +243,9 @@ pub struct Workflows {
     /// Forge override for PR features: `auto` (detect from the origin
     /// remote), `github`, or `none`.
     pub forge: String,
+    /// Order an item's PRs into a GitHub stack — see the
+    /// `workflows.pr_stacking` row.
+    pub pr_stacking: bool,
     /// Slack incoming-webhook URL for sharing and notifications. Empty
     /// disables the destination.
     pub slack_webhook: String,
@@ -285,6 +288,7 @@ impl Default for Workflows {
             omp_subagent_model: default_str("workflows.omp_subagent_model"),
             pr_skill: default_str("workflows.pr_skill"),
             forge: default_str("workflows.forge"),
+            pr_stacking: default_bool("workflows.pr_stacking"),
             slack_webhook: default_str("workflows.slack_webhook"),
             discord_webhook: default_str("workflows.discord_webhook"),
             notify_webhook: default_str("workflows.notify_webhook"),

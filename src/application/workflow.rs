@@ -1394,6 +1394,13 @@ pub fn build_review_prompt(
     } else {
         format!(" PR: {}.", picked.join(", "))
     };
+    // The PR stack base → tip, so each layer is reviewed against its parent
+    // and nothing that lands in a sibling layer is reported missing.
+    let stack = if review.stack.len() > 1 {
+        format!(" Stack: {}.", review.stack.join(" > "))
+    } else {
+        String::new()
+    };
     // What the human asked this pass to settle. A blueprint they sent back for
     // a deeper look is the case this exists for: without it the next round
     // redraws the same document and answers the same questions.
@@ -1430,7 +1437,7 @@ pub fn build_review_prompt(
     };
     format!(
         "Use the {} skill. Workflow item directory: {}. \
-         Target: {}. Depth: {}. Publish: {}. Round: {}.{}{} Mode: {}.{}{}{}{}{}",
+         Target: {}. Depth: {}. Publish: {}. Round: {}.{}{} Mode: {}.{}{}{}{}{}{}",
         engine,
         item_dir,
         review.target,
@@ -1442,6 +1449,7 @@ pub fn build_review_prompt(
         mode,
         delegation.clause(),
         pr,
+        stack,
         focus,
         interactive,
         auto_apply
@@ -2009,6 +2017,21 @@ mod tests {
         // No explainer is ever named for this target — that skill judges
         // nothing, so it would grade no divergence at all.
         assert!(!p.contains("clash-explain"), "{p}");
+    }
+
+    #[test]
+    fn review_prompt_states_the_stack_base_to_tip_or_omits_it() {
+        use crate::domain::workflow::WorkflowReview;
+        let none = WorkflowReview::default();
+        let p = build_review_prompt("/x", &none, WorkflowMode::Full, &Delegation::default());
+        assert!(!p.contains("Stack:"), "{p}");
+        let stacked = WorkflowReview {
+            pr_urls: vec!["u2".into()],
+            stack: vec!["u1".into(), "u2".into(), "u3".into()],
+            ..Default::default()
+        };
+        let p = build_review_prompt("/x", &stacked, WorkflowMode::Full, &Delegation::default());
+        assert!(p.contains(" PR: u2. Stack: u1 > u2 > u3."), "{p}");
     }
 
     #[test]

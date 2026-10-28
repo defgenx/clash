@@ -12,6 +12,7 @@ const {
   prChipLabel,
   prStateLabel,
   itemPrs,
+  prStackLabel,
   prDashboardModel,
 } = require("../dist/wf-prs.js");
 
@@ -100,12 +101,67 @@ test("the dashboard sums unanswered comments across an item's PRs", () => {
   assert.equal(rows[0].prs.length, 2);
 });
 
+test("a stack is spliced in base to tip where its first layer sat", () => {
+  const u = (r, n) => `https://github.com/o/${r}/pull/${n}`;
+  const meta = {
+    pr: { url: u("api", 2) },
+    linkedPrs: [{ url: u("web", 9) }, { url: u("api", 1) }],
+  };
+  const prs = itemPrs(meta, { layers: [{ url: u("api", 1) }, { url: u("api", 2) }] });
+  assert.deepEqual(
+    prs.map((p) => p.url.split("/").pop()),
+    ["1", "2", "9"]
+  );
+  assert.deepEqual(prs[1].stack, { pos: 2, of: 2, parent: u("api", 1) });
+  assert.equal(prStackLabel(prs[1]), "2/2");
+  assert.equal(prs[2].stack, null);
+  assert.equal(prStackLabel(prs[2]), "");
+  // Without a stack (or with a stale one) the order is the item's own.
+  assert.deepEqual(
+    itemPrs(meta).map((p) => p.url.split("/").pop()),
+    ["2", "9", "1"]
+  );
+  const stale = { layers: [{ url: u("api", 1) }, { url: u("api", 7) }] };
+  assert.ok(itemPrs(meta, stale).every((p) => p.stack === null));
+});
+
+test("the dashboard orders a stacked item's chips and names an unclear stack", () => {
+  const u = (n) => `https://github.com/o/api/pull/${n}`;
+  const rows = prDashboardModel([
+    {
+      project: "p",
+      slug: "s",
+      meta: { status: "pr-draft", pr: { url: u(2) }, linkedPrs: [{ url: u(1) }] },
+      prStack: { layers: [{ url: u(1) }, { url: u(2) }] },
+    },
+    {
+      project: "p",
+      slug: "t",
+      meta: { status: "pr-draft", pr: { url: u(5) } },
+      prStackIssue: "api#5 and api#6 target each other in a loop",
+    },
+  ]);
+  assert.deepEqual(
+    rows[0].prs.map((p) => p.url.split("/").pop()),
+    ["1", "2"]
+  );
+  assert.equal(rows[0].stackIssue, null);
+  assert.match(rows[1].stackIssue, /loop/);
+});
+
 test("browser branch publishes every global app.js reads", () => {
   const src = fs.readFileSync(path.join(__dirname, "..", "dist", "wf-prs.js"), "utf8");
   const sandbox = { window: {} };
   vm.createContext(sandbox);
   vm.runInContext(src, sandbox);
-  for (const name of ["prRepo", "prChipLabel", "prStateLabel", "itemPrs", "prDashboardModel"]) {
+  for (const name of [
+    "prRepo",
+    "prChipLabel",
+    "prStateLabel",
+    "itemPrs",
+    "prStackLabel",
+    "prDashboardModel",
+  ]) {
     assert.ok(name in sandbox.window, `${name} must be published to window`);
   }
 });

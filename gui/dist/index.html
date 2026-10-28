@@ -140,6 +140,12 @@
             <option value="none">None</option>
           </select>
         </label>
+        <label class="setting-row inline">PR stacking
+          <select id="set-wf-pr-stacking" title="GitHub only. When an item's PRs build on each other (each one's base branch is another's head), order them base → tip: chips show the layer, PR actions default to the whole stack, and reviews read each layer against its parent instead of reporting what a sibling layer holds as missing. An item can override this in its ⚙ Settings tab.">
+            <option value="off">Off</option>
+            <option value="on">On</option>
+          </select>
+        </label>
         <label class="setting-row inline">Skill updates
           <select id="set-skills-update" title="Skills you never edited are always brought up to date at startup, and missing ones install themselves. This is only about skills you edited by hand: ask at startup (popup), always overwrite your edits, or always keep them.">
             <option value="ask">Ask at startup</option>

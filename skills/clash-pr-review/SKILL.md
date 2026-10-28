@@ -27,7 +27,10 @@ starting. These sections of it apply **as written**:
 - **Lead and subagents** — how a round is sized and split under
   `Delegation: team`, and the rule that only the lead writes, posts and asks;
 - **The diff under review** — how to read a linked PR in another repository
-  (`gh pr diff --repo`, `gh api …/contents?ref=<sha>`).
+  (`gh pr diff --repo`, `gh api …/contents?ref=<sha>`);
+- **A PR stack** — each layer measured against its parent, sibling layers
+  checked before anything is called missing, findings per PR. "PR stacks"
+  below adds how to find the stack when nobody gave it to you.
 
 In a workflow round (see "Two ways to run" below), these sections apply too:
 **Step 0 — read first**, **Hard rules**, the annotation format under **The
@@ -60,6 +63,7 @@ chat message is the report.
 and `Target: self-review`. It also gives you `Workflow item directory`,
 `Depth`, `Publish` (always `pr-comments` for this target), `Round`,
 `Return to`, `Mode`, optionally `PR:` (one URL or several, separated by `, `),
+`Stack:` (the item's PR stack, base → tip, separated by ` > `),
 `Interactive`, `Auto-apply`, `Focus` and `Delegation`. Without `PR:`, the PR is
 the item's primary, `meta.pr.url`. The round is a self-returning side trip like
 every review round: your last act is to set the status back to `Return to`.
@@ -132,6 +136,49 @@ For each PR under review (`<n>` its number, `--repo <owner/repo>` from its URL):
 
 `Focus:` (workflow) or anything the request singles out is read first in every
 pass, not instead of the rest.
+
+## PR stacks — find the stack, review every layer
+
+A PR whose base branch is another PR's head is one layer of a **stack**.
+Reviewed alone against the trunk it is wrong twice: its diff contains the
+layers below it, and what the layers above it add reads as missing.
+
+**Finding the stack.** A workflow round's `Stack:` field is the stack. With
+none — always the case standalone — find it yourself, from the PR you were
+given (`--repo <o/r>` on every call):
+
+1. `gh repo view <o/r> --json defaultBranchRef --jq .defaultBranchRef.name` —
+   the trunk. A PR whose `baseRefName` is the trunk is the bottom layer.
+2. **Down:** while the current PR's `baseRefName` is not the trunk,
+   `gh pr list --repo <o/r> --head <baseRefName> --state all --json number,url,state,baseRefName,headRefName`.
+   One open (or merged) PR is the parent; none means the base is a plain
+   branch and the walk stops; several is ambiguous — stop and say so.
+3. **Up:** `gh pr list --repo <o/r> --base <headRefName> --state open --json number,url,baseRefName,headRefName`
+   from the tip. One PR is the child; several is a fork — the stack is
+   unclear above this point, so stop there and say which PRs fork.
+4. Stop after 10 layers either way. Closed (unmerged) PRs are never layers;
+   a merged lower layer is history and is not reviewed again.
+
+A workflow round does not walk further than `Stack:` — it is what clash
+ordered from the PRs the human linked — but if GitHub shows a parent or child
+the item does not track, say so in the report so it can be linked.
+
+**Which layers.** Review every layer of the stack unless `PR:` (workflow) or
+the request (standalone) names some. Interactive: right after the opening
+question, ask in one `AskUserQuestion` with `multiSelect: true` —
+*Whole stack* (recommended), then one option per layer
+(`#42 — layer 2/3, on #41`) — with the PR you were given, or the `PR:` set,
+pre-recommended when it is not the whole stack. Autonomous: the whole stack.
+
+**One loop, one ledger section and one verdict per layer.** Run the loop below
+over all chosen layers together (a pass reads every layer, because a finding
+on one is checked against the others), keep each layer's findings under its
+own `# <owner>/<repo>#<n>` heading in the ledger, and post one review on each
+PR, in stack order. A layer's verdict is about that layer: never request
+changes on it for what a higher layer delivers, and do request them when it
+cannot merge safely without that layer (see `clash-code-review` → "A PR
+stack"). A summary may name the layer (`Layer 2/3 of #41 > #42 > #43.`) in its
+verdict sentence; nothing more about the stack goes on the PR.
 
 ## The PR's discussion — read all of it, verify every outcome
 

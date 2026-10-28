@@ -39,9 +39,14 @@
   }
 
   /// Every PR of one item's meta, primary first: `{ url, number, repo, draft,
-  /// state, unanswered, primary }`. Empty-URL records are skipped — they are
-  /// placeholders, not PRs.
-  function itemPrs(meta) {
+  /// state, unanswered, primary, stack }`. Empty-URL records are skipped —
+  /// they are placeholders, not PRs.
+  ///
+  /// `prStack` is the item's derived stack (`item.prStack`, base → tip). Its
+  /// layers are spliced in stack order where the first of them sat, and each
+  /// carries `stack: { pos, of, parent }` — so every fan-out walks a stack
+  /// parent before child. PRs outside it keep their place and `stack: null`.
+  function itemPrs(meta, prStack) {
     const out = [];
     const push = (pr, primary) => {
       if (!pr || !pr.url) return;
@@ -53,11 +58,34 @@
         state: pr.state || "",
         unanswered: typeof pr.unansweredComments === "number" ? pr.unansweredComments : null,
         primary,
+        stack: null,
       });
     };
     push(meta && meta.pr, true);
     for (const pr of (meta && meta.linkedPrs) || []) push(pr, false);
+    return stackOrder(out, prStack);
+  }
+
+  /// Annotate and reorder `prs` by a stack (see `itemPrs`). A stack naming a
+  /// PR the item no longer tracks is stale, and is ignored whole.
+  function stackOrder(prs, prStack) {
+    const layers = ((prStack && prStack.layers) || []).map((l) => l.url);
+    if (layers.length < 2 || !layers.every((u) => prs.some((p) => p.url === u))) return prs;
+    const layered = layers.map((url, i) => ({
+      ...prs.find((p) => p.url === url),
+      stack: { pos: i + 1, of: layers.length, parent: i > 0 ? layers[i - 1] : null },
+    }));
+    const out = [];
+    for (const p of prs) {
+      if (!layers.includes(p.url)) out.push(p);
+      else if (!out.some((q) => q.stack)) out.push(...layered);
+    }
     return out;
+  }
+
+  /// "2/3" for a stacked PR, "" otherwise.
+  function prStackLabel(pr) {
+    return pr && pr.stack ? `${pr.stack.pos}/${pr.stack.of}` : "";
   }
 
   /// Rows for the PR dashboard: every item holding at least one PR, sorted so
@@ -69,7 +97,7 @@
   function prDashboardModel(items) {
     const rows = [];
     for (const item of items || []) {
-      const prs = itemPrs(item.meta || {});
+      const prs = itemPrs(item.meta || {}, item.prStack);
       if (!prs.length) continue;
       const open = prs.filter((p) => p.state !== "MERGED" && p.state !== "CLOSED");
       rows.push({
@@ -81,6 +109,9 @@
         updatedAt: (item.meta && item.meta.updatedAt) || 0,
         unanswered: prs.reduce((n, p) => n + (p.unanswered || 0), 0),
         allSettled: open.length === 0,
+        // Why stacking is on but the PRs do not order — said on the row,
+        // since a silent fallback to "no stack" reads as stacking not working.
+        stackIssue: (item.prStack ? null : item.prStackIssue) || null,
         prs,
       });
     }
@@ -92,7 +123,7 @@
     return rows;
   }
 
-  const api = { prRepo, prChipLabel, prStateLabel, itemPrs, prDashboardModel };
+  const api = { prRepo, prChipLabel, prStateLabel, itemPrs, prStackLabel, prDashboardModel };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else Object.assign(window, api);

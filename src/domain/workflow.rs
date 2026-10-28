@@ -675,6 +675,10 @@ pub struct WorkflowReview {
     /// whole artifact, which is the common case.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub focus: String,
+    /// The item's PR stack at launch, base → tip, when stacking is on — the
+    /// kickoff's `Stack:` field. Empty means no stack.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stack: Vec<String>,
     /// How much of the explanation tree an explain round writes up front.
     /// Read only by explainers; every other round ignores it.
     #[serde(default)]
@@ -962,8 +966,35 @@ pub struct WorkflowPr {
     /// items) — the GUI shows the count on its "Answer PR comments" action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unanswered_comments: Option<u64>,
+    /// Branch the PR proposes, as of the last refresh. With `base_ref`, what
+    /// orders an item's PRs into a stack (`application::pr_stack`). Empty
+    /// until first fetched.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub head_ref: String,
+    /// Branch the PR targets, as of the last refresh.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub base_ref: String,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// One layer of an item's PR stack: a PR whose base branch is the previous
+/// layer's head. Derived on listing, never stored.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StackLayer {
+    pub url: String,
+    pub head_ref: String,
+    pub base_ref: String,
+}
+
+/// An item's PRs ordered into a GitHub stack, base → tip. Layer `i`'s parent
+/// is layer `i - 1`; the first layer targets the trunk. See
+/// `docs/workflows.md` → *PR stacks*.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrStack {
+    pub layers: Vec<StackLayer>,
 }
 
 /// Persisted shape of a workflow item's `meta.json`. Lenient serde like
@@ -1038,6 +1069,10 @@ pub struct WorkflowMeta {
     /// skill for this item.
     #[serde(default)]
     pub pr_skill: String,
+    /// Per-item PR stacking override (item Settings tab): `on` | `off`, empty
+    /// inherits the global `workflows.pr_stacking` setting.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pr_stacking: String,
     /// Per-item default for how agent rounds run (item Settings tab):
     /// `""`/`ask` (the skill asks in-session), `interactive`, or
     /// `autonomous`. Pre-fills the review composer and applies to executor
@@ -1496,6 +1531,18 @@ pub struct WorkflowItem {
     /// `run.json`'s autopilot step count.
     #[serde(default)]
     pub autopilot_steps: u32,
+    /// Effective PR stacking (item override over the global setting, off on
+    /// a non-GitHub forge). Computed by the GUI layer.
+    #[serde(default)]
+    pub pr_stacking: bool,
+    /// The item's PRs ordered into a stack, when stacking is on and they form
+    /// one. Computed by the GUI layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_stack: Option<PrStack>,
+    /// Why the item's PRs could not be ordered (a fork, a cycle, a missing
+    /// layer), when stacking is on. Computed by the GUI layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_stack_issue: Option<String>,
 }
 
 /// Resolution state of a diff annotation.

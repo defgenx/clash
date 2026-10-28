@@ -411,6 +411,15 @@ pub const PROPS: &[Prop] = &[
          change-request features for repos without a supported forge.",
     ),
     Prop::new(
+        "workflows.pr_stacking",
+        Kind::Bool,
+        Val::Bool(false),
+        "Treat a workflow item's PRs as a GitHub stack when each one's base branch is another's \
+         head: chips show the order, PR actions default to the whole stack, and review rounds \
+         read each layer against its parent. Off by default; an item can override it in its \
+         ⚙ Settings tab. GitHub only.",
+    ),
+    Prop::new(
         "workflows.slack_webhook",
         Kind::Str,
         Val::Str(""),

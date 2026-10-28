@@ -978,7 +978,7 @@ existed and must keep working); only hosts recognizably another forge
 (gitlab, bitbucket) map to `none` until they have an implementation.
 
 clash records the PR in `meta.json.pr` (`url`, `number`, `draft`, `state`,
-`lastCheckedAt`, `unansweredComments`) via the forge.
+`lastCheckedAt`, `unansweredComments`, `headRef`, `baseRef`) via the forge.
 
 **Identity-shaped PR errors are recoverable in place, never dead ends.**
 Commands that need a PR identity return machine prefixes — `no-pr:` (nothing
@@ -1097,6 +1097,65 @@ Three consequences are contractual rather than cosmetic:
   (`PR: <url>, <url>`) and the skills require the round report to say which
   ones it read and, for a respond round, what it published where — a round
   that answered two repositories and reported one total cannot be audited.
+
+#### PR stacks
+
+A **stack** is a chain of PRs in one repository where each PR's base branch
+is the previous PR's head: each layer's diff is only its own change, and the
+layers merge bottom first. GitHub has no stack object — `gh pr view`'s
+`baseRefName`/`headRefName` chain is all there is — so that chain is the
+definition, and the item's own PRs (primary + linked, linked in the *same*
+repository included) are the input. clash discovers nothing on GitHub by
+itself; the PRs must be linked.
+
+**Setting.** `workflows.pr_stacking` (bool, default **off**), overridden per
+item by `meta.prStacking` (`on` | `off`, absent inherits) in the item ⚙
+Settings tab. Off by default because it changes what reviews read and what PR
+actions pre-select, and an item whose PRs merely share a repository must not
+start behaving differently on upgrade. The effective value is the pure
+`application::pr_stack::stacking_enabled`: the item override wins, and any
+forge other than GitHub is always off.
+
+**Ordering** is the pure `order_stack` over the PRs' recorded `headRef` /
+`baseRef` (filled by every PR refresh and attach — no extra forge call, so an
+unrefreshed PR is simply not placed yet). It returns one chain base → tip, or
+no stack when nothing builds on anything, and it **reports instead of
+guessing**: a fork (two PRs on one parent), two PRs from one branch, a cycle,
+several chains, or a **gap** — two PRs of one repository starting from
+different branches with neither building on the other, i.e. a middle layer
+the item does not track. Closed PRs are never layers; a merged layer stays one
+until GitHub retargets its child. The result rides `WorkflowItem.prStack`
+(`layers: [{url, headRef, baseRef}]`) or `prStackIssue` (the reason, shown as
+*⚠ stack unclear* on the item header and the ⇄ dashboard); nothing about it is
+stored.
+
+When a stack exists:
+
+- **Order everywhere.** `itemPrs(meta, item.prStack)` splices the layers in
+  base → tip where the first of them sat and tags each `stack: {pos, of,
+  parent}`; chips show `2/3`, and every scope selection follows that order, so
+  fan-outs walk parent before child.
+- **Defaults.** A code or drift round's composer pre-ticks the whole stack
+  (`prStackUrls`); *Answer PR comments* pre-ticks the stack plus any PR with
+  threads waiting; self-review already ticks every open PR. Mark-ready, post
+  and open keep their own rules — readying a whole stack is a release.
+- **The item's own diff** is taken from the primary's parent head when
+  `meta.base` is empty (`stack_parent_head`); from the trunk it would contain
+  every layer below.
+- **Kickoff.** Every review round records `meta.review.stack` and states it as
+  `Stack: <url1> > <url2> > <url3>` (base → tip). It is context, not scope:
+  `PR:` still says which PRs the round was pointed at. `clash-code-review`
+  and `clash-pr-review` then review **every layer** when `PR:` is absent (in
+  an interactive round they first ask, multi-select, whole stack or which
+  layers), measure each layer against its parent (`gh pr diff`, or
+  `git diff origin/<parent head>...HEAD` locally), check sibling layers
+  before calling anything missing, and report per PR in stack order. Run
+  standalone, `clash-pr-review` finds the stack itself with `gh pr list
+  --head/--base`, bounded to 10 layers and stopping at a fork.
+
+A draft PR clash creates targets `meta.base`: to open a new PR on top of its
+parent, set the item's diff base (⚙ Settings → Diff base) to the parent's
+branch.
 
 ### Sharing, export and webhook notifications (clash-side, informative)
 

@@ -632,7 +632,10 @@ test("a review round's PR scope is a row in the composer, not a second dialog", 
   // comments") was invisible even to the person who asked for it.
   const composer = extractFunction(APP, "wfComposeReviewRound");
   assert.ok(composer.includes("model.prScope"), "the composer must render the scope group");
-  assert.ok(composer.includes("prs: itemPrs(item.meta)"), "the model needs the item's PRs");
+  assert.ok(
+    composer.includes("prs: itemPrs(item.meta, item.prStack)"),
+    "the model needs the item's PRs, in stack order"
+  );
   assert.ok(composer.includes("prUrls: scope ? scopeUrls()"), "the launch payload must carry the picks");
   // The scope is a SET — checkboxes, not radios: a cross-repo change is one
   // change, and reviewing the API PR without the web PR that consumes it

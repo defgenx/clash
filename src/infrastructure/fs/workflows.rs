@@ -237,6 +237,10 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         ),
         run: run.batch,
         autopilot_steps: run.autopilot_steps,
+        // Stacking is a setting plus a forge question; the GUI layer answers it.
+        pr_stacking: false,
+        pr_stack: None,
+        pr_stack_issue: None,
         meta,
     })
 }
