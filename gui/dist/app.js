@@ -1036,7 +1036,7 @@ function renderWorkspaceBar() {
       const close = document.createElement("span");
       close.className = "ws-close";
       close.innerHTML = svgIcon("x", 11);
-      close.title = "Close workspace (⌘⇧W)";
+      close.title = "Close workspace and kill its sessions (⌘⇧W)";
       close.onclick = (ev) => {
         ev.stopPropagation();
         state.activeWs = i;
@@ -1253,10 +1253,45 @@ async function renameWorkspace(i) {
   }
 }
 
-function closeWorkspace() {
+/// Close a workspace and everything in it: its sessions are killed and its
+/// other tabs closed, never handed to another workspace — an orphaned session
+/// would otherwise be adopted by whichever workspace is on screen. Wild rows
+/// are left running (clash did not start them), only their ownership goes.
+async function closeWorkspace(i = state.activeWs) {
   if (state.workspaces.length <= 1) return;
-  state.workspaces.splice(state.activeWs, 1);
-  switchWorkspace(Math.max(0, state.activeWs - 1));
+  const w = state.workspaces[i];
+  const byId = new Map(state.sessions.map((s) => [s.id, s]));
+  const sessions = w.sessions.filter((sid) => byId.has(sid) && byId.get(sid).source !== "Wild");
+  if (
+    sessions.length &&
+    !(await uiConfirm(
+      `Close workspace "${w.name}" and kill its ${sessions.length} session${
+        sessions.length === 1 ? "" : "s"
+      }? They are removed from clash, not moved to another workspace.`,
+      "Close and kill"
+    ))
+  )
+    return;
+  // Re-find it: the confirm is async and the list may have changed meanwhile.
+  const at = state.workspaces.indexOf(w);
+  if (at < 0 || state.workspaces.length <= 1) return;
+  const tabs = [...state.open.keys()].filter((id) => tabWorkspace(id) === at && !sessions.includes(id));
+  const results = await Promise.allSettled(
+    sessions.map((sid) => invoke("kill_session", { sessionId: sid }))
+  );
+  for (const sid of sessions) dropTerminal(sid);
+  // Shells are killed, browser and view tabs closed — the same as closing each.
+  for (const id of tabs) await detachSession(id);
+  const idx = state.workspaces.indexOf(w);
+  if (idx < 0) return;
+  state.workspaces.splice(idx, 1);
+  saveWorkspaces();
+  // The workspace before the closed one, like closing a tab.
+  const next = idx <= state.activeWs ? state.activeWs - 1 : state.activeWs;
+  switchWorkspace(Math.max(0, Math.min(next, state.workspaces.length - 1)));
+  const failed = results.filter((r) => r.status === "rejected").length;
+  if (failed) uiAlert(`${failed} of ${sessions.length} sessions could not be killed.`);
+  refreshSessions();
 }
 
 // ── Session helpers ─────────────────────────────────────────────

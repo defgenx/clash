@@ -188,7 +188,10 @@ teams, files, tabs and panes, the terminal and settings. Replay it from *Setting
 
 - **Workspaces** (cmux-style) each own a pane layout *and* their sessions:
   - `⌘N` creates one, `⌘1–9` switches, and `⌘⇧R` or a double-click on the chip renames it.
-  - `⌘⇧W` or the chip's `×` closes it; the last one can't be closed.
+  - `⌘⇧W` or the chip's `×` closes it; the last one can't be closed. Closing a
+    workspace **kills its sessions** (after one confirm) and closes its other
+    tabs — nothing is moved to another workspace. Sessions started outside
+    clash are left running.
   - The sidebar is scoped to the active workspace, plus an **UNASSIGNED** group
     for sessions no workspace has claimed (opening one claims it).
   - Every tab — agent session, shell, browser, workflow item, inbox, board —

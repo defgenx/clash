@@ -1010,3 +1010,16 @@ test("dragging a tab never starts a text selection", () => {
   const press = src.slice(src.indexOf('"mousedown"'), src.indexOf("const onMove"));
   assert.match(press, /ev\.preventDefault\(\);/);
 });
+
+test("closing a workspace kills its sessions instead of handing them to another", () => {
+  const close = extractFunction(APP, "closeWorkspace");
+  // One confirm names the cost, then every owned session is killed and its
+  // terminal dropped — an orphan would be adopted by whatever is on screen.
+  assert.match(close, /uiConfirm\(/);
+  assert.match(close, /invoke\("kill_session", \{ sessionId: sid \}\)/);
+  assert.match(close, /for \(const sid of sessions\) dropTerminal\(sid\)/);
+  // Its other tabs (shells, browser, views) close too.
+  assert.match(close, /await detachSession\(id\)/);
+  // Sessions clash did not start are never killed.
+  assert.match(close, /source !== "Wild"/);
+});
