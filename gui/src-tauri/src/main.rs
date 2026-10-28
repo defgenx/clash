@@ -412,6 +412,24 @@ fn resume_context(state: &GuiState, session_id: &str) -> (String, Option<String>
             return (cwd, s.name.clone());
         }
     }
+    // Unregistered (killed) but still on disk — e.g. a workflow item reopening
+    // the agent it recorded. Re-register it, or the resumed PTY is never listed.
+    if let Some(cwd) =
+        clash::infrastructure::agent::find_transcript_cwd(&state.backend.projects_dir(), session_id)
+    {
+        let name = clash::infrastructure::hooks::read_all_session_names(state.backend.base_dir())
+            .remove(session_id)
+            .unwrap_or_else(|| format!("clash-{}", &session_id[..session_id.len().min(8)]));
+        clash::infrastructure::hooks::registry::register(
+            session_id,
+            &name,
+            &cwd,
+            None,
+            clash::domain::entities::AgentKind::Claude,
+            None,
+        );
+        return (cwd, Some(name));
+    }
     (String::new(), None)
 }
 

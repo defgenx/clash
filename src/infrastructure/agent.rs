@@ -290,9 +290,87 @@ pub fn claude_transcript_exists(projects: &Path, cwd: &str, session_id: &str) ->
     })
 }
 
+/// The working directory recorded in a Claude transcript: the first entry
+/// carrying a non-empty `cwd`.
+/// `dead_code` allowed: only the `clash-gui` crate reopens unregistered sessions.
+#[allow(dead_code)]
+pub fn transcript_cwd<'a>(lines: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    lines.into_iter().find_map(|l| {
+        serde_json::from_str::<serde_json::Value>(l)
+            .ok()?
+            .get("cwd")?
+            .as_str()
+            .filter(|c| !c.is_empty())
+            .map(str::to_string)
+    })
+}
+
+/// Where a Claude conversation lives when nothing else remembers it (a killed
+/// session's registry entry is gone): the cwd recorded in its transcript, from
+/// whichever project dir holds the largest `<id>.jsonl`.
+///
+/// Without it a resume runs with no cwd, Claude finds no transcript there and
+/// a fresh `--session-id` for an id already on disk fails "already in use".
+#[allow(dead_code)] // see `transcript_cwd`
+pub fn find_transcript_cwd(projects: &Path, session_id: &str) -> Option<String> {
+    use std::io::BufRead;
+    let name = format!("{session_id}.jsonl");
+    let best = std::fs::read_dir(projects)
+        .ok()?
+        .flatten()
+        .filter_map(|d| {
+            let f = d.path().join(&name);
+            let len = std::fs::metadata(&f).ok()?.len();
+            (len > 0).then_some((len, f))
+        })
+        .max_by_key(|(len, _)| *len)?
+        .1;
+    let file = std::fs::File::open(best).ok()?;
+    let lines: Vec<String> = std::io::BufReader::new(file)
+        .lines()
+        .take(200)
+        .map_while(Result::ok)
+        .collect();
+    transcript_cwd(lines.iter().map(String::as_str))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transcript_cwd_is_the_first_non_empty_cwd() {
+        let lines = [
+            r#"{"type":"mode"}"#,
+            "not json",
+            r#"{"type":"user","cwd":""}"#,
+            r#"{"type":"user","cwd":"/w/repo"}"#,
+            r#"{"type":"user","cwd":"/elsewhere"}"#,
+        ];
+        assert_eq!(transcript_cwd(lines).as_deref(), Some("/w/repo"));
+        assert_eq!(transcript_cwd([r#"{"type":"mode"}"#]), None);
+    }
+
+    /// A stray short transcript (a fresh launch that ran in `/`) must not win
+    /// over the real conversation.
+    #[test]
+    fn find_transcript_cwd_takes_the_largest_transcript() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let write = |proj: &str, body: &str| {
+            std::fs::create_dir_all(dir.path().join(proj)).unwrap();
+            std::fs::write(dir.path().join(proj).join("S.jsonl"), body).unwrap();
+        };
+        write("-", "{\"cwd\":\"/\"}\n");
+        write(
+            "-w-repo",
+            "{\"type\":\"mode\"}\n{\"cwd\":\"/w/repo\",\"pad\":\"xxxxxxxxxxxxxxxx\"}\n",
+        );
+        assert_eq!(
+            find_transcript_cwd(dir.path(), "S").as_deref(),
+            Some("/w/repo")
+        );
+        assert_eq!(find_transcript_cwd(dir.path(), "missing"), None);
+    }
 
     #[test]
     fn claude_new_sessions_pin_the_id_and_omp_ones_pin_the_file() {
