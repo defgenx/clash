@@ -151,7 +151,11 @@ The goal is the best result in the least wall-clock time. Breadth comes from rev
 
 **Size the round before you split it.** Read the kickoff, the item's files and
 the size of the work (diff stat, plan length, repos and subsystems touched),
-then pick the smallest split that keeps quality:
+then pick the smallest split that keeps quality. When the kickoff carries
+`Size: small|medium|large (<N> lines, <F> files)`, clash has measured the change
+and chosen the models from it (a small change runs on a lighter lead, a large
+one on stronger subagents): a `small` round needs no subagent at all, a `large`
+one gets a reviewer per area and, under `deep`, a split by lens.
 
 - **No split** — the work fits in a few reads of your own (roughly a handful
   of files or a few hundred changed lines, one subsystem, a short plan). Do it
