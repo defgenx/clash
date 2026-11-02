@@ -1,6 +1,6 @@
 ---
 name: clash-pr-review
-description: Review a pull request the way a real reviewer does and post a verdict — APPROVE or REQUEST CHANGES — with line comments on the exact code concerned and a summary that opens with an "automated review" preamble. Takes the PR's whole history into account — every review thread, comment, review and fix commit — verifying that claimed fixes are really in the code and that settled decisions still hold. Loops on itself (a Ralph loop over an on-disk ledger) until a full pass finds nothing new, so the issues are found before the verdict is posted. Works on any PR on its own ("review PR <url>", "/clash-pr-review 123") and as the Self-review round of a clash Workflow item ("Use the clash-pr-review skill", "Target: self-review" in a kickoff prompt). Extends clash-code-review.
+description: Review a pull request the way a real reviewer does and post a verdict — APPROVE or REQUEST CHANGES — written the way a careful colleague writes one — short line comments on the exact code concerned, a summary shaped to the case, every finding carrying its grade and confidence, and a one-line automated-review disclosure. Takes the PR's whole history into account — every review thread, comment, review and fix commit — verifying that claimed fixes are really in the code and that settled decisions still hold. Loops on itself (a Ralph loop over an on-disk ledger) until a full pass finds nothing new, so the issues are found before the verdict is posted. Works on any PR on its own ("review PR <url>", "/clash-pr-review 123") and as the Self-review round of a clash Workflow item ("Use the clash-pr-review skill", "Target: self-review" in a kickoff prompt). Extends clash-code-review.
 ---
 
 # clash-pr-review — review a PR until nothing new turns up, then decide
@@ -71,6 +71,30 @@ every review round: your last act is to set the status back to `Return to`.
 `Depth` defaults to `deep` when the request does not say; reviewing for a
 verdict is the case depth exists for.
 
+## Size — how hard to look, and with which model
+
+A ten-line fix and a 2,000-line feature do not deserve the same review. The
+**size** of the change scales the loop and the reviewers' model; `Depth` still
+sets the rigor of each pass.
+
+- **Workflow round:** the kickoff says `Size: small|medium|large (<N> lines,
+  <F> files)`. clash measured the change and already chose the models at
+  launch (a small change gets a lighter lead, a large one stronger
+  subagents), and it forces them, so you never pass a `model` there.
+- **Standalone:** measure it yourself — `additions + deletions` and
+  `changedFiles` from `gh pr view`, summed over the layers you review. Small
+  is ≤150 lines **and** ≤5 files; large is ≥800 lines **or** ≥25 files;
+  medium otherwise; more than one PR is never small. Here nothing pins the
+  subagents, so pick their model per call by size (the table).
+
+| Size | Who reads | Subagent model (standalone) | Loop |
+|---|---|---|---|
+| small | you alone — a subagent costs more than the reading | none | the depth's minimum passes |
+| medium | `clash-code-review`'s sizing rules under `Delegation: team` | `sonnet` | the depth's minimum passes |
+| large | one fresh reviewer per area **every** pass, split by lens under `deep` | `opus` | one pass above the depth's minimum, and every hunk read twice |
+
+Say the size and what it decided in your final message.
+
 ## Opening question — interactive or autonomous
 
 - `Interactive: yes` → interactive, no question asked.
@@ -84,8 +108,8 @@ verdict is the case depth exists for.
 
 Interactive runs have two checkpoints, both **after** the loop has converged:
 
-1. **Triage** — print the verified findings, numbered and graded, one line
-   each plus the concrete failure, and ask which to keep. Batch them into
+1. **Triage** — print the verified findings, numbered, graded and with their
+   confidence, one line each plus the concrete failure, and ask which to keep. Batch them into
    multiSelect questions (at most 4 options per question, all questions in one
    call), each option carrying your keep/drop recommendation and a one-line
    why. A dropped finding is posted nowhere; record it under
@@ -93,9 +117,9 @@ Interactive runs have two checkpoints, both **after** the loop has converged:
    Free-text answers ("downgrade 3 to NIT") are instructions — apply them.
 2. **Verdict** — show the verdict, the summary and every line comment exactly
    as they will be posted, and ask: **Post as shown** / **Change the verdict** /
-   **Don't post**. The human may overrule your verdict; post what they chose
-   (the preamble's "confirmed before posting" already says a person signed
-   off).
+   **Don't post**. The human may overrule your verdict, or rewrite any
+   comment; post what they chose (the disclosure's "confirmed before posting"
+   already says a person signed off).
 
 Blocking on a question is safe — in a workflow the item is parked in
 `reviewing` and clash offers "End round" — so never time out and decide for
@@ -238,13 +262,14 @@ Rules that keep this honest:
   only with a concrete failure, never because you would have chosen otherwise.
 - **Outstanding change requests.** A human reviewer whose latest review is
   `CHANGES_REQUESTED` has not been satisfied yet: their points that still hold
-  are **Must change** items like any other. Your approval never claims to
+  are blocking items like any other. Your approval never claims to
   settle their review for them.
-- **Earlier automated reviews** carry the marker `<!-- clash-pr-review -->`
-  (and line comments starting with `🤖`). Their findings are discussion items
-  like any other: verify each, and never post the same line comment twice —
-  one that still holds goes under **Must change** with a link to its existing
-  comment instead of a new one.
+- **Earlier automated reviews** carry the marker `<!-- clash-pr-review -->`;
+  their line comments carry `<!-- clash-pr-review F<n> -->` (older runs: a
+  leading `🤖 **GRADE**`). Their findings are discussion items like any other:
+  verify each, and never post the same line comment twice — one that still
+  holds is a blocking item in the summary, linked to its existing comment,
+  instead of a new one.
 
 **Every pass reads the `## Discussion` table first**, and its findings join
 the same verification and dedupe as your own. The loop does not stop (see
@@ -268,7 +293,7 @@ It never goes inside a workflow item's directory: clash watches that tree and
 those files are a contract. It holds:
 
 ```markdown
-# <owner>/<repo>#<n> @ <headsha7> — <depth>
+# <owner>/<repo>#<n> @ <headsha7> — <depth> · <size>
 
 ## Coverage
 | file | hunks | read in passes |
@@ -338,13 +363,14 @@ those files are a contract. It holds:
 **Hard cap:** `standard` 5 passes, `deep` 8. Reaching the cap while passes
 still verify new `BLOCKER` or `RISK` findings means the change is not
 converging: stop and request changes — a change that keeps yielding real
-defects on every reading is not ready; its findings are the **Must change**
+defects on every reading is not ready; its findings are the blocking
 list, and the non-convergence goes in the ledger and your final message, not on
 the PR. Reaching the cap with only new `NIT`s is convergence; continue.
 
 **Under `Delegation: team`**, each pass's find step is a fresh wave of
 read-only subagents (fresh eyes are the point of a new pass — never reuse the
-previous pass's agents), sized by `clash-code-review`'s rules, each briefed
+previous pass's agents), sized by the change's **Size** (above) and
+`clash-code-review`'s rules, each briefed
 with the pass's angle, its area, and the ledger's findings verbatim under
 "already found — do not report these again". Verification follows the same
 rules as there. Only you write the ledger.
@@ -370,10 +396,12 @@ Decide on what survived verification (and triage, in an interactive run):
   actually in the code, for a concern graded `BLOCKER` or `RISK`;
 - a reviewer's `BLOCKER`-grade concern is still open with no decision that
   holds;
+- the change's core behaviour has no test that would fail if it were
+  reverted;
 - the loop hit its cap still finding real defects.
 
-**APPROVE** when none of the above holds and nothing stops you from vouching
-for the change. `GAP`s, `NIT`s and minor `RISK`s are posted as non-blocking
+**APPROVE** when none of the above holds and you can answer every question
+under *Own the verdict* below. `GAP`s, `NIT`s and minor `RISK`s are posted as non-blocking
 comments alongside an approval, and the summary says they are non-blocking.
 
 **COMMENT** — neither — when the review cannot honestly end in either:
@@ -392,60 +420,204 @@ Judge by severity, never by count: one timing-attack `BLOCKER` requests
 changes; twenty `NIT`s do not.
 
 Only a `high` or `medium` confidence finding drives REQUEST CHANGES. A `low`
-one is either verified in another pass or posted under **Could change** with
-what would confirm it — never the sole reason for a verdict.
+one is either verified in another pass or posted as a non-blocking
+`question:` with what would confirm it — never the sole reason for a verdict.
 
-## Post — one review per PR
+### Own the verdict
 
-### The preamble
+Both verdicts have consequences for a real person. An approval puts this
+account's name on the change: if it breaks production, "the review approved
+it" is part of the story. A change request blocks someone's work until they
+answer it. Decide as if you will be the one asked to explain the verdict —
+because the account holder will be.
 
-Every review summary starts with this, whatever the verdict, so nobody reads
-an automated review as a person's:
+**Before approving**, answer these from the ledger, not from memory:
+
+1. **What is the worst this change can do once merged?** Name it: data lost or
+   corrupted, a wrong permission granted, money or messages sent twice, an
+   outage, a public API or schema broken for existing clients, a migration
+   that cannot be rolled back.
+2. **Did you read the code that prevents it?** For any change touching
+   authentication or permissions, persisted data or migrations, payments,
+   deletion, concurrency, or a contract other services consume, the paths that
+   matter must be read at the PR head with `high` confidence. If they are not,
+   you have not earned the approval: read them, or post `COMMENT` saying what
+   you did not cover.
+3. **Is every open `RISK` acceptable for a reason you can state?** "It only
+   fires under X, and X is guarded by Y (link)" is a reason. "It's probably
+   fine" is not; that `RISK` is still open.
+4. **Does it do what the description says, and is it tested where it
+   matters?** When no test would fail if the change's core behaviour were
+   reverted, that `GAP` blocks: ask for the test. Other `GAP`s stay
+   non-blocking.
+
+An approval on a risky change says in its one line what you checked that
+matters ("LGTM — I went through the migration's rollback and both writers of
+`balance`"), so a reader knows what the approval covers. On a trivial change,
+"LGTM" is enough.
+
+**Before requesting changes**, check every blocking item:
+
+- it is a defect, verified at `high` or `medium` confidence, with a concrete
+  failure — not a preference, not a `NIT`, not a `low` hunch;
+- it belongs to this PR: something the change introduces or makes worse. A
+  pre-existing problem it merely sits next to is a non-blocking comment or a
+  follow-up ticket, never a reason to hold this PR;
+- the author can act on it: say what would make you approve ("once the retry
+  is idempotent, this is good to go"). A change request with no way out is a
+  veto, not a review;
+- you are not blocking for the same point twice: when the author answered it
+  in the discussion and the answer holds, it is settled.
+
+Hold a few blocking points, not a long list of mixed ones: when everything
+blocks, nothing reads as important. If there are many real blockers, say the
+change needs another pass and lead with the ones that matter most.
+
+**When in doubt between the two, don't pick the comfortable one.** Approving
+to be nice and requesting changes to be safe are both ways of not deciding.
+If the code gives you a concrete failure, request changes; if you read what
+matters and it holds, approve; if you can do neither honestly, `COMMENT` and
+say what is missing. In an interactive run, show the human your answers to
+the questions above at the verdict checkpoint, so they sign off on the
+reasoning and not just the word.
+
+## Post — one review per PR, written like a colleague wrote it
+
+The review goes out under a person's account and is read by people who work
+with them. It must read like a careful colleague's review: short, specific,
+in plain words. Whatever the loop found, a review that reads like a form is
+skimmed, and a skimmed review is one nobody acts on.
+
+### How to write
+
+These rules come from how experienced reviewers actually write on PRs. They
+apply to the summary, every line comment and every reply:
+
+- **One comment, one point.** Most line comments are one to three
+  sentences. If it needs a paragraph, the point is not clear yet.
+- **Say the problem first, in the reader's terms**: what goes wrong, for whom,
+  when. "This panics when `items` is empty — `load()` returns `[]` on a 404."
+  Not a label, not a `Failure:` / `Fix:` scaffold, not a bold grade as the
+  opening word.
+- **First person, plain words.** "I think", "I'd", "not sure this…", "we"
+  for the team's code. Contractions are fine. Write in the language the PR's
+  description and discussion use.
+- **Unsure? Ask.** A finding you hold at `low` confidence is a question,
+  not a statement: "Can `user` be nil here? `find_by` returns nil when the
+  invite was revoked." A question invites the author's knowledge; a confident
+  wrong claim costs a round of argument.
+- **Point to precedent.** "We already do this in `<permalink>`, could we
+  reuse it?" persuades better than a rule. When the repository's own docs
+  (`CLAUDE.md`, `CONTRIBUTING.md`) settle it, link the line.
+- **Suggest the change, don't lecture.** Name the fix in one sentence, or a
+  ` ```suggestion ` block when it is small and certainly right (it must apply
+  cleanly to the commented lines), or a short sketch when it is neither.
+- **Nothing that isn't for the author.** No praise padding, no "Overall…",
+  no recap of what the PR does, no description of how the review ran, no
+  pass counts. Those live in the ledger and the item's report.
+- **No tells of generated text.** Avoid "It's worth noting", "Consider…",
+  "This ensures", "robust", "comprehensive", "Additionally", lists of three
+  for rhythm, em-dash chains, bold on every other phrase, headings inside a
+  line comment. Use formatting only where it means something: code, links,
+  a suggestion block.
+
+### How to point at an issue
+
+- **Anchor where the fix goes**, on the smallest range that shows it
+  (`start_line` + `line`). If the symptom shows elsewhere, comment at the
+  cause and link the symptom, not the other way round.
+- **Make the failure concrete**: the input, the caller, the sequence. "A
+  retried webhook runs this twice and creates two invoices", not "this is not
+  idempotent".
+- **Link code with permalinks pinned to the head commit** —
+  `https://github.com/<o>/<r>/blob/<headRefOid>/<path>#L<a>-L<b>`. GitHub
+  renders a permalink on its own line as a code snippet, so the reader sees the
+  caller, the precedent or the other copy without leaving the thread. Never
+  link a branch name: the lines move under it.
+- **One mistake, one comment.** The same problem in several places is one
+  comment on the first occurrence ("same thing at <permalink>, <permalink>"),
+  never N copies.
+- **Outside the diff** — a line GitHub cannot anchor to (unchanged code the
+  change breaks, a missing file) goes in the summary as a permalink with the
+  sentence that explains it. Never dropped for having no line to sit on.
+- **Prefix only what changes the reader's next move**, the way human reviewers
+  label comments ([Conventional Comments](https://conventionalcomments.org)):
+  `blocking:` on what must change before merge, `nit:` on what doesn't
+  matter, `question:` on what you are asking. Everything else needs no prefix.
+
+### Every finding keeps its grade and its confidence
+
+The prose is for people; the grade and the confidence are what clash and the
+next run read, and they are **never** left out. Every line comment ends with
+one small footer line:
+
+```markdown
+<sub>🤖 blocker · confidence high — traced both callers of `check_token`</sub> <!-- clash-pr-review F1 -->
+```
+
+- the grade in lower case (`blocker` / `risk` / `gap` / `nit`), the
+  confidence (`high` / `medium` / `low`), and its basis — for `medium` and
+  `low`, what would raise it;
+- the hidden marker with the ledger id is how later runs recognise their own
+  comments. (Runs before this format marked them with a leading `🤖 **GRADE**`;
+  treat both as earlier automated comments.)
+
+In the summary, every item that names a finding ends with its grade and
+confidence in the same words: `— blocker, high confidence`.
+
+### Pick the summary's shape from the case
+
+There is no fixed template. Choose the shape that fits what this review has
+to say, and leave out every part that would be empty:
+
+| Case | What the summary says |
+|---|---|
+| Approve, nothing to change | One line. "LGTM." on a trivial change; on a risky one, what you checked that matters ("LGTM — I went through the migration's rollback"). Nothing else. |
+| Approve, minor things inline | One line: approving, the inline comments are small and none blocks. Mention a point only when it is outside the diff. |
+| Request changes, one blocker | Say the blocker in a sentence or two with its link and what would make you approve, then "the rest is inline and minor" if there is a rest. |
+| Request changes, several | One sentence, then a short numbered list of what must change, each item one line with its link. Non-blocking items stay inline; add a second short list only for those outside the diff. |
+| A question only the author can answer (`COMMENT`) | Ask it directly, and say what each answer would mean: "Is the fallback meant to swallow 5xx? If yes, a comment says so; if not, it should re-raise." |
+| Couldn't review all of it (`COMMENT`) | What you covered, what you could not read and why. Never approve what you did not read. |
+| Re-review after fixes | What you re-checked, briefly: "Checked the fixes — the timeout and the nil case are good. The retry still double-charges (link)." This is the one case where earlier discussion belongs on the PR. |
+| Your own PR | Notes to yourself and your reviewers: what you would fix before asking for review, in the same voice. Posted as `COMMENT` (see below). |
+| A stack layer | Start with where it sits: "Layer 2/3, reviewed against #41." Then the shape of whichever case above applies. |
+| A draft | "Early pass on the draft:" then the case above. |
+| Generated code, lockfiles, a pure dependency bump | Say what you checked (changelog, breaking notes, the call sites that matter) in one or two lines. |
+
+Use headings (`**Blocking**`, `**Smaller things**`) only when there are
+enough items that a reader needs them to find their way, roughly more than
+five. Each review has one disclosure line, **last**, in small text:
 
 ```markdown
 <!-- clash-pr-review -->
-> 🤖 **Automated review** — written by an AI reviewer (clash `clash-pr-review`), not by a person. <one of:> Launched by @<login> and confirmed before posting. | Launched by @<login> and posted without confirmation.
+…the summary…
+
+<sub>🤖 Automated review by clash (`clash-pr-review`), launched by @<login> — <confirmed before posting | posted without confirmation>.</sub>
 ```
 
-The HTML comment is the marker later runs look for — keep it the first line.
-Every **line comment** starts with `🤖 `, the grade and the confidence
-(`🤖 **BLOCKER** [confidence: high] — …`, with `Confidence basis: …` as its
-last line), because a line comment is read alone in "Files changed", far
-from the summary.
+The hidden marker stays the **first line** (later runs look for it). The
+disclosure is not optional: the account is a person's, and a reader must be
+able to tell this review was not written by them.
 
-### The summary — only what must change
+### Check before posting — every time
 
-The posted review exists to tell the author **what to change**. It says
-nothing else: no description of the change, no praise for what was done well,
-no history of the earlier discussion, no pass count or how the review was run.
-All of that stays in the ledger (and, in a workflow round, in the item's
-report), never on the PR.
+A review missing a confidence, or a finding the ledger holds but the post
+dropped, is a defect in the review. Before sending, build `review.json` (below)
+and run:
 
-After the preamble:
+```bash
+jq -e '
+  ([.comments[].body | select(test("<!-- clash-pr-review F[0-9]+ -->") | not)] | length == 0)
+  and ([.comments[].body | select(test("🤖 (blocker|risk|gap|nit) · confidence (high|medium|low) — .+") | not)] | length == 0)
+  and (.body | startswith("<!-- clash-pr-review -->"))
+  and (.body | test("<sub>🤖 Automated review by clash"))
+' review.json
+```
 
-1. `**Verdict: APPROVE**`, `**Verdict: REQUEST CHANGES**` or
-   `**Verdict: COMMENT**`, then one sentence saying why.
-2. **Must change** — every finding that drives the verdict, most severe first,
-   one line each: what to change and why, linked to its line comment. A
-   finding the discussion already raised and that still holds is simply one of
-   these — state the change, not the thread's history. A failing CI check this
-   change caused belongs here too.
-3. **Could change** — non-blocking findings, the same way. Omit when empty.
-4. **Outside the diff** — findings on lines GitHub cannot anchor a comment to
-   (unchanged code the change breaks, a missing file), in the same shape.
-   Never dropped for having no line to sit on.
-5. **Not reviewed** — only for a `COMMENT` verdict that rests on it: what you
-   could not read, or the question only the author can answer.
-
-An approval with nothing to change is the verdict line and nothing else.
-
-### Line comments
-
-On the exact line concerned (`side: RIGHT` for added or kept lines, `LEFT`
-for a removed one; `start_line` + `line` for a range). Each says the grade,
-the concrete failure, and the fix — nothing more: no compliments, no
-recap of who said it before. Use a ` ```suggestion ` block only when the
-fix is small and certainly right.
+Then check the summary by eye: every finding it names ends with
+`— <grade>, <level> confidence`, and every finding the ledger marks for
+posting is either a line comment or a summary item, once. Fix and re-check
+until both pass. Never post to get past the check.
 
 ### How to post
 
@@ -460,34 +632,37 @@ gh api --method POST repos/<o>/<r>/pulls/<n>/reviews --input review.json
 {
   "commit_id": "<headRefOid>",
   "event": "APPROVE | REQUEST_CHANGES | COMMENT",
-  "body": "<preamble + summary>",
+  "body": "<!-- clash-pr-review -->\n<summary>\n\n<sub>🤖 Automated review by clash …</sub>",
   "comments": [
-    { "path": "src/auth.rs", "line": 42, "side": "RIGHT", "body": "🤖 **BLOCKER** [confidence: high] — …" }
+    { "path": "src/auth.rs", "start_line": 40, "line": 42, "side": "RIGHT",
+      "body": "blocking: tokens are compared with `==`, which returns early on the first differing byte, so response time leaks how much of a guessed token is right. `subtle::ConstantTimeEq` is already a dependency (we use it in <permalink>).\n\n<sub>🤖 blocker · confidence high — traced both callers of `check_token`</sub> <!-- clash-pr-review F1 -->" }
   ]
 }
 ```
 
-A comment on a line outside the diff's hunks makes GitHub reject the whole
-review (HTTP 422). When that happens, move the offending comments into
-**Outside the diff** and send it again — never drop a finding to make a post
-go through.
+`side` is `RIGHT` for added or kept lines, `LEFT` for a removed one; drop
+`start_line` for a single line. A comment on a line outside the diff's hunks
+makes GitHub reject the whole review (HTTP 422). When that happens, move the
+offending comments into the summary as outside-the-diff items and send it
+again — never drop a finding to make a post go through.
 
-Three cases change the `event`, and each must be **said in the summary**,
-right under the verdict line, or the review misstates what was decided:
+Three cases change the `event`, and each must be **said in the summary**
+in a short sentence, or the review misstates what was decided:
 
 - **Your own PR** (`author.login` = your login): GitHub refuses
   `APPROVE` and `REQUEST_CHANGES` from a PR's author — server-side, for every
   client and token of that account (HTTP 422), so there is nothing to retry and
   no flag to try; only a different account can leave a green check. Post with
-  `"event": "COMMENT"`; the verdict line stays as decided, followed by
-  *(posted as a comment: GitHub does not let a PR's author approve or request
-  changes on it)*. This is the common case for a workflow item — the item's
-  PR is usually yours.
+  `"event": "COMMENT"` and say what the verdict would have been: "I'd request
+  changes on this if I could — GitHub doesn't let an author do that on their
+  own PR." This is the common case for a workflow item — the item's PR is
+  usually yours.
 - **A draft PR**: GitHub does not take a review on a draft. Post each line
   comment through `POST repos/<o>/<r>/pulls/<n>/comments` (`commit_id`,
   `path`, `line`, `side`, `body`), then the summary with
-  `gh pr comment <n> --repo <o/r> --body-file <file>`, noting *(a draft cannot
-  take a formal review — run it again once the PR is ready)*.
+  `gh pr comment <n> --repo <o/r> --body-file <file>`, and say it is a draft
+  pass to run again once the PR is ready. The pre-post check applies to each
+  comment body all the same.
 - **A COMMENT verdict**: `"event": "COMMENT"` — nothing to restate, the event
   is the verdict.
 
@@ -497,11 +672,11 @@ A later `APPROVE` from the same account supersedes an earlier
 **Several PRs** (a multi-repo change): read them all before judging any — the
 contract between them is the point of reviewing them together — then post one
 review per PR, each with its own verdict. A finding that crosses repositories
-goes on the PR where the fix belongs and is named in both summaries.
+goes on the PR where the fix belongs, and the other PR's summary links it.
 
 If `gh` is missing or unauthenticated, post nothing and say so plainly; in a
-standalone run, print the full review (verdict, summary, every line comment
-with its `path:line`) in your final message so it can be posted by hand.
+standalone run, print the full review (summary, every line comment with its
+`path:line`) in your final message so it can be posted by hand.
 
 ## Workflow round — what lands in the item
 
@@ -585,8 +760,9 @@ Final chat message, short — the posted review is the artifact:
   posted);
 - what the PR's prior discussion came to — threads verified fixed, claimed
   but not fixed, still open, decided;
-- the count per grade, and how many passes the loop ran with the new verified
-  findings per pass;
+- the count per grade and per confidence, and how many passes the loop ran
+  with the new verified findings per pass;
+- the size, and the models and fan-out it decided;
 - the event actually used when it differs from the verdict (own PR, draft);
 - what was not covered, if anything;
 - under `Delegation: team`, how the passes were split and what verification

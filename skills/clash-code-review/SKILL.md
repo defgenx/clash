@@ -266,9 +266,9 @@ or the run that would settle it.
 
 One shape everywhere: in `agent-review.md`, the finding's last line is
 `**Confidence:** <level> — <basis>`; in `annotations.json`, the entry's
-`"confidence"` and `"confidenceBasis"` fields; on a PR line comment,
-`[confidence: <level>]` right after the grade, with `Confidence basis: <basis>`
-as the comment's last line.
+`"confidence"` and `"confidenceBasis"` fields; on a PR line comment, the
+footer `<sub>🤖 <grade> · confidence <level> — <basis></sub>` as its last line
+(see Publish).
 
 ### Depth
 
@@ -449,8 +449,17 @@ instead.
   rounds show the human exactly what will be posted first (checkpoint 3). Post
   **one** review per round. Never `--approve` and never `--request-changes` —
   approval is the human's call, not yours. Findings you already published in an
-  earlier round must not be posted twice. Each line comment carries its
-  confidence: `BLOCKER [confidence: medium] — …`, basis on the last line.
+  earlier round must not be posted twice.
+
+  **Write it the way `../clash-pr-review/SKILL.md` → *Post* says** — its
+  *How to write*, *How to point at an issue* and *Every finding keeps its
+  grade and its confidence* sections apply as written, and so does its
+  pre-post check (minus the verdict, which this round never gives): plain,
+  short comments anchored where the fix goes, a summary shaped to what the
+  round found, the small `🤖 <grade> · confidence <level> — <basis>` footer and
+  `<!-- clash-pr-review F<n> -->` marker on every line comment, and the
+  one-line disclosure last. The replies of `respond-pr-comments` below are
+  written in the same voice.
 
   **A draft PR cannot take a review.** GitHub rejects `gh pr review` on a draft
   ("Draft pull requests cannot be reviewed"), so check first —

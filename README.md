@@ -736,8 +736,15 @@ nothing new. It reads everything already on the PR (review threads, comments,
 reviews and fix commits) and checks each claimed fix against the code. A thread
 marked resolved whose problem is still there becomes a finding credited to the
 reviewer who raised it, and decisions settled in the discussion are respected.
-Every summary opens with a note saying it is an automated review,
-and every line comment is marked 🤖.
+It writes like a colleague would: short line comments on the line where the
+fix goes, a question when it is unsure, links to the code it means (permalinks,
+which GitHub shows as snippets), and a summary whose shape depends on the case
+(a one-line LGTM, a single blocker, a list, a question for the author, a
+re-check after fixes). Every finding still ends with a small 🤖 footer giving
+its grade and confidence, a check refuses to post a comment without one, and
+the summary ends with a line saying it is an automated review. How hard it
+looks depends on the size of the change: a small PR gets a lighter model and no
+fan-out, a large one stronger reviewers on every pass.
 
 On an item with several PRs, the click asks which of the open ones to review,
 with all of them ticked; one round then posts a verdict on each. A PR's own

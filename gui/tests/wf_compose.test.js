@@ -441,6 +441,11 @@ test("confidence levels normalize like the Rust domain: absent, known, unknown",
 test("an annotation's confidence comes with its basis; a human comment has none", () => {
   assert.equal(annotationConfidence({ body: "x" }), null);
   assert.equal(annotationConfidence(null), null);
+  assert.equal(annotationConfidence({ author: "human", body: "x" }), null);
+  assert.deepEqual(annotationConfidence({ author: "agent", body: "x" }), {
+    level: "unknown",
+    basis: "the reviewer gave none",
+  });
   assert.deepEqual(
     annotationConfidence({ confidence: "medium", confidenceBasis: " read the handler " }),
     { level: "medium", basis: "read the handler" }

@@ -101,11 +101,14 @@
     return ["high", "medium", "low"].includes(s) ? s : "unknown";
   }
 
-  /// An annotation's confidence as `{ level, basis }`, or null when it carries
-  /// none (every human comment, and findings written before the field).
+  /// An annotation's confidence as `{ level, basis }`, or null for a human
+  /// comment. An agent finding without one reads `unknown`, so a reviewer that
+  /// skipped the rating shows it instead of looking like a person's note.
   function annotationConfidence(a) {
     const level = normalizeConfidence(a && a.confidence);
-    if (!level) return null;
+    if (!level) {
+      return a && a.author === "agent" ? { level: "unknown", basis: "the reviewer gave none" } : null;
+    }
     return { level, basis: String((a && a.confidenceBasis) || "").trim() };
   }
 

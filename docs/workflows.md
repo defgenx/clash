@@ -415,8 +415,15 @@ dropped. One shape per surface:
 |---|---|
 | `agent-review.md` | the finding's last line: `**Confidence:** <level> — <basis>` |
 | `annotations.json` | `"confidence": "high"\|"medium"\|"low"` and `"confidenceBasis": "<basis>"` on the entry; both optional, absent on human comments |
-| PR line comment | `[confidence: <level>]` after the grade, `Confidence basis: <basis>` as the last line |
+| PR line comment | a small last-line footer, `<sub>🤖 <grade> · confidence <level> — <basis></sub>`, then the hidden `<!-- clash-pr-review F<n> -->` marker; the summary's items end `— <grade>, <level> confidence` |
 | `review.md` digest | ` [confidence: <level> — <basis>]` after the body (`annotation_digest_line`) |
+
+A finding that reaches clash **without** a confidence is shown as one, never
+silently: an agent annotation with none badges `confidence ?` and its digest
+line says `[confidence: unknown — the reviewer gave none]` (human comments
+carry none by design). On the PR side, `clash-pr-review` (and
+`clash-code-review`'s `pr-comments` posts) run a `jq` check over the review
+before sending it and refuse to post a line comment missing its footer.
 
 clash reads it leniently: `FindingConfidence` is case-insensitive, an
 unrecognized value loads as `unknown` and a non-string one costs the field,
@@ -769,11 +776,25 @@ human first. Here the post *is* the output, so:
   item is unverified, and the discussion is fetched again before posting.
   `### Prior discussion` is the report's record of it and is left out of
   pasted findings.
-- **The post says only what must change.** Verdict line, *Must change*,
-  *Could change*, *Outside the diff* — and, for a `COMMENT` verdict, what could
-  not be reviewed. No description of the change, no praise, no history of the
-  earlier discussion, no pass count: those live in the ledger and the item's
-  report. An approval with nothing to change is the verdict line alone.
+- **The post reads like a colleague's review, shaped to the case.** No fixed
+  template: a clean approval is one line, one blocker is a sentence with its
+  link, several are a short numbered list, a question for the author is asked
+  as one, and a re-review says what it re-checked. Line comments are one point
+  each, anchored where the fix goes, phrased as a question when confidence is
+  low, with head-pinned permalinks for the code they mean and Conventional
+  Comments prefixes (`blocking:`, `nit:`, `question:`) only where they change
+  the reader's next move. No description of the change, no praise, no pass
+  count: those live in the ledger and the item's report. The skill's *Post*
+  section is the style guide; `clash-code-review`'s `pr-comments` posts follow
+  it too.
+- **The verdict is owned.** Before approving, the skill names the worst
+  thing the change can do once merged and must have read the code that
+  prevents it at `high` confidence (auth, data and migrations, payments,
+  deletion, concurrency, cross-service contracts), or it posts `COMMENT`
+  saying what it did not cover; every open `RISK` needs a stated reason to
+  accept it. A change request blocks only on verified defects this PR
+  introduces, each with what would make it approvable. See *Own the verdict*
+  in the skill.
 - **Three verdicts.** `APPROVE`, `REQUEST_CHANGES`, or `COMMENT` when neither
   is honest (part of the change could not be read, or what is open is a
   question only the author can answer).
@@ -782,9 +803,16 @@ human first. Here the post *is* the output, so:
   still open, CI failing because of the change, or a change that does not
   do what its description (or `plan.md`) says; approve otherwise, with the
   rest posted as non-blocking comments.
-- **Every summary opens with an "automated review" preamble** (behind a
-  `<!-- clash-pr-review -->` marker later runs use to avoid re-posting a
-  finding), and every line comment starts with `🤖` and its grade.
+- **Grade and confidence are never dropped.** Every line comment ends with a
+  small `🤖 <grade> · confidence <level> — <basis>` footer and a hidden
+  `<!-- clash-pr-review F<n> -->` marker (later runs use the markers to avoid
+  re-posting a finding; the old leading `🤖 **GRADE**` is still recognised),
+  and a `jq` check over the review refuses to post one without them. The
+  summary starts with the `<!-- clash-pr-review -->` marker and ends with a
+  one-line automated-review disclosure.
+- **The size of the change sets the effort.** Small / medium / large (lines and
+  files changed) picks the models at launch and scales the loop's fan-out and
+  passes — see *Lead and subagents*.
 - **GitHub's two refusals are stated, not hidden.** A PR's author cannot
   approve or request changes on it — the usual case for an item's own PR — so
   the review goes out as `COMMENT` with the verdict stated first; a draft takes

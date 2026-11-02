@@ -631,6 +631,8 @@ pub fn annotation_digest_line(a: &Annotation) -> String {
             line.push_str(basis);
         }
         line.push(']');
+    } else if a.author == "agent" {
+        line.push_str(" [confidence: unknown — the reviewer gave none]");
     }
     line
 }
@@ -2406,6 +2408,22 @@ not landing in the branch: the commit message still ships a MAJOR.\n\n\
         let it = parse_review_iterations(&md);
         assert_eq!(it[0].annotations.len(), 1);
         assert!(it[0].annotations[0].ends_with("not traced]"));
+        let mut unrated = Annotation {
+            file: "src/auth.rs".into(),
+            line: 42,
+            body: "BLOCKER — timing leak".into(),
+            author: "agent".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            annotation_digest_line(&unrated),
+            "- `src/auth.rs:42` — BLOCKER — timing leak [confidence: unknown — the reviewer gave none]"
+        );
+        unrated.author = "user".into();
+        assert_eq!(
+            annotation_digest_line(&unrated),
+            "- `src/auth.rs:42` — BLOCKER — timing leak"
+        );
     }
 
     #[test]
