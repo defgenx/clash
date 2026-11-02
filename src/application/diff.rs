@@ -254,6 +254,20 @@ pub fn parse_file_diffs(text: &str) -> Vec<FileDiff> {
     parse_diff(text).files
 }
 
+/// The size of a change: changed lines (additions + deletions) and files.
+/// Untruncated, unlike the display view. `dead_code`: see `parse_file_diffs`.
+#[allow(dead_code)]
+pub fn change_size(text: &str) -> (usize, usize) {
+    let files = parse_file_diffs(text);
+    let lines = files
+        .iter()
+        .flat_map(|f| &f.hunks)
+        .flat_map(|h| &h.lines)
+        .filter(|l| l.kind != HunkLineKind::Ctx)
+        .count();
+    (lines, files.len())
+}
+
 // ── Display view (TUI) ──────────────────────────────────────────────────
 
 /// Parse raw `git diff` output into typed display lines, truncated at
@@ -499,6 +513,14 @@ mod tests {
             .replace("line 38\n", "LINE 38\n");
         let d = unified_diff(&old, &new, "a", "b");
         assert_eq!(d.matches("@@ ").count(), 2, "{}", d);
+    }
+
+    #[test]
+    fn change_size_counts_added_and_deleted_lines_per_file() {
+        let d = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n keep\n-old\n+new\n keep\n\
+                 diff --git a/y b/y\nnew file mode 100644\n--- /dev/null\n+++ b/y\n@@ -0,0 +1,2 @@\n+a\n+b\n";
+        assert_eq!(change_size(d), (4, 2));
+        assert_eq!(change_size(""), (0, 0));
     }
 
     #[test]

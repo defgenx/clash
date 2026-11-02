@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::clash_data_dir;
+use crate::application::review_size::RoundModels;
 use crate::domain::entities::AgentKind;
 
 const REGISTRY_FILE: &str = "sessions.json";
@@ -82,6 +83,12 @@ pub struct ClashSession {
     /// can keep every round's session with the item's tab across workspaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_item: Option<String>,
+    /// A sized review round's lead / subagent models where they differ from
+    /// the workflow pins, so every relaunch keeps the launch's choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_model: Option<String>,
 }
 
 /// Path to the session registry file.
@@ -272,6 +279,7 @@ pub fn register(
     source_branch: Option<&str>,
     agent: AgentKind,
     workflow_item: Option<&str>,
+    round: &RoundModels,
 ) {
     let Some(mut registry) = load_for_mutation("register") else {
         return;
@@ -289,6 +297,8 @@ pub fn register(
             agent,
             workflow: workflow_item.is_some(),
             workflow_item: workflow_item.map(str::to_string),
+            lead_model: round.lead.clone(),
+            subagent_model: round.subagent.clone(),
         },
     );
     save_checked(&registry, "register", false);
@@ -339,6 +349,22 @@ pub fn registered_workflow_item(
         .iter()
         .find(|(k, v)| entry_answers_to(k, v, session_id))
         .and_then(|(_, v)| v.workflow_item.clone())
+}
+
+/// The sized-round model overrides recorded for `session_id`, under any of
+/// its ids; empty when it has none.
+pub fn registered_round_models(
+    registry: &HashMap<String, ClashSession>,
+    session_id: &str,
+) -> RoundModels {
+    registry
+        .iter()
+        .find(|(k, v)| entry_answers_to(k, v, session_id))
+        .map(|(_, v)| RoundModels {
+            lead: v.lead_model.clone(),
+            subagent: v.subagent_model.clone(),
+        })
+        .unwrap_or_default()
 }
 
 /// Was `session_id` (under any of its ids) launched by a workflow?
@@ -678,6 +704,8 @@ mod tests {
                 agent: Default::default(),
                 workflow: false,
                 workflow_item: None,
+                lead_model: None,
+                subagent_model: None,
             },
         );
 
@@ -702,6 +730,8 @@ mod tests {
             agent: Default::default(),
             workflow: false,
             workflow_item: None,
+            lead_model: None,
+            subagent_model: None,
         };
         let mut reg = HashMap::new();
         reg.insert("new".to_string(), entry("new", &["pty", "older"]));
@@ -749,6 +779,8 @@ mod tests {
             agent: Default::default(),
             workflow: false,
             workflow_item: None,
+            lead_model: None,
+            subagent_model: None,
         }
     }
 
@@ -855,6 +887,21 @@ mod tests {
         let loaded: HashMap<String, ClashSession> = serde_json::from_str(json).unwrap();
         assert_eq!(loaded["test-2"].name, "old");
         assert!(loaded["test-2"].source_branch.is_none());
+        assert_eq!(
+            registered_round_models(&loaded, "test-2"),
+            RoundModels::default()
+        );
+    }
+
+    /// A sized round's override is found under any of the session's ids.
+    #[test]
+    fn round_models_follow_the_entry_across_a_clear() {
+        let json = r#"{"new":{"session_id":"new","name":"r","cwd":"/p","claude_session_id":"new",
+            "previous_ids":["old"],"workflow":true,"lead_model":"claude-sonnet-5-5"}}"#;
+        let loaded: HashMap<String, ClashSession> = serde_json::from_str(json).unwrap();
+        let round = registered_round_models(&loaded, "old");
+        assert_eq!(round.lead.as_deref(), Some("claude-sonnet-5-5"));
+        assert_eq!(round.subagent, None);
     }
 
     #[test]
@@ -873,6 +920,8 @@ mod tests {
                 agent: Default::default(),
                 workflow: false,
                 workflow_item: None,
+                lead_model: None,
+                subagent_model: None,
             },
         );
 
@@ -893,6 +942,8 @@ mod tests {
             agent: Default::default(),
             workflow: false,
             workflow_item: None,
+            lead_model: None,
+            subagent_model: None,
         }
     }
 

@@ -875,6 +875,13 @@ never post.
 
   The models are applied at launch and again every time the session is
   resumed (after a restart, an update or a reload).
+  Code reviews and self-reviews are **sized** by the change they read
+  (`workflows.review_sizing`, default `auto`, Claude Code only): a small change
+  (≤150 lines, ≤5 files, one PR) runs its lead on `workflows.small_review_model`
+  (default `claude-sonnet-5-5`), a large one (≥800 lines or ≥25 files) its
+  subagents on `workflows.large_review_subagent_model` (default
+  `claude-opus-5-5`), and a resumed round keeps the models it launched with.
+  [Details](docs/workflows.md#sized-review-rounds).
   It sizes the round first: small work stays with the lead, and large work gets
   explorers, implementers in waves of disjoint files, or one reviewer per area,
   followed by verification. `solo` keeps everything in one session.
@@ -1238,6 +1245,9 @@ delegation = "team"        # team: lead fans work out to parallel subagents | so
 assist = "suggest"         # suggest: highlight the next step | autopilot: also start it when it decides nothing | off
 subagent_model = "claude-sonnet-5-5" # model those subagents run on (Claude Code); empty = inherit the lead's
 omp_subagent_model = ""    # model those subagents run on (OMP); empty = omp's own task model
+review_sizing = "auto"     # size code reviews / self-reviews by the change: auto | off (Claude Code only)
+small_review_model = "claude-sonnet-5-5"          # lead of a small sized review; empty = lead_model
+large_review_subagent_model = "claude-opus-5-5"   # subagents of a large sized review; empty = subagent_model
 pr_skill = "hivebrite-engineering:github-pr"  # skill the PR phase opens PRs with; "none" disables
 forge = "auto"             # code forge for PR features: auto | github | none
 slack_webhook = ""         # Slack incoming webhook for sharing + notifications

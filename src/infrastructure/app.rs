@@ -1601,6 +1601,7 @@ impl App {
                         source_branch.as_deref(),
                         agent,
                         None,
+                        &Default::default(),
                     );
                     self.registry_cache.invalidate();
                 }
@@ -2053,6 +2054,7 @@ impl App {
                                 src_branch,
                                 agent,
                                 None,
+                                &Default::default(),
                             );
                             self.registry_cache.invalidate();
                             // Save session name

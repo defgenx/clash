@@ -1467,6 +1467,8 @@ mod tests {
             agent: Default::default(),
             workflow: false,
             workflow_item: None,
+            lead_model: None,
+            subagent_model: None,
         }
     }
 

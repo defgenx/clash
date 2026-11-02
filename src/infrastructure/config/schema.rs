@@ -395,6 +395,33 @@ pub const PROPS: &[Prop] = &[
          leaves omp's own task model. Claude Code sessions use `workflows.subagent_model`.",
     ),
     Prop::new(
+        "workflows.review_sizing",
+        Kind::Enum(&["auto", "off"]),
+        Val::Str("auto"),
+        "Size code reviews and self-reviews by the change they read: a small change \
+         (≤150 changed lines and ≤5 files, one PR) runs its lead on \
+         `workflows.small_review_model`, a large one (≥800 lines or ≥25 files) its subagents \
+         on `workflows.large_review_subagent_model`, anything else on the regular models. \
+         The kickoff states the size either way. `off` measures nothing. Claude Code only: \
+         OMP sessions keep their own models.",
+    ),
+    Prop::new(
+        "workflows.small_review_model",
+        Kind::Str,
+        Val::Str("claude-sonnet-5-5"),
+        "Lead model of a small sized review round (its subagents keep \
+         `workflows.subagent_model`). Empty uses `workflows.lead_model`. Claude Code only — \
+         OMP sessions ignore sizing.",
+    ),
+    Prop::new(
+        "workflows.large_review_subagent_model",
+        Kind::Str,
+        Val::Str("claude-opus-5-5"),
+        "Subagent model of a large sized review round (its lead keeps \
+         `workflows.lead_model`). Empty uses `workflows.subagent_model`. Claude Code only — \
+         OMP sessions ignore sizing.",
+    ),
+    Prop::new(
         "workflows.pr_skill",
         Kind::Str,
         Val::Str("hivebrite-engineering:github-pr"),

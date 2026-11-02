@@ -7247,6 +7247,8 @@ function launchStageLine(p) {
       return `Creating the worktree ${b} — a first launch checks out the whole repo`;
     case "checkout":
       return `Checking out the repository — ${p.percent}% (${p.files}/${p.total} files)`;
+    case "measure":
+      return "Measuring the change to size the review…";
     case "record":
       return "Recording the launch…";
     case "spawn":
@@ -14628,9 +14630,16 @@ function syncAgentSettingsUi(cfg) {
   if (repaint) rebuildOpenWorkflowTabs();
   $("set-wf-subagent-model").value = cfg.subagentModel;
   $("set-wf-omp-subagent-model").value = cfg.ompSubagentModel || "";
+  $("set-wf-review-sizing").value = cfg.reviewSizing || "auto";
+  $("set-wf-small-review-model").value = cfg.smallReviewModel || "";
+  $("set-wf-large-review-subagent-model").value = cfg.largeReviewSubagentModel || "";
   // Solo launches no subagents, so their model is not in play — on either harness.
   for (const row of ["set-wf-subagent-row", "set-wf-omp-subagent-row"])
     $(row).classList.toggle("setting-inactive", cfg.delegation === "solo");
+  // The tier models are only read while sizing is on (and large subagents only under Team).
+  const sizing = cfg.reviewSizing !== "off";
+  $("set-wf-small-review-row").classList.toggle("setting-inactive", !sizing);
+  $("set-wf-large-review-row").classList.toggle("setting-inactive", !sizing || cfg.delegation === "solo");
 }
 for (const [id, key] of [
   ["set-omp-bin", "general.omp_bin"],
@@ -14643,6 +14652,9 @@ for (const [id, key] of [
   ["set-wf-explain-detail", "workflows.explain_detail"],
   ["set-wf-subagent-model", "workflows.subagent_model"],
   ["set-wf-omp-subagent-model", "workflows.omp_subagent_model"],
+  ["set-wf-review-sizing", "workflows.review_sizing"],
+  ["set-wf-small-review-model", "workflows.small_review_model"],
+  ["set-wf-large-review-subagent-model", "workflows.large_review_subagent_model"],
 ]) {
   $(id).addEventListener("change", async () => {
     try {

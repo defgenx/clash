@@ -1483,6 +1483,9 @@ struct ItemSessionSpawn<'a> {
     cwd: &'a str,
     cols: u16,
     rows: u16,
+    /// A sized review round's models (`review_size::models_for_round`);
+    /// default = the workflow pins. Recorded on the registry entry.
+    round: clash::application::review_size::RoundModels,
 }
 
 /// The agent a launch runs on (`workflow::resolve_launch_agent`), recorded as
@@ -1527,6 +1530,7 @@ async fn spawn_item_session(
         cwd,
         cols,
         rows,
+        round,
     } = spawn;
     let name = name.to_string();
     let cfg = state.config.get();
@@ -1546,6 +1550,7 @@ async fn spawn_item_session(
         // Marks it for every relaunch to re-apply the workflow models, and
         // ties it to its item for the GUI's workspace ownership.
         Some(format!("{}/{}", project, slug).as_str()),
+        &round,
     );
     clash::infrastructure::hooks::save_session_name(
         state.backend.base_dir(),
@@ -1572,7 +1577,7 @@ async fn spawn_item_session(
     // the same call every relaunch of this session makes, so a resume after a
     // restart comes back on the same models. The prompt goes last.
     let agents = state.agents();
-    let launch = agents.with_workflow_models(agent, agents.fresh(agent, session_id, cwd));
+    let launch = agents.with_workflow_models(agent, agents.fresh(agent, session_id, cwd), &round);
     let args = clash::infrastructure::agent::with_prompt(launch.args, &prompt);
     let env = launch.env;
     let mut control = state.control.lock().await;
@@ -1731,6 +1736,7 @@ pub(crate) async fn start_workflow_agent(
             cwd: &cwd,
             cols,
             rows,
+            round: Default::default(),
         },
         |item_dir| {
             clash::application::workflow::build_agent_prompt(
@@ -1997,6 +2003,26 @@ pub(crate) async fn launch_review(
             .unwrap_or_default(),
         target.as_str(),
     );
+    // Context, not scope: the reviewer reads each layer against its parent
+    // whichever PRs it was pointed at. An unorderable stack is no stack.
+    let stack: Vec<String> = match item_stack(state, &meta).1 {
+        Ok(Some(s)) => s.layers.into_iter().map(|l| l.url).collect(),
+        _ => Vec::new(),
+    };
+    // A diff-judging round picks its models from the size of the change.
+    let cfg = state.config.get();
+    let measured = if target.is_sized() && cfg.review_sizing().enabled() {
+        crate::launch_stage(app, &key, "measure", None);
+        measure_round(state, &project, &slug, &meta, &pr_urls, stack.len()).await
+    } else {
+        None
+    };
+    let agent_kind = clash::domain::entities::AgentKind::parse(&meta.agent);
+    let round_models = clash::application::review_size::models_for_round(
+        agent_kind,
+        measured.map(|(size, _, _)| size),
+        &cfg.review_sizing(),
+    );
     let review = WorkflowReview {
         target,
         depth,
@@ -2006,14 +2032,12 @@ pub(crate) async fn launch_review(
         interactive,
         auto_apply,
         pr_urls,
-        // Context, not scope: the reviewer reads each layer against its parent
-        // whichever PRs it was pointed at. An unorderable stack is no stack.
-        stack: match item_stack(state, &meta).1 {
-            Ok(Some(s)) => s.layers.into_iter().map(|l| l.url).collect(),
-            _ => Vec::new(),
-        },
+        stack,
         // What this pass must concentrate on, when the human said so at launch.
         focus: focus.map(|f| f.trim().to_string()).unwrap_or_default(),
+        size: measured.map(|(size, _, _)| size),
+        size_lines: measured.map_or(0, |(_, lines, _)| lines),
+        size_files: measured.map_or(0, |(_, _, files)| files),
         started_at: now_ms(),
         ..Default::default()
     };
@@ -2069,16 +2093,15 @@ pub(crate) async fn launch_review(
             cwd: &cwd,
             cols,
             rows,
+            round: round_models.clone(),
         },
         |item_dir| {
             clash::application::workflow::build_review_prompt(
                 item_dir,
                 &review,
                 mode,
-                &state
-                    .config
-                    .get()
-                    .workflow_delegation(clash::domain::entities::AgentKind::parse(&meta.agent)),
+                &cfg.workflow_delegation(agent_kind)
+                    .with_subagent(round_models.subagent.as_deref()),
             )
         },
     )
@@ -2102,6 +2125,70 @@ pub(crate) async fn launch_review(
     }
 
     Ok(session_id)
+}
+
+/// Measure the change a sized round reads: the item's own diff (what its
+/// Changes view shows) for the primary PR or an unscoped round, plus each
+/// other picked PR's diff from the forge. `(size, changed lines, files)`;
+/// any failure is `None` — the regular models, never a failed launch.
+async fn measure_round(
+    state: &GuiState,
+    project: &str,
+    slug: &str,
+    meta: &clash::domain::workflow::WorkflowMeta,
+    pr_urls: &[String],
+    stack_layers: usize,
+) -> Option<(clash::domain::workflow::ReviewSize, usize, usize)> {
+    use clash::application::diff::change_size;
+    let primary = meta
+        .pr
+        .as_ref()
+        .map(|p| p.url.clone())
+        .filter(|u| !u.is_empty());
+    let mut remote: Vec<String> = pr_urls
+        .iter()
+        .filter(|u| Some(*u) != primary.as_ref())
+        .cloned()
+        .collect();
+    let mut texts = Vec::new();
+    if pr_urls.is_empty() || remote.len() < pr_urls.len() {
+        let local = workflow_diff_text(state, project, slug, None).await.ok()?;
+        // No checkout to diff (an item reviewing a PR it never checked out):
+        // the primary's own diff is the change.
+        match &primary {
+            Some(url) if change_size(&local).1 == 0 => remote.push(url.clone()),
+            _ => texts.push(local),
+        }
+    }
+    if !remote.is_empty() {
+        let dir = pr_dir(meta).ok()?;
+        let forge = state.forge_for_dir(&dir);
+        let fetched = tauri::async_runtime::spawn_blocking(move || {
+            remote
+                .iter()
+                .map(|url| {
+                    let (repo, number) = clash::infrastructure::gh::parse_pr_url(url)?;
+                    forge.change_diff(Path::new(&dir), number, Some(&repo)).ok()
+                })
+                .collect::<Option<Vec<String>>>()
+        })
+        .await
+        .ok()??;
+        texts.extend(fetched);
+    }
+    let (lines, files) = texts
+        .iter()
+        .map(|t| change_size(t))
+        .fold((0, 0), |(l, f), (dl, df)| (l + dl, f + df));
+    if files == 0 {
+        return None;
+    }
+    let prs = pr_urls.len().max(stack_layers).max(1);
+    Some((
+        clash::application::review_size::review_size(lines, files, prs),
+        lines,
+        files,
+    ))
 }
 
 /// An explainer launch's arguments — `start_workflow_review_agent`'s, minus
@@ -2264,6 +2351,7 @@ async fn start_explainer(
             cwd: &cwd,
             cols,
             rows,
+            round: Default::default(),
         },
         |item_dir| {
             clash::application::workflow::build_review_prompt(
@@ -2575,6 +2663,7 @@ pub(crate) async fn start_workflow_dive(
             cwd: &cwd,
             cols,
             rows,
+            round: Default::default(),
         },
         |_| prompt.clone(),
     )
@@ -3739,6 +3828,7 @@ pub(crate) async fn share_workflow_via_agent(
             cwd: &cwd,
             cols,
             rows,
+            round: Default::default(),
         },
         |_item_dir| {
             clash::application::workflow_share::share_prompt(

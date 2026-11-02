@@ -427,6 +427,7 @@ fn resume_context(state: &GuiState, session_id: &str) -> (String, Option<String>
             None,
             clash::domain::entities::AgentKind::Claude,
             None,
+            &Default::default(),
         );
         return (cwd, Some(name));
     }
@@ -1088,6 +1089,7 @@ async fn create_new_session(
         None,
         agent,
         None,
+        &Default::default(),
     );
     clash::infrastructure::hooks::save_session_name(
         state.backend.base_dir(),
@@ -1753,6 +1755,10 @@ struct AgentSettings {
     delegation: String,
     subagent_model: String,
     omp_subagent_model: String,
+    /// `auto` | `off`, and the two tier models of a sized review round.
+    review_sizing: String,
+    small_review_model: String,
+    large_review_subagent_model: String,
     assist: String,
     /// `overview` | `critical` | `full`: what an explain round writes up front.
     explain_detail: String,
@@ -1772,6 +1778,7 @@ fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
     let team = cfg
         .workflow_delegation(clash::domain::entities::AgentKind::Claude)
         .team;
+    let sizing = cfg.review_sizing().enabled();
     AgentSettings {
         default_agent: cfg.default_agent().as_str().to_string(),
         omp_available: bin_available(&cfg.general.omp_bin),
@@ -1789,6 +1796,9 @@ fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
         delegation: if team { "team" } else { "solo" }.to_string(),
         subagent_model: cfg.workflows.subagent_model,
         omp_subagent_model: cfg.workflows.omp_subagent_model,
+        review_sizing: if sizing { "auto" } else { "off" }.to_string(),
+        small_review_model: cfg.workflows.small_review_model,
+        large_review_subagent_model: cfg.workflows.large_review_subagent_model,
         assist: match cfg.workflows.assist.as_str() {
             "autopilot" | "off" => cfg.workflows.assist.clone(),
             _ => "suggest".to_string(),
@@ -1805,7 +1815,8 @@ fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
 /// `general.default_agent`, `general.omp_bin`, `workflows.agent`,
 /// `workflows.omp_model`, `workflows.lead_model`, `workflows.delegation`,
 /// `workflows.subagent_model`, `workflows.omp_subagent_model`, `workflows.assist`,
-/// `workflows.explain_detail`; an empty
+/// `workflows.explain_detail`, `workflows.review_sizing`,
+/// `workflows.small_review_model`, `workflows.large_review_subagent_model`; an empty
 /// value resets it to the default. An
 /// absolute `omp_bin` must exist, like `claude_bin`.
 #[tauri::command]
@@ -1842,6 +1853,9 @@ fn set_agent_setting(
         {
             return Err(format!("Not an explanation detail: {value}"));
         }
+        "workflows.review_sizing" if !value.is_empty() && value != "auto" && value != "off" => {
+            return Err(format!("Not a review sizing mode: {value}"));
+        }
         "general.default_agent"
         | "workflows.agent"
         | "general.omp_bin"
@@ -1851,7 +1865,10 @@ fn set_agent_setting(
         | "workflows.subagent_model"
         | "workflows.omp_subagent_model"
         | "workflows.assist"
-        | "workflows.explain_detail" => value.to_string(),
+        | "workflows.explain_detail"
+        | "workflows.review_sizing"
+        | "workflows.small_review_model"
+        | "workflows.large_review_subagent_model" => value.to_string(),
         other => return Err(format!("Not an agent setting: {other}")),
     };
     let result = if value.is_empty() {
@@ -2387,6 +2404,7 @@ async fn create_worktree_session(
         Some(git_branch.as_str()),
         agent,
         None,
+        &Default::default(),
     );
     clash::infrastructure::hooks::save_session_name(
         state.backend.base_dir(),

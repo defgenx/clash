@@ -723,6 +723,15 @@ impl<'a> Delegation<'a> {
         }
     }
 
+    /// The same split with its subagents on `model` when one is given — a
+    /// sized round's override, so the kickoff names the model they really run on.
+    pub fn with_subagent(self, model: Option<&'a str>) -> Self {
+        Self {
+            subagent_model: model.map_or(self.subagent_model, str::trim),
+            ..self
+        }
+    }
+
     /// The kickoff field. Always stated, so a skill never has to guess.
     fn clause(&self) -> String {
         match (self.team, self.subagent_model) {
@@ -1437,13 +1446,22 @@ pub fn build_review_prompt(
     } else {
         String::new()
     };
+    // How big the change is, so the reviewer scales its passes to it.
+    let size = match review.size.filter(|_| review.target.is_sized()) {
+        Some(size) => format!(
+            " Size: {} ({} lines, {} files).",
+            size, review.size_lines, review.size_files
+        ),
+        None => String::new(),
+    };
     format!(
         "Use the {} skill. Workflow item directory: {}. \
-         Target: {}. Depth: {}. Publish: {}. Round: {}.{}{} Mode: {}.{}{}{}{}{}{}",
+         Target: {}. Depth: {}.{} Publish: {}. Round: {}.{}{} Mode: {}.{}{}{}{}{}{}",
         engine,
         item_dir,
         review.target,
         review.depth,
+        size,
         review.publish,
         review.round.max(1),
         return_to,
@@ -2019,6 +2037,45 @@ mod tests {
         // No explainer is ever named for this target — that skill judges
         // nothing, so it would grade no divergence at all.
         assert!(!p.contains("clash-explain"), "{p}");
+    }
+
+    #[test]
+    fn review_prompt_states_the_size_after_the_depth_for_diff_judging_rounds() {
+        use crate::domain::workflow::{ReviewSize, ReviewTarget, WorkflowReview};
+        let sized = |target| WorkflowReview {
+            target,
+            size: Some(ReviewSize::Large),
+            size_lines: 1234,
+            size_files: 30,
+            ..Default::default()
+        };
+        for target in [ReviewTarget::Diff, ReviewTarget::SelfReview] {
+            let p = build_review_prompt(
+                "/x",
+                &sized(target),
+                WorkflowMode::Full,
+                &Delegation::default(),
+            );
+            assert!(
+                p.contains("Depth: standard. Size: large (1234 lines, 30 files). Publish: local."),
+                "{p}"
+            );
+        }
+        // Only diff-judging rounds are sized, and an unmeasured one says nothing.
+        let drift = build_review_prompt(
+            "/x",
+            &sized(ReviewTarget::Drift),
+            WorkflowMode::Full,
+            &Delegation::default(),
+        );
+        assert!(!drift.contains("Size:"), "{drift}");
+        let unmeasured = build_review_prompt(
+            "/x",
+            &WorkflowReview::default(),
+            WorkflowMode::Full,
+            &Delegation::default(),
+        );
+        assert!(!unmeasured.contains("Size:"), "{unmeasured}");
     }
 
     #[test]

@@ -14,10 +14,12 @@
 //! A **workflow** session's models are applied here too
 //! ([`Agents::with_workflow_models`]) — at its first launch *and* at every
 //! relaunch, since a resume keeps none of the original command line or env.
+//! A sized review round's override rides its registry entry.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::application::review_size::RoundModels;
 use crate::domain::entities::AgentKind;
 use crate::infrastructure::config::Config;
 use crate::infrastructure::hooks::registry::{self, ClashSession};
@@ -109,17 +111,24 @@ impl Agents {
     /// `--model`, and the subagent pin as env (Claude Code: model + force
     /// flag; OMP: a config overlay setting its `task` role). Called for a
     /// workflow session's first launch and for every relaunch of one.
-    pub fn with_workflow_models(&self, agent: AgentKind, mut launch: Launch) -> Launch {
+    /// `round` overrides the pins for a sized review round (Claude Code only).
+    pub fn with_workflow_models(
+        &self,
+        agent: AgentKind,
+        mut launch: Launch,
+        round: &RoundModels,
+    ) -> Launch {
         use crate::application::workflow::{delegation_env, launch_model, Delegation};
         let w = &self.workflow;
-        if let Some(m) = launch_model(agent, &w.claude_lead, &w.omp_lead) {
+        let claude_lead = round.lead.as_deref().unwrap_or(&w.claude_lead);
+        if let Some(m) = launch_model(agent, claude_lead, &w.omp_lead) {
             launch.args.push("--model".into());
             launch.args.push(m.to_string());
         }
         let delegation = Delegation::from_settings(
             &w.delegation,
             match agent {
-                AgentKind::Claude => &w.claude_subagent,
+                AgentKind::Claude => round.subagent.as_deref().unwrap_or(&w.claude_subagent),
                 AgentKind::Omp => &w.omp_subagent,
             },
         );
@@ -260,8 +269,10 @@ impl Agents {
         // A resume keeps none of the first launch's flags or env, so a
         // workflow session would otherwise come back on the agent's default
         // model with its subagents unpinned.
+        // A sized review round keeps the models it was launched with.
         if registry::is_workflow_session(registry, session_id) {
-            self.with_workflow_models(agent, launch)
+            let round = registry::registered_round_models(registry, session_id);
+            self.with_workflow_models(agent, launch, &round)
         } else {
             launch
         }
@@ -424,12 +435,16 @@ mod tests {
     fn workflow_models_are_applied_per_harness() {
         let dir = tempfile::TempDir::new().unwrap();
         let a = agents_with(dir.path(), models());
-        let c = a.with_workflow_models(AgentKind::Claude, Launch::default());
+        let c = a.with_workflow_models(
+            AgentKind::Claude,
+            Launch::default(),
+            &RoundModels::default(),
+        );
         assert_eq!(c.args, ["--model", "claude-opus-5-5"]);
         assert_eq!(c.env["CLAUDE_CODE_SUBAGENT_MODEL"], "claude-sonnet-5-5");
         assert_eq!(c.env["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1");
 
-        let o = a.with_workflow_models(AgentKind::Omp, Launch::default());
+        let o = a.with_workflow_models(AgentKind::Omp, Launch::default(), &RoundModels::default());
         assert_eq!(o.args, ["--model", "glm-5"]);
         let overlay = &o.env["PI_CONFIG_FILES"];
         assert!(overlay.ends_with("workflow-models.yml"), "{overlay}");
@@ -447,7 +462,7 @@ mod tests {
         );
         for agent in [AgentKind::Claude, AgentKind::Omp] {
             assert_eq!(
-                bare.with_workflow_models(agent, Launch::default()),
+                bare.with_workflow_models(agent, Launch::default(), &RoundModels::default()),
                 Launch::default()
             );
         }
@@ -470,6 +485,8 @@ mod tests {
             agent: AgentKind::Claude,
             workflow,
             workflow_item: None,
+            lead_model: None,
+            subagent_model: None,
         };
         let reg: HashMap<String, ClashSession> = [
             ("wf".to_string(), entry("wf", true)),
@@ -487,6 +504,40 @@ mod tests {
         let plain = a.relaunch_with(&reg, "plain", Some("/p"), |_| true);
         assert_eq!(plain.args, ["--resume", "plain"]);
         assert!(plain.env.is_empty());
+    }
+
+    /// A sized review round resumes on the models it was launched with, not
+    /// on whatever the pins say now.
+    #[test]
+    fn a_relaunched_sized_round_keeps_its_override_from_the_registry_entry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = agents_with(dir.path(), models());
+        let entry = |lead: Option<&str>, subagent: Option<&str>| ClashSession {
+            session_id: "wf".into(),
+            name: "wf".into(),
+            cwd: "/p".into(),
+            claude_session_id: "wf".into(),
+            created_at: String::new(),
+            source_branch: None,
+            previous_ids: Vec::new(),
+            agent: AgentKind::Claude,
+            workflow: true,
+            workflow_item: Some("p/s".into()),
+            lead_model: lead.map(str::to_string),
+            subagent_model: subagent.map(str::to_string),
+        };
+        let small: HashMap<String, ClashSession> =
+            [("wf".to_string(), entry(Some("claude-sonnet-5-5"), None))].into();
+        let l = a.relaunch_with(&small, "wf", Some("/p"), |_| true);
+        assert_eq!(l.args, ["--resume", "wf", "--model", "claude-sonnet-5-5"]);
+        assert_eq!(l.env["CLAUDE_CODE_SUBAGENT_MODEL"], "claude-sonnet-5-5");
+
+        let large: HashMap<String, ClashSession> =
+            [("wf".to_string(), entry(None, Some("claude-opus-5-5")))].into();
+        let l = a.relaunch_with(&large, "wf", Some("/p"), |_| true);
+        assert_eq!(l.args, ["--resume", "wf", "--model", "claude-opus-5-5"]);
+        assert_eq!(l.env["CLAUDE_CODE_SUBAGENT_MODEL"], "claude-opus-5-5");
+        assert_eq!(l.env["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1");
     }
 
     #[test]

@@ -465,6 +465,14 @@ impl ReviewTarget {
         )
     }
 
+    /// Is a round on this target sized — its models picked from the size of
+    /// the change (`workflows.review_sizing`)? Only the rounds that judge a
+    /// diff: more change is more to find. A plan, a drift comparison and an
+    /// explanation keep the regular pins.
+    pub fn is_sized(&self) -> bool {
+        matches!(self, Self::Diff | Self::SelfReview)
+    }
+
     /// Normalize a target string off disk — a `meta.review.target` or an
     /// `agent-review.md` heading — to its current spelling, so rounds written
     /// under the old names keep counting toward the same per-target tally.
@@ -522,6 +530,37 @@ impl ReviewDepth {
 }
 
 impl std::fmt::Display for ReviewDepth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// How big the change a diff-judging round reads is, measured at launch —
+/// what picks its models and how far its skill scales its passes. Thresholds:
+/// `application::review_size`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReviewSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+    #[serde(other)]
+    Unknown,
+}
+
+impl ReviewSize {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Small => "small",
+            Self::Medium => "medium",
+            Self::Large => "large",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl std::fmt::Display for ReviewSize {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
@@ -683,6 +722,16 @@ pub struct WorkflowReview {
     /// Read only by explainers; every other round ignores it.
     #[serde(default)]
     pub detail: ExplainDetail,
+    /// Size of the change a diff-judging round (`ReviewTarget::is_sized`)
+    /// reads, measured at launch — the kickoff's `Size:` field. `None` when
+    /// sizing is off, the target judges no diff, or measuring failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<ReviewSize>,
+    /// Changed lines (additions + deletions) and files behind `size`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub size_lines: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub size_files: usize,
     #[serde(default)]
     pub started_at: i64,
     #[serde(flatten)]
@@ -1633,6 +1682,10 @@ where
         serde_json::Value::String(s) => s,
         other => other.to_string(),
     })
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// A reply on an annotation thread.

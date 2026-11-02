@@ -14,6 +14,10 @@ pub mod nav;
 pub mod pr_stack;
 pub mod prompt_queue;
 pub mod reducer;
+/// Same allowance as `workflow`: review rounds are launched by the GUI in v1
+/// (the TUI only relaunches them, through `RoundModels`).
+#[allow(dead_code)]
+pub mod review_size;
 pub mod state;
 pub mod store;
 /// Pure workflow logic is consumed only through the lib crate in v1 (GUI

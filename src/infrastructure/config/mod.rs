@@ -237,6 +237,12 @@ pub struct Workflows {
     pub subagent_model: String,
     /// Model an OMP lead's subagents run on; empty = omp's own `task` role.
     pub omp_subagent_model: String,
+    /// `auto` | `off` — see the `workflows.review_sizing` row.
+    pub review_sizing: String,
+    /// Lead of a small sized review round; empty = `lead_model`.
+    pub small_review_model: String,
+    /// Subagents of a large sized review round; empty = `subagent_model`.
+    pub large_review_subagent_model: String,
     /// Skill the workflow PR phase opens pull requests with; empty means
     /// "follow the repo's own conventions with `gh`".
     pub pr_skill: String,
@@ -286,6 +292,9 @@ impl Default for Workflows {
             explain_detail: default_str("workflows.explain_detail"),
             subagent_model: default_str("workflows.subagent_model"),
             omp_subagent_model: default_str("workflows.omp_subagent_model"),
+            review_sizing: default_str("workflows.review_sizing"),
+            small_review_model: default_str("workflows.small_review_model"),
+            large_review_subagent_model: default_str("workflows.large_review_subagent_model"),
             pr_skill: default_str("workflows.pr_skill"),
             forge: default_str("workflows.forge"),
             pr_stacking: default_bool("workflows.pr_stacking"),
@@ -404,6 +413,17 @@ impl Config {
                 crate::domain::entities::AgentKind::Omp => &self.workflows.omp_subagent_model,
             },
         )
+    }
+
+    /// The settings a sized review round's models come from — see
+    /// `application::review_size`. GUI-only, like `workflow_delegation`.
+    #[allow(dead_code)]
+    pub fn review_sizing(&self) -> crate::application::review_size::SizingSettings<'_> {
+        crate::application::review_size::SizingSettings {
+            sizing: &self.workflows.review_sizing,
+            small_lead: &self.workflows.small_review_model,
+            large_subagent: &self.workflows.large_review_subagent_model,
+        }
     }
 
     /// The configured PR-creation skill for workflow agents, or `None` when

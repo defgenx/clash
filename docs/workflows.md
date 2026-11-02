@@ -451,7 +451,9 @@ the launcher picked one of several (multi-repo items answer reviewers per PR;
 absent means the primary `meta.pr.url`, and a linked PR's calls must be
 repo-scoped since it lives in another repository) — and `Interactive: yes|no`
 — **absent means the skill asks in-session** before starting (the GUI
-composer's "ask me when it starts" default omits the field).
+composer's "ask me when it starts" default omits the field). A code review or
+self-review also carries `Size: <small|medium|large> (<N> lines, <F> files).`
+right after `Depth:` when the change was measured — see *Sized review rounds*.
 
 Plan review and code review are **two separate, self-contained skills** — each
 owns the whole job for its target: the judgement, the file contract
@@ -1496,11 +1498,46 @@ every clash restart (updates included), every ⟳ reload and every stashed
 session brought back — so pinning only the first launch meant most workflow
 sessions ran on the agent's default model with unpinned subagents. A workflow
 session's registry entry carries `"workflow": true`, and `Agents::relaunch_with`
-applies the same `with_workflow_models` for it, from the *current* settings.
+applies the same `with_workflow_models` for it, from the *current* settings
+— except a sized review round's override, which rides the entry (below).
 The lead alone writes the item's files, runs git, posts to PRs, asks the
 human and changes the status; every brief says so. An empty subagent model
 leaves the harness's own choice (Claude: inherit the lead's; omp: its `task`
 role).
+
+### Sized review rounds
+
+A code review (`diff`) and a self-review (`self-review`) pick their models
+from the **size of the change** they read, so a big change gets stronger
+finders and a tiny one does not burn the most expensive lead. Plan, drift and
+explain rounds keep the regular pins. `launch_review` measures the change
+before recording the round — the item's own diff (the one its Changes view
+shows, `workflow_diff_text`) for an unscoped round or the primary PR, plus each
+other picked PR's diff from the forge (`gh pr diff --repo`); an item with no
+checkout to diff falls back to its primary PR's diff. The pure
+`application::review_size` decides:
+
+| Size | When | Lead | Subagents |
+|------|------|------|-----------|
+| `small` | ≤150 changed lines (additions + deletions) **and** ≤5 files, one PR | `workflows.small_review_model` (default `claude-sonnet-5-5`) | `workflows.subagent_model` |
+| `medium` | anything else | `workflows.lead_model` | `workflows.subagent_model` |
+| `large` | ≥800 changed lines **or** ≥25 files | `workflows.lead_model` | `workflows.large_review_subagent_model` (default `claude-opus-5-5`) |
+
+More than one PR in scope (several picked, or a stack) is never `small`. An
+empty tier setting falls back to the regular pin, and a measurement that fails
+(or finds no change) is `medium` without a `Size:` field — never a failed
+launch. `workflows.review_sizing = off` measures nothing: exactly the regular
+pins and no `Size:`. **Claude Code only** — an OMP round still states its size
+in the kickoff, but its models are the user's providers', so it keeps its own.
+
+The kickoff carries `Size: <small|medium|large> (<N> lines, <F> files).` right
+after `Depth:`, recorded as `meta.review.size` / `sizeLines` / `sizeFiles`, so
+the skill scales its passes to the change. The delegation clause names the
+subagent model the round really runs on. **A relaunch keeps the launch's
+choice**: the override rides the session's registry entry (`lead_model` /
+`subagent_model`, only where it differs from the pins), and
+`Agents::relaunch_with` prefers it over the current settings — a resumed
+round does not change models halfway through because the pins moved.
 
 ## Embedded skills — install as a decision
 
