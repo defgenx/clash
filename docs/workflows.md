@@ -789,6 +789,14 @@ human first. Here the post *is* the output, so:
   count: those live in the ledger and the item's report. The skill's *Post*
   section is the style guide; `clash-code-review`'s `pr-comments` posts follow
   it too.
+- **The other side is read before it is blamed.** The skill lists the
+  services, repositories and libraries the changed code reaches across a
+  boundary and reads them at the version the change runs against (the pinned
+  ref, not the default branch; docs at the pinned version for third-party
+  ones). A finding that rests on another side's behaviour is capped at
+  `medium` confidence until that side is read. Interactive runs ask which to
+  read up front (one multi-select, after the opening question); autonomous runs
+  read the ones a candidate finding or a risky path depends on.
 - **The verdict is owned.** Before approving, the skill names the worst
   thing the change can do once merged and must have read the code that
   prevents it at `high` confidence (auth, data and migrations, payments,

@@ -742,7 +742,9 @@ which GitHub shows as snippets), and a summary whose shape depends on the case
 (a one-line LGTM, a single blocker, a list, a question for the author, a
 re-check after fixes). Every finding still ends with a small 🤖 footer giving
 its grade and confidence, a check refuses to post a comment without one, and
-the summary ends with a line saying it is an automated review. How hard it
+the summary ends with a line saying it is an automated review. Before calling something a bug in how another service, repository or library
+behaves, it reads that side at the version the change uses (asking you which
+ones first in an interactive run). How hard it
 looks depends on the size of the change: a small PR gets a lighter model and no
 fan-out, a large one stronger reviewers on every pass.
 

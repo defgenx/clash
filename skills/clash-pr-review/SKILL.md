@@ -157,9 +157,77 @@ For each PR under review (`<n>` its number, `--repo <owner/repo>` from its URL):
 7. Workflow round only: `clash-code-review`'s Step 0 (meta, plan, review.md,
    agent-review.md, annotations.json). Never re-raise what the human
    dismissed in an earlier round.
+8. **The surroundings** — the services, repositories and libraries the
+   changed code calls or is called by. List them now; how far you read them
+   is decided below ("The surroundings").
 
 `Focus:` (workflow) or anything the request singles out is read first in every
 pass, not instead of the rest.
+
+## The surroundings — read the other side before you call it a bug
+
+A change rarely stands alone. It calls another service, consumes an SDK
+built from another repository, publishes an event someone else reads, or
+relies on a library behaving a certain way. Most false positives come from
+guessing what the other side does: "this field can be null", "that endpoint
+retries", "the consumer ignores unknown values". Read the other side instead.
+
+**What counts.** From the diff and the files it touches, list every
+dependency the changed lines reach across a boundary:
+
+- another service it calls or is called by: HTTP / gRPC clients and handlers,
+  queue or topic producers and consumers, webhooks, the gateway in front of it;
+- a shared contract or SDK: generated clients, protobuf / OpenAPI packages,
+  an internal gem / module / npm package, and the repository it is built from;
+- a third-party library or API whose behaviour the change depends on (a retry
+  policy, an error type, a rate limit, a default);
+- infrastructure configuration the code assumes (environment variables, feature
+  flags, deployment manifests), when it lives in another repository.
+
+**How to read it.**
+
+- **An organisation repository:** find it (the import path, the gem or module
+  source, the package's `repository` field, `gh search code` / `gh search repos
+  --owner <org>`), then read the code **at the version this change runs
+  against** — the ref pinned in the lockfile, `go.mod`, `Gemfile.lock` or
+  `package.json`, not the default branch —
+  `gh api repos/<o>/<r>/contents/<path>?ref=<pinned>`. When the default branch
+  differs from the pinned version in a way that matters, that is a finding of
+  its own (deploy order, a pending bump). Read only the code on the path the
+  change uses: the handler it calls, the message it consumes, the field it
+  reads.
+- **A third-party library or API:** its documentation or source at the pinned
+  version (the package registry's docs, the library's own repository at that
+  tag), with the URL in the ledger. A changelog entry for a recent bump is the
+  first thing to read.
+- **Nothing to read** (a private SaaS with no public docs, a repository you
+  cannot access): say so in the ledger, and every finding that rests on it stays
+  at `medium` or below, with "the other side was not read" as its basis.
+
+**The rule it enforces.** A finding whose concrete failure depends on what
+another service, repository or library does is **at most `medium` until that
+side has been read**, and it reaches `high` only from the code or the docs,
+never from naming. Reading the other side also kills findings: when it shows
+the case cannot happen, drop the candidate and record why.
+
+**Ask first, unless autonomous.** Reading the surroundings costs time and
+tokens, and only the human knows which ones are worth it. In an interactive run,
+right after the opening question (in the same call as the stack's layer
+question, when there is one), ask in one `AskUserQuestion` with
+`multiSelect: true` which to read, one option per dependency you listed, each
+with what you would read and why (`api-contracts @ v0.11.0 — the
+CLASSIFICATION enum this PR switches on`), the ones the change's risky paths
+depend on recommended, plus **None — this repository only**. A dependency the
+human leaves unticked is not read, and findings that rest on it are capped at
+`medium` as above. When you list nothing, say so and skip the question.
+Autonomous: read every dependency on a path a candidate finding or a risky
+change (see *Own the verdict*) depends on, and skip the rest.
+
+Record each one in the ledger's `## Surroundings` table — what it is, where you
+read it (repo and ref, or URL), and what it established — and every later pass
+reads that table before guessing about a dependency. Under
+`Delegation: team`, one read-only subagent per dependency worth more than a
+couple of reads.
 
 ## PR stacks — find the stack, review every layer
 
@@ -300,6 +368,11 @@ those files are a contract. It holds:
 |---|---|---|
 | src/auth.rs | 3 | 1, 2 |
 
+## Surroundings
+| dependency | kind | read at | established |
+|---|---|---|---|
+| Hivebrite/api-contracts | SDK (gem) | v0.11.0 `proto/audit/v1/log.proto` | `classification` is a closed enum; unknown values decode as 0 |
+
 ## Discussion
 | id | by | where | concern | state | claimed outcome | verified |
 |---|---|---|---|---|---|---|
@@ -328,6 +401,10 @@ those files are a contract. It holds:
    - **beyond the diff** — callers of what changed, other implementers of the
      trait or interface, config, migrations, serialization, docs that describe
      the old behaviour;
+   - **the surroundings** — every candidate that rests on another service,
+     repository or library, checked against the code or docs listed in
+     `## Surroundings` (reading the ones it is missing, within what the human
+     chose);
    - **clusters** — every verified finding is a pattern: look for the same
      mistake elsewhere in the change;
    - **adversarial inputs** — empty, huge, malformed, unicode, concurrent,
@@ -763,6 +840,8 @@ Final chat message, short — the posted review is the artifact:
 - the count per grade and per confidence, and how many passes the loop ran
   with the new verified findings per pass;
 - the size, and the models and fan-out it decided;
+- which surroundings were read (repo@ref or URL) and which were not, and the
+  findings capped at `medium` because of it;
 - the event actually used when it differs from the verdict (own PR, draft);
 - what was not covered, if anything;
 - under `Delegation: team`, how the passes were split and what verification
