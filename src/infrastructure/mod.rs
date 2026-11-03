@@ -3,6 +3,10 @@ pub mod app;
 pub mod clipboard;
 pub mod config;
 pub mod daemon;
+/// Terminal file drops are stored only by the GUI (lib crate) — same
+/// dead-code allowance as `gh`/`forge`.
+#[allow(dead_code)]
+pub mod drops;
 pub mod env_path;
 pub mod error;
 pub mod event;

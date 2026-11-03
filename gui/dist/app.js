@@ -3566,6 +3566,7 @@ async function openSession(sid, label, opts = {}) {
   // (focusing would resume them); live opens claim the focused pane.
   if (!defer) assignToFocusedPane(sid);
   term.open(el);
+  wireTerminalDrop(el, sid);
   // GPU-accelerated rendering. The default DOM renderer repaints cells as
   // styled <span>s and, under Claude Code's rapid streaming output (spinners,
   // progressive tokens, statusline redraws), leaves stale/half-refreshed
@@ -4610,6 +4611,70 @@ async function launchScratchEditor(note, value) {
     uiAlert(`Open failed: ${e}`);
   }
 }
+
+// ── Terminal file drops ─────────────────────────────────────────────
+// Native file drops are off (`dragDropEnabled: false`, which in-page DnD
+// needs), so a Finder drop arrives as DOM `File`s with bytes and no path.
+// A drop on a terminal types paths, like iTerm2: real ones when the drop
+// carries file:// URLs, otherwise a copy stored by `save_dropped_file`.
+// Claude Code and OMP turn a typed image path into an attachment.
+
+const dragHasFiles = (ev) => [...(ev.dataTransfer?.types || [])].includes("Files");
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).replace(/^data:[^,]*,/, ""));
+    r.onerror = () => reject(r.error || new Error("could not read the file"));
+    r.readAsDataURL(file);
+  });
+}
+
+async function droppedPaths(dt) {
+  const real = fileUriPaths(dt.getData("text/uri-list"));
+  const files = [...(dt.files || [])];
+  if (real.length && real.length >= files.length) return real;
+  const out = [];
+  for (const f of files) {
+    out.push(await invoke("save_dropped_file", { name: f.name, data: await fileToBase64(f) }));
+  }
+  return out;
+}
+
+function wireTerminalDrop(el, sid) {
+  el.addEventListener("dragover", (ev) => {
+    if (!dragHasFiles(ev)) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = "copy";
+  });
+  el.addEventListener("drop", async (ev) => {
+    if (!dragHasFiles(ev)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const entry = state.open.get(sid);
+    if (!entry || !entry.term) return;
+    if (entry.deferred) {
+      flashToast("Resume the session, then drop the file again");
+      return;
+    }
+    try {
+      const paths = await droppedPaths(ev.dataTransfer);
+      if (!paths.length) return;
+      entry.term.paste(`${dropPasteText(paths)} `);
+      entry.term.focus();
+    } catch (e) {
+      uiAlert(`Drop failed: ${e}`);
+    }
+  });
+}
+
+// A file dropped anywhere else must not navigate the webview to it.
+document.addEventListener("dragover", (ev) => {
+  if (dragHasFiles(ev)) ev.preventDefault();
+});
+document.addEventListener("drop", (ev) => {
+  if (dragHasFiles(ev)) ev.preventDefault();
+});
 
 // ── Files panel ─────────────────────────────────────────────────
 // A file explorer docked right of the panes (⌘E), rooted at the focused

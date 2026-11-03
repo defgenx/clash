@@ -149,6 +149,35 @@
     return ["", ...open.sort()];
   }
 
+  /// What a terminal drop types: the paths, space-separated, each escaped the
+  /// way iTerm2/Terminal escape a Finder drop (a backslash before every
+  /// shell-special character), so an agent's image-path detection and a shell
+  /// both read it as one argument per file.
+  function dropPasteText(paths) {
+    return paths
+      .filter(Boolean)
+      .map((p) => String(p).replace(/[^A-Za-z0-9_\-.,:\/@%+=]/g, (c) => `\\${c}`))
+      .join(" ");
+  }
+
+  /// Local paths carried by a drop's `text/uri-list` (file:// URLs only;
+  /// comment lines and other schemes are skipped).
+  function fileUriPaths(uriList) {
+    const out = [];
+    for (const line of String(uriList || "").split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t || t.startsWith("#") || !t.startsWith("file://")) continue;
+      try {
+        const u = new URL(t);
+        if (u.host && u.host !== "localhost") continue;
+        out.push(decodeURIComponent(u.pathname));
+      } catch (_) {
+        /* not a URL */
+      }
+    }
+    return out;
+  }
+
   const api = {
     fileTreeRows,
     statusIndex,
@@ -160,6 +189,8 @@
     highlightMatch,
     formatSize,
     foldersToRefresh,
+    dropPasteText,
+    fileUriPaths,
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;

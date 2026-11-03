@@ -3345,6 +3345,23 @@ fn clipboard_read_text(app: tauri::AppHandle) -> Result<String, String> {
     Ok(app.clipboard().read_text().unwrap_or_default())
 }
 
+/// Store a file dropped onto a terminal and return its path. The window has
+/// native file drops off, so the page sees the bytes but never the path; the
+/// frontend types the returned path into the session instead.
+#[tauri::command]
+async fn save_dropped_file(name: String, data: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &data)
+            .map_err(|e| format!("bad file data: {e}"))?;
+        let dir = clash::infrastructure::config::Config::clash_data_dir().join("drops");
+        clash::infrastructure::drops::save_dropped_file(&dir, &name, &bytes)
+            .map(|p| p.to_string_lossy().into_owned())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// (Re)connect the control client if the connection was lost.
 async fn ensure_connected(client: &mut DaemonClient) {
     if !client.is_connected() {
@@ -3756,6 +3773,7 @@ fn main() {
             open_external,
             clipboard_write_text,
             clipboard_read_text,
+            save_dropped_file,
             save_gui_state,
             load_gui_state,
             workflows::list_workflow_items,

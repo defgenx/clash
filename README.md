@@ -279,6 +279,12 @@ teams, files, tabs and panes, the terminal and settings. Replay it from *Setting
   - `⌘K` clears the terminal.
 - **Selecting text**: Claude Code captures the mouse, so **⌥-drag** (Shift on
   Linux) to select text. Right-click selects a word.
+- **Dropping files**: drop a file or a screenshot onto a terminal and its path
+  is typed into the session, escaped like iTerm2 does — Claude Code and OMP
+  attach a dropped image. The window has native file drops off (in-app
+  drag-and-drop needs it), so the page gets the file's bytes without its path:
+  clash stores a copy under `~/.claude/clash/drops/` (kept 7 days, 64 MB max)
+  and types that path instead.
 - **International layouts**: ⌥ composes characters (`{`, `[` on AZERTY).
   *⌥ sends Esc (Meta)* keeps ⌥+letter as Meta.
 - **Notifications**: a desktop alert fires when a session starts waiting or

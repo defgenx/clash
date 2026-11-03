@@ -213,7 +213,7 @@ async fn handle_client(
                 raw_startup,
             } => {
                 let mut map = sessions.lock().await;
-                if map.contains_key(&session_id) {
+                if !free_for_spawn(&mut map, &session_id, PtySession::is_alive) {
                     send_event(
                         &writer,
                         &Event::Error {
@@ -455,4 +455,41 @@ async fn send_event(writer: &Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>, event
     let mut w = writer.lock().await;
     let _ = w.write_all(line.as_bytes()).await;
     let _ = w.flush().await;
+}
+
+/// Is `id` free for a new session? A dead entry the reaper has not reached
+/// yet is dropped here: a reload or a stash-then-resume respawns under the
+/// same id right after the old process exits, and refusing it as
+/// "already exists" failed the first attempt of every one of them.
+fn free_for_spawn<V>(
+    map: &mut HashMap<String, V>,
+    id: &str,
+    is_alive: impl Fn(&V) -> bool,
+) -> bool {
+    match map.get(id) {
+        None => true,
+        Some(v) if is_alive(v) => false,
+        Some(_) => {
+            tracing::info!("Reaping dead session {} to respawn it", id);
+            map.remove(id);
+            true
+        }
+    }
+}
+
+#[cfg(test)]
+mod spawn_slot_tests {
+    use super::*;
+
+    #[test]
+    fn a_dead_entry_frees_its_id_and_a_live_one_does_not() {
+        let mut map: HashMap<String, bool> = HashMap::new();
+        assert!(free_for_spawn(&mut map, "a", |v| *v));
+        map.insert("a".into(), true);
+        assert!(!free_for_spawn(&mut map, "a", |v| *v));
+        assert!(map.contains_key("a"));
+        map.insert("a".into(), false);
+        assert!(free_for_spawn(&mut map, "a", |v| *v));
+        assert!(!map.contains_key("a"));
+    }
 }

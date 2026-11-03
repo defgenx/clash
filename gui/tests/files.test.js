@@ -125,3 +125,22 @@ test("the browser branch publishes every helper app.js reads", () => {
     assert.ok(app.includes(`${name}(`), `app.js never calls ${name}`);
   }
 });
+
+test("dropPasteText escapes like a terminal drop", () => {
+  const { dropPasteText } = require("../dist/files.js");
+  assert.equal(dropPasteText(["/tmp/a.png"]), "/tmp/a.png");
+  assert.equal(
+    dropPasteText(["/Users/me/Screen Shot (2).png", "/x/it's.jpg"]),
+    "/Users/me/Screen\\ Shot\\ \\(2\\).png /x/it\\'s.jpg",
+  );
+  assert.equal(dropPasteText(["", null, "/a"]), "/a");
+});
+
+test("fileUriPaths keeps local file URLs only", () => {
+  const { fileUriPaths } = require("../dist/files.js");
+  assert.deepEqual(
+    fileUriPaths("# c\r\nfile:///Users/me/Screen%20Shot.png\r\nhttps://x.io/a.png\nfile://host/x\nfile://localhost/tmp/b"),
+    ["/Users/me/Screen Shot.png", "/tmp/b"],
+  );
+  assert.deepEqual(fileUriPaths(""), []);
+});
