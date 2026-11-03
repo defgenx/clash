@@ -529,9 +529,9 @@ because the account holder will be.
    non-blocking.
 
 An approval on a risky change says in its one line what you checked that
-matters ("LGTM — I went through the migration's rollback and both writers of
-`balance`"), so a reader knows what the approval covers. On a trivial change,
-"LGTM" is enough.
+matters ("Went through the migration's rollback and both writers of
+`balance`, all good."), so a reader knows what the approval covers. On a
+trivial change, a short plain sentence is enough ("Looks good to me.").
 
 **Before requesting changes**, check every blocking item:
 
@@ -592,6 +592,8 @@ apply to the summary, every line comment and every reply:
 - **Nothing that isn't for the author.** No praise padding, no "Overall…",
   no recap of what the PR does, no description of how the review ran, no
   pass counts. Those live in the ledger and the item's report.
+- **Never "LGTM"**, in any case or form (`lgtm`, `LGTM!`, `LGTM 👍`), in the
+  summary, a line comment or a reply. Say it in words.
 - **No tells of generated text.** Avoid "It's worth noting", "Consider…",
   "This ensures", "robust", "comprehensive", "Additionally", lists of three
   for rhythm, em-dash chains, bold on every other phrase, headings inside a
@@ -611,6 +613,18 @@ apply to the summary, every line comment and every reply:
   renders a permalink on its own line as a code snippet, so the reader sees the
   caller, the precedent or the other copy without leaving the thread. Never
   link a branch name: the lines move under it.
+- **Every reference is a link.** A ticket, another PR or issue, a commit, a
+  doc, an RFC, a library's changelog — whatever a comment or the summary
+  names, the reader can click it:
+  - Jira key → `<base>/browse/PS-1234`, the base taken from a ticket link
+    already in the PR, its branch or description, or `workflows.jira_base_url`;
+    Linear → the issue URL the PR or the Linear integration comment carries;
+  - PRs, issues and commits → `owner/repo#123` and full shas autolink on
+    GitHub; anything in another repo gets its full URL;
+  - code → a permalink (above); docs and changelogs → the URL at the version
+    the change pins.
+  Never guess a URL. If you cannot find one, write the reference plainly and
+  list it under *not linked* in the Finish report.
 - **One mistake, one comment.** The same problem in several places is one
   comment on the first occurrence ("same thing at <permalink>, <permalink>"),
   never N copies.
@@ -649,7 +663,7 @@ to say, and leave out every part that would be empty:
 
 | Case | What the summary says |
 |---|---|
-| Approve, nothing to change | One line. "LGTM." on a trivial change; on a risky one, what you checked that matters ("LGTM — I went through the migration's rollback"). Nothing else. |
+| Approve, nothing to change | One line. A short plain sentence on a trivial change ("Looks good to me."); on a risky one, what you checked that matters ("Went through the migration's rollback, all good."). Never "LGTM". Nothing else. |
 | Approve, minor things inline | One line: approving, the inline comments are small and none blocks. Mention a point only when it is outside the diff. |
 | Request changes, one blocker | Say the blocker in a sentence or two with its link and what would make you approve, then "the rest is inline and minor" if there is a rest. |
 | Request changes, several | One sentence, then a short numbered list of what must change, each item one line with its link. Non-blocking items stay inline; add a second short list only for those outside the diff. |
@@ -688,6 +702,7 @@ jq -e '
   and ([.comments[].body | select(test("🤖 (blocker|risk|gap|nit) · confidence (high|medium|low) — .+") | not)] | length == 0)
   and (.body | startswith("<!-- clash-pr-review -->"))
   and (.body | test("<sub>🤖 Automated review by clash"))
+  and ([.body, .comments[].body] | map(test("\\blgtm\\b"; "i")) | any | not)
 ' review.json
 ```
 
@@ -844,6 +859,8 @@ Final chat message, short — the posted review is the artifact:
   findings capped at `medium` because of it;
 - the event actually used when it differs from the verdict (own PR, draft);
 - what was not covered, if anything;
+- *not linked*: any ticket or reference the review names without a link,
+  because no URL could be found;
 - under `Delegation: team`, how the passes were split and what verification
   dropped;
 - the ledger's path.

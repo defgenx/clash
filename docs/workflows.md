@@ -785,7 +785,9 @@ human first. Here the post *is* the output, so:
   each, anchored where the fix goes, phrased as a question when confidence is
   low, with head-pinned permalinks for the code they mean and Conventional
   Comments prefixes (`blocking:`, `nit:`, `question:`) only where they change
-  the reader's next move. No description of the change, no praise, no pass
+  the reader's next move. Every ticket, PR, commit or doc it names is a link
+  (never a guessed URL), and it never writes "LGTM" — the pre-post check
+  refuses one. No description of the change, no praise, no pass
   count: those live in the ledger and the item's report. The skill's *Post*
   section is the style guide; `clash-code-review`'s `pr-comments` posts follow
   it too.

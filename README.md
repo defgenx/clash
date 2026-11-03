@@ -744,8 +744,8 @@ marked resolved whose problem is still there becomes a finding credited to the
 reviewer who raised it, and decisions settled in the discussion are respected.
 It writes like a colleague would: short line comments on the line where the
 fix goes, a question when it is unsure, links to the code it means (permalinks,
-which GitHub shows as snippets), and a summary whose shape depends on the case
-(a one-line LGTM, a single blocker, a list, a question for the author, a
+which GitHub shows as snippets) and to every ticket, PR or doc it mentions, never "LGTM", and a summary whose shape depends on the case
+(a one-line approval, a single blocker, a list, a question for the author, a
 re-check after fixes). Every finding still ends with a small 🤖 footer giving
 its grade and confidence, a check refuses to post a comment without one, and
 the summary ends with a line saying it is an automated review. Before calling something a bug in how another service, repository or library
