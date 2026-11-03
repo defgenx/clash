@@ -322,7 +322,8 @@ No code edits, no commits, no pushes — not even the trivial fixes
 would be reporting on its own work, and the human would lose the one document
 that says what was agreed versus what arrived.
 
-Your writable surface is exactly five files: **`drift.md`**, **`drift.html`**,
+Your writable surface is exactly five files — plus any `drift.<view>.html`
+view pages (see *The HTML page*): **`drift.md`**, **`drift.html`**,
 **`drift.json`** (write/overwrite — living documents, regenerated per round), **`annotations.json`**
 (append) and **`agent-review.md`** (append). You never write `plan.md`,
 `review.md`, `explain-*.*`, the `drift/` directory (dives into the report are
@@ -399,6 +400,13 @@ Point at a code review; do not grade it here.>
 ````
 
 ## The HTML page — `drift.html`
+
+The page follows the drawing and legibility rules of `clash-explain` → *The
+HTML page* (plain-language box titles, numbered main path, NEW/CHANGED marked,
+a legend). It may also carry up to two **views** (`drift.<view>.html`, listed
+under `"views"` in `drift.json`) per `clash-explain` → *Views* — typically a
+`flow` when the plan and the code send one request down different paths. That
+widens your writable surface by those pages only.
 
 The document is read; **this one is looked at.** One screen that answers "did we
 build the plan?" in fifteen seconds: the spine as boxes, each badged with what

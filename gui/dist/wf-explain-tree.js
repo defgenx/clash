@@ -111,7 +111,133 @@
     return m ? { repo: m[1], number: Number(m[2]) } : null;
   }
 
+  /// What one level deeper adds, by the depth of the level it would be — the
+  /// altitudes of `skills/clash-explain` → *The tree*.
+  const DEEPER = {
+    1: "what is inside it — its components, the data and control flow between them, and the contract with the parts around it",
+    2: "the mechanism — the key functions, state transitions, invariants and edge cases, with file:line",
+    3: "an annotated walk-through of the code itself, with short excerpts",
+  };
+
+  /// Everything already known about a part that has no level of its own yet,
+  /// gathered from the level that lists it: what it is, what it exchanges
+  /// with its neighbours, where it lives, and what explaining it would add.
+  /// Null when no written level lists the part.
+  function explainPartPreview(tree, id) {
+    const parentId = explainParentOf(id);
+    const parent = explainLevel(tree, parentId);
+    const part = parent && (parent.nodes || []).find((n) => n.id === id);
+    if (!part) return null;
+    const title = (pid) => {
+      const n = (parent.nodes || []).find((x) => x.id === pid);
+      return n ? n.title || pid : pid;
+    };
+    const edges = parent.edges || [];
+    const depth = String(id).split(".").length;
+    return {
+      part,
+      parentId,
+      parentTitle: parent.title || (parentId ? parentId : "Overview"),
+      depth,
+      incoming: edges
+        .filter((e) => e.to === id && e.from !== id)
+        .map((e) => ({ id: e.from, title: title(e.from), label: e.label || "" })),
+      outgoing: edges
+        .filter((e) => e.from === id && e.to !== id)
+        .map((e) => ({ id: e.to, title: title(e.to), label: e.label || "" })),
+      siblings: (parent.nodes || []).filter((n) => n.id !== id),
+      files: (part.files || []).filter(Boolean),
+      deeper: DEEPER[depth] || "",
+    };
+  }
+
+  /// Starting points for a dive's focus — the questions people bring to an
+  /// unfamiliar part. Each becomes the dive's `Focus:`.
+  function explainFocusSuggestions(preview) {
+    const out = [
+      "How does it work, step by step?",
+      "What could break, and what happens then?",
+    ];
+    if (preview && (preview.incoming.length || preview.outgoing.length))
+      out.push("Draw the flow through it, in order");
+    if (preview && preview.part && preview.part.isNew) out.push("Why is it needed — what did we do before?");
+    else out.push("What changes compared to today?");
+    out.push("How is it tested?");
+    return out;
+  }
+
+  /// `src/x.rs:40` → `src/x.rs`: a part's file reference without its line.
+  function explainFilePath(ref) {
+    return String(ref || "").replace(/:\d+(?::\d+)?$/, "");
+  }
+
+  const VIEW_GLYPHS = {
+    flow: "→",
+    state: "◎",
+    data: "▤",
+    "before-after": "⇄",
+    rollout: "⏱",
+    dependency: "⋔",
+  };
+
+  /// The tabs of one level, in the order the reader meets them: the main
+  /// drawing, each extra view, then the write-up. Only what exists is offered.
+  function explainViewTabs(forms, views) {
+    const tabs = [];
+    if (forms && forms.html) {
+      tabs.push({
+        key: "graphic",
+        label: "◫ Diagram",
+        hint: "The drawn overview — boxes, arrows, the repos and features it touches",
+      });
+    }
+    for (const v of views || []) {
+      tabs.push({
+        key: `view:${v.id}`,
+        label: `${VIEW_GLYPHS[v.kind || v.id] || "◇"} ${v.title || v.id}`,
+        hint: v.why || `Another drawing of the same level: ${v.title || v.id}`,
+      });
+    }
+    if (forms && forms.md) {
+      tabs.push({
+        key: "text",
+        label: "☰ Write-up",
+        hint: "The written walk-through, with diagrams where they help",
+      });
+    }
+    return tabs;
+  }
+
+  /// Which tab to show: the one asked for when this level has it, else the
+  /// main drawing, else the first tab there is. A view chosen on one level is
+  /// not carried to a level that has no such view.
+  function explainResolveView(requested, forms, views) {
+    const tabs = explainViewTabs(forms, views);
+    if (tabs.some((t) => t.key === requested)) return requested;
+    if (tabs.some((t) => t.key === "graphic")) return "graphic";
+    return tabs.length ? tabs[0].key : "text";
+  }
+
+  /// The view id of a `view:<id>` tab key, or null for the main forms.
+  function explainViewId(key) {
+    const m = /^view:([a-z][a-z0-9-]{0,23})$/.exec(String(key || ""));
+    return m ? m[1] : null;
+  }
+
+  /// Is a frame still showing the document clash gave it? Anything else —
+  /// the app's own page, a website — means a link navigated it away.
+  function explainFrameIntact(href) {
+    return /^about:srcdoc(#.*)?$/.test(String(href || ""));
+  }
+
   const api = {
+    explainPartPreview,
+    explainFocusSuggestions,
+    explainFilePath,
+    explainViewTabs,
+    explainResolveView,
+    explainViewId,
+    explainFrameIntact,
     explainTreeTarget,
     explainLevel,
     explainParentOf,

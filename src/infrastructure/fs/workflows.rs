@@ -545,21 +545,25 @@ pub(crate) fn read_explain_levels_in(
             written_at: at,
             md,
             html,
+            views: view_pages(dir, Some(stem), ""),
         });
     }
     let sub = dir.join(stem);
     let Ok(entries) = std::fs::read_dir(&sub) else {
         return out;
     };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
+    let names: Vec<String> = entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    for name in &names {
         let Some(id) = name.strip_suffix(".json") else {
             continue;
         };
         if !valid_node_id(id) {
             continue;
         }
-        let path = entry.path();
+        let path = sub.join(name);
         let (Ok(json), Some(at)) = (std::fs::read_to_string(&path), mtime_ms(&path)) else {
             continue;
         };
@@ -569,8 +573,29 @@ pub(crate) fn read_explain_levels_in(
             written_at: at,
             md: has_content(&sub.join(format!("{id}.md"))),
             html: has_content(&sub.join(format!("{id}.html"))),
+            views: view_pages(&sub, None, id),
         });
     }
+    out
+}
+
+/// Ids of the non-empty view pages of one level: `<stem>.<view>.html` in the
+/// item dir for the overview (`stem` given), `<node>.<view>.html` in the
+/// tree dir for a part.
+fn view_pages(dir: &Path, stem: Option<&str>, node: &str) -> Vec<String> {
+    use crate::application::explain_tree::split_view_file;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let (n, v) = split_view_file(&name, stem)?;
+            (n == node && has_content(&e.path())).then(|| v.to_string())
+        })
+        .collect();
+    out.sort();
     out
 }
 
@@ -586,9 +611,10 @@ pub fn read_explain_levels(
     ))
 }
 
-/// Read one level's markdown or HTML (`form` = `md` | `html`). The overview
-/// is `node = ""` and reads the item's existing documents. Missing reads as
-/// empty, like every item document.
+/// Read one level's markdown or HTML (`form` = `md` | `html`), or one of its
+/// view pages (`view` set, HTML only). The overview is `node = ""` and reads
+/// the item's existing documents. Missing reads as empty, like every item
+/// document.
 pub fn read_explain_node_doc(
     root: &Path,
     project: &str,
@@ -596,15 +622,33 @@ pub fn read_explain_node_doc(
     target: crate::domain::workflow::ReviewTarget,
     node: &str,
     form: &str,
+    view: Option<&str>,
 ) -> Result<String> {
-    use crate::application::explain_tree::{tree_dir, valid_node_id};
+    use crate::application::explain_tree::{tree_dir, valid_node_id, valid_view_id};
     let dir = existing_item_dir(root, project, slug)?;
     let stem =
         tree_dir(target).ok_or_else(|| parse_err(format!("{} has no drill-down", target)))?;
     if form != "md" && form != "html" {
         return Err(parse_err(format!("Not an explanation form: '{}'", form)));
     }
-    let path = if node.is_empty() {
+    let view = view.map(str::trim).filter(|v| !v.is_empty());
+    if let Some(v) = view {
+        if form != "html" || !valid_view_id(v) {
+            return Err(parse_err(format!("Not a view of the explanation: '{}'", v)));
+        }
+    }
+    let path = if let Some(v) = view {
+        if node.is_empty() {
+            dir.join(format!("{stem}.{v}.html"))
+        } else if valid_node_id(node) {
+            dir.join(stem).join(format!("{node}.{v}.html"))
+        } else {
+            return Err(parse_err(format!(
+                "Not a part of the explanation: '{}'",
+                node
+            )));
+        }
+    } else if node.is_empty() {
         let main = dir.join(format!("{stem}.{form}"));
         let legacy = match (stem, form) {
             ("explain-diff", "md") => Some(dir.join(STRUCTURE_FILE)),
@@ -1008,6 +1052,51 @@ mod tests {
             repo_path: repo_path.to_string(),
             ..NewWorkflowItem::default()
         }
+    }
+
+    #[test]
+    fn explanation_views_are_read_beside_their_level() {
+        use crate::domain::workflow::ReviewTarget;
+        let (_g, root) = root();
+        let item = create_item(&root, &req("clash", "Views", "/w/clash")).unwrap();
+        let dir = PathBuf::from(&item.path);
+        std::fs::write(dir.join("explain-diff.json"), r#"{"nodes":[{"id":"3"}]}"#).unwrap();
+        std::fs::write(dir.join("explain-diff.flow.html"), "<p>flow</p>").unwrap();
+        std::fs::write(dir.join("explain-diff.empty.html"), "").unwrap();
+        std::fs::create_dir_all(dir.join("explain-diff")).unwrap();
+        std::fs::write(dir.join("explain-diff/3.json"), "{}").unwrap();
+        std::fs::write(dir.join("explain-diff/3.state.html"), "<p>state</p>").unwrap();
+        let levels = read_explain_levels_in(&dir, ReviewTarget::ExplainDiff);
+        let by = |n: &str| levels.iter().find(|l| l.node == n).unwrap();
+        assert_eq!(by("").views, ["flow"]);
+        assert_eq!(by("3").views, ["state"]);
+
+        let read = |node: &str, view: Option<&str>| {
+            read_explain_node_doc(
+                &root,
+                "clash",
+                "views",
+                ReviewTarget::ExplainDiff,
+                node,
+                "html",
+                view,
+            )
+        };
+        assert_eq!(read("", Some("flow")).unwrap(), "<p>flow</p>");
+        assert_eq!(read("3", Some("state")).unwrap(), "<p>state</p>");
+        assert_eq!(read("3", Some("nope")).unwrap(), "");
+        assert!(read("", Some("../plan")).is_err());
+        assert!(read("../x", Some("flow")).is_err());
+        assert!(read_explain_node_doc(
+            &root,
+            "clash",
+            "views",
+            ReviewTarget::ExplainDiff,
+            "",
+            "md",
+            Some("flow")
+        )
+        .is_err());
     }
 
     #[test]

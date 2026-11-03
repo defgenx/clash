@@ -7,6 +7,13 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  explainPartPreview,
+  explainFocusSuggestions,
+  explainFilePath,
+  explainViewTabs,
+  explainResolveView,
+  explainViewId,
+  explainFrameIntact,
   explainTreeTarget,
   explainLevel,
   explainParentOf,
@@ -126,4 +133,84 @@ test("a PR URL finds its local checkout, and only an unambiguous one", () => {
   assert.equal(matchRepoForPr("acme/web", repos), null, "two checkouts: the human picks");
   assert.equal(matchRepoForPr("acme/none", repos), null);
   assert.equal(matchRepoForPr("", repos), null);
+});
+
+test("a level's tabs: the drawing, each view, the write-up — only what exists", () => {
+  const views = [
+    { id: "flow", kind: "flow", title: "Request flow", why: "three services in a row" },
+    { id: "life", kind: "state", title: "Lifecycle" },
+    { id: "odd", title: "" },
+  ];
+  const tabs = explainViewTabs({ html: true, md: true }, views);
+  assert.deepEqual(
+    tabs.map((t) => t.key),
+    ["graphic", "view:flow", "view:life", "view:odd", "text"]
+  );
+  assert.equal(tabs[1].label, "→ Request flow");
+  assert.equal(tabs[1].hint, "three services in a row");
+  assert.equal(tabs[2].label, "◎ Lifecycle");
+  assert.equal(tabs[3].label, "◇ odd");
+  assert.deepEqual(explainViewTabs({ md: true }, []).map((t) => t.key), ["text"]);
+});
+
+test("the tab shown falls back to the drawing when the level lacks the view", () => {
+  const views = [{ id: "flow" }];
+  assert.equal(explainResolveView("view:flow", { html: true }, views), "view:flow");
+  assert.equal(explainResolveView("view:data", { html: true }, views), "graphic");
+  assert.equal(explainResolveView("text", { html: true }, views), "graphic");
+  assert.equal(explainResolveView("text", { html: true, md: true }, views), "text");
+  assert.equal(explainResolveView(undefined, { md: true }, views), "view:flow");
+  assert.equal(explainResolveView(undefined, {}, []), "text");
+});
+
+test("view keys carry a safe id", () => {
+  assert.equal(explainViewId("view:before-after"), "before-after");
+  assert.equal(explainViewId("graphic"), null);
+  assert.equal(explainViewId("view:../plan"), null);
+  assert.equal(explainViewId("view:Flow"), null);
+});
+
+test("a frame that navigated away from its drawing is noticed", () => {
+  assert.ok(explainFrameIntact("about:srcdoc"));
+  assert.ok(explainFrameIntact("about:srcdoc#node-3"));
+  assert.ok(!explainFrameIntact("tauri://localhost/#node-3"));
+  assert.ok(!explainFrameIntact("https://example.com/"));
+  assert.ok(!explainFrameIntact(""));
+});
+
+test("a part with no level yet is previewed from the level that lists it", () => {
+  const tree = [
+    {
+      node: "",
+      title: "Rate limiting",
+      nodes: [
+        { id: "1", title: "Gateway" },
+        { id: "2", title: "Counter", summary: "counts calls", critical: true, why: "every call", files: ["src/c.rs:40"], isNew: true },
+        { id: "3", title: "Service" },
+      ],
+      edges: [
+        { from: "1", to: "2", label: "api key" },
+        { from: "2", to: "3", label: "forwards" },
+        { from: "2", to: "2", label: "self" },
+      ],
+    },
+  ];
+  const p = explainPartPreview(tree, "2");
+  assert.equal(p.part.title, "Counter");
+  assert.equal(p.parentTitle, "Rate limiting");
+  assert.equal(p.depth, 1);
+  assert.deepEqual(p.incoming, [{ id: "1", title: "Gateway", label: "api key" }]);
+  assert.deepEqual(p.outgoing, [{ id: "3", title: "Service", label: "forwards" }]);
+  assert.deepEqual(p.siblings.map((n) => n.id), ["1", "3"]);
+  assert.deepEqual(p.files, ["src/c.rs:40"]);
+  assert.match(p.deeper, /inside it/);
+  assert.equal(explainPartPreview(tree, "9"), null);
+  assert.equal(explainPartPreview(tree, "2.1"), null, "its parent level is not written");
+
+  const asks = explainFocusSuggestions(p);
+  assert.ok(asks.includes("Draw the flow through it, in order"));
+  assert.ok(asks.includes("Why is it needed — what did we do before?"));
+  assert.equal(explainFilePath("src/c.rs:40"), "src/c.rs");
+  assert.equal(explainFilePath("src/c.rs:40:2"), "src/c.rs");
+  assert.equal(explainFilePath("README.md"), "README.md");
 });

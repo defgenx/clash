@@ -576,10 +576,40 @@ once it has handed the item back. A drift dive always runs `clash-explain`: it
 explains a divergence and never re-grades it, so `drift.md`'s grades and
 annotations stay the drift round's.
 
-The GUI builds the breadcrumb, the parts strip and the dive buttons from the
-index, **outside** the sandboxed frame. A part drawn as `<a href="#node-3">`
-is followed by watching the frame's fragment from the parent
-(`wfWatchExplainFrame`), so the page still runs no script.
+**Views.** A level may carry up to two extra drawings of itself, each one
+answering a question the map answers badly: `flow` (one request step by step),
+`state`, `data`, `before-after`, `rollout`, `dependency`. A view is one page,
+`<level>.<view>.html` (`explain-diff.flow.html`, `explain-diff/3.state.html`),
+listed in the level's index as `views[] {id, kind, title, why}`. A view id is
+lowercase and starts with a letter (`valid_view_id`), so `3.flow.html` can
+never read as a part. The level shows the listed views whose page exists, then
+unlisted pages, capped at `MAX_VIEWS` (`build_tree`). The GUI turns them into
+tabs between *◫ Diagram* and *☰ Write-up*, with `why` as each tab's tooltip.
+
+Which views to draw is the explainer's call in an autonomous round. In an
+interactive round it suggests them and the human picks. `Focus:` naming one
+always gets it. The catalogue, and the legibility rules every drawing follows,
+live in `skills/clash-explain/SKILL.md` → *The HTML page* / *Views*.
+
+The GUI builds the breadcrumb, the parts strip, the view tabs and the dive
+buttons from the index, **outside** the sandboxed frame. The frame document
+starts with `<base href="about:srcdoc">`. Without it, a srcdoc frame resolves
+links against the app's own URL, so `#node-3` loaded clash itself inside the
+frame. `wfGuardExplainFrame` then handles every click in the drawing:
+- a part link opens or dives that part;
+- a web link goes through `openLink`;
+- anything else does nothing.
+
+A frame that navigates away anyway is put back on its drawing.
+
+A part with no level of its own still has a page (`renderWfExplainPartPage`,
+model `explainPartPreview` in `gui/dist/wf-explain-tree.js`). It shows what
+the parent level already says about the part: summary, `why`, its in/out edges
+with the neighbours, its `files` and its siblings. Its *Explain this part*
+button starts the dive with the reader's question as `Focus:`. A click on a box
+never starts an agent by itself. Fragment
+watching (`wfWatchExplainFrame`) remains the fallback, so the page still runs
+no script.
 
 **◫ Explain a PR…** turns any PR URL into a review-only item
 (`create_workflow_review`) and launches `explain-diff` on it with the chosen

@@ -2440,6 +2440,7 @@ pub(crate) fn get_workflow_explain_node(
     target: ReviewTarget,
     node: String,
     form: String,
+    view: Option<String>,
 ) -> Result<String, String> {
     clash::infrastructure::fs::workflows::read_explain_node_doc(
         &state.backend.workflows_dir(),
@@ -2448,6 +2449,7 @@ pub(crate) fn get_workflow_explain_node(
         target,
         &node,
         &form,
+        view.as_deref(),
     )
     .map_err(e2s)
 }

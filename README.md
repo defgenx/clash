@@ -682,10 +682,24 @@ says **not applied yet** and the stage's own Approve steps back.
 what the implementation is *going* to do before it exists. **◫ Explain changes**
 reads the diff and explains what the change *did*. Each run writes two forms:
 - a written walk-through with mermaid diagrams;
-- one hand-drawn page of boxes and arrows (the parts, the repos, what is new),
-  rendered sandboxed with scripts off.
+- one hand-drawn page that shows what will be done and how it works: the goal
+  in a sentence, the parts as plain-language boxes laid out in the order things
+  happen, the main path numbered ①②③ with a step list, and what is new or
+  changed marked on the map. It is rendered sandboxed with scripts off.
 
-The tab opens on the drawing. **◫ Diagram / ☰ Write-up** switches form, and
+Some changes are better seen from another angle, so a level can carry up to two
+extra **views** beside the map:
+- **flow**: one request or job, step by step across the components;
+- **state**: a lifecycle's states and transitions;
+- **data**: the schema or payload before and after;
+- **before-after**, **rollout** (what must land in which order) and
+  **dependency**.
+
+In an interactive round the explainer suggests the views it thinks would help,
+and you pick. In an autonomous round it decides, and the tab's tooltip says why.
+Asking for one in *Focus* ("draw the request flow") always gets it.
+
+The tab opens on the drawing. **◫ Diagram / views / ☰ Write-up** switches form, and
 **⤢** gives the drawing the whole tab. An explainer judges nothing, runs
 alongside the item's other agents without blocking it, and can be told what to
 focus on.
@@ -700,8 +714,18 @@ above the document is a breadcrumb back to the overview plus one chip per part:
 - **●** marks a part the explainer flagged critical, with the reason on hover;
 - **⟳** marks a level drawn before the one above it was redrawn.
 
-Clicking a box in the drawing, or **⊕ explain deeper** next to a section of the
-write-up, does the same. A dive goes into the session that drew the overview
+Clicking a box in the drawing, a chip, or **⊕ about this part** next to a
+section of the write-up opens that part. A part nobody has explained yet opens
+on a page of what is already known about it:
+- its summary and why it matters;
+- what it receives from and sends to its neighbours, each one a click away;
+- the files it lives in, which open in your editor;
+- a link to what the write-up says about it.
+
+From that page, **⊕ Explain this part** goes one level deeper. You can type the
+question you want answered first or pick one of the suggestions ("What could
+break?", "Draw the flow through it"). While a part is being explained, the page
+says so and links to the session. A dive goes into the session that drew the overview
 when it is still open, because that session already has the code in context.
 
 **How much is written up front** is a choice per launch, defaulting to

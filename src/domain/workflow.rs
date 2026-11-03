@@ -1459,6 +1459,24 @@ pub struct ExplainEdge {
     pub label: String,
 }
 
+/// A second drawing of one level from another angle — a request's flow, a
+/// lifecycle, a schema — written beside the level's main page as
+/// `<level>.<id>.html`. Catalogue and when each pays: `skills/clash-explain`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplainView {
+    #[serde(default)]
+    pub id: String,
+    /// `flow`, `state`, `data`, `before-after`, `rollout`, `dependency`, …
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    #[serde(default)]
+    pub title: String,
+    /// The question this view answers that the main page cannot.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub why: String,
+}
+
 /// Shape of a level's `.json` index — the overview's `explain-<target>.json`
 /// or a node's `explain-<target>/<id>.json`. Lenient like every agent-written
 /// file.
@@ -1473,6 +1491,8 @@ pub struct ExplainIndex {
     pub nodes: Vec<ExplainNode>,
     #[serde(default)]
     pub edges: Vec<ExplainEdge>,
+    #[serde(default)]
+    pub views: Vec<ExplainView>,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
@@ -1509,6 +1529,8 @@ pub struct ExplainLevel {
     pub stale: bool,
     pub nodes: Vec<ExplainNodeView>,
     pub edges: Vec<ExplainEdge>,
+    /// The extra views whose page exists, in the index's order.
+    pub views: Vec<ExplainView>,
 }
 
 /// A workflow item as listed to the frontends — a runtime DTO like

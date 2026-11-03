@@ -10974,6 +10974,12 @@ async function renderWfExplainView(body, root, item, ts, which) {
   ts.explainNodes = ts.explainNodes || {};
   let node = ts.explainNodes[which] || "";
   let level = explainLevel(tree, node);
+  // A part nobody has explained yet still has a page: what is already known
+  // about it, and the ways to learn more.
+  if (node && !level) {
+    const preview = explainPartPreview(tree, node);
+    if (preview) return renderWfExplainPartPage(body, root, item, ts, which, target, tree, preview);
+  }
   if (node && !level) {
     node = "";
     ts.explainNodes[which] = "";
@@ -10986,11 +10992,25 @@ async function renderWfExplainView(body, root, item, ts, which) {
   const htmlDoc = node ? `${target}/${node}.html` : pair.html;
   const legacy = node ? null : pair.legacy;
   // The picture is the headline when there is one — that is what it is for.
-  const view = ts.explainView === "text" || !forms.html ? "text" : "graphic";
+  // A level may also carry extra views (a request's flow, a lifecycle…),
+  // each one more drawing of the same level.
+  const views = (level && level.views) || [];
+  const view = explainResolveView(ts.explainView, forms, views);
+  const viewId = explainViewId(view);
+  const drawn = view !== "text";
 
   let text = "";
   try {
-    if (node) {
+    if (viewId) {
+      text = await invoke("get_workflow_explain_node", {
+        project,
+        slug,
+        target,
+        node,
+        form: "html",
+        view: viewId,
+      });
+    } else if (node) {
       text = await invoke("get_workflow_explain_node", {
         project,
         slug,
@@ -11021,22 +11041,16 @@ async function renderWfExplainView(body, root, item, ts, which) {
   bar.className = "wf-explain-bar";
   bar.title = pair.caption;
 
-  // Both forms exist: one toggle, because they answer the same question at
-  // two altitudes and the reader picks.
-  //
-  // A real segmented control, not the `.wf-round-nav` pill row it used to
-  // borrow. That row is a heading jump-nav — 10px, dim, and with no style at
-  // all for its `.on` class — so the switch between the two halves of the
-  // document, the most-used control on the tab, was both the smallest thing
-  // on it and gave no sign of which half you were looking at.
-  if (forms.html && forms.md) {
+  // More than one form: one segmented control (drawing, extra views,
+  // write-up), because they answer the same question from different angles
+  // and the reader picks. A real control rather than a pill row, since it is
+  // the most-used thing on the tab and must show which one is on.
+  const tabs = explainViewTabs(forms, views);
+  if (tabs.length > 1) {
     const seg = document.createElement("div");
     seg.className = "wf-seg";
     seg.setAttribute("role", "tablist");
-    for (const [key, label, hint] of [
-      ["graphic", "◫ Diagram", "The drawn overview — boxes, arrows, the repos and features it touches"],
-      ["text", "☰ Write-up", "The written walk-through, with diagrams where they help"],
-    ]) {
+    for (const { key, label, hint } of tabs) {
       const b = document.createElement("button");
       b.textContent = label;
       b.title = hint;
@@ -11056,7 +11070,7 @@ async function renderWfExplainView(body, root, item, ts, which) {
 
   // The drawing is the one document read at a glance, so it can take the
   // whole tab: header, pipeline stepper and action bar step aside.
-  if (view === "graphic") {
+  if (drawn) {
     const zoom = document.createElement("button");
     zoom.className = "icon-btn";
     zoom.textContent = ts.explainBig ? "⤡" : "⤢";
@@ -11070,7 +11084,8 @@ async function renderWfExplainView(body, root, item, ts, which) {
     bar.appendChild(zoom);
   }
 
-  const doc = view === "graphic" ? htmlDoc : mdDoc;
+  const viewBase = node ? `${target}/${node}` : target;
+  const doc = viewId ? `${viewBase}.${viewId}.html` : drawn ? htmlDoc : mdDoc;
   const edit = document.createElement("button");
   edit.className = "icon-btn wide";
   edit.innerHTML = `${svgIcon("pencil", 12)}<span>Edit ${doc}</span>`;
@@ -11095,7 +11110,7 @@ async function renderWfExplainView(body, root, item, ts, which) {
     return;
   }
 
-  if (view === "graphic") {
+  if (drawn) {
     // The frame fills the pane and scrolls its own content. Measuring the
     // page and growing the frame to fit left a short drawing — the fifteen
     // second overview, which is the whole point of the form — as a stamp at
@@ -11105,7 +11120,10 @@ async function renderWfExplainView(body, root, item, ts, which) {
     frame.className = "wf-explain-frame";
     // No allow-scripts: the page is inert markup.
     frame.setAttribute("sandbox", "allow-same-origin");
-    frame.srcdoc = wfExplainFrameDoc(text);
+    const srcdoc = wfExplainFrameDoc(text);
+    frame.srcdoc = srcdoc;
+    const onPart = level ? (id) => wfExplainActivate(root, item, ts, which, target, tree, id) : null;
+    wfGuardExplainFrame(frame, srcdoc, onPart);
     body.appendChild(frame);
     if (level) wfWatchExplainFrame(frame, root, item, ts, which, target, tree);
     return;
@@ -11116,6 +11134,12 @@ async function renderWfExplainView(body, root, item, ts, which) {
   renderMarkdown(md, text);
   renderMermaidIn(md);
   if (level) wfMarkExplainHeadings(md, root, item, ts, which, target, tree, level);
+  if (ts.explainScrollTo) {
+    const want = ts.explainScrollTo;
+    ts.explainScrollTo = null;
+    const h = [...md.querySelectorAll("h2, h3")].find((x) => headingPartId(x.textContent) === want);
+    if (h) setTimeout(() => h.scrollIntoView({ block: "start" }), 0);
+  }
   const heads = [...md.querySelectorAll("h2")];
   if (heads.length > 1) {
     const nav = document.createElement("div");
@@ -11135,7 +11159,9 @@ async function renderWfExplainView(body, root, item, ts, which) {
 /// back to the overview) and the parts of this level, each one a way down —
 /// open when its level exists, a dive when it can be written.
 function renderWfExplainNav(root, item, ts, which, target, tree, node) {
-  const level = explainLevel(tree, node);
+  // A part with no level of its own shows its parent's parts, itself marked.
+  const own = explainLevel(tree, node);
+  const level = own || explainLevel(tree, explainParentOf(node));
   const nav = document.createElement("div");
   nav.className = "wf-explain-nav";
 
@@ -11150,7 +11176,7 @@ function renderWfExplainNav(root, item, ts, which, target, tree, node) {
     else b.onclick = () => wfExplainGo(root, item, ts, which, c.node);
     crumbs.appendChild(b);
   });
-  if (level.stale) {
+  if (own && level.stale) {
     const stale = document.createElement("button");
     stale.className = "wf-explain-stale";
     stale.textContent = "⟳ out of date — redraw";
@@ -11166,7 +11192,7 @@ function renderWfExplainNav(root, item, ts, which, target, tree, node) {
   for (const part of level.nodes || []) {
     const st = explainPartState(item, target, part);
     const chip = document.createElement("button");
-    chip.className = `wf-explain-part ${st}${part.critical ? " critical" : ""}`;
+    chip.className = `wf-explain-part ${st}${part.critical ? " critical" : ""}${part.id === node ? " on" : ""}`;
     const mark = { open: "▸", stale: "⟳", diving: "…", dive: "⊕", none: "" }[st];
     chip.textContent = `${part.critical ? "● " : ""}${part.id} ${part.title || ""}${mark ? ` ${mark}` : ""}`;
     chip.title = [
@@ -11176,16 +11202,15 @@ function renderWfExplainNav(root, item, ts, which, target, tree, node) {
         open: "Open this part's own level.",
         stale: "Open this part's level — drawn before the level above was redrawn. ⇧-click to redraw it.",
         diving: "Being explained right now.",
-        dive: "Explain this part one level deeper (spends tokens).",
-        none: "Nothing below this part.",
+        dive: "Not explained yet — open what is known about it, and explain it deeper from there.",
+        none: "Nothing below this part — open what is known about it.",
       }[st],
     ]
       .filter(Boolean)
       .join("\n");
-    chip.disabled = st === "none" || st === "diving";
     chip.onclick = (ev) => {
-      if (st === "dive" || (st === "stale" && ev.shiftKey)) wfDive(item, root, target, [part]);
-      else wfExplainGo(root, item, ts, which, part.id);
+      if (st === "stale" && ev.shiftKey) wfDive(item, root, target, [part]);
+      else if (part.id !== node) wfExplainGo(root, item, ts, which, part.id);
     };
     parts.appendChild(chip);
   }
@@ -11209,17 +11234,177 @@ function wfExplainGo(root, item, ts, which, node) {
   buildWorkflowView(root, item.project, item.slug);
 }
 
-/// A part reached from the drawing or the write-up: open its level when it
-/// has one, otherwise offer to write it.
+/// A part reached from the drawing or the write-up: open its page.
+/// The last part activated and when: a click can reach here twice (the
+/// frame's click listener, then its fragment poll or a restored navigation).
+let wfLastExplainActivate = { id: "", at: 0 };
+
 function wfExplainActivate(root, item, ts, which, target, tree, id) {
-  if (explainLevel(tree, id)) return wfExplainGo(root, item, ts, which, id);
-  const parent = explainLevel(tree, explainParentOf(id));
-  const part = parent && (parent.nodes || []).find((n) => n.id === id);
-  if (!part) return flashToast(`The explanation lists no part ${id}`);
+  const now = Date.now();
+  if (wfLastExplainActivate.id === id && now - wfLastExplainActivate.at < 800) return;
+  wfLastExplainActivate = { id, at: now };
+  // Explained or not, a listed part has a page: its level, or what is known
+  // about it with the ways to learn more (renderWfExplainPartPage).
+  if (explainLevel(tree, id) || explainPartPreview(tree, id)) return wfExplainGo(root, item, ts, which, id);
+  flashToast(`The explanation lists no part ${id}`);
+}
+
+const WF_DIVE_COST =
+  "Spends tokens: the explainer reads that code and writes one more level — a write-up, a drawing and its parts. " +
+  "When the session that drew the overview is still open the follow-up goes there, since it already has the code in context.";
+
+/// The page of a part nobody has explained yet. A click on a box used to
+/// start a dive outright (or, worse, follow a link out of the frame); what a
+/// reader wants first is what is already known — the part's summary, why it
+/// matters, what it exchanges with its neighbours, where it lives — and then
+/// a deliberate way to learn more, with a question of their own.
+function renderWfExplainPartPage(body, root, item, ts, which, target, tree, preview) {
+  const { part } = preview;
   const st = explainPartState(item, target, part);
-  if (st === "dive") return wfDive(item, root, target, [part]);
-  if (st === "diving") return flashToast(`Part ${id} is being explained…`);
-  flashToast(`Nothing below part ${id}`);
+  body.innerHTML = "";
+  body.appendChild(renderWfExplainNav(root, item, ts, which, target, tree, part.id));
+
+  const page = document.createElement("div");
+  page.className = "wf-part-page";
+  const esc = escapeHtml;
+  const badges = [
+    part.isNew ? `<span class="wf-part-badge new">NEW</span>` : "",
+    part.critical ? `<span class="wf-part-badge critical" title="${esc(part.why || "")}">● critical</span>` : "",
+    {
+      dive: `<span class="wf-part-badge">not explained yet</span>`,
+      diving: `<span class="wf-part-badge busy">being explained…</span>`,
+      none: `<span class="wf-part-badge">nothing deeper</span>`,
+    }[st] || "",
+  ].join("");
+  page.insertAdjacentHTML(
+    "beforeend",
+    `<h2>${esc(part.id)} · ${esc(part.title || "Untitled part")} ${badges}</h2>` +
+      `<p class="hint">Part of <b>${esc(preview.parentTitle)}</b>. ` +
+      (st === "none"
+        ? "The explainer judged it small enough that the level above says all there is."
+        : st === "diving"
+          ? "It is being explained right now; this page turns into its explanation when that lands."
+          : "Nobody has explained it yet — here is what the level above already says about it.") +
+      `</p>`
+  );
+
+  const section = (title) => {
+    const box = document.createElement("section");
+    box.className = "wf-part-section";
+    box.appendChild(Object.assign(document.createElement("h3"), { textContent: title }));
+    page.appendChild(box);
+    return box;
+  };
+
+  const known = section("What we know");
+  known.insertAdjacentHTML(
+    "beforeend",
+    `<p>${esc(part.summary || "The level above gives it no summary.")}</p>` +
+      (part.critical && part.why ? `<p><b>Why it matters:</b> ${esc(part.why)}</p>` : "")
+  );
+
+  if (preview.incoming.length || preview.outgoing.length) {
+    const links = section("How it connects");
+    const row = (dir, e) => {
+      const b = document.createElement("button");
+      b.className = "wf-part-link";
+      b.innerHTML =
+        dir === "in"
+          ? `<b>${esc(e.id)} ${esc(e.title)}</b> → <span>${esc(e.label || "talks to it")}</span> → this part`
+          : `this part → <span>${esc(e.label || "talks to")}</span> → <b>${esc(e.id)} ${esc(e.title)}</b>`;
+      b.title = `Open part ${e.id}`;
+      b.onclick = () => wfExplainGo(root, item, ts, which, e.id);
+      links.appendChild(b);
+    };
+    preview.incoming.forEach((e) => row("in", e));
+    preview.outgoing.forEach((e) => row("out", e));
+  }
+
+  if (preview.files.length) {
+    const where = section("Where it lives");
+    const repo = (item.meta && (item.meta.worktree || item.meta.repoPath)) || "";
+    for (const ref of preview.files) {
+      const b = document.createElement("button");
+      b.className = "wf-part-file";
+      b.textContent = ref;
+      b.title = repo ? "Open in an editor" : ref;
+      b.disabled = !repo;
+      b.onclick = (ev) =>
+        openScratchInEditor(
+          { path: `${repo}/${explainFilePath(ref)}`, title: ref },
+          ev.clientX,
+          ev.clientY
+        );
+      where.appendChild(b);
+    }
+  }
+
+  // What is already readable, before spending anything.
+  const read = section("Read what exists");
+  const writeup = document.createElement("button");
+  writeup.className = "wf-part-action";
+  writeup.textContent = `☰ What the write-up of ${preview.parentId ? `part ${preview.parentId}` : "the overview"} says`;
+  writeup.onclick = () => {
+    ts.explainView = "text";
+    ts.explainScrollTo = part.id;
+    wfExplainGo(root, item, ts, which, preview.parentId);
+  };
+  read.appendChild(writeup);
+  const back = document.createElement("button");
+  back.className = "wf-part-action";
+  back.textContent = `◫ Back to the drawing of ${preview.parentId ? `part ${preview.parentId}` : "the overview"}`;
+  back.onclick = () => wfExplainGo(root, item, ts, which, preview.parentId);
+  read.appendChild(back);
+
+  if (st === "dive") {
+    const more = section("Explain it deeper");
+    more.insertAdjacentHTML(
+      "beforeend",
+      `<p class="hint">One more level: ${esc(preview.deeper)}. ${esc(WF_DIVE_COST)}</p>`
+    );
+    const ask = document.createElement("textarea");
+    ask.className = "wf-part-focus";
+    ask.rows = 2;
+    ask.placeholder = "What do you want to understand about it? (optional — leads the explanation)";
+    const chips = document.createElement("div");
+    chips.className = "wf-part-chips";
+    for (const q of explainFocusSuggestions(preview)) {
+      const c = document.createElement("button");
+      c.textContent = q;
+      c.onclick = () => {
+        ask.value = ask.value.trim() ? `${ask.value.trim()} ${q}` : q;
+        ask.focus();
+      };
+      chips.appendChild(c);
+    }
+    const go = document.createElement("button");
+    go.className = "primary";
+    go.textContent = "⊕ Explain this part";
+    go.onclick = () => busyButton(go, () => wfDive(item, root, target, [part], { focus: ask.value }));
+    more.append(chips, ask, go);
+  } else if (st === "diving") {
+    const run = runningDive(item, target, part.id);
+    if (run && run.sessionId) {
+      const open = document.createElement("button");
+      open.className = "wf-part-action";
+      open.textContent = "▸ Watch the explainer work";
+      open.onclick = () => openSession(run.sessionId, wfSessionName(item, `explain part ${part.id}`));
+      section("Being explained").appendChild(open);
+    }
+  }
+
+  if (preview.siblings.length) {
+    const near = section("Next to it");
+    for (const n of preview.siblings) {
+      const b = document.createElement("button");
+      b.className = "wf-part-link";
+      b.textContent = `${n.critical ? "● " : ""}${n.id} ${n.title || ""}`;
+      b.title = n.summary || "";
+      b.onclick = () => wfExplainGo(root, item, ts, which, n.id);
+      near.appendChild(b);
+    }
+  }
+  body.appendChild(page);
 }
 
 /// Follow `<a href="#node-3">` links inside the drawn page. The frame runs no
@@ -11270,7 +11455,7 @@ function wfMarkExplainHeadings(md, root, item, ts, which, target, tree, level) {
       open: "▸ inside",
       stale: "▸ inside (out of date)",
       diving: "… being explained",
-      dive: "⊕ explain deeper",
+      dive: "⊕ about this part",
     }[st];
     b.disabled = st === "diving";
     b.onclick = () => wfExplainActivate(root, item, ts, which, target, tree, id);
@@ -11282,14 +11467,16 @@ function wfMarkExplainHeadings(md, root, item, ts, which, target, tree, level) {
 /// part's level; when the session that drew the overview is still open the
 /// backend queues the dive into it (it already holds the code), otherwise it
 /// starts a fresh session.
-async function wfDive(item, root, target, parts) {
+/// `opts.focus` (a string, possibly empty) comes from the part page, which has
+/// already shown the cost and asked for a focus, so nothing is asked again.
+async function wfDive(item, root, target, parts, opts = {}) {
   const home = ws();
   const names = parts.map((p) => `${p.id} ${p.title || ""}`.trim());
-  const cost =
-    "Spends tokens: the explainer reads that code and writes one more level — a write-up, a drawing and its parts. " +
-    "When the session that drew the overview is still open the follow-up goes there, since it already has the code in context.";
+  const cost = WF_DIVE_COST;
   let focus = "";
-  if (parts.length === 1) {
+  if (typeof opts.focus === "string") {
+    focus = opts.focus.trim();
+  } else if (parts.length === 1) {
     const f = await uiPrompt(
       `Explain part ${names[0]} one level deeper?\n\n${cost}\n\nAnything specific to concentrate on? (optional)`,
       ""
@@ -11369,11 +11556,72 @@ function wfExplainFrameDoc(html) {
     a[href^="#node-"] { color: inherit; text-decoration: none; cursor: pointer; }
     a[href^="#node-"]:hover > * { filter: brightness(1.25); }
   `;
-  const head = `<meta charset="utf-8"><style>${style}</style>`;
-  // A full page keeps its own <head>; a fragment gets one.
-  return /<html[\s>]/i.test(html)
-    ? html.replace(/<head(\s[^>]*)?>/i, (m) => `${m}${head}`)
-    : `<!doctype html><html><head>${head}</head><body>${html}</body></html>`;
+  // `<base href="about:srcdoc">` comes first so it wins over any base the page
+  // sets: a srcdoc frame otherwise resolves links against *this* page, so the
+  // drawing's `#node-3` meant `tauri://localhost/#node-3` and following it
+  // loaded clash itself inside the frame.
+  const head =
+    `<base href="about:srcdoc"><meta name="clash-explain" content="1">` +
+    `<meta charset="utf-8"><style>${style}</style>`;
+  return wfFrameWithHead(html, head);
+}
+
+/// Put `head` at the start of the page's <head> — creating one when a full
+/// page has none — or wrap a fragment in a page.
+function wfFrameWithHead(html, head) {
+  if (/<head(\s[^>]*)?>/i.test(html)) return html.replace(/<head(\s[^>]*)?>/i, (m) => `${m}${head}`);
+  if (/<html[\s>]/i.test(html)) return html.replace(/<html(\s[^>]*)?>/i, (m) => `${m}<head>${head}</head>`);
+  return `<!doctype html><html><head>${head}</head><body>${html}</body></html>`;
+}
+
+/// Keep a drawn page in its frame. Its links are answered from here: a part
+/// (`#node-3`) opens or dives, a web link goes through `openLink`, anything
+/// else does nothing. Should a navigation slip through anyway (the listener
+/// cannot run, a link resolves elsewhere), the frame is put back on its
+/// drawing instead of showing whatever it loaded.
+function wfGuardExplainFrame(frame, srcdoc, onPart) {
+  // A page that keeps navigating itself (a meta refresh) is restored a few
+  // times, then left alone rather than looped on.
+  let restores = 0;
+  frame.addEventListener("load", () => {
+    let href = "";
+    let doc = null;
+    try {
+      href = frame.contentWindow.location.href;
+      doc = frame.contentDocument;
+    } catch (_) {
+      href = "";
+    }
+    const ours = doc && doc.querySelector('meta[name="clash-explain"]');
+    if ((!explainFrameIntact(href) || !ours) && restores < 3) {
+      restores += 1;
+      dlog(`explain frame navigated away (${href || "cross-origin"}); restoring the drawing`);
+      const id = fragmentPartId((/#.*$/.exec(href) || [""])[0]);
+      frame.srcdoc = srcdoc;
+      if (id && onPart) onPart(id);
+      return;
+    }
+    if (!doc) return;
+    doc.addEventListener(
+      "click",
+      (ev) => {
+        const a = ev.target && ev.target.closest ? ev.target.closest("a") : null;
+        if (!a) return;
+        const raw = a.getAttribute("href") || a.getAttribute("xlink:href") || "";
+        const id = fragmentPartId(raw);
+        if (id && onPart) {
+          ev.preventDefault();
+          onPart(id);
+          return;
+        }
+        // An in-page anchor scrolls as usual; nothing else may navigate.
+        if (raw.startsWith("#")) return;
+        ev.preventDefault();
+        if (/^(https?:|mailto:)/i.test(raw)) openLink(raw);
+      },
+      true
+    );
+  });
 }
 
 async function renderWfSubView(body, root, item, ts) {

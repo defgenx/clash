@@ -699,8 +699,8 @@ test("the two explanations are separate, and each has two forms", () => {
   // control on the tab was both the smallest thing on it and gave no sign of
   // which form you were reading.
   assert.match(APP, /seg\.className = "wf-seg"/);
-  assert.match(APP, /\["graphic", "◫ Diagram"/);
-  assert.match(APP, /\["text", "☰ Write-up"/);
+  // Its tabs (drawing, extra views, write-up) come from the pure model.
+  assert.match(APP, /const tabs = explainViewTabs\(forms, views\);/);
   const css = fs.readFileSync(path.join(__dirname, "..", "dist", "style.css"), "utf8");
   assert.match(css, /\.wf-seg button\.on/, "the active segment must be styled");
 
@@ -713,7 +713,16 @@ test("the two explanations are separate, and each has two forms", () => {
   );
   assert.match(ex, /frame\.setAttribute\("sandbox", "allow-same-origin"\)/);
   assert.doesNotMatch(ex, /"sandbox", "[^"]*allow-scripts/);
-  assert.match(ex, /frame\.srcdoc = wfExplainFrameDoc\(text\)/);
+  assert.match(ex, /const srcdoc = wfExplainFrameDoc\(text\);\s*frame\.srcdoc = srcdoc;/);
+  // A srcdoc frame resolves links against this page, so `#node-3` used to
+  // load clash itself into the frame. The base keeps fragments in the frame,
+  // and the guard answers links from here and restores a frame that left.
+  assert.match(extractFunction(APP, "wfExplainFrameDoc"), /<base href="about:srcdoc">/);
+  assert.match(ex, /wfGuardExplainFrame\(frame, srcdoc, onPart\)/);
+  const guard = extractFunction(APP, "wfGuardExplainFrame");
+  assert.match(guard, /explainFrameIntact\(href\)/);
+  assert.match(guard, /frame\.srcdoc = srcdoc;/);
+  assert.match(guard, /openLink\(raw\)/);
   // The written form still renders its mermaid like every other document.
   assert.match(ex, /renderMermaidIn\(md\)/);
 

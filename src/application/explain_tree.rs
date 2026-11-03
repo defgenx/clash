@@ -7,11 +7,43 @@
 //! written. Contract: `docs/workflows.md` → *Drill-down explanations*.
 
 use crate::domain::workflow::{
-    ExplainBasis, ExplainIndex, ExplainLevel, ExplainNodeView, ReviewTarget,
+    ExplainBasis, ExplainIndex, ExplainLevel, ExplainNodeView, ExplainView, ReviewTarget,
 };
 
 /// Deepest level a part may get: overview → `3` → `3.2` → `3.2.1`.
 pub const MAX_DEPTH: usize = 3;
+
+/// Extra views one level may carry beside its main page.
+pub const MAX_VIEWS: usize = 3;
+
+/// A view id: lowercase, starting with a letter (so `3.flow.html` can never
+/// read as part `3.flow`), at most 24 characters. Checked before it becomes
+/// part of a file name.
+pub fn valid_view_id(id: &str) -> bool {
+    let b = id.as_bytes();
+    !b.is_empty()
+        && b.len() <= 24
+        && b[0].is_ascii_lowercase()
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+}
+
+/// `3.2.flow.html` → (`3.2`, `flow`); the overview's `explain-diff.flow.html`
+/// is split with `stem` = `explain-diff`. `None` for anything that is not a
+/// view page.
+pub fn split_view_file<'a>(name: &'a str, stem: Option<&str>) -> Option<(&'a str, &'a str)> {
+    let base = name.strip_suffix(".html")?;
+    let (node, view) = base.rsplit_once('.')?;
+    if !valid_view_id(view) {
+        return None;
+    }
+    match stem {
+        Some(s) if node == s => Some(("", view)),
+        Some(_) => None,
+        None if valid_node_id(node) => Some((node, view)),
+        None => None,
+    }
+}
 
 /// The directory (and index stem) a target's tree lives under, or `None` for
 /// a target that has no tree.
@@ -64,6 +96,8 @@ pub struct RawLevel {
     pub written_at: i64,
     pub md: bool,
     pub html: bool,
+    /// Ids of the view pages present beside it (`<level>.<id>.html`).
+    pub views: Vec<String>,
 }
 
 fn parse_index(raw: &str) -> ExplainIndex {
@@ -113,6 +147,7 @@ pub fn build_tree(raw: &[RawLevel]) -> Vec<ExplainLevel> {
             stale,
             nodes: Vec::new(),
             edges: idx.edges.clone(),
+            views: level_views(&idx.views, &r.views),
         });
         // A leaf level (the depth cap) has no parts of its own.
         let nodes = if depth(&r.node) >= MAX_DEPTH {
@@ -143,6 +178,36 @@ pub fn build_tree(raw: &[RawLevel]) -> Vec<ExplainLevel> {
             n.stale = n.expanded && stale_levels.iter().any(|(id, s)| *id == n.node.id && *s);
         }
     }
+    out
+}
+
+/// The views a level shows: those its index lists whose page exists, in
+/// the index's order, then pages the index forgot (titled by their id) —
+/// a drawing on disk is never hidden for want of a line of JSON.
+fn level_views(listed: &[ExplainView], present: &[String]) -> Vec<ExplainView> {
+    let mut out: Vec<ExplainView> = Vec::new();
+    for v in listed {
+        if valid_view_id(&v.id) && present.contains(&v.id) && !out.iter().any(|o| o.id == v.id) {
+            let mut v = v.clone();
+            if v.title.trim().is_empty() {
+                v.title = v.id.clone();
+            }
+            out.push(v);
+        }
+    }
+    let mut rest: Vec<&String> = present
+        .iter()
+        .filter(|p| valid_view_id(p) && !out.iter().any(|o| &o.id == *p))
+        .collect();
+    rest.sort();
+    for p in rest {
+        out.push(ExplainView {
+            id: p.clone(),
+            title: p.clone(),
+            ..Default::default()
+        });
+    }
+    out.truncate(MAX_VIEWS);
     out
 }
 
@@ -204,6 +269,7 @@ mod tests {
             written_at: at,
             md: true,
             html: true,
+            views: Vec::new(),
         }
     }
 
@@ -353,5 +419,66 @@ mod tests {
         );
         assert!(can_dive(ReviewTarget::ExplainDiff, "../1", &tree).is_err());
         assert!(can_dive(ReviewTarget::Diff, "1", &tree).is_err(), "no tree");
+    }
+
+    #[test]
+    fn view_ids_are_lowercase_words_never_part_ids() {
+        assert!(valid_view_id("flow"));
+        assert!(valid_view_id("before-after"));
+        assert!(valid_view_id("v2"));
+        for bad in ["", "2", "Flow", "../x", "a.b", "a/b", &"x".repeat(25)] {
+            assert!(!valid_view_id(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn view_files_split_into_level_and_view() {
+        assert_eq!(
+            split_view_file("3.2.flow.html", None),
+            Some(("3.2", "flow"))
+        );
+        assert_eq!(split_view_file("3.flow.html", None), Some(("3", "flow")));
+        assert_eq!(
+            split_view_file("explain-diff.state.html", Some("explain-diff")),
+            Some(("", "state"))
+        );
+        // A part's own page, the overview's own page and junk are not views.
+        assert_eq!(split_view_file("3.2.html", None), None);
+        assert_eq!(
+            split_view_file("explain-diff.html", Some("explain-diff")),
+            None
+        );
+        assert_eq!(
+            split_view_file("drift.flow.html", Some("explain-diff")),
+            None
+        );
+        assert_eq!(split_view_file("x.flow.html", None), None);
+        assert_eq!(split_view_file("3.flow.md", None), None);
+    }
+
+    #[test]
+    fn a_level_shows_listed_views_whose_page_exists() {
+        let mut r = level("", 10, &n("1"));
+        r.json = r#"{"nodes":[],"views":[
+            {"id":"flow","kind":"flow","title":"Request flow","why":"three hops"},
+            {"id":"state","title":""},
+            {"id":"ghost","title":"never drawn"},
+            {"id":"Bad","title":"bad id"}]}"#
+            .to_string();
+        r.views = vec!["state".into(), "flow".into(), "extra".into(), "Bad".into()];
+        let tree = build_tree(&[r]);
+        let ids: Vec<&str> = tree[0].views.iter().map(|v| v.id.as_str()).collect();
+        assert_eq!(ids, ["flow", "state", "extra"]);
+        assert_eq!(tree[0].views[0].why, "three hops");
+        // An empty title falls back to the id; so does an unlisted page.
+        assert_eq!(tree[0].views[1].title, "state");
+        assert_eq!(tree[0].views[2].title, "extra");
+    }
+
+    #[test]
+    fn views_are_capped() {
+        let mut r = level("", 10, "");
+        r.views = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(build_tree(&[r])[0].views.len(), MAX_VIEWS);
     }
 }

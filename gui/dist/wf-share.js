@@ -262,8 +262,10 @@
   /// The agent's drawn page as a frame document. It goes in `srcdoc` of a
   /// frame sandboxed without scripts, never into the export's own DOM.
   function shareFrameDoc(html) {
+    // The base keeps the drawing's `#node-3` links inside its frame; without
+    // it they resolve against the export and load the export into the frame.
     const head =
-      '<meta charset="utf-8"><style>:root{color-scheme:light dark}' +
+      '<base href="about:srcdoc"><meta charset="utf-8"><style>:root{color-scheme:light dark}' +
       "body{margin:0;padding:16px;font:13px/1.55 -apple-system,'Segoe UI',system-ui,sans-serif}" +
       "svg{max-width:100%;height:auto}.box,.node{border:1px solid rgba(128,128,128,.4);border-radius:8px;padding:8px 10px}" +
       "</style>";

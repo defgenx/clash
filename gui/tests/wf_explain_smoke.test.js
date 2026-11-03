@@ -37,8 +37,11 @@ function sandboxFor(docs, tree = []) {
       calls.push([cmd, args]);
       if (cmd === "get_workflow_doc") return docs[args.doc] ?? "";
       if (cmd === "get_workflow_explain_tree") return tree;
-      if (cmd === "get_workflow_explain_node")
+      if (cmd === "get_workflow_explain_node") {
+        const base = args.node ? `${args.target}/${args.node}` : args.target;
+        if (args.view) return docs[`${base}.${args.view}.html`] ?? "";
         return docs[`${args.target}/${args.node}.${args.form}`] ?? "";
+      }
       throw new Error(`unexpected command ${cmd}`);
     },
     setInterval: () => 0,
@@ -63,7 +66,22 @@ function sandboxFor(docs, tree = []) {
   vm.runInContext(APP.slice(start, APP.indexOf("\n};", start) + 3), sandbox);
   vm.runInContext(extractFunction(APP, "wfExplainFormsFor"), sandbox);
   vm.runInContext(extractFunction(APP, "renderWfExplainView"), sandbox);
-  for (const fn of ["renderWfExplainNav", "wfWatchExplainFrame", "wfMarkExplainHeadings", "wfExplainGo"])
+  sandbox.dlog = () => {};
+  sandbox.WF_DIVE_COST = "Spends tokens.";
+  sandbox.dives = [];
+  sandbox.wfDive = (...a) => sandbox.dives.push(a);
+  sandbox.busyButton = (_b, work) => work();
+  sandbox.openSession = () => {};
+  sandbox.wfSessionName = () => "s";
+  sandbox.openLink = () => {};
+  for (const fn of [
+    "renderWfExplainNav",
+    "wfWatchExplainFrame",
+    "wfGuardExplainFrame",
+    "renderWfExplainPartPage",
+    "wfMarkExplainHeadings",
+    "wfExplainGo",
+  ])
     vm.runInContext(extractFunction(APP, fn), sandbox);
   sandbox.__calls = calls;
   return sandbox;
@@ -224,10 +242,11 @@ test("an explanation with a tree shows its parts, each a way down", async () => 
   assert.ok(all.some((e) => (e.className || "").includes("wf-explain-nav")), "the strip renders");
   const chips = all.filter((e) => /(^| )wf-explain-part( |$)/.test(e.className || ""));
   assert.equal(chips.length, 3);
-  // Open, dive, and a leaf that offers nothing.
+  // Open, dive, and a leaf — every one opens a page, even the leaf.
   assert.match(chips[0].className, /\bopen\b/);
   assert.match(chips[1].className, /\bdive\b/);
-  assert.ok(chips[2].disabled, "a leaf is not clickable");
+  assert.match(chips[2].className, /\bnone\b/);
+  assert.ok(!chips[2].disabled, "a leaf still opens what is known about it");
   // Only the critical part not yet written is offered as a batch.
   const batch = all.find((e) => (e.className || "").includes("wf-explain-critical"));
   assert.ok(batch && /\(1\)/.test(batch.textContent), "one critical part to dive");
@@ -259,4 +278,71 @@ test("a level that vanished falls back to the overview", async () => {
   await sandbox.renderWfExplainView(stubEl(), stubEl(), ITEM, ts, "diff");
   assert.equal(ts.explainNodes.diff, "");
   assert.ok(sandbox.__calls.some(([c, a]) => c === "get_workflow_doc" && a.doc === "explain-diff.md"));
+});
+
+test("a level's extra views are tabs, and one opens its own page", async () => {
+  const tree = [
+    {
+      node: "",
+      title: "",
+      md: true,
+      html: true,
+      nodes: [],
+      edges: [],
+      views: [{ id: "flow", kind: "flow", title: "Request flow", why: "three hops" }],
+    },
+  ];
+  const docs = {
+    "explain-diff.md": "# doc",
+    "explain-diff.html": "<h1>map</h1>",
+    "explain-diff.flow.html": "<h1>flow</h1>",
+  };
+  // The tab bar offers the drawing, the view and the write-up.
+  let sandbox = sandboxFor(docs, tree);
+  let body = stubEl();
+  await sandbox.renderWfExplainView(body, stubEl(), ITEM, {}, "diff");
+  let all = descendants(body);
+  const labels = all.filter((e) => e.tagName === "BUTTON").map((e) => e.textContent);
+  assert.ok(labels.includes("→ Request flow"), `tabs: ${labels}`);
+  // Picking it reads the view's own page into the frame.
+  sandbox = sandboxFor(docs, tree);
+  body = stubEl();
+  await sandbox.renderWfExplainView(body, stubEl(), ITEM, { explainView: "view:flow" }, "diff");
+  all = descendants(body);
+  const frame = all.find((e) => (e.className || "").includes("wf-explain-frame"));
+  assert.ok(frame && /flow/.test(frame.srcdoc), "the view renders in the frame");
+  assert.ok(
+    sandbox.__calls.some(([c, a]) => c === "get_workflow_explain_node" && a.view === "flow" && a.node === ""),
+    JSON.stringify(sandbox.__calls)
+  );
+  assert.ok(all.some((e) => (e.innerHTML || "").includes("Edit explain-diff.flow.html")));
+});
+
+test("a part nobody explained opens a page of what is known, not clash and not a dive", async () => {
+  const tree = JSON.parse(JSON.stringify(TREE));
+  tree[0].nodes[1].summary = "keeps parsed files";
+  tree[0].nodes[1].files = ["src/cache.rs:12"];
+  tree[0].edges = [{ from: "1", to: "2", label: "parsed file" }];
+  const sandbox = sandboxFor({}, tree);
+  const body = stubEl();
+  await sandbox.renderWfExplainView(body, stubEl(), ITEM, { explainNodes: { diff: "2" } }, "diff");
+  const all = descendants(body);
+  // Nothing is fetched for a level that does not exist, and nothing launches.
+  assert.ok(!sandbox.__calls.some(([c]) => c === "get_workflow_explain_node"));
+  assert.equal(sandbox.dives.length, 0);
+  assert.ok(all.some((e) => (e.className || "").includes("wf-part-page")), "the part page renders");
+  const html = all.map((e) => `${e.innerHTML || ""} ${e.__html || ""}`).join(" ");
+  assert.match(html, /keeps parsed files/);
+  assert.match(html, /every read|invalidation/);
+  const texts = all.map((e) => e.textContent || "");
+  assert.ok(texts.some((t) => t === "src/cache.rs:12"), "its files are listed");
+  // The way down is deliberate, carries the question asked, and spends once.
+  const go = all.find((e) => e.textContent === "⊕ Explain this part");
+  assert.ok(go, "an explain button");
+  const ask = all.find((e) => (e.className || "").includes("wf-part-focus"));
+  ask.value = "How does invalidation work?";
+  await go.onclick();
+  assert.equal(sandbox.dives.length, 1);
+  assert.equal(sandbox.dives[0][3][0].id, "2");
+  assert.equal(sandbox.dives[0][4].focus, "How does invalidation work?");
 });

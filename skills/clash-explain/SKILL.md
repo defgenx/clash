@@ -90,8 +90,8 @@ full file contract is in the clash repo at `docs/workflows.md`.
   1. **Autonomous** (recommended) — read everything, write the whole document.
   2. **Interactive** — propose the functional-part breakdown first and let the
      human reorder it, merge parts, and confirm the critical set — the parts
-     whose inside you write up front under `Detail: critical` — before you
-     write.
+     whose inside you write up front under `Detail: critical` — and the
+     **views** (see "Views") you think the change deserves, before you write.
 
 Blocking on a question is safe: nothing waits on you — the item's other work
 carries on — and clash can always stop tracking the round.
@@ -194,7 +194,9 @@ How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
     `.json`), the levels its `Detail:` asks for under `explain-<target>/`, and
     appends its round entry to `agent-review.md` (see Finish);
   - a dive writes **only** its node's three files
-    (`<tree>/<node>.md`, `.html`, `.json`) and appends nothing.
+    (`<tree>/<node>.md`, `.html`, `.json`) and appends nothing;
+  - either may add **view pages** beside a level it writes
+    (`<level>.<view>.html`, see "Views") — never beside a level it does not.
 
   Every file is a living document, overwritten per round, not an append log. Never write the *other* target's
   document: an `explain-plan` round that overwrote `explain-diff.*` would
@@ -301,8 +303,9 @@ code, so do not re-read what you know; read only what the part needs.
    breadcrumb uses them.
 4. **Append nothing to `agent-review.md`** and touch no other level — not the
    parent, not a sibling. A dive is not a round.
-5. Final chat message: one sentence — what the part does, and how many parts
-   it lists. Then stop and wait: the next dive may be queued into this
+5. Final chat message: one sentence — what the part does, how many parts
+   it lists, and the view you drew for it, if any (see "Views": the same rule
+   applies to a part — a part that is one request path may need its `flow`). Then stop and wait: the next dive may be queued into this
    session.
 
 The dive's `.md` follows the shape of the explain-diff document scaled to one
@@ -453,28 +456,76 @@ list — a forced diagram is noise.
 
 ## The HTML page — `explain-plan.html` / `explain-diff.html`
 
-The written document is read; **this one is looked at.** One screen that shows
-the shape of the work: the parts as boxes, the relationships as arrows, the
-repositories and features they live in, and what is new versus what already
-existed. If someone can only spend fifteen seconds on this item, this is what
-they spend it on.
+The written document is read; **this one is looked at.** It is a *different
+reading dimension*, not the markdown drawn: the write-up is for someone who
+will read the code, the drawing is for someone who never will. Pitch it at a
+smart newcomer — a PM, a new teammate, you in six months — who knows nothing
+about this codebase. From this page alone they must understand **what is going
+to be done (or was done), for whom, and how it will work**, in thirty seconds.
+A drawing that is correct but has to be decoded has failed.
+
+**Higher level than you think.** The overview drawing shows *the idea*, not the
+code:
+- **no file paths, function, class or type names** on the overview page —
+  those live in the write-up and in the parts' own levels (where a small
+  code name under a box is fine);
+- **people and things a newcomer recognises**: "the member", "the admin
+  screen", "the nightly job", "the payments service", "the database" — not
+  `MemberPolicyResolver`;
+- **5–8 boxes**, never more: if the change has more parts, the drawing groups
+  them ("everything that sends emails") and the parts strip carries the rest;
+- **one sentence per step**, in everyday words, as if explaining it out loud.
 
 Draw it, don't list it. A page that is a bulleted summary of the markdown adds
 nothing — the markdown is right there.
 
-**What it must contain**, in roughly this order:
+**What it must contain**, top to bottom:
 
-1. **The map** — the whole change as one picture. Boxes for the parts (a
-   service, a module, a screen, a job, a table), grouped by the repository or
-   the layer they belong to, with arrows for calls / data flow / dependency.
-   Mark **NEW** parts distinctly from existing ones, and label every arrow with
-   what actually crosses it ("session id", "webhook POST", "reads").
-2. **Blast radius** — what exists today that this touches, and how. A second
-   small picture or a table; whichever is honest at this size.
-3. **A one-line legend** naming the visual convention you used (what a dashed
-   arrow means, what the colour or the NEW badge means). A diagram whose rules
-   are guessed is a diagram misread.
-4. **The one-sentence summary**, top or bottom: what this change is, in a line.
+1. **The goal, in one sentence** — what this change achieves for a user or a
+   system, in plain words ("Customers get a clear error instead of a timeout
+   when they exceed their quota"), not what files it edits.
+2. **Before → after, in two lines** — what happens today, what will happen
+   instead ("Today: an over-quota call hangs for 30s. After: it is refused at
+   once with a clear message."). This is the line a newcomer remembers.
+3. **The map, told as a story.** The parts as boxes (a service, a module, a
+   screen, a job, a table), grouped by repository or layer, **laid out in the
+   order things happen** — left to right or top to bottom — with the arrows
+   **numbered** ① ② ③ along the main path. Beside or under the picture, the
+   same numbers as short sentences: "① the gateway counts the call; ② over the
+   limit, it answers 429 before the service is reached; ③ …". The numbers are
+   what turns boxes into *how it works*.
+4. **What changes, marked on the map** — NEW, CHANGED and untouched-context
+   parts visibly different (fill/border, with the legend), so "what is going
+   to be done" is readable straight off the picture.
+5. **Blast radius** — what exists today that this touches, and how, in plain
+   words ("anyone calling the public API more than 100 times a minute"). A
+   small table or a strip under the map.
+6. **A one-line legend** naming the convention (what dashed means, what the
+   colours or badges mean). A diagram whose rules are guessed is misread.
+
+**Legibility rules — these are what make it understandable:**
+
+- **Label boxes by role, in plain language**: the title says what the part
+  *does* in this change ("Counts calls per API key"). On the overview that is
+  all; on a part's level the code name may go underneath, small ("NEW ·
+  middleware/limit.rs"). A box titled `RateLimiterMiddlewareImpl` makes the
+  reader open the code, which is what the page exists to spare them.
+- **Label arrows with a verb and what crosses**: "sends order id", "reads
+  quota", "publishes `order.paid`" — never a bare line, never just "uses".
+- **At most ~10 boxes on the overview** and ~8 on a part's level. More than
+  that, group: one box per subsystem with its pieces named inside, and leave
+  the inside to that part's level.
+- **One main path, drawn straight**; side paths thinner or dashed. No crossing
+  arrows, no arrow longer than it needs to be, no two arrows between the same
+  pair of boxes (merge their labels).
+- **Context stays dim.** Untouched neighbours are drawn only when the change
+  talks to them, lighter than the parts that change.
+- **Before you finish, read the page as that reader** — the newcomer above,
+  who knows the product a little and this code not at all. For each box ask "do I know what it does?", for
+  each arrow "do I know what happens here?", and for the whole "could I explain
+  this change to a colleague now?". Rename, regroup or renumber until every
+  answer is yes. If the honest answer needs another angle (the order of calls,
+  the states, the data), that is a view — see "Views".
 
 **How to write it — the constraints are real, not stylistic:**
 
@@ -503,8 +554,9 @@ nothing — the markdown is right there.
 Sketch of the shape (yours will differ — this is the altitude, not a template):
 
 ```html
-<h1>Adds rate limiting to the public API</h1>
-<p class="lede">Two repos: the gateway counts, the service enforces.</p>
+<h1>Callers over their quota get a 429 instead of a timeout</h1>
+<p class="lede"><b>Today:</b> a caller over its quota waits 30s for a timeout.
+<b>After:</b> the front door refuses it at once with a clear message.</p>
 
 <svg viewBox="0 0 900 320" role="img" aria-label="Map of the change">
   <!-- group: repo -->
@@ -512,22 +564,92 @@ Sketch of the shape (yours will differ — this is the altitude, not a template)
   <text x="24" y="34" class="repo-label">gateway</text>
   <!-- a NEW part -->
   <rect x="40" y="60" width="180" height="54" rx="8" class="node new"/>
-  <text x="52" y="84" class="node-label">token bucket</text>
-  <text x="52" y="102" class="node-sub">NEW · middleware/limit.rs</text>
-  <!-- an arrow, labelled with what crosses it -->
+  <text x="52" y="84" class="node-label">Counts calls per API key</text>
+  <text x="52" y="102" class="node-sub">NEW</text>
+  <!-- a numbered arrow, labelled with a verb and what crosses it -->
   <path d="M230 87 H 470" class="edge" marker-end="url(#a)"/>
-  <text x="300" y="78" class="edge-label">X-RateLimit headers</text>
+  <text x="300" y="78" class="edge-label">② forwards, adds X-RateLimit headers</text>
 </svg>
 
-<p class="legend">Solid = call · dashed = generated artifact · NEW badge = does not exist today.</p>
+<ol class="steps">
+  <li>① A call arrives; the gateway counts it against the caller's key.</li>
+  <li>② Under the limit, it is forwarded with the remaining quota in headers.</li>
+  <li>③ Over the limit, the gateway answers 429 — the service never sees it.</li>
+</ol>
+
+<p class="legend">Filled = NEW · outlined = CHANGED · dim = untouched context · ①②③ = the order things happen.</p>
 ```
+
+## Views — the same level from another angle
+
+The map (boxes and arrows) answers *what are the parts and how do they
+connect*. Some changes are mostly about a different question, and a map
+answers it badly. A level may therefore carry up to **2** extra drawings —
+**views** — beside its main page. clash shows them as tabs next to
+*◫ Diagram* and *☰ Write-up*.
+
+| View (`kind`) | Answers | Draw it when |
+|---|---|---|
+| `flow` | what happens, in order, to one request / event / job: numbered steps across the components it passes through, sync vs async, where it can fail | the change sits on a request path, an API, a webhook, a queue consumer, auth, a retry loop |
+| `state` | which states a thing has and which transitions exist, with the new/removed/guarded edges marked | a status, lifecycle or pipeline gains or changes states |
+| `data` | the shape of the data before → after, and who writes / reads each field | a migration, a new table or column, a payload or contract change |
+| `before-after` | behaviour today next to behaviour after, side by side | a refactor or behaviour change that adds few parts but changes how they act |
+| `rollout` | the order things must land in: repos, migrations, flags, the window where old and new must coexist | several repos, a migration, a feature flag — the usual case for an `explain-plan` round |
+| `dependency` | who calls / imports what, and which edges are new | a large refactor or a module split |
+
+**Choose by the question the reader will have, never by habit.** Ask: "what
+would someone reviewing this get wrong from the map alone?" If the answer is
+"the order of the calls", draw `flow`; "which statuses can follow which",
+`state`; "what the table looks like after", `data`. If the map already answers
+it, draw no view — a view that restates the map is noise, and every one costs
+tokens. Most changes need zero or one; two is the cap.
+
+- **Interactive** — after proposing the parts, *suggest* the views: name each
+  one, the question it answers and why the map does not, and recommend one or
+  none (`AskUserQuestion`, multi-select, "No extra view" as an option). Draw
+  what the human picks. Also suggest a view when they had not thought of one
+  and the change clearly calls for it — that suggestion is the point.
+- **Autonomous** — decide yourself with the rule above, and write the reason
+  in the view's `why`: it is the tab's tooltip, and it is how a reader learns
+  why this angle was drawn.
+- **`Focus:` naming a view** ("draw the request flow") is a request for it:
+  draw it whatever the rule says.
+
+Files and index — a view is one HTML page, the level's id plus the view id:
+
+```
+explain-diff.flow.html       a view of the overview
+explain-diff/3.state.html    a view of part 3
+```
+
+and it is listed in that level's `.json` (written last, as always):
+
+```json
+"views": [ { "id": "flow", "kind": "flow", "title": "Checkout request",
+             "why": "the change is three hops on one request; the map hides their order" } ]
+```
+
+- `id`: lowercase letters, digits and `-`, starting with a letter; usually the
+  kind itself.
+- The page follows every rule of "The HTML page" (inert, self-contained,
+  theme-aware, viewBox). Keep the map's names and numbers for the same parts,
+  and link a part to its level the same way (`<a href="#node-3">`) — a reader
+  should be able to jump from step 4 of a flow into part 3.
+- A `flow` is a sequence picture: lanes (one per component) left to right,
+  steps numbered top to bottom, arrows labelled with what crosses them, the
+  failure branch drawn rather than mentioned. A `state` view is states as
+  rounded boxes and transitions as labelled arrows, new ones marked NEW.
+- The write-up may carry the same angle as a mermaid `sequenceDiagram` /
+  `stateDiagram-v2` / `erDiagram` where it helps the prose — the view page is
+  the drawn, glanceable form of it.
 
 ## Finish — in this order, every run
 
 1. Write/overwrite **the target's overview** — `explain-plan.md` +
    `explain-plan.html` + `explain-plan.json` on `Target: explain-plan`,
-   `explain-diff.{md,html,json}` on `Target: explain-diff` — then the levels
-   `Detail:` asks for (see "The tree"). Never the other target's files. (A
+   `explain-diff.{md,html,json}` on `Target: explain-diff`, with any view
+   pages before the `.json` (see "Views") — then the levels `Detail:` asks for
+   (see "The tree"). Never the other target's files. (A
    dive follows "Dive mode" instead and skips step 2.)
 2. **Append** your round to `agent-review.md` — one shell append, never a
    rewrite (see Hard rules). This entry is also how clash learns you are
