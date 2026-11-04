@@ -3052,3 +3052,9 @@ button.busy:disabled { opacity: 1; }
 .hljs-deletion { color: var(--red); }
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: 700; }
+
+/* A mermaid fence that failed to draw stays readable as code (markBadMermaid). */
+pre.wf-mermaid-bad { border-left: 3px solid var(--red); }
+pre.wf-mermaid-bad::before { content: "⚠ diagram could not be drawn — shown as code"; display: block; font-size: 11px; color: var(--fg-dim); margin-bottom: 6px; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+/* mermaid stages each render in <body>; never let it show under the app. */
+body > [id^="dwf-mmd-"], body > [id^="iwf-mmd-"], body > [id^="wf-mmd-"] { position: absolute !important; left: -10000px !important; top: 0 !important; }

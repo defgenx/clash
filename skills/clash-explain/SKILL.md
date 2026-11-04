@@ -537,10 +537,14 @@ nothing — the markdown is right there.
   document, which clash renders with it. Here you hand-draw: `<svg>` with
   `<rect>`/`<path>`/`<text>`, or HTML boxes positioned with flex/grid and SVG
   arrows over them. Both are fine; pick what you can keep readable.
-- **Fits the width it is given.** The page renders in a panel, not a monitor:
-  target ~900px, wrap or stack instead of overflowing, and give every `<svg>` a
-  `viewBox` (clash sets `svg { max-width: 100% }`, so a viewBox scales and a
-  fixed width clips).
+- **Uses the space it is given.** The page fills a whole pane, often 1400px
+  or more wide, and the reader zooms into it, so draw the map as one `<svg>`
+  with a wide `viewBox` (about 1200–1600 units, wider than tall) and no fixed
+  `width`/`height`. clash scales every drawing whose viewBox is at least 400
+  units wide to the pane's width, as tall as the pane allows, and lifts any
+  `max-width` you put on `body`. Give boxes room: text at 13–15 units,
+  generous gaps, no box narrower than its label. Keep prose above and below
+  the drawing short; it is capped to a readable line length anyway.
 - **Theme-aware by default.** clash injects the app's colours as the page's
   background/foreground before your styles, so a page that sets no colours
   looks native in both light and dark. If you do set colours, set both — use

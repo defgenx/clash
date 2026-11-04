@@ -890,8 +890,10 @@ The preview **is** the payload. It can go to:
 - the clipboard;
 - a `.md` file, or a self-contained `.html` page to send to someone without
   clash. The page opens offline by double-click. With **Explanation drawings** set to
-  a depth, it also carries the item's explanation drawings and write-ups,
-  linked from overview to part to sub-part. The drawings stay sandboxed.
+  a depth, it also carries the item's explanations and opens on an explorer:
+  the drawing fills the screen, clicking a part zooms into it, and Esc zooms
+  back out into its box. A reading panel beside it lists the parts and holds
+  the write-up, and `←`/`→` step between parts. The drawings stay sandboxed.
   Both saves use the system save dialog, then offer **Reveal in Finder** and
   **Copy path**;
 - Slack or Discord;

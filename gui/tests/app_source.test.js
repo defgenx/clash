@@ -1032,3 +1032,15 @@ test("closing a workspace kills its sessions instead of handing them to another"
   // Sessions clash did not start are never killed.
   assert.match(close, /source !== "Wild"/);
 });
+
+test("a mermaid syntax error never draws into the app's body", () => {
+  // mermaid's default on a parse error is a "Syntax error in text" bomb
+  // appended to <body>, under the whole UI — and its staging nodes stay there
+  // when render throws.
+  const fn = extractFunction(APP, "renderMermaidIn");
+  assert.match(fn, /suppressErrorRendering: true/);
+  assert.match(fn, /mermaid\.parse\(src, \{ suppressErrors: true \}\)/);
+  assert.match(fn, /finally \{\s*removeMermaidLeftovers\(id\);/);
+  const sweep = extractFunction(APP, "removeMermaidLeftovers");
+  assert.match(sweep, /parentNode === document\.body/, "only strays under <body>, never the placed svg");
+});

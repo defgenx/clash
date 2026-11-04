@@ -22,8 +22,9 @@ const {
   SHARE_EXPLAIN_PAIRS,
   explainLevelsToShare,
   shareAnchor,
-  shareExplanationEntries,
+  shareExplanationChapter,
   explainOutline,
+  shareViewer,
 } = require("../dist/wf-share.js");
 const { extractFunction } = require("./extract-fn.js");
 const APP = fs.readFileSync(path.join(__dirname, "..", "dist", "app.js"), "utf8");
@@ -56,54 +57,197 @@ test("the explanation depth cuts the tree, and a part goes only with its parent"
   assert.deepEqual(explainLevelsToShare([], "all", false), []);
 });
 
-test("entries carry breadcrumbs and link only the parts the page holds", () => {
-  const levels = explainLevelsToShare(TREE, "parts", true);
-  const [root, one] = shareExplanationEntries(DIFF, levels, { "": { bodyHtml: "<p>w</p>", frameHtml: "<div>d</div>" } });
-  assert.equal(root.anchor, "x-explain-diff");
+test("a chapter holds every kept level, its drawings framed and its parts described", () => {
+  const tree = [
+    { ...TREE[0], edges: [{ from: "1", to: "2", label: "retries" }], views: [{ id: "flow", title: "Request flow" }] },
+    TREE[1],
+    TREE[2],
+  ];
+  const levels = explainLevelsToShare(tree, "parts", true);
+  const ch = shareExplanationChapter(DIFF, levels, {
+    "": { bodyHtml: "<p>w</p>", frameHtml: "<div>d</div>", views: { flow: "<div>f</div>" } },
+  });
+  assert.equal(ch.id, "explain-diff");
+  assert.deepEqual(Object.keys(ch.levels).sort(), ["", "1"], "1.1 was cut at this depth; part 2 never opened");
+  const root = ch.levels[""];
   assert.equal(root.title, "Changes explained");
-  assert.equal(root.parts[0].anchor, "x-explain-diff-1");
-  assert.equal(root.parts[1].anchor, null, "never opened");
-  assert.equal(one.title, "1 Retry");
-  assert.equal(one.stale, true);
-  assert.equal(one.parts[0].anchor, null, "1.1 was cut at this depth");
-  assert.deepEqual(one.crumbs.map((c) => c.anchor), ["x-explain-diff", "x-explain-diff-1"]);
-  assert.equal(shareAnchor("drift", "3.2.1"), "x-drift-3-2-1");
-  assert.deepEqual(explainOutline([{ label: "Changes explained", entries: [root, one] }]), [
-    "Changes explained — overview + 1 part",
-  ]);
+  assert.deepEqual(root.parts.map((p) => [p.id, p.critical, p.summary]), [["1", true, "wraps calls"], ["2", false, ""]]);
+  assert.deepEqual(root.edges, [{ from: "1", to: "2", label: "retries" }]);
+  // Drawings travel as ready frame documents: the base that keeps their
+  // `#node-` links inside the frame is already there.
+  assert.match(root.drawing, /^<!doctype html><html><head><base href="about:srcdoc">/);
+  assert.deepEqual(root.views.map((v) => [v.id, v.title]), [["flow", "Request flow"]]);
+  assert.match(root.views[0].html, /<base href="about:srcdoc">[\s\S]*<div>f<\/div>/);
+  assert.equal(ch.levels["1"].title, "Retry", "a part's level is named by its parent");
+  assert.equal(ch.levels["1"].stale, true);
+  assert.equal(ch.levels["1"].drawing, "", "no drawing: the explorer draws a map of the parts");
+  assert.deepEqual(explainOutline([ch]), ["Changes explained — overview + 1 part"]);
 });
 
-test("the saved page sandboxes the drawings and stays script-free", () => {
+const scriptsOf = (html) => [...html.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/g)].map((m) => ({ attrs: m[1], body: m[2] }));
+
+test("the saved page is an explorer whose drawings stay script-less frames", () => {
   const levels = explainLevelsToShare(TREE, "all", true);
   const drawn = '<div onclick="x()">drawn "page"</div><script>alert(1)</script>';
-  const entries = shareExplanationEntries(DIFF, levels, {
+  const ch = shareExplanationChapter(DIFF, levels, {
     "": { bodyHtml: "<p>write-up</p>", frameHtml: drawn },
     1: { bodyHtml: "<p>inside</p>", frameHtml: "" },
   });
-  const html = shareHtmlDocument("T", "<p>doc</p>", [{ label: "Changes explained", entries }]);
-  // The agent's page is an escaped srcdoc of a script-less sandbox — never
-  // markup of the page itself.
-  assert.match(html, /<iframe sandbox="allow-same-origin" title="Changes explained" srcdoc="[^"]*&lt;script&gt;alert\(1\)/);
-  assert.ok(!html.includes(drawn));
+  const html = shareHtmlDocument("T", "<p>doc</p>", [ch]);
   assert.ok(!/allow-scripts/.test(html));
-  assert.ok(!/<script/.test(html), "no script of the page's own");
   assert.ok(!/\b(src|href)\s*=\s*["'](https?:)?\/\//.test(html), "external reference found");
-  // Navigation is anchors: a contents line, and each level's own section.
-  assert.match(html, /<nav class="toc"><a href="#x-document">Document<\/a> · <a href="#x-explain-diff">/);
-  for (const id of ["x-explain-diff", "x-explain-diff-1", "x-explain-diff-1-1"]) assert.ok(html.includes(`id="${id}"`), id);
-  assert.match(html, /<a href="#x-explain-diff-1"><b>1 Retry<\/b> →<\/a>/);
-  // With a drawing the write-up folds under it; without one it is the body.
-  assert.match(html, /<details class="writeup"><summary>Write-up<\/summary><p>write-up<\/p>/);
-  assert.ok(html.includes("<p>inside</p>") && !html.includes("<summary>Write-up</summary><p>inside"));
-  // No explanations: the page is the old export, plus nothing.
-  assert.ok(!shareHtmlDocument("T", "<p>doc</p>").includes('class="toc"'));
+  // Two scripts: the data, which no string inside can close, and the
+  // explorer, which compiles.
+  const [data, viewer, ...rest] = scriptsOf(html);
+  assert.equal(rest.length, 0);
+  assert.equal(data.attrs, ' type="application/json" id="x-data"');
+  assert.ok(!data.body.includes("<"), "a < in the data could close its element");
+  const parsed = JSON.parse(data.body);
+  assert.equal(parsed.chapters[0].levels[""].drawing.includes(drawn), true, "the drawing rides as data, never as markup");
+  assert.ok(!html.replace(data.body, "").includes("drawn &quot;page&quot;") && !html.replace(data.body, "").includes('drawn "page"'));
+  assert.doesNotThrow(() => new vm.Script(viewer.body));
+  // The frames are made by the explorer, sandboxed without scripts.
+  assert.match(viewer.body, /setAttribute\("sandbox", "allow-same-origin"\)/);
+  // The document reads without script.
+  assert.ok(html.includes('<section class="doc" id="x-document"><article class="md">\n<p>doc</p>'));
+  // No explanations: the plain document, without any script.
+  const plain = shareHtmlDocument("T", "<p>doc</p>");
+  assert.ok(!/<script/.test(plain) && !plain.includes("x-explorer"));
 });
+
+test("the explorer is self-contained: it reads nothing from the module around it", () => {
+  // It is shipped with toString(), so a closure variable would be a
+  // ReferenceError on the recipient's machine and nowhere in clash.
+  const src = shareViewer.toString();
+  const free = ["shareFrameDoc", "shareAnchor", "parentOf(l", "nodeDepth", "PAGE_STYLE", "scriptJson", "api"].filter((name) =>
+    new RegExp(`\\b${name.replace("(", "\\(")}`).test(src)
+  );
+  assert.deepEqual(free, []);
+  assert.ok(!src.includes("</script"), "would close the page's script element");
+});
+
+test("smoke: the explorer zooms into a part and back out", async () => {
+  // A tiny DOM, enough for the explorer to boot, route and swap layers.
+  const levels = explainLevelsToShare(TREE, "all", true);
+  const ch = shareExplanationChapter(DIFF, levels, {
+    "": { bodyHtml: "<h3>1. Retry</h3><p>w</p>", frameHtml: "" },
+    1: { bodyHtml: "<p>inside</p>", frameHtml: "" },
+  });
+  const html = shareHtmlDocument("T", "<p>doc</p>", [ch]);
+  const [data, viewer] = scriptsOf(html);
+  const dom = fakeDom(JSON.parse(data.body));
+  vm.createContext(dom.window);
+  vm.runInContext(viewer.body, dom.window);
+  await dom.flush();
+  assert.equal(dom.window.document.title, "Changes explained — T");
+  assert.ok(dom.byId("x-panel").innerHTML.includes("Inside"));
+  dom.go("#explain-diff/1");
+  await dom.flush();
+  assert.equal(dom.window.document.title, "1 Retry — T");
+  assert.deepEqual(
+    dom.byId("x-path").children.filter((c) => c.tagName === "BUTTON").map((c) => c.textContent),
+    ["Overview", "1 Retry"]
+  );
+  dom.go("#explain-diff/2");
+  await dom.flush();
+  assert.ok(dom.byId("x-panel").innerHTML.includes("2 Docs"), "a part with no level still has a page");
+  dom.go("#document");
+  await dom.flush();
+  assert.equal(dom.byId("x-document").hidden, false);
+  assert.equal(dom.byId("x-explorer").hidden, true);
+});
+
+/// The smallest DOM the explorer boots in: elements are plain objects that
+/// remember children, attributes and innerHTML; layout reads return zeros.
+function fakeDom(data) {
+  const els = {};
+  const listeners = {};
+  const make = (tag) => {
+    const el = {
+      tagName: String(tag).toUpperCase(),
+      children: [],
+      style: {},
+      dataset: {},
+      attrs: {},
+      hidden: false,
+      className: "",
+      textContent: "",
+      html: "",
+      get innerHTML() { return this.html; },
+      set innerHTML(v) { this.html = v; this.children = []; },
+      classList: {
+        set: new Set(),
+        add(c) { this.set.add(c); },
+        remove(c) { this.set.delete(c); },
+        toggle(c, on) { (on === undefined ? !this.set.has(c) : on) ? this.set.add(c) : this.set.delete(c); },
+        contains(c) { return this.set.has(c); },
+      },
+      appendChild(c) { this.children.push(c); c.parentNode = this; return c; },
+      append(...cs) { cs.forEach((c) => this.appendChild(c)); },
+      remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((x) => x !== this); },
+      setAttribute(k, v) { this.attrs[k] = v; },
+      getAttribute(k) { return this.attrs[k]; },
+      removeAttribute(k) { delete this.attrs[k]; },
+      addEventListener() {},
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+      getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 600 }; },
+      scrollIntoView() {},
+      cloneNode() { return make(tag); },
+      get offsetWidth() { return 0; },
+    };
+    return el;
+  };
+  for (const id of ["x-data", "x-stage", "x-panel", "x-document", "x-explorer", "x-theme", "x-chapters", "x-read", "x-out", "x-path", "x-angles"]) {
+    els[id] = make("div");
+  }
+  els["x-data"].textContent = JSON.stringify(data);
+  const location = { hash: "" };
+  const document = {
+    title: "T",
+    documentElement: make("html"),
+    getElementById: (id) => els[id] || null,
+    createElement: make,
+    addEventListener() {},
+  };
+  const timers = [];
+  const window = {
+    document,
+    location,
+    JSON,
+    Promise,
+    Object,
+    Array,
+    String,
+    Number,
+    Math,
+    CSS: { escape: (s) => s },
+    localStorage: { getItem: () => null, setItem() {} },
+    matchMedia: () => ({ matches: true }),
+    addEventListener: (k, f) => { listeners[k] = f; },
+    scrollTo() {},
+    requestAnimationFrame: (f) => f(),
+    setTimeout: (f) => { timers.push(f); return timers.length; },
+    open() {},
+  };
+  window.window = window;
+  Object.defineProperty(location, "hash", {
+    get() { return this._h || ""; },
+    set(v) { this._h = v.startsWith("#") ? v : `#${v}`; if (listeners.hashchange) listeners.hashchange(); },
+  });
+  return {
+    window,
+    byId: (id) => els[id],
+    go: (h) => { location.hash = h; },
+    flush: () => new Promise((r) => setImmediate(r)),
+  };
+}
 
 test("the page export reads explanations only through the document readers", () => {
   const fn = extractFunction(APP, "wfShareExplanations");
   const cmds = [...fn.matchAll(/invoke\("([a-z_]+)"/g)].map((m) => m[1]);
   assert.deepEqual([...new Set(cmds)].sort(), ["get_workflow_doc", "get_workflow_explain_node", "get_workflow_explain_tree"]);
-  assert.match(fn, /renderMarkdownForExport\(md\)/);
+  assert.match(fn, /renderMarkdownForExport\(md, `\$\{anchor\}--`\)/, "write-up ids are kept apart from the document's");
   // Saves go through the native save dialog seeded with the backend's name,
   // then a toast that reveals the file or copies its path.
   const dialog = extractFunction(APP, "wfShareDialog");
@@ -123,12 +267,16 @@ test("smoke: gathering explanations for the page, with the legacy fallback", asy
   const sandbox = {
     ...require("../dist/wf-share.js"),
     invoke: async (cmd, args) => {
-      if (cmd === "get_workflow_explain_tree") return args.target === "explain-diff" ? TREE : [];
+      if (cmd === "get_workflow_explain_tree")
+        return args.target === "explain-diff"
+          ? TREE.map((l) => (l.node === "1.1" ? { ...l, views: [{ id: "flow", title: "Flow" }] } : l))
+          : [];
       if (cmd === "get_workflow_doc") return docs[args.doc] || "";
       if (cmd === "get_workflow_explain_node") return `${args.node}.${args.form}`;
       throw new Error(`unexpected ${cmd}`);
     },
     renderMarkdownForExport: async (md) => `<rendered>${md}</rendered>`,
+    dlog: () => {},
   };
   const pairs = APP.slice(APP.indexOf("const WF_DOC_PAIRS = {"), APP.indexOf("\n};", APP.indexOf("const WF_DOC_PAIRS = {")) + 3);
   vm.createContext(sandbox);
@@ -140,10 +288,13 @@ test("smoke: gathering explanations for the page, with the legacy fallback", asy
   // Across the vm realm, compare plain data.
   const groups = JSON.parse(JSON.stringify(await sandbox.fn(item, "all", true)));
   assert.deepEqual(groups.map((g) => g.label), ["Changes explained"]);
-  const [root, one] = groups[0].entries;
-  assert.equal(root.bodyHtml, "<rendered># legacy write-up</rendered>");
-  assert.equal(root.frameHtml, "<div>drawn</div>");
-  assert.equal(one.frameHtml, "1.html");
+  const level = (node) => groups[0].levels[node];
+  const root = level("");
+  assert.equal(root.writeup, "<rendered># legacy write-up</rendered>");
+  assert.match(root.drawing, /<body><div>drawn<\/div><style data-clash-breathe>/);
+  assert.match(level("1").drawing, /<body>1\.html<style data-clash-breathe>/);
+  // A level's extra views travel with it, read through the same node reader.
+  assert.deepEqual(level("1.1").views.map((v) => [v.id, /<body>1\.1\.html<style/.test(v.html)]), [["flow", true]]);
   assert.equal((await sandbox.fn(item, "none", false)).length, 0);
 });
 
@@ -304,7 +455,7 @@ test("browser branch publishes every global app.js reads", () => {
     "SHARE_EXPLAIN_PAIRS",
     "SHARE_EXPLAIN_DEPTHS",
     "explainLevelsToShare",
-    "shareExplanationEntries",
+    "shareExplanationChapter",
     "explainOutline",
   ]) {
     assert.ok(name in sandbox.window, `${name} must be published to window`);
@@ -344,4 +495,32 @@ test("an unwritten agent document is listed, disabled and says why", () => {
   assert.equal(row("explainDiff").disabled, false);
   assert.equal(row("explainDiff").checked, true);
   assert.equal(row("handoff").checked, true);
+});
+
+test("drawn pages breathe: the page's own width cap is lifted, last", () => {
+  const { shareFrameDoc, withBreathingRoom, markWideDrawings } = require("../dist/wf-share.js");
+  const capped = "<html><head><style>body{max-width:920px}</style></head><body><svg viewBox='0 0 900 470'></svg></body></html>";
+  const framed = shareFrameDoc(capped);
+  // After the page's own styles, so it wins; still exactly one base, first.
+  assert.ok(framed.indexOf("data-clash-breathe") > framed.indexOf("max-width:920px"));
+  assert.match(framed, /max-width:none!important[\s\S]*<\/style><\/body><\/html>$/);
+  assert.equal(framed.match(/<base /g).length, 1);
+  assert.match(withBreathingRoom("<div>fragment</div>"), /^<div>fragment<\/div><style data-clash-breathe>/);
+  // A page with <html> but no <head> still gets the base.
+  assert.match(shareFrameDoc("<html><body>x</body></html>"), /^<html><head><base href="about:srcdoc">/);
+  // Only an outermost, large drawing is scaled — icons keep their size.
+  const svg = (vb, inner = false) => ({
+    attrs: {},
+    parentElement: { closest: () => (inner ? {} : null) },
+    getAttribute() { return vb; },
+    setAttribute(k, v) { this.attrs[k] = v; },
+  });
+  const big = svg("0 0 1200 600");
+  const icon = svg("0 0 16 16");
+  const nested = svg("0 0 900 400", true);
+  assert.equal(markWideDrawings({ querySelectorAll: () => [big, icon, nested] }), 1);
+  assert.ok("data-clash-wide" in big.attrs && !("data-clash-wide" in icon.attrs) && !("data-clash-wide" in nested.attrs));
+  // clash's own tab applies the same room and the same marking.
+  assert.match(extractFunction(APP, "wfExplainFrameDoc"), /return withBreathingRoom\(wfFrameWithHead\(html, head\)\);/);
+  assert.match(extractFunction(APP, "wfGuardExplainFrame"), /markWideDrawings\(doc\);/);
 });

@@ -602,6 +602,14 @@ frame. `wfGuardExplainFrame` then handles every click in the drawing:
 
 A frame that navigates away anyway is put back on its drawing.
 
+A drawing gets the whole pane, whatever width the agent wrote it for. The frame
+document ends with `FRAME_BREATHE_STYLE` (`gui/dist/wf-share.js`), which lifts
+any `max-width` on the page's `body` and scales every drawing marked by
+`markWideDrawings` to the pane's width, as tall as the pane allows. Those are
+outermost `<svg>`s whose viewBox is at least 400 units wide. Top-level prose
+keeps a readable line length. The style comes *last* so it beats the page's
+own rules. The saved page's explorer applies the same rule.
+
 A part with no level of its own still has a page (`renderWfExplainPartPage`,
 model `explainPartPreview` in `gui/dist/wf-explain-tree.js`). It shows what
 the parent level already says about the part: summary, `why`, its in/out edges
@@ -1266,18 +1274,39 @@ ticket key is prompted per send, pre-filled from the item's title/branch).
 
 The `.html` export is the one destination that carries more than the
 markdown: it is a single self-contained page meant to be sent to people
-without clash. It works offline and opens by double-click, with no server,
-no sidecar files and no script. The dialog's **Explanation drawings** picker (`Every
-level` / `Overview + parts` / `Overview only` / `None`) adds the explanation
-trees (*Drill-down explanations* above) as one section per level. Each
-section has a breadcrumb, its parts list linking to the parts' own sections,
-the drawn page and the write-up. A part's level is included only with the
-level above it, so every link leads somewhere. Three rules keep the page
-safe and honest:
+without clash. It works offline and opens by double-click, with no server and
+no sidecar files. The dialog's **Explanation drawings** picker (`Every level` /
+`Overview + parts` / `Overview only` / `None`) adds the explanation trees
+(*Drill-down explanations* above), and the page then opens on an **explorer**
+built for a reader rather than a copy of the GUI tab:
+
+- the level's drawing fills the stage. Clicking a part zooms into it: the
+  drawing grows until that box fills the screen while the part's own level
+  grows out of it. **Zoom out** (Esc), the path bar or browser back shrinks it
+  back into its box. `←`/`→` move to the next part of the same level;
+- a part with no level in the page zooms into a card of what the level above
+  says about it: summary, why it matters, how it connects, where it lives;
+- a level with no drawing gets a map of its parts as cards;
+- a reading panel beside the stage (`r` or **☰ Read** toggles it) names the
+  level, lists its parts (hovering one lights it up in the drawing, clicking
+  zooms in) and holds the write-up, or just the write-up's section about the
+  part on a part card;
+- a level's extra views (flow, rollout…) are angles of the same stage;
+- the share document is the **Document** chapter, and each explanation is a
+  chapter of its own. A light/dark/auto toggle sits in the header.
+
+The explorer is `shareViewer` in `gui/dist/wf-share.js`. It is shipped inline
+with `toString()`, so it must not use anything else in the module (a test pins
+that). It reads the levels from one `<script type="application/json">` block
+whose JSON has no `<` at all, so no string in it can close the element. The
+document reads without script and prints; the explanations need JavaScript. A
+share without explanations is the plain document and carries no script. Three
+rules keep the page safe and honest:
 
 - the agent's drawn `.html` goes into an `<iframe sandbox="allow-same-origin"
   srcdoc>` with no `allow-scripts`, exactly like the GUI's tab, and never into
-  the page's own markup;
+  the page's own markup: it travels as data, and the explorer puts it in the
+  frame;
 - the levels are read only through the explanation readers
   (`get_workflow_explain_tree` / `_node`, `get_workflow_doc`), which serve
   whitelisted documents. clash's own files (`meta.json`, `explainers.json`,
@@ -1290,7 +1319,9 @@ Saves go through the native save dialog, seeded with a clash-derived name
 (`default_share_export_path`: `clash-<project>-<slug>.<ext>` in Downloads). The
 returned path is checked by `workflow_share::validate_export_path`: absolute,
 no `..`, extension forced. The page is pure functions in `gui/dist/wf-share.js`
-(`explainLevelsToShare`, `shareExplanationEntries`, `shareHtmlDocument`).
+(`explainLevelsToShare`, `shareExplanationChapter`, `shareHtmlDocument`,
+`shareViewer`). Write-up heading ids are prefixed with their level's anchor
+(`x-explain-plan-3--…`) so they never collide with the document's.
 
 Who posts each destination is a setting, not a fallback chain:
 `workflows.jira_transport` / `workflows.chat_transport` are `agent` (the

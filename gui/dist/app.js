@@ -3937,18 +3937,48 @@ async function renderMermaidIn(el, { theme = null } = {}) {
     startOnLoad: false,
     securityLevel: "strict",
     theme: theme || (document.documentElement.classList.contains("theme-light") ? "default" : "dark"),
+    // On a syntax error mermaid otherwise draws its "Syntax error in text"
+    // bomb into <body>, below the whole app.
+    suppressErrorRendering: true,
   });
   for (const code of blocks) {
     if (!el.isConnected) return; // the tab was rebuilt while we loaded
+    const id = `wf-mmd-${++wfMermaidSeq}`;
+    const src = code.textContent || "";
     try {
-      const { svg } = await mermaid.render(`wf-mmd-${++wfMermaidSeq}`, code.textContent || "");
+      if (!(await mermaid.parse(src, { suppressErrors: true }))) {
+        markBadMermaid(code, "the diagram has a syntax error");
+        continue;
+      }
+      const { svg } = await mermaid.render(id, src);
       const holder = document.createElement("div");
       holder.className = "wf-mermaid";
       holder.innerHTML = svg;
       code.closest("pre").replaceWith(holder);
     } catch (e) {
       dlog(`mermaid render failed: ${e}`);
+      markBadMermaid(code, `the diagram could not be drawn: ${e}`);
+    } finally {
+      removeMermaidLeftovers(id);
     }
+  }
+}
+
+/// A fence mermaid could not draw stays as code, saying why.
+function markBadMermaid(code, why) {
+  const pre = code.closest("pre");
+  if (!pre || pre.classList.contains("wf-mermaid-bad")) return;
+  pre.classList.add("wf-mermaid-bad");
+  pre.title = `${why} — shown as code`;
+}
+
+/// `mermaid.render` stages its work in `<body>` (`#d<id>`, `#i<id>`, the
+/// `#<id>` svg) and leaves it there when it throws. Only direct children of
+/// <body> are removed: the drawn svg itself carries `id` once it is placed.
+function removeMermaidLeftovers(id) {
+  for (const stray of [id, `d${id}`, `i${id}`]) {
+    const n = document.getElementById(stray);
+    if (n && n.parentNode === document.body) n.remove();
   }
 }
 
@@ -3956,7 +3986,8 @@ async function renderMermaidIn(el, { theme = null } = {}) {
 /// every render, mermaid drawn to inline SVG. The stage is attached off-screen
 /// while it renders — `renderMermaidIn` skips a detached node, so a detached
 /// stage exported its diagrams as bare code.
-async function renderMarkdownForExport(md) {
+/// `idPrefix` keeps the heading ids of several documents in one page apart.
+async function renderMarkdownForExport(md, idPrefix = "") {
   const stage = document.createElement("div");
   stage.style.cssText = "position:fixed;left:-10000px;top:0;width:900px;visibility:hidden";
   document.body.appendChild(stage);
@@ -3967,7 +3998,7 @@ async function renderMarkdownForExport(md) {
     // share's contents and cross-links point at.
     const heads = [...stage.querySelectorAll("h1, h2, h3, h4, h5, h6")];
     shareHeadingSlugs(heads.map((h) => h.textContent)).forEach((slug, i) => {
-      heads[i].id = slug;
+      heads[i].id = idPrefix + slug;
     });
     return stage.innerHTML;
   } finally {
@@ -8570,7 +8601,7 @@ async function wfShareDialog(item) {
     const text = document.createElement("span");
     text.innerHTML =
       `<span class="wf-share-section-label">Explanation drawings</span>` +
-      `<span class="dim">Drawings and write-ups, linked overview → part — in the saved .html only</span>`;
+      `<span class="dim">Drawings, views and write-ups, browsable like clash's explanation tab — in the saved .html only</span>`;
     const sel = document.createElement("select");
     for (const d of SHARE_EXPLAIN_DEPTHS) {
       const o = document.createElement("option");
@@ -8646,7 +8677,8 @@ async function wfShareDialog(item) {
             let content = current;
             if (d.id === "html") {
               // One self-contained page: the document (markdown + mermaid →
-              // inline SVG) plus the chosen explanation levels. No script.
+              // inline SVG) plus the chosen explanation levels, browsed by the
+              // page's own viewer (wf-share.js `shareViewer`).
               let explanations = [];
               try {
                 showProgress("Rendering the page…");
@@ -8791,8 +8823,8 @@ async function wfShareDialog(item) {
   rebuild();
 }
 
-/// The explanation trees for the saved share page, as `[{ label, entries }]`
-/// (`shareExplanationEntries`). Reads only through the explanation readers,
+/// The explanation trees for the saved share page, one chapter each
+/// (`shareExplanationChapter`). Reads only through the explanation readers,
 /// which serve whitelisted documents — nothing of clash's own bookkeeping can
 /// come through here. `render` fetches and renders each level's two forms;
 /// without it only the outline is known.
@@ -8829,13 +8861,30 @@ async function wfShareExplanations(item, depth, render) {
           return text;
         };
         const md = (await read("md")) || "";
+        const views = {};
+        for (const v of l.views || []) {
+          try {
+            views[v.id] = await invoke("get_workflow_explain_node", {
+              project: item.project,
+              slug: item.slug,
+              target: pair.target,
+              node: l.node,
+              form: "html",
+              view: v.id,
+            });
+          } catch (e) {
+            dlog(`share: view ${v.id} of ${pair.target}/${l.node || "overview"} unreadable: ${e}`);
+          }
+        }
+        const anchor = shareAnchor(pair.target, l.node);
         docs[l.node] = {
-          bodyHtml: md.trim() ? await renderMarkdownForExport(md) : "",
+          bodyHtml: md.trim() ? await renderMarkdownForExport(md, `${anchor}--`) : "",
           frameHtml: (await read("html")) || "",
+          views,
         };
       }
     }
-    groups.push({ label: pair.label, entries: shareExplanationEntries(pair, levels, docs) });
+    groups.push(shareExplanationChapter(pair, levels, docs));
   }
   return groups;
 }
@@ -11591,7 +11640,7 @@ function wfExplainFrameDoc(html) {
   const head =
     `<base href="about:srcdoc"><meta name="clash-explain" content="1">` +
     `<meta charset="utf-8"><style>${style}</style>`;
-  return wfFrameWithHead(html, head);
+  return withBreathingRoom(wfFrameWithHead(html, head));
 }
 
 /// Put `head` at the start of the page's <head> — creating one when a full
@@ -11630,6 +11679,7 @@ function wfGuardExplainFrame(frame, srcdoc, onPart) {
       return;
     }
     if (!doc) return;
+    markWideDrawings(doc);
     doc.addEventListener(
       "click",
       (ev) => {
