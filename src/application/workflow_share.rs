@@ -24,8 +24,19 @@ pub struct ShareSections {
     pub reviews: bool,
     /// Open diff comments from `annotations.json`.
     pub annotations: bool,
-    /// The current diff, fenced.
+    /// The current diff, one fenced block per file.
     pub diff: bool,
+    /// The plan explanation's write-up (`explain-plan.md`).
+    pub explain_plan: bool,
+    /// The change explanation's write-up (`explain-diff.md`).
+    pub explain_diff: bool,
+    /// The plan-vs-changes report (`drift.md`).
+    pub drift: bool,
+    /// The executor's latest hand-off note (`handoff.md`): where it stands.
+    pub handoff: bool,
+    /// A linked contents list, back-links and comment → diff links. Off for
+    /// a chat post, where anchors are dead text.
+    pub toc: bool,
 }
 
 /// Everything the builder reads. Borrowed because the caller (a Tauri
@@ -41,6 +52,10 @@ pub struct ShareInput<'a> {
     pub agent_review_md: &'a str,
     pub annotations: &'a [Annotation],
     pub diff: &'a str,
+    pub explain_plan: &'a str,
+    pub explain_diff: &'a str,
+    pub drift: &'a str,
+    pub handoff: &'a str,
 }
 
 /// One PR line: URL plus whatever state is known. The primary is labeled —
@@ -76,10 +91,26 @@ fn plural(n: u64) -> &'static str {
     }
 }
 
+/// A heading of the finished document: level, text and anchor slug.
+type Anchored = (usize, String, String);
+
+/// One `##` section of the share document: its heading and its markdown.
+struct Section {
+    title: &'static str,
+    body: String,
+}
+
 /// Build the share document. Sections render in a fixed order regardless of
 /// how the caller toggled them, so two exports of the same item always read
 /// the same way. An all-off `sections` yields the summary anyway — an empty
 /// share is never what anyone meant.
+///
+/// With two sections or more the document opens on a **Contents** list and
+/// is cross-linked: every section links back to it, the diff is one heading
+/// per file, and each open comment links to its file's diff. The anchors are
+/// GitHub's heading slugs ([`heading_slug`]), so they work on GitHub, in any
+/// renderer that follows it, in the GUI preview and in the `.html` export,
+/// which assign ids with the same rule (`shareHeadingSlugs` in wf-share.js).
 pub fn build_share_markdown(input: &ShareInput, sections: &ShareSections) -> String {
     let meta = input.meta;
     let title = if meta.title.trim().is_empty() {
@@ -87,36 +118,40 @@ pub fn build_share_markdown(input: &ShareInput, sections: &ShareSections) -> Str
     } else {
         meta.title.trim()
     };
-    let mut out = format!("# {}\n\n", title);
+    let mut head = format!("# {}\n\n", title);
 
     let any = sections.plan
         || sections.timeline
         || sections.reviews
         || sections.annotations
-        || sections.diff;
+        || sections.diff
+        || sections.explain_plan
+        || sections.explain_diff
+        || sections.drift
+        || sections.handoff;
     if sections.summary || !any {
-        out.push_str(&format!(
+        head.push_str(&format!(
             "**Status:** {} · **Mode:** {} · iteration {}",
             meta.status,
             meta.mode,
             meta.iteration.max(1)
         ));
         if meta.review_round > 0 {
-            out.push_str(&format!(
+            head.push_str(&format!(
                 " · {} agent review round{}",
                 meta.review_round,
                 plural(meta.review_round as u64)
             ));
         }
-        out.push('\n');
-        out.push_str(&format!("**Project:** {}", input.project));
+        head.push('\n');
+        head.push_str(&format!("**Project:** {}", input.project));
         if !meta.branch.trim().is_empty() {
-            out.push_str(&format!(" · **Branch:** `{}`", meta.branch.trim()));
+            head.push_str(&format!(" · **Branch:** `{}`", meta.branch.trim()));
             if !meta.base.trim().is_empty() {
-                out.push_str(&format!(" (base `{}`)", meta.base.trim()));
+                head.push_str(&format!(" (base `{}`)", meta.base.trim()));
             }
         }
-        out.push('\n');
+        head.push('\n');
 
         let mut prs = Vec::new();
         if let Some(pr) = meta.pr.as_ref().filter(|p| !p.url.is_empty()) {
@@ -126,106 +161,421 @@ pub fn build_share_markdown(input: &ShareInput, sections: &ShareSections) -> Str
             prs.push(pr_line(pr, false));
         }
         if !prs.is_empty() {
-            out.push_str("\n**Pull requests:**\n");
-            out.push_str(&prs.join("\n"));
-            out.push('\n');
+            head.push_str("\n**Pull requests:**\n");
+            head.push_str(&prs.join("\n"));
+            head.push('\n');
         }
-        out.push('\n');
+        head.push('\n');
     }
 
+    let mut body: Vec<Section> = Vec::new();
+    push_doc(
+        &mut body,
+        sections.handoff,
+        "Where it stands",
+        input.handoff,
+    );
+
     if sections.plan {
-        out.push_str("## Plan\n\n");
-        if input.plan.trim().is_empty() {
-            out.push_str("_No plan — this item has no plan phase or none was written yet._\n\n");
+        let text = if input.plan.trim().is_empty() {
+            "_No plan — this item has no plan phase or none was written yet._".to_string()
         } else {
-            out.push_str(input.plan.trim());
-            out.push_str("\n\n");
-        }
+            // The plan's own headings sit under this section, not beside it.
+            demote_headings(input.plan.trim(), 2)
+        };
+        body.push(Section {
+            title: "Plan",
+            body: text,
+        });
     }
+
+    push_doc(
+        &mut body,
+        sections.explain_plan,
+        "Plan explained",
+        input.explain_plan,
+    );
+    push_doc(
+        &mut body,
+        sections.explain_diff,
+        "Changes explained",
+        input.explain_diff,
+    );
+    push_doc(&mut body, sections.drift, "Plan vs changes", input.drift);
 
     if sections.timeline {
         let iterations = super::workflow::parse_review_iterations(input.review_md);
         if !iterations.is_empty() {
-            out.push_str("## Change rounds\n\n");
+            let mut text = String::new();
             for it in &iterations {
-                out.push_str(&format!("### Iteration {}", it.iteration));
+                text.push_str(&format!("### Iteration {}", it.iteration));
                 if !it.heading.is_empty() {
-                    out.push_str(&format!(" — {}", it.heading));
+                    text.push_str(&format!(" — {}", it.heading));
                 }
-                out.push_str("\n\n");
+                text.push_str("\n\n");
                 if !it.note.is_empty() {
-                    out.push_str(&it.note);
-                    out.push_str("\n\n");
+                    text.push_str(&demote_headings(&it.note, 2));
+                    text.push_str("\n\n");
                 }
                 if !it.annotations.is_empty() {
-                    out.push_str(&format!(
+                    text.push_str(&format!(
                         "_{} diff comment{} attached to this round._\n\n",
                         it.annotations.len(),
                         plural(it.annotations.len() as u64)
                     ));
                 }
             }
+            body.push(Section {
+                title: "Change rounds",
+                body: text,
+            });
         }
     }
 
     if sections.reviews {
         let rounds = super::workflow::all_agent_reviews(input.agent_review_md);
         if !rounds.is_empty() {
-            out.push_str("## Agent reviews\n\n");
+            let mut text = String::new();
             for r in &rounds {
-                out.push_str(&format!("### Round {}", r.round));
+                text.push_str(&format!("### Round {}", r.round));
                 if !r.heading.is_empty() {
-                    out.push_str(&format!(" — {}", r.heading));
+                    text.push_str(&format!(" — {}", r.heading));
                 }
-                out.push_str("\n\n");
+                text.push_str("\n\n");
                 if !r.verdict.is_empty() {
-                    out.push_str(&format!("**Verdict:** {}\n\n", r.verdict));
+                    text.push_str(&format!("**Verdict:** {}\n\n", r.verdict));
                 }
                 if !r.published.is_empty() {
-                    out.push_str(&format!("Published: {}\n\n", r.published.join(" · ")));
+                    text.push_str(&format!("Published: {}\n\n", r.published.join(" · ")));
                 }
             }
+            body.push(Section {
+                title: "Agent reviews",
+                body: text,
+            });
         }
     }
 
-    if sections.annotations {
-        let open: Vec<&Annotation> = input
-            .annotations
-            .iter()
-            .filter(|a| a.status == AnnotationStatus::Open)
-            .collect();
-        if !open.is_empty() {
-            out.push_str("## Open comments\n\n");
-            for a in open {
-                out.push_str(&format!(
-                    "- `{}:{}` — {}{}\n",
-                    a.file,
-                    a.line,
-                    a.body.replace('\n', " "),
-                    if a.author == "agent" {
-                        " _(agent)_"
-                    } else {
-                        ""
-                    }
-                ));
-            }
-            out.push('\n');
-        }
-    }
+    let open: Vec<&Annotation> = input
+        .annotations
+        .iter()
+        .filter(|a| a.status == AnnotationStatus::Open)
+        .collect();
+    // Filled once the anchors are known: its links point into the diff.
+    let comments_at = (sections.annotations && !open.is_empty()).then(|| {
+        body.push(Section {
+            title: "Open comments",
+            body: String::new(),
+        });
+        body.len() - 1
+    });
 
+    let mut diff_files: Vec<String> = Vec::new();
     if sections.diff {
-        out.push_str("## Diff\n\n");
-        if input.diff.trim().is_empty() {
-            out.push_str("_No diff — nothing changed yet against the base._\n");
+        let text = if input.diff.trim().is_empty() {
+            "_No diff — nothing changed yet against the base._".to_string()
         } else {
-            // Four backticks so diffs containing ``` fences stay inside.
-            out.push_str("````diff\n");
-            out.push_str(input.diff.trim_end());
-            out.push_str("\n````\n");
+            let files = split_diff_by_file(input.diff);
+            let mut text = String::new();
+            for (path, chunk) in &files {
+                if let Some(path) = path {
+                    text.push_str(&format!("### `{}`\n\n", path));
+                    diff_files.push(path.clone());
+                }
+                // Four backticks so diffs containing ``` fences stay inside.
+                text.push_str("````diff\n");
+                text.push_str(chunk.trim_end());
+                text.push_str("\n````\n\n");
+            }
+            text
+        };
+        body.push(Section {
+            title: "Diff",
+            body: text,
+        });
+    }
+
+    let toc = sections.toc && body.len() >= 2;
+    // Every heading of the finished document, in order — the slugs depend on
+    // all of them, because a repeated heading gets `-1`, `-2`…
+    let mut slugger = Slugger::default();
+    for (_, t) in markdown_headings(&head) {
+        slugger.slug(&t);
+    }
+    let contents_slug = toc.then(|| slugger.slug("Contents"));
+    let mut section_slugs: Vec<(String, Vec<Anchored>)> = Vec::new();
+    for sec in &body {
+        let own = slugger.slug(sec.title);
+        let subs = markdown_headings(&sec.body)
+            .into_iter()
+            .map(|(lvl, t)| {
+                let s = slugger.slug(&t);
+                (lvl, t, s)
+            })
+            .collect();
+        section_slugs.push((own, subs));
+    }
+
+    if let Some(i) = comments_at {
+        // Links only where the reader can follow them: a contents-less post
+        // (a chat message) gets plain locations.
+        let file_slug = |file: &str| -> Option<&String> {
+            let (_, subs) = section_slugs.last()?;
+            if !sections.diff || !toc {
+                return None;
+            }
+            diff_files
+                .iter()
+                .position(|f| f == file)
+                .and_then(|k| subs.get(k).map(|(_, _, s)| s))
+        };
+        let mut text = String::new();
+        for a in &open {
+            let loc = format!("`{}:{}`", a.file, a.line);
+            let loc = match file_slug(&a.file) {
+                Some(slug) => format!("[{}](#{})", loc, slug),
+                None => loc,
+            };
+            text.push_str(&format!(
+                "- {} — {}{}\n",
+                loc,
+                a.body.replace('\n', " "),
+                if a.author == "agent" {
+                    " _(agent)_"
+                } else {
+                    ""
+                }
+            ));
         }
+        body[i].body = text;
+    }
+
+    let mut out = head;
+    if let Some(contents) = &contents_slug {
+        out.push_str("## Contents\n\n");
+        for (sec, (slug, subs)) in body.iter().zip(&section_slugs) {
+            out.push_str(&format!("- [{}](#{})\n", sec.title, slug));
+            for (title, slug) in toc_children(subs) {
+                out.push_str(&format!("  - [{}](#{})\n", toc_label(&title), slug));
+            }
+        }
+        out.push('\n');
+        for sec in &mut body {
+            let trimmed = sec.body.trim_end().to_string();
+            sec.body = format!("{}\n\n[↑ Contents](#{})", trimmed, contents);
+        }
+    }
+    for sec in &body {
+        out.push_str(&format!("## {}\n\n", sec.title));
+        out.push_str(sec.body.trim_end());
+        out.push_str("\n\n");
     }
 
     out.trim_end().to_string() + "\n"
+}
+
+/// An agent-written document as its own section, its headings pushed under
+/// it — or nothing when the agent never wrote it: an empty heading says less
+/// than no heading.
+fn push_doc(body: &mut Vec<Section>, on: bool, title: &'static str, text: &str) {
+    if on && !text.trim().is_empty() {
+        body.push(Section {
+            title,
+            body: demote_headings(text.trim(), 2),
+        });
+    }
+}
+
+/// Most entries one section lists in the contents; a 300-file diff would
+/// otherwise bury everything after it.
+const TOC_CHILDREN_MAX: usize = 25;
+
+/// The entries a section lists under it in the contents: its shallowest
+/// headings, or the level below when there is only one of those (a plan
+/// whose `# Title` sits above its real sections).
+fn toc_children(subs: &[Anchored]) -> Vec<(String, String)> {
+    let Some(min) = subs.iter().map(|(l, _, _)| *l).min() else {
+        return Vec::new();
+    };
+    let at = |lvl: usize| subs.iter().filter(move |(l, _, _)| *l == lvl);
+    let level = if at(min).count() == 1 && subs.iter().any(|(l, _, _)| *l == min + 1) {
+        min + 1
+    } else {
+        min
+    };
+    let all: Vec<(String, String)> = at(level).map(|(_, t, s)| (t.clone(), s.clone())).collect();
+    if all.len() <= TOC_CHILDREN_MAX {
+        return all;
+    }
+    let more = all.len() - TOC_CHILDREN_MAX;
+    let mut out: Vec<(String, String)> = all.into_iter().take(TOC_CHILDREN_MAX).collect();
+    // Points at the section's last listed entry: the rest follow it.
+    let last = out.last().map(|(_, s)| s.clone()).unwrap_or_default();
+    out.push((format!("… {} more", more), last));
+    out
+}
+
+/// A contents entry's text: a heading's code spans keep their backticks, but
+/// a `]` would end the link early.
+fn toc_label(title: &str) -> String {
+    title.replace('[', "\\[").replace(']', "\\]")
+}
+
+/// Split a unified diff into one chunk per file, keyed by the file's path
+/// (`b/` side, or `a/` for a deletion). Text before the first `diff --git`
+/// line, or a diff without any, is one chunk with no path.
+fn split_diff_by_file(diff: &str) -> Vec<(Option<String>, String)> {
+    let mut out: Vec<(Option<String>, String)> = Vec::new();
+    for line in diff.split_inclusive('\n') {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            out.push((diff_path(rest.trim_end()), String::new()));
+        } else if out.is_empty() {
+            out.push((None, String::new()));
+        }
+        out.last_mut().expect("pushed above").1.push_str(line);
+    }
+    out.retain(|(p, c)| p.is_some() || !c.trim().is_empty());
+    out
+}
+
+/// `a/src/x.rs b/src/x.rs` → `src/x.rs`.
+fn diff_path(spec: &str) -> Option<String> {
+    let b = spec.rfind(" b/").map(|i| &spec[i + 3..]);
+    let a = spec.strip_prefix("a/").and_then(|r| r.split(" b/").next());
+    b.or(a).map(str::to_string).filter(|p| !p.is_empty())
+}
+
+/// Every ATX heading outside fenced code: (level, text).
+fn markdown_headings(md: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut fence: Option<(char, usize)> = None;
+    for line in md.lines() {
+        let t = line.trim_start();
+        if let Some(f) = fence_marker(t) {
+            match fence {
+                None => fence = Some(f),
+                Some((c, n)) if f.0 == c && f.1 >= n && t.trim_end().chars().all(|x| x == c) => {
+                    fence = None
+                }
+                _ => {}
+            }
+            continue;
+        }
+        if fence.is_some() || line.len() - t.len() > 3 {
+            continue;
+        }
+        if let Some((level, text)) = atx_heading(t) {
+            out.push((level, text));
+        }
+    }
+    out
+}
+
+/// A fence opener/closer: three or more backticks or tildes.
+fn fence_marker(t: &str) -> Option<(char, usize)> {
+    let c = t.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let n = t.chars().take_while(|x| *x == c).count();
+    (n >= 3).then_some((c, n))
+}
+
+fn atx_heading(t: &str) -> Option<(usize, String)> {
+    let level = t.chars().take_while(|c| *c == '#').count();
+    if level == 0 || level > 6 {
+        return None;
+    }
+    let rest = &t[level..];
+    if !(rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t')) {
+        return None;
+    }
+    let text = rest.trim().trim_end_matches('#').trim_end().to_string();
+    Some((level, text))
+}
+
+/// Push every ATX heading outside fences `by` levels deeper (capped at 6), so
+/// a document pasted under a `##` section stays inside it.
+fn demote_headings(md: &str, by: usize) -> String {
+    let mut out = String::with_capacity(md.len() + 16);
+    let mut fence: Option<(char, usize)> = None;
+    for line in md.split_inclusive('\n') {
+        let t = line.trim_start();
+        if let Some(f) = fence_marker(t) {
+            match fence {
+                None => fence = Some(f),
+                Some((c, n)) if f.0 == c && f.1 >= n && t.trim_end().chars().all(|x| x == c) => {
+                    fence = None
+                }
+                _ => {}
+            }
+        } else if fence.is_none() && line.len() - t.len() <= 3 {
+            if let Some((level, _)) = atx_heading(t.trim_end()) {
+                let to = (level + by).min(6);
+                out.push_str(&"#".repeat(to));
+                out.push_str(&t[level..]);
+                continue;
+            }
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+/// GitHub's heading anchor for `text`: the rendered text lower-cased, every
+/// character that is not a letter, digit, `-`, `_` or space dropped, spaces
+/// turned into `-`. Inline markup is rendered away first (code backticks,
+/// emphasis stars, link syntax). Mirrored by `shareHeadingSlug` in
+/// `gui/dist/wf-share.js`; the two must agree or the links go nowhere.
+pub fn heading_slug(text: &str) -> String {
+    rendered_text(text)
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | ' '))
+        .map(|c| if c == ' ' { '-' } else { c })
+        .collect()
+}
+
+/// `[text](url)` → `text`, and backticks and stars dropped.
+fn rendered_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let after = &rest[open + 1..];
+        match after
+            .find("](")
+            .and_then(|m| after[m + 2..].find(')').map(|c| (m, c)))
+        {
+            Some((m, c)) => {
+                out.push_str(&rest[..open]);
+                out.push_str(&after[..m]);
+                rest = &after[m + 2 + c + 1..];
+            }
+            None => {
+                out.push_str(&rest[..=open]);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out.replace(['`', '*'], "")
+}
+
+/// Deduplicates slugs the way GitHub does: the second `Plan` is `plan-1`.
+#[derive(Default)]
+struct Slugger {
+    seen: std::collections::HashMap<String, usize>,
+}
+
+impl Slugger {
+    fn slug(&mut self, text: &str) -> String {
+        let base = heading_slug(text);
+        let mut slug = base.clone();
+        while self.seen.contains_key(&slug) {
+            let n = self.seen.get_mut(&base).expect("base was seen first");
+            *n += 1;
+            slug = format!("{}-{}", base, n);
+        }
+        self.seen.insert(slug.clone(), 0);
+        slug
+    }
 }
 
 /// The export's file name without extension: `clash-<project>-<slug>`, ASCII
@@ -364,6 +714,10 @@ mod tests {
             agent_review_md: "## Review 2 — diff · deep · 2026-08-04\n\n**Verdict:** ship it\n\n### Published\n\n- nothing\n",
             annotations: &[],
             diff: "diff --git a/a.rs b/a.rs\n+new line\n",
+            explain_plan: "",
+            explain_diff: "",
+            drift: "",
+            handoff: "",
         }
     }
 
@@ -400,6 +754,8 @@ mod tests {
             reviews: true,
             annotations: true,
             diff: true,
+            toc: true,
+            ..Default::default()
         };
         let mut inp = input(&m);
         let anns = [Annotation {
@@ -425,10 +781,12 @@ mod tests {
             order.windows(2).all(|w| w[0] < w[1]),
             "sections out of order"
         );
-        // Newlines in a comment body collapse — one bullet per comment.
+        // Newlines in a comment body collapse — one bullet per comment. The
+        // diff has no `src/a.rs`, so the location stays plain.
         assert!(md.contains("- `src/a.rs:12` — rename this _(agent)_"));
-        // The diff is fenced with four backticks so inner fences survive.
-        assert!(md.contains("````diff\n"));
+        // The diff is fenced with four backticks so inner fences survive,
+        // one block per file under the file's own heading.
+        assert!(md.contains("### `a.rs`\n\n````diff\n"));
         assert!(md.contains("**Verdict:** ship it"));
         assert!(md.contains("### Iteration 1 — 2026-08-01 10:00"));
         assert!(md.contains("_1 diff comment attached to this round._"));
@@ -456,6 +814,10 @@ mod tests {
             agent_review_md: "",
             annotations: &[],
             diff: "",
+            explain_plan: "",
+            explain_diff: "",
+            drift: "",
+            handoff: "",
         };
         let md = build_share_markdown(
             &inp,
@@ -466,6 +828,7 @@ mod tests {
                 reviews: true,
                 annotations: true,
                 diff: true,
+                ..Default::default()
             },
         );
         // Untitled falls back to the slug — the identity, like the GUI does.
@@ -531,6 +894,8 @@ mod tests {
             reviews: true,
             annotations: true,
             diff: true,
+            toc: true,
+            ..Default::default()
         };
         let md = build_share_markdown(&input(&m), &all);
         assert!(!md.contains("0199-secret-session"));
@@ -611,5 +976,129 @@ mod tests {
         // Jira without a key still says Jira rather than inventing one.
         let j = share_prompt(None, "jira", "/tmp/x.md", "Item", None);
         assert!(j.contains("to Jira."));
+    }
+
+    #[test]
+    fn slugs_follow_github() {
+        assert_eq!(heading_slug("Change rounds"), "change-rounds");
+        assert_eq!(
+            heading_slug("Iteration 1 — 2026-08-01 10:00"),
+            "iteration-1--2026-08-01-1000"
+        );
+        assert_eq!(heading_slug("`src/a.rs`"), "srcars");
+        assert_eq!(
+            heading_slug("Use [the API](https://x.y) **now**"),
+            "use-the-api-now"
+        );
+        assert_eq!(heading_slug("Déjà vu_2"), "déjà-vu_2");
+        let mut s = Slugger::default();
+        assert_eq!(s.slug("Plan"), "plan");
+        assert_eq!(s.slug("Plan"), "plan-1");
+        assert_eq!(s.slug("Plan 1"), "plan-1-1");
+        assert_eq!(s.slug("Plan"), "plan-2");
+    }
+
+    #[test]
+    fn a_multi_section_share_opens_on_linked_contents() {
+        let m = meta();
+        let mut inp = input(&m);
+        inp.plan =
+            "# The plan\n\n## Step one\n\nx\n\n## Step two\n\n```md\n## not a heading\n```\n";
+        inp.diff = "diff --git a/src/a.rs b/src/a.rs\n+x\ndiff --git a/b.rs b/b.rs\n-y\n";
+        inp.explain_diff = "# What this change does\n\n## At a glance\n\nit works\n";
+        inp.handoff = "Implemented; tests pass.\n";
+        let anns = [Annotation {
+            file: "src/a.rs".into(),
+            line: 4,
+            body: "check".into(),
+            ..Default::default()
+        }];
+        inp.annotations = &anns;
+        let md = build_share_markdown(
+            &inp,
+            &ShareSections {
+                summary: true,
+                plan: true,
+                annotations: true,
+                diff: true,
+                explain_diff: true,
+                handoff: true,
+                toc: true,
+                ..Default::default()
+            },
+        );
+        let toc_at = md.find("## Contents").expect("contents");
+        assert!(toc_at < md.find("## Where it stands").unwrap(), "{md}");
+        // Every section is listed and linked, in order, with its parts.
+        for line in [
+            "- [Where it stands](#where-it-stands)",
+            "- [Plan](#plan)",
+            "  - [Step one](#step-one)",
+            "  - [Step two](#step-two)",
+            "- [Changes explained](#changes-explained)",
+            "  - [At a glance](#at-a-glance)",
+            "- [Open comments](#open-comments)",
+            "- [Diff](#diff)",
+            "  - [`src/a.rs`](#srcars)",
+            "  - [`b.rs`](#brs)",
+        ] {
+            assert!(md.contains(line), "missing {line:?} in\n{md}");
+        }
+        // The plan's headings sit under its section; a fenced `##` is code.
+        assert!(md.contains("### The plan\n"));
+        assert!(md.contains("#### Step one"));
+        assert!(md.contains("```md\n## not a heading\n```"));
+        // A comment links to its file's diff; every section leads back.
+        assert!(md.contains("- [`src/a.rs:4`](#srcars) — check"), "{md}");
+        assert_eq!(md.matches("[↑ Contents](#contents)").count(), 5);
+    }
+
+    #[test]
+    fn without_contents_nothing_is_linked() {
+        let m = meta();
+        let mut inp = input(&m);
+        let anns = [Annotation {
+            file: "a.rs".into(),
+            line: 1,
+            body: "check".into(),
+            ..Default::default()
+        }];
+        inp.annotations = &anns;
+        let sections = ShareSections {
+            summary: true,
+            annotations: true,
+            diff: true,
+            ..Default::default()
+        };
+        let md = build_share_markdown(&inp, &sections);
+        assert!(!md.contains("## Contents"));
+        assert!(!md.contains("](#"), "{md}");
+        // One section is no reason for contents, even when asked.
+        let md = build_share_markdown(
+            &inp,
+            &ShareSections {
+                plan: true,
+                toc: true,
+                ..Default::default()
+            },
+        );
+        assert!(!md.contains("## Contents"));
+    }
+
+    #[test]
+    fn an_unwritten_document_adds_no_section() {
+        let m = meta();
+        let md = build_share_markdown(
+            &input(&m),
+            &ShareSections {
+                explain_plan: true,
+                drift: true,
+                handoff: true,
+                ..Default::default()
+            },
+        );
+        assert!(!md.contains("## Plan explained"));
+        assert!(!md.contains("## Plan vs changes"));
+        assert!(!md.contains("## Where it stands"));
     }
 }

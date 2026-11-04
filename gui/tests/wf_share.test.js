@@ -15,6 +15,8 @@ const {
   shareModel,
   shareDestination,
   sectionsFromChecks,
+  shareHeadingSlug,
+  shareHeadingSlugs,
   shareHtmlDocument,
   detectTicketKey,
   SHARE_EXPLAIN_PAIRS,
@@ -296,6 +298,7 @@ test("browser branch publishes every global app.js reads", () => {
     "presetSections",
     "shareModel",
     "sectionsFromChecks",
+    "shareHeadingSlugs",
     "shareHtmlDocument",
     "detectTicketKey",
     "SHARE_EXPLAIN_PAIRS",
@@ -306,4 +309,39 @@ test("browser branch publishes every global app.js reads", () => {
   ]) {
     assert.ok(name in sandbox.window, `${name} must be published to window`);
   }
+});
+
+test("heading anchors follow the same rule as the Rust builder", () => {
+  // The same cases as `slugs_follow_github` in workflow_share.rs: the links
+  // are written there, the ids are made here.
+  assert.equal(shareHeadingSlug("Change rounds"), "change-rounds");
+  assert.equal(shareHeadingSlug("Iteration 1 — 2026-08-01 10:00"), "iteration-1--2026-08-01-1000");
+  assert.equal(shareHeadingSlug("src/a.rs"), "srcars");
+  assert.equal(shareHeadingSlug("Use the API now"), "use-the-api-now");
+  assert.equal(shareHeadingSlug("Déjà vu_2"), "déjà-vu_2");
+  assert.deepEqual(shareHeadingSlugs(["Plan", "Plan", "Plan 1", "Plan"]), ["plan", "plan-1", "plan-1-1", "plan-2"]);
+});
+
+test("every preset names real sections, and the chat-sized ones carry no contents", () => {
+  const ids = new Set(SHARE_SECTIONS.map((s) => s.id));
+  for (const p of SHARE_PRESETS) for (const s of p.sections) assert.ok(ids.has(s), `${p.id}: ${s}`);
+  const of = (id) => SHARE_PRESETS.find((p) => p.id === id).sections;
+  assert.ok(!of("summary").includes("toc"));
+  assert.ok(!of("status").includes("toc"));
+  assert.ok(of("packet").includes("toc"));
+  assert.ok(of("explain").includes("explainDiff"));
+  assert.ok(of("handover").includes("handoff"));
+});
+
+test("an unwritten agent document is listed, disabled and says why", () => {
+  const m = shareModel({ preset: "dossier", has: { explainPlan: false, drift: false } });
+  const row = (id) => m.sections.find((s) => s.id === id);
+  assert.equal(row("explainPlan").disabled, true);
+  assert.equal(row("explainPlan").checked, false);
+  assert.match(row("explainPlan").detail, /not been explained/);
+  assert.equal(row("drift").disabled, true);
+  // Unknown means present: a caller that says nothing hides nothing.
+  assert.equal(row("explainDiff").disabled, false);
+  assert.equal(row("explainDiff").checked, true);
+  assert.equal(row("handoff").checked, true);
 });

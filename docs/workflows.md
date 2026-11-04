@@ -1231,9 +1231,33 @@ branch.
 
 These are clash features, not agent contract — listed here so a reader of this
 file knows they exist and what they read. The GUI's share dialog composes one
-markdown document from the item's files (summary, `plan.md`, `review.md`
-iteration notes, `agent-review.md` verdicts, open annotations, the current
-diff — each section optional) and sends **exactly the previewed text** to a
+markdown document from the item's files and sends **exactly the previewed
+text**. The sections, each optional:
+- summary and `handoff.md` ("where it stands");
+- `plan.md`;
+- the overview write-ups of the two explanations and of plan vs changes;
+- `review.md` iteration notes;
+- `agent-review.md` verdicts;
+- open annotations;
+- the current diff, one fenced block per file.
+
+Agent-written documents keep their content, but their headings are pushed
+under their section.
+
+With **Contents & links** (`toc`) and at least two sections,
+`build_share_markdown` adds:
+- a `## Contents` list of every section and its parts;
+- `[↑ Contents](#contents)` at the end of every section;
+- links from each open comment to its file's diff heading.
+
+The anchors are GitHub's heading slugs (`heading_slug`, repeats numbered by
+`Slugger`), computed over every heading of the finished document.
+`shareHeadingSlugs` in `gui/dist/wf-share.js` mirrors the rule: the `.html`
+export gives each heading that id, and the preview follows a `#slug` link by
+finding the heading with it, without adding ids to the app's DOM. The chat
+presets leave `toc` off, because an anchor is dead text in a channel.
+
+The document can go to a
 clipboard, a `.md`/`.html` export, a Slack/Discord webhook configured in
 `config.toml` (`workflows.slack_webhook` / `workflows.discord_webhook`), or a
 Jira ticket as one comment (`workflows.jira_base_url` / `jira_email` /
@@ -1243,7 +1267,7 @@ ticket key is prompted per send, pre-filled from the item's title/branch).
 The `.html` export is the one destination that carries more than the
 markdown: it is a single self-contained page meant to be sent to people
 without clash. It works offline and opens by double-click, with no server,
-no sidecar files and no script. The dialog's **Explanations** picker (`Every
+no sidecar files and no script. The dialog's **Explanation drawings** picker (`Every
 level` / `Overview + parts` / `Overview only` / `None`) adds the explanation
 trees (*Drill-down explanations* above) as one section per level. Each
 section has a breadcrumb, its parts list linking to the parts' own sections,

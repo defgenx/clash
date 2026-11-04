@@ -14,27 +14,48 @@
   /// renders them. `heavy` marks the one worth a size warning (a diff can be
   /// tens of thousands of lines; webhooks truncate hard).
   const SHARE_SECTIONS = [
+    { id: "toc", label: "Contents & links", detail: "A linked contents list, ↑ back-links, comments linked to their file's diff" },
     { id: "summary", label: "Summary", detail: "Title, status, branch, iteration counters, PR links" },
+    { id: "handoff", label: "Where it stands", detail: "The agent's latest hand-off note: done, left, next" },
     { id: "plan", label: "Plan", detail: "plan.md, verbatim" },
+    { id: "explainPlan", label: "Plan explained", detail: "What the plan will do, written for a reader of the code" },
+    { id: "explainDiff", label: "Changes explained", detail: "What the change does, part by part" },
+    { id: "drift", label: "Plan vs changes", detail: "Where the built change differs from the plan, graded" },
     { id: "timeline", label: "Change rounds", detail: "Your change-request notes, one per iteration" },
     { id: "reviews", label: "Agent reviews", detail: "Each round's verdict and what it published" },
     { id: "annotations", label: "Open comments", detail: "Unresolved diff comments" },
-    { id: "diff", label: "Diff", detail: "The current diff, fenced", heavy: true },
+    { id: "diff", label: "Diff", detail: "The current diff, one block per file", heavy: true },
   ];
 
-  /// Three honest sizes. "Review packet" is the default: everything a
-  /// colleague needs to weigh in, without the raw diff.
+  /// Sizes and purposes. "Review packet" is the default: everything a
+  /// colleague needs to weigh in, without the raw diff. The chat-sized ones
+  /// leave the contents out — anchors are dead text in a channel.
   const SHARE_PRESETS = [
     { id: "summary", label: "Summary", sections: ["summary"] },
     {
+      id: "status",
+      label: "Status update",
+      sections: ["summary", "handoff", "reviews", "annotations"],
+    },
+    {
+      id: "explain",
+      label: "Explain it",
+      sections: ["toc", "summary", "explainPlan", "explainDiff"],
+    },
+    {
       id: "packet",
       label: "Review packet",
-      sections: ["summary", "plan", "timeline", "reviews", "annotations"],
+      sections: ["toc", "summary", "plan", "explainDiff", "drift", "timeline", "reviews", "annotations"],
+    },
+    {
+      id: "handover",
+      label: "Hand-over",
+      sections: ["toc", "summary", "handoff", "plan", "explainDiff", "timeline", "annotations"],
     },
     {
       id: "dossier",
       label: "Full dossier",
-      sections: ["summary", "plan", "timeline", "reviews", "annotations", "diff"],
+      sections: SHARE_SECTIONS.map((s) => s.id),
     },
   ];
 
@@ -54,6 +75,9 @@
   /// saying where to configure them.
   function shareModel({
     hasPlan = true,
+    // Which agent-written documents exist; an unwritten one is listed but
+    // disabled, like a planless item's plan.
+    has = {},
     slackConfigured = false,
     discordConfigured = false,
     jiraConfigured = false,
@@ -70,12 +94,16 @@
     return {
       presets: SHARE_PRESETS.map((p) => ({ id: p.id, label: p.label })),
       preset: SHARE_PRESETS.some((p) => p.id === preset) ? preset : "packet",
-      sections: SHARE_SECTIONS.map((s) => ({
-        ...s,
-        checked: checked[s.id] && (s.id !== "plan" || hasPlan),
-        disabled: s.id === "plan" && !hasPlan,
-        detail: s.id === "plan" && !hasPlan ? "This item has no plan phase" : s.detail,
-      })),
+      sections: SHARE_SECTIONS.map((s) => {
+        const missing =
+          s.id === "plan" ? (hasPlan ? null : "This item has no plan phase") : sectionMissing(s.id, has);
+        return {
+          ...s,
+          checked: checked[s.id] && !missing,
+          disabled: !!missing,
+          detail: missing || s.detail,
+        };
+      }),
       destinations: [
         { id: "clipboard", label: "Copy markdown", enabled: true, route: "local" },
         { id: "md", label: "Save .md…", enabled: true, route: "local" },
@@ -154,6 +182,45 @@
       if (m) return m[1].toUpperCase();
     }
     return "";
+  }
+
+  /// Why an agent-written section has nothing to carry, or null when it does.
+  /// `has` is unspecified-means-present, so a caller that knows nothing about
+  /// a document never hides it.
+  function sectionMissing(id, has) {
+    const why = {
+      handoff: "No hand-off note written yet",
+      explainPlan: "The plan has not been explained yet",
+      explainDiff: "The changes have not been explained yet",
+      drift: "Plan vs changes has not been run yet",
+    }[id];
+    return why && has && has[id] === false ? why : null;
+  }
+
+  /// GitHub's heading anchor, mirroring `heading_slug` in
+  /// `application::workflow_share` — the share document's links are written
+  /// with that rule, so the page's ids must be made with this one.
+  function shareHeadingSlug(text) {
+    return String(text || "")
+      .toLowerCase()
+      .replace(/[^\p{Alphabetic}\p{N}\-_ ]/gu, "")
+      .replace(/ /g, "-");
+  }
+
+  /// Slugs for a document's headings in order, repeats numbered the way
+  /// GitHub does (`plan`, `plan-1`…).
+  function shareHeadingSlugs(texts) {
+    const seen = new Map();
+    return (texts || []).map((t) => {
+      const base = shareHeadingSlug(t);
+      let slug = base;
+      while (seen.has(slug)) {
+        seen.set(base, seen.get(base) + 1);
+        slug = `${base}-${seen.get(base)}`;
+      }
+      seen.set(slug, 0);
+      return slug;
+    });
   }
 
   /// The `sections` object from the dialog's live checkbox state.
@@ -392,6 +459,8 @@ ${explained}
     presetSections,
     shareModel,
     sectionsFromChecks,
+    shareHeadingSlug,
+    shareHeadingSlugs,
     shareHtmlDocument,
     detectTicketKey,
     SHARE_EXPLAIN_PAIRS,

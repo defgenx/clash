@@ -3668,6 +3668,32 @@ pub(crate) async fn build_workflow_share(
     } else {
         String::new()
     };
+    use clash::domain::workflow::ReviewTarget;
+    use clash::infrastructure::fs::workflows as wf;
+    // The explanations' overview write-ups, legacy file names included.
+    let explanation = |on: bool, target: ReviewTarget| {
+        if !on {
+            return String::new();
+        }
+        wf::read_explain_node_doc(
+            &state.backend.workflows_dir(),
+            &project,
+            &slug,
+            target,
+            "",
+            "md",
+            None,
+        )
+        .unwrap_or_default()
+    };
+    let explain_plan = explanation(sections.explain_plan, ReviewTarget::ExplainPlan);
+    let explain_diff = explanation(sections.explain_diff, ReviewTarget::ExplainDiff);
+    let drift = explanation(sections.drift, ReviewTarget::Drift);
+    let handoff = if sections.handoff {
+        read(wf::HANDOFF_FILE)
+    } else {
+        String::new()
+    };
     Ok(clash::application::workflow_share::build_share_markdown(
         &clash::application::workflow_share::ShareInput {
             meta: &meta,
@@ -3678,6 +3704,10 @@ pub(crate) async fn build_workflow_share(
             agent_review_md: &agent_md,
             annotations: &annotations,
             diff: &diff,
+            explain_plan: &explain_plan,
+            explain_diff: &explain_diff,
+            drift: &drift,
+            handoff: &handoff,
         },
         &sections,
     ))

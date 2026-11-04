@@ -3888,8 +3888,20 @@ function renderMarkdown(el, md) {
       // Same decision as every other link: the setting says where links go,
       // and a plan's links are no different from a terminal's.
       if (/^\w+:/.test(href)) openLink(href);
+      // An in-document anchor (a share's contents) scrolls to its heading.
+      // No ids are added to the app's DOM: they could collide with its own.
+      else if (href.startsWith("#")) markdownHeadingFor(el, href.slice(1))?.scrollIntoView({ block: "start" });
     });
   }
+}
+
+/// The heading of rendered markdown that a `#slug` link names, by GitHub's
+/// slug rule (`shareHeadingSlugs`), or null.
+function markdownHeadingFor(el, slug) {
+  const heads = [...el.querySelectorAll("h1, h2, h3, h4, h5, h6")];
+  const slugs = shareHeadingSlugs(heads.map((h) => h.textContent));
+  const i = slugs.indexOf(decodeURIComponent(slug));
+  return i < 0 ? null : heads[i];
 }
 
 /// Lazy-load the vendored mermaid bundle (2.7MB — parsed only when a document
@@ -3951,6 +3963,12 @@ async function renderMarkdownForExport(md) {
   try {
     renderMarkdown(stage, md);
     await renderMermaidIn(stage, { theme: "default" });
+    // A saved page is its own document, so its headings get the ids the
+    // share's contents and cross-links point at.
+    const heads = [...stage.querySelectorAll("h1, h2, h3, h4, h5, h6")];
+    shareHeadingSlugs(heads.map((h) => h.textContent)).forEach((slug, i) => {
+      heads[i].id = slug;
+    });
     return stage.innerHTML;
   } finally {
     stage.remove();
@@ -8429,8 +8447,18 @@ async function wfShareDialog(item) {
   } catch (e) {
     void e; // webhooks just show as unconfigured
   }
+  const forms = (which) => {
+    const f = wfExplainFormsFor(item, which);
+    return !!(f && f.md);
+  };
   const model = shareModel({
     hasPlan: wfHasPlanPhase(item),
+    has: {
+      handoff: !!item.handoff,
+      explainPlan: forms("plan"),
+      explainDiff: forms("diff"),
+      drift: forms("drift"),
+    },
     slackConfigured: !!settings.slackWebhook,
     discordConfigured: !!settings.discordWebhook,
     jiraConfigured: !!(settings.jiraBaseUrl && settings.jiraEmail && settings.jiraTokenSet),
@@ -8541,7 +8569,7 @@ async function wfShareDialog(item) {
     row.className = "wf-share-section wf-share-explain";
     const text = document.createElement("span");
     text.innerHTML =
-      `<span class="wf-share-section-label">Explanations</span>` +
+      `<span class="wf-share-section-label">Explanation drawings</span>` +
       `<span class="dim">Drawings and write-ups, linked overview → part — in the saved .html only</span>`;
     const sel = document.createElement("select");
     for (const d of SHARE_EXPLAIN_DEPTHS) {

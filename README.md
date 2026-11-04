@@ -862,12 +862,34 @@ show **⚠ stack unclear** with the reason and are treated as unstacked.
 
 ### Share & notifications
 
-**↗ Share…** composes one document from the item (summary, plan, rounds,
-verdicts, open comments, diff) from three presets with per-section checkboxes.
+**↗ Share…** composes one document from the item. You tick what goes in:
+- summary;
+- where it stands (the agent's latest hand-off note);
+- plan;
+- plan explained / changes explained (the explanations' write-ups);
+- plan vs changes;
+- change rounds;
+- agent reviews;
+- open comments;
+- diff.
+
+Six presets fill the boxes: *Summary*, *Status update*, *Explain it*, *Review
+packet* (the default), *Hand-over* and *Full dossier*. Anything the agent hasn't
+written yet is listed but disabled, with the reason.
+
+With **Contents & links** on (every preset but the chat-sized ones):
+- the document opens on a linked table of contents;
+- every section ends with a **↑ Contents** link;
+- the diff gets one heading per file;
+- each open comment links to its file's diff.
+
+The anchors follow GitHub's heading rule, so they work in the preview, in a
+saved `.md` on GitHub and in the `.html` page.
+
 The preview **is** the payload. It can go to:
 - the clipboard;
 - a `.md` file, or a self-contained `.html` page to send to someone without
-  clash. The page opens offline by double-click. With **Explanations** set to
+  clash. The page opens offline by double-click. With **Explanation drawings** set to
   a depth, it also carries the item's explanation drawings and write-ups,
   linked from overview to part to sub-part. The drawings stay sandboxed.
   Both saves use the system save dialog, then offer **Reveal in Finder** and
