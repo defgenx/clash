@@ -133,6 +133,9 @@
         <label class="setting-row">PR skill
           <input id="set-wf-pr-skill" type="text" placeholder="myorg:github-pr" autocomplete="off" spellcheck="false" title="Skill workflow agents open pull requests with, so your org's PR conventions come along. Empty resets to the shipped default; 'none' disables it and the agent follows the repo's own conventions with gh. An item can override this in its ⚙ Settings tab." />
         </label>
+        <label class="setting-row">Ticket links
+          <input id="set-wf-ticket-url" type="text" placeholder="yourorg.atlassian.net" autocomplete="off" spellcheck="false" title="Where the tickets agents mention live, so they link every one: a host (links host/browse/KEY) or a template with {key}, e.g. https://linear.app/acme/issue/{key}. Empty uses the Jira site URL below, and with neither the agent asks you. 'none' mentions keys unlinked. External documents always keep their own URL. An item can override this in its ⚙ Settings tab." />
+        </label>
         <label class="setting-row inline">Forge
           <select id="set-wf-forge" title="Where this repo's pull requests live. Auto reads the origin remote (unknown hosts count as GitHub, so GitHub Enterprise keeps working); None hides every PR feature for repos that don't use one.">
             <option value="auto">Auto-detect</option>

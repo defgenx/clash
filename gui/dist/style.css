@@ -595,13 +595,25 @@ html, body, #app {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 4px 0 2px;
+  /* Room between the controls and the scrollbar; the stable gutter keeps the
+     layout from shifting when the filter shortens the list. */
+  padding: 4px 10px 2px 0;
+  scrollbar-gutter: stable;
   /* The list is long enough to need its own scroll — the footer rows (session
-     count, version) must stay reachable no matter how many settings there are. */
+     count, version) must stay reachable no matter how many settings there are.
+     overflow-y alone computes overflow-x to auto, which let any control wider
+     than the panel make the whole list scroll sideways. */
   max-height: 52vh;
   overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
 }
+/* Nothing in the list may be wider than the panel: every row and control
+   shrinks, and long tokens in labels and notes wrap. */
+#settings-body > * { min-width: 0; max-width: 100%; }
+#settings-body .setting-row > * { min-width: 0; }
+#settings-body .settings-note,
+#settings-body .setting-check { overflow-wrap: anywhere; }
 /* Sticky so the filter stays usable while scrolling a long list. */
 #settings-filter {
   position: sticky;
@@ -1288,7 +1300,7 @@ body.pane-dragging, body.pane-dragging * { cursor: grabbing !important; user-sel
 .wf-explain-part.on { background: var(--accent); color: var(--on-accent); border-style: solid; opacity: 1; }
 
 /* The page of a part nobody has explained yet (renderWfExplainPartPage). */
-.wf-part-page { padding: 4px 14px 18px; max-width: 760px; }
+.wf-part-page { padding: 8px clamp(14px, 3vw, 48px) 28px; }
 .wf-part-page h2 { font-size: 16px; margin: 6px 0 4px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .wf-part-badge {
   font-size: 10px;
@@ -1723,9 +1735,15 @@ button.busy:disabled { opacity: 1; }
 /* The ⚙ Settings tab is meta, not content — it hugs the right edge. */
 .wf-subtab-end { margin-left: auto; }
 
-/* Structure documents read as an exposé, not a dump: generous headings,
-   sectioned h2s, calmer body rhythm. */
-.wf-md.wf-structure { max-width: 900px; padding-bottom: 48px; }
+/* Explanation documents read as an exposé, not a dump: the pane's whole
+   width (like their drawings), generous headings, sectioned h2s. */
+.wf-md.wf-structure {
+  max-width: none;
+  padding: 6px clamp(8px, 2.5vw, 44px) 64px;
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+.wf-md.wf-structure p, .wf-md.wf-structure ul, .wf-md.wf-structure ol { margin: 10px 0; }
 .wf-md.wf-structure h1 {
   font-size: 22px;
   padding-bottom: 10px;
@@ -1742,12 +1760,7 @@ button.busy:disabled { opacity: 1; }
 }
 .wf-md.wf-structure h3 { font-size: 13.5px; margin: 18px 0 6px; color: var(--fg); }
 .wf-md.wf-structure li { margin: 3px 0; }
-.wf-md.wf-structure .wf-mermaid {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px;
-  background: color-mix(in srgb, var(--bg-hover) 35%, transparent);
-}
+.wf-md.wf-structure table { width: 100%; }
 
 /* Per-item Settings tab: small grouped form + fact list. */
 .wf-settings { padding: 14px 18px; max-width: 640px; display: flex; flex-direction: column; gap: 12px; }
@@ -1776,9 +1789,21 @@ button.busy:disabled { opacity: 1; }
 }
 .wf-settings-desc:focus { border-color: var(--accent); outline: none; }
 
-/* Mermaid diagrams (structure.md and any other doc): scroll wide graphs
-   inside their own box rather than the whole tab. */
-.wf-mermaid { overflow-x: auto; margin: 12px 0; }
+/* Mermaid diagrams (any rendered doc): a figure with Diagram / Source tabs
+   switched by CSS alone (mermaidFigure in app.js). Mirrors the `.wf-mmd`
+   rules of wf-share.js DOC_STYLE, which the saved page carries. */
+.wf-mmd { position: relative; margin: 14px 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.wf-mmd > input { position: absolute; opacity: 0; pointer-events: none; }
+.wf-mmd-bar { display: flex; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--border); background: var(--bg-3); }
+.wf-mmd-bar label { padding: 1px 10px; border-radius: 999px; font-size: 11px; cursor: pointer; color: var(--fg-dim); }
+.wf-mmd-bar label:hover { color: var(--fg); }
+.wf-mmd > .wf-mmd-d:checked ~ .wf-mmd-bar .wf-mmd-ld,
+.wf-mmd > .wf-mmd-s:checked ~ .wf-mmd-bar .wf-mmd-ls { background: var(--accent); color: var(--on-accent); }
+.wf-mmd .wf-mmd-src { display: none; margin: 0; border: 0; border-radius: 0; }
+.wf-mmd > .wf-mmd-s:checked ~ .wf-mermaid { display: none; }
+.wf-mmd > .wf-mmd-s:checked ~ .wf-mmd-src { display: block; }
+.wf-mermaid { overflow-x: auto; margin: 0; padding: 14px; text-align: center;
+  background: color-mix(in srgb, var(--bg-hover) 35%, transparent); }
 .wf-mermaid svg { max-width: 100%; height: auto; }
 
 /* Comment navigation / composer jumps flash the revealed thread. */

@@ -18,6 +18,8 @@ const {
   shareHeadingSlug,
   shareHeadingSlugs,
   shareHtmlDocument,
+  shareDocOutline,
+  shareDocSection,
   detectTicketKey,
   SHARE_EXPLAIN_PAIRS,
   explainLevelsToShare,
@@ -109,7 +111,7 @@ test("the saved page is an explorer whose drawings stay script-less frames", () 
   // The frames are made by the explorer, sandboxed without scripts.
   assert.match(viewer.body, /setAttribute\("sandbox", "allow-same-origin"\)/);
   // The document reads without script.
-  assert.ok(html.includes('<section class="doc" id="x-document"><article class="md">\n<p>doc</p>'));
+  assert.ok(html.includes('<section class="doc" id="x-document"><div class="doc-wrap"><article class="md doc-body">\n<p>doc</p>'));
   // No explanations: the plain document, without any script.
   const plain = shareHtmlDocument("T", "<p>doc</p>");
   assert.ok(!/<script/.test(plain) && !plain.includes("x-explorer"));
@@ -304,7 +306,7 @@ test("an export renders its diagrams on an attached stage", () => {
   const fn = extractFunction(APP, "renderMarkdownForExport");
   assert.match(fn, /document\.body\.appendChild\(stage\)/);
   assert.match(fn, /stage\.remove\(\)/);
-  assert.match(fn, /renderMermaidIn\(stage, \{ theme: "default" \}\)/);
+  assert.match(fn, /renderMermaidIn\(stage, \{ themes: \["default", "dark"\] \}\)/);
 });
 
 test("presets are honest sizes: summary ⊂ packet ⊂ dossier", () => {
@@ -523,4 +525,38 @@ test("drawn pages breathe: the page's own width cap is lifted, last", () => {
   // clash's own tab applies the same room and the same marking.
   assert.match(extractFunction(APP, "wfExplainFrameDoc"), /return withBreathingRoom\(wfFrameWithHead\(html, head\)\);/);
   assert.match(extractFunction(APP, "wfGuardExplainFrame"), /markWideDrawings\(doc\);/);
+});
+
+test("the document's outline is its h2/h3 headings that carry an id", () => {
+  const body =
+    '<h1 id="t">Title</h1><h2 id="why">Why <code>it</code>\n matters</h2><p>x</p>' +
+    '<h3 id="a-b">A &amp; B</h3><h2>no id</h2><h4 id="deep">deep</h4>';
+  assert.deepEqual(shareDocOutline(body), [
+    { id: "why", level: 2, text: "Why it matters" },
+    { id: "a-b", level: 3, text: "A &amp; B" },
+  ]);
+  assert.deepEqual(shareDocOutline(""), []);
+});
+
+test("the document section gets a contents rail only when it has two sections", () => {
+  const two = shareDocSection('<h2 id="one">One</h2><h2 id="r&amp;d">R&amp;D</h2>');
+  assert.match(two, /<div class="doc-wrap has-toc"><nav class="doc-toc" id="x-toc"/);
+  assert.ok(two.includes('<a class="l2" href="#one">One</a>'));
+  assert.ok(two.includes('href="#r&amp;amp;d"') || two.includes('href="#r&amp;d"'));
+  const one = shareDocSection('<h2 id="one">One</h2>');
+  assert.ok(!one.includes("doc-toc") && one.includes('<div class="doc-wrap">'));
+  assert.ok(!one.includes("doc-foot"), "the explorer page has its own chrome");
+  assert.match(shareDocSection("<p>x</p>", { plain: true }), /class="doc doc-plain"[\s\S]*class="doc-foot"/);
+});
+
+test("both page shapes carry the same document design and the mermaid tabs", () => {
+  const body = '<h2 id="a">A</h2><h2 id="b">B</h2>';
+  const chapter = { id: "x", label: "X", levels: { "": { title: "o", parts: [] } } };
+  for (const page of [shareHtmlDocument("T", body), shareHtmlDocument("T", body, [chapter])]) {
+    assert.ok(page.includes(".doc-wrap.has-toc {"), "the full-width layout");
+    assert.ok(page.includes('id="x-toc"'), "the contents rail");
+    assert.ok(page.includes(".wf-mmd > .wf-mmd-s:checked ~ .wf-mmd-src"), "Diagram / Source switch without script");
+    assert.ok(!/\.doc(-wrap|-body)? \{[^}]*max-width/.test(page), "no reading column caps the document");
+  }
+  assert.ok(!/<script/.test(shareHtmlDocument("T", body)), "the plain page stays script-free");
 });

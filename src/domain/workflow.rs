@@ -1118,6 +1118,10 @@ pub struct WorkflowMeta {
     /// skill for this item.
     #[serde(default)]
     pub pr_skill: String,
+    /// Per-item ticket link host or `{key}` template (item Settings tab).
+    /// Empty inherits `workflows.ticket_url`; `none` mentions keys unlinked.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ticket_url: String,
     /// Per-item PR stacking override (item Settings tab): `on` | `off`, empty
     /// inherits the global `workflows.pr_stacking` setting.
     #[serde(default, skip_serializing_if = "String::is_empty")]

@@ -195,6 +195,10 @@ comments waiting). Typically `plan-review` after `plan`/`revise`;
 re-review would add nothing. It is a recommendation: clash ranks its own
 checks first and uses it only where those are silent.
 
+## Linking tickets
+
+Link every ticket you mention (`PS-12345`, `ENG-42`) wherever you write it — documents, reports, annotations, PR text. The kickoff's `Ticket links:` field is the URL to use: replace `{key}` with the key, as in `[PS-12345](https://yourorg.atlassian.net/browse/PS-12345)`. `Ticket links: none` means mention keys unlinked. Without the field, **ask the human for the ticket host** the first time you need one (interactive) and tell them it can be saved in Settings → Workflows → Ticket links; in an autonomous run leave the key unlinked and say so in your report. Never guess a host. The field is for ticket keys only: an external document (a Confluence page, a Google doc, any page you have a URL for) is linked with its own full URL.
+
 ## Lead and subagents — `Delegation: team`
 
 Under `team` you are the **lead**: you decide how the round splits, dispatch

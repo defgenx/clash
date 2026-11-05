@@ -920,6 +920,22 @@ below; absent means the item's worktree), `PR skill: <name>.` (from the
 `workflows.pr_skill` config — see PR integration) and `Interactive: yes|no.`
 (absent means the skill's opening question asks in-session).
 
+### Ticket links — every kickoff
+
+Every agent launch (executor, reviewers, drift, explainer, dives) ends with
+`Ticket links: <template>.` so the agent links each ticket key it writes:
+`{key}` in the template is replaced by the key. Resolution is the pure
+`effective_ticket_links(item, global, jira_base_url)`: the item's ⚙ Settings
+override (`meta.ticketUrl`), else `workflows.ticket_url`, else the Jira site
+the share dialog posts to. A value without `{key}` is a host and means its Jira
+browse URL (`yourorg.atlassian.net` → `https://yourorg.atlassian.net/browse/{key}`);
+`none` at either level gives `Ticket links: none.` (keys stay unlinked, no
+question), and it does not fall through. With nothing configured anywhere the
+field is omitted, and every skill's *Linking tickets* rule makes the agent ask
+the human for the host (interactive) or leave the key unlinked and say so
+(autonomous), never guess one. The template is for ticket keys only: external
+documents keep their own URL.
+
 ### Workspace — where an executor round runs
 
 Decided per launch by the pure `resolve_work_dir` (`application::workflow`),
@@ -1313,7 +1329,16 @@ rules keep the page safe and honest:
   `run.json`) and session ids have no way in, and a test pins both readers
   and the markdown builder;
 - markdown is rendered in the webview (sanitized, mermaid as inline SVG on an
-  attached off-screen stage), so what is saved is what the GUI renders.
+  attached off-screen stage), so what is saved is what the GUI renders. Each
+  diagram is drawn twice, once per mermaid theme, and the page's theme shows
+  one (the reader can switch theme after the colours are baked). The ids inside
+  each drawing are prefixed with its own, because mermaid gives some defs fixed
+  ids (`arrowhead`) and a visible drawing would otherwise use the markers of the
+  hidden one. A figure keeps its source behind Diagram / Source tabs made of two
+  radios and `:checked` rules, so they work in the script-free page too;
+- both page shapes share one document design (`shareDocSection` + `DOC_STYLE`):
+  full width, a contents rail built from the h2/h3 ids (`shareDocOutline`, two
+  sections or more), scroll-spy in the explorer page only.
 
 Saves go through the native save dialog, seeded with a clash-derived name
 (`default_share_export_path`: `clash-<project>-<slug>.<ext>` in Downloads). The

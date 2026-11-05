@@ -430,6 +430,16 @@ pub const PROPS: &[Prop] = &[
          conventions when it isn't installed in the session.",
     ),
     Prop::new(
+        "workflows.ticket_url",
+        Kind::Str,
+        Val::Str(""),
+        "Where the tickets workflow agents mention live, so they can link them: a host \
+         (`yourorg.atlassian.net` links `<host>/browse/<KEY>`) or a template with `{key}` \
+         (`https://linear.app/acme/issue/{key}`). Empty falls back to `workflows.jira_base_url`, \
+         and with neither the agent asks for the host. `none` mentions keys unlinked. \
+         External documents are always linked with their own URL. An item can override this.",
+    ),
+    Prop::new(
         "workflows.forge",
         Kind::Enum(&["auto", "github", "none"]),
         Val::Str("auto"),

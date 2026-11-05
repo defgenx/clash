@@ -3933,20 +3933,25 @@ let wfMermaidSeq = 0;
 /// Render ```mermaid fences inside an element renderMarkdown just filled —
 /// the explain documents carry architecture/flow diagrams, and any other may.
 /// Each failure leaves that fence as visible code instead of a blank hole.
-/// `theme` overrides the app's — exports draw on a light card whatever the
-/// app theme is.
-async function renderMermaidIn(el, { theme = null } = {}) {
+/// `themes` overrides the app's single theme: a saved page draws every
+/// diagram once per mermaid theme (`["default", "dark"]`) and its own theme
+/// shows one, since the reader may switch it after the colours are baked.
+async function renderMermaidIn(el, { themes = null } = {}) {
   const blocks = el.querySelectorAll("pre > code.language-mermaid");
   if (!blocks.length) return;
   if (!(await ensureMermaid())) return;
-  mermaid.initialize({
-    startOnLoad: false,
-    securityLevel: "strict",
-    theme: theme || (document.documentElement.classList.contains("theme-light") ? "default" : "dark"),
-    // On a syntax error mermaid otherwise draws its "Syntax error in text"
-    // bomb into <body>, below the whole app.
-    suppressErrorRendering: true,
-  });
+  const appTheme = document.documentElement.classList.contains("theme-light") ? "default" : "dark";
+  const want = themes && themes.length ? themes : [appTheme];
+  const init = (theme) =>
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      theme,
+      // On a syntax error mermaid otherwise draws its "Syntax error in text"
+      // bomb into <body>, below the whole app.
+      suppressErrorRendering: true,
+    });
+  init(want[0]);
   for (const code of blocks) {
     if (!el.isConnected) return; // the tab was rebuilt while we loaded
     const id = `wf-mmd-${++wfMermaidSeq}`;
@@ -3956,17 +3961,89 @@ async function renderMermaidIn(el, { theme = null } = {}) {
         markBadMermaid(code, "the diagram has a syntax error");
         continue;
       }
-      const { svg } = await mermaid.render(id, src);
-      const holder = document.createElement("div");
-      holder.className = "wf-mermaid";
-      holder.innerHTML = svg;
-      code.closest("pre").replaceWith(holder);
+      const drawn = [];
+      for (const theme of want) {
+        // Each drawing needs its own id: mermaid scopes the svg's styles to it.
+        const rid = want.length > 1 ? `${id}-${theme}` : id;
+        if (want.length > 1) init(theme);
+        try {
+          drawn.push({ theme, svg: (await mermaid.render(rid, src)).svg });
+        } finally {
+          removeMermaidLeftovers(rid);
+        }
+      }
+      code.closest("pre").replaceWith(mermaidFigure(id, drawn, code));
     } catch (e) {
       dlog(`mermaid render failed: ${e}`);
       markBadMermaid(code, `the diagram could not be drawn: ${e}`);
     } finally {
       removeMermaidLeftovers(id);
     }
+  }
+}
+
+/// A drawn fence keeps its source: Diagram / Source tabs that switch through
+/// two radios and CSS alone, so they also work in a saved page with no
+/// script. Styled by `.wf-mmd` in style.css and wf-share.js's DOC_STYLE.
+/// `drawn` is `[{ theme, svg }]`; with both themes each holder is marked for
+/// the page theme that shows it.
+function mermaidFigure(id, drawn, code) {
+  const fig = document.createElement("figure");
+  fig.className = "wf-mmd";
+  const name = `${id}-view`;
+  const tabs = [
+    ["d", "Diagram"],
+    ["s", "Source"],
+  ];
+  const bar = document.createElement("div");
+  bar.className = "wf-mmd-bar";
+  for (const [k, label] of tabs) {
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = name;
+    radio.id = `${id}-${k}`;
+    radio.className = `wf-mmd-${k}`;
+    if (k === "d") radio.setAttribute("checked", "");
+    fig.appendChild(radio);
+    const l = document.createElement("label");
+    l.htmlFor = radio.id;
+    l.className = `wf-mmd-l${k}`;
+    l.textContent = label;
+    bar.appendChild(l);
+  }
+  fig.appendChild(bar);
+  for (const { theme, svg } of drawn) {
+    const holder = document.createElement("div");
+    holder.className = "wf-mermaid";
+    if (drawn.length > 1) holder.classList.add(theme === "dark" ? "wf-mmd-dark" : "wf-mmd-light");
+    holder.innerHTML = svg;
+    const root = holder.querySelector("svg");
+    if (root && root.id) scopeSvgIds(root, root.id);
+    fig.appendChild(holder);
+  }
+  const pre = document.createElement("pre");
+  pre.className = "wf-mmd-src";
+  pre.appendChild(code.cloneNode(true));
+  fig.appendChild(pre);
+  return fig;
+}
+
+/// Prefix every id inside a drawing with `scope` and follow its references.
+/// Mermaid gives some defs fixed ids (`arrowhead` in sequence diagrams), so
+/// two drawings in one page share the first one's markers — and when that
+/// one is hidden (the other theme's drawing) the visible one has none.
+function scopeSvgIds(svg, scope) {
+  const renamed = new Map();
+  for (const n of svg.querySelectorAll("[id]")) {
+    if (n.id.startsWith(scope)) continue;
+    renamed.set(n.id, `${scope}-${n.id}`);
+    n.id = `${scope}-${n.id}`;
+  }
+  if (!renamed.size) return;
+  const fix = (v) => v.replace(/#([\w.:-]+)/g, (m, id) => (renamed.has(id) ? `#${renamed.get(id)}` : m));
+  for (const n of svg.querySelectorAll("*")) {
+    for (const a of n.attributes) if (a.value.includes("#")) a.value = fix(a.value);
+    if (n.localName === "style") n.textContent = fix(n.textContent);
   }
 }
 
@@ -3999,7 +4076,7 @@ async function renderMarkdownForExport(md, idPrefix = "") {
   document.body.appendChild(stage);
   try {
     renderMarkdown(stage, md);
-    await renderMermaidIn(stage, { theme: "default" });
+    await renderMermaidIn(stage, { themes: ["default", "dark"] });
     // A saved page is its own document, so its headings get the ids the
     // share's contents and cross-links point at.
     const heads = [...stage.querySelectorAll("h1, h2, h3, h4, h5, h6")];
@@ -12009,6 +12086,7 @@ async function renderWfSubView(body, root, item, ts) {
       agentSetting: item.meta.agentSetting || "",
       workInPlace: !!item.meta.workInPlace,
       prStacking: item.meta.prStacking || "",
+      ticketUrl: item.meta.ticketUrl || "",
     };
     const save = async (patch, revert) => {
       try {
@@ -12159,6 +12237,21 @@ async function renderWfSubView(body, root, item, ts) {
       save({ prSkill: prInput.value.trim() }, () => (prInput.value = committed.prSkill));
     prRow.appendChild(prInput);
     agents.appendChild(prRow);
+
+    const ticketRow = document.createElement("label");
+    ticketRow.className = "wf-settings-row";
+    ticketRow.appendChild(document.createTextNode("Ticket links "));
+    const ticketInput = document.createElement("input");
+    ticketInput.type = "text";
+    ticketInput.spellcheck = false;
+    ticketInput.placeholder = "inherit global setting";
+    ticketInput.value = item.meta.ticketUrl || "";
+    ticketInput.title =
+      "Per-item override of Settings → Workflows → Ticket links: a host (links host/browse/KEY) or a template with {key}. Empty inherits the global value; “none” mentions keys unlinked.";
+    ticketInput.onchange = () =>
+      save({ ticketUrl: ticketInput.value.trim() }, () => (ticketInput.value = committed.ticketUrl));
+    ticketRow.appendChild(ticketInput);
+    agents.appendChild(ticketRow);
 
     const stackRow = document.createElement("label");
     stackRow.className = "wf-settings-row";
@@ -15078,6 +15171,20 @@ $("set-wf-pr-skill").addEventListener("change", async () => {
   }
 });
 
+/// Where linked tickets live (config.toml, shared): every workflow kickoff
+/// carries it as `Ticket links:`, so agents link the keys they mention.
+$("set-wf-ticket-url").addEventListener("change", async () => {
+  const el = $("set-wf-ticket-url");
+  try {
+    el.value = await invoke("set_workflow_ticket_url", { url: el.value.trim() });
+  } catch (e) {
+    uiAlert(`Ticket links: ${e}`);
+    try {
+      el.value = await invoke("get_workflow_ticket_url");
+    } catch (_) {}
+  }
+});
+
 /// The forge override lives in config.toml (shared with the TUI): auto
 /// detects from the repo's origin remote, github forces the gh path, none
 /// disables PR features for repos without a supported forge.
@@ -15543,6 +15650,9 @@ function restartSessionPoll() {
   invoke("get_agent_settings").then(syncAgentSettingsUi).catch(() => {});
   invoke("get_workflow_pr_skill")
     .then((s) => ($("set-wf-pr-skill").value = s))
+    .catch(() => {});
+  invoke("get_workflow_ticket_url")
+    .then((s) => ($("set-wf-ticket-url").value = s))
     .catch(() => {});
   invoke("get_workflow_forge")
     .then((f) => ($("set-wf-forge").value = f || "auto"))

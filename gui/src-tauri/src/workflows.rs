@@ -454,6 +454,44 @@ pub(crate) fn set_workflow_pr_stacking(
     Ok(state.config.get().workflows.pr_stacking)
 }
 
+/// Where the tickets agents mention live, for the Settings field.
+#[tauri::command]
+pub(crate) fn get_workflow_ticket_url(state: State<'_, GuiState>) -> String {
+    state.config.get().workflows.ticket_url.trim().to_string()
+}
+
+/// Set (or clear) the ticket link host / `{key}` template every workflow
+/// kickoff carries as `Ticket links:`. Empty falls back to the Jira site URL,
+/// then to the agent asking; items can override per item.
+#[tauri::command]
+pub(crate) fn set_workflow_ticket_url(
+    state: State<'_, GuiState>,
+    url: String,
+) -> Result<String, String> {
+    let trimmed = url.trim();
+    if trimmed.chars().any(char::is_whitespace) {
+        return Err(format!(
+            "A ticket host contains no whitespace: '{}'",
+            trimmed
+        ));
+    }
+    if trimmed.is_empty() {
+        state
+            .config
+            .reset_values(&["workflows.ticket_url"])
+            .map_err(|e| e.to_string())?;
+    } else {
+        state
+            .config
+            .set_json(&[(
+                "workflows.ticket_url",
+                serde_json::Value::String(trimmed.to_string()),
+            )])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(state.config.get().workflows.ticket_url)
+}
+
 /// Patch the per-item settings (the item ⚙ Settings tab). Every field is
 /// optional: `Some` sets, `None` leaves the current value — one command for
 /// the whole tab, so it grows without new commands per knob.
@@ -472,6 +510,8 @@ pub(crate) fn set_workflow_pr_stacking(
 /// - `work_in_place`: never create a worktree; refused once one exists,
 ///   since the recorded worktree is the item's checkout from then on.
 /// - `pr_stacking`: `on` | `off`; empty inherits `workflows.pr_stacking`.
+/// - `ticket_url`: ticket link host or `{key}` template; empty inherits
+///   `workflows.ticket_url`, `none` mentions keys unlinked.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn set_workflow_item_settings(
@@ -488,6 +528,7 @@ pub(crate) fn set_workflow_item_settings(
     base: Option<String>,
     work_in_place: Option<bool>,
     pr_stacking: Option<String>,
+    ticket_url: Option<String>,
 ) -> Result<clash::domain::workflow::WorkflowMeta, String> {
     let mut meta = state
         .backend
@@ -515,6 +556,13 @@ pub(crate) fn set_workflow_item_settings(
             return Err(format!("Skill names contain no whitespace: '{}'", skill));
         }
         meta.pr_skill = skill;
+    }
+    if let Some(url) = ticket_url {
+        let url = url.trim().to_string();
+        if url.chars().any(char::is_whitespace) {
+            return Err(format!("A ticket host contains no whitespace: '{}'", url));
+        }
+        meta.ticket_url = url;
     }
     if let Some(mode) = interaction_default {
         let mode = mode.trim().to_ascii_lowercase();
@@ -1752,7 +1800,11 @@ pub(crate) async fn start_workflow_agent(
                     ),
                     workspace: work_dir.kickoff_field(),
                 },
-            )
+            ) + &state
+                .config
+                .get()
+                .workflow_ticket_links(&meta.ticket_url)
+                .clause()
         },
     )
     .await;
@@ -2049,6 +2101,7 @@ pub(crate) async fn launch_review(
         .filter(|w| !w.is_empty())
         .unwrap_or_else(|| meta.repo_path.clone());
     let mode = meta.mode;
+    let ticket_links = cfg.workflow_ticket_links(&meta.ticket_url).clause();
     let session_id = uuid::Uuid::now_v7().to_string();
 
     // Persist the round BEFORE spawning — same crash-safety ordering as
@@ -2102,7 +2155,7 @@ pub(crate) async fn launch_review(
                 mode,
                 &cfg.workflow_delegation(agent_kind)
                     .with_subagent(round_models.subagent.as_deref()),
-            )
+            ) + &ticket_links
         },
     )
     .await;
@@ -2362,7 +2415,11 @@ async fn start_explainer(
                     .config
                     .get()
                     .workflow_delegation(clash::domain::entities::AgentKind::parse(&meta.agent)),
-            )
+            ) + &state
+                .config
+                .get()
+                .workflow_ticket_links(&meta.ticket_url)
+                .clause()
         },
     )
     .await;
@@ -2600,7 +2657,7 @@ pub(crate) async fn start_workflow_dive(
         &focus,
         meta.mode,
         &delegation,
-    );
+    ) + &cfg.workflow_ticket_links(&meta.ticket_url).clause();
     let iteration = meta.iteration;
     let record = |session_id: &str| clash::domain::workflow::WorkflowExplainer {
         target,

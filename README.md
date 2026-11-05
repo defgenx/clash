@@ -386,7 +386,7 @@ The sidebar's collapsible **SETTINGS** section is grouped and filterable (type
 |---|---|
 | **Appearance** | Theme — 12 palettes (below) |
 | **Paths** | default session directory · scratch directory · workflows directory · `claude` binary · OMP binary · default agent (Claude Code / OMP) |
-| **Workflows · agents** | workflow agent (ask / Claude Code / OMP) · lead model · next-step assist (suggest / autopilot / off) · delegation (team / solo) · subagent model · OMP model · PR skill · forge · skill updates |
+| **Workflows · agents** | workflow agent (ask / Claude Code / OMP) · lead model · next-step assist (suggest / autopilot / off) · delegation (team / solo) · subagent model · OMP model · PR skill · ticket links · forge · skill updates |
 | **Workflows · sharing** | who posts to Jira (agent / clash) · Jira skill · Jira site, email, API token · who posts to Slack/Discord (agent / clash) · chat skill · Slack and Discord webhooks |
 | **Workflows · notifications** | notify decisions (off / Slack / Discord) |
 | **Terminal · text** | font family (searchable picker) · size · weight · bold weight · line height · letter spacing |
@@ -559,7 +559,7 @@ due for review again.
 | **◫ Plan explained** / **◫ Changes explained** | the explainer's two documents (see below) |
 | **⇄ Plan vs changes** | the latest plan-vs-changes comparison |
 | **Timeline** | one newest-first feed of every change round (your note, the plan diff, the plan as it stood, the code diff) and every review round |
-| **⚙ Settings** | per-item knobs: title, description, diff base, agent CLI, PR skill, default interaction mode, work in place, session-name prefix, Jira ticket — plus the item's facts |
+| **⚙ Settings** | per-item knobs: title, description, diff base, agent CLI, PR skill, ticket links, default interaction mode, work in place, session-name prefix, Jira ticket — plus the item's facts |
 
 Workflow sessions are named by item and job (`Auth refactor · implement`,
 `· plan review r2`, `· code review r1`, `· explain plan`, `· plan vs changes r1`,
@@ -817,6 +817,12 @@ or abandoned item offers **↩ Reopen at diff review**.
   `none` disables, per-item override in ⚙ Settings): agent-written PRs go
   through that skill, so they follow your org's titles, templates and ticket
   links.
+- **Ticket links** (*Settings → Workflows*, per-item override in ⚙ Settings):
+  where the tickets agents mention live, so every key they write is a link. A
+  host (`yourorg.atlassian.net` links `…/browse/KEY`) or a template with `{key}`
+  (`https://linear.app/acme/issue/{key}`). Empty falls back to the Jira site
+  URL, and with neither the agent asks you for the host. `none` leaves keys
+  unlinked. External documents always keep their own URL.
 - **`workflows.forge`** (`auto` | `github` | `none`): `auto` detects GitHub from
   the origin remote (GitHub Enterprise included). `none` hides every PR feature.
 - A command that needs a PR the item doesn't know asks for its URL, attaches it
@@ -889,7 +895,10 @@ saved `.md` on GitHub and in the `.html` page.
 The preview **is** the payload. It can go to:
 - the clipboard;
 - a `.md` file, or a self-contained `.html` page to send to someone without
-  clash. The page opens offline by double-click. With **Explanation drawings** set to
+  clash. The page opens offline by double-click. The document takes the whole
+  window, with a contents rail that follows your reading, and every mermaid
+  diagram has **Diagram** / **Source** tabs and follows the page's light or
+  dark theme. With **Explanation drawings** set to
   a depth, it also carries the item's explanations and opens on an explorer:
   the drawing fills the screen, clicking a part zooms into it, and Esc zooms
   back out into its box. A reading panel beside it lists the parts and holds

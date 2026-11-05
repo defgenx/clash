@@ -3829,6 +3829,8 @@ fn main() {
             workflows::default_share_export_path,
             workflows::get_workflow_pr_skill,
             workflows::set_workflow_pr_skill,
+            workflows::get_workflow_ticket_url,
+            workflows::set_workflow_ticket_url,
             workflows::get_workflow_forge,
             workflows::set_workflow_forge,
             workflows::get_workflow_pr_stacking,

@@ -1060,3 +1060,26 @@ test("a terminal's PTY follows every resize, including those during open_session
     "the size is re-sent once the attach completes"
   );
 });
+
+test("a drawn mermaid fence keeps its source behind a CSS-only Diagram / Source switch", () => {
+  // The saved page may carry no script, so the switch is two radios and
+  // :checked rules (style.css and wf-share.js DOC_STYLE), never a handler.
+  const render = extractFunction(APP, "renderMermaidIn");
+  assert.match(render, /replaceWith\(mermaidFigure\(id, drawn, code\)\)/);
+  const fig = extractFunction(APP, "mermaidFigure");
+  assert.match(fig, /radio\.type = "radio"/);
+  assert.match(fig, /code\.cloneNode\(true\)/, "the source travels with the diagram");
+  assert.ok(!/onclick|addEventListener/.test(fig), "the switch must work without script");
+  const css = fs.readFileSync(path.join(__dirname, "..", "dist", "style.css"), "utf8");
+  assert.ok(css.includes(".wf-mmd > .wf-mmd-s:checked ~ .wf-mmd-src { display: block; }"));
+});
+
+test("a saved page draws each diagram in both themes, ids scoped per drawing", () => {
+  // The reader can switch the page's theme after the colours are baked, and
+  // mermaid's fixed defs ids (`arrowhead`) would point the visible drawing at
+  // the hidden one's markers.
+  assert.match(extractFunction(APP, "renderMarkdownForExport"), /renderMermaidIn\(stage, \{ themes: \["default", "dark"\] \}\)/);
+  const fig = extractFunction(APP, "mermaidFigure");
+  assert.match(fig, /wf-mmd-dark/);
+  assert.match(fig, /scopeSvgIds\(root, root\.id\)/);
+});

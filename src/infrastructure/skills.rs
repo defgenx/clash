@@ -739,6 +739,21 @@ mod tests {
     }
 
     #[test]
+    fn every_skill_links_tickets_through_the_kickoff_field() {
+        // Every kickoff may carry `Ticket links:`; a skill without the rule
+        // would ignore it, or guess a host when the field is absent.
+        for skill in SKILLS {
+            assert!(
+                skill.content.contains("## Linking tickets")
+                    && skill.content.contains("`Ticket links:`")
+                    && skill.content.contains("ask the human for the ticket host"),
+                "{} has no ticket-linking rule",
+                skill.name
+            );
+        }
+    }
+
+    #[test]
     fn skill_names_are_unique_and_never_retired() {
         // Two entries with the same name would silently install over each
         // other; a name both shipped and retired would install then delete

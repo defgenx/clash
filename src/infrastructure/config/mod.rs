@@ -275,6 +275,7 @@ pub struct Workflows {
     /// Jira site URL for the share dialog's "Post to Jira" destination.
     /// Empty disables the destination.
     pub jira_base_url: String,
+    pub ticket_url: String,
     /// Jira account email paired with the API token.
     pub jira_email: String,
     /// Jira API token; stored here like the webhook URLs.
@@ -306,6 +307,7 @@ impl Default for Workflows {
             jira_skill: default_str("workflows.jira_skill"),
             chat_skill: default_str("workflows.chat_skill"),
             jira_base_url: default_str("workflows.jira_base_url"),
+            ticket_url: default_str("workflows.ticket_url"),
             jira_email: default_str("workflows.jira_email"),
             jira_api_token: default_str("workflows.jira_api_token"),
         }
@@ -424,6 +426,18 @@ impl Config {
             small_lead: &self.workflows.small_review_model,
             large_subagent: &self.workflows.large_review_subagent_model,
         }
+    }
+
+    /// How a workflow agent links the tickets it mentions, for an item whose
+    /// own override is `item` — see `application::workflow::effective_ticket_links`.
+    /// GUI-only, like `workflow_pr_skill`.
+    #[allow(dead_code)]
+    pub fn workflow_ticket_links(&self, item: &str) -> crate::application::workflow::TicketLinks {
+        crate::application::workflow::effective_ticket_links(
+            item,
+            &self.workflows.ticket_url,
+            &self.workflows.jira_base_url,
+        )
     }
 
     /// The configured PR-creation skill for workflow agents, or `None` when

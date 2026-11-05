@@ -301,13 +301,12 @@
   }
 
   /// Appended *last* to every drawn page — in clash's tab and in the saved
-  /// page — so it beats the page's own width cap: a drawing written for a
-  /// 900px column otherwise stays a column in a 1600px pane. Prose at the top
-  /// level stays a readable measure; the page's large drawings (marked by
-  /// `markWideDrawings`) take the whole width, as tall as the pane allows.
+  /// page — so it beats the page's own width cap: a page written for a 900px
+  /// column otherwise stays a column in a 1600px pane. Prose and drawings
+  /// alike take the whole width; the large drawings (marked by
+  /// `markWideDrawings`) scale to it, as tall as the pane allows.
   const FRAME_BREATHE_STYLE =
     "html,body{max-width:none!important;width:auto!important}" +
-    "body>h1,body>h2,body>h3,body>p,body>ol,body>ul,body>table,body>blockquote{max-width:100ch}" +
     "svg[data-clash-wide]{display:block;width:100%!important;max-width:none!important;" +
     "height:auto!important;max-height:calc(100vh - 36px)}";
 
@@ -1040,6 +1039,32 @@
       if (current) current.style.transform = "none";
     });
 
+    // The document's contents rail follows the reading: the section reaching
+    // the top of the window lights its entry.
+    var toc = $("x-toc");
+    if (toc && window.IntersectionObserver) {
+      var links = {};
+      Array.prototype.forEach.call(toc.querySelectorAll("a"), function (a) {
+        links[a.getAttribute("href").slice(1)] = a;
+      });
+      var lit = null;
+      var spy = new IntersectionObserver(
+        function (entries) {
+          entries.forEach(function (e) {
+            var a = e.isIntersecting && links[e.target.id];
+            if (!a || a === lit) return;
+            if (lit) lit.classList.remove("on");
+            a.classList.add("on");
+            lit = a;
+          });
+        },
+        { rootMargin: "-80px 0px -70% 0px" }
+      );
+      Array.prototype.forEach.call(docEl.querySelectorAll("h2[id], h3[id]"), function (h) {
+        if (links[h.id]) spy.observe(h);
+      });
+    }
+
     // The drawing comes first: on a window where the panel would leave it
     // under 1100px, the panel starts closed (☰ Read / r opens it).
     if (window.innerWidth && window.innerWidth - 340 < 1100 && window.innerWidth > 900) root.classList.add("panel-closed");
@@ -1065,7 +1090,8 @@
       .replace(/\u2029/g, "\\u2029");
   }
 
-  const PAGE_STYLE = `
+  /// Colours, base typography and the top bar — shared by both page shapes.
+  const THEME_STYLE = `
   :root { color-scheme: light; --bg: #f7f6f3; --bg-panel: #ffffff; --bg-raised: #ffffff; --bg-hover: #efece6;
           --border: #e0dbd2; --fg: #26241f; --fg-dim: #6e6960; --accent: #b0741a; --on-accent: #fff;
           --green: #17803d; --warn: #96700f; --stage: #eeece7; --code: rgba(0,0,0,.05); --shadow: 0 10px 30px rgba(0,0,0,.12); }
@@ -1088,7 +1114,6 @@
   table { border-collapse: collapse; }
   th, td { border: 1px solid var(--border); padding: .3rem .6rem; vertical-align: top; }
   img, svg { max-width: 100%; }
-  .wf-mermaid { background: #fff; border-radius: 6px; padding: .5rem; text-align: center; overflow-x: auto; }
   .dim { color: var(--fg-dim); }
   [hidden] { display: none !important; }
 
@@ -1103,10 +1128,122 @@
   .spacer { flex: 1; }
   .icon { background: none; border: 1px solid var(--border); border-radius: 8px; min-width: 32px; height: 30px; cursor: pointer; }
   .icon:hover { border-color: var(--accent); }
+`;
 
-  .doc { max-width: 52rem; margin: 0 auto; padding: 28px 24px 80px; }
-  .doc h2 { margin-top: 2em; border-bottom: 1px solid var(--border); padding-bottom: .25em; scroll-margin-top: 64px; }
+  /// The shared document: the full window wide, a sticky contents rail
+  /// beside it, sections that breathe. The mermaid figure rules mirror
+  /// `.wf-mmd-*` in style.css (the GUI draws the same markup).
+  const DOC_STYLE = `
+  .doc { --doc-top: 76px; padding: clamp(24px, 4vw, 56px) clamp(18px, 5vw, 80px) 120px; }
+  .doc-plain { --doc-top: 24px; }
+  .doc-wrap { display: grid; grid-template-columns: minmax(0, 1fr); gap: clamp(28px, 3.5vw, 64px); align-items: start; }
+  .doc-wrap.has-toc { grid-template-columns: 250px minmax(0, 1fr); }
+  .doc-toc { position: sticky; top: var(--doc-top); max-height: calc(100vh - var(--doc-top) - 24px); overflow-y: auto;
+             padding: 14px 10px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 14px;
+             box-shadow: var(--shadow); font-size: 13px; line-height: 1.4; }
+  .doc-toc b { display: block; padding: 2px 10px 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--fg-dim); }
+  .doc-toc a { display: block; padding: 6px 10px; border-radius: 8px; color: var(--fg-dim); text-decoration: none; border-left: 2px solid transparent; }
+  .doc-toc a:hover { background: var(--bg-hover); color: var(--fg); }
+  .doc-toc a.l3 { padding-left: 24px; font-size: 12.5px; }
+  .doc-toc a.on { color: var(--accent); border-left-color: var(--accent); background: var(--bg-hover); }
+  .doc-body { min-width: 0; font-size: 15.5px; line-height: 1.75; }
+  .doc-body > :first-child { margin-top: 0; }
+  .doc-body > h1:first-child { font-size: clamp(28px, 3.2vw, 42px); line-height: 1.15; letter-spacing: -.01em;
+             padding: clamp(24px, 3vw, 40px) clamp(22px, 3vw, 44px); margin: 0 0 36px; border-radius: 20px;
+             border: 1px solid var(--border); box-shadow: var(--shadow);
+             background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 20%, var(--bg-panel)) 0%, var(--bg-panel) 65%); }
+  .doc-body > h1:first-child::before { content: "◫ clash · shared from a workflow item"; display: block; margin-bottom: 12px;
+             font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+  .doc-body h1, .doc-body h2, .doc-body h3, .doc-body h4 { line-height: 1.25; scroll-margin-top: calc(var(--doc-top) + 8px); }
+  .doc-body h2 { font-size: 22px; margin: 64px 0 18px; padding: 12px 18px; border-left: 4px solid var(--accent);
+             border-radius: 0 12px 12px 0; background: linear-gradient(90deg, var(--bg-hover), transparent); }
+  .doc-body h3 { font-size: 17px; margin: 36px 0 10px; }
+  .doc-body h4 { font-size: 15px; margin: 26px 0 8px; color: var(--fg-dim); }
+  .doc-body p, .doc-body ul, .doc-body ol { margin: 14px 0; }
+  .doc-body li { margin: 7px 0; }
+  .doc-body li::marker { color: var(--accent); }
+  .doc-body :not(pre) > code { background: var(--code); border: 1px solid var(--border); border-radius: 6px; padding: .08em .4em; }
+  .doc-body pre { padding: 18px 22px; border: 1px solid var(--border); border-radius: 14px; line-height: 1.55; }
+  .doc-body blockquote { margin: 22px 0; padding: 14px 20px; color: var(--fg); border-left: 4px solid var(--accent); border-radius: 0 12px 12px 0;
+             background: color-mix(in srgb, var(--accent) 9%, var(--bg-panel)); }
+  .doc-body blockquote > :first-child { margin-top: 0; }
+  .doc-body blockquote > :last-child { margin-bottom: 0; }
+  .doc-body table { width: 100%; margin: 22px 0; border-collapse: separate; border-spacing: 0; border: 1px solid var(--border);
+             border-radius: 14px; overflow: hidden; font-size: 14px; }
+  .doc-body th, .doc-body td { border: 0; border-bottom: 1px solid var(--border); padding: 10px 14px; text-align: left; }
+  .doc-body th { background: var(--bg-hover); font-weight: 600; }
+  .doc-body tr:last-child td { border-bottom: 0; }
+  .doc-body tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--bg-hover) 45%, transparent); }
+  .doc-body hr { border: 0; height: 1px; background: var(--border); margin: 48px 0; }
+  .doc-body img { border-radius: 12px; }
+  .doc-foot { margin-top: 72px; padding-top: 18px; border-top: 1px solid var(--border); font-size: 12px; color: var(--fg-dim); }
 
+  .wf-mmd { position: relative; margin: 24px 0; border: 1px solid var(--border); border-radius: 16px; overflow: hidden;
+            background: var(--bg-panel); box-shadow: var(--shadow); }
+  .wf-mmd > input { position: absolute; opacity: 0; pointer-events: none; }
+  .wf-mmd-bar { display: flex; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--border); background: var(--bg-hover); }
+  .wf-mmd-bar label { padding: 3px 12px; border-radius: 999px; font-size: 12px; cursor: pointer; color: var(--fg-dim); }
+  .wf-mmd-bar label:hover { color: var(--fg); }
+  .wf-mmd > .wf-mmd-d:checked ~ .wf-mmd-bar .wf-mmd-ld,
+  .wf-mmd > .wf-mmd-s:checked ~ .wf-mmd-bar .wf-mmd-ls { background: var(--accent); color: var(--on-accent); }
+  .wf-mmd > .wf-mmd-d:focus-visible ~ .wf-mmd-bar .wf-mmd-ld,
+  .wf-mmd > .wf-mmd-s:focus-visible ~ .wf-mmd-bar .wf-mmd-ls { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .wf-mmd .wf-mermaid { margin: 0; padding: clamp(14px, 2vw, 28px); background: var(--bg-panel); text-align: center; overflow-x: auto; }
+  /* Each diagram is drawn in both mermaid themes; the page's theme shows one. */
+  .wf-mmd .wf-mmd-dark { display: none; }
+  :root[data-theme="dark"] .wf-mmd .wf-mmd-dark { display: block; }
+  :root[data-theme="dark"] .wf-mmd .wf-mmd-light { display: none; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .wf-mmd .wf-mmd-dark { display: block; }
+    :root:not([data-theme="light"]) .wf-mmd .wf-mmd-light { display: none; }
+  }
+  .wf-mmd .wf-mmd-src { display: none; margin: 0; border: 0; border-radius: 0; }
+  .wf-mmd > .wf-mmd-s:checked ~ .wf-mermaid { display: none !important; }
+  .wf-mmd > .wf-mmd-s:checked ~ .wf-mmd-src { display: block; }
+
+  @media (max-width: 900px) {
+    .doc-wrap.has-toc { grid-template-columns: minmax(0, 1fr); }
+    .doc-toc { position: static; max-height: none; }
+  }
+  @media print {
+    .top, .doc-toc { display: none !important; }
+    .doc-wrap.has-toc { grid-template-columns: minmax(0, 1fr); }
+    .doc-body > h1:first-child, .doc-toc, .wf-mmd { box-shadow: none; }
+  }
+`;
+
+  /// The h2/h3 headings of a rendered document that carry an id, in order:
+  /// `[{ id, level, text }]` with `text` still HTML-escaped, tags removed.
+  function shareDocOutline(bodyHtml) {
+    const out = [];
+    const re = /<h([23])\b[^>]*\bid="([^"]+)"[^>]*>([\s\S]*?)<\/h\1>/gi;
+    let m;
+    while ((m = re.exec(String(bodyHtml || "")))) {
+      const text = m[3].replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+      if (text) out.push({ id: m[2], level: Number(m[1]), text });
+    }
+    return out;
+  }
+
+  /// The document section both page shapes share: a contents rail when the
+  /// document has at least two sections, the body beside it.
+  function shareDocSection(bodyHtml, { plain = false } = {}) {
+    const outline = shareDocOutline(bodyHtml);
+    const toc =
+      outline.length >= 2
+        ? `<nav class="doc-toc" id="x-toc" aria-label="Contents"><b>Contents</b>${outline
+            .map((h) => `<a class="l${h.level}" href="#${h.id.replace(/&/g, "&amp;")}">${h.text}</a>`)
+            .join("")}</nav>`
+        : "";
+    const foot = plain ? `<footer class="doc-foot">Exported from a clash workflow item.</footer>` : "";
+    return (
+      `<section class="doc${plain ? " doc-plain" : ""}" id="x-document"><div class="doc-wrap${toc ? " has-toc" : ""}">` +
+      `${toc}<article class="md doc-body">\n${bodyHtml}\n${foot}</article></div></section>`
+    );
+  }
+
+  /// The explorer around the explanations — only on a page that has some.
+  const EXPLORER_STYLE = `
   .explorer { display: flex; flex-direction: column; height: calc(100vh - 52px); }
   .toolbar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--bg-panel); flex-wrap: wrap; }
   .tb { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 8px; padding: 4px 12px; cursor: pointer; }
@@ -1201,6 +1338,8 @@
     .doc { display: block !important; }
   }`;
 
+  const PAGE_STYLE = THEME_STYLE + DOC_STYLE + EXPLORER_STYLE;
+
   /// Wrap rendered markdown in a self-contained HTML document — no external
   /// requests, readable in both OS themes. Mermaid diagrams arrive already
   /// rendered to inline SVG. `chapters` come from `shareExplanationChapter`;
@@ -1231,9 +1370,7 @@
 <div class="toolbar"><button type="button" class="tb" id="x-out" title="Zoom out (Esc)">⤺ Zoom out</button><nav class="path" id="x-path"></nav><span class="spacer"></span><div class="angles" id="x-angles"></div><button type="button" class="tb" id="x-read" title="Show or hide the reading panel (r)">☰ Read</button></div>
 <div class="body"><div class="stage" id="x-stage"><div class="hint">Click a box to zoom in · Esc zooms out · ← → next part</div></div><aside class="panel" id="x-panel"></aside></div>
 </div>
-<section class="doc" id="x-document"><article class="md">
-${bodyHtml}
-</article></section>
+${shareDocSection(bodyHtml)}
 <script type="application/json" id="x-data">${scriptJson(data)}</script>
 <script>${shareViewerScript()}</script>
 </body>
@@ -1241,7 +1378,8 @@ ${bodyHtml}
 `;
   }
 
-  /// The document alone: one readable column, no script.
+  /// The document alone, no script: the same full-width design as the
+  /// explorer page's document chapter, its theme following the OS.
   function plainHtmlDocument(esc, bodyHtml) {
     return `<!doctype html>
 <html lang="en">
@@ -1249,28 +1387,11 @@ ${bodyHtml}
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${esc}</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { max-width: 56rem; margin: 2rem auto; padding: 0 1.25rem;
-         font: 15px/1.6 -apple-system, "Segoe UI", system-ui, sans-serif; }
-  h1, h2, h3 { line-height: 1.25; }
-  h2 { margin-top: 2em; border-bottom: 1px solid rgba(128,128,128,.35); padding-bottom: .25em; }
-  code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .9em; }
-  pre { padding: .75rem 1rem; border-radius: 6px; overflow-x: auto;
-        background: rgba(128,128,128,.12); }
-  blockquote { margin: 0; padding-left: 1rem; border-left: 3px solid rgba(128,128,128,.4); }
-  table { border-collapse: collapse; }
-  th, td { border: 1px solid rgba(128,128,128,.35); padding: .3rem .6rem; }
-  img, svg { max-width: 100%; }
-  a { color: inherit; }
-  footer { margin-top: 3rem; font-size: .8em; opacity: .6; }
-  .wf-mermaid { background: #fff; border-radius: 6px; padding: .5rem; text-align: center; overflow-x: auto; }
-  @media print { body { margin: 0 auto; } }
+<style>${THEME_STYLE + DOC_STYLE}
 </style>
 </head>
 <body>
-${bodyHtml}
-<footer>Exported from a clash workflow item.</footer>
+${shareDocSection(bodyHtml, { plain: true })}
 </body>
 </html>
 `;
@@ -1286,6 +1407,8 @@ ${bodyHtml}
     shareHeadingSlug,
     shareHeadingSlugs,
     shareHtmlDocument,
+    shareDocOutline,
+    shareDocSection,
     detectTicketKey,
     SHARE_EXPLAIN_PAIRS,
     SHARE_EXPLAIN_DEPTHS,
