@@ -12,8 +12,10 @@ attention inbox and [Workflows](workflows-guide.md) are GUI-only.
 The first launch opens a **guided tour**, a spotlight walkthrough of
 workspaces, starting a session, sessions, the inbox, workflows, scratches,
 teams, files, tabs and panes, the terminal and settings. Replay it from
-*Settings → General → ▶ Show the tour*. It follows the layout: a step about a
-view opens that view first, and the sidebar is left as the tour found it.
+*Settings → General → ▶ Show the tour*. It follows the layout: its text describes
+what that layout shows (workspace chips or rail buttons, sections or one view
+at a time, docked panels or drawers), a step about a view opens that view
+first, and the sidebar is left as the tour found it.
 
 The first workflow item you open gets a second, shorter tour of the item tab
 (its header, the stage stepper, its documents, the next-step card, the last

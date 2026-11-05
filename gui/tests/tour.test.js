@@ -8,7 +8,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const { TOUR_STEPS, tourPlacement } = require("../dist/tour.js");
+const { TOUR_STEPS, windowTourSteps, tourPlacement } = require("../dist/tour.js");
 
 test("steps are well-formed: unique ids, anchors, tooltip-sized prose", () => {
   const ids = new Set();
@@ -17,7 +17,13 @@ test("steps are well-formed: unique ids, anchors, tooltip-sized prose", () => {
     ids.add(s.id);
     assert.ok(s.target && typeof s.target === "string", `${s.id}: target element id`);
     assert.ok(s.title && s.title.length <= 40, `${s.id}: title fits a tooltip header`);
-    assert.ok(s.body && s.body.length >= 40 && s.body.length <= 400, `${s.id}: body fits`);
+  }
+  // Every layout gets a complete tour, every body fitting the tooltip.
+  for (const layout of ["classic", "rail", "flyout"]) {
+    for (const s of windowTourSteps(layout)) {
+      assert.equal(typeof s.body, "string", `${layout}/${s.id}: one body`);
+      assert.ok(s.body.length >= 40 && s.body.length <= 400, `${layout}/${s.id}: body fits (${s.body.length})`);
+    }
   }
   assert.ok(TOUR_STEPS.length >= 6, "a tour of the whole window has at least 6 stops");
 });
@@ -65,7 +71,7 @@ test("browser branch publishes every global app.js reads", () => {
   const sandbox = { window: {} };
   vm.createContext(sandbox);
   vm.runInContext(src, sandbox);
-  for (const name of ["TOUR_STEPS", "tourPlacement"]) {
+  for (const name of ["TOUR_STEPS", "windowTourSteps", "itemTourSteps", "tourPlacement"]) {
     assert.ok(name in sandbox.window, `${name} must be published to window`);
   }
 });
@@ -94,4 +100,15 @@ test("the item tour resolves per view, with anchors the item view really renders
   // The documents step points at the outline in one view and the tab row in the other.
   assert.equal(itemTourSteps("workbench").find((s) => s.id === "item-documents").selector, ".wf-outline");
   assert.equal(itemTourSteps("tabs").find((s) => s.id === "item-documents").selector, ".wf-subbar");
+});
+
+test("the window tour speaks the layout: rail buttons, one-at-a-time panels, drawers", () => {
+  const body = (layout, id) => windowTourSteps(layout).find((s) => s.id === id).body;
+  assert.match(body("classic", "workspaces"), /⌘N creates one/);
+  assert.match(body("rail", "workspaces"), /button on the rail/);
+  assert.match(body("flyout", "workspaces"), /button on the rail/, "Flyout falls back to Rail's text");
+  assert.match(body("rail", "files"), /one panel at a time/);
+  assert.match(body("flyout", "files"), /drawer over the terminals/);
+  assert.match(body("flyout", "sessions"), /slides out from the rail/);
+  assert.match(body("classic", "inspector"), /beside Files/);
 });

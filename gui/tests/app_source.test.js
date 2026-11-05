@@ -1148,7 +1148,7 @@ test("the item tour runs once on its own, inside the item's tab, and can be repl
   assert.match(view, /tourBtn\.onclick = \(\) => startItemTour\(el\)/, "the ? in the header replays it");
   assert.match(APP, /tour: \{ seen: tourSeen, itemSeen: itemTourSeen \}/, "the flag persists like the window tour's");
   // Both tours share one overlay engine.
-  assert.match(extractFunction(APP, "startGuiTour"), /return runTour\(TOUR_STEPS,/);
+  assert.match(extractFunction(APP, "startGuiTour"), /return runTour\(windowTourSteps\(currentLayout\(\)\.id\),/);
   assert.match(item, /return runTour\(itemTourSteps\(view\),/);
 });
 

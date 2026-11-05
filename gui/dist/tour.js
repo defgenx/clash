@@ -17,9 +17,16 @@
       id: "workspaces",
       target: "workspace-bar",
       title: "Workspaces",
-      body:
-        "Group your sessions and tabs into workspaces — one per project or per train of thought. " +
-        "⌘N creates one; ⌘1-9 switches. Layout and open tabs survive a restart.",
+      body: {
+        classic:
+          "Group your sessions and tabs into workspaces — one per project or per train of thought. " +
+          "⌘N creates one; ⌘1-9 switches; right-click one to rename or close it. Layout and open " +
+          "tabs survive a restart.",
+        rail:
+          "Each workspace is a button on the rail, with its initials — one per project or per train " +
+          "of thought. ＋ or ⌘N creates one, ⌘1-9 switches, right-click renames or closes it. Layout " +
+          "and open tabs survive a restart.",
+      },
     },
     {
       id: "new-session",
@@ -33,10 +40,20 @@
       id: "sessions",
       target: "session-list",
       title: "Sessions",
-      body:
-        "Every session, grouped by state. Click to open its terminal, right-click for " +
-        "actions, ⟳ hot-restarts it on the newest claude binary. Sessions started " +
-        "elsewhere show up as “wild” — one click adopts them.",
+      body: {
+        classic:
+          "Every session, grouped by state. Click to open its terminal, right-click for " +
+          "actions, ⟳ hot-restarts it on the newest claude binary. Sessions started " +
+          "elsewhere show up as “wild” — one click adopts them.",
+        rail:
+          "The Sessions view: every session, grouped by state. Click to open its terminal, " +
+          "right-click for actions, ⟳ hot-restarts it. The rail switches between Sessions, " +
+          "Workflows, Scratches and Teams; clicking the open one folds the panel (⌘B).",
+        flyout:
+          "The Sessions view slides out from the rail: every session, grouped by state. Pick one " +
+          "and the panel slides away so the terminals keep the whole width; Esc or a click " +
+          "outside does the same, and ⌘B brings it back.",
+      },
     },
     {
       id: "inbox",
@@ -51,12 +68,16 @@
       id: "workflows",
       target: "wf-section",
       title: "Workflows",
-      body:
-        "A plan → review → implement → PR pipeline per work item, driven by agents and " +
-        "gated by your decisions. An agent review is applied in one click — it becomes " +
-        "the next round and the plan is versioned, so you can diff what changed. An item " +
-        "opens as a Workbench: its documents grouped on the left, the next step on top. " +
-        "⊞ opens the board, ⇄ the PR dashboard across all projects.",
+      body: {
+        classic:
+          "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
+          "by your decisions. An item opens as a Workbench: its documents grouped on the left, " +
+          "the next step on top. ⊞ opens the board, ⇄ the PR dashboard across all projects.",
+        rail:
+          "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
+          "by your decisions. Its rail icon counts the items waiting on you. An item opens as a " +
+          "Workbench: documents on the left, the next step on top. ⊞ board, ⇄ PR dashboard.",
+      },
     },
     {
       id: "scratches",
@@ -76,19 +97,39 @@
       id: "files",
       target: "files-btn",
       title: "Files",
-      body:
-        "A file explorer for the focused session's folder (⌘E), with git status on every " +
-        "file. ⌘P finds a file by name; click to preview it with syntax highlighting, " +
-        "right-click to @-mention it in the session or open it in your editor.",
+      body: {
+        classic:
+          "A file explorer for the focused session's folder (⌘E), with git status on every " +
+          "file. ⌘P finds a file by name; click to preview it, right-click to @-mention it in " +
+          "the session. It docks on the right, beside the Inspector if that is open too.",
+        rail:
+          "A file explorer for the focused session's folder (⌘E), with git status on every " +
+          "file and ⌘P to find one. It docks on the right one panel at a time: its header " +
+          "switches between Files and the Inspector.",
+        flyout:
+          "A file explorer for the focused session's folder (⌘E), with git status on every " +
+          "file and ⌘P to find one. It opens as a drawer over the terminals; Esc or a click " +
+          "outside closes it.",
+      },
     },
     {
       id: "inspector",
       target: "details-btn",
       title: "Inspector",
-      body:
-        "ⓘ opens the focused session at a glance: status, agent, branch, where it runs " +
-        "(click a path to copy it), and one-click conversation, subagents, diff, IDE and " +
-        "ports. Rail shows it or Files one at a time; Flyout opens both as drawers.",
+      body: {
+        classic:
+          "ⓘ opens the focused session at a glance: status, agent, branch, where it runs " +
+          "(click a path to copy it), and one-click conversation, subagents, diff, IDE and " +
+          "ports. It docks on the right and can stay open beside Files.",
+        rail:
+          "ⓘ opens the focused session at a glance: status, agent, branch, where it runs " +
+          "(click a path to copy it), and one-click conversation, subagents, diff, IDE and " +
+          "ports. It shares the right side with Files, one at a time.",
+        flyout:
+          "ⓘ opens the focused session at a glance: status, agent, branch, where it runs " +
+          "(click a path to copy it), and one-click conversation, subagents, diff, IDE and " +
+          "ports — as a drawer over the terminals, like Files.",
+      },
     },
     {
       id: "tabs",
@@ -96,10 +137,9 @@
       title: "Tabs & panes",
       body:
         "Sessions, terminals and browser tabs live up here. ⌘D splits the view into " +
-        "panes, or drag a tab onto a pane: the highlighted half is where it splits, " +
-        "the outer edge of the whole area spans that side, and the tab strip " +
-        "unsplits a pane (drag the dividers to resize). ⌘⇧T opens a shell, ⌘⇧B a " +
-        "browser tab.",
+        "panes, or drag a tab onto a pane: the highlighted half is where it splits. " +
+        "The buttons on the right are grouped: new tab, stash all, panes, then the " +
+        "Files and Inspector panels, lit while open.",
     },
     {
       id: "terminal",
@@ -120,6 +160,17 @@
         "Rerun this tour from Settings → General.",
     },
   ];
+
+  /// The window tour for one sidebar layout (layout.js ids). A step's body
+  /// is a string or `{ classic, rail, flyout }`; Flyout falls back to Rail's
+  /// text where it says nothing of its own (it is a rail layout too).
+  function windowTourSteps(layout) {
+    const pick = (v) => {
+      if (!v || typeof v !== "object") return v;
+      return v[layout] || (layout === "flyout" ? v.rail : null) || v.classic;
+    };
+    return TOUR_STEPS.map((s) => ({ id: s.id, target: s.target, title: s.title, body: pick(s.body) }));
+  }
 
   /// Where the tooltip goes relative to the anchor rectangle. Tries the
   /// preferred side, then the others (right → left → bottom → top), and
@@ -238,7 +289,7 @@
       .filter((s) => s.selector && s.body);
   }
 
-  const api = { TOUR_STEPS, ITEM_TOUR_STEPS, itemTourSteps, tourPlacement };
+  const api = { TOUR_STEPS, windowTourSteps, ITEM_TOUR_STEPS, itemTourSteps, tourPlacement };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else Object.assign(window, api);

@@ -16186,7 +16186,7 @@ document.addEventListener("click", () => iconTip.remove(), true);
 // Runs once on first launch (persisted top-level in gui-state.json) and any
 // time from Settings → clash → "Show the tour".
 
-/// The window tour (tour.js TOUR_STEPS): anchors are element ids, revealed
+/// The window tour (tour.js windowTourSteps): anchors are element ids, revealed
 /// under the current layout first (`tourAnchorFor`).
 function startGuiTour() {
   // The tour switches views and slides panels out to point at things; it
@@ -16196,7 +16196,9 @@ function startGuiTour() {
     flyout: flyoutOpen,
     collapsed: $("sidebar").classList.contains("collapsed"),
   };
-  return runTour(TOUR_STEPS, {
+  // The steps' text follows the layout: chips or rail buttons, docked panels
+  // or drawers (tour.js windowTourSteps).
+  return runTour(windowTourSteps(currentLayout().id), {
     exists: (step) => !!document.getElementById(step.target),
     resolve: (step) => {
       const a = tourAnchorFor(step.target);
