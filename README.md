@@ -191,7 +191,8 @@ previews, and *Mention in session* to type `@path` into the agent.
 
 Pick how the window is arranged in *Settings → Appearance → Layout*: **Classic**
 (one sidebar, collapsible sections), **Rail** (an icon rail for workspaces and
-views, one full-height panel) or
+views, one full-height panel), **Tabbed** (one sidebar, a tab strip switching
+full-height views) or
 **Flyout** (the rail alone; views slide over the terminals). Same features in
 each — see [docs/gui.md → Layouts](docs/gui.md#layouts). A workflow item opens
 as a **Workbench** (a grouped outline beside the content, the next step on top)

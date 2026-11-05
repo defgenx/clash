@@ -21,12 +21,17 @@
   /// - `exclusive`: one section is open at a time and takes the room.
   /// - `rail`: workspaces and views live in an icon rail; the panel shows one
   ///   view at a time, full height.
+  /// - `tabs`: the sidebar keeps its workspace chips and switches views with
+  ///   a tab strip at its top (the exclusive rule without a rail).
   /// - `overlay`: the panel floats over the terminals and closes on its own,
   ///   so the terminals keep the window's whole width.
   /// - `panels`: how the right-hand panels (Files ⌘E, Inspector ⓘ) open —
   ///   `stack`: docked, any together; `single`: docked, one at a time (the
   ///   rail's one-view rule, on the right); `overlay`: a drawer over the
   ///   panes, one at a time, closing like Flyout's panel.
+  /// - `quickSettings`: where the sidebar's quick settings live — `footer`
+  ///   (a collapsible section under the lists) or `popover` (behind the ⚙ at
+  ///   the rail's foot, so they never read as part of the open view).
   const LAYOUTS = [
     {
       id: "classic",
@@ -36,6 +41,7 @@
       rail: false,
       overlay: false,
       panels: "stack",
+      quickSettings: "footer",
     },
     {
       id: "rail",
@@ -45,6 +51,18 @@
       rail: true,
       overlay: false,
       panels: "single",
+      quickSettings: "popover",
+    },
+    {
+      id: "tabbed",
+      label: "Tabbed",
+      detail: "One sidebar with workspace chips; a tab strip at its top switches between the views, each full height.",
+      exclusive: true,
+      rail: false,
+      tabs: true,
+      overlay: false,
+      panels: "stack",
+      quickSettings: "footer",
     },
     {
       id: "flyout",
@@ -54,6 +72,7 @@
       rail: true,
       overlay: true,
       panels: "overlay",
+      quickSettings: "popover",
     },
   ];
 
@@ -90,9 +109,11 @@
       active: current,
       views,
       rail: layout.rail,
+      viewTabs: !!layout.tabs,
       panel: layout.overlay ? !!panelOpen : true,
       workspaceChips: !layout.rail,
       panels: layout.panels || "stack",
+      quickSettings: layout.quickSettings || "footer",
     };
   }
 
@@ -108,7 +129,8 @@
     return letters.toUpperCase();
   }
 
-  /// The rail's view buttons with their badges (`badges[id]` = a count).
+  /// The view switcher's buttons — the rail's icons or Tabbed's tab strip —
+  /// with their badges (`badges[id]` = a count).
   function railItems(active, badges = {}) {
     return SIDEBAR_VIEWS.map((v) => ({
       id: v.id,

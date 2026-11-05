@@ -49,6 +49,10 @@
           "The Sessions view: every session, grouped by state. Click to open its terminal, " +
           "right-click for actions, ⟳ hot-restarts it. The rail switches between Sessions, " +
           "Workflows, Scratches and Teams; clicking the open one folds the panel (⌘B).",
+        tabbed:
+          "The Sessions view: every session, grouped by state. Click to open its terminal, " +
+          "right-click for actions, ⟳ hot-restarts it. The tabs above switch between Sessions, " +
+          "Workflows, Scratches and Teams, each taking the sidebar's full height.",
         flyout:
           "The Sessions view slides out from the rail: every session, grouped by state. Pick one " +
           "and the panel slides away so the terminals keep the whole width; Esc or a click " +
@@ -153,11 +157,18 @@
       id: "settings",
       target: "sidebar-footer",
       title: "Settings",
-      body:
-        "Quick settings live here; ⚙ All settings… (⌘,) opens every setting by topic — " +
-        "theme, terminal, paths, workflows, models, trackers. Appearance → Layout rearranges " +
-        "this window (Classic, Rail, Flyout); Workflow item view picks Workbench or Tabs. " +
-        "Rerun this tour from Settings → General.",
+      body: {
+        classic:
+          "Quick settings live here; ⚙ All settings… (⌘,) opens every setting by topic — " +
+          "theme, terminal, paths, workflows, models, trackers. Appearance → Layout rearranges " +
+          "this window (Classic, Rail, Flyout); Workflow item view picks Workbench or Tabs. " +
+          "Rerun this tour from Settings → General.",
+        rail:
+          "Quick settings open from the ⚙ at the foot of the rail; ⚙ All settings… (⌘,) opens " +
+          "every setting by topic — theme, terminal, paths, workflows, models, trackers. " +
+          "Appearance → Layout rearranges this window (Classic, Rail, Flyout); Workflow item " +
+          "view picks Workbench or Tabs. Rerun this tour from Settings → General.",
+      },
     },
   ];
 

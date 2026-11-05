@@ -69,7 +69,7 @@ test("every view's elements and every layout exist where app.js expects them", (
 });
 
 test("Focus is gone: a saved Focus layout falls back to Classic", () => {
-  assert.deepEqual(L.LAYOUTS.map((l) => l.id), ["classic", "rail", "flyout"]);
+  assert.deepEqual(L.LAYOUTS.map((l) => l.id), ["classic", "rail", "tabbed", "flyout"]);
   assert.equal(L.layoutOf("focus").id, "classic");
 });
 
@@ -82,4 +82,24 @@ test("right panels: stacked in Classic, one at a time in Rail, drawers in Flyout
   assert.deepEqual(L.rightPanelsAfterOpen("overlay", ["details"], "files"), ["files"]);
   assert.deepEqual(L.rightPanelsAfterOpen("stack", [], "files"), ["files"]);
   for (const l of L.LAYOUTS) assert.ok(["stack", "single", "overlay"].includes(l.panels), `${l.id} says how panels open`);
+});
+
+test("quick settings: a footer section in Classic, the rail's ⚙ popover in Rail and Flyout", () => {
+  assert.equal(L.sidebarPlan("classic", {}).quickSettings, "footer");
+  assert.equal(L.sidebarPlan("rail", {}).quickSettings, "popover");
+  assert.equal(L.sidebarPlan("flyout", {}).quickSettings, "popover");
+  // A rail layout without the popover would leave them under the open view.
+  for (const l of L.LAYOUTS) assert.equal(l.quickSettings === "popover", l.rail, `${l.id}: popover iff rail`);
+});
+
+test("Tabbed: one view at a time like Rail, but switched by a tab strip beside the workspace chips", () => {
+  const plan = L.sidebarPlan("tabbed", { active: "teams", open: { wfOpen: true } });
+  assert.equal(plan.rail, false);
+  assert.equal(plan.viewTabs, true);
+  assert.equal(plan.workspaceChips, true, "no rail, so the chips stay");
+  assert.equal(plan.panel, true);
+  assert.deepEqual(plan.views.filter((v) => v.shown).map((v) => v.id), ["teams"]);
+  assert.ok(plan.views.find((v) => v.id === "teams").fill);
+  assert.equal(plan.quickSettings, "footer");
+  for (const id of ["classic", "rail", "flyout"]) assert.equal(L.sidebarPlan(id, {}).viewTabs, false, id);
 });

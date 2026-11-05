@@ -139,8 +139,8 @@ const ICONS = {
     '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>',
   chevron: '<polyline points="9 18 15 12 9 6"/>',
-  sliders:
-    '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
+  gear:
+    '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
   inbox:
     '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
@@ -695,6 +695,8 @@ function workspacesJson() {
 let sidebarView = "sessions";
 /// Whether the Flyout panel is out.
 let flyoutOpen = false;
+/// Whether the rail's ⚙ quick-settings popover is out (Rail, Flyout).
+let railSettingsOpen = false;
 /// Classic's own open sections, kept while an exclusive layout drives the
 /// flags — switching back restores them, and they are what gets persisted.
 let classicOpen = null;
@@ -3926,6 +3928,7 @@ function overlayOut() {
   return (
     !!document.querySelector(".settings-backdrop:not(.hidden)") ||
     (currentLayout().overlay && flyoutOpen) ||
+    railSettingsOpen ||
     rightDrawerOpen()
   );
 }
@@ -14081,6 +14084,10 @@ document.addEventListener("keydown", (e) => {
       closeRightDrawers();
       return;
     }
+    if (railSettingsOpen) {
+      toggleRailSettings(false);
+      return;
+    }
     if (flyoutOpen) {
       closeFlyout();
       return;
@@ -14915,6 +14922,7 @@ async function applySidebarLayout() {
   const body = document.body.classList;
   for (const l of SidebarLayout.LAYOUTS) body.toggle(`layout-${l.id}`, l.id === layout.id);
   body.toggle("layout-has-rail", plan.rail);
+  body.toggle("layout-exclusive", layout.exclusive);
   body.toggle("layout-panel-out", plan.panel);
   for (const v of plan.views) {
     const def = SidebarLayout.viewOf(v.id);
@@ -14935,6 +14943,8 @@ async function applySidebarLayout() {
   $("files-resizer").classList.toggle("hidden", plan.panels === "overlay" || !filesPanel.open);
   $("details-resizer").classList.toggle("hidden", plan.panels === "overlay" || !detailsShown());
   $("layout-rail").classList.toggle("hidden", !plan.rail);
+  $("layout-tabs").classList.toggle("hidden", !plan.viewTabs);
+  placeQuickSettings(plan.quickSettings);
   syncSidebarRail();
   // What shows is painted above, before any list has to load: expanding a
   // section fetches its data, and a view switch must not wait on that.
@@ -15011,6 +15021,10 @@ function sidebarCollapse() {
 function tourAnchorFor(id) {
   const layout = currentLayout();
   if (id === "workspace-bar" && layout.rail) return { id: "layout-rail", revealed: false };
+  if (id === "sidebar-footer" && layout.rail) {
+    toggleRailSettings(true);
+    return { id: "rail-settings", revealed: true };
+  }
   const el = $(id);
   const inSidebar = !!(el && el.closest("#sidebar"));
   let revealed = false;
@@ -15053,10 +15067,12 @@ $("sidebar").addEventListener("click", (ev) => {
   if (ev.target instanceof Element && ev.target.closest(".session-item")) setTimeout(closeFlyout, 0);
 });
 
-/// Repaint the rail of the Rail and Flyout layouts: workspaces, views with
-/// their badges, the inbox, settings and an update button when one is found.
-/// Cheap, and called after anything that changes a badge.
+/// Repaint the view switcher of the one-view layouts: the rail of Rail and
+/// Flyout (workspaces, views with their badges, the inbox, quick settings and
+/// an update button when one is found) or Tabbed's tab strip. Cheap, and
+/// called after anything that changes a badge.
 function syncSidebarRail() {
+  if (currentLayout().tabs) return syncSidebarTabs();
   const rail = $("layout-rail");
   if (!rail || !currentLayout().rail) return;
   rail.replaceChildren();
@@ -15108,8 +15124,73 @@ function syncSidebarRail() {
       startUpdateFlow()
     );
   }
-  button("rail-view", svgIcon("sliders", 18), "Settings (⌘,)", () => openSettings());
+  button(
+    "rail-view rail-settings-btn" + (railSettingsOpen ? " active" : ""),
+    svgIcon("gear", 18),
+    "Quick settings — ⌘, opens every setting",
+    () => toggleRailSettings()
+  );
 }
+
+/// Tabbed's tab strip: one tab per view, badged like the rail's icons.
+function syncSidebarTabs() {
+  const strip = $("layout-tabs");
+  if (!strip) return;
+  strip.replaceChildren();
+  const plan = sidebarPlanNow();
+  for (const item of SidebarLayout.railItems(plan.active, { workflows: state.wfUnread.size })) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "layout-tab" + (item.active ? " active" : "");
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", item.active ? "true" : "false");
+    b.title = item.label;
+    b.innerHTML =
+      svgIcon(item.icon, 13) +
+      `<span class="layout-tab-label">${escapeHtml(item.label)}</span>` +
+      (item.badge > 0 ? `<span class="rail-badge">${item.badge}</span>` : "");
+    b.onclick = () => sidebarShow(item.id);
+    strip.appendChild(b);
+  }
+}
+
+/// Where the quick settings live (layout.js `quickSettings`): Classic's
+/// sidebar footer, or the rail's ⚙ popover. The same nodes move, so their
+/// bindings travel with them.
+function placeQuickSettings(where) {
+  const body = $("settings-body");
+  const home = where === "popover" ? $("rail-settings") : $("sidebar-footer");
+  if (body.parentElement !== home) {
+    if (where === "popover") home.appendChild(body);
+    else home.insertBefore(body, home.querySelector(".footer-row"));
+  }
+  if (where !== "popover" && railSettingsOpen) toggleRailSettings(false);
+}
+
+/// Open or close the rail's ⚙ popover. It paints over the panes, so the
+/// native browser webviews hide while it is out (overlayOut).
+function toggleRailSettings(open = !railSettingsOpen) {
+  railSettingsOpen = !!open && currentLayout().rail;
+  $("rail-settings").classList.toggle("hidden", !railSettingsOpen);
+  if (railSettingsOpen) {
+    closeFlyout();
+    syncQuickSettings();
+    hideBrowserWebviews();
+  } else {
+    fitAll();
+  }
+  syncSidebarRail();
+}
+
+// A press outside the popover (and outside a menu or dialog it opened) puts
+// it away; the ⚙ itself toggles.
+document.addEventListener("mousedown", (ev) => {
+  if (!railSettingsOpen) return;
+  const t = ev.target;
+  if (!(t instanceof Element)) return;
+  if (t.closest("#rail-settings, .rail-settings-btn, #context-menu, .dialog-backdrop, .settings-backdrop, .tour-backdrop, .tour-tip")) return;
+  toggleRailSettings(false);
+});
 
 /// Re-open the sections and re-apply the geometry saved in gui-state.json.
 /// localStorage is only a same-session cache the bare WKWebView loses, so the
@@ -15406,6 +15487,7 @@ function settingsOpen() {
 }
 
 function openSettings(tab) {
+  if (railSettingsOpen) toggleRailSettings(false);
   hideBrowserWebviews();
   $("settings-modal").classList.remove("hidden");
   renderSettingsTabs();
@@ -16208,6 +16290,7 @@ function startGuiTour() {
       sidebarView = layoutBefore.view;
       flyoutOpen = layoutBefore.flyout;
       $("sidebar").classList.toggle("collapsed", layoutBefore.collapsed);
+      if (railSettingsOpen) toggleRailSettings(false);
       applySidebarLayout();
       // Completed or skipped, the tour has been seen — never auto-runs again.
       tourSeen = true;

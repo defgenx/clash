@@ -11,6 +11,10 @@
   <div id="app">
     <!-- The icon rail of the Rail and Flyout layouts (layout.js and the sidebar layout adapter). -->
     <nav id="layout-rail" class="hidden" aria-label="Workspaces and views"></nav>
+    <!-- The rail layouts' quick settings: #settings-body moves in here (placeQuickSettings). -->
+    <div id="rail-settings" class="hidden" role="dialog" aria-label="Quick settings">
+      <div class="section-label">SETTINGS</div>
+    </div>
     <aside id="sidebar">
       <div id="sidebar-header">
         <img class="logo" src="logo.svg" alt="clash" />
@@ -23,6 +27,8 @@
         <div id="workspace-chips"></div>
         <button id="new-ws-btn" class="icon-btn mini" title="New workspace (⌘N)">+</button>
       </div>
+      <!-- The Tabbed layout's view switcher (painted by syncSidebarRail). -->
+      <nav id="layout-tabs" class="hidden" role="tablist" aria-label="Views"></nav>
       <button id="new-session-btn" class="primary-action" title="Start a new session (⌘T)">＋ New session</button>
       <div id="search-wrap">
         <input id="search" type="text" placeholder="Search sessions…  ( / )" autocomplete="off" spellcheck="false" />
@@ -190,9 +196,10 @@
               <select id="set-theme" title="Recolors the whole app and every terminal (◐ dark · ◑ light)"></select>
             </label>
             <label class="setting-row inline">Layout
-              <select id="set-layout" title="How the sidebar is arranged. Classic: one column, collapsible sections. Rail: an icon rail and one full-height view. Flyout: the rail alone, views slide over the terminals.">
+              <select id="set-layout" title="How the sidebar is arranged. Classic: one column, collapsible sections. Rail: an icon rail and one full-height view. Tabbed: one column, a tab strip switches between full-height views. Flyout: the rail alone, views slide over the terminals.">
                 <option value="classic">Classic</option>
                 <option value="rail">Rail</option>
+                <option value="tabbed">Tabbed</option>
                 <option value="flyout">Flyout</option>
               </select>
             </label>

@@ -19,7 +19,7 @@ test("steps are well-formed: unique ids, anchors, tooltip-sized prose", () => {
     assert.ok(s.title && s.title.length <= 40, `${s.id}: title fits a tooltip header`);
   }
   // Every layout gets a complete tour, every body fitting the tooltip.
-  for (const layout of ["classic", "rail", "flyout"]) {
+  for (const layout of ["classic", "rail", "tabbed", "flyout"]) {
     for (const s of windowTourSteps(layout)) {
       assert.equal(typeof s.body, "string", `${layout}/${s.id}: one body`);
       assert.ok(s.body.length >= 40 && s.body.length <= 400, `${layout}/${s.id}: body fits (${s.body.length})`);
@@ -111,4 +111,9 @@ test("the window tour speaks the layout: rail buttons, one-at-a-time panels, dra
   assert.match(body("flyout", "files"), /drawer over the terminals/);
   assert.match(body("flyout", "sessions"), /slides out from the rail/);
   assert.match(body("classic", "inspector"), /beside Files/);
+  assert.match(body("rail", "settings"), /⚙ at the foot of the rail/);
+  assert.match(body("flyout", "settings"), /⚙ at the foot of the rail/);
+  assert.match(body("classic", "settings"), /Quick settings live here/);
+  assert.match(body("tabbed", "sessions"), /The tabs above switch/);
+  assert.match(body("tabbed", "workspaces"), /⌘N creates one/, "Tabbed keeps the chips, so Classic's text");
 });

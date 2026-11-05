@@ -1166,4 +1166,17 @@ test("both right panels open through the layout's rule, and no overlay lets a we
   assert.match(over, /settings-backdrop:not\(\.hidden\)/);
   assert.match(over, /flyoutOpen/);
   assert.match(over, /rightDrawerOpen\(\)/);
+  assert.match(over, /railSettingsOpen/, "the rail's ⚙ popover paints over the panes too");
+});
+
+test("the rail layouts keep the quick settings behind the rail's ⚙, not under the open view", () => {
+  // The layout says where they live; the same nodes move, bindings and all.
+  assert.match(extractFunction(APP, "applySidebarLayout"), /placeQuickSettings\(plan\.quickSettings\)/);
+  assert.match(extractFunction(APP, "placeQuickSettings"), /\$\("rail-settings"\)/);
+  // The rail's gear opens the popover rather than jumping to the full modal.
+  const rail = extractFunction(APP, "syncSidebarRail");
+  assert.match(rail, /svgIcon\("gear", 18\)/);
+  assert.match(rail, /\(\) => toggleRailSettings\(\)/);
+  assert.doesNotMatch(rail, /=> openSettings\(\)/);
+  assert.match(extractFunction(APP, "tourAnchorFor"), /"rail-settings"/);
 });
