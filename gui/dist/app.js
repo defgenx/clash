@@ -684,7 +684,7 @@ function workspacesJson() {
     // localStorage — gui-state.json is the durable copy, seeded back at boot.
     sidebar: sidebarPersistState(),
     // First-run guided tour: shown once, rerunnable from Settings.
-    tour: { seen: tourSeen },
+    tour: { seen: tourSeen, itemSeen: itemTourSeen },
   });
 }
 
@@ -799,6 +799,8 @@ let savedSidebar = null;
 /// top-level blob field like `sidebar` — not a setting, so it stays out of
 /// the schema-validated settings blob.
 let tourSeen = false;
+/// Whether the workflow item tour already ran once — same rules as `tourSeen`.
+let itemTourSeen = false;
 
 function applyWorkspacesData(data, { migratable = false } = {}) {
   if (!data) return false;
@@ -807,6 +809,7 @@ function applyWorkspacesData(data, { migratable = false } = {}) {
     savedSidebar = data.sidebar;
   }
   if (data.tour && data.tour.seen) tourSeen = true;
+  if (data.tour && data.tour.itemSeen) itemTourSeen = true;
   // Settings ride along with the workspaces blob but load independently — a
   // fresh install with no workspaces yet still gets its saved settings. First
   // source wins: loadWorkspaces tries disk before the localStorage fallback,
@@ -6997,6 +7000,14 @@ async function buildWorkflowView(el, project, slug) {
     head.appendChild(prBtn);
   }
   if (item.prStackIssue) head.appendChild(wfStackIssueChip(item.prStackIssue));
+  {
+    const tourBtn = document.createElement("button");
+    tourBtn.className = "icon-btn wf-tour-btn";
+    tourBtn.textContent = "?";
+    tourBtn.title = "A tour of this view";
+    tourBtn.onclick = () => startItemTour(el);
+    head.appendChild(tourBtn);
+  }
   if (!bigDrawing) el.appendChild(head);
 
   // ── Pipeline stepper ──
@@ -7208,6 +7219,14 @@ async function buildWorkflowView(el, project, slug) {
   }
 
   renderWfSubView(body, el, item, ts);
+
+  // The first item anyone opens gets the item tour, once — after the window
+  // tour, so a first launch is not two tours deep. Rebuilds re-check the flag.
+  if (!itemTourSeen && tourSeen && !bigDrawing) {
+    setTimeout(() => {
+      if (!itemTourSeen && el.isConnected && el.offsetParent) startItemTour(el);
+    }, 700);
+  }
 }
 
 /// Workbench's outline: the item's sub-views grouped (Build, Feedback,
@@ -14882,20 +14901,32 @@ function sidebarCollapse() {
   fitAll();
 }
 
-/// Where a tour step points under the current layout. The exclusive layouts
-/// show one view at a time, so a step about a view switches to it first; the
-/// workspace chips are the rail's workspace buttons when there is a rail.
+/// Where a tour step points under the current layout, made visible first:
+/// the workspace chips are the rail's workspace buttons when there is a rail;
+/// anything in the sidebar needs the sidebar back (⌘B may have folded it) and,
+/// in Flyout, its panel out; a step about a view switches the exclusive
+/// layouts to that view. `startGuiTour` puts all of it back when it ends.
 function tourAnchorFor(id) {
   const layout = currentLayout();
   if (id === "workspace-bar" && layout.rail) return { id: "layout-rail", revealed: false };
-  const view = SidebarLayout.SIDEBAR_VIEWS.find((v) => v.elements.includes(id));
-  if (!view || !layout.exclusive || (sidebarView === view.id && (!layout.overlay || flyoutOpen))) {
-    return { id, revealed: false };
+  const el = $(id);
+  const inSidebar = !!(el && el.closest("#sidebar"));
+  let revealed = false;
+  if (inSidebar && $("sidebar").classList.contains("collapsed")) {
+    $("sidebar").classList.remove("collapsed");
+    revealed = true;
   }
-  sidebarView = view.id;
-  if (layout.overlay) flyoutOpen = true;
-  applySidebarLayout();
-  return { id, revealed: true };
+  const view = SidebarLayout.SIDEBAR_VIEWS.find((v) => v.elements.includes(id));
+  if (view && layout.exclusive && sidebarView !== view.id) {
+    sidebarView = view.id;
+    revealed = true;
+  }
+  if (inSidebar && layout.overlay && !flyoutOpen) {
+    flyoutOpen = true;
+    revealed = true;
+  }
+  if (revealed) applySidebarLayout();
+  return { id, revealed };
 }
 
 function closeFlyout() {
@@ -15868,6 +15899,17 @@ for (const { id, kind, title } of PATH_SETTINGS) {
 $("settings-filter").addEventListener("input", () => filterSettings($("settings-filter").value));
 
 $("tour-guide-btn").onclick = () => startGuiTour();
+// The item tour walks a tab that is open: the focused one, else any.
+$("tour-item-btn").onclick = () => {
+  const focused = state.activeTab && state.activeTab.startsWith("view:workflow:") ? state.open.get(state.activeTab) : null;
+  const entry = focused || [...state.open].find(([k]) => k.startsWith("view:workflow:"))?.[1];
+  if (!entry) {
+    flashToast("Open a workflow item first — the tour walks through its tab");
+    return;
+  }
+  closeSettings();
+  setTimeout(() => startItemTour(entry.el), 0);
+};
 
 // ── TUI launcher (sidebar header) ───────────────────────────────
 // Gold when a clash TUI process is running somewhere, grey when not.
@@ -16042,12 +16084,59 @@ document.addEventListener("click", () => iconTip.remove(), true);
 // Runs once on first launch (persisted top-level in gui-state.json) and any
 // time from Settings → clash → "Show the tour".
 
+/// The window tour (tour.js TOUR_STEPS): anchors are element ids, revealed
+/// under the current layout first (`tourAnchorFor`).
 function startGuiTour() {
-  if (document.querySelector(".tour-backdrop")) return; // one at a time
+  // The tour switches views and slides panels out to point at things; it
+  // leaves the sidebar the way it found it.
+  const layoutBefore = {
+    view: sidebarView,
+    flyout: flyoutOpen,
+    collapsed: $("sidebar").classList.contains("collapsed"),
+  };
+  return runTour(TOUR_STEPS, {
+    exists: (step) => !!document.getElementById(step.target),
+    resolve: (step) => {
+      const a = tourAnchorFor(step.target);
+      return { find: () => document.getElementById(a.id), revealed: a.revealed };
+    },
+    onEnd: () => {
+      sidebarView = layoutBefore.view;
+      flyoutOpen = layoutBefore.flyout;
+      $("sidebar").classList.toggle("collapsed", layoutBefore.collapsed);
+      applySidebarLayout();
+      // Completed or skipped, the tour has been seen — never auto-runs again.
+      tourSeen = true;
+    },
+  });
+}
+
+/// The tour of one workflow item's tab (tour.js ITEM_TOUR_STEPS) in the view
+/// it is showing. Anchors are found inside that tab: several items can be
+/// open at once. Runs once on its own (the first item opened), and on the
+/// **?** in the item header or Settings → General.
+function startItemTour(root) {
+  const view = root.classList.contains("wf-bench-view") ? "workbench" : "tabs";
+  return runTour(itemTourSteps(view), {
+    exists: (step) => !!root.querySelector(step.selector),
+    resolve: (step) => ({ find: () => root.querySelector(step.selector), revealed: false }),
+    onEnd: () => {
+      itemTourSeen = true;
+    },
+  });
+}
+
+/// The spotlight overlay both tours share. `exists(step)` keeps the steps
+/// whose anchor is there now; `resolve(step)` reveals it if it must
+/// (`revealed`: measure next frame) and says how to `find` it; `onEnd` runs
+/// once when the tour is completed or skipped. Returns whether it started —
+/// one tour at a time.
+function runTour(allSteps, { exists, resolve, onEnd }) {
+  if (document.querySelector(".tour-backdrop")) return false; // one at a time
   // Steps whose anchor exists right now; a hidden/removed element would ring
   // nothing.
-  const steps = TOUR_STEPS.filter((s) => document.getElementById(s.target));
-  if (!steps.length) return;
+  const steps = allSteps.filter(exists);
+  if (!steps.length) return false;
 
   const backdrop = document.createElement("div");
   backdrop.className = "tour-backdrop";
@@ -16059,12 +16148,12 @@ function startGuiTour() {
   backdrop.append(ring, tip);
 
   let i = 0;
+  let placeSeq = 0;
   const done = () => {
     window.removeEventListener("resize", show);
     document.removeEventListener("keydown", onKey, true);
     backdrop.remove();
-    // Completed or skipped, the tour has been seen — never auto-runs again.
-    tourSeen = true;
+    onEnd();
     saveWorkspaces();
     if (typeof fitAll === "function") fitAll();
   };
@@ -16091,13 +16180,16 @@ function startGuiTour() {
 
   const show = () => {
     const step = steps[i];
-    const anchor = tourAnchorFor(step.target);
-    // When the layout had to change what is on screen, measure next frame.
-    if (anchor.revealed) requestAnimationFrame(() => place(step, anchor.id));
-    else place(step, anchor.id);
+    const anchor = resolve(step);
+    // When the layout had to change what is on screen, measure next frame —
+    // unless a newer step has been shown meanwhile (Next pressed within a
+    // frame), whose ring must not be overwritten by this stale one.
+    const token = ++placeSeq;
+    if (anchor.revealed) requestAnimationFrame(() => token === placeSeq && place(step, anchor.find));
+    else place(step, anchor.find);
   };
-  const place = (step, anchorId) => {
-    const target = document.getElementById(anchorId);
+  const place = (step, find) => {
+    const target = find();
     if (!target) {
       if (i < steps.length - 1) move(1);
       else done();
@@ -16168,6 +16260,7 @@ function startGuiTour() {
   document.addEventListener("keydown", onKey, true);
   window.addEventListener("resize", show);
   show();
+  return true;
 }
 
 // ── Boot ────────────────────────────────────────────────────────

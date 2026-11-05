@@ -3372,3 +3372,7 @@ body.layout-flyout #sidebar-resizer { display: none; }
 }
 .wf-bench .wf-actions-item.wf-actions-folded .wf-actions-caption { display: none; }
 .wf-bench .wf-actions > .wf-next { padding-right: 84px; }
+
+/* The item header's tour button: small, last, out of the PR chips' way. */
+.wf-head .wf-tour-btn { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border); font-size: 12px; font-weight: 700; margin-left: 4px; color: var(--fg-dim); }
+.wf-head .wf-tour-btn:hover { color: var(--fg); border-color: var(--accent); }

@@ -69,3 +69,29 @@ test("browser branch publishes every global app.js reads", () => {
     assert.ok(name in sandbox.window, `${name} must be published to window`);
   }
 });
+
+test("the item tour resolves per view, with anchors the item view really renders", () => {
+  const { ITEM_TOUR_STEPS, itemTourSteps } = require("../dist/tour.js");
+  const APP = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "dist", "app.js"), "utf8");
+  const ids = new Set();
+  for (const s of ITEM_TOUR_STEPS) {
+    assert.ok(s.id && !ids.has(s.id), `duplicate/missing id ${s.id}`);
+    ids.add(s.id);
+  }
+  for (const view of ["workbench", "tabs"]) {
+    const steps = itemTourSteps(view);
+    assert.ok(steps.length >= 6, `${view}: a tour of an item has at least 6 stops`);
+    for (const s of steps) {
+      assert.equal(typeof s.selector, "string", `${view}/${s.id}: one selector`);
+      assert.equal(typeof s.body, "string", `${view}/${s.id}: one body`);
+      assert.ok(s.title.length <= 40 && s.body.length >= 40 && s.body.length <= 400, `${view}/${s.id} fits`);
+      // Every class the selector names is one app.js gives an element.
+      for (const cls of s.selector.match(/\.[\w-]+/g) || []) {
+        assert.ok(APP.includes(cls.slice(1)), `${view}/${s.id}: app.js never renders ${cls}`);
+      }
+    }
+  }
+  // The documents step points at the outline in one view and the tab row in the other.
+  assert.equal(itemTourSteps("workbench").find((s) => s.id === "item-documents").selector, ".wf-outline");
+  assert.equal(itemTourSteps("tabs").find((s) => s.id === "item-documents").selector, ".wf-subbar");
+});

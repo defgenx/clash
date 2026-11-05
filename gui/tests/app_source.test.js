@@ -1124,3 +1124,30 @@ test("both workflow item views come from one sub-view list, and More clicks the 
   assert.match(fold, /action: \(\) => btns\[it\.index\]\.click\(\)/);
   assert.doesNotMatch(fold, /invoke\(/);
 });
+
+test("the tour reaches every anchor under every layout and leaves the sidebar as it was", () => {
+  // Flyout hides its panel and ⌘B folds the sidebar: a step anchored inside it
+  // would ring an invisible element.
+  const anchor = extractFunction(APP, "tourAnchorFor");
+  assert.match(anchor, /el\.closest\("#sidebar"\)/);
+  assert.match(anchor, /classList\.remove\("collapsed"\)/);
+  assert.match(anchor, /layout\.overlay && !flyoutOpen/);
+  assert.match(anchor, /"layout-rail"/, "the workspaces step points at the rail when there is one");
+  const tour = extractFunction(APP, "startGuiTour");
+  assert.match(tour, /const layoutBefore = \{/);
+  assert.match(tour, /sidebarView = layoutBefore\.view;/);
+  assert.match(tour, /flyoutOpen = layoutBefore\.flyout;/);
+});
+
+test("the item tour runs once on its own, inside the item's tab, and can be replayed", () => {
+  const item = extractFunction(APP, "startItemTour");
+  assert.match(item, /root\.querySelector\(step\.selector\)/, "anchors are found inside that tab");
+  assert.match(item, /itemTourSeen = true/);
+  const view = extractFunction(APP, "buildWorkflowView");
+  assert.match(view, /if \(!itemTourSeen && tourSeen && !bigDrawing\)/, "never on top of the window tour");
+  assert.match(view, /tourBtn\.onclick = \(\) => startItemTour\(el\)/, "the ? in the header replays it");
+  assert.match(APP, /tour: \{ seen: tourSeen, itemSeen: itemTourSeen \}/, "the flag persists like the window tour's");
+  // Both tours share one overlay engine.
+  assert.match(extractFunction(APP, "startGuiTour"), /return runTour\(TOUR_STEPS,/);
+  assert.match(item, /return runTour\(itemTourSteps\(view\),/);
+});

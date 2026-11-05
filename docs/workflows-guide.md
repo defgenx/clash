@@ -132,7 +132,8 @@ view*), over the same documents and actions:
 
 The grouping is the pure `gui/dist/wf-outline.js` (tested); both views are
 built from one sub-view list, so they can never disagree about what an item
-has.
+has. The **?** in an item's header walks through its tab in either view (it
+also runs by itself the first time you open an item).
 
 | Tab | Holds |
 |---|---|

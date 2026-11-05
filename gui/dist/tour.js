@@ -54,8 +54,9 @@
       body:
         "A plan → review → implement → PR pipeline per work item, driven by agents and " +
         "gated by your decisions. An agent review is applied in one click — it becomes " +
-        "the next round and the plan is versioned, so you can diff what changed. ⊞ opens " +
-        "the board, ⇄ the PR dashboard across all projects.",
+        "the next round and the plan is versioned, so you can diff what changed. An item " +
+        "opens as a Workbench: its documents grouped on the left, the next step on top. " +
+        "⊞ opens the board, ⇄ the PR dashboard across all projects.",
     },
     {
       id: "scratches",
@@ -105,8 +106,9 @@
       title: "Settings",
       body:
         "Quick settings live here; ⚙ All settings… (⌘,) opens every setting by topic — " +
-        "theme, terminal, paths, workflows, models, trackers. Shared settings persist in " +
-        "config.toml, so the TUI sees them too. Rerun this tour from Settings → General.",
+        "theme, terminal, paths, workflows, models, trackers. Appearance → Layout rearranges " +
+        "this window (Classic, Focus, Rail, Flyout); Workflow item view picks Workbench or " +
+        "Tabs. Rerun this tour from Settings → General.",
     },
   ];
 
@@ -140,7 +142,94 @@
     return { left, top, side };
   }
 
-  const api = { TOUR_STEPS, tourPlacement };
+  /// The tour of a workflow item's tab — run the first time an item opens,
+  /// replayable from the **?** in its header and Settings → General. Anchors
+  /// are selectors inside the item tab (several items can be open, so ids
+  /// would collide). A step may differ by item view: `selector` and `body`
+  /// are either a string or `{ workbench, tabs }`; a step naming `views`
+  /// appears only in those. A missing anchor skips its step (no review strip
+  /// on an item never reviewed).
+  const ITEM_TOUR_STEPS = [
+    {
+      id: "item-head",
+      selector: ".wf-head",
+      title: "The item",
+      body:
+        "Its title (double-click to rename), its stage, and its pull requests — right-click " +
+        "a PR chip for that PR's own actions: open it, mark it ready, post a review.",
+    },
+    {
+      id: "item-pipeline",
+      selector: ".wf-pipeline",
+      title: "Where it stands",
+      body:
+        "Every stage this item goes through. A ✓ stage behind it is clickable: it moves the " +
+        "item back there, deleting nothing. The chips count its change rounds and agent reviews.",
+    },
+    {
+      id: "item-documents",
+      selector: { workbench: ".wf-outline", tabs: ".wf-subbar" },
+      title: "Its documents",
+      body: {
+        workbench:
+          "Grouped by what they are: Build (the plan, the diff), Feedback (your change " +
+          "requests, the agent reviews, the hand-off), Explained, History. Badges count rounds " +
+          "and open comments; a dim entry is not written yet.",
+        tabs:
+          "One tab per document: the plan, your change requests, the agent reviews, the " +
+          "explanations, the diff with its comments, the timeline. Counts ride on the labels.",
+      },
+    },
+    {
+      id: "item-next",
+      selector: ".wf-actions",
+      title: "What now",
+      body: {
+        workbench:
+          "The suggested next step and why, this step's actions (🔍 Check… runs reviews and " +
+          "explanations), then the decisions that move the item. Back, share and abandon are " +
+          "under More.",
+        tabs:
+          "The suggested next step and why, this step's actions (🔍 Check… runs reviews and " +
+          "explanations), the decisions that move the item, and on the right back, share and " +
+          "abandon.",
+      },
+    },
+    {
+      id: "item-review",
+      selector: ".wf-review-strip",
+      title: "The last review",
+      body:
+        "The latest agent review's verdict, and whether it was applied or published yet. " +
+        "Click it for the full report; ↻ Apply review turns its findings into the next round.",
+    },
+    {
+      id: "item-content",
+      selector: ".wf-body",
+      title: "The content",
+      body:
+        "The document or diff you picked. In the diff, click a line to comment: open " +
+        "comments become the next round's work when you request changes.",
+    },
+    {
+      id: "item-settings",
+      selector: { workbench: ".wf-outline > .wf-outline-item:last-child", tabs: ".wf-subtab-end" },
+      title: "This item's settings",
+      body:
+        "Its own knobs: title, diff base, agent, PR skill, ticket, how its rounds run. " +
+        "Settings → Appearance → Workflow item view switches between Workbench and Tabs.",
+    },
+  ];
+
+  /// The item tour for one view, every per-view field resolved.
+  function itemTourSteps(view) {
+    const pick = (v) => (v && typeof v === "object" ? v[view] : v);
+    return ITEM_TOUR_STEPS.filter((s) => !s.views || s.views.includes(view))
+      .map((s) => ({ id: s.id, selector: pick(s.selector), title: s.title, body: pick(s.body) }))
+      .filter((s) => s.selector && s.body);
+  }
+
+  const api = { TOUR_STEPS, ITEM_TOUR_STEPS, itemTourSteps, tourPlacement };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else Object.assign(window, api);
