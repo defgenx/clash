@@ -3564,6 +3564,12 @@ async function openSession(sid, label, opts = {}) {
 
   // Deferred restores keep their saved pane slot and must not steal focus
   // (focusing would resume them); live opens claim the focused pane.
+  // Wired before the first fit: the layout's real fit (renderPanes' rAF) lands
+  // while `open_session` is in flight, and a resize missed then leaves the PTY
+  // at the stale size — Claude drawn in part of the pane.
+  term.onResize(({ cols, rows }) => {
+    invoke("resize_session", { sessionId: sid, cols, rows }).catch(() => {});
+  });
   if (!defer) assignToFocusedPane(sid);
   term.open(el);
   wireTerminalDrop(el, sid);
@@ -3584,6 +3590,8 @@ async function openSession(sid, label, opts = {}) {
         cols: term.cols,
         rows: term.rows,
       });
+      // A resize sent before the attach finished was refused ("Not attached").
+      invoke("resize_session", { sessionId: sid, cols: term.cols, rows: term.rows }).catch(() => {});
     } catch (e) {
       term.writeln(`\x1b[31mFailed to open session: ${e}\x1b[0m`);
     }
@@ -3597,9 +3605,6 @@ async function openSession(sid, label, opts = {}) {
       return;
     }
     invoke("send_input", { sessionId: sid, text: data }).catch(console.error);
-  });
-  term.onResize(({ cols, rows }) => {
-    invoke("resize_session", { sessionId: sid, cols, rows }).catch(() => {});
   });
   // Copy-on-select (off by default). The bare WKWebView's navigator.clipboard
   // is unreliable (no secure-context/edit-menu plumbing), so route through the
@@ -3661,6 +3666,7 @@ async function resumeDeferred(sid) {
       cols: entry.term.cols,
       rows: entry.term.rows,
     });
+    invoke("resize_session", { sessionId: sid, cols: entry.term.cols, rows: entry.term.rows }).catch(() => {});
   } catch (e) {
     entry.term.writeln(`\x1b[31mFailed to resume: ${e}\x1b[0m`);
   }

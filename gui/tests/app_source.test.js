@@ -1044,3 +1044,19 @@ test("a mermaid syntax error never draws into the app's body", () => {
   const sweep = extractFunction(APP, "removeMermaidLeftovers");
   assert.match(sweep, /parentNode === document\.body/, "only strays under <body>, never the placed svg");
 });
+
+test("a terminal's PTY follows every resize, including those during open_session", () => {
+  // The layout's real fit lands while `open_session` is awaited; a resize hook
+  // wired after the await missed it and left Claude drawn in part of the pane.
+  const body = extractFunction(APP, "openSession");
+  const hook = body.indexOf("term.onResize(");
+  const fit = body.indexOf("fitAddon.fit()");
+  const open = body.indexOf('invoke("open_session"');
+  assert.ok(hook >= 0 && fit >= 0 && open >= 0, "openSession still fits, opens and hooks resizes");
+  assert.ok(hook < fit && hook < open, "term.onResize is wired before the first fit and the open");
+  assert.match(
+    body.slice(open),
+    /invoke\("resize_session"/,
+    "the size is re-sent once the attach completes"
+  );
+});
