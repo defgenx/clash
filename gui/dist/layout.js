@@ -7,8 +7,8 @@
   "use strict";
 
   /// Everything the sidebar can show. `elements` are the DOM ids a view owns;
-  /// `openKey` is the `state` flag a collapsible section keeps (Classic and
-  /// Focus collapse sections, the rail layouts never do).
+  /// `openKey` is the `state` flag a collapsible section keeps (Classic
+  /// collapses sections, the rail layouts never do).
   const SIDEBAR_VIEWS = [
     { id: "sessions", label: "Sessions", icon: "terminal", elements: ["new-session-btn", "search-wrap", "session-list"] },
     { id: "workflows", label: "Workflows", icon: "pr", elements: ["wf-section"], resizer: "wf-resizer", openKey: "wfOpen" },
@@ -23,6 +23,10 @@
   ///   view at a time, full height.
   /// - `overlay`: the panel floats over the terminals and closes on its own,
   ///   so the terminals keep the window's whole width.
+  /// - `panels`: how the right-hand panels (Files ⌘E, Inspector ⓘ) open —
+  ///   `stack`: docked, any together; `single`: docked, one at a time (the
+  ///   rail's one-view rule, on the right); `overlay`: a drawer over the
+  ///   panes, one at a time, closing like Flyout's panel.
   const LAYOUTS = [
     {
       id: "classic",
@@ -31,14 +35,7 @@
       exclusive: false,
       rail: false,
       overlay: false,
-    },
-    {
-      id: "focus",
-      label: "Focus",
-      detail: "One sidebar, sessions on top and one section open at a time below them, filling the height.",
-      exclusive: true,
-      rail: false,
-      overlay: false,
+      panels: "stack",
     },
     {
       id: "rail",
@@ -47,6 +44,7 @@
       exclusive: true,
       rail: true,
       overlay: false,
+      panels: "single",
     },
     {
       id: "flyout",
@@ -55,6 +53,7 @@
       exclusive: true,
       rail: true,
       overlay: true,
+      panels: "overlay",
     },
   ];
 
@@ -72,9 +71,8 @@
   /// list expanded (`expanded`) and stretched to the free height (`fill`),
   /// plus whether the panel itself is visible.
   ///
-  /// `active` is the view the user last chose (rail layouts, and the open
-  /// section in Focus); `open` the Classic collapse flags; `panelOpen` whether
-  /// a Flyout panel is out.
+  /// `active` is the view the user last chose (the rail layouts); `open` the
+  /// Classic collapse flags; `panelOpen` whether a Flyout panel is out.
   function sidebarPlan(layoutId, { active = "sessions", open = {}, panelOpen = false } = {}) {
     const layout = layoutOf(layoutId);
     const current = viewOf(active) ? active : "sessions";
@@ -82,13 +80,6 @@
       if (!layout.exclusive) {
         // Classic: everything stacked, each section as its own flag says.
         return { id: v.id, shown: true, expanded: v.openKey ? !!open[v.openKey] : true, fill: false };
-      }
-      if (!layout.rail) {
-        // Focus: sessions always on top; of the sections, only the active one
-        // is open, and it takes the rest of the height.
-        if (v.id === "sessions") return { id: v.id, shown: true, expanded: true, fill: false };
-        const on = v.id === current;
-        return { id: v.id, shown: true, expanded: on, fill: on };
       }
       // Rail / Flyout: the active view alone, full height.
       const on = v.id === current;
@@ -101,13 +92,8 @@
       rail: layout.rail,
       panel: layout.overlay ? !!panelOpen : true,
       workspaceChips: !layout.rail,
+      panels: layout.panels || "stack",
     };
-  }
-
-  /// The section Focus opens when a user clicks a section header: the clicked
-  /// one, or none when it was already the open one (sessions stay).
-  function focusToggle(active, clicked) {
-    return active === clicked ? "sessions" : clicked;
   }
 
   /// A workspace's rail badge: up to two initials of its name (`Saturn Core`
@@ -133,14 +119,27 @@
     }));
   }
 
+  /// The right-hand panels, in the order they sit left to right.
+  const RIGHT_PANELS = ["files", "details"];
+
+  /// Which right panels stay open when `which` opens, given the layout's
+  /// `panels` mode and the ones open now: `stack` keeps the others, `single`
+  /// and `overlay` show one at a time.
+  function rightPanelsAfterOpen(mode, open, which) {
+    const now = (open || []).filter((p) => RIGHT_PANELS.includes(p));
+    if (mode === "stack") return RIGHT_PANELS.filter((p) => p === which || now.includes(p));
+    return [which];
+  }
+
   const api = {
+    RIGHT_PANELS,
+    rightPanelsAfterOpen,
     SIDEBAR_VIEWS,
     LAYOUTS,
     DEFAULT_LAYOUT,
     layoutOf,
     viewOf,
     sidebarPlan,
-    focusToggle,
     workspaceInitials,
     railItems,
   };

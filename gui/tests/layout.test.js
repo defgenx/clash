@@ -20,21 +20,6 @@ test("Classic stacks every view and keeps each section's own collapse flag", () 
   assert.equal(p.workspaceChips, true);
 });
 
-test("Focus keeps sessions on top and opens exactly one section, filling", () => {
-  const v = by(L.sidebarPlan("focus", { active: "scratches", open: { wfOpen: true } }));
-  assert.equal(v.sessions.expanded, true);
-  assert.deepEqual(
-    ["workflows", "scratches", "teams"].filter((id) => v[id].expanded),
-    ["scratches"],
-    "one open section, whatever Classic's flags say"
-  );
-  assert.equal(v.scratches.fill, true);
-  assert.ok(["workflows", "teams"].every((id) => v[id].shown), "the other headers stay");
-  // Clicking the open section closes it; clicking another switches.
-  assert.equal(L.focusToggle("scratches", "scratches"), "sessions");
-  assert.equal(L.focusToggle("scratches", "teams"), "teams");
-});
-
 test("Rail and Flyout show the active view alone, full height", () => {
   for (const id of ["rail", "flyout"]) {
     const p = L.sidebarPlan(id, { active: "workflows" });
@@ -81,4 +66,20 @@ test("every view's elements and every layout exist where app.js expects them", (
   sandbox.globalThis = sandbox;
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "..", "dist", "layout.js"), "utf8"), sandbox);
   assert.equal(typeof sandbox.SidebarLayout.sidebarPlan, "function");
+});
+
+test("Focus is gone: a saved Focus layout falls back to Classic", () => {
+  assert.deepEqual(L.LAYOUTS.map((l) => l.id), ["classic", "rail", "flyout"]);
+  assert.equal(L.layoutOf("focus").id, "classic");
+});
+
+test("right panels: stacked in Classic, one at a time in Rail, drawers in Flyout", () => {
+  assert.equal(L.sidebarPlan("classic", {}).panels, "stack");
+  assert.equal(L.sidebarPlan("rail", {}).panels, "single");
+  assert.equal(L.sidebarPlan("flyout", {}).panels, "overlay");
+  assert.deepEqual(L.rightPanelsAfterOpen("stack", ["files"], "details"), ["files", "details"]);
+  assert.deepEqual(L.rightPanelsAfterOpen("single", ["files"], "details"), ["details"]);
+  assert.deepEqual(L.rightPanelsAfterOpen("overlay", ["details"], "files"), ["files"]);
+  assert.deepEqual(L.rightPanelsAfterOpen("stack", [], "files"), ["files"]);
+  for (const l of L.LAYOUTS) assert.ok(["stack", "single", "overlay"].includes(l.panels), `${l.id} says how panels open`);
 });

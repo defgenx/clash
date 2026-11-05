@@ -605,11 +605,11 @@ pub const PROPS: &[Prop] = &[
     .local(),
     Prop::new(
         "appearance.layout",
-        Kind::Enum(&["classic", "focus", "rail", "flyout"]),
+        Kind::Enum(&["classic", "rail", "flyout"]),
         Val::Str("classic"),
         "How the GUI's sidebar is arranged: `classic` (one column, collapsible sections), \
-         `focus` (one column, one section open at a time), `rail` (an icon rail and one \
-         full-height view) or `flyout` (the rail alone, views slide over the terminals).",
+         `rail` (an icon rail and one full-height view) or `flyout` (the rail alone, views \
+         slide over the terminals).",
     )
     .gui("layout")
     .local(),

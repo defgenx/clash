@@ -91,9 +91,12 @@
         <div id="tabs"></div>
         <div id="topbar-actions">
           <button id="new-term-btn" class="icon-btn" title="New tab — terminal (⌘⇧T) or browser (⌘⇧B)"></button>
+          <span class="tb-sep" aria-hidden="true"></span>
           <button id="stash-all-btn" class="icon-btn wide" title="Stash all running sessions">⏸ all</button>
+          <span class="tb-sep" aria-hidden="true"></span>
           <button id="split-btn" class="icon-btn" title="Add split pane (⌘D)">◫</button>
           <button id="unsplit-btn" class="icon-btn" title="Close focused pane (⌘⇧D)">◻</button>
+          <span class="tb-sep" aria-hidden="true"></span>
           <button id="files-btn" class="icon-btn" title="Files — browse the focused session's folder (⌘E · ⌘P to find a file)"></button>
           <button id="details-btn" class="icon-btn" title="Toggle details panel">ⓘ</button>
         </div>
@@ -109,6 +112,7 @@
         <div class="panel-resizer hidden" id="files-resizer" title="Drag to resize"></div>
         <aside id="files-panel" class="hidden">
           <div id="files-header">
+            <span class="panel-switch" role="tablist" aria-label="Right panel"><button type="button" data-panel="files" class="on">Files</button><button type="button" data-panel="details">Inspector</button></span>
             <span id="files-root" class="files-root" title="">No folder</span>
             <span id="files-branch" class="files-branch hidden"></span>
             <span class="spacer"></span>
@@ -124,6 +128,11 @@
         </aside>
         <div class="panel-resizer hidden" id="details-resizer" title="Drag to resize"></div>
         <div id="details" class="hidden">
+          <div id="details-head">
+            <span class="panel-switch" role="tablist" aria-label="Right panel"><button type="button" data-panel="files">Files</button><button type="button" data-panel="details" class="on">Inspector</button></span>
+            <span id="details-title">Details</span>
+            <button id="details-close" class="icon-btn" type="button" title="Close (ⓘ)">✕</button>
+          </div>
           <div id="details-body"></div>
         </div>
       </div>
@@ -181,9 +190,8 @@
               <select id="set-theme" title="Recolors the whole app and every terminal (◐ dark · ◑ light)"></select>
             </label>
             <label class="setting-row inline">Layout
-              <select id="set-layout" title="How the sidebar is arranged. Classic: one column, collapsible sections. Focus: one column, one section open at a time. Rail: an icon rail and one full-height view. Flyout: the rail alone, views slide over the terminals.">
+              <select id="set-layout" title="How the sidebar is arranged. Classic: one column, collapsible sections. Rail: an icon rail and one full-height view. Flyout: the rail alone, views slide over the terminals.">
                 <option value="classic">Classic</option>
-                <option value="focus">Focus</option>
                 <option value="rail">Rail</option>
                 <option value="flyout">Flyout</option>
               </select>

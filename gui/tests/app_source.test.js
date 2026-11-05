@@ -1151,3 +1151,19 @@ test("the item tour runs once on its own, inside the item's tab, and can be repl
   assert.match(extractFunction(APP, "startGuiTour"), /return runTour\(TOUR_STEPS,/);
   assert.match(item, /return runTour\(itemTourSteps\(view\),/);
 });
+
+test("both right panels open through the layout's rule, and no overlay lets a webview paint over it", () => {
+  // Files and the inspector both make room the way the layout says (stack /
+  // one at a time / drawer); an opener that skipped it would stack panels in
+  // Rail or dock one in Flyout.
+  assert.match(extractFunction(APP, "openDetailsPanel"), /rightPanelOpening\("details"\)/);
+  assert.match(extractFunction(APP, "toggleFilesPanel"), /rightPanelOpening\("files"\)/);
+  assert.match(extractFunction(APP, "rightPanelOpening"), /SidebarLayout\.rightPanelsAfterOpen\(/);
+  // Native browser webviews paint over all DOM: the sync must stand down for
+  // the Settings modal and the layouts' overlays, not only `.dialog-backdrop`.
+  assert.match(extractFunction(APP, "syncBrowserWebviews"), /overlayOut\(\)\) return;/);
+  const over = extractFunction(APP, "overlayOut");
+  assert.match(over, /settings-backdrop:not\(\.hidden\)/);
+  assert.match(over, /flyoutOpen/);
+  assert.match(over, /rightDrawerOpen\(\)/);
+});

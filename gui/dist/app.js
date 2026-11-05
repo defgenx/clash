@@ -691,7 +691,7 @@ function workspacesJson() {
 /// What the sidebar looks like right now, for persistence: open/collapsed per
 /// section plus every panel size (widths + section heights).
 // Sidebar layout adapter state (see "Sidebar layout adapter").
-/// The view the rail layouts show, and the section Focus has open.
+/// The view the rail layouts show.
 let sidebarView = "sessions";
 /// Whether the Flyout panel is out.
 let flyoutOpen = false;
@@ -3870,11 +3870,64 @@ let detailsShellFor = null;
 
 function showDetails(sid) {
   state.detailsFor = sid;
-  $("details").classList.remove("hidden");
-  $("details-resizer").classList.remove("hidden");
-  $("details-btn").classList.add("on");
+  openDetailsPanel("Session");
   renderDetails();
-  fitAll();
+}
+
+/// Open the inspector (session or team details) as the layout presents it —
+/// see `rightPanelOpening`.
+function openDetailsPanel(title) {
+  rightPanelOpening("details");
+  $("details-title").textContent = title;
+  $("details").classList.remove("hidden");
+  $("details-btn").classList.add("on");
+  afterRightPanelOpened();
+}
+
+function detailsShown() {
+  return !$("details").classList.contains("hidden");
+}
+
+/// The right-hand panels (Files ⌘E, Inspector ⓘ) follow the layout's
+/// `panels` mode (layout.js): Classic stacks them, Rail shows one at a time,
+/// Flyout opens them as drawers over the panes. Called before a panel shows,
+/// it closes whichever the mode says must make room.
+function rightPanelOpening(which) {
+  const open = [filesPanel.open ? "files" : null, detailsShown() ? "details" : null].filter(Boolean);
+  const keep = SidebarLayout.rightPanelsAfterOpen(sidebarPlanNow().panels, open, which);
+  if (filesPanel.open && !keep.includes("files")) toggleFilesPanel(false);
+  if (detailsShown() && !keep.includes("details")) hideDetails();
+}
+
+/// After a right panel shows: a drawer paints over the panes, so the native
+/// browser webviews hide (syncBrowserWebviews keeps them hidden while it is
+/// out); a docked panel re-fits the panes. Resizers only exist when docked.
+function afterRightPanelOpened() {
+  const overlay = sidebarPlanNow().panels === "overlay";
+  $("files-resizer").classList.toggle("hidden", overlay || !filesPanel.open);
+  $("details-resizer").classList.toggle("hidden", overlay || !detailsShown());
+  if (overlay) hideBrowserWebviews();
+  else fitAll();
+}
+
+/// An open right-panel drawer (Flyout), if any.
+function rightDrawerOpen() {
+  return sidebarPlanNow().panels === "overlay" && (filesPanel.open || detailsShown());
+}
+
+function closeRightDrawers() {
+  if (filesPanel.open) toggleFilesPanel(false);
+  if (detailsShown()) hideDetails();
+}
+
+/// Whether something painted over the panes is out: the native browser
+/// webviews must stay hidden under it (they paint over all DOM).
+function overlayOut() {
+  return (
+    !!document.querySelector(".settings-backdrop:not(.hidden)") ||
+    (currentLayout().overlay && flyoutOpen) ||
+    rightDrawerOpen()
+  );
 }
 
 function hideDetails() {
@@ -4145,32 +4198,52 @@ function renderDetails() {
   }
   detailsShellFor = s.id;
   const st = statusInfo(s);
+  const agent = s.agent === "omp" ? "OMP" : "Claude Code";
+  const where = s.cwd || s.project_path || "";
+  // A path or id row copies on click: these are exactly the values one pastes
+  // into a terminal or a ticket.
+  const row = (k, v, { id = "", copy = false } = {}) =>
+    `<div class="ins-row${copy && v ? " copyable" : ""}"${copy && v ? ` data-copy="${escapeHtml(v)}" data-what="${escapeHtml(k.toLowerCase())}" title="Click to copy"` : ""}>` +
+    `<span class="k">${escapeHtml(k)}</span><span class="v"${id ? ` id="${id}"` : ""}>${escapeHtml(v || "—")}</span></div>`;
   body.innerHTML = `
-    <h3 id="d-kv-name">${escapeHtml(displayName(s))}</h3>
-    <div class="kv"><span class="k">Status</span><span class="status-label ${st.cls}" id="d-kv-status">${st.icon} ${st.label}</span></div>
-    ${kv("Branch", s.git_branch)}
-    ${kv("Project", s.worktree_project || s.project)}
-    ${s.worktree ? kv("Worktree", s.worktree) : ""}
-    ${kv("CWD", s.cwd || s.project_path)}
-    ${kv("Agents", s.subagent_count > 0 ? String(s.subagent_count) : "—", "d-kv-agents")}
-    ${kv("Modified", s.last_modified, "d-kv-modified")}
-    <h4>SUMMARY</h4>
-    <div class="kv"><span class="v" id="d-kv-summary">${escapeHtml(s.summary || s.first_prompt || "—")}</span></div>
-    <h4>OPEN AS TAB</h4>
-    <div class="actions">
-      <button id="d-conv">🗨 Conversation</button>
-      <button id="d-subs">⛭ Subagents</button>
-      <button id="d-diff">± Diff</button>
+    <div class="ins-hero">
+      <h3 id="d-kv-name">${escapeHtml(displayName(s))}</h3>
+      <div class="ins-chips">
+        <span class="status-label ${st.cls}" id="d-kv-status">${st.icon} ${st.label}</span>
+        <span class="ins-chip">${escapeHtml(agent)}</span>
+        ${s.git_branch ? `<span class="ins-chip" title="Branch">⎇ ${escapeHtml(s.git_branch)}</span>` : ""}
+        ${s.source === "Wild" ? `<span class="ins-chip" title="Started outside clash">🌿 Wild</span>` : ""}
+      </div>
     </div>
-    <h4>TOOLS</h4>
-    <div class="actions">
-      <button id="d-ports">Ports</button>
-      <button id="d-ide">Open in IDE</button>
-      <button id="d-browser">Open in browser</button>
+    <div class="ins-actions">
+      <button id="d-conv" title="Open the conversation as a tab">🗨<span>Conversation</span></button>
+      <button id="d-subs" title="Open its subagents as a tab">⛭<span>Subagents</span></button>
+      <button id="d-diff" title="Open its working-tree diff as a tab">±<span>Diff</span></button>
+      <button id="d-ide" title="Open the folder in an editor">⌘<span>Open in IDE</span></button>
+      <button id="d-browser" title="Open its repository or PR in a browser">↗<span>Browser</span></button>
+      <button id="d-ports" title="List the ports its processes listen on">⇆<span>Ports</span></button>
     </div>
+    <section class="ins-card">
+      <h4>Summary</h4>
+      <p class="ins-summary" id="d-kv-summary">${escapeHtml(s.summary || s.first_prompt || "—")}</p>
+    </section>
+    <section class="ins-card">
+      <h4>Where</h4>
+      ${row("Project", s.worktree_project || s.project)}
+      ${s.worktree ? row("Worktree", s.worktree, { copy: true }) : ""}
+      ${row("Directory", where, { copy: true })}
+    </section>
+    <section class="ins-card">
+      <h4>Activity</h4>
+      ${row("Subagents", s.subagent_count > 0 ? String(s.subagent_count) : "—", { id: "d-kv-agents" })}
+      ${row("Modified", s.last_modified, { id: "d-kv-modified" })}
+    </section>
     <div id="d-out"></div>
-    <div class="kv dim-id" title="${escapeHtml(s.id)}"><span class="k">ID</span><span class="v">${escapeHtml(s.id)}</span></div>
+    <div class="ins-id copyable" data-copy="${escapeHtml(s.id)}" data-what="session id" title="Click to copy">ID ${escapeHtml(s.id)}</div>
   `;
+  for (const el of body.querySelectorAll("[data-copy]")) {
+    el.onclick = () => copyText(el.dataset.copy, el.dataset.what);
+  }
   $("d-browser").onclick = () => showBrowserOpenPicker(s);
   $("d-diff").onclick = () => openDiffTab(s);
   $("d-conv").onclick = () => openConversationTab(s);
@@ -4178,11 +4251,11 @@ function renderDetails() {
   $("d-ide").onclick = () => showIdePicker(s);
   $("d-ports").onclick = async () => {
     const out = $("d-out");
-    out.innerHTML = "<h4>LISTENING PORTS</h4><p class='hint'>scanning…</p>";
+    out.innerHTML = "<section class='ins-card'><h4>Listening ports</h4><p class='hint'>scanning…</p></section>";
     try {
       const ports = await invoke("get_session_ports", { sessionId: s.id });
       out.innerHTML =
-        "<h4>LISTENING PORTS</h4>" +
+        "<section class='ins-card'><h4>Listening ports</h4>" +
         (ports.length
           ? ports
               .map(
@@ -4190,12 +4263,13 @@ function renderDetails() {
                   `<div class="row-item port" data-port="${escapeHtml(p)}"><span>:${escapeHtml(p)}</span><span class="dim">http://localhost:${escapeHtml(p)}</span></div>`
               )
               .join("")
-          : "<p class='hint'>no listening ports</p>");
+          : "<p class='hint'>no listening ports</p>") +
+        "</section>";
       out.querySelectorAll(".row-item.port").forEach((row) => {
         row.onclick = () => openLink(`http://localhost:${row.dataset.port}`);
       });
     } catch (e) {
-      out.innerHTML = `<h4>LISTENING PORTS</h4><p class='hint'>failed: ${escapeHtml(e)}</p>`;
+      out.innerHTML = `<section class='ins-card'><h4>Listening ports</h4><p class='hint'>failed: ${escapeHtml(e)}</p></section>`;
     }
   };
 }
@@ -4869,12 +4943,15 @@ function sessionDir(s) {
 
 function toggleFilesPanel(open) {
   const want = open ?? !filesPanel.open;
+  // The layout decides whether the inspector makes room (sidebar layout adapter).
+  if (want && !filesPanel.open && typeof rightPanelOpening === "function") rightPanelOpening("files");
   filesPanel.open = want;
   $("files-panel").classList.toggle("hidden", !want);
   $("files-resizer").classList.toggle("hidden", !want);
   $("files-btn").classList.toggle("on", want);
   saveWorkspaces();
-  fitAll();
+  if (want && typeof afterRightPanelOpened === "function") afterRightPanelOpened();
+  else fitAll();
   if (!want) return;
   if (!filesPanel.root || !filesPanel.pinned) {
     const s = state.sessions.find((x) => x.id === state.activeTab);
@@ -5450,9 +5527,7 @@ async function renderFilePreview(el, abs, opts = {}) {
 const TASK_STATES = ["pending", "in_progress", "completed", "blocked"];
 
 async function showTeamDetails(team) {
-  $("details").classList.remove("hidden");
-  $("details-resizer").classList.remove("hidden");
-  $("details-btn").classList.add("on");
+  openDetailsPanel("Team");
   state.detailsFor = null;
   state.openTeamPanel = team.name; // enables live refresh while open
   detailsShellFor = null; // team view replaces the session shell
@@ -13598,6 +13673,28 @@ async function setVersionLabel() {
 
 $("split-btn").onclick = addPane;
 $("unsplit-btn").onclick = removePane;
+$("details-close").onclick = () => hideDetails();
+// Rail shows one right panel at a time; each panel's header switches to the other.
+for (const b of document.querySelectorAll(".panel-switch button")) {
+  b.onclick = () => {
+    if (b.dataset.panel === "files") toggleFilesPanel(true);
+    else $("details-btn").click();
+  };
+}
+// The Flyout drawer closes like Flyout's panel: a press outside it (and
+// outside a menu or dialog it opened) puts it away.
+document.addEventListener("mousedown", (ev) => {
+  if (!rightDrawerOpen()) return;
+  const t = ev.target;
+  if (!(t instanceof Element)) return;
+  if (
+    t.closest(
+      "#details, #files-panel, #details-btn, #files-btn, #context-menu, .dialog-backdrop, .settings-backdrop, #modal-backdrop, .tour-backdrop, .tour-tip"
+    )
+  )
+    return;
+  closeRightDrawers();
+});
 $("details-btn").onclick = () => {
   if ($("details").classList.contains("hidden")) {
     if (state.activeTab) showDetails(state.activeTab);
@@ -13978,6 +14075,10 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (settingsOpen()) {
       closeSettings();
+      return;
+    }
+    if (rightDrawerOpen()) {
+      closeRightDrawers();
       return;
     }
     if (flyoutOpen) {
@@ -14577,6 +14678,9 @@ function syncBrowserWebviews() {
   // still open. Whichever dialog closes last runs fitAll() with no backdrop
   // left, and that call restores the webviews.
   if (document.querySelector(".dialog-backdrop")) return;
+  // The same for the Settings modal and the layouts' overlays (Flyout's
+  // panel, the right-panel drawers): they are not `.dialog-backdrop`s.
+  if (typeof overlayOut === "function" && overlayOut()) return;
   const w = ws();
   const visible = new Set(
     (w.zoomed ? [w.panes[w.focused]] : w.panes).filter(
@@ -14825,6 +14929,11 @@ async function applySidebarLayout() {
   }
   if (!layout.exclusive) reapplySectionHeights();
   $("workspace-bar").classList.toggle("layout-off", !plan.workspaceChips);
+  for (const m of ["stack", "single", "overlay"]) body.toggle(`panels-${m}`, plan.panels === m);
+  // A switch to a one-at-a-time layout with both panels open keeps the inspector.
+  if (plan.panels !== "stack" && filesPanel.open && detailsShown()) toggleFilesPanel(false);
+  $("files-resizer").classList.toggle("hidden", plan.panels === "overlay" || !filesPanel.open);
+  $("details-resizer").classList.toggle("hidden", plan.panels === "overlay" || !detailsShown());
   $("layout-rail").classList.toggle("hidden", !plan.rail);
   syncSidebarRail();
   // What shows is painted above, before any list has to load: expanding a
@@ -14860,8 +14969,7 @@ async function switchSidebarLayout(next) {
 }
 
 /// Put a view on screen, as the layout means it: Classic expands the section,
-/// Focus opens it (closing the others), Rail switches to it, Flyout slides it
-/// out. A collapsed sidebar (⌘B) comes back — a request to show must show.
+/// Rail switches to it, Flyout slides it out. A collapsed sidebar (⌘B) comes back — a request to show must show.
 async function sidebarShow(id) {
   const layout = currentLayout();
   $("sidebar").classList.remove("collapsed");
@@ -14877,16 +14985,10 @@ async function sidebarShow(id) {
   saveWorkspaces();
 }
 
-/// A click on a section's header: Classic collapses or expands it, Focus
-/// opens it or closes it back to sessions alone. In the rail layouts the
-/// header is the view's title and does nothing.
+/// A click on a section's header: Classic collapses or expands it. In the
+/// rail layouts the header is the view's title and does nothing.
 async function sidebarToggle(id) {
-  const layout = currentLayout();
-  if (!layout.exclusive) return SECTION_TOGGLES[id]();
-  if (layout.rail) return;
-  sidebarView = SidebarLayout.focusToggle(sidebarView, id);
-  await applySidebarLayout();
-  saveWorkspaces();
+  if (!currentLayout().exclusive) return SECTION_TOGGLES[id]();
 }
 
 /// ⌘B: hide or bring back the sidebar. Flyout's rail always stays — the key

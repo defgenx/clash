@@ -82,6 +82,15 @@
         "right-click to @-mention it in the session or open it in your editor.",
     },
     {
+      id: "inspector",
+      target: "details-btn",
+      title: "Inspector",
+      body:
+        "ⓘ opens the focused session at a glance: status, agent, branch, where it runs " +
+        "(click a path to copy it), and one-click conversation, subagents, diff, IDE and " +
+        "ports. Rail shows it or Files one at a time; Flyout opens both as drawers.",
+    },
+    {
       id: "tabs",
       target: "topbar",
       title: "Tabs & panes",
@@ -107,8 +116,8 @@
       body:
         "Quick settings live here; ⚙ All settings… (⌘,) opens every setting by topic — " +
         "theme, terminal, paths, workflows, models, trackers. Appearance → Layout rearranges " +
-        "this window (Classic, Focus, Rail, Flyout); Workflow item view picks Workbench or " +
-        "Tabs. Rerun this tour from Settings → General.",
+        "this window (Classic, Rail, Flyout); Workflow item view picks Workbench or Tabs. " +
+        "Rerun this tour from Settings → General.",
     },
   ];
 

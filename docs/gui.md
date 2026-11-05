@@ -44,9 +44,20 @@ only their arrangement changes, live, without a restart:
 | Layout | Arrangement |
 |---|---|
 | **Classic** (default) | One sidebar: workspace chips, sessions, then collapsible Workflows, Scratches and Teams, each with its own height. |
-| **Focus** | One sidebar, sessions always on top and **one** section open at a time below them, filling the rest of the height. Clicking the open section's header closes it. |
 | **Rail** | An icon rail on the left holds the workspaces (their initials; right-click for the workspace menu), the views (Sessions, Workflows, Scratches, Teams, with badges), the inbox, an update button when a release is found, and Settings. The panel beside it shows one view at a time, full height. |
 | **Flyout** | The rail alone stays on screen, so the terminals get the window's whole width. Opening a view slides its panel over the terminals; Esc, a click outside, or picking a session or an item puts it away. |
+
+The right-hand panels — **Files** (`⌘E`) and the **Inspector** (`ⓘ`) — follow
+the same logic. Classic docks them side by side and lets both stay open; Rail
+docks **one at a time**, with a *Files | Inspector* switch in the panel's header;
+Flyout opens either as a **drawer** over the terminals, closing on Esc or a
+press outside. The top-right actions are grouped the same way in every layout:
+new tab · stash all · panes · panels (lit while open).
+
+The **Inspector** shows the focused session (or a team) as cards: status, agent,
+branch and Wild badge; quick actions (conversation, subagents, diff, open in IDE,
+browser, listening ports); the summary; where it runs, with the worktree and
+directory copied by a click; activity; and the session ID, also copyable.
 
 `⌘B` hides or brings back the sidebar; in Flyout it slides the panel in and out.
 A second click on the open view's rail icon does the same. Switching back to
@@ -320,7 +331,7 @@ the sidebar's SETTINGS panel. A search box at the top searches every tab (type
 | Tab | Settings |
 |---|---|
 | **General** | how links open · refresh interval · default shell · terminal for the TUI launcher · default agent (Claude Code / OMP) · desktop notifications · attention count in the window title · confirm before killing a session · check for updates in the background · ▶ Show the tour |
-| **Appearance** | theme (12 palettes, below) · layout (Classic / Focus / Rail / Flyout, [above](#layouts)) · workflow item view (Workbench / Tabs, see [Reading an item](workflows-guide.md#reading-an-item)) · terminal text: font family (searchable picker), size, weight, bold weight, line height, letter spacing · cursor: style, unfocused style, bar width, blink · colors: minimum contrast ratio, bold text in bright colors |
+| **Appearance** | theme (12 palettes, below) · layout (Classic / Rail / Flyout, [above](#layouts)) · workflow item view (Workbench / Tabs, see [Reading an item](workflows-guide.md#reading-an-item)) · terminal text: font family (searchable picker), size, weight, bold weight, line height, letter spacing · cursor: style, unfocused style, bar width, blink · colors: minimum contrast ratio, bold text in bright colors |
 | **Terminal** | scrollback · scroll speed · smooth scroll · copy on select · right-click selects word · ⌥ sends Esc (Meta) · toast on terminal bell |
 | **Paths** | default session directory · scratch directory · workflows directory · `claude` binary · OMP binary |
 | **Workflows** | workflow agent (ask / Claude Code / OMP) · next-step assist (suggest / autopilot / off) · explanation detail · delegation (team / solo) · PR skill · forge · PR stacking · skill updates |

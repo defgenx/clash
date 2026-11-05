@@ -3179,7 +3179,6 @@ body > [id^="dwf-mmd-"], body > [id^="iwf-mmd-"], body > [id^="wf-mmd-"] { posit
   max-height: none !important;
   min-height: 0 !important;
 }
-body.layout-focus #session-list { flex: 1 1 0; }
 
 /* The rail (Rail, Flyout): workspaces, views, inbox, settings. */
 #layout-rail {
@@ -3376,3 +3375,88 @@ body.layout-flyout #sidebar-resizer { display: none; }
 /* The item header's tour button: small, last, out of the PR chips' way. */
 .wf-head .wf-tour-btn { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border); font-size: 12px; font-weight: 700; margin-left: 4px; color: var(--fg-dim); }
 .wf-head .wf-tour-btn:hover { color: var(--fg); border-color: var(--accent); }
+
+/* ── Top-right actions, grouped: new tab · stash · panes · panels ── */
+.tb-sep { width: 1px; height: 18px; background: var(--border); margin: 0 3px; flex: none; align-self: center; }
+#topbar-actions .icon-btn.on { color: var(--accent); background: var(--bg-hover); }
+
+/* ── Right panels per layout (layout.js `panels`) ─────────────────────
+   Rail: one at a time, switched from either panel's header. */
+.panel-switch { display: none; }
+body.panels-single .panel-switch {
+  display: inline-flex;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-right: 6px;
+}
+.panel-switch button {
+  background: none;
+  border: 0;
+  padding: 2px 9px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.panel-switch button + button { border-left: 1px solid var(--border); }
+.panel-switch button:hover { color: var(--fg); }
+.panel-switch button.on { background: var(--bg-hover); color: var(--fg); font-weight: 600; }
+body.panels-single #details-title { display: none; }
+/* Flyout: drawers over the panes, closing on Esc or a press outside. */
+body.panels-overlay #files-panel,
+body.panels-overlay #details {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 122;
+  width: min(400px, 92vw);
+  box-shadow: var(--shadow-lg, -18px 0 50px rgba(0, 0, 0, 0.45));
+}
+
+/* ── Inspector (ⓘ): session and team details ─────────────────────── */
+#details { display: flex; flex-direction: column; }
+#details.hidden { display: none; }
+#details-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 8px 14px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+#details-title { flex: 1; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-dim); }
+body.panels-single #details-head .panel-switch { margin-right: auto; }
+#details-body { flex: 1; min-height: 0; overflow-y: auto; }
+.ins-hero { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.ins-hero h3 { font-size: 15px; margin: 0; overflow-wrap: anywhere; }
+.ins-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ins-chip { font-size: 11px; padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--fg-dim); white-space: nowrap; }
+.ins-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-bottom: 12px; }
+.ins-actions button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 4px;
+  font-size: 15px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg);
+  cursor: pointer;
+}
+.ins-actions button span { font-size: 10.5px; color: var(--fg-dim); }
+.ins-actions button:hover { border-color: var(--accent); }
+.ins-actions button:hover span { color: var(--fg); }
+.ins-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; background: var(--bg); }
+#details .ins-card h4 { border-top: 0; padding-top: 0; margin: 0 0 6px; font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--fg-dim); }
+.ins-summary { font-size: 12.5px; line-height: 1.5; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 8; -webkit-box-orient: vertical; overflow: hidden; }
+.ins-row { display: flex; gap: 10px; font-size: 12px; padding: 4px 6px; margin: 0 -6px; border-radius: 6px; }
+.ins-row .k { color: var(--fg-dim); min-width: 74px; flex: none; }
+.ins-row .v { min-width: 0; overflow-wrap: anywhere; user-select: text; }
+.ins-row.copyable, .ins-id.copyable { cursor: copy; }
+.ins-row.copyable:hover { background: var(--bg-hover); }
+.ins-id { margin-top: 6px; font-size: 10px; color: var(--fg-dim); opacity: 0.6; overflow-wrap: anywhere; font-family: var(--mono); }
+.ins-id:hover { opacity: 1; }
