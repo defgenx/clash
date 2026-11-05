@@ -193,7 +193,9 @@ Pick how the window is arranged in *Settings → Appearance → Layout*: **Class
 (one sidebar, collapsible sections), **Focus** (one section open at a time),
 **Rail** (an icon rail for workspaces and views, one full-height panel) or
 **Flyout** (the rail alone; views slide over the terminals). Same features in
-each — see [docs/gui.md → Layouts](docs/gui.md#layouts).
+each — see [docs/gui.md → Layouts](docs/gui.md#layouts). A workflow item opens
+as a **Workbench** (a grouped outline beside the content, the next step on top)
+or as **Tabs** (*Settings → Appearance → Workflow item view*).
 
 `⌘,` (or **⚙ All settings…** in the sidebar) opens the Settings window, with
 tabs for General, Appearance, Terminal, Paths, Workflows, Models and Trackers &

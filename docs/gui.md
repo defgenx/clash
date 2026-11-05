@@ -313,7 +313,7 @@ the sidebar's SETTINGS panel. A search box at the top searches every tab (type
 | Tab | Settings |
 |---|---|
 | **General** | how links open · refresh interval · default shell · terminal for the TUI launcher · default agent (Claude Code / OMP) · desktop notifications · attention count in the window title · confirm before killing a session · check for updates in the background · ▶ Show the tour |
-| **Appearance** | theme (12 palettes, below) · layout (Classic / Focus / Rail / Flyout, [above](#layouts)) · terminal text: font family (searchable picker), size, weight, bold weight, line height, letter spacing · cursor: style, unfocused style, bar width, blink · colors: minimum contrast ratio, bold text in bright colors |
+| **Appearance** | theme (12 palettes, below) · layout (Classic / Focus / Rail / Flyout, [above](#layouts)) · workflow item view (Workbench / Tabs, see [Reading an item](workflows-guide.md#reading-an-item)) · terminal text: font family (searchable picker), size, weight, bold weight, line height, letter spacing · cursor: style, unfocused style, bar width, blink · colors: minimum contrast ratio, bold text in bright colors |
 | **Terminal** | scrollback · scroll speed · smooth scroll · copy on select · right-click selects word · ⌥ sends Esc (Meta) · toast on terminal bell |
 | **Paths** | default session directory · scratch directory · workflows directory · `claude` binary · OMP binary |
 | **Workflows** | workflow agent (ask / Claude Code / OMP) · next-step assist (suggest / autopilot / off) · explanation detail · delegation (team / solo) · PR skill · forge · PR stacking · skill updates |

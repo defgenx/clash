@@ -72,7 +72,9 @@ diff-review → pr-draft → pr-ready → done`, plus `abandoned` from anywhere 
 
 ## The action bar
 
-Every item ends with an action bar in three labeled zones:
+Every item has an action bar in three labeled zones — at the bottom in the
+Tabs view, as the next-step card on top in Workbench (where the Item zone is
+its **More** menu):
 
 - **This step · stays here** — **🔍 Check…** and **▾** (every review and
   explanation, see [Check runs](#check-runs)), opening the PR or the session.
@@ -113,6 +115,24 @@ assist*):
 - `off` gives the plain bar.
 
 ## Reading an item
+
+An item tab opens in one of two views (*Settings → Appearance → Workflow item
+view*), over the same documents and actions:
+
+- **Workbench** (default) — a grouped outline on the left: **Build** (Plan,
+  Diff), **Feedback** (Change requests, Agent reviews, Hand-off), **Explained**
+  (Plan explained, Changes explained, Plan vs changes), **History** (Revisions,
+  Timeline), with ⚙ Settings at the bottom. Counts and open comments show as
+  badges, a document not written yet is dimmed. The main column opens on the
+  **next-step card** — the suggested step with its reason, this step's actions
+  and the decisions that move the item — with the Item actions (move back,
+  share, abandon…) folded into its **More** menu, so "where am I" (the stepper)
+  and "what now" sit together above the content.
+- **Tabs** — one row of tabs above the content and the action bar below it.
+
+The grouping is the pure `gui/dist/wf-outline.js` (tested); both views are
+built from one sub-view list, so they can never disagree about what an item
+has.
 
 | Tab | Holds |
 |---|---|

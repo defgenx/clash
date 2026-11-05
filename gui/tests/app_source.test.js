@@ -1111,3 +1111,16 @@ test("the sidebar's arrangement goes through the layout adapter only", () => {
   // A Flyout panel paints over the panes: native browser webviews must hide.
   assert.match(extractFunction(APP, "applySidebarLayout"), /hideBrowserWebviews\(\)/);
 });
+
+test("both workflow item views come from one sub-view list, and More clicks the real buttons", () => {
+  const view = extractFunction(APP, "buildWorkflowView");
+  // One list, two renderings: a document added to subViews appears in both.
+  assert.match(view, /wfRenderOutline\(subViews, ts\.subView, selectSubView\)/);
+  assert.match(view, /for \(const \[id, label\] of subViews\)/);
+  assert.match(view, /WfOutline\.itemViewOf\(state\.settings\.workflowView\)/);
+  // The folded Item zone re-dispatches to the bar's own buttons, so busy
+  // state, confirmations and handlers are never duplicated.
+  const fold = extractFunction(APP, "wfFoldItemZone");
+  assert.match(fold, /action: \(\) => btns\[it\.index\]\.click\(\)/);
+  assert.doesNotMatch(fold, /invoke\(/);
+});

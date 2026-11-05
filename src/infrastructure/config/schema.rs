@@ -613,6 +613,16 @@ pub const PROPS: &[Prop] = &[
     )
     .gui("layout")
     .local(),
+    Prop::new(
+        "appearance.workflow_view",
+        Kind::Enum(&["workbench", "tabs"]),
+        Val::Str("workbench"),
+        "How a workflow item's tab is laid out in the GUI: `workbench` (a grouped outline \
+         beside the content, the next step on top of it) or `tabs` (one row of tabs above the \
+         content, the actions below it).",
+    )
+    .gui("workflowView")
+    .local(),
     // ── [terminal] — GUI-local (xterm rendering) ────────────────────
     Prop::new(
         "terminal.font_size",
@@ -1264,7 +1274,7 @@ mod tests {
         // GUI-local keys added after the migration — never in the legacy blob,
         // listed so the "nothing else claims a GUI key" check below stays a
         // deliberate decision.
-        const ADDED_LOCAL: &[&str] = &["layout"];
+        const ADDED_LOCAL: &[&str] = &["layout", "workflowView"];
         for key in ADDED_LOCAL {
             let p = prop_by_gui_key(key).unwrap_or_else(|| panic!("{} has no schema entry", key));
             assert_eq!(p.scope, Scope::GuiLocal, "{} should be GUI-local", key);

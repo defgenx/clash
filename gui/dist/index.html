@@ -188,6 +188,12 @@
               </select>
             </label>
             <p class="settings-note" id="set-layout-note"></p>
+            <label class="setting-row inline">Workflow item view
+              <select id="set-wf-item-view" title="How a workflow item's tab is laid out. Workbench: a grouped outline (Build, Feedback, Explained, History) beside the content, the next step on top of it. Tabs: one row of tabs above the content, the actions below it.">
+                <option value="workbench">Workbench</option>
+                <option value="tabs">Tabs</option>
+              </select>
+            </label>
             <div class="settings-group">Terminal · text</div>
             <label class="setting-row">Font family
               <span class="input-with-btn">
@@ -534,6 +540,7 @@
   <script src="pane-layout.js"></script>
   <script src="tab-order.js"></script>
   <script src="layout.js"></script>
+  <script src="wf-outline.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

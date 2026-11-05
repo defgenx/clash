@@ -37,6 +37,7 @@ const state = {
   settings: {
     theme: "clash-dark", // key into THEMES — drives the chrome and the terminals
     layout: "classic", // a SidebarLayout id (layout.js) — how the sidebar is arranged
+    workflowView: "workbench", // a WfOutline item view (wf-outline.js) — how an item tab is laid out
     defaultCwd: "",
     fontSize: 13,
     fontFamily: "SF Mono, Menlo, monospace",
@@ -7100,26 +7101,44 @@ async function buildWorkflowView(el, project, slug) {
     // Per-item configuration — right-aligned, meta rather than content.
     ["settings", "⚙ Settings"],
   ];
-  for (const [id, label] of subViews) {
-    const b = document.createElement("button");
-    const active = ts.subView === id;
-    b.className = "wf-subtab" + (active ? " active" : "") + (id === "settings" ? " wf-subtab-end" : "");
-    b.textContent = label;
-    b.onclick = () => {
-      ts.subView = id;
-      if (id !== "diff") ts.iteration = null;
-      // Clicking either plan tab means "show me the plan", not "show me the
-      // comparison I was looking at ten minutes ago".
-      if (id === "plan" || id === "revisions") {
-        ts.planVersion = null;
-        ts.planCompare = false;
-        ts.planBase = null;
-      }
-      buildWorkflowView(el, project, slug);
-    };
-    bar.appendChild(b);
+  const selectSubView = (id) => {
+    ts.subView = id;
+    if (id !== "diff") ts.iteration = null;
+    // Clicking either plan tab means "show me the plan", not "show me the
+    // comparison I was looking at ten minutes ago".
+    if (id === "plan" || id === "revisions") {
+      ts.planVersion = null;
+      ts.planCompare = false;
+      ts.planBase = null;
+    }
+    buildWorkflowView(el, project, slug);
+  };
+  // Two item views over the same sub-view list (Settings → Appearance →
+  // Workflow item view): Tabs, the row above; Workbench, a grouped outline
+  // beside a main column that opens on the next step. A full-screen drawing
+  // keeps the bare tab row either way.
+  const bench = !bigDrawing && WfOutline.itemViewOf(state.settings.workflowView).id === "workbench";
+  el.classList.toggle("wf-bench-view", bench);
+  let host = el;
+  if (bench) {
+    const wrap = document.createElement("div");
+    wrap.className = "wf-bench";
+    const main = document.createElement("div");
+    main.className = "wf-bench-main";
+    wrap.append(wfRenderOutline(subViews, ts.subView, selectSubView), main);
+    el.appendChild(wrap);
+    host = main;
+  } else {
+    for (const [id, label] of subViews) {
+      const b = document.createElement("button");
+      const active = ts.subView === id;
+      b.className = "wf-subtab" + (active ? " active" : "") + (id === "settings" ? " wf-subtab-end" : "");
+      b.textContent = label;
+      b.onclick = () => selectSubView(id);
+      bar.appendChild(b);
+    }
+    el.appendChild(bar);
   }
-  el.appendChild(bar);
 
   // ── Last review round outcome ──
   // The verdict and what (if anything) was published, without opening the
@@ -7168,23 +7187,92 @@ async function buildWorkflowView(el, project, slug) {
       ts.subView = "agentReview";
       buildWorkflowView(el, project, slug);
     };
-    el.appendChild(strip);
+    host.appendChild(strip);
   }
 
   // ── Content ──
   const body = document.createElement("div");
   body.className = "wf-body";
-  el.appendChild(body);
+  host.appendChild(body);
 
   // ── Action bar ──
+  // Tabs: below the content. Workbench: on top of it, as the next-step card —
+  // "where am I" (the stepper) and "what now" sit together.
   if (!bigDrawing) {
     const actions = document.createElement("div");
     actions.className = "wf-actions";
-    el.appendChild(actions);
+    if (bench) host.insertBefore(actions, host.firstChild);
+    else el.appendChild(actions);
     renderWfActions(actions, el, item);
+    if (bench) wfFoldItemZone(actions);
   }
 
   renderWfSubView(body, el, item, ts);
+}
+
+/// Workbench's outline: the item's sub-views grouped (Build, Feedback,
+/// Explained, History) with counts as badges, Settings at the bottom. The
+/// grouping is the pure `WfOutline.wfOutline`, fed the same list as the tabs.
+function wfRenderOutline(subViews, active, onPick) {
+  const nav = document.createElement("nav");
+  nav.className = "wf-outline";
+  nav.setAttribute("aria-label", "Item documents");
+  const { groups, settings } = WfOutline.wfOutline(subViews, active);
+  const entry = (it) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "wf-outline-item" + (it.active ? " active" : "") + (it.empty ? " empty" : "");
+    b.innerHTML =
+      `<span class="wf-outline-text">${escapeHtml(it.text)}</span>` +
+      (it.badge ? `<span class="wf-outline-badge${it.hot ? " hot" : ""}">${it.badge}</span>` : "");
+    b.title = it.empty ? `${it.text} — nothing written yet` : it.text;
+    b.onclick = () => onPick(it.id);
+    return b;
+  };
+  for (const g of groups) {
+    const label = document.createElement("div");
+    label.className = "wf-outline-group";
+    label.textContent = g.label;
+    nav.appendChild(label);
+    for (const it of g.items) nav.appendChild(entry(it));
+  }
+  if (settings) {
+    const sp = document.createElement("div");
+    sp.className = "spacer";
+    nav.appendChild(sp);
+    nav.appendChild(entry({ ...settings, text: "⚙ Settings" }));
+  }
+  return nav;
+}
+
+/// Workbench folds the Item zone (move back, park, share, abandon) into one
+/// More ▾ menu, so the card leads with this step and the decisions. The menu
+/// clicks the real buttons: their handlers, busy state and confirmations are
+/// exactly the bar's.
+function wfFoldItemZone(bar) {
+  const zone = bar.querySelector(".wf-actions-item");
+  if (!zone) return;
+  const btns = [...zone.querySelectorAll(".wf-actions-btns > button")];
+  const items = WfOutline.moreMenuItems(
+    btns.map((b) => ({ text: b.textContent, danger: b.classList.contains("danger") }))
+  );
+  if (!items.length) return;
+  zone.classList.add("wf-actions-folded");
+  const more = document.createElement("button");
+  more.type = "button";
+  more.className = "wf-more-btn";
+  more.textContent = "More ▾";
+  more.title = zone.title;
+  more.onclick = (ev) => {
+    ev.stopPropagation();
+    const r = more.getBoundingClientRect();
+    showContextMenu(
+      r.left,
+      r.bottom + 4,
+      items.map((it) => ({ label: it.label, danger: it.danger, action: () => btns[it.index].click() }))
+    );
+  };
+  zone.querySelector(".wf-actions-btns").appendChild(more);
 }
 
 /// Ask which of the item's PRs an action applies to — the one scope question
@@ -15066,6 +15154,7 @@ async function loadScratchDir() {
 function syncSettingsUi() {
   const s = state.settings;
   if ($("set-layout")) $("set-layout").value = SidebarLayout.layoutOf(s.layout).id;
+  if ($("set-wf-item-view")) $("set-wf-item-view").value = WfOutline.itemViewOf(s.workflowView).id;
   syncLayoutNote();
   const theme = $("set-theme");
   if (theme) {
@@ -15443,6 +15532,9 @@ bindChoiceSetting("set-theme", "theme", {
     }
   },
 });
+// Workflow item view: every open item tab is rebuilt in the chosen view.
+bindChoiceSetting("set-wf-item-view", "workflowView", { onChange: () => rebuildOpenWorkflowTabs() });
+
 // Layout: the sidebar adapter re-arranges the window in place.
 bindChoiceSetting("set-layout", "layout", {
   onChange: (id) => {
