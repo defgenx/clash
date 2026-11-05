@@ -56,295 +56,19 @@
       <div id="sidebar-footer">
         <div class="section-label collapsible" id="settings-toggle">SETTINGS <span id="settings-caret">▸</span></div>
         <div id="settings-body" class="hidden">
-        <input id="settings-filter" type="search" placeholder="Filter settings…" autocomplete="off" spellcheck="false" />
-
-        <div class="settings-group">Appearance</div>
         <label class="setting-row">Theme
-          <select id="set-theme" title="Recolors the whole app and every terminal (◐ dark · ◑ light)"></select>
-        </label>
-
-        <div class="settings-group">Paths</div>
-        <label class="setting-row">Default directory
-          <span class="input-with-btn">
-            <input id="default-cwd" type="text" placeholder="/Users/you" autocomplete="off" spellcheck="false" />
-            <button id="default-cwd-browse" class="icon-btn" title="Browse for a directory" type="button"></button>
-          </span>
-        </label>
-        <label class="setting-row">Scratch directory
-          <span class="input-with-btn">
-            <input id="set-scratch-dir" type="text" placeholder="~/.claude/clash/scratch" autocomplete="off" spellcheck="false" />
-            <button id="set-scratch-dir-browse" class="icon-btn" title="Browse for a directory" type="button"></button>
-          </span>
-        </label>
-        <label class="setting-row">Workflows directory
-          <span class="input-with-btn">
-            <input id="set-workflows-dir" type="text" placeholder="~/.claude/clash/workflows" autocomplete="off" spellcheck="false" />
-            <button id="set-workflows-dir-browse" class="icon-btn" title="Browse for a directory" type="button"></button>
-          </span>
-        </label>
-        <label class="setting-row">Claude binary
-          <span class="input-with-btn">
-            <input id="set-claude-bin" type="text" placeholder="claude" autocomplete="off" spellcheck="false" title="Name resolved on PATH, or an absolute path. Applies to sessions started from now on." />
-            <button id="set-claude-bin-browse" class="icon-btn" title="Browse for the claude executable" type="button"></button>
-          </span>
-        </label>
-        <label class="setting-row">OMP binary
-          <span class="input-with-btn">
-            <input id="set-omp-bin" type="text" placeholder="omp" autocomplete="off" spellcheck="false" title="The oh-my-pi binary — a name resolved on PATH, or an absolute path. Applies to OMP sessions started from now on." />
-            <button id="set-omp-bin-browse" class="icon-btn" title="Browse for the omp executable" type="button"></button>
-          </span>
-        </label>
-        <label class="setting-row inline">Default agent
-          <select id="set-default-agent" title="Agent the New session dialog pre-selects. You can still pick the other one each time.">
-            <option value="claude">Claude Code</option>
-            <option value="omp">OMP</option>
-          </select>
-        </label>
-
-        <div class="settings-group">Workflows · agents</div>
-        <p class="settings-note">How the agents clash launches for a workflow item behave.</p>
-        <label class="setting-row inline">Workflow agent
-          <select id="set-wf-agent" title="Agent CLI workflow sessions (plan, implement, reviews, explanations, shares) run on — or ask at every step. An item's ⚙ Settings tab can override it.">
-            <option value="ask">Ask at every step</option>
-            <option value="claude">Claude Code</option>
-            <option value="omp">OMP</option>
-          </select>
-        </label>
-        <label class="setting-row inline">Next-step assist
-          <select id="set-wf-assist" title="Suggest: every item's action bar highlights the recommended next step and says why. Autopilot: also starts that step when it decides nothing — a review round, or applying a round that said apply — and always stops before an approval or anything that moves the item forward. Off: the plain action bar.">
-            <option value="suggest">Suggest the next step</option>
-            <option value="autopilot">Autopilot until a decision</option>
-            <option value="off">Off</option>
-          </select>
-        </label>
-        <label class="setting-row inline">Explanation detail
-          <select id="set-wf-explain-detail" title="How much a ◫ Explain round writes up front. Every part it leaves closed is a dive you start by clicking the part — that is where the cost goes. Each launch can override this.">
-            <option value="critical">Critical parts (overview + what it flags critical)</option>
-            <option value="overview">Overview only (cheapest)</option>
-            <option value="full">Every part (costs the most)</option>
-          </select>
-        </label>
-        <label class="setting-row inline">Delegation
-          <select id="set-wf-delegation" title="Team: the lead sizes each round and fans implementation steps, exploration and review passes out to parallel subagents only where that is faster than doing them itself, then verifies what they return. Solo: everything runs in the one session.">
-            <option value="team">Team (lead + subagents)</option>
-            <option value="solo">Solo</option>
-          </select>
-        </label>
-        <label class="setting-row">PR skill
-          <input id="set-wf-pr-skill" type="text" placeholder="myorg:github-pr" autocomplete="off" spellcheck="false" title="Skill workflow agents open pull requests with, so your org's PR conventions come along. Empty resets to the shipped default; 'none' disables it and the agent follows the repo's own conventions with gh. An item can override this in its ⚙ Settings tab." />
-        </label>
-        <label class="setting-row">Ticket links
-          <input id="set-wf-ticket-url" type="text" placeholder="yourorg.atlassian.net" autocomplete="off" spellcheck="false" title="Where the tickets agents mention live, so they link every one: a host (links host/browse/KEY) or a template with {key}, e.g. https://linear.app/acme/issue/{key}. Empty uses the Jira site URL below, and with neither the agent asks you. 'none' mentions keys unlinked. External documents always keep their own URL. An item can override this in its ⚙ Settings tab." />
-        </label>
-        <label class="setting-row inline">Forge
-          <select id="set-wf-forge" title="Where this repo's pull requests live. Auto reads the origin remote (unknown hosts count as GitHub, so GitHub Enterprise keeps working); None hides every PR feature for repos that don't use one.">
-            <option value="auto">Auto-detect</option>
-            <option value="github">GitHub</option>
-            <option value="none">None</option>
-          </select>
-        </label>
-        <label class="setting-row inline">PR stacking
-          <select id="set-wf-pr-stacking" title="GitHub only. When an item's PRs build on each other (each one's base branch is another's head), order them base → tip: chips show the layer, PR actions default to the whole stack, and reviews read each layer against its parent instead of reporting what a sibling layer holds as missing. An item can override this in its ⚙ Settings tab.">
-            <option value="off">Off</option>
-            <option value="on">On</option>
-          </select>
-        </label>
-        <label class="setting-row inline">Skill updates
-          <select id="set-skills-update" title="Skills you never edited are always brought up to date at startup, and missing ones install themselves. This is only about skills you edited by hand: ask at startup (popup), always overwrite your edits, or always keep them.">
-            <option value="ask">Ask at startup</option>
-            <option value="all">Overwrite my edits</option>
-            <option value="keep">Keep my edits</option>
-          </select>
-        </label>
-
-        <div class="settings-group">Models · Claude Code</div>
-        <p class="settings-note">What a workflow session launched on Claude Code runs on. Applied at launch <em>and</em> every time the session is resumed.</p>
-        <label class="setting-row">Lead model
-          <input id="set-wf-lead-model" type="text" placeholder="claude-opus-5-5" autocomplete="off" spellcheck="false" title="Model every Claude Code workflow session runs on — the lead that plans, reviews, splits the work and verifies it (claude --model). Empty resets to the shipped default." />
-        </label>
-        <label class="setting-row" id="set-wf-subagent-row">Subagent model
-          <input id="set-wf-subagent-model" type="text" placeholder="claude-sonnet-5-5" autocomplete="off" spellcheck="false" title="Model the lead's subagents run on under Team delegation — forced (CLAUDE_CODE_SUBAGENT_MODEL + CLAUDE_CODE_SUBAGENT_MODEL_FORCE), so neither an agent definition nor the lead can pick another. Claude Code's built-in Explore agent keeps its own model. Empty resets to the shipped default." />
-        </label>
-        <label class="setting-row inline">Review sizing
-          <select id="set-wf-review-sizing" title="Code reviews and self-reviews measure the change they read at launch. Small (≤150 changed lines and ≤5 files, one PR) runs its lead on the small-review model; large (≥800 lines or ≥25 files) runs its subagents on the large-review model; anything else uses the models above. A resumed round keeps the models it was launched with. Off measures nothing. Claude Code only — OMP sessions keep their own models.">
-            <option value="auto">By change size</option>
-            <option value="off">Off (always the models above)</option>
-          </select>
-        </label>
-        <label class="setting-row" id="set-wf-small-review-row">Small review · lead
-          <input id="set-wf-small-review-model" type="text" placeholder="claude-sonnet-5-5" autocomplete="off" spellcheck="false" title="Lead model of a small code review or self-review; its subagents keep the subagent model above. Claude Code only. Empty resets to the shipped default." />
-        </label>
-        <label class="setting-row" id="set-wf-large-review-row">Large review · subagents
-          <input id="set-wf-large-review-subagent-model" type="text" placeholder="claude-opus-5-5" autocomplete="off" spellcheck="false" title="Subagent model of a large code review or self-review, so a big change gets stronger finders; its lead keeps the lead model above. Claude Code only. Empty resets to the shipped default." />
-        </label>
-
-        <div class="settings-group">Models · OMP</div>
-        <p class="settings-note">What a workflow session launched on OMP runs on — names are matched by omp, against the providers you configured there. Applied at launch and on every resume.</p>
-        <label class="setting-row">Lead model
-          <input id="set-wf-omp-model" type="text" placeholder="omp's default" autocomplete="off" spellcheck="false" title="Model OMP workflow sessions run on (omp --model, fuzzy-matched). Empty uses omp's own default model." />
-        </label>
-        <label class="setting-row" id="set-wf-omp-subagent-row">Subagent model
-          <input id="set-wf-omp-subagent-model" type="text" placeholder="omp's task model" autocomplete="off" spellcheck="false" title="Model the lead's subagents run on under Team delegation — pinned through a per-run omp config overlay that sets the task model role (your own config.yml is left alone). Empty leaves omp's own task model." />
-        </label>
-
-        <div class="settings-group">Workflows · sharing</div>
-        <p class="settings-note">
-          Where an item's <b>↗ Share…</b> can send its document, and <b>who does
-          the posting</b>. Per destination you pick one of two: an <b>agent
-          session</b> — through a skill you name, or with whatever tooling that
-          session has connected, an MCP server for instance — or <b>clash
-          itself</b>, over HTTPS with the credentials below. Neither falls back
-          to the other: each button names the route it will take, and nothing is
-          ever sent without you pressing one.
-        </p>
-        <label class="setting-row inline">Jira posted by
-          <select id="set-wf-jira-transport" title="Who posts a share to Jira. An agent session uses the skill below when you name one, otherwise whatever tooling it has connected. clash itself posts the comment over HTTPS with the site URL, email and token below.">
-            <option value="agent">An agent session</option>
-            <option value="clash">clash itself</option>
-          </select>
-        </label>
-        <label class="setting-row" data-transport="jira:agent">Jira skill
-          <input id="set-wf-jira-skill" type="text" placeholder="myorg:jira-post" autocomplete="off" spellcheck="false" title="Skill the session routes the Jira post through. Empty is fine: the session then uses whatever tooling it has connected. A named skill that isn't installed in that session falls back to the same tooling rather than dead-ending." />
-        </label>
-        <label class="setting-row" data-transport="jira:clash">Jira site URL
-          <input id="set-wf-jira-url" type="text" placeholder="https://yourorg.atlassian.net" autocomplete="off" spellcheck="false" title="Jira site clash posts the comment to. Only used when Jira is posted by clash itself." />
-        </label>
-        <label class="setting-row" data-transport="jira:clash">Jira email
-          <input id="set-wf-jira-email" type="text" placeholder="you@yourorg.com" autocomplete="off" spellcheck="false" title="Jira account email paired with the API token below." />
-        </label>
-        <label class="setting-row" data-transport="jira:clash">Jira API token
-          <input id="set-wf-jira-token" type="password" placeholder="API token" autocomplete="off" spellcheck="false" title="Jira API token, stored in config.toml like the webhook URLs. It never comes back to this window once saved — the placeholder says whether one is stored, not its value." />
-        </label>
-        <label class="setting-row inline">Slack / Discord posted by
-          <select id="set-wf-chat-transport" title="Who posts a share to Slack or Discord. Decision notifications below are not affected — they always use the webhook.">
-            <option value="agent">An agent session</option>
-            <option value="clash">clash itself</option>
-          </select>
-        </label>
-        <label class="setting-row" data-transport="chat:agent">Chat skill
-          <input id="set-wf-chat-skill" type="text" placeholder="myorg:slack-post" autocomplete="off" spellcheck="false" title="Skill the session routes the Slack/Discord post through. Empty is fine — the session uses whatever tooling it has connected." />
-        </label>
-        <label class="setting-row" data-transport="chat:clash">Slack webhook
-          <input id="set-wf-slack-webhook" type="text" placeholder="https://hooks.slack.com/services/…" autocomplete="off" spellcheck="false" title="Slack incoming-webhook URL. Used when Slack is posted by clash itself — and always, independently, by decision notifications below." />
-        </label>
-        <label class="setting-row" data-transport="chat:clash">Discord webhook
-          <input id="set-wf-discord-webhook" type="text" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" spellcheck="false" title="Discord webhook URL. Used when Discord is posted by clash itself — and always, independently, by decision notifications below." />
-        </label>
-
-        <div class="settings-group">Workflows · notifications</div>
-        <p class="settings-note">
-          Announce items that park waiting for you. Only <i>agent-driven</i>
-          transitions post — never your own clicks — and this always uses a
-          webhook: it fires with nobody watching, so a skill session would be a
-          notification you'd have to go read.
-        </p>
-        <label class="setting-row inline">Notify decisions
-          <select id="set-wf-notify-webhook" title="Post to the configured webhook when an item parks at a decision state (plan review, diff review, PR draft).">
-            <option value="off">Off</option>
-            <option value="slack">Slack</option>
-            <option value="discord">Discord</option>
-          </select>
-        </label>
-
-        <div class="settings-group">Terminal · text</div>
-        <label class="setting-row">Font family
-          <span class="input-with-btn">
-            <input id="set-fontfamily" type="text" placeholder="SF Mono, Menlo, monospace" autocomplete="off" spellcheck="false" readonly title="Click to pick from the fonts installed on this machine" />
-            <button id="set-fontfamily-pick" class="icon-btn" title="Choose a font" type="button"></button>
-          </span>
+          <select data-mirror="set-theme" title="Recolors the whole app and every terminal"></select>
         </label>
         <label class="setting-row inline">Font size
-          <input id="set-fontsize" type="number" min="9" max="24" step="1" />
+          <input data-mirror="set-fontsize" type="number" min="9" max="24" step="1" />
         </label>
-        <label class="setting-row inline">Font weight
-          <select id="set-font-weight">
-            <option value="300">Light</option>
-            <option value="normal">Normal</option>
-            <option value="500">Medium</option>
-            <option value="600">Semibold</option>
-            <option value="bold">Bold</option>
-          </select>
-        </label>
-        <label class="setting-row inline">Bold weight
-          <select id="set-font-weight-bold">
-            <option value="normal">Normal</option>
-            <option value="500">Medium</option>
-            <option value="600">Semibold</option>
-            <option value="bold">Bold</option>
-            <option value="800">Extra bold</option>
-          </select>
-        </label>
-        <label class="setting-row inline">Line height
-          <input id="set-line-height" type="number" min="1" max="2" step="0.05" />
-        </label>
-        <label class="setting-row inline">Letter spacing
-          <input id="set-letter-spacing" type="number" min="-2" max="5" step="0.5" />
-        </label>
-
-        <div class="settings-group">Terminal · cursor</div>
-        <label class="setting-row inline">Cursor style
-          <select id="set-cursor-style">
-            <option value="block">Block</option>
-            <option value="bar">Bar</option>
-            <option value="underline">Underline</option>
-          </select>
-        </label>
-        <label class="setting-row inline">Unfocused cursor
-          <select id="set-cursor-inactive">
-            <option value="outline">Outline</option>
-            <option value="block">Block</option>
-            <option value="bar">Bar</option>
-            <option value="underline">Underline</option>
-            <option value="none">Hidden</option>
-          </select>
-        </label>
-        <label class="setting-row inline">Bar cursor width
-          <input id="set-cursor-width" type="number" min="1" max="5" step="1" />
-        </label>
-        <label class="setting-check"><input id="set-cursor-blink" type="checkbox" /> Cursor blink</label>
-
-        <div class="settings-group">Terminal · colors</div>
-        <label class="setting-row inline" title="Force a minimum contrast between text and background. 1 = off, 4.5 = WCAG AA, 21 = black on white.">Min contrast
-          <input id="set-min-contrast" type="number" min="1" max="21" step="0.5" />
-        </label>
-        <label class="setting-check"><input id="set-bright-bold" type="checkbox" /> Bold text in bright colors</label>
-
-        <div class="settings-group">Terminal · scroll &amp; input</div>
-        <label class="setting-row inline">Scrollback lines
-          <input id="set-scrollback" type="number" min="0" max="200000" step="1000" />
-        </label>
-        <label class="setting-row inline">Scroll speed
-          <input id="set-scroll-speed" type="number" min="1" max="10" step="1" />
-        </label>
-        <label class="setting-row inline" title="Animation length for scroll-to-bottom jumps. 0 disables smooth scrolling.">Smooth scroll (ms)
-          <input id="set-smooth-scroll" type="number" min="0" max="500" step="25" />
-        </label>
-        <label class="setting-check"><input id="set-copy-select" type="checkbox" /> Copy on select</label>
-        <label class="setting-check"><input id="set-rclick-word" type="checkbox" /> Right-click selects word</label>
-        <label class="setting-check"><input id="set-option-meta" type="checkbox" /> ⌥ sends Esc (Meta)</label>
-        <label class="setting-check"><input id="set-bell-toast" type="checkbox" /> Show a toast on terminal bell</label>
-
-        <div class="settings-group">clash</div>
         <label class="setting-row inline">Open links
-          <select id="set-link-open" title="Where every link clash opens goes: terminal hyperlinks, workflow PR buttons, session PR/repository rows, listening ports, links inside a rendered plan. Opening an item's several PRs asks once, not once per PR. mailto:/tel:/file: always go to the OS, which has the handler.">
-            <option value="ask">Ask each time</option>
-            <option value="embedded">In clash</option>
-            <option value="external">System browser</option>
-          </select>
+          <select data-mirror="set-link-open"></select>
         </label>
-        <label class="setting-check"><input id="set-notify" type="checkbox" /> Desktop notifications</label>
-        <label class="setting-check"><input id="set-title-attention" type="checkbox" /> Attention count in window title</label>
-        <label class="setting-check"><input id="set-confirm-kill" type="checkbox" /> Confirm before killing a session</label>
-        <label class="setting-row inline" title="How often the session list is refreshed from the backend.">Refresh every (s)
-          <input id="set-refresh-secs" type="number" min="1" max="30" step="1" />
+        <label class="setting-row inline">Default agent
+          <select data-mirror="set-default-agent"></select>
         </label>
-        <label class="setting-row inline">Default shell
-          <select id="set-term-shell"></select>
-        </label>
-        <label class="setting-row inline">Terminal for TUI
-          <select id="set-tui-terminal"></select>
-        </label>
-        <button id="tour-guide-btn" class="update-big" title="Replay the guided tour of the window">▶ Show the tour</button>
+        <button id="settings-open-btn" class="update-big" title="Every setting, by topic (⌘,)">⚙ All settings…</button>
         <button id="update-btn" class="update-big" title="Download and install the latest clash version">⟳ Update clash</button>
         </div>
         <div class="footer-row">
@@ -402,6 +126,348 @@
   </div>
 
   <!-- New session modal -->
+  <!-- Every setting, by topic (⌘,). The sidebar's quick settings mirror a few of these controls (data-mirror). -->
+  <div id="settings-modal" class="settings-backdrop hidden">
+    <div class="settings-dialog" role="dialog" aria-modal="true" aria-label="Settings">
+      <aside class="settings-nav">
+        <div class="settings-title">Settings</div>
+        <input id="settings-filter" type="search" placeholder="Search every setting…" autocomplete="off" spellcheck="false" />
+        <nav id="settings-tabs"></nav>
+      </aside>
+      <div class="settings-main">
+        <button id="settings-close" class="icon-btn settings-close" type="button" title="Close (Esc)">✕</button>
+        <div id="settings-pane">
+          <section class="settings-tab" data-tab="general" data-label="General">
+            <div class="settings-group">Behaviour</div>
+            <label class="setting-row inline">Open links
+              <select id="set-link-open" title="Where every link clash opens goes: terminal hyperlinks, workflow PR buttons, session PR/repository rows, listening ports, links inside a rendered plan. Opening an item's several PRs asks once, not once per PR. mailto:/tel:/file: always go to the OS, which has the handler.">
+                <option value="ask">Ask each time</option>
+                <option value="embedded">In clash</option>
+                <option value="external">System browser</option>
+              </select>
+            </label>
+            <label class="setting-check"><input id="set-notify" type="checkbox" /> Desktop notifications</label>
+            <label class="setting-check"><input id="set-title-attention" type="checkbox" /> Attention count in window title</label>
+            <label class="setting-check"><input id="set-confirm-kill" type="checkbox" /> Confirm before killing a session</label>
+            <label class="setting-row inline" title="How often the session list is refreshed from the backend.">Refresh every (s)
+              <input id="set-refresh-secs" type="number" min="1" max="30" step="1" />
+            </label>
+            <label class="setting-row inline">Default shell
+              <select id="set-term-shell"></select>
+            </label>
+            <label class="setting-row inline">Terminal for TUI
+              <select id="set-tui-terminal"></select>
+            </label>
+            <label class="setting-row inline">Default agent
+              <select id="set-default-agent" title="Agent the New session dialog pre-selects. You can still pick the other one each time.">
+                <option value="claude">Claude Code</option>
+                <option value="omp">OMP</option>
+              </select>
+            </label>
+            <div class="settings-group">Updates</div>
+            <label class="setting-check" title="Look for a newer clash release at startup and every 6 hours. Found releases are announced only; nothing installs until you click."><input id="set-update-check" type="checkbox" /> Check for updates in the background</label>
+            <div class="settings-group">Help</div>
+            <button id="tour-guide-btn" class="update-big" title="Replay the guided tour of the window">▶ Show the tour</button>
+              </section>
+          <section class="settings-tab" data-tab="appearance" data-label="Appearance">
+            <div class="settings-group">Appearance</div>
+            <label class="setting-row">Theme
+              <select id="set-theme" title="Recolors the whole app and every terminal (◐ dark · ◑ light)"></select>
+            </label>
+            <div class="settings-group">Terminal · text</div>
+            <label class="setting-row">Font family
+              <span class="input-with-btn">
+                <input id="set-fontfamily" type="text" placeholder="SF Mono, Menlo, monospace" autocomplete="off" spellcheck="false" readonly title="Click to pick from the fonts installed on this machine" />
+                <button id="set-fontfamily-pick" class="icon-btn" title="Choose a font" type="button"></button>
+              </span>
+            </label>
+            <label class="setting-row inline">Font size
+              <input id="set-fontsize" type="number" min="9" max="24" step="1" />
+            </label>
+            <label class="setting-row inline">Font weight
+              <select id="set-font-weight">
+                <option value="300">Light</option>
+                <option value="normal">Normal</option>
+                <option value="500">Medium</option>
+                <option value="600">Semibold</option>
+                <option value="bold">Bold</option>
+              </select>
+            </label>
+            <label class="setting-row inline">Bold weight
+              <select id="set-font-weight-bold">
+                <option value="normal">Normal</option>
+                <option value="500">Medium</option>
+                <option value="600">Semibold</option>
+                <option value="bold">Bold</option>
+                <option value="800">Extra bold</option>
+              </select>
+            </label>
+            <label class="setting-row inline">Line height
+              <input id="set-line-height" type="number" min="1" max="2" step="0.05" />
+            </label>
+            <label class="setting-row inline">Letter spacing
+              <input id="set-letter-spacing" type="number" min="-2" max="5" step="0.5" />
+            </label>
+            <div class="settings-group">Terminal · cursor</div>
+            <label class="setting-row inline">Cursor style
+              <select id="set-cursor-style">
+                <option value="block">Block</option>
+                <option value="bar">Bar</option>
+                <option value="underline">Underline</option>
+              </select>
+            </label>
+            <label class="setting-row inline">Unfocused cursor
+              <select id="set-cursor-inactive">
+                <option value="outline">Outline</option>
+                <option value="block">Block</option>
+                <option value="bar">Bar</option>
+                <option value="underline">Underline</option>
+                <option value="none">Hidden</option>
+              </select>
+            </label>
+            <label class="setting-row inline">Bar cursor width
+              <input id="set-cursor-width" type="number" min="1" max="5" step="1" />
+            </label>
+            <label class="setting-check"><input id="set-cursor-blink" type="checkbox" /> Cursor blink</label>
+            <div class="settings-group">Terminal · colors</div>
+            <label class="setting-row inline" title="Force a minimum contrast between text and background. 1 = off, 4.5 = WCAG AA, 21 = black on white.">Min contrast
+              <input id="set-min-contrast" type="number" min="1" max="21" step="0.5" />
+            </label>
+            <label class="setting-check"><input id="set-bright-bold" type="checkbox" /> Bold text in bright colors</label>
+              </section>
+          <section class="settings-tab" data-tab="terminal" data-label="Terminal">
+            <div class="settings-group">Terminal · scroll &amp; input</div>
+            <label class="setting-row inline">Scrollback lines
+              <input id="set-scrollback" type="number" min="0" max="200000" step="1000" />
+            </label>
+            <label class="setting-row inline">Scroll speed
+              <input id="set-scroll-speed" type="number" min="1" max="10" step="1" />
+            </label>
+            <label class="setting-row inline" title="Animation length for scroll-to-bottom jumps. 0 disables smooth scrolling.">Smooth scroll (ms)
+              <input id="set-smooth-scroll" type="number" min="0" max="500" step="25" />
+            </label>
+            <label class="setting-check"><input id="set-copy-select" type="checkbox" /> Copy on select</label>
+            <label class="setting-check"><input id="set-rclick-word" type="checkbox" /> Right-click selects word</label>
+            <label class="setting-check"><input id="set-option-meta" type="checkbox" /> ⌥ sends Esc (Meta)</label>
+            <label class="setting-check"><input id="set-bell-toast" type="checkbox" /> Show a toast on terminal bell</label>
+              </section>
+          <section class="settings-tab" data-tab="paths" data-label="Paths">
+            <div class="settings-group">Paths</div>
+            <label class="setting-row">Default directory
+              <span class="input-with-btn">
+                <input id="default-cwd" type="text" placeholder="/Users/you" autocomplete="off" spellcheck="false" />
+                <button id="default-cwd-browse" class="icon-btn" title="Browse for a directory" type="button"></button>
+              </span>
+            </label>
+            <label class="setting-row">Scratch directory
+              <span class="input-with-btn">
+                <input id="set-scratch-dir" type="text" placeholder="~/.claude/clash/scratch" autocomplete="off" spellcheck="false" />
+                <button id="set-scratch-dir-browse" class="icon-btn" title="Browse for a directory" type="button"></button>
+              </span>
+            </label>
+            <label class="setting-row">Workflows directory
+              <span class="input-with-btn">
+                <input id="set-workflows-dir" type="text" placeholder="~/.claude/clash/workflows" autocomplete="off" spellcheck="false" />
+                <button id="set-workflows-dir-browse" class="icon-btn" title="Browse for a directory" type="button"></button>
+              </span>
+            </label>
+            <label class="setting-row">Claude binary
+              <span class="input-with-btn">
+                <input id="set-claude-bin" type="text" placeholder="claude" autocomplete="off" spellcheck="false" title="Name resolved on PATH, or an absolute path. Applies to sessions started from now on." />
+                <button id="set-claude-bin-browse" class="icon-btn" title="Browse for the claude executable" type="button"></button>
+              </span>
+            </label>
+            <label class="setting-row">OMP binary
+              <span class="input-with-btn">
+                <input id="set-omp-bin" type="text" placeholder="omp" autocomplete="off" spellcheck="false" title="The oh-my-pi binary — a name resolved on PATH, or an absolute path. Applies to OMP sessions started from now on." />
+                <button id="set-omp-bin-browse" class="icon-btn" title="Browse for the omp executable" type="button"></button>
+              </span>
+            </label>
+              </section>
+          <section class="settings-tab" data-tab="workflows" data-label="Workflows">
+            <div class="settings-group">Workflows · agents</div>
+            <p class="settings-note">How the agents clash launches for a workflow item behave.</p>
+            <label class="setting-row inline">Workflow agent
+              <select id="set-wf-agent" title="Agent CLI workflow sessions (plan, implement, reviews, explanations, shares) run on — or ask at every step. An item's ⚙ Settings tab can override it.">
+                <option value="ask">Ask at every step</option>
+                <option value="claude">Claude Code</option>
+                <option value="omp">OMP</option>
+              </select>
+            </label>
+            <label class="setting-row inline">Next-step assist
+              <select id="set-wf-assist" title="Suggest: every item's action bar highlights the recommended next step and says why. Autopilot: also starts that step when it decides nothing — a review round, or applying a round that said apply — and always stops before an approval or anything that moves the item forward. Off: the plain action bar.">
+                <option value="suggest">Suggest the next step</option>
+                <option value="autopilot">Autopilot until a decision</option>
+                <option value="off">Off</option>
+              </select>
+            </label>
+            <label class="setting-row inline">Explanation detail
+              <select id="set-wf-explain-detail" title="How much a ◫ Explain round writes up front. Every part it leaves closed is a dive you start by clicking the part — that is where the cost goes. Each launch can override this.">
+                <option value="critical">Critical parts (overview + what it flags critical)</option>
+                <option value="overview">Overview only (cheapest)</option>
+                <option value="full">Every part (costs the most)</option>
+              </select>
+            </label>
+            <label class="setting-row inline">Delegation
+              <select id="set-wf-delegation" title="Team: the lead sizes each round and fans implementation steps, exploration and review passes out to parallel subagents only where that is faster than doing them itself, then verifies what they return. Solo: everything runs in the one session.">
+                <option value="team">Team (lead + subagents)</option>
+                <option value="solo">Solo</option>
+              </select>
+            </label>
+            <label class="setting-row">PR skill
+              <input id="set-wf-pr-skill" type="text" placeholder="myorg:github-pr" autocomplete="off" spellcheck="false" title="Skill workflow agents open pull requests with, so your org's PR conventions come along. Empty resets to the shipped default; 'none' disables it and the agent follows the repo's own conventions with gh. An item can override this in its ⚙ Settings tab." />
+            </label>
+            <label class="setting-row inline">Forge
+              <select id="set-wf-forge" title="Where this repo's pull requests live. Auto reads the origin remote (unknown hosts count as GitHub, so GitHub Enterprise keeps working); None hides every PR feature for repos that don't use one.">
+                <option value="auto">Auto-detect</option>
+                <option value="github">GitHub</option>
+                <option value="none">None</option>
+              </select>
+            </label>
+            <label class="setting-row inline">PR stacking
+              <select id="set-wf-pr-stacking" title="GitHub only. When an item's PRs build on each other (each one's base branch is another's head), order them base → tip: chips show the layer, PR actions default to the whole stack, and reviews read each layer against its parent instead of reporting what a sibling layer holds as missing. An item can override this in its ⚙ Settings tab.">
+                <option value="off">Off</option>
+                <option value="on">On</option>
+              </select>
+            </label>
+            <label class="setting-row inline">Skill updates
+              <select id="set-skills-update" title="Skills you never edited are always brought up to date at startup, and missing ones install themselves. This is only about skills you edited by hand: ask at startup (popup), always overwrite your edits, or always keep them.">
+                <option value="ask">Ask at startup</option>
+                <option value="all">Overwrite my edits</option>
+                <option value="keep">Keep my edits</option>
+              </select>
+            </label>
+              </section>
+          <section class="settings-tab" data-tab="models" data-label="Models">
+            <div class="settings-group">Models · Claude Code</div>
+            <p class="settings-note">What a workflow session launched on Claude Code runs on. Applied at launch <em>and</em> every time the session is resumed.</p>
+            <label class="setting-row">Lead model
+              <input id="set-wf-lead-model" type="text" placeholder="claude-opus-5-5" autocomplete="off" spellcheck="false" title="Model every Claude Code workflow session runs on — the lead that plans, reviews, splits the work and verifies it (claude --model). Empty resets to the shipped default." />
+            </label>
+            <label class="setting-row" id="set-wf-subagent-row">Subagent model
+              <input id="set-wf-subagent-model" type="text" placeholder="claude-sonnet-5-5" autocomplete="off" spellcheck="false" title="Model the lead's subagents run on under Team delegation — forced (CLAUDE_CODE_SUBAGENT_MODEL + CLAUDE_CODE_SUBAGENT_MODEL_FORCE), so neither an agent definition nor the lead can pick another. Claude Code's built-in Explore agent keeps its own model. Empty resets to the shipped default." />
+            </label>
+            <label class="setting-row inline">Review sizing
+              <select id="set-wf-review-sizing" title="Code reviews and self-reviews measure the change they read at launch. Small (≤150 changed lines and ≤5 files, one PR) runs its lead on the small-review model; large (≥800 lines or ≥25 files) runs its subagents on the large-review model; anything else uses the models above. A resumed round keeps the models it was launched with. Off measures nothing. Claude Code only — OMP sessions keep their own models.">
+                <option value="auto">By change size</option>
+                <option value="off">Off (always the models above)</option>
+              </select>
+            </label>
+            <label class="setting-row" id="set-wf-small-review-row">Small review · lead
+              <input id="set-wf-small-review-model" type="text" placeholder="claude-sonnet-5-5" autocomplete="off" spellcheck="false" title="Lead model of a small code review or self-review; its subagents keep the subagent model above. Claude Code only. Empty resets to the shipped default." />
+            </label>
+            <label class="setting-row" id="set-wf-large-review-row">Large review · subagents
+              <input id="set-wf-large-review-subagent-model" type="text" placeholder="claude-opus-5-5" autocomplete="off" spellcheck="false" title="Subagent model of a large code review or self-review, so a big change gets stronger finders; its lead keeps the lead model above. Claude Code only. Empty resets to the shipped default." />
+            </label>
+            <div class="settings-group">Models · OMP</div>
+            <p class="settings-note">What a workflow session launched on OMP runs on — names are matched by omp, against the providers you configured there. Applied at launch and on every resume.</p>
+            <label class="setting-row">Lead model
+              <input id="set-wf-omp-model" type="text" placeholder="omp's default" autocomplete="off" spellcheck="false" title="Model OMP workflow sessions run on (omp --model, fuzzy-matched). Empty uses omp's own default model." />
+            </label>
+            <label class="setting-row" id="set-wf-omp-subagent-row">Subagent model
+              <input id="set-wf-omp-subagent-model" type="text" placeholder="omp's task model" autocomplete="off" spellcheck="false" title="Model the lead's subagents run on under Team delegation — pinned through a per-run omp config overlay that sets the task model role (your own config.yml is left alone). Empty leaves omp's own task model." />
+            </label>
+              </section>
+          <section class="settings-tab" data-tab="trackers" data-label="Trackers &amp; sharing">
+            <div class="settings-group">Ticket trackers</div>
+            <p class="settings-note">
+              Where your tickets live. Workflow agents link every ticket key they
+              write, and an item's <b>↗ Share…</b> can post to the ticket. Jira and
+              Linear keys look alike (<code>PS-123</code>, <code>ENG-42</code>), so a
+              key belongs to the tracker that <b>lists its prefix</b>, and any other
+              key to the <b>primary</b> tracker — both can run side by side during a
+              migration. With no tracker set, agents ask you for the host.
+            </p>
+            <label class="setting-row inline">Primary tracker
+              <select id="set-trk-primary" title="The tracker a key belongs to when no tracker lists its prefix. Falls back to the only configured one. None: agents mention keys unlinked and never ask.">
+                <option value="jira">Jira</option>
+                <option value="linear">Linear</option>
+                <option value="none">None (don't link tickets)</option>
+              </select>
+            </label>
+            <div class="settings-group">Jira</div>
+            <label class="setting-row">Site
+              <input id="set-wf-jira-url" type="text" placeholder="yourorg.atlassian.net" autocomplete="off" spellcheck="false" title="Your Jira site. Keys link to site/browse/KEY, and the share dialog offers Post to Jira. Empty: no Jira tracker." />
+            </label>
+            <label class="setting-row">Key prefixes
+              <input id="set-trk-jira-prefixes" type="text" placeholder="PS, OPS" autocomplete="off" spellcheck="false" title="Project keys that belong to Jira, when another tracker is set too. Keys with an unlisted prefix go to the primary tracker." />
+            </label>
+            <label class="setting-row inline">Posted by
+              <select id="set-wf-jira-transport" title="Who posts a share to Jira: an agent session (a skill, or the Jira tools it has connected) or clash itself with the email and API token below. A choice, never a fallback.">
+                <option value="agent">An agent session</option>
+                <option value="clash">clash itself</option>
+              </select>
+            </label>
+            <label class="setting-row" data-transport="jira:agent">Skill
+              <input id="set-wf-jira-skill" type="text" placeholder="myorg:jira-post" autocomplete="off" spellcheck="false" title="Skill the agent session posts with. Empty: it uses whatever Jira tooling it has connected; a named skill that isn't installed falls back to the same." />
+            </label>
+            <label class="setting-row" data-transport="jira:clash">Email
+              <input id="set-wf-jira-email" type="text" placeholder="you@yourorg.com" autocomplete="off" spellcheck="false" title="Jira account email paired with the API token." />
+            </label>
+            <label class="setting-row" data-transport="jira:clash">API token
+              <input id="set-wf-jira-token" type="password" placeholder="API token" autocomplete="off" spellcheck="false" title="Jira API token (id.atlassian.com → Security → API tokens), stored in config.toml. It never comes back to this window once saved — the placeholder only says whether one is stored." />
+            </label>
+            <div class="settings-group">Linear</div>
+            <label class="setting-row">Workspace
+              <input id="set-trk-linear-workspace" type="text" placeholder="acme  or  https://linear.app/acme" autocomplete="off" spellcheck="false" title="Your Linear workspace — its slug or any linear.app URL inside it. Keys link to linear.app/slug/issue/KEY, and the share dialog offers Post to Linear. Empty: no Linear tracker." />
+            </label>
+            <label class="setting-row">Key prefixes
+              <input id="set-trk-linear-prefixes" type="text" placeholder="ENG, WEB" autocomplete="off" spellcheck="false" title="Team keys that belong to Linear, when another tracker is set too. Keys with an unlisted prefix go to the primary tracker." />
+            </label>
+            <label class="setting-row inline">Posted by
+              <select id="set-trk-linear-transport" title="Who posts a share to Linear: an agent session (a skill, or the Linear tools it has connected) or clash itself through Linear's API with the key below.">
+                <option value="agent">An agent session</option>
+                <option value="clash">clash itself</option>
+              </select>
+            </label>
+            <label class="setting-row" data-transport="linear:agent">Skill
+              <input id="set-trk-linear-skill" type="text" placeholder="myorg:linear-post" autocomplete="off" spellcheck="false" title="Skill the agent session posts with. Empty: it uses whatever Linear tooling it has connected (a Linear MCP server, say)." />
+            </label>
+            <label class="setting-row" data-transport="linear:clash">API key
+              <input id="set-trk-linear-key" type="password" placeholder="lin_api_…" autocomplete="off" spellcheck="false" title="Linear personal API key (Settings → Security &amp; access → Personal API keys), stored in config.toml. Write-only, like the Jira token." />
+            </label>
+            <div class="settings-group">Slack &amp; Discord</div>
+            <p class="settings-note">
+              Where else <b>↗ Share…</b> can send an item's document, and who posts it:
+              an agent session or clash itself over the webhooks below. Neither falls
+              back to the other, and nothing is sent without you pressing a button.
+            </p>
+            <label class="setting-row inline">Slack / Discord posted by
+              <select id="set-wf-chat-transport" title="Who posts a share to Slack or Discord. Decision notifications below are not affected — they always use the webhook.">
+                <option value="agent">An agent session</option>
+                <option value="clash">clash itself</option>
+              </select>
+            </label>
+            <label class="setting-row" data-transport="chat:agent">Chat skill
+              <input id="set-wf-chat-skill" type="text" placeholder="myorg:slack-post" autocomplete="off" spellcheck="false" title="Skill the session routes the Slack/Discord post through. Empty is fine — the session uses whatever tooling it has connected." />
+            </label>
+            <label class="setting-row" data-transport="chat:clash">Slack webhook
+              <input id="set-wf-slack-webhook" type="text" placeholder="https://hooks.slack.com/services/…" autocomplete="off" spellcheck="false" title="Slack incoming-webhook URL. Used when Slack is posted by clash itself — and always, independently, by decision notifications below." />
+            </label>
+            <label class="setting-row" data-transport="chat:clash">Discord webhook
+              <input id="set-wf-discord-webhook" type="text" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" spellcheck="false" title="Discord webhook URL. Used when Discord is posted by clash itself — and always, independently, by decision notifications below." />
+            </label>
+            <div class="settings-group">Notifications</div>
+            <p class="settings-note">
+              Announce items that park waiting for you. Only <i>agent-driven</i>
+              transitions post — never your own clicks — and this always uses a
+              webhook: it fires with nobody watching, so a skill session would be a
+              notification you'd have to go read.
+            </p>
+            <label class="setting-row inline">Notify decisions
+              <select id="set-wf-notify-webhook" title="Post to the configured webhook when an item parks at a decision state (plan review, diff review, PR draft).">
+                <option value="off">Off</option>
+                <option value="slack">Slack</option>
+                <option value="discord">Discord</option>
+              </select>
+            </label>
+          </section>
+          <p id="settings-empty" class="settings-note hidden">No setting matches.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="modal-backdrop" class="hidden">
     <div id="new-session-modal">
       <h3>New session</h3>

@@ -2789,6 +2789,40 @@ struct UpdatePhaseDto {
     message: Option<String>,
 }
 
+/// Background release check for the GUI's startup / periodic announcement.
+/// `Some(version)` only when a newer release exists; an up-to-date build, a
+/// disabled check and a failed network call are all `None` — a background
+/// check has nothing to say about any of them.
+#[tauri::command]
+async fn check_update(state: tauri::State<'_, GuiState>) -> Result<Option<String>, String> {
+    if !state.config.get().general.update_check {
+        return Ok(None);
+    }
+    Ok(
+        match clash::infrastructure::update::check_for_update().await {
+            Some(clash::infrastructure::update::UpdateCheck::Available { version, .. }) => {
+                Some(version)
+            }
+            _ => None,
+        },
+    )
+}
+
+/// Whether the background release check runs (`general.update_check`).
+#[tauri::command]
+fn get_update_check(state: tauri::State<'_, GuiState>) -> bool {
+    state.config.get().general.update_check
+}
+
+#[tauri::command]
+fn set_update_check(state: tauri::State<'_, GuiState>, enabled: bool) -> Result<bool, String> {
+    state
+        .config
+        .set_json(&[("general.update_check", serde_json::Value::Bool(enabled))])
+        .map_err(|e| e.to_string())?;
+    Ok(state.config.get().general.update_check)
+}
+
 /// Self-update: runs the shared updater (installs both clash and clash-gui),
 /// streaming phases to the webview as `update-phase` events.
 #[tauri::command]
@@ -3823,14 +3857,15 @@ fn main() {
             workflows::set_workflow_share_settings,
             workflows::build_workflow_share,
             workflows::share_workflow_webhook,
-            workflows::share_workflow_jira,
+            workflows::share_workflow_ticket,
             workflows::share_workflow_via_agent,
             workflows::export_workflow_share,
             workflows::default_share_export_path,
             workflows::get_workflow_pr_skill,
             workflows::set_workflow_pr_skill,
-            workflows::get_workflow_ticket_url,
-            workflows::set_workflow_ticket_url,
+            check_update,
+            get_update_check,
+            set_update_check,
             workflows::get_workflow_forge,
             workflows::set_workflow_forge,
             workflows::get_workflow_pr_stacking,

@@ -104,8 +104,9 @@
       target: "sidebar-footer",
       title: "Settings",
       body:
-        "Theme, fonts, directories, workflow webhooks — shared settings persist in " +
-        "config.toml, so the TUI sees them too. You can rerun this tour from here anytime.",
+        "Quick settings live here; ⚙ All settings… (⌘,) opens every setting by topic — " +
+        "theme, terminal, paths, workflows, models, trackers. Shared settings persist in " +
+        "config.toml, so the TUI sees them too. Rerun this tour from Settings → General.",
     },
   ];
 

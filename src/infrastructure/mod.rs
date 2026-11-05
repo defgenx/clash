@@ -31,9 +31,15 @@ pub mod ide;
 /// command) — same dead-code allowance as `gh`/`forge`.
 #[allow(dead_code)]
 pub mod jira;
+/// Same allowance as `jira`: the Linear share transport is GUI-only.
+#[allow(dead_code)]
+pub mod linear;
 pub mod logging;
 pub mod omp;
 pub mod process_scan;
+/// The tracker clients' shared POST (`jira`, `linear`); GUI-only like them.
+#[allow(dead_code)]
+pub mod secure_post;
 pub mod session_refresh;
 pub mod skills;
 pub mod tui;

@@ -3,10 +3,11 @@
 //!
 //! Two of them:
 //!
-//! 1. **v1 → v2**: the original `config.toml` was flat (`claude_bin`,
-//!    `scratch_dir`, …). v2 namespaces everything into sections. Applied in
-//!    memory on every load and written back the next time we save, so an old
-//!    binary reading the same file keeps working until then.
+//! 1. **Key moves between schema versions**: v1 → v2 namespaced the original
+//!    flat `config.toml` (`claude_bin`, `scratch_dir`, …) into sections; v2 →
+//!    v3 moved the Jira settings from `[workflows]` into `[trackers.jira]`.
+//!    Applied in memory on every load and written back the next time we save,
+//!    so an old binary reading the same file keeps working until then.
 //! 2. **The GUI settings blob → `config.toml`**: [`migrate_gui_blob`] is the
 //!    single Rust entry point the plan's Issue 6 asks for. It validates *all*
 //!    28 legacy keys against the schema — the 7 shared ones on their way into
@@ -28,6 +29,57 @@ const V1_MOVES: &[(&str, &str)] = &[
     ("workflows_dir", "paths.workflows_dir"),
 ];
 
+/// v2 keys that moved in v3, and where they live now.
+const V2_MOVES: &[(&str, &str)] = &[
+    ("workflows.jira_base_url", "trackers.jira.site"),
+    ("workflows.jira_email", "trackers.jira.email"),
+    ("workflows.jira_api_token", "trackers.jira.api_token"),
+    ("workflows.jira_transport", "trackers.jira.transport"),
+    ("workflows.jira_skill", "trackers.jira.skill"),
+];
+
+/// v1.142.0's single `workflows.ticket_url` (a host or a `{key}` template),
+/// replaced in v3 by the trackers: where its value now lives, if anywhere.
+/// A Linear URL becomes the workspace, a host or a `/browse/{key}` template
+/// the Jira site, and `none` turns linking off. Any other template has no
+/// tracker to map to and is dropped.
+fn ticket_url_target(raw: &str) -> Option<(&'static str, String)> {
+    let v = raw.trim();
+    if v.is_empty() {
+        return None;
+    }
+    if v.eq_ignore_ascii_case("none") {
+        return Some(("trackers.primary", "none".to_string()));
+    }
+    if v.contains("linear.app/") {
+        let slug = crate::application::trackers::linear_template(v)?
+            .trim_start_matches("https://linear.app/")
+            .trim_end_matches("/issue/{key}")
+            .to_string();
+        return Some(("trackers.linear.workspace", slug));
+    }
+    match v.strip_suffix("/browse/{key}") {
+        Some(site) => Some(("trackers.jira.site", site.to_string())),
+        None if v.contains("{key}") => None,
+        None => Some(("trackers.jira.site", v.to_string())),
+    }
+}
+
+/// Every move, tagged with the version that made it: a document older than
+/// that version gets the move.
+const MOVES: &[(i64, &[(&str, &str)])] = &[(2, V1_MOVES), (3, V2_MOVES)];
+
+/// Remove the value at a dotted `path`, returning it.
+fn take_path(table: &mut toml::Table, path: &str) -> Option<toml::Value> {
+    let mut parts: Vec<&str> = path.split('.').collect();
+    let leaf = parts.pop()?;
+    let mut cur = table;
+    for p in parts {
+        cur = cur.get_mut(p)?.as_table_mut()?;
+    }
+    cur.remove(leaf)
+}
+
 /// The document's declared schema version (0 when absent, i.e. a v1 file
 /// written before versioning existed).
 fn table_version(table: &toml::Table) -> i64 {
@@ -37,23 +89,39 @@ fn table_version(table: &toml::Table) -> i64 {
         .unwrap_or(0)
 }
 
-/// Upgrade a parsed config table in place. Idempotent: running it on a v2
-/// document changes nothing.
+/// Upgrade a parsed config table in place. Idempotent: running it on a
+/// current document changes nothing.
 ///
-/// A key present in *both* shapes keeps its v2 value — the namespaced form is
-/// the one clash writes, so it is the more recent intent.
+/// A key present in *both* shapes keeps its new value — the new form is the
+/// one clash writes, so it is the more recent intent.
 pub fn migrate_table(table: &mut toml::Table) -> bool {
-    if table_version(table) >= SCHEMA_VERSION {
+    let version = table_version(table);
+    if version >= SCHEMA_VERSION {
         return false;
     }
     let mut changed = false;
-    for (old, new) in V1_MOVES {
-        let Some(value) = table.remove(*old) else {
+    for (since, moves) in MOVES {
+        if version >= *since {
             continue;
-        };
-        changed = true;
-        if layers::get_path(table, new).is_none() {
-            layers::set_path(table, new, value);
+        }
+        for (old, new) in *moves {
+            let Some(value) = take_path(table, old) else {
+                continue;
+            };
+            changed = true;
+            if layers::get_path(table, new).is_none() {
+                layers::set_path(table, new, value);
+            }
+        }
+    }
+    if version < 3 {
+        if let Some(value) = take_path(table, "workflows.ticket_url") {
+            changed = true;
+            if let Some((path, v)) = value.as_str().and_then(ticket_url_target) {
+                if layers::get_path(table, path).is_none() {
+                    layers::set_path(table, path, toml::Value::String(v));
+                }
+            }
         }
     }
     table.insert(
@@ -76,16 +144,43 @@ pub fn migrate_document(document: &mut toml_edit::DocumentMut) -> bool {
     if version >= SCHEMA_VERSION {
         return false;
     }
-    for (old, new) in V1_MOVES {
-        // `remove_entry` rather than `remove`: a comment written above the key
-        // lives on the *key*, not the value, and dropping it would silently eat
-        // the user's annotations the first time they saved after an upgrade.
-        let Some((key, item)) = document.as_table_mut().remove_entry(old) else {
-            continue;
-        };
-        if doc::get(document, new).is_none() {
-            if let Some(value) = item.as_value() {
-                doc::set_keeping_decor(document, new, value.clone(), &key);
+    if version < 2 {
+        for (old, new) in V1_MOVES {
+            // `remove_entry` rather than `remove`: a comment written above the
+            // key lives on the *key*, not the value, and dropping it would
+            // silently eat the user's annotations the first time they saved
+            // after an upgrade.
+            let Some((key, item)) = document.as_table_mut().remove_entry(old) else {
+                continue;
+            };
+            if doc::get(document, new).is_none() {
+                if let Some(value) = item.as_value() {
+                    doc::set_keeping_decor(document, new, value.clone(), &key);
+                }
+            }
+        }
+    }
+    if version < 3 {
+        // Moves across tables: a key's comment cannot follow it into another
+        // table sensibly, so only the value moves.
+        for (old, new) in V2_MOVES {
+            let Some(value) = doc::get(document, old).and_then(|i| i.as_value()).cloned() else {
+                continue;
+            };
+            doc::remove(document, old);
+            if doc::get(document, new).is_none() {
+                doc::set(document, new, value);
+            }
+        }
+        let ticket_url = doc::get(document, "workflows.ticket_url")
+            .and_then(|i| i.as_str())
+            .map(str::to_string);
+        if let Some(raw) = ticket_url {
+            doc::remove(document, "workflows.ticket_url");
+            if let Some((path, v)) = ticket_url_target(&raw) {
+                if doc::get(document, path).is_none() {
+                    doc::set(document, path, v.into());
+                }
             }
         }
     }
@@ -292,6 +387,116 @@ mod tests {
             .iter()
             .find(|(p, _)| p == path)
             .map(|(_, v)| v.clone())
+    }
+
+    // ── v2 → v3 ─────────────────────────────────────────────────────
+
+    #[test]
+    fn v2_jira_settings_move_into_the_jira_tracker() {
+        let mut table: toml::Table = toml::from_str(
+            r#"
+            schema_version = 2
+            [workflows]
+            jira_base_url = "https://acme.atlassian.net"
+            jira_email = "me@acme.com"
+            jira_api_token = "t0k"
+            jira_transport = "clash"
+            pr_skill = "kept"
+            "#,
+        )
+        .unwrap();
+        assert!(migrate_table(&mut table));
+        let get = |p: &str| {
+            layers::get_path(&table, p)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        };
+        assert_eq!(
+            get("trackers.jira.site").as_deref(),
+            Some("https://acme.atlassian.net")
+        );
+        assert_eq!(get("trackers.jira.email").as_deref(), Some("me@acme.com"));
+        assert_eq!(get("trackers.jira.api_token").as_deref(), Some("t0k"));
+        assert_eq!(get("trackers.jira.transport").as_deref(), Some("clash"));
+        assert_eq!(get("workflows.jira_base_url"), None, "the old key is gone");
+        assert_eq!(
+            get("workflows.pr_skill").as_deref(),
+            Some("kept"),
+            "unrelated keys stay"
+        );
+        assert_eq!(table_version(&table), SCHEMA_VERSION);
+        assert!(!migrate_table(&mut table), "idempotent");
+    }
+
+    #[test]
+    fn the_released_ticket_url_maps_onto_a_tracker() {
+        assert_eq!(
+            ticket_url_target("https://linear.app/acme/issue/{key}"),
+            Some(("trackers.linear.workspace", "acme".to_string()))
+        );
+        assert_eq!(
+            ticket_url_target("https://acme.atlassian.net/browse/{key}"),
+            Some((
+                "trackers.jira.site",
+                "https://acme.atlassian.net".to_string()
+            ))
+        );
+        assert_eq!(
+            ticket_url_target("acme.atlassian.net"),
+            Some(("trackers.jira.site", "acme.atlassian.net".to_string()))
+        );
+        assert_eq!(
+            ticket_url_target("NONE"),
+            Some(("trackers.primary", "none".to_string()))
+        );
+        assert_eq!(
+            ticket_url_target("https://git.example.com/issues/{key}"),
+            None
+        );
+        assert_eq!(ticket_url_target(""), None);
+
+        let mut table: toml::Table = toml::from_str(
+            "schema_version = 2\n[workflows]\nticket_url = \"https://linear.app/acme/issue/{key}\"\n",
+        )
+        .unwrap();
+        assert!(migrate_table(&mut table));
+        assert_eq!(
+            layers::get_path(&table, "trackers.linear.workspace").and_then(|v| v.as_str()),
+            Some("acme")
+        );
+        assert!(layers::get_path(&table, "workflows.ticket_url").is_none());
+
+        let mut document: toml_edit::DocumentMut =
+            "schema_version = 2\n[workflows]\nticket_url = \"acme.atlassian.net\"\n"
+                .parse()
+                .unwrap();
+        assert!(migrate_document(&mut document));
+        assert_eq!(
+            doc::get(&document, "trackers.jira.site").and_then(|i| i.as_str()),
+            Some("acme.atlassian.net")
+        );
+        assert!(doc::get(&document, "workflows.ticket_url").is_none());
+    }
+
+    #[test]
+    fn v2_document_migration_moves_jira_and_keeps_the_rest() {
+        let mut document: toml_edit::DocumentMut = r#"schema_version = 2
+# my settings
+[workflows]
+pr_skill = "kept" # trailing
+jira_base_url = "https://acme.atlassian.net"
+"#
+        .parse()
+        .unwrap();
+        assert!(migrate_document(&mut document));
+        let text = document.to_string();
+        assert!(text.contains("# my settings"), "{}", text);
+        assert!(text.contains(r#"pr_skill = "kept" # trailing"#), "{}", text);
+        assert!(!text.contains("jira_base_url"), "{}", text);
+        assert_eq!(
+            doc::get(&document, "trackers.jira.site").and_then(|i| i.as_str()),
+            Some("https://acme.atlassian.net")
+        );
     }
 
     // ── v1 → v2 ─────────────────────────────────────────────────────

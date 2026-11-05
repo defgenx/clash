@@ -1141,71 +1141,6 @@ pub fn effective_pr_skill(item_value: &str, global: Option<&str>) -> Option<Stri
         .map(str::to_string)
 }
 
-/// How an agent links the tickets it mentions — the kickoff's `Ticket links:`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TicketLinks {
-    /// URL template; `{key}` is replaced by the ticket key.
-    Template(String),
-    /// `none` was chosen: mention keys plainly, never ask for a host.
-    Off,
-    /// Nothing configured: the agent asks the human for the host when it
-    /// first needs one (or, autonomous, leaves the key unlinked and says so).
-    Unknown,
-}
-
-impl TicketLinks {
-    /// The kickoff field; nothing when unknown, so the skill's ask applies.
-    pub fn clause(&self) -> String {
-        match self {
-            TicketLinks::Template(t) => format!(" Ticket links: {}.", t),
-            TicketLinks::Off => " Ticket links: none.".to_string(),
-            TicketLinks::Unknown => String::new(),
-        }
-    }
-}
-
-/// Pure: one setting value as a link template. A value holding `{key}` is a
-/// template already; anything else is a host whose Jira browse URL it means
-/// (`yourorg.atlassian.net` → `https://yourorg.atlassian.net/browse/{key}`).
-/// `Ok(None)` is a blank value (inherit), `Err(())` is `none` (off).
-fn ticket_setting(raw: &str) -> Result<Option<String>, ()> {
-    let s = raw.trim();
-    if s.is_empty() {
-        return Ok(None);
-    }
-    if s.eq_ignore_ascii_case("none") {
-        return Err(());
-    }
-    if s.contains("{key}") {
-        return Ok(Some(s.to_string()));
-    }
-    let base = s.trim_end_matches('/');
-    let base = if base.contains("://") {
-        base.to_string()
-    } else {
-        format!("https://{}", base)
-    };
-    Ok(Some(format!("{}/browse/{{key}}", base)))
-}
-
-/// Pure: the ticket links a launch carries — the item's override, else
-/// `workflows.ticket_url`, else the Jira site the share dialog posts to
-/// (`workflows.jira_base_url`, already the host of those tickets). `none` at
-/// either level turns linking off rather than falling through.
-pub fn effective_ticket_links(item: &str, global: &str, jira_base_url: &str) -> TicketLinks {
-    for level in [item, global] {
-        match ticket_setting(level) {
-            Ok(Some(t)) => return TicketLinks::Template(t),
-            Err(()) => return TicketLinks::Off,
-            Ok(None) => {}
-        }
-    }
-    match ticket_setting(jira_base_url) {
-        Ok(Some(t)) => TicketLinks::Template(t),
-        _ => TicketLinks::Unknown,
-    }
-}
-
 /// Pure: should a **linked-only** item auto-close? True when the item has no
 /// primary PR (nothing else can drive its status) and every linked PR — at
 /// least one — is merged. Items *with* a primary keep the invariant that
@@ -3078,46 +3013,6 @@ Tighten the API.\n\n\
             &Delegation::default(),
         );
         assert!(p.contains("Round: 1."));
-    }
-
-    #[test]
-    fn ticket_links_resolve_item_then_global_then_the_jira_site() {
-        let t = |s: &str| TicketLinks::Template(s.to_string());
-        // A host means its Jira browse URL; a template is kept as written.
-        assert_eq!(
-            effective_ticket_links("", "yourorg.atlassian.net/", ""),
-            t("https://yourorg.atlassian.net/browse/{key}")
-        );
-        assert_eq!(
-            effective_ticket_links("https://linear.app/acme/issue/{key}", "x.atlassian.net", ""),
-            t("https://linear.app/acme/issue/{key}")
-        );
-        // Unset everywhere but the share dialog's Jira site: that site.
-        assert_eq!(
-            effective_ticket_links("", "", "https://acme.atlassian.net"),
-            t("https://acme.atlassian.net/browse/{key}")
-        );
-        // `none` turns linking off at the level it is written — no fallthrough.
-        assert_eq!(
-            effective_ticket_links("NONE", "x.atlassian.net", ""),
-            TicketLinks::Off
-        );
-        assert_eq!(
-            effective_ticket_links("", "none", "https://acme.atlassian.net"),
-            TicketLinks::Off
-        );
-        // Nothing anywhere: the agent has to ask.
-        assert_eq!(effective_ticket_links(" ", "", ""), TicketLinks::Unknown);
-    }
-
-    #[test]
-    fn ticket_links_clause_is_absent_only_when_unknown() {
-        assert_eq!(
-            TicketLinks::Template("https://a/browse/{key}".into()).clause(),
-            " Ticket links: https://a/browse/{key}."
-        );
-        assert_eq!(TicketLinks::Off.clause(), " Ticket links: none.");
-        assert_eq!(TicketLinks::Unknown.clause(), "");
     }
 
     #[test]

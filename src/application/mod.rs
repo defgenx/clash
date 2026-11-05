@@ -20,6 +20,10 @@ pub mod reducer;
 pub mod review_size;
 pub mod state;
 pub mod store;
+/// Same allowance as `workflow`: ticket trackers are used by the GUI's
+/// workflow and share commands in v1.
+#[allow(dead_code)]
+pub mod trackers;
 /// Pure workflow logic is consumed only through the lib crate in v1 (GUI
 /// Tauri commands); the binary's private-`mod` compilation would otherwise
 /// flag it as dead code. Remove the `allow` once the TUI grows its read-only

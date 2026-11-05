@@ -614,21 +614,6 @@ html, body, #app {
 #settings-body .setting-row > * { min-width: 0; }
 #settings-body .settings-note,
 #settings-body .setting-check { overflow-wrap: anywhere; }
-/* Sticky so the filter stays usable while scrolling a long list. */
-#settings-filter {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--fg);
-  font-size: 12px;
-  padding: 5px 8px;
-  outline: none;
-}
-#settings-filter:focus { border-color: var(--accent); }
-#settings-filter::-webkit-search-cancel-button { filter: invert(0.6); }
 .settings-group {
   font-size: 9px;
   font-weight: 700;
@@ -729,6 +714,9 @@ html, body, #app {
 }
 .update-big:hover { border-color: var(--accent); color: var(--accent); }
 .footer-row { display: flex; align-items: center; gap: 6px; }
+/* A release the background check found: the version label is the button. */
+#version.has-update { color: var(--accent); font-weight: 600; cursor: pointer; }
+#version.has-update:hover { text-decoration: underline; }
 
 /* Primary sidebar action — the "new session" entry point. */
 .primary-action {
@@ -3083,3 +3071,94 @@ pre.wf-mermaid-bad { border-left: 3px solid var(--red); }
 pre.wf-mermaid-bad::before { content: "⚠ diagram could not be drawn — shown as code"; display: block; font-size: 11px; color: var(--fg-dim); margin-bottom: 6px; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
 /* mermaid stages each render in <body>; never let it show under the app. */
 body > [id^="dwf-mmd-"], body > [id^="iwf-mmd-"], body > [id^="wf-mmd-"] { position: absolute !important; left: -10000px !important; top: 0 !important; }
+
+/* ── Settings modal (⌘,) ───────────────────────────────────────────
+   Below the in-app dialogs (200) so the font/folder pickers a setting
+   opens stack above it. */
+.settings-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  background: var(--scrim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.settings-dialog {
+  position: relative;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  width: min(980px, calc(100vw - 48px));
+  height: min(720px, calc(100vh - 64px));
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg, 0 18px 50px rgba(0, 0, 0, 0.45));
+  overflow: hidden;
+}
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 12px;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+  min-height: 0;
+}
+.settings-title { font-size: 15px; font-weight: 600; padding: 0 6px 2px; }
+#settings-filter {
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 6px 9px;
+  outline: none;
+}
+#settings-filter:focus { border-color: var(--accent); }
+#settings-filter::-webkit-search-cancel-button { filter: invert(0.6); }
+#settings-tabs { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+#settings-tabs button {
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 13px;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+#settings-tabs button:hover { background: var(--bg-hover); color: var(--fg); }
+#settings-tabs button.on { background: var(--bg-active, var(--bg-hover)); color: var(--fg); font-weight: 600; }
+.settings-main { position: relative; min-width: 0; min-height: 0; }
+.settings-close { position: absolute; top: 12px; right: 12px; z-index: 1; }
+#settings-pane {
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 22px clamp(20px, 3vw, 40px) 40px;
+}
+.settings-tab { display: flex; flex-direction: column; gap: 12px; max-width: 640px; }
+#settings-pane.searching .settings-tab { margin-bottom: 26px; }
+#settings-pane.searching .settings-tab::before {
+  content: attr(data-label);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+}
+#settings-pane .settings-group { font-size: 11px; opacity: 1; margin-top: 14px; padding-bottom: 5px; }
+#settings-pane .settings-tab > .settings-group:first-child { margin-top: 0; }
+#settings-pane .setting-row { font-size: 11px; }
+#settings-pane .setting-row > * { min-width: 0; }
+#settings-pane .settings-note { font-size: 12px; overflow-wrap: anywhere; }
+#settings-pane .setting-check { font-size: 12.5px; overflow-wrap: anywhere; }
+#settings-pane .setting-row.inline select { max-width: 60%; }
+#settings-pane .update-big { align-self: flex-start; }
+.filtered-out { display: none !important; }
+@media (max-width: 720px) {
+  .settings-dialog { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .settings-nav { border-right: 0; border-bottom: 1px solid var(--border); }
+  #settings-tabs { flex-direction: row; flex-wrap: wrap; }
+}

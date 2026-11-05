@@ -1118,10 +1118,6 @@ pub struct WorkflowMeta {
     /// skill for this item.
     #[serde(default)]
     pub pr_skill: String,
-    /// Per-item ticket link host or `{key}` template (item Settings tab).
-    /// Empty inherits `workflows.ticket_url`; `none` mentions keys unlinked.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub ticket_url: String,
     /// Per-item PR stacking override (item Settings tab): `on` | `off`, empty
     /// inherits the global `workflows.pr_stacking` setting.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1141,12 +1137,17 @@ pub struct WorkflowMeta {
     /// Empty inherits the global `workflows.agent` setting.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub agent_setting: String,
-    /// Jira ticket this item belongs to (`PROJ-123`). Pre-fills the share
-    /// dialog's Post-to-Jira prompt and is remembered after the first post;
-    /// also editable in the item Settings tab. Empty means "detect from
-    /// title/branch".
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub jira_ticket: String,
+    /// Ticket this item belongs to (`PROJ-123`), in whichever tracker owns
+    /// its prefix. Pre-fills the share dialog's Post-to-ticket prompt and is
+    /// remembered after the first post; also editable in the item Settings
+    /// tab. Empty means "detect from title/branch". Read under its old name
+    /// too, from before trackers other than Jira existed.
+    #[serde(
+        default,
+        alias = "jiraTicket",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub ticket: String,
     /// The review round whose findings have been handed to the executor, as
     /// `"<target>:<round>"`. Every change round does that — the executor's
     /// contract has it read the latest `agent-review.md` round as input — so

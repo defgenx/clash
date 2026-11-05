@@ -154,9 +154,11 @@ impl Prop {
         self
     }
 
-    /// The section this property lives in (`""` for a root-level key).
+    /// The table this property lives in — its path minus the leaf
+    /// (`trackers.jira` for `trackers.jira.site`, `""` for a root-level key).
+    /// The TOML emitters write it as the `[header]`.
     pub fn section(&self) -> &'static str {
-        match self.path.split_once('.') {
+        match self.path.rsplit_once('.') {
             Some((section, _)) => section,
             None => "",
         }
@@ -198,8 +200,9 @@ const THEMES: &[&str] = &[
 
 /// The current config schema version. Bumped whenever a key moves or changes
 /// meaning; [`super::migrate::migrate_document`] upgrades older documents in
-/// place. v1 was the flat, un-namespaced file (5 keys, no sections).
-pub const SCHEMA_VERSION: i64 = 2;
+/// place. v1 was the flat, un-namespaced file (5 keys, no sections); v2 kept
+/// Jira under `[workflows]`, v3 moved it into `[trackers.jira]`.
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// Every configurable property, in the order `--defaults` emits them.
 pub const PROPS: &[Prop] = &[
@@ -242,6 +245,14 @@ pub const PROPS: &[Prop] = &[
          synonym `untouched`) keeps them. Skills you never edited are always refreshed, \
          missing ones always install, and retired ones are removed unless you edited them — \
          none of that asks.",
+    ),
+    Prop::new(
+        "general.update_check",
+        Kind::Bool,
+        Val::Bool(true),
+        "Look for a newer clash release in the background — at startup, and every 6 hours \
+         while the GUI runs. A release found is announced (a toast, and the version in the \
+         sidebar becomes an update button); nothing is installed until you ask.",
     ),
     // ── [paths] ─────────────────────────────────────────────────────
     Prop::new(
@@ -430,16 +441,6 @@ pub const PROPS: &[Prop] = &[
          conventions when it isn't installed in the session.",
     ),
     Prop::new(
-        "workflows.ticket_url",
-        Kind::Str,
-        Val::Str(""),
-        "Where the tickets workflow agents mention live, so they can link them: a host \
-         (`yourorg.atlassian.net` links `<host>/browse/<KEY>`) or a template with `{key}` \
-         (`https://linear.app/acme/issue/{key}`). Empty falls back to `workflows.jira_base_url`, \
-         and with neither the agent asks for the host. `none` mentions keys unlinked. \
-         External documents are always linked with their own URL. An item can override this.",
-    ),
-    Prop::new(
         "workflows.forge",
         Kind::Enum(&["auto", "github", "none"]),
         Val::Str("auto"),
@@ -481,63 +482,117 @@ pub const PROPS: &[Prop] = &[
          clicks.",
     ),
     Prop::new(
-        "workflows.jira_transport",
-        Kind::Enum(&["agent", "clash"]),
-        Val::Str("agent"),
-        "Who posts a share to Jira. `agent` (the default) launches a Claude Code session — \
-         through `jira_skill` when one is named, otherwise using whatever tooling that session \
-         has connected (an MCP server for Jira, say). `clash` makes clash post the comment \
-         itself over HTTPS with `jira_base_url` + `jira_email` + `jira_api_token`. Deliberately \
-         a choice rather than a fallback: which system talks to your tracker is not something \
-         to infer from whether a token happens to be filled in.",
-    ),
-    Prop::new(
         "workflows.chat_transport",
         Kind::Enum(&["agent", "clash"]),
         Val::Str("agent"),
-        "Who posts a share to Slack or Discord — same two values as `jira_transport`, with \
+        "Who posts a share to Slack or Discord — same two values as `trackers.jira.transport`, with \
          `chat_skill` and the webhook URLs as their respective settings. Decision \
          notifications are not affected: they always use the webhook, because they fire \
          without a human present and a notification you have to go read in a session is not a \
          notification.",
     ),
     Prop::new(
-        "workflows.jira_skill",
-        Kind::Str,
-        Val::Str(""),
-        "Skill the `agent` Jira transport routes through. Empty is not \"no session route\" — \
-         it means no skill is named, and the session uses whatever tooling it has connected. A \
-         named skill that is not installed in that session falls back to the same tooling \
-         rather than dead-ending. Ignored when `jira_transport` is `clash`.",
-    ),
-    Prop::new(
         "workflows.chat_skill",
         Kind::Str,
         Val::Str(""),
         "Skill the `agent` chat transport routes through, for the Slack and Discord \
-         destinations. Same shape as `jira_skill`, including the fallback to the session's own \
+         destinations. Same shape as `trackers.jira.skill`, including the fallback to the session's own \
          tooling. Ignored when `chat_transport` is `clash`.",
     ),
+    // ── [trackers] ──────────────────────────────────────────────────
+    // Ticket systems: where the keys agents write link to, and where a share
+    // posts. A key belongs to the tracker listing its prefix, else to the
+    // primary — Jira and Linear keys share one shape, so nothing else can tell.
     Prop::new(
-        "workflows.jira_base_url",
-        Kind::Str,
-        Val::Str(""),
-        "Jira site URL (e.g. https://yourorg.atlassian.net) used by the workflow share \
-         dialog's \"Post to Jira\" destination. Empty disables it. Nothing is ever posted \
-         without an explicit share action.",
+        "trackers.primary",
+        Kind::Enum(&["jira", "linear", "none"]),
+        Val::Str("jira"),
+        "The tracker a ticket key belongs to when no tracker lists its prefix. Falls back to \
+         the only configured tracker. `none` turns ticket linking off: agents mention keys \
+         unlinked and never ask for a host.",
     ),
     Prop::new(
-        "workflows.jira_email",
+        "trackers.jira.site",
         Kind::Str,
         Val::Str(""),
-        "Jira account email paired with the API token for the \"Post to Jira\" destination.",
+        "Jira site (e.g. `yourorg.atlassian.net`): keys link to `<site>/browse/<KEY>`, and \
+         the share dialog offers \"Post to Jira\". Empty means no Jira tracker.",
     ),
     Prop::new(
-        "workflows.jira_api_token",
+        "trackers.jira.prefixes",
         Kind::Str,
         Val::Str(""),
-        "Jira API token (id.atlassian.com → Security → API tokens) for the \"Post to Jira\" \
-         destination. Stored in config.toml like the webhook URLs.",
+        "Ticket-key prefixes that belong to Jira (`PS, OPS`), when another tracker is \
+         configured too. Keys with an unlisted prefix go to `trackers.primary`.",
+    ),
+    Prop::new(
+        "trackers.jira.transport",
+        Kind::Enum(&["agent", "clash"]),
+        Val::Str("agent"),
+        "Who posts a share to Jira. `agent` (the default) launches a Claude Code session — \
+         through `trackers.jira.skill` when one is named, otherwise using whatever tooling that \
+         session has connected (an MCP server for Jira, say). `clash` posts the comment itself \
+         over HTTPS with the site, `trackers.jira.email` and `trackers.jira.api_token`. A \
+         choice, not a fallback: which system talks to your tracker is not inferred from \
+         whether a token happens to be filled in.",
+    ),
+    Prop::new(
+        "trackers.jira.skill",
+        Kind::Str,
+        Val::Str(""),
+        "Skill the `agent` Jira transport routes through. Empty means no skill is named and \
+         the session uses whatever tooling it has connected; a named skill that is not \
+         installed falls back to the same tooling. Ignored when the transport is `clash`.",
+    ),
+    Prop::new(
+        "trackers.jira.email",
+        Kind::Str,
+        Val::Str(""),
+        "Jira account email paired with the API token, for the `clash` transport.",
+    ),
+    Prop::new(
+        "trackers.jira.api_token",
+        Kind::Str,
+        Val::Str(""),
+        "Jira API token (id.atlassian.com → Security → API tokens) for the `clash` transport. \
+         Stored in config.toml like the webhook URLs.",
+    ),
+    Prop::new(
+        "trackers.linear.workspace",
+        Kind::Str,
+        Val::Str(""),
+        "Linear workspace — its slug (`acme`) or any URL inside it: keys link to \
+         `https://linear.app/<slug>/issue/<KEY>`, and the share dialog offers \"Post to \
+         Linear\". Empty means no Linear tracker.",
+    ),
+    Prop::new(
+        "trackers.linear.prefixes",
+        Kind::Str,
+        Val::Str(""),
+        "Ticket-key prefixes (team keys) that belong to Linear (`ENG, WEB`), when another \
+         tracker is configured too. Keys with an unlisted prefix go to `trackers.primary`.",
+    ),
+    Prop::new(
+        "trackers.linear.transport",
+        Kind::Enum(&["agent", "clash"]),
+        Val::Str("agent"),
+        "Who posts a share to Linear: `agent` (a Claude Code session, through \
+         `trackers.linear.skill` or the Linear tools it has connected) or `clash` (clash \
+         posts the comment through Linear's API with `trackers.linear.api_key`).",
+    ),
+    Prop::new(
+        "trackers.linear.skill",
+        Kind::Str,
+        Val::Str(""),
+        "Skill the `agent` Linear transport routes through. Same shape as \
+         `trackers.jira.skill`. Ignored when the transport is `clash`.",
+    ),
+    Prop::new(
+        "trackers.linear.api_key",
+        Kind::Str,
+        Val::Str(""),
+        "Linear personal API key (Settings → Security & access → Personal API keys) for the \
+         `clash` transport. Stored in config.toml like the webhook URLs.",
     ),
     // ── [appearance] — GUI-local ────────────────────────────────────
     Prop::new(
@@ -1059,16 +1114,23 @@ pub fn json_schema() -> Json {
         }),
     );
     for (section, props) in sections {
-        properties.insert(
-            section.to_string(),
-            json!({
-                "type": "object",
-                "properties": Json::Object(props),
-                // Unknown keys are preserved on save, so the schema must not
-                // call them invalid.
-                "additionalProperties": true,
-            }),
-        );
+        // A nested table (`trackers.jira`) is an object inside its parent's.
+        let mut level = &mut properties;
+        for part in section.split('.') {
+            let node = level.entry(part.to_string()).or_insert_with(|| {
+                json!({
+                    "type": "object",
+                    "properties": {},
+                    // Unknown keys are preserved on save, so the schema must
+                    // not call them invalid.
+                    "additionalProperties": true,
+                })
+            });
+            level = node["properties"]
+                .as_object_mut()
+                .expect("section node is an object");
+        }
+        level.extend(props);
     }
     properties.insert(
         "ides".into(),

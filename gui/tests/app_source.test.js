@@ -199,11 +199,12 @@ test("no dialog dismisses on a bare backdrop click", () => {
   assert.match(APP, /function wireBackdropDismiss\(backdrop, dismiss, hits =/);
   assert.doesNotMatch(APP, /e\.target === backdrop/);
   assert.doesNotMatch(APP, /e\.target === \$\("modal-backdrop"\)/);
-  // One wiring per dialog builder (plus the new-session modal and the tour
-  // scrim, whose backdrops are not `.dialog-backdrop`).
+  // One wiring per dialog builder (plus the new-session modal, the tour
+  // scrim and the settings modal, whose backdrops are not `.dialog-backdrop`).
   const backdrops = (APP.match(/className = "dialog-backdrop"/g) || []).length;
   const wired = (APP.match(/^\s*(?:if \(cancelable\) )?wireBackdropDismiss\(/gm) || []).length;
-  assert.equal(wired, backdrops + 2, "every backdrop needs one wireBackdropDismiss");
+  assert.equal(wired, backdrops + 3, "every backdrop needs one wireBackdropDismiss");
+  assert.match(APP, /wireBackdropDismiss\(\$\("settings-modal"\), closeSettings\)/);
 });
 
 test("a click inside the already-focused pane repaints nothing", () => {
@@ -463,7 +464,7 @@ test("a session share hands off without leaking credentials or the payload's sha
   assert.match(APP, /invoke\("share_workflow_via_agent", \{/);
   const send = APP.slice(
     APP.indexOf('} else if (d.route === "agent") {'),
-    APP.indexOf('} else if (d.id === "jira") {')
+    APP.indexOf('} else if (TRACKER_DESTS.has(d.id)) {')
   );
   assert.match(send, /destination: d\.id/);
   assert.match(send, /skill: d\.skill \|\| null/);

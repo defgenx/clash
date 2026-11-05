@@ -8553,6 +8553,12 @@ async function wfComposeChecks(item, { preselect = null } = {}) {
 /// the payload** — every destination sends exactly the markdown on screen
 /// (the backend's pure builder composes it), so nothing leaves the machine
 /// unseen. Section presets + availability are the pure model in wf-share.js.
+/// The share destinations that post to a ticket, and the tracker each names.
+const TRACKER_DESTS = new Map([
+  ["jira", "Jira"],
+  ["linear", "Linear"],
+]);
+
 async function wfShareDialog(item) {
   const home = ws();
   let settings = { slackWebhook: "", discordWebhook: "", notifyWebhook: "off" };
@@ -8575,11 +8581,23 @@ async function wfShareDialog(item) {
     },
     slackConfigured: !!settings.slackWebhook,
     discordConfigured: !!settings.discordWebhook,
-    jiraConfigured: !!(settings.jiraBaseUrl && settings.jiraEmail && settings.jiraTokenSet),
-    jiraTransport: settings.jiraTransport || "agent",
     chatTransport: settings.chatTransport || "agent",
-    jiraSkill: settings.jiraSkill || "",
     chatSkill: settings.chatSkill || "",
+    trackers: {
+      primary: settings.primaryTracker || "jira",
+      jira: {
+        configured: !!settings.jiraSite,
+        clientConfigured: !!(settings.jiraSite && settings.jiraEmail && settings.jiraTokenSet),
+        transport: settings.jiraTransport || "agent",
+        skill: settings.jiraSkill || "",
+      },
+      linear: {
+        configured: !!settings.linearWorkspace,
+        clientConfigured: !!settings.linearKeySet,
+        transport: settings.linearTransport || "agent",
+        skill: settings.linearSkill || "",
+      },
+    },
     preset: "packet",
   });
 
@@ -8792,16 +8810,17 @@ async function wfShareDialog(item) {
           } else if (d.route === "agent") {
             // clash hands the document to a Claude session and stops there —
             // through the named skill when there is one, otherwise through
-            // whatever the session has connected. Jira still needs a ticket:
-            // nothing else can guess which one, and the prompt carries the
-            // rest.
+            // whatever the session has connected. A tracker still needs a
+            // ticket: nothing else can guess which one, and the prompt carries
+            // the rest.
             let ticket = null;
-            if (d.id === "jira") {
+            if (TRACKER_DESTS.has(d.id)) {
+              const name = TRACKER_DESTS.get(d.id);
               const asked = await uiPrompt(
                 d.skill
-                  ? `Post to Jira with the ${d.skill} skill — ticket key`
-                  : "Post to Jira from an agent session — ticket key",
-                item.meta.jiraTicket ||
+                  ? `Post to ${name} with the ${d.skill} skill — ticket key`
+                  : `Post to ${name} from an agent session — ticket key`,
+                item.meta.ticket ||
                   detectTicketKey(item.meta.title, item.meta.branch, item.slug)
               );
               if (!asked || !asked.trim()) return;
@@ -8844,37 +8863,38 @@ async function wfShareDialog(item) {
                 ? `Handed the share to ${d.skill} — watch the session`
                 : "Handed the share to an agent session — watch it post"
             );
-            if (ticket && ticket !== (item.meta.jiraTicket || "")) {
-              item.meta.jiraTicket = ticket;
+            if (ticket && ticket !== (item.meta.ticket || "")) {
+              item.meta.ticket = ticket;
               invoke("set_workflow_item_settings", {
                 project: item.project,
                 slug: item.slug,
-                jiraTicket: ticket,
+                ticket,
               }).catch(() => {});
             }
-          } else if (d.id === "jira") {
+          } else if (TRACKER_DESTS.has(d.id)) {
             // One comment on a ticket; the key is pre-filled from the item's
             // remembered ticket, else detected from title/branch/slug — and
             // remembered after a successful post so the next share is
             // one confirmation away.
             const ticket = await uiPrompt(
-              "Post to Jira — ticket key",
-              item.meta.jiraTicket ||
+              `Post to ${TRACKER_DESTS.get(d.id)} — ticket key`,
+              item.meta.ticket ||
                 detectTicketKey(item.meta.title, item.meta.branch, item.slug)
             );
             if (!ticket || !ticket.trim()) return;
             const key = ticket.trim().toUpperCase();
-            const truncated = await invoke("share_workflow_jira", {
+            const truncated = await invoke("share_workflow_ticket", {
+              tracker: d.id,
               ticket: key,
               text: current,
             });
             flashToast(`Posted to ${key}${truncated ? " (truncated to fit)" : ""}`);
-            if (key !== (item.meta.jiraTicket || "")) {
-              item.meta.jiraTicket = key; // this dialog's own pre-fill
+            if (key !== (item.meta.ticket || "")) {
+              item.meta.ticket = key; // this dialog's own pre-fill
               invoke("set_workflow_item_settings", {
                 project: item.project,
                 slug: item.slug,
-                jiraTicket: key,
+                ticket: key,
               }).catch(() => {}); // remembering is best-effort, never the send
             }
           } else {
@@ -12082,11 +12102,10 @@ async function renderWfSubView(body, root, item, ts) {
         ? item.meta.interactionDefault
         : "",
       prSkill: item.meta.prSkill || "",
-      jiraTicket: item.meta.jiraTicket || "",
+      ticket: item.meta.ticket || "",
       agentSetting: item.meta.agentSetting || "",
       workInPlace: !!item.meta.workInPlace,
       prStacking: item.meta.prStacking || "",
-      ticketUrl: item.meta.ticketUrl || "",
     };
     const save = async (patch, revert) => {
       try {
@@ -12238,20 +12257,6 @@ async function renderWfSubView(body, root, item, ts) {
     prRow.appendChild(prInput);
     agents.appendChild(prRow);
 
-    const ticketRow = document.createElement("label");
-    ticketRow.className = "wf-settings-row";
-    ticketRow.appendChild(document.createTextNode("Ticket links "));
-    const ticketInput = document.createElement("input");
-    ticketInput.type = "text";
-    ticketInput.spellcheck = false;
-    ticketInput.placeholder = "inherit global setting";
-    ticketInput.value = item.meta.ticketUrl || "";
-    ticketInput.title =
-      "Per-item override of Settings → Workflows → Ticket links: a host (links host/browse/KEY) or a template with {key}. Empty inherits the global value; “none” mentions keys unlinked.";
-    ticketInput.onchange = () =>
-      save({ ticketUrl: ticketInput.value.trim() }, () => (ticketInput.value = committed.ticketUrl));
-    ticketRow.appendChild(ticketInput);
-    agents.appendChild(ticketRow);
 
     const stackRow = document.createElement("label");
     stackRow.className = "wf-settings-row";
@@ -12346,17 +12351,17 @@ async function renderWfSubView(body, root, item, ts) {
     sharing.appendChild(slg);
     const jiraRow = document.createElement("label");
     jiraRow.className = "wf-settings-row";
-    jiraRow.appendChild(document.createTextNode("Jira ticket "));
+    jiraRow.appendChild(document.createTextNode("Ticket "));
     const jiraInput = document.createElement("input");
     jiraInput.type = "text";
     jiraInput.spellcheck = false;
     jiraInput.placeholder =
       detectTicketKey(item.meta.title, item.meta.branch, item.slug) || "PROJ-123";
-    jiraInput.value = item.meta.jiraTicket || "";
+    jiraInput.value = item.meta.ticket || "";
     jiraInput.title =
-      "The ticket the share dialog's Post-to-Jira posts to. Remembered automatically after a successful post; empty falls back to detecting one in the title/branch.";
+      "The ticket the share dialog's Post to Jira / Post to Linear pre-fills. Remembered automatically after a successful post; empty falls back to detecting one in the title/branch.";
     jiraInput.onchange = () =>
-      save({ jiraTicket: jiraInput.value.trim() }, () => (jiraInput.value = committed.jiraTicket));
+      save({ ticket: jiraInput.value.trim() }, () => (jiraInput.value = committed.ticket));
     jiraRow.appendChild(jiraInput);
     sharing.appendChild(jiraRow);
     wrap.appendChild(sharing);
@@ -13368,9 +13373,39 @@ $("new-note-btn").onclick = (e) => {
   ]);
 };
 
-$("update-btn").onclick = () => {
+function startUpdateFlow() {
   $("version").textContent = "checking…";
   invoke("start_update").catch(console.error);
+}
+$("update-btn").onclick = startUpdateFlow;
+
+/// The release the background check found (`null`: none known), and whether
+/// one was already installed this run — the running binary stays the old one
+/// until the restart, so a later check would announce it again.
+let updateAvailable = null;
+let updateInstalled = false;
+const UPDATE_RECHECK_MS = 6 * 60 * 60 * 1000;
+
+/// Background release check (`general.update_check`, at boot and every 6h):
+/// announce once per version, never install. The footer's version label is
+/// the button because it is always visible — the ⟳ Update button sits in the
+/// settings list, collapsed most of the time.
+async function checkForUpdate() {
+  if (updateInstalled) return;
+  let found = null;
+  try {
+    found = await invoke("check_update");
+  } catch {
+    return;
+  }
+  if (!found || found === updateAvailable) return;
+  updateAvailable = found;
+  $("update-btn").textContent = `⟳ Update to v${found}`;
+  setVersionLabel();
+  flashToast(`clash v${found} is available — click the version in the sidebar to install it`);
+}
+$("version").onclick = () => {
+  if (updateAvailable && !updateInstalled) startUpdateFlow();
 };
 
 listen("update-phase", (event) => {
@@ -13390,6 +13425,8 @@ listen("update-phase", (event) => {
       v.textContent = "installing…";
       break;
     case "done":
+      updateInstalled = true;
+      v.classList.remove("has-update");
       v.textContent = `v${version} installed — restart`;
       uiDialog({
         message: `clash v${version} installed. Restart now? Running sessions will be closed.`,
@@ -13413,11 +13450,15 @@ listen("update-phase", (event) => {
 });
 
 async function setVersionLabel() {
+  const v = $("version");
+  const offer = updateAvailable && !updateInstalled;
   try {
-    $("version").textContent = `v${await invoke("get_version")}`;
+    v.textContent = `v${await invoke("get_version")}` + (offer ? ` → v${updateAvailable}` : "");
   } catch {
-    $("version").textContent = "";
+    v.textContent = "";
   }
+  v.classList.toggle("has-update", !!offer);
+  v.title = offer ? `clash v${updateAvailable} is available — click to install it` : "";
 }
 
 $("split-btn").onclick = addPane;
@@ -13439,12 +13480,6 @@ function toggleSettings(open) {
   $("settings-body").classList.toggle("hidden", !want);
   saveWorkspaces();
   $("settings-caret").textContent = want ? "▾" : "▸";
-  // Reopen shows the whole list — a leftover filter would look like the
-  // settings had vanished.
-  if (want && $("settings-filter").value) {
-    $("settings-filter").value = "";
-    filterSettings("");
-  }
   try {
     localStorage.setItem("clash-settings-open", want ? "1" : "0");
   } catch (e) {
@@ -13799,7 +13834,17 @@ document.addEventListener("keydown", (e) => {
     (document.activeElement.tagName === "INPUT" ||
       document.activeElement.classList.contains("xterm-helper-textarea"));
 
+  if (e.metaKey && e.key === ",") {
+    e.preventDefault();
+    if (settingsOpen()) closeSettings();
+    else openSettings();
+    return;
+  }
   if (e.key === "Escape") {
+    if (settingsOpen()) {
+      closeSettings();
+      return;
+    }
     hideNewSessionModal();
     if (document.activeElement === $("search")) {
       $("search").blur();
@@ -14795,6 +14840,7 @@ function syncSettingsUi() {
   $("set-confirm-kill").checked = s.confirmKill;
   $("set-refresh-secs").value = s.refreshSecs;
   syncPickerSelects();
+  syncQuickSettings();
 }
 
 /// Fill the shell / TUI-terminal selects from what the backend detected. Called
@@ -14829,29 +14875,125 @@ function syncPickerSelects() {
   }
 }
 
-/// Filter the settings list as you type: hide rows whose label doesn't match,
-/// and hide a group header when everything under it is hidden. Empty = show all.
+// ── Settings modal (⌘,) ─────────────────────────────────────────
+// Every setting, by topic. The sidebar's quick settings (`data-mirror`) are
+// thin proxies of a few of these controls: the modal's control stays the one
+// its binding listens to, so nothing is wired twice.
+
+let settingsTab = "general";
+
+function settingsTabs() {
+  return [...document.querySelectorAll("#settings-pane .settings-tab")];
+}
+
+function renderSettingsTabs() {
+  const nav = $("settings-tabs");
+  nav.replaceChildren();
+  for (const sec of settingsTabs()) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = sec.dataset.label;
+    b.dataset.tab = sec.dataset.tab;
+    b.onclick = () => showSettingsTab(sec.dataset.tab);
+    nav.appendChild(b);
+  }
+}
+
+function showSettingsTab(tab) {
+  settingsTab = tab;
+  if ($("settings-filter").value) $("settings-filter").value = "";
+  filterSettings("");
+  $("settings-pane").scrollTop = 0;
+}
+
+function settingsOpen() {
+  return !$("settings-modal").classList.contains("hidden");
+}
+
+function openSettings(tab) {
+  hideBrowserWebviews();
+  $("settings-modal").classList.remove("hidden");
+  renderSettingsTabs();
+  showSettingsTab(tab || settingsTab);
+  setTimeout(() => $("settings-filter").focus(), 0);
+}
+
+function closeSettings() {
+  if (!settingsOpen()) return;
+  $("settings-modal").classList.add("hidden");
+  syncQuickSettings();
+  fitAll(); // brings back the browser webviews hidden on open
+}
+$("settings-open-btn").onclick = () => openSettings();
+$("settings-close").onclick = closeSettings;
+wireBackdropDismiss($("settings-modal"), closeSettings);
+
+/// Search every tab at once: an empty query shows the current tab; a query
+/// stacks the matching rows of every tab (each labelled with its tab) and
+/// hides a group header with nothing matching under it. `filtered-out`, not
+/// `hidden`: some rows are hidden by their own logic (sizing, transports),
+/// and clearing a search must not reveal them.
 function filterSettings(query) {
   const q = query.trim().toLowerCase();
-  const rows = [...$("settings-body").children];
-  let lastGroup = null;
-  let groupHasMatch = false;
-  const flushGroup = () => {
-    if (lastGroup) lastGroup.classList.toggle("hidden", !groupHasMatch);
-  };
-  for (const el of rows) {
-    if (el.classList.contains("settings-group")) {
-      flushGroup();
-      lastGroup = el;
-      groupHasMatch = false;
-      continue;
+  let any = false;
+  for (const sec of settingsTabs()) {
+    let group = null;
+    let groupHit = false;
+    let secHit = false;
+    const flush = () => {
+      if (group) group.classList.toggle("filtered-out", !!q && !groupHit);
+    };
+    for (const el of sec.children) {
+      if (el.classList.contains("settings-group")) {
+        flush();
+        group = el;
+        groupHit = false;
+        continue;
+      }
+      const hit = !q || el.textContent.toLowerCase().includes(q);
+      el.classList.toggle("filtered-out", !hit);
+      if (hit) {
+        groupHit = true;
+        secHit = true;
+      }
     }
-    if (el.id === "settings-filter" || el.id === "update-btn") continue;
-    const match = !q || el.textContent.toLowerCase().includes(q);
-    el.classList.toggle("hidden", !match);
-    if (match) groupHasMatch = true;
+    flush();
+    sec.classList.toggle("hidden", q ? !secHit : sec.dataset.tab !== settingsTab);
+    if (secHit) any = true;
   }
-  flushGroup();
+  $("settings-pane").classList.toggle("searching", !!q);
+  $("settings-empty").classList.toggle("hidden", !q || any);
+  for (const b of $("settings-tabs").children) b.classList.toggle("on", !q && b.dataset.tab === settingsTab);
+}
+
+/// The sidebar's quick settings: each proxies the modal control named by its
+/// `data-mirror`. A change is forwarded as that control's own `change`, so its
+/// binding (validation, persistence, live-apply) runs exactly as from the
+/// modal; values are copied back whenever the control may have moved.
+function syncQuickSettings() {
+  for (const m of document.querySelectorAll("[data-mirror]")) {
+    const t = $(m.dataset.mirror);
+    if (!t) continue;
+    if (m.tagName === "SELECT") {
+      if (m.innerHTML !== t.innerHTML) m.innerHTML = t.innerHTML;
+      m.value = t.value;
+    } else if (m.type === "checkbox") {
+      m.checked = t.checked;
+    } else {
+      m.value = t.value;
+    }
+  }
+}
+for (const m of document.querySelectorAll("[data-mirror]")) {
+  const t = $(m.dataset.mirror);
+  if (!t) continue;
+  m.addEventListener("change", () => {
+    if (m.type === "checkbox") t.checked = m.checked;
+    else t.value = m.value;
+    t.dispatchEvent(new Event("change"));
+    setTimeout(syncQuickSettings, 0);
+  });
+  t.addEventListener("change", () => setTimeout(syncQuickSettings, 0));
 }
 
 /// Live-apply an xterm option to every open terminal, then persist.
@@ -15130,6 +15272,7 @@ function syncAgentSettingsUi(cfg) {
   const sizing = cfg.reviewSizing !== "off";
   $("set-wf-small-review-row").classList.toggle("setting-inactive", !sizing);
   $("set-wf-large-review-row").classList.toggle("setting-inactive", !sizing || cfg.delegation === "solo");
+  syncQuickSettings();
 }
 for (const [id, key] of [
   ["set-omp-bin", "general.omp_bin"],
@@ -15171,17 +15314,14 @@ $("set-wf-pr-skill").addEventListener("change", async () => {
   }
 });
 
-/// Where linked tickets live (config.toml, shared): every workflow kickoff
-/// carries it as `Ticket links:`, so agents link the keys they mention.
-$("set-wf-ticket-url").addEventListener("change", async () => {
-  const el = $("set-wf-ticket-url");
+/// The background release check (`general.update_check`, config.toml).
+$("set-update-check").addEventListener("change", async () => {
+  const el = $("set-update-check");
   try {
-    el.value = await invoke("set_workflow_ticket_url", { url: el.value.trim() });
+    el.checked = await invoke("set_update_check", { enabled: el.checked });
+    if (el.checked) checkForUpdate();
   } catch (e) {
-    uiAlert(`Ticket links: ${e}`);
-    try {
-      el.value = await invoke("get_workflow_ticket_url");
-    } catch (_) {}
+    uiAlert(`Update check: ${e}`);
   }
 });
 
@@ -15218,17 +15358,25 @@ $("set-wf-pr-stacking").addEventListener("change", async () => {
 /// field patches its own key; the backend validates the URL / enum and echoes
 /// the effective values back. Nothing is ever posted without an explicit
 /// share action or the notify opt-in below.
+/// What an empty share setting shows: the select defaults, else blank.
+const SHARE_SETTING_DEFAULTS = {
+  notifyWebhook: "off",
+  primaryTracker: "jira",
+  jiraTransport: "agent",
+  linearTransport: "agent",
+  chatTransport: "agent",
+};
 function bindShareWebhookSetting(id, sendKey, readKey) {
   $(id).addEventListener("change", async () => {
     const el = $(id);
     try {
       const s = await invoke("set_workflow_share_settings", { [sendKey]: el.value });
-      el.value = s[readKey] || (readKey === "notifyWebhook" ? "off" : "");
+      el.value = s[readKey] || SHARE_SETTING_DEFAULTS[readKey] || "";
     } catch (e) {
       uiAlert(`Webhook setting: ${e}`);
       try {
         const s = await invoke("get_workflow_share_settings");
-        el.value = s[readKey] || (readKey === "notifyWebhook" ? "off" : "");
+        el.value = s[readKey] || SHARE_SETTING_DEFAULTS[readKey] || "";
       } catch (_) {}
     }
   });
@@ -15236,7 +15384,24 @@ function bindShareWebhookSetting(id, sendKey, readKey) {
 bindShareWebhookSetting("set-wf-slack-webhook", "slackWebhook", "slackWebhook");
 bindShareWebhookSetting("set-wf-discord-webhook", "discordWebhook", "discordWebhook");
 bindShareWebhookSetting("set-wf-notify-webhook", "notifyWebhook", "notifyWebhook");
-bindShareWebhookSetting("set-wf-jira-url", "jiraBaseUrl", "jiraBaseUrl");
+bindShareWebhookSetting("set-wf-jira-url", "jiraSite", "jiraSite");
+bindShareWebhookSetting("set-trk-primary", "primaryTracker", "primaryTracker");
+bindShareWebhookSetting("set-trk-jira-prefixes", "jiraPrefixes", "jiraPrefixes");
+bindShareWebhookSetting("set-trk-linear-workspace", "linearWorkspace", "linearWorkspace");
+bindShareWebhookSetting("set-trk-linear-prefixes", "linearPrefixes", "linearPrefixes");
+bindShareWebhookSetting("set-trk-linear-skill", "linearSkill", "linearSkill");
+bindShareWebhookSetting("set-trk-linear-transport", "linearTransport", "linearTransport");
+// Write-only like the Jira token below.
+$("set-trk-linear-key").addEventListener("change", async () => {
+  const el = $("set-trk-linear-key");
+  try {
+    const s = await invoke("set_workflow_share_settings", { linearApiKey: el.value });
+    el.value = "";
+    el.placeholder = s.linearKeySet ? "•••••• (stored)" : "lin_api_…";
+  } catch (e) {
+    uiAlert(`Linear API key: ${e}`);
+  }
+});
 bindShareWebhookSetting("set-wf-jira-email", "jiraEmail", "jiraEmail");
 // The token is write-only: the backend never sends it back, so the field
 // clears on save and the placeholder carries the only state worth showing.
@@ -15267,6 +15432,7 @@ bindShareWebhookSetting("set-wf-chat-transport", "chatTransport", "chatTransport
 function syncShareTransportRows() {
   const chosen = {
     jira: $("set-wf-jira-transport").value || "agent",
+    linear: $("set-trk-linear-transport").value || "agent",
     chat: $("set-wf-chat-transport").value || "agent",
   };
   for (const row of document.querySelectorAll("[data-transport]")) {
@@ -15276,6 +15442,7 @@ function syncShareTransportRows() {
 }
 $("set-wf-jira-transport").addEventListener("change", syncShareTransportRows);
 $("set-wf-chat-transport").addEventListener("change", syncShareTransportRows);
+$("set-trk-linear-transport").addEventListener("change", syncShareTransportRows);
 
 /// Startup policy for changed skills: ask (popup) or one of the silent modes.
 $("set-skills-update").addEventListener("change", async () => {
@@ -15651,8 +15818,8 @@ function restartSessionPoll() {
   invoke("get_workflow_pr_skill")
     .then((s) => ($("set-wf-pr-skill").value = s))
     .catch(() => {});
-  invoke("get_workflow_ticket_url")
-    .then((s) => ($("set-wf-ticket-url").value = s))
+  invoke("get_update_check")
+    .then((on) => ($("set-update-check").checked = !!on))
     .catch(() => {});
   invoke("get_workflow_forge")
     .then((f) => ($("set-wf-forge").value = f || "auto"))
@@ -15670,7 +15837,15 @@ function restartSessionPoll() {
       $("set-wf-slack-webhook").value = s.slackWebhook || "";
       $("set-wf-discord-webhook").value = s.discordWebhook || "";
       $("set-wf-notify-webhook").value = s.notifyWebhook || "off";
-      $("set-wf-jira-url").value = s.jiraBaseUrl || "";
+      $("set-wf-jira-url").value = s.jiraSite || "";
+      $("set-trk-primary").value = s.primaryTracker || "jira";
+      $("set-trk-jira-prefixes").value = s.jiraPrefixes || "";
+      $("set-trk-linear-workspace").value = s.linearWorkspace || "";
+      $("set-trk-linear-prefixes").value = s.linearPrefixes || "";
+      $("set-trk-linear-skill").value = s.linearSkill || "";
+      $("set-trk-linear-transport").value = s.linearTransport || "agent";
+      $("set-trk-linear-key").value = "";
+      $("set-trk-linear-key").placeholder = s.linearKeySet ? "•••••• (stored)" : "lin_api_…";
       $("set-wf-jira-email").value = s.jiraEmail || "";
       $("set-wf-jira-skill").value = s.jiraSkill || "";
       $("set-wf-chat-skill").value = s.chatSkill || "";
@@ -15775,4 +15950,7 @@ function restartSessionPoll() {
       `font "${state.settings.fontFamily}" ${state.settings.fontSize}px, ` +
       `refresh ${state.settings.refreshSecs}s`
   );
+  // Out of the way of boot: the check spawns curl and may wait on the network.
+  setTimeout(checkForUpdate, 8000);
+  setInterval(checkForUpdate, UPDATE_RECHECK_MS);
 })();

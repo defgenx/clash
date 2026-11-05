@@ -1,7 +1,7 @@
 # Configuration — reference
 
 One namespaced, layered, schema-described file that both frontends read.
-README.md has the overview and the settings you'll actually reach for; this is
+[config-file.md](config-file.md) has the overview and every key with its default; this is
 the reference for how the subsystem behaves, and the contract a second frontend
 (or a future `[keymap]` phase) has to hold to.
 

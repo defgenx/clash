@@ -644,12 +644,13 @@ pub fn share_prompt(
     title: &str,
     ticket: Option<&str>,
 ) -> String {
-    let where_to = match destination {
-        "jira" => match ticket {
-            Some(key) => format!("Jira ticket {}", key),
-            None => "Jira".to_string(),
-        },
-        other => other.to_string(),
+    let where_to = match (
+        crate::application::trackers::TrackerKind::parse(destination),
+        ticket,
+    ) {
+        (Some(kind), Some(key)) => format!("{} issue {}", kind.label(), key),
+        (Some(kind), None) => kind.label().to_string(),
+        (None, _) => destination.to_string(),
     };
     let tools = format!(
         "use whatever tooling you have connected that can reach {destination} — an MCP \
@@ -937,7 +938,7 @@ mod tests {
             Some("PROJ-12"),
         );
         assert!(p.contains("/data/share/p-item-1.md"));
-        assert!(p.contains("Jira ticket PROJ-12"));
+        assert!(p.contains("Jira issue PROJ-12"));
         assert!(p.contains("Auth refactor"));
         assert!(p.contains("Use the myorg:jira-post skill"));
         // The instruction that keeps a share the thing the human previewed.
@@ -976,6 +977,13 @@ mod tests {
         // Jira without a key still says Jira rather than inventing one.
         let j = share_prompt(None, "jira", "/tmp/x.md", "Item", None);
         assert!(j.contains("to Jira."));
+    }
+
+    #[test]
+    fn a_linear_share_names_the_linear_issue() {
+        let p = share_prompt(None, "linear", "/tmp/x.md", "Item", Some("ENG-42"));
+        assert!(p.contains("to Linear issue ENG-42."));
+        assert!(p.contains("reach linear"));
     }
 
     #[test]

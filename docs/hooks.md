@@ -15,6 +15,9 @@ queue refusing to type into a tool-approval dialog, the attention inbox's
 "blocked tool call" band, a row going STASHED when its agent exits — depends
 on this layer working.
 
+The status icons and session sources as users see them are in
+[sessions.md](sessions.md).
+
 ## How registration works
 
 Everything lives in clash's own data directory:

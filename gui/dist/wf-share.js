@@ -80,14 +80,13 @@
     has = {},
     slackConfigured = false,
     discordConfigured = false,
-    jiraConfigured = false,
     // Who posts each family of destination, and the skill the session route
     // uses when one is named. Both come straight from Settings: this model
     // renders the human's choice, it does not make one.
-    jiraTransport = "agent",
     chatTransport = "agent",
-    jiraSkill = "",
     chatSkill = "",
+    // `{ primary, jira: {...}, linear: {...} }` — see `trackerDestinations`.
+    trackers = {},
     preset = "packet",
   } = {}) {
     const checked = presetSections(preset);
@@ -118,13 +117,30 @@
           skill: chatSkill,
           clientConfigured: discordConfigured,
         }),
-        shareDestination("jira", "Post to Jira…", {
-          transport: jiraTransport,
-          skill: jiraSkill,
-          clientConfigured: jiraConfigured,
-        }),
+        ...trackerDestinations(trackers),
       ],
     };
+  }
+
+  /// The ticket destinations: one per tracker that is configured (its site
+  /// or workspace set) or is the primary one — so a fresh install still
+  /// offers "Post to Jira…" through an agent session, as before trackers.
+  /// Each tracker is `{ configured, clientConfigured, transport, skill }`;
+  /// `primary` is `jira` | `linear` | `none`.
+  function trackerDestinations({ primary = "jira", jira = {}, linear = {} } = {}) {
+    const kinds = [
+      ["jira", "Jira", jira],
+      ["linear", "Linear", linear],
+    ];
+    return kinds
+      .filter(([id, , t]) => t.configured || id === primary)
+      .map(([id, label, t]) =>
+        shareDestination(id, `Post to ${label}…`, {
+          transport: t.transport || "agent",
+          skill: t.skill || "",
+          clientConfigured: !!t.clientConfigured,
+        })
+      );
   }
 
   /// One outward destination, with the route it will actually take.
@@ -158,7 +174,7 @@
         enabled: clientConfigured,
         hint: clientConfigured
           ? "clash posts it directly"
-          : "clash posts this one directly, but its credentials are missing — fill them in, or switch this destination to an agent session in Settings → Workflows",
+          : "clash posts this one directly, but its credentials are missing — fill them in, or switch this destination to an agent session in Settings → Trackers & sharing",
       };
     }
     return {
@@ -173,9 +189,9 @@
     };
   }
 
-  /// The first Jira ticket key found in any of `texts` (PROJ-123, any case —
-  /// branch names carry `ps-1234`), uppercased. Pre-fills the Jira ticket
-  /// prompt from the item's title/branch/slug; the backend re-validates.
+  /// The first ticket key found in any of `texts` (PROJ-123, any case —
+  /// branch names carry `ps-1234`), uppercased. Pre-fills the ticket prompt
+  /// from the item's title/branch/slug; the backend re-validates.
   function detectTicketKey(...texts) {
     for (const t of texts) {
       const m = /(?:^|[^A-Za-z0-9])([A-Za-z]{2,}[A-Za-z0-9]*-\d+)(?![A-Za-z0-9])/.exec(t || "");
@@ -1399,6 +1415,7 @@ ${shareDocSection(bodyHtml, { plain: true })}
 
   const api = {
     shareDestination,
+    trackerDestinations,
     SHARE_SECTIONS,
     SHARE_PRESETS,
     presetSections,

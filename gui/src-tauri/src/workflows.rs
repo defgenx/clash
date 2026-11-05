@@ -454,44 +454,6 @@ pub(crate) fn set_workflow_pr_stacking(
     Ok(state.config.get().workflows.pr_stacking)
 }
 
-/// Where the tickets agents mention live, for the Settings field.
-#[tauri::command]
-pub(crate) fn get_workflow_ticket_url(state: State<'_, GuiState>) -> String {
-    state.config.get().workflows.ticket_url.trim().to_string()
-}
-
-/// Set (or clear) the ticket link host / `{key}` template every workflow
-/// kickoff carries as `Ticket links:`. Empty falls back to the Jira site URL,
-/// then to the agent asking; items can override per item.
-#[tauri::command]
-pub(crate) fn set_workflow_ticket_url(
-    state: State<'_, GuiState>,
-    url: String,
-) -> Result<String, String> {
-    let trimmed = url.trim();
-    if trimmed.chars().any(char::is_whitespace) {
-        return Err(format!(
-            "A ticket host contains no whitespace: '{}'",
-            trimmed
-        ));
-    }
-    if trimmed.is_empty() {
-        state
-            .config
-            .reset_values(&["workflows.ticket_url"])
-            .map_err(|e| e.to_string())?;
-    } else {
-        state
-            .config
-            .set_json(&[(
-                "workflows.ticket_url",
-                serde_json::Value::String(trimmed.to_string()),
-            )])
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(state.config.get().workflows.ticket_url)
-}
-
 /// Patch the per-item settings (the item ⚙ Settings tab). Every field is
 /// optional: `Some` sets, `None` leaves the current value — one command for
 /// the whole tab, so it grows without new commands per knob.
@@ -501,8 +463,9 @@ pub(crate) fn set_workflow_ticket_url(
 ///   setting, `none` disables for this item.
 /// - `interaction_default`: `""`/`ask` | `interactive` | `autonomous` — how
 ///   this item's agent rounds run unless chosen at launch.
-/// - `jira_ticket`: the item's Jira ticket (`PROJ-123`); pre-fills and is
-///   remembered by the share dialog's Post-to-Jira. Empty clears it.
+/// - `ticket`: the item's ticket (`PROJ-123`), in whichever tracker owns its
+///   prefix; pre-fills and is remembered by the share dialog's Post-to-ticket.
+///   Empty clears it.
 /// - `description`: the item's free-form intent — the planning agent's
 ///   primary source. Editable so it can be refined before launching a plan.
 /// - `agent_setting`: `claude` | `omp` | `ask`; empty inherits the global
@@ -510,8 +473,6 @@ pub(crate) fn set_workflow_ticket_url(
 /// - `work_in_place`: never create a worktree; refused once one exists,
 ///   since the recorded worktree is the item's checkout from then on.
 /// - `pr_stacking`: `on` | `off`; empty inherits `workflows.pr_stacking`.
-/// - `ticket_url`: ticket link host or `{key}` template; empty inherits
-///   `workflows.ticket_url`, `none` mentions keys unlinked.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn set_workflow_item_settings(
@@ -521,14 +482,13 @@ pub(crate) fn set_workflow_item_settings(
     bare_session_names: Option<bool>,
     pr_skill: Option<String>,
     interaction_default: Option<String>,
-    jira_ticket: Option<String>,
+    ticket: Option<String>,
     description: Option<String>,
     agent_setting: Option<String>,
     title: Option<String>,
     base: Option<String>,
     work_in_place: Option<bool>,
     pr_stacking: Option<String>,
-    ticket_url: Option<String>,
 ) -> Result<clash::domain::workflow::WorkflowMeta, String> {
     let mut meta = state
         .backend
@@ -557,13 +517,6 @@ pub(crate) fn set_workflow_item_settings(
         }
         meta.pr_skill = skill;
     }
-    if let Some(url) = ticket_url {
-        let url = url.trim().to_string();
-        if url.chars().any(char::is_whitespace) {
-            return Err(format!("A ticket host contains no whitespace: '{}'", url));
-        }
-        meta.ticket_url = url;
-    }
     if let Some(mode) = interaction_default {
         let mode = mode.trim().to_ascii_lowercase();
         if !["", "ask", "interactive", "autonomous"].contains(&mode.as_str()) {
@@ -571,12 +524,12 @@ pub(crate) fn set_workflow_item_settings(
         }
         meta.interaction_default = if mode == "ask" { String::new() } else { mode };
     }
-    if let Some(ticket) = jira_ticket {
+    if let Some(ticket) = ticket {
         let ticket = ticket.trim().to_ascii_uppercase();
-        if !ticket.is_empty() && !clash::infrastructure::jira::valid_ticket_key(&ticket) {
-            return Err(format!("Not a Jira ticket key: '{}'", ticket));
+        if !ticket.is_empty() && !clash::application::trackers::valid_ticket_key(&ticket) {
+            return Err(format!("Not a ticket key: '{}'", ticket));
         }
-        meta.jira_ticket = ticket;
+        meta.ticket = ticket;
     }
     if let Some(desc) = description {
         meta.description = desc.trim().to_string();
@@ -1800,11 +1753,7 @@ pub(crate) async fn start_workflow_agent(
                     ),
                     workspace: work_dir.kickoff_field(),
                 },
-            ) + &state
-                .config
-                .get()
-                .workflow_ticket_links(&meta.ticket_url)
-                .clause()
+            ) + &state.config.get().ticket_links_clause()
         },
     )
     .await;
@@ -2101,7 +2050,7 @@ pub(crate) async fn launch_review(
         .filter(|w| !w.is_empty())
         .unwrap_or_else(|| meta.repo_path.clone());
     let mode = meta.mode;
-    let ticket_links = cfg.workflow_ticket_links(&meta.ticket_url).clause();
+    let ticket_links = cfg.ticket_links_clause();
     let session_id = uuid::Uuid::now_v7().to_string();
 
     // Persist the round BEFORE spawning — same crash-safety ordering as
@@ -2415,11 +2364,7 @@ async fn start_explainer(
                     .config
                     .get()
                     .workflow_delegation(clash::domain::entities::AgentKind::parse(&meta.agent)),
-            ) + &state
-                .config
-                .get()
-                .workflow_ticket_links(&meta.ticket_url)
-                .clause()
+            ) + &state.config.get().ticket_links_clause()
         },
     )
     .await;
@@ -2657,7 +2602,7 @@ pub(crate) async fn start_workflow_dive(
         &focus,
         meta.mode,
         &delegation,
-    ) + &cfg.workflow_ticket_links(&meta.ticket_url).clause();
+    ) + &cfg.ticket_links_clause();
     let iteration = meta.iteration;
     let record = |session_id: &str| clash::domain::workflow::WorkflowExplainer {
         target,
@@ -3547,17 +3492,25 @@ pub(crate) struct ShareSettings {
     /// Who posts each family of destination: `agent` | `clash`. The dialog
     /// renders the choice rather than inferring one from what happens to be
     /// filled in.
-    jira_transport: String,
     chat_transport: String,
     /// Skill the `agent` transport routes through, when one is named.
-    jira_skill: String,
     chat_skill: String,
-    jira_base_url: String,
+    /// `[trackers]`: `jira` | `linear` | `none`.
+    primary_tracker: String,
+    jira_site: String,
+    jira_prefixes: String,
+    jira_transport: String,
+    jira_skill: String,
     jira_email: String,
-    /// Never sent to the frontend: the dialog only needs to know whether Jira
-    /// is usable, and a token that reaches the webview is a token in a
-    /// devtools inspector.
+    /// Secrets never reach the frontend: the dialog only needs to know
+    /// whether the `clash` transport is usable, and a token that reaches the
+    /// webview is a token in a devtools inspector.
     jira_token_set: bool,
+    linear_workspace: String,
+    linear_prefixes: String,
+    linear_transport: String,
+    linear_skill: String,
+    linear_key_set: bool,
 }
 
 fn share_settings(state: &GuiState) -> ShareSettings {
@@ -3566,13 +3519,20 @@ fn share_settings(state: &GuiState) -> ShareSettings {
         slack_webhook: cfg.workflows.slack_webhook.trim().to_string(),
         discord_webhook: cfg.workflows.discord_webhook.trim().to_string(),
         notify_webhook: cfg.workflows.notify_webhook.trim().to_string(),
-        jira_transport: cfg.workflows.jira_transport.trim().to_string(),
         chat_transport: cfg.workflows.chat_transport.trim().to_string(),
-        jira_skill: cfg.workflows.jira_skill.trim().to_string(),
         chat_skill: cfg.workflows.chat_skill.trim().to_string(),
-        jira_base_url: cfg.workflows.jira_base_url.trim().to_string(),
-        jira_email: cfg.workflows.jira_email.trim().to_string(),
-        jira_token_set: !cfg.workflows.jira_api_token.trim().is_empty(),
+        primary_tracker: cfg.trackers.primary.trim().to_string(),
+        jira_site: cfg.trackers.jira.site.trim().to_string(),
+        jira_prefixes: cfg.trackers.jira.prefixes.trim().to_string(),
+        jira_transport: cfg.trackers.jira.transport.trim().to_string(),
+        jira_skill: cfg.trackers.jira.skill.trim().to_string(),
+        jira_email: cfg.trackers.jira.email.trim().to_string(),
+        jira_token_set: !cfg.trackers.jira.api_token.trim().is_empty(),
+        linear_workspace: cfg.trackers.linear.workspace.trim().to_string(),
+        linear_prefixes: cfg.trackers.linear.prefixes.trim().to_string(),
+        linear_transport: cfg.trackers.linear.transport.trim().to_string(),
+        linear_skill: cfg.trackers.linear.skill.trim().to_string(),
+        linear_key_set: !cfg.trackers.linear.api_key.trim().is_empty(),
     }
 }
 
@@ -3596,14 +3556,22 @@ pub(crate) fn set_workflow_share_settings(
     slack_webhook: Option<String>,
     discord_webhook: Option<String>,
     notify_webhook: Option<String>,
-    jira_transport: Option<String>,
     chat_transport: Option<String>,
-    jira_skill: Option<String>,
     chat_skill: Option<String>,
-    jira_base_url: Option<String>,
+    primary_tracker: Option<String>,
+    jira_site: Option<String>,
+    jira_prefixes: Option<String>,
+    jira_transport: Option<String>,
+    jira_skill: Option<String>,
     jira_email: Option<String>,
     jira_api_token: Option<String>,
+    linear_workspace: Option<String>,
+    linear_prefixes: Option<String>,
+    linear_transport: Option<String>,
+    linear_skill: Option<String>,
+    linear_api_key: Option<String>,
 ) -> Result<ShareSettings, String> {
+    use clash::application::trackers;
     let mut sets: Vec<(&str, serde_json::Value)> = Vec::new();
     let mut resets: Vec<&str> = Vec::new();
     let mut url_setting = |key: &'static str, value: Option<String>| -> Result<(), String> {
@@ -3620,7 +3588,50 @@ pub(crate) fn set_workflow_share_settings(
     };
     url_setting("workflows.slack_webhook", slack_webhook)?;
     url_setting("workflows.discord_webhook", discord_webhook)?;
-    url_setting("workflows.jira_base_url", jira_base_url)?;
+    // A bare host is accepted and stored with its scheme: the clash transport
+    // posts to it, and the link template is read from it.
+    url_setting(
+        "trackers.jira.site",
+        jira_site.map(|v| match v.trim() {
+            "" => String::new(),
+            t if t.contains("://") => t.to_string(),
+            t => format!("https://{}", t),
+        }),
+    )?;
+    if let Some(ws) = linear_workspace {
+        let ws = ws.trim().to_string();
+        if ws.is_empty() {
+            resets.push("trackers.linear.workspace");
+        } else if trackers::linear_template(&ws).is_none() {
+            return Err(format!(
+                "Not a Linear workspace: '{}' — use its slug (acme) or a linear.app URL",
+                ws
+            ));
+        } else {
+            sets.push(("trackers.linear.workspace", serde_json::Value::String(ws)));
+        }
+    }
+    let mut prefix_setting = |key: &'static str, value: Option<String>| {
+        let Some(value) = value else { return };
+        let joined = trackers::parse_prefixes(&value).join(", ");
+        if joined.is_empty() {
+            resets.push(key);
+        } else {
+            sets.push((key, serde_json::Value::String(joined)));
+        }
+    };
+    prefix_setting("trackers.jira.prefixes", jira_prefixes);
+    prefix_setting("trackers.linear.prefixes", linear_prefixes);
+    if let Some(primary) = primary_tracker {
+        let primary = primary.trim().to_ascii_lowercase();
+        match primary.as_str() {
+            "jira" => resets.push("trackers.primary"),
+            "linear" | "none" => {
+                sets.push(("trackers.primary", serde_json::Value::String(primary)))
+            }
+            other => return Err(format!("Unknown tracker '{}'", other)),
+        }
+    }
     let mut text_setting = |key: &'static str, value: Option<String>| {
         let Some(value) = value else { return };
         let value = value.trim().to_string();
@@ -3630,9 +3641,11 @@ pub(crate) fn set_workflow_share_settings(
             sets.push((key, serde_json::Value::String(value)));
         }
     };
-    text_setting("workflows.jira_email", jira_email);
-    text_setting("workflows.jira_api_token", jira_api_token);
-    text_setting("workflows.jira_skill", jira_skill);
+    text_setting("trackers.jira.email", jira_email);
+    text_setting("trackers.jira.api_token", jira_api_token);
+    text_setting("trackers.jira.skill", jira_skill);
+    text_setting("trackers.linear.api_key", linear_api_key);
+    text_setting("trackers.linear.skill", linear_skill);
     text_setting("workflows.chat_skill", chat_skill);
     let mut transport_setting = |key: &'static str, value: Option<String>| -> Result<(), String> {
         let Some(value) = value else { return Ok(()) };
@@ -3646,7 +3659,8 @@ pub(crate) fn set_workflow_share_settings(
         }
         Ok(())
     };
-    transport_setting("workflows.jira_transport", jira_transport)?;
+    transport_setting("trackers.jira.transport", jira_transport)?;
+    transport_setting("trackers.linear.transport", linear_transport)?;
     transport_setting("workflows.chat_transport", chat_transport)?;
     if let Some(notify) = notify_webhook {
         let notify = notify.trim().to_ascii_lowercase();
@@ -3797,39 +3811,60 @@ pub(crate) async fn share_workflow_webhook(
         .map_err(|e| e.to_string())?
 }
 
-/// POST a share document as one comment on a Jira ticket. The markdown is
-/// converted to Jira wiki markup and truncated to the comment limit; returns
-/// whether it was truncated. Only ever called from the share dialog's
-/// explicit send — never automatically.
+/// POST a share document as one comment on a ticket, through clash's own
+/// client for `tracker` (`jira`: wiki markup, Jira's limit; `linear`:
+/// markdown through the GraphQL API). Returns whether it was truncated. Only
+/// ever called from the share dialog's explicit send — never automatically.
 #[tauri::command]
-pub(crate) async fn share_workflow_jira(
+pub(crate) async fn share_workflow_ticket(
     state: State<'_, GuiState>,
+    tracker: String,
     ticket: String,
     text: String,
 ) -> Result<bool, String> {
+    use clash::application::trackers::TrackerKind;
     let cfg = state.config.get();
-    let (base, email, token) = (
-        cfg.workflows.jira_base_url.clone(),
-        cfg.workflows.jira_email.clone(),
-        cfg.workflows.jira_api_token.clone(),
-    );
-    if base.trim().is_empty() || email.trim().is_empty() || token.trim().is_empty() {
-        return Err(
-            "Jira is not configured — set the site URL, email and API token in Settings → \
-             Workflows"
-                .to_string(),
-        );
+    match TrackerKind::parse(&tracker) {
+        Some(TrackerKind::Jira) => {
+            let t = &cfg.trackers.jira;
+            let base = clash::application::trackers::jira_template(&t.site)
+                .map(|tpl| tpl.trim_end_matches("/browse/{key}").to_string())
+                .unwrap_or_default();
+            let (email, token) = (t.email.clone(), t.api_token.clone());
+            if base.is_empty() || email.trim().is_empty() || token.trim().is_empty() {
+                return Err(
+                    "Jira is not configured — set the site, email and API token in Settings → \
+                     Trackers & sharing"
+                        .to_string(),
+                );
+            }
+            tauri::async_runtime::spawn_blocking(move || {
+                clash::infrastructure::jira::post_comment(&base, &email, &token, &ticket, &text)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+        }
+        Some(TrackerKind::Linear) => {
+            let key = cfg.trackers.linear.api_key.clone();
+            if key.trim().is_empty() {
+                return Err(
+                    "Linear is not configured — set the API key in Settings → Trackers & sharing"
+                        .to_string(),
+                );
+            }
+            tauri::async_runtime::spawn_blocking(move || {
+                clash::infrastructure::linear::post_comment(&key, &ticket, &text)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+        }
+        None => Err(format!("Unknown tracker '{}'", tracker)),
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        clash::infrastructure::jira::post_comment(&base, &email, &token, &ticket, &text)
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 /// Hand a share document to a Claude Code session.
 ///
-/// The third transport, next to the webhook and the Jira API token, and the
+/// The third transport, next to the webhook and the trackers' API tokens, and the
 /// only one that can reach a destination clash has no client for: whatever the
 /// session's own skills and MCP servers can post to. clash's part is
 /// deliberately small — write the document where the session can read it,
@@ -3865,7 +3900,7 @@ pub(crate) async fn share_workflow_via_agent(
     // The destination is named in the prompt, so it must be one clash means:
     // an arbitrary string here would be an instruction the human never gave.
     let destination = match destination.as_str() {
-        "jira" | "slack" | "discord" => destination,
+        "jira" | "linear" | "slack" | "discord" => destination,
         other => return Err(format!("Unknown share destination '{}'", other)),
     };
     if text.trim().is_empty() {

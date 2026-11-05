@@ -14,6 +14,7 @@ const {
   presetSections,
   shareModel,
   shareDestination,
+  trackerDestinations,
   sectionsFromChecks,
   shareHeadingSlug,
   shareHeadingSlugs,
@@ -386,8 +387,7 @@ test("clash's own route fails loudly rather than falling back", () => {
 
 test("the model renders the transports it is given, per family", () => {
   const m = shareModel({
-    jiraTransport: "clash",
-    jiraConfigured: true,
+    trackers: { primary: "jira", jira: { configured: true, transport: "clash", clientConfigured: true } },
     chatTransport: "agent",
     chatSkill: "myorg:chat",
   });
@@ -559,4 +559,29 @@ test("both page shapes carry the same document design and the mermaid tabs", () 
     assert.ok(!/\.doc(-wrap|-body)? \{[^}]*max-width/.test(page), "no reading column caps the document");
   }
   assert.ok(!/<script/.test(shareHtmlDocument("T", body)), "the plain page stays script-free");
+});
+
+test("a tracker is offered when it is configured or primary", () => {
+  const ids = (t) => trackerDestinations(t).map((d) => d.id);
+  // A fresh install: Jira is the primary, so "Post to Jira…" stays offered
+  // through an agent session, as before trackers existed.
+  assert.deepEqual(ids({}), ["jira"]);
+  // Linear-only: Linear configured and primary, Jira not offered.
+  assert.deepEqual(ids({ primary: "linear", linear: { configured: true } }), ["linear"]);
+  // Mid-migration: both, each with its own route.
+  const both = trackerDestinations({
+    primary: "linear",
+    jira: { configured: true, transport: "clash", clientConfigured: true },
+    linear: { configured: true, transport: "agent", skill: "myorg:linear" },
+  });
+  assert.deepEqual(both.map((d) => [d.id, d.route, d.skill]), [
+    ["jira", "clash", ""],
+    ["linear", "agent", "myorg:linear"],
+  ]);
+  assert.equal(both[1].label, "Post to Linear…");
+  // `none` offers only what is configured.
+  assert.deepEqual(ids({ primary: "none" }), []);
+  // clash's own client without credentials is disabled, never swapped.
+  const noKey = trackerDestinations({ primary: "linear", linear: { configured: true, transport: "clash" } });
+  assert.equal(noKey[0].enabled, false);
 });

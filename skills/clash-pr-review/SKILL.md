@@ -127,7 +127,7 @@ the human.
 
 ## Linking tickets
 
-Link every ticket you mention (`PS-12345`, `ENG-42`) wherever you write it — documents, reports, annotations, PR text. The kickoff's `Ticket links:` field is the URL to use: replace `{key}` with the key, as in `[PS-12345](https://yourorg.atlassian.net/browse/PS-12345)`. `Ticket links: none` means mention keys unlinked. Without the field, **ask the human for the ticket host** the first time you need one (interactive) and tell them it can be saved in Settings → Workflows → Ticket links; in an autonomous run leave the key unlinked and say so in your report. Never guess a host. The field is for ticket keys only: an external document (a Confluence page, a Google doc, any page you have a URL for) is linked with its own full URL.
+Link every ticket you mention (`PS-12345`, `ENG-42`) wherever you write it — documents, reports, annotations, PR text. The kickoff's `Ticket links:` field says where keys link: one URL template, or a routing table such as `PS, OPS → https://acme.atlassian.net/browse/{key}; any other key → https://linear.app/acme/issue/{key}` — Jira and Linear keys look alike, so the key's prefix picks the template. Replace `{key}` with the key: `[PS-12345](https://acme.atlassian.net/browse/PS-12345)`. `Ticket links: none` means mention keys unlinked. Without the field, **ask the human for the ticket host** the first time you need one (interactive) and tell them it can be saved in Settings → Trackers & sharing; in an autonomous run leave the key unlinked and say so in your report. Never guess a host. The field is for ticket keys only: an external document (a Confluence page, a Google doc, any page you have a URL for) is linked with its own full URL.
 
 ## Step 0 — the PR, its context, and what is already on it
 

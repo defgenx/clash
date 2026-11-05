@@ -8,6 +8,9 @@ them — the executor (`clash-workflow` skill) does the work, the reviewers
 reviews the PR for a verdict it posts (the **Self-review** round). This
 document is the contract all sides follow.
 
+What the GUI shows and how to use it is in the user guide,
+[workflows-guide.md](workflows-guide.md).
+
 ## Layout
 
 Rooted at the workflows directory — default `~/.claude/clash/workflows`,
@@ -920,21 +923,35 @@ below; absent means the item's worktree), `PR skill: <name>.` (from the
 `workflows.pr_skill` config — see PR integration) and `Interactive: yes|no.`
 (absent means the skill's opening question asks in-session).
 
-### Ticket links — every kickoff
+### Ticket trackers — every kickoff
 
 Every agent launch (executor, reviewers, drift, explainer, dives) ends with
-`Ticket links: <template>.` so the agent links each ticket key it writes:
-`{key}` in the template is replaced by the key. Resolution is the pure
-`effective_ticket_links(item, global, jira_base_url)`: the item's ⚙ Settings
-override (`meta.ticketUrl`), else `workflows.ticket_url`, else the Jira site
-the share dialog posts to. A value without `{key}` is a host and means its Jira
-browse URL (`yourorg.atlassian.net` → `https://yourorg.atlassian.net/browse/{key}`);
-`none` at either level gives `Ticket links: none.` (keys stay unlinked, no
-question), and it does not fall through. With nothing configured anywhere the
-field is omitted, and every skill's *Linking tickets* rule makes the agent ask
-the human for the host (interactive) or leave the key unlinked and say so
-(autonomous), never guess one. The template is for ticket keys only: external
-documents keep their own URL.
+`Ticket links: …` so the agent links each ticket key it writes. The value
+comes from the `[trackers]` config through the pure `application::trackers`
+module:
+
+- a tracker exists once its location is set: `trackers.jira.site` (keys link
+  to `<site>/browse/{key}`) or `trackers.linear.workspace` (a slug or any
+  `linear.app` URL; keys link to `https://linear.app/<slug>/issue/{key}`);
+- Jira and Linear keys share one shape, so a key belongs to the tracker whose
+  `prefixes` list its prefix, and any other key to `trackers.primary` (which
+  falls back to the only configured tracker);
+- one template is written bare (`Ticket links: https://acme.atlassian.net/browse/{key}.`);
+  with prefix routes it is a table
+  (`Ticket links: PS, OPS → <jira>; any other key → <linear>.`);
+- `trackers.primary = "none"` gives `Ticket links: none.` (keys stay unlinked,
+  no question); with no tracker configured the field is omitted, and every
+  skill's *Linking tickets* rule makes the agent ask the human for the host
+  (interactive) or leave the key unlinked and say so (autonomous), never guess
+  one.
+
+The template is for ticket keys only: external documents keep their own URL.
+Config schema v3 moved the old `workflows.jira_*` keys into `[trackers.jira]`
+(`jira_base_url` → `site`; `email`, `api_token`, `transport`, `skill` keep
+their names), and v1.142.0's single `workflows.ticket_url` onto the trackers
+(a `linear.app` URL → `trackers.linear.workspace`, a host or `…/browse/{key}`
+→ `trackers.jira.site`, `none` → `trackers.primary = "none"`; any other
+template is dropped). The migration runs on load and on the next save.
 
 ### Workspace — where an executor round runs
 
@@ -1284,9 +1301,11 @@ presets leave `toc` off, because an anchor is dead text in a channel.
 The document can go to a
 clipboard, a `.md`/`.html` export, a Slack/Discord webhook configured in
 `config.toml` (`workflows.slack_webhook` / `workflows.discord_webhook`), or a
-Jira ticket as one comment (`workflows.jira_base_url` / `jira_email` /
-`jira_api_token`; the markdown is converted to Jira wiki markup and the
-ticket key is prompted per send, pre-filled from the item's title/branch).
+ticket as one comment — Jira (`trackers.jira.*`; the markdown is converted
+to Jira wiki markup) or Linear (`trackers.linear.*`; markdown through the
+GraphQL API, the issue resolved from its key first). The ticket key is
+prompted per send, pre-filled from `meta.ticket` (read under its old name
+`jiraTicket` too) or the item's title/branch.
 
 The `.html` export is the one destination that carries more than the
 markdown: it is a single self-contained page meant to be sent to people
@@ -1349,11 +1368,12 @@ no `..`, extension forced. The page is pure functions in `gui/dist/wf-share.js`
 (`x-explain-plan-3--…`) so they never collide with the document's.
 
 Who posts each destination is a setting, not a fallback chain:
-`workflows.jira_transport` / `workflows.chat_transport` are `agent` (the
+`trackers.jira.transport` / `trackers.linear.transport` /
+`workflows.chat_transport` are `agent` (the
 default) or `clash`. On `agent` the document is written under
 `<clash data>/share/` and a Claude Code session is launched with the
 destination stated in the kickoff (`workflow_share::share_prompt`) — routed
-through `workflows.jira_skill` / `workflows.chat_skill` when one is named,
+through `trackers.<tracker>.skill` / `workflows.chat_skill` when one is named,
 otherwise using whatever tooling that session has connected (an MCP server for
 the destination, say), which is how a share reaches services clash has no
 client for. On `clash` the webhook/token transport above is used and nothing is

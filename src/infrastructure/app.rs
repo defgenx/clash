@@ -356,10 +356,11 @@ impl App {
         // Clear the loading overlay
         self.state.spinner = None;
 
-        // Background update check
-        let mut update_check: Option<tokio::task::JoinHandle<_>> = Some(tokio::spawn(async {
-            crate::infrastructure::update::check_for_update().await
-        }));
+        // Background update check (announce only; `general.update_check`)
+        let mut update_check: Option<tokio::task::JoinHandle<_>> =
+            self.config.get().general.update_check.then(|| {
+                tokio::spawn(async { crate::infrastructure::update::check_for_update().await })
+            });
 
         loop {
             // Create a fresh EventLoop for the TUI phase

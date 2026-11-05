@@ -120,6 +120,8 @@ pub struct General {
     /// What a startup does when a clash upgrade shipped changed skills:
     /// `ask` | `all` | `untouched` | `keep`.
     pub skills_update: String,
+    /// Look for a newer release in the background (announce only).
+    pub update_check: bool,
 }
 
 impl Default for General {
@@ -130,6 +132,7 @@ impl Default for General {
             default_agent: default_str("general.default_agent"),
             debounce_ms: default_int("general.debounce_ms") as u64,
             skills_update: default_str("general.skills_update"),
+            update_check: default_bool("general.update_check"),
         }
     }
 }
@@ -217,6 +220,76 @@ impl Default for Notifications {
     }
 }
 
+/// `[trackers]` — the ticket systems (see `application::trackers`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Trackers {
+    /// `jira` | `linear` | `none` — owner of keys no tracker claims.
+    pub primary: String,
+    pub jira: JiraTracker,
+    pub linear: LinearTracker,
+}
+
+impl Default for Trackers {
+    fn default() -> Self {
+        Self {
+            primary: default_str("trackers.primary"),
+            jira: JiraTracker::default(),
+            linear: LinearTracker::default(),
+        }
+    }
+}
+
+/// `[trackers.jira]`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JiraTracker {
+    pub site: String,
+    pub prefixes: String,
+    /// `agent` | `clash` — who posts a share.
+    pub transport: String,
+    pub skill: String,
+    pub email: String,
+    pub api_token: String,
+}
+
+impl Default for JiraTracker {
+    fn default() -> Self {
+        Self {
+            site: default_str("trackers.jira.site"),
+            prefixes: default_str("trackers.jira.prefixes"),
+            transport: default_str("trackers.jira.transport"),
+            skill: default_str("trackers.jira.skill"),
+            email: default_str("trackers.jira.email"),
+            api_token: default_str("trackers.jira.api_token"),
+        }
+    }
+}
+
+/// `[trackers.linear]`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinearTracker {
+    pub workspace: String,
+    pub prefixes: String,
+    /// `agent` | `clash` — who posts a share.
+    pub transport: String,
+    pub skill: String,
+    pub api_key: String,
+}
+
+impl Default for LinearTracker {
+    fn default() -> Self {
+        Self {
+            workspace: default_str("trackers.linear.workspace"),
+            prefixes: default_str("trackers.linear.prefixes"),
+            transport: default_str("trackers.linear.transport"),
+            skill: default_str("trackers.linear.skill"),
+            api_key: default_str("trackers.linear.api_key"),
+        }
+    }
+}
+
 /// `[workflows]`
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -261,25 +334,11 @@ pub struct Workflows {
     /// Where decision-state transitions are announced: `off` | `slack` |
     /// `discord`.
     pub notify_webhook: String,
-    /// Who posts a share to Jira: `agent` (a Claude Code session) or `clash`
-    /// (clash's own HTTPS call with the credentials below). A choice, not a
-    /// fallback.
-    pub jira_transport: String,
-    /// Same for the Slack/Discord destinations.
+    /// Who posts a share to Slack/Discord: `agent` (a Claude Code session) or
+    /// `clash` (the webhook). A choice, not a fallback.
     pub chat_transport: String,
-    /// Skill the `agent` Jira transport routes through. Empty means the
-    /// session uses whatever tooling it has connected.
-    pub jira_skill: String,
     /// Skill the `agent` chat transport routes through.
     pub chat_skill: String,
-    /// Jira site URL for the share dialog's "Post to Jira" destination.
-    /// Empty disables the destination.
-    pub jira_base_url: String,
-    pub ticket_url: String,
-    /// Jira account email paired with the API token.
-    pub jira_email: String,
-    /// Jira API token; stored here like the webhook URLs.
-    pub jira_api_token: String,
 }
 
 impl Default for Workflows {
@@ -302,14 +361,8 @@ impl Default for Workflows {
             slack_webhook: default_str("workflows.slack_webhook"),
             discord_webhook: default_str("workflows.discord_webhook"),
             notify_webhook: default_str("workflows.notify_webhook"),
-            jira_transport: default_str("workflows.jira_transport"),
             chat_transport: default_str("workflows.chat_transport"),
-            jira_skill: default_str("workflows.jira_skill"),
             chat_skill: default_str("workflows.chat_skill"),
-            jira_base_url: default_str("workflows.jira_base_url"),
-            ticket_url: default_str("workflows.ticket_url"),
-            jira_email: default_str("workflows.jira_email"),
-            jira_api_token: default_str("workflows.jira_api_token"),
         }
     }
 }
@@ -325,6 +378,7 @@ pub struct Config {
     pub terminal: Terminal,
     pub notifications: Notifications,
     pub workflows: Workflows,
+    pub trackers: Trackers,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ides: Vec<IdeEntry>,
 }
@@ -339,6 +393,7 @@ impl Default for Config {
             terminal: Terminal::default(),
             notifications: Notifications::default(),
             workflows: Workflows::default(),
+            trackers: Trackers::default(),
             ides: Vec::new(),
         }
     }
@@ -428,16 +483,26 @@ impl Config {
         }
     }
 
-    /// How a workflow agent links the tickets it mentions, for an item whose
-    /// own override is `item` — see `application::workflow::effective_ticket_links`.
+    /// The configured ticket trackers, resolved (prefix routing, links).
     /// GUI-only, like `workflow_pr_skill`.
     #[allow(dead_code)]
-    pub fn workflow_ticket_links(&self, item: &str) -> crate::application::workflow::TicketLinks {
-        crate::application::workflow::effective_ticket_links(
-            item,
-            &self.workflows.ticket_url,
-            &self.workflows.jira_base_url,
+    pub fn trackers(&self) -> crate::application::trackers::TrackerSet {
+        let t = &self.trackers;
+        crate::application::trackers::TrackerSet::from_settings(
+            crate::application::trackers::TrackerSettings {
+                primary: &t.primary,
+                jira_site: &t.jira.site,
+                jira_prefixes: &t.jira.prefixes,
+                linear_workspace: &t.linear.workspace,
+                linear_prefixes: &t.linear.prefixes,
+            },
         )
+    }
+
+    /// The kickoff's `Ticket links:` clause for every workflow agent launch.
+    #[allow(dead_code)]
+    pub fn ticket_links_clause(&self) -> String {
+        self.trackers().ticket_links().clause()
     }
 
     /// The configured PR-creation skill for workflow agents, or `None` when
@@ -1442,7 +1507,11 @@ command = "code"
         let saved = std::fs::read_to_string(&path).unwrap();
         assert!(saved.contains("[general]"), "{}", saved);
         assert!(saved.contains("# hand written"), "{}", saved);
-        assert!(saved.contains("schema_version = 2"), "{}", saved);
+        assert!(
+            saved.contains(&format!("schema_version = {}", schema::SCHEMA_VERSION)),
+            "{}",
+            saved
+        );
         assert_eq!(handle.get().general.claude_bin, "/opt/claude");
     }
 
