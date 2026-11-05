@@ -323,6 +323,9 @@
   /// `markWideDrawings`) scale to it, as tall as the pane allows.
   const FRAME_BREATHE_STYLE =
     "html,body{max-width:none!important;width:auto!important}" +
+    // A drawn page's tables keep content-sized columns at any width: fixed
+    // layouts and stretched widths spread short columns across a wide pane.
+    "table{table-layout:auto!important;max-width:100%}td,th{vertical-align:top}" +
     "svg[data-clash-wide]{display:block;width:100%!important;max-width:none!important;" +
     "height:auto!important;max-height:calc(100vh - 36px)}";
 
@@ -1184,9 +1187,16 @@
              background: color-mix(in srgb, var(--accent) 9%, var(--bg-panel)); }
   .doc-body blockquote > :first-child { margin-top: 0; }
   .doc-body blockquote > :last-child { margin-bottom: 0; }
-  .doc-body table { width: 100%; margin: 22px 0; border-collapse: separate; border-spacing: 0; border: 1px solid var(--border);
-             border-radius: 14px; overflow: hidden; font-size: 14px; }
-  .doc-body th, .doc-body td { border: 0; border-bottom: 1px solid var(--border); padding: 10px 14px; text-align: left; }
+  /* Columns size to their content: the table is only as wide as it needs
+     (never stretched to the page, which spread short columns apart), and a
+     table wider than the page scrolls on its own instead of squeezing. */
+  .doc-body table { display: block; width: fit-content; max-width: 100%; overflow-x: auto; margin: 22px 0;
+             border-collapse: separate; border-spacing: 0; border: 1px solid var(--border); border-radius: 14px;
+             font-size: 14px; }
+  .doc-body th, .doc-body td { border: 0; border-bottom: 1px solid var(--border); padding: 10px 14px; text-align: left;
+             vertical-align: top; }
+  .doc-body th + th, .doc-body td + td { border-left: 1px solid var(--border); }
+  .doc-body th { white-space: nowrap; }
   .doc-body th { background: var(--bg-hover); font-weight: 600; }
   .doc-body tr:last-child td { border-bottom: 0; }
   .doc-body tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--bg-hover) 45%, transparent); }
@@ -1334,7 +1344,8 @@
   .md h1 { font-size: 17px; }
   .md h2 { font-size: 15px; margin-top: 1.4em; }
   .md h3 { font-size: 14px; }
-  .md table { display: block; overflow-x: auto; }
+  .md table { display: block; width: fit-content; max-width: 100%; overflow-x: auto; }
+  .md th, .md td { vertical-align: top; }
   .inline { margin-left: 8px; font-size: 11px; font-weight: normal; border: 1px solid var(--border); border-radius: 10px;
             background: none; padding: 0 8px; cursor: zoom-in; color: var(--accent); vertical-align: middle; }
   footer { display: none; }

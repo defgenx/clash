@@ -1084,3 +1084,30 @@ test("a saved page draws each diagram in both themes, ids scoped per drawing", (
   assert.match(fig, /wf-mmd-dark/);
   assert.match(fig, /scopeSvgIds\(root, root\.id\)/);
 });
+
+test("the sidebar's arrangement goes through the layout adapter only", () => {
+  // Every layout must be able to answer "show this view" and "the header was
+  // clicked" its own way; a direct toggle or collapse would only ever do what
+  // Classic means by it.
+  for (const [header, view] of [
+    ["wf-toggle", "workflows"],
+    ["notes-toggle", "scratches"],
+    ["teams-toggle", "teams"],
+  ]) {
+    assert.ok(
+      APP.includes(`$("${header}").onclick = () => sidebarToggle("${view}");`),
+      `${header} must route through sidebarToggle`
+    );
+  }
+  // Revealing a section is sidebarShow's job, never a bare toggle.
+  assert.doesNotMatch(APP, /if \(!state\.(wfOpen|notesOpen|teamsOpen)\) (await )?toggle(Workflows|Notes|Teams)\(\)/);
+  // ⌘B and the rail fold the panel through one function.
+  const collapses = APP.match(/\$\("sidebar"\)\.classList\.toggle\("collapsed"\)/g) || [];
+  assert.equal(collapses.length, 1, "only sidebarCollapse folds the sidebar");
+  assert.match(extractFunction(APP, "sidebarCollapse"), /classList\.toggle\("collapsed"\)/);
+  // The layout is applied at boot, after the saved sections are restored.
+  const boot = APP.slice(APP.indexOf("await restoreSidebarState();"));
+  assert.match(boot.slice(0, 120), /await applySidebarLayout\(\);/);
+  // A Flyout panel paints over the panes: native browser webviews must hide.
+  assert.match(extractFunction(APP, "applySidebarLayout"), /hideBrowserWebviews\(\)/);
+});

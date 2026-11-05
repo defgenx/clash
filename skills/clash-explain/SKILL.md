@@ -541,6 +541,10 @@ nothing — the markdown is right there.
   document, which clash renders with it. Here you hand-draw: `<svg>` with
   `<rect>`/`<path>`/`<text>`, or HTML boxes positioned with flex/grid and SVG
   arrows over them. Both are fine; pick what you can keep readable.
+- **Tables size to their content.** No `table-layout: fixed`, no fixed
+  column widths and no `width: 100%` on a table of short cells — a stretched
+  table spreads its columns across a 1400px pane and reads worse than a
+  compact one. Let the browser size each column; top-align the cells.
 - **Uses the space it is given.** The page fills a whole pane, often 1400px
   or more wide, and the reader zooms into it, so draw the map as one `<svg>`
   with a wide `viewBox` (about 1200–1600 units, wider than tall) and no fixed

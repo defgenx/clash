@@ -14,6 +14,7 @@ workspaces, starting a session, sessions, the inbox, workflows, scratches,
 teams, files, tabs and panes, the terminal and settings. Replay it from
 *Settings → General → ▶ Show the tour*.
 
+- [Layouts](#layouts)
 - [Workspaces, panes and tabs](#workspaces-panes-and-tabs)
 - [Sessions](#sessions)
 - [Terminals](#terminals)
@@ -26,6 +27,33 @@ teams, files, tabs and panes, the terminal and settings. Replay it from
 - [Settings](#settings)
 - [Updates](#updates)
 - [Keyboard shortcuts](#keyboard-shortcuts)
+
+## Layouts
+
+How the sidebar is arranged is a setting (*Settings → Appearance → Layout*, also
+in the sidebar's quick settings). The features are the same in every layout;
+only their arrangement changes, live, without a restart:
+
+| Layout | Arrangement |
+|---|---|
+| **Classic** (default) | One sidebar: workspace chips, sessions, then collapsible Workflows, Scratches and Teams, each with its own height. |
+| **Focus** | One sidebar, sessions always on top and **one** section open at a time below them, filling the rest of the height. Clicking the open section's header closes it. |
+| **Rail** | An icon rail on the left holds the workspaces (their initials; right-click for the workspace menu), the views (Sessions, Workflows, Scratches, Teams, with badges), the inbox, an update button when a release is found, and Settings. The panel beside it shows one view at a time, full height. |
+| **Flyout** | The rail alone stays on screen, so the terminals get the window's whole width. Opening a view slides its panel over the terminals; Esc, a click outside, or picking a session or an item puts it away. |
+
+`⌘B` hides or brings back the sidebar; in Flyout it slides the panel in and out.
+A second click on the open view's rail icon does the same. Switching back to
+Classic restores the sections you had open there. The tour follows the layout:
+a step about a view opens that view first.
+
+How it works: the app speaks in layout-neutral actions (show a view, toggle a
+section, fold the sidebar, repaint the rail), and each layout implements them.
+The catalogue of views and layouts and every decision about what shows live
+in the pure `gui/dist/layout.js` (tested by `gui/tests/layout.test.js`); the
+adapter in `app.js` (*Sidebar layout adapter*) applies them to the DOM. Adding
+a layout is one entry in `LAYOUTS` plus its CSS; adding a view is one entry in
+`SIDEBAR_VIEWS`. The setting is `appearance.layout` (GUI-local, in
+`gui-state.json`).
 
 ## Workspaces, panes and tabs
 
@@ -285,15 +313,15 @@ the sidebar's SETTINGS panel. A search box at the top searches every tab (type
 | Tab | Settings |
 |---|---|
 | **General** | how links open · refresh interval · default shell · terminal for the TUI launcher · default agent (Claude Code / OMP) · desktop notifications · attention count in the window title · confirm before killing a session · check for updates in the background · ▶ Show the tour |
-| **Appearance** | theme (12 palettes, below) · terminal text: font family (searchable picker), size, weight, bold weight, line height, letter spacing · cursor: style, unfocused style, bar width, blink · colors: minimum contrast ratio, bold text in bright colors |
+| **Appearance** | theme (12 palettes, below) · layout (Classic / Focus / Rail / Flyout, [above](#layouts)) · terminal text: font family (searchable picker), size, weight, bold weight, line height, letter spacing · cursor: style, unfocused style, bar width, blink · colors: minimum contrast ratio, bold text in bright colors |
 | **Terminal** | scrollback · scroll speed · smooth scroll · copy on select · right-click selects word · ⌥ sends Esc (Meta) · toast on terminal bell |
 | **Paths** | default session directory · scratch directory · workflows directory · `claude` binary · OMP binary |
 | **Workflows** | workflow agent (ask / Claude Code / OMP) · next-step assist (suggest / autopilot / off) · explanation detail · delegation (team / solo) · PR skill · forge · PR stacking · skill updates |
 | **Models** | Claude Code: lead model, subagent model, review sizing, small review lead, large review subagents · OMP: lead model, subagent model |
 | **Trackers & sharing** | primary tracker · Jira (site, key prefixes, who posts: agent / clash, skill, email, API token) · Linear (workspace, key prefixes, who posts, skill, API key) · who posts to Slack/Discord (agent / clash), chat skill, webhooks · decision notifications |
 
-The sidebar's **SETTINGS** panel keeps only the quick settings — theme, font
-size, how links open, default agent — plus **⚙ All settings…** and the
+The sidebar's **SETTINGS** panel keeps only the quick settings — theme, layout,
+font size, how links open, default agent — plus **⚙ All settings…** and the
 **⟳ Update clash** button.
 
 Theme and terminal settings are the GUI's own (`gui-state.json`), because the
@@ -334,7 +362,7 @@ face and tagged *mono* or *proportional*. *Monospace only* is on by default, and
 | `⌘D` / `⌘⇧D` | split / close the focused pane |
 | `⌘⇧↩` · `⌘⌥←/→` | zoom pane · cycle pane focus |
 | `⌘W` | close the active tab (agent: stash, shell: kill) |
-| `⌘B` | toggle the sidebar |
+| `⌘B` | toggle the sidebar (Flyout: slide its panel in and out) |
 | `⌘E` / `⌘P` | toggle the Files panel / find a file |
 | `⌘⇧B` | new browser tab |
 | `⌘F` or `/` | search |

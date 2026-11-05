@@ -603,6 +603,16 @@ pub const PROPS: &[Prop] = &[
     )
     .gui("theme")
     .local(),
+    Prop::new(
+        "appearance.layout",
+        Kind::Enum(&["classic", "focus", "rail", "flyout"]),
+        Val::Str("classic"),
+        "How the GUI's sidebar is arranged: `classic` (one column, collapsible sections), \
+         `focus` (one column, one section open at a time), `rail` (an icon rail and one \
+         full-height view) or `flyout` (the rail alone, views slide over the terminals).",
+    )
+    .gui("layout")
+    .local(),
     // ── [terminal] — GUI-local (xterm rendering) ────────────────────
     Prop::new(
         "terminal.font_size",
@@ -1251,6 +1261,14 @@ mod tests {
             "linkOpen",
         ];
         assert_eq!(SHARED.len() + GUI_LOCAL.len(), 28);
+        // GUI-local keys added after the migration — never in the legacy blob,
+        // listed so the "nothing else claims a GUI key" check below stays a
+        // deliberate decision.
+        const ADDED_LOCAL: &[&str] = &["layout"];
+        for key in ADDED_LOCAL {
+            let p = prop_by_gui_key(key).unwrap_or_else(|| panic!("{} has no schema entry", key));
+            assert_eq!(p.scope, Scope::GuiLocal, "{} should be GUI-local", key);
+        }
 
         for key in SHARED {
             let p = prop_by_gui_key(key).unwrap_or_else(|| panic!("{} has no schema entry", key));
@@ -1262,7 +1280,12 @@ mod tests {
         }
         // And nothing else claims a GUI key — a new blob key must be added to
         // one of the lists above deliberately.
-        let known: HashSet<&str> = SHARED.iter().chain(GUI_LOCAL).copied().collect();
+        let known: HashSet<&str> = SHARED
+            .iter()
+            .chain(GUI_LOCAL)
+            .chain(ADDED_LOCAL)
+            .copied()
+            .collect();
         for p in PROPS {
             if let Some(k) = p.gui_key {
                 assert!(

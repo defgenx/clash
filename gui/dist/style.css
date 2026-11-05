@@ -1748,7 +1748,6 @@ button.busy:disabled { opacity: 1; }
 }
 .wf-md.wf-structure h3 { font-size: 13.5px; margin: 18px 0 6px; color: var(--fg); }
 .wf-md.wf-structure li { margin: 3px 0; }
-.wf-md.wf-structure table { width: 100%; }
 
 /* Per-item Settings tab: small grouped form + fact list. */
 .wf-settings { padding: 14px 18px; max-width: 640px; display: flex; flex-direction: column; gap: 12px; }
@@ -1909,8 +1908,11 @@ button.busy:disabled { opacity: 1; }
   padding: 2px 12px;
   color: var(--fg-dim);
 }
-.wf-md table { border-collapse: collapse; margin: 8px 0; }
-.wf-md th, .wf-md td { border: 1px solid var(--border); padding: 4px 8px; font-size: 12px; }
+/* Columns size to their content; a table wider than its pane scrolls on its
+   own instead of squeezing every column (mirrors wf-share.js DOC_STYLE). */
+.wf-md table { border-collapse: collapse; margin: 8px 0; display: block; width: fit-content; max-width: 100%; overflow-x: auto; }
+.wf-md th, .wf-md td { border: 1px solid var(--border); padding: 4px 8px; font-size: 12px; vertical-align: top; }
+.wf-md th { white-space: nowrap; text-align: left; background: var(--bg-3); }
 .wf-md a { color: var(--accent); }
 .wf-md hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
 
@@ -3161,4 +3163,125 @@ body > [id^="dwf-mmd-"], body > [id^="iwf-mmd-"], body > [id^="wf-mmd-"] { posit
   .settings-dialog { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .settings-nav { border-right: 0; border-bottom: 1px solid var(--border); }
   #settings-tabs { flex-direction: row; flex-wrap: wrap; }
+}
+
+/* ── Sidebar layouts (layout.js + the adapter in app.js) ───────────────
+   The body carries `layout-<id>`; the adapter marks each view's elements
+   `layout-off` (not shown) or `layout-fill` (takes the free height). */
+.layout-off { display: none !important; }
+/* An exclusive layout's open view takes the room: a saved Classic height
+   (inline, from the section resizer) must not cap it. */
+#wf-section.layout-fill,
+#notes-section.layout-fill,
+#teams-section.layout-fill {
+  flex: 1 1 0 !important;
+  height: auto !important;
+  max-height: none !important;
+  min-height: 0 !important;
+}
+body.layout-focus #session-list { flex: 1 1 0; }
+
+/* The rail (Rail, Flyout): workspaces, views, inbox, settings. */
+#layout-rail {
+  width: 52px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0 12px;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  overflow-x: hidden;
+  z-index: 121;
+}
+#layout-rail .spacer { flex: 1; }
+.rail-sep { width: 24px; height: 1px; background: var(--border); margin: 4px 0; flex: none; }
+.rail-ws {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  color: var(--fg-dim);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.rail-ws:hover { color: var(--fg); border-color: var(--fg-dim); }
+.rail-ws.active { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+.rail-ws.rail-add { border-style: dashed; background: none; }
+.rail-view {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.rail-view:hover { color: var(--fg); background: var(--bg-hover); }
+.rail-view.active { color: var(--fg); background: var(--bg-hover); }
+.rail-view.active::before {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.rail-view.rail-update { color: var(--accent); }
+.rail-badge {
+  position: absolute;
+  top: 3px;
+  right: 2px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+.rail-badge.hot { background: var(--red); }
+/* In the rail layouts a section header is the view's title, not a toggle. */
+body.layout-has-rail .section-label.collapsible { cursor: default; }
+body.layout-has-rail #wf-caret,
+body.layout-has-rail #notes-caret,
+body.layout-has-rail #teams-caret { display: none; }
+body.layout-has-rail #wf-section,
+body.layout-has-rail #notes-section,
+body.layout-has-rail #teams-section { border-top: 0; }
+
+/* Flyout: the panel floats over the terminals beside the rail and slides
+   in only when a view is opened, so the panes keep the whole width. */
+body.layout-flyout #sidebar {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 52px;
+  z-index: 120;
+  box-shadow: var(--shadow-lg, 0 18px 50px rgba(0, 0, 0, 0.45));
+  transition: transform 0.16s ease, visibility 0.16s;
+}
+body.layout-flyout:not(.layout-panel-out) #sidebar { transform: translateX(-105%); visibility: hidden; }
+body.layout-flyout #sidebar-resizer { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  body.layout-flyout #sidebar { transition: none; }
 }

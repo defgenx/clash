@@ -36,6 +36,7 @@ const state = {
   // Esc (Meta) in terminals; off = ⌥ always composes characters.
   settings: {
     theme: "clash-dark", // key into THEMES — drives the chrome and the terminals
+    layout: "classic", // a SidebarLayout id (layout.js) — how the sidebar is arranged
     defaultCwd: "",
     fontSize: 13,
     fontFamily: "SF Mono, Menlo, monospace",
@@ -137,6 +138,9 @@ const ICONS = {
     '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>',
   chevron: '<polyline points="9 18 15 12 9 6"/>',
+  sliders:
+    '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
   inbox:
     '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
 };
@@ -685,6 +689,17 @@ function workspacesJson() {
 
 /// What the sidebar looks like right now, for persistence: open/collapsed per
 /// section plus every panel size (widths + section heights).
+// Sidebar layout adapter state (see "Sidebar layout adapter").
+/// The view the rail layouts show, and the section Focus has open.
+let sidebarView = "sessions";
+/// Whether the Flyout panel is out.
+let flyoutOpen = false;
+/// Classic's own open sections, kept while an exclusive layout drives the
+/// flags — switching back restores them, and they are what gets persisted.
+let classicOpen = null;
+/// The layout last painted — what a switch moves away from.
+let appliedLayout = "classic";
+
 function sidebarPersistState() {
   let sizes = {};
   try {
@@ -693,14 +708,16 @@ function sidebarPersistState() {
     void e;
   }
   return {
+    // Classic's own sections, even while an exclusive layout drives the flags.
     open: {
-      teams: !!state.teamsOpen,
-      notes: !!state.notesOpen,
-      wf: !!state.wfOpen,
+      teams: !!(classicOpen ? classicOpen.teamsOpen : state.teamsOpen),
+      notes: !!(classicOpen ? classicOpen.notesOpen : state.notesOpen),
+      wf: !!(classicOpen ? classicOpen.wfOpen : state.wfOpen),
       settings: !$("settings-body").classList.contains("hidden"),
       files: filesPanel.open,
     },
     files: { showIgnored: filesPanel.showIgnored },
+    view: sidebarView,
     sizes,
   };
 }
@@ -1046,48 +1063,55 @@ function renderWorkspaceBar() {
     }
     chip.onclick = () => switchWorkspace(i);
     chip.ondblclick = () => renameWorkspace(i);
-    chip.oncontextmenu = (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      // Only sessions that still exist (and aren't wild) are killable.
-      const known = new Set(
-        state.sessions.filter((s) => s.source !== "Wild").map((s) => s.id)
-      );
-      const ids = w.sessions.filter((sid) => known.has(sid));
-      showContextMenu(ev.clientX, ev.clientY, [
-        { label: "Rename workspace…", icon: "pencil", hint: "⌘⇧R", action: () => renameWorkspace(i) },
-        ...(state.workspaces.length > 1
-          ? [
-              {
-                label: "Close workspace",
-                icon: "x",
-                hint: "⌘⇧W",
-                action: () => {
-                  state.activeWs = i;
-                  closeWorkspace();
-                },
-              },
-            ]
-          : []),
-        ...(ids.length
-          ? [
-              null,
-              {
-                label: `Kill all ${ids.length} session${ids.length === 1 ? "" : "s"}…`,
-                icon: "alert",
-                danger: true,
-                action: () =>
-                  massKill(
-                    ids,
-                    `session${ids.length === 1 ? "" : "s"} in workspace "${w.name}"`
-                  ),
-              },
-            ]
-          : []),
-      ]);
-    };
+    chip.oncontextmenu = (ev) => workspaceMenu(ev, i);
     chips.appendChild(chip);
   });
+  if (typeof syncSidebarRail === "function") syncSidebarRail();
+}
+
+/// A workspace's right-click menu — shared by the sidebar chips and the
+/// layouts' rail, so both offer the same actions.
+function workspaceMenu(ev, i) {
+  const w = state.workspaces[i];
+  if (!w) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  // Only sessions that still exist (and aren't wild) are killable.
+  const known = new Set(
+    state.sessions.filter((s) => s.source !== "Wild").map((s) => s.id)
+  );
+  const ids = w.sessions.filter((sid) => known.has(sid));
+  showContextMenu(ev.clientX, ev.clientY, [
+    { label: "Rename workspace…", icon: "pencil", hint: "⌘⇧R", action: () => renameWorkspace(i) },
+    ...(state.workspaces.length > 1
+      ? [
+          {
+            label: "Close workspace",
+            icon: "x",
+            hint: "⌘⇧W",
+            action: () => {
+              state.activeWs = i;
+              closeWorkspace();
+            },
+          },
+        ]
+      : []),
+    ...(ids.length
+      ? [
+          null,
+          {
+            label: `Kill all ${ids.length} session${ids.length === 1 ? "" : "s"}…`,
+            icon: "alert",
+            danger: true,
+            action: () =>
+              massKill(
+                ids,
+                `session${ids.length === 1 ? "" : "s"} in workspace "${w.name}"`
+              ),
+          },
+        ]
+      : []),
+  ]);
 }
 
 function switchWorkspace(i) {
@@ -5862,6 +5886,7 @@ function updateWfBadge() {
   const n = state.wfUnread.size;
   badge.classList.toggle("hidden", n === 0);
   badge.textContent = n > 0 ? String(n) : "";
+  if (typeof syncSidebarRail === "function") syncSidebarRail();
 }
 
 function renderWorkflows() {
@@ -6267,7 +6292,7 @@ async function newReviewWorkflow({ project, repoPath }) {
 /// the explanation. The item is an ordinary review-only one, so a review or a
 /// self-review of the same PR is one click away afterwards.
 async function explainPrFlow() {
-  if (!state.wfOpen) await toggleWorkflows();
+  await sidebarShow("workflows");
   const url = ((await uiPrompt("Pull request to explain — paste its URL")) || "").trim();
   if (!url) return;
   const pr = parsePrUrl(url);
@@ -6320,7 +6345,7 @@ async function explainPrFlow() {
 
 /// New-item flow: entry mode → repo/project → whatever that mode needs.
 async function newWorkflowFlow() {
-  if (!state.wfOpen) await toggleWorkflows();
+  await sidebarShow("workflows");
   const mode = await uiListChoice({
     message: "How does this workflow item start?",
     items: WF_MODES.map((m) => ({ label: m.label, detail: m.detail, value: m.value })),
@@ -6812,6 +6837,7 @@ function renderInboxBadge() {
   btn.title = total
     ? `Inbox (⌘I) — ${total} waiting on you${blocking ? `, ${blocking} blocked` : ""}`
     : "Inbox (⌘I) — nothing waiting on you";
+  if (typeof syncSidebarRail === "function") syncSidebarRail();
 }
 
 /// Repaint the badge, and the tab when it is open. One call after anything
@@ -13333,7 +13359,7 @@ $("new-team-btn").onclick = (e) => {
   createTeamPrompt();
 };
 
-$("notes-toggle").onclick = toggleNotes;
+$("notes-toggle").onclick = () => sidebarToggle("scratches");
 // Manual refresh (re-list the scratch dir). A backend watcher also pushes
 // `scratch-changed` on external edits, but the button is an always-works
 // fallback (and expands the section if collapsed).
@@ -13341,7 +13367,7 @@ $("refresh-notes-btn").innerHTML = svgIcon("reload", 13);
 $("refresh-notes-btn").onclick = (e) => {
   e.stopPropagation();
   spinButton($("refresh-notes-btn"), async () => {
-    if (!state.notesOpen) await toggleNotes(); // opening already refreshes
+    if (!state.notesOpen) await sidebarShow("scratches"); // opening already refreshes
     else await refreshNotes();
   });
 };
@@ -13357,7 +13383,7 @@ listen("scratch-changed", () => {
 $("new-note-btn").onclick = (e) => {
   e.stopPropagation();
   // Make sure the section is expanded so the new entry is visible after refresh.
-  if (!state.notesOpen) toggleNotes();
+  if (!state.notesOpen) sidebarShow("scratches");
   // Offer a new note or a new folder at the scratch root.
   showContextMenu(e.clientX, e.clientY, [
     {
@@ -13402,6 +13428,7 @@ async function checkForUpdate() {
   updateAvailable = found;
   $("update-btn").textContent = `⟳ Update to v${found}`;
   setVersionLabel();
+  syncSidebarRail();
   flashToast(`clash v${found} is available — click the version in the sidebar to install it`);
 }
 $("version").onclick = () => {
@@ -13426,6 +13453,7 @@ listen("update-phase", (event) => {
       break;
     case "done":
       updateInstalled = true;
+      syncSidebarRail();
       v.classList.remove("has-update");
       v.textContent = `v${version} installed — restart`;
       uiDialog({
@@ -13471,7 +13499,7 @@ $("details-btn").onclick = () => {
     hideDetails();
   }
 };
-$("teams-toggle").onclick = toggleTeams;
+$("teams-toggle").onclick = () => sidebarToggle("teams");
 
 // SETTINGS section collapses like TEAMS; the choice persists. Collapsed
 // by default — the footer rows (session count, version) stay visible.
@@ -13845,6 +13873,10 @@ document.addEventListener("keydown", (e) => {
       closeSettings();
       return;
     }
+    if (flyoutOpen) {
+      closeFlyout();
+      return;
+    }
     hideNewSessionModal();
     if (document.activeElement === $("search")) {
       $("search").blur();
@@ -13905,8 +13937,7 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.metaKey && e.key === "b") {
     e.preventDefault();
-    $("sidebar").classList.toggle("collapsed");
-    fitAll();
+    sidebarCollapse();
     return;
   }
   if (e.metaKey && e.shiftKey && e.key === "Enter") {
@@ -14013,12 +14044,12 @@ document.addEventListener("visibilitychange", () => {
 
 
 // Workflows sidebar section.
-$("wf-toggle").onclick = toggleWorkflows;
+$("wf-toggle").onclick = () => sidebarToggle("workflows");
 $("refresh-wf-btn").innerHTML = svgIcon("reload", 13);
 $("refresh-wf-btn").onclick = (e) => {
   e.stopPropagation();
   spinButton($("refresh-wf-btn"), async () => {
-    if (!state.wfOpen) await toggleWorkflows(); // opening already refreshes
+    if (!state.wfOpen) await sidebarShow("workflows"); // opening already refreshes
     else await refreshWorkflows();
   });
 };
@@ -14621,6 +14652,244 @@ initResizer(
 );
 loadPanelSizes();
 
+// ── Sidebar layout adapter ──────────────────────────────────────
+// The app speaks in layout-neutral actions — sidebarShow(view),
+// sidebarToggle(view), sidebarCollapse(), syncSidebarRail() — and the layout
+// chosen in Settings → Appearance → Layout decides what each one looks like.
+// The decisions are the pure SidebarLayout (layout.js); this adapter only
+// applies them. `state.wfOpen` / `notesOpen` / `teamsOpen` stay the one answer
+// to "is that list expanded", so every refresh path that reads them works the
+// same under every layout. Full design: docs/gui.md → Layouts.
+
+const SECTION_TOGGLES = {
+  workflows: () => toggleWorkflows(),
+  scratches: () => toggleNotes(),
+  teams: () => toggleTeams(),
+};
+/// (The adapter's state — sidebarView, flyoutOpen, classicOpen — is declared
+/// with sidebarPersistState, which reads it during load.)
+
+function currentLayout() {
+  return SidebarLayout.layoutOf(state.settings.layout);
+}
+
+function sidebarOpenFlags() {
+  return { wfOpen: !!state.wfOpen, notesOpen: !!state.notesOpen, teamsOpen: !!state.teamsOpen };
+}
+
+function sidebarPlanNow() {
+  return SidebarLayout.sidebarPlan(currentLayout().id, {
+    active: sidebarView,
+    open: sidebarOpenFlags(),
+    panelOpen: flyoutOpen,
+  });
+}
+
+/// Toggle the sections whose expanded flag differs from `want` (by view id).
+async function setSectionsOpen(want) {
+  const jobs = [];
+  for (const [id, toggle] of Object.entries(SECTION_TOGGLES)) {
+    const key = SidebarLayout.viewOf(id).openKey;
+    if (id in want && !!state[key] !== !!want[id]) jobs.push(toggle());
+  }
+  await Promise.all(jobs).catch(() => {});
+}
+
+/// Paint the current layout: body classes, which views show and fill, the
+/// rail. Idempotent — call it after anything that changes the plan.
+async function applySidebarLayout() {
+  const layout = currentLayout();
+  const plan = sidebarPlanNow();
+  appliedLayout = layout.id;
+  const body = document.body.classList;
+  for (const l of SidebarLayout.LAYOUTS) body.toggle(`layout-${l.id}`, l.id === layout.id);
+  body.toggle("layout-has-rail", plan.rail);
+  body.toggle("layout-panel-out", plan.panel);
+  for (const v of plan.views) {
+    const def = SidebarLayout.viewOf(v.id);
+    for (const id of def.elements) {
+      const el = $(id);
+      if (!el) continue;
+      el.classList.toggle("layout-off", !v.shown);
+      el.classList.toggle("layout-fill", v.fill);
+    }
+    // Exclusive layouts size their one open view themselves.
+    if (def.resizer && layout.exclusive) $(def.resizer)?.classList.add("hidden");
+  }
+  if (!layout.exclusive) reapplySectionHeights();
+  $("workspace-bar").classList.toggle("layout-off", !plan.workspaceChips);
+  $("layout-rail").classList.toggle("hidden", !plan.rail);
+  syncSidebarRail();
+  // What shows is painted above, before any list has to load: expanding a
+  // section fetches its data, and a view switch must not wait on that.
+  if (layout.exclusive) {
+    await setSectionsOpen(Object.fromEntries(plan.views.map((v) => [v.id, v.expanded])));
+  }
+  // A Flyout panel paints over the panes, and the native browser webviews
+  // paint over everything — hide them while it is out (fitAll restores).
+  if (layout.overlay && plan.panel) hideBrowserWebviews();
+  else fitAll();
+}
+
+/// Switch layouts (the setting's change). Classic's open sections are put
+/// aside when an exclusive layout takes over, and given back on return.
+async function switchSidebarLayout(next) {
+  const was = SidebarLayout.layoutOf(appliedLayout);
+  const now = SidebarLayout.layoutOf(next);
+  flyoutOpen = false;
+  if (!was.exclusive && now.exclusive) {
+    classicOpen = sidebarOpenFlags();
+  } else if (was.exclusive && !now.exclusive && classicOpen) {
+    await setSectionsOpen({
+      workflows: classicOpen.wfOpen,
+      scratches: classicOpen.notesOpen,
+      teams: classicOpen.teamsOpen,
+    });
+    classicOpen = null;
+  }
+  $("sidebar").classList.remove("collapsed");
+  await applySidebarLayout();
+  saveWorkspaces();
+}
+
+/// Put a view on screen, as the layout means it: Classic expands the section,
+/// Focus opens it (closing the others), Rail switches to it, Flyout slides it
+/// out. A collapsed sidebar (⌘B) comes back — a request to show must show.
+async function sidebarShow(id) {
+  const layout = currentLayout();
+  $("sidebar").classList.remove("collapsed");
+  if (!layout.exclusive) {
+    const def = SidebarLayout.viewOf(id);
+    if (def && def.openKey && !state[def.openKey]) await SECTION_TOGGLES[id]();
+    fitAll();
+    return;
+  }
+  sidebarView = id;
+  if (layout.overlay) flyoutOpen = true;
+  await applySidebarLayout();
+  saveWorkspaces();
+}
+
+/// A click on a section's header: Classic collapses or expands it, Focus
+/// opens it or closes it back to sessions alone. In the rail layouts the
+/// header is the view's title and does nothing.
+async function sidebarToggle(id) {
+  const layout = currentLayout();
+  if (!layout.exclusive) return SECTION_TOGGLES[id]();
+  if (layout.rail) return;
+  sidebarView = SidebarLayout.focusToggle(sidebarView, id);
+  await applySidebarLayout();
+  saveWorkspaces();
+}
+
+/// ⌘B: hide or bring back the sidebar. Flyout's rail always stays — the key
+/// slides its panel in and out instead.
+function sidebarCollapse() {
+  if (currentLayout().overlay) {
+    flyoutOpen = !flyoutOpen;
+    applySidebarLayout();
+    return;
+  }
+  $("sidebar").classList.toggle("collapsed");
+  fitAll();
+}
+
+/// Where a tour step points under the current layout. The exclusive layouts
+/// show one view at a time, so a step about a view switches to it first; the
+/// workspace chips are the rail's workspace buttons when there is a rail.
+function tourAnchorFor(id) {
+  const layout = currentLayout();
+  if (id === "workspace-bar" && layout.rail) return { id: "layout-rail", revealed: false };
+  const view = SidebarLayout.SIDEBAR_VIEWS.find((v) => v.elements.includes(id));
+  if (!view || !layout.exclusive || (sidebarView === view.id && (!layout.overlay || flyoutOpen))) {
+    return { id, revealed: false };
+  }
+  sidebarView = view.id;
+  if (layout.overlay) flyoutOpen = true;
+  applySidebarLayout();
+  return { id, revealed: true };
+}
+
+function closeFlyout() {
+  if (!currentLayout().overlay || !flyoutOpen) return;
+  flyoutOpen = false;
+  applySidebarLayout();
+}
+
+// A Flyout panel is a popover: a press outside it (and outside the rail, a
+// menu or a dialog it opened) puts it away, and so does picking a session or
+// an item from it — the point of the layout is that the terminals get the
+// room back.
+document.addEventListener("mousedown", (ev) => {
+  if (!flyoutOpen || !currentLayout().overlay) return;
+  const t = ev.target;
+  if (!(t instanceof Element)) return;
+  if (t.closest("#sidebar, #layout-rail, #context-menu, .dialog-backdrop, .settings-backdrop, #modal-backdrop, .tour-backdrop, .tour-tip")) return;
+  closeFlyout();
+});
+$("sidebar").addEventListener("click", (ev) => {
+  if (!flyoutOpen || !currentLayout().overlay) return;
+  if (ev.target instanceof Element && ev.target.closest(".session-item")) setTimeout(closeFlyout, 0);
+});
+
+/// Repaint the rail of the Rail and Flyout layouts: workspaces, views with
+/// their badges, the inbox, settings and an update button when one is found.
+/// Cheap, and called after anything that changes a badge.
+function syncSidebarRail() {
+  const rail = $("layout-rail");
+  if (!rail || !currentLayout().rail) return;
+  rail.replaceChildren();
+  const button = (cls, html, title, onclick) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = cls;
+    b.innerHTML = html;
+    b.title = title;
+    b.onclick = onclick;
+    rail.appendChild(b);
+    return b;
+  };
+  const badge = (n, hot) => (n > 0 ? `<span class="rail-badge${hot ? " hot" : ""}">${n}</span>` : "");
+  state.workspaces.forEach((w, i) => {
+    const b = button(
+      "rail-ws" + (i === state.activeWs ? " active" : ""),
+      escapeHtml(SidebarLayout.workspaceInitials(w.name, i)),
+      `${w.name} — ⌘${i + 1}`,
+      () => switchWorkspace(i)
+    );
+    b.ondblclick = () => renameWorkspace(i);
+    b.oncontextmenu = (ev) => workspaceMenu(ev, i);
+  });
+  button("rail-ws rail-add", svgIcon("plus", 14), "New workspace (⌘N)", () => $("new-ws-btn").click());
+  rail.appendChild(Object.assign(document.createElement("div"), { className: "rail-sep" }));
+  const plan = sidebarPlanNow();
+  const shown = plan.panel && !$("sidebar").classList.contains("collapsed");
+  for (const item of SidebarLayout.railItems(plan.active, { workflows: state.wfUnread.size })) {
+    button(
+      "rail-view" + (item.active && shown ? " active" : ""),
+      svgIcon(item.icon, 18) + badge(item.badge, false),
+      item.label,
+      () => {
+        // A second click on the open view puts it away: Flyout slides it in,
+        // Rail folds the panel (⌘B does the same).
+        if (item.active && shown) sidebarCollapse();
+        else sidebarShow(item.id);
+      }
+    );
+  }
+  rail.appendChild(Object.assign(document.createElement("div"), { className: "spacer" }));
+  const inbox = attentionSummary(inboxRows());
+  button("rail-view", svgIcon("inbox", 18) + badge(inbox.total, inbox.blocking > 0), "Inbox (⌘I)", () =>
+    $("inbox-btn").click()
+  );
+  if (updateAvailable && !updateInstalled) {
+    button("rail-view rail-update", svgIcon("download", 18), `clash v${updateAvailable} is available — install`, () =>
+      startUpdateFlow()
+    );
+  }
+  button("rail-view", svgIcon("sliders", 18), "Settings (⌘,)", () => openSettings());
+}
+
 /// Re-open the sections and re-apply the geometry saved in gui-state.json.
 /// localStorage is only a same-session cache the bare WKWebView loses, so the
 /// disk copy seeds it back before anything measures.
@@ -14643,6 +14912,8 @@ async function restoreSidebarState() {
   filesPanel.showIgnored = !!savedSidebar.files?.showIgnored;
   if (open.files) toggleFilesPanel(true);
   await Promise.all(jobs).catch(() => {});
+  if (SidebarLayout.viewOf(savedSidebar.view)) sidebarView = savedSidebar.view;
+  if (currentLayout().exclusive) classicOpen = sidebarOpenFlags();
   reapplySectionHeights();
 }
 
@@ -14794,6 +15065,8 @@ async function loadScratchDir() {
 /// Reflect persisted settings into the footer controls.
 function syncSettingsUi() {
   const s = state.settings;
+  if ($("set-layout")) $("set-layout").value = SidebarLayout.layoutOf(s.layout).id;
+  syncLayoutNote();
   const theme = $("set-theme");
   if (theme) {
     // Built once, from the theme table — dark first, then light, each group
@@ -15170,6 +15443,20 @@ bindChoiceSetting("set-theme", "theme", {
     }
   },
 });
+// Layout: the sidebar adapter re-arranges the window in place.
+bindChoiceSetting("set-layout", "layout", {
+  onChange: (id) => {
+    syncLayoutNote();
+    switchSidebarLayout(id);
+  },
+});
+
+/// The Layout setting's one-line description of the chosen layout.
+function syncLayoutNote() {
+  const note = $("set-layout-note");
+  if (note) note.textContent = currentLayout().detail;
+}
+
 // Terminal · text (metrics changes need a refit so cols/rows track the cell box)
 bindChoiceSetting("set-font-weight", "fontWeight", { option: "fontWeight", refit: true });
 bindChoiceSetting("set-font-weight-bold", "fontWeightBold", {
@@ -15712,7 +15999,13 @@ function startGuiTour() {
 
   const show = () => {
     const step = steps[i];
-    const target = document.getElementById(step.target);
+    const anchor = tourAnchorFor(step.target);
+    // When the layout had to change what is on screen, measure next frame.
+    if (anchor.revealed) requestAnimationFrame(() => place(step, anchor.id));
+    else place(step, anchor.id);
+  };
+  const place = (step, anchorId) => {
+    const target = document.getElementById(anchorId);
     if (!target) {
       if (i < steps.length - 1) move(1);
       else done();
@@ -15913,6 +16206,7 @@ function restartSessionPoll() {
   if (state.homeDir) $("default-cwd").placeholder = state.homeDir;
   renderAll();
   await restoreSidebarState();
+  await applySidebarLayout();
   setVersionLabel();
   refreshTuiIndicator();
   setInterval(refreshTuiIndicator, 5000);

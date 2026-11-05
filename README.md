@@ -187,13 +187,19 @@ previews, and *Mention in session* to type `@path` into the agent.
   errors, parked decisions, unanswered PR threads and finished turns, in that
   order.
 
-### Settings and updates
+### Layouts, settings and updates
+
+Pick how the window is arranged in *Settings → Appearance → Layout*: **Classic**
+(one sidebar, collapsible sections), **Focus** (one section open at a time),
+**Rail** (an icon rail for workspaces and views, one full-height panel) or
+**Flyout** (the rail alone; views slide over the terminals). Same features in
+each — see [docs/gui.md → Layouts](docs/gui.md#layouts).
 
 `⌘,` (or **⚙ All settings…** in the sidebar) opens the Settings window, with
 tabs for General, Appearance, Terminal, Paths, Workflows, Models and Trackers &
 sharing, and a search box over every tab. The sidebar's SETTINGS panel keeps
-the quick settings (theme, font size, how links open, default agent) and the
-**⟳ Update clash** button.
+the quick settings (theme, layout, font size, how links open, default agent)
+and the **⟳ Update clash** button.
 
 clash checks for a new release at startup and every 6 hours
 (`general.update_check`, on by default). A release found is announced with a
