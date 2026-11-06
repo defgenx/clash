@@ -48,3 +48,10 @@ test("index.html loads tab-order.js before app.js", () => {
   const mod = html.indexOf('src="tab-order.js"');
   assert.ok(mod > 0 && mod < html.indexOf('src="app.js"'));
 });
+
+test("moveKey reorders objects by identity (the workspace list uses it)", () => {
+  const a = { name: "a" }, b = { name: "b" }, c = { name: "c" };
+  assert.deepEqual(moveKey([a, b, c], c, a), [c, a, b]);
+  assert.deepEqual(moveKey([a, b, c], a, null), [b, c, a]);
+  assert.equal(moveKey([a, b, c], a, b), null, "already in front of b");
+});

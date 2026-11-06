@@ -20,12 +20,12 @@
       body: {
         classic:
           "Group your sessions and tabs into workspaces — one per project or per train of thought. " +
-          "⌘N creates one; ⌘1-9 switches; right-click one to rename or close it. Layout and open " +
-          "tabs survive a restart.",
+          "⌘N creates one; ⌘1-9 switches; drag one to reorder, right-click to rename or close it. " +
+          "Layout and open tabs survive a restart.",
         rail:
           "Each workspace is a button on the rail, with its initials — one per project or per train " +
-          "of thought. ＋ or ⌘N creates one, ⌘1-9 switches, right-click renames or closes it. Layout " +
-          "and open tabs survive a restart.",
+          "of thought. ＋ or ⌘N creates one, ⌘1-9 switches, drag one to reorder, right-click renames " +
+          "or closes it. Layout and open tabs survive a restart.",
       },
     },
     {

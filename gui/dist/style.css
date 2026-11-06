@@ -208,6 +208,13 @@ html, body, #app {
 .ws-chip .ws-close { display: inline-flex; align-items: center; opacity: 0; margin-left: 2px; }
 .ws-chip:hover .ws-close { opacity: 0.6; }
 .ws-chip .ws-close:hover { opacity: 1; color: var(--red); }
+/* Dragging a workspace (a chip, or a rail button) to reorder it: the accent
+   bar marks where it lands. */
+body.ws-dragging, body.ws-dragging * { cursor: grabbing !important; user-select: none; }
+.ws-chip.ws-drop-before { box-shadow: -3px 0 0 -1px var(--accent); }
+.ws-chip.ws-drop-after { box-shadow: 3px 0 0 -1px var(--accent); }
+.rail-ws.ws-drop-before { box-shadow: 0 -5px 0 -2px var(--accent); }
+.rail-ws.ws-drop-after { box-shadow: 0 5px 0 -2px var(--accent); }
 
 #sidebar.collapsed { display: none; }
 

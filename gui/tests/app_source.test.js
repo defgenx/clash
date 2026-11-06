@@ -1180,3 +1180,17 @@ test("the rail layouts keep the quick settings behind the rail's ⚙, not under 
   assert.doesNotMatch(rail, /=> openSettings\(\)/);
   assert.match(extractFunction(APP, "tourAnchorFor"), /"rail-settings"/);
 });
+
+test("workspaces reorder by drag in every layout, through TabOrder's rule", () => {
+  // Chips (Classic, Tabbed) and rail buttons (Rail, Flyout) share one drag.
+  assert.match(extractFunction(APP, "renderWorkspaceBar"), /wireWorkspaceDrag\(chip, i, "x"\)/);
+  assert.match(extractFunction(APP, "syncSidebarRail"), /wireWorkspaceDrag\(b, i, "y"\)/);
+  assert.match(extractFunction(APP, "workspaceOrderAfter"), /TabOrder\.moveKey\(/);
+  // The active workspace is tracked by index: it must follow its object.
+  const reorder = extractFunction(APP, "reorderWorkspace");
+  assert.match(reorder, /const active = ws\(\);/);
+  assert.match(reorder, /state\.activeWs = state\.workspaces\.indexOf\(active\);/);
+  assert.match(reorder, /saveWorkspaces\(\)/);
+  // A drag's release must not also switch workspace.
+  assert.match(extractFunction(APP, "wireWorkspaceDrag"), /addEventListener\("click", swallow/);
+});

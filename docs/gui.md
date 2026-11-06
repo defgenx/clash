@@ -84,6 +84,8 @@ Workspaces (cmux-style) each own a pane layout *and* their sessions.
 
 - `⌘N` creates one, `⌘1–9` switches, and `⌘⇧R` or a double-click on the chip
   renames it.
+- Drag a workspace's chip (or its rail button, in Rail and Flyout) to reorder
+  the workspaces; `⌘1–9` follow the new order, and the active one stays active.
 - `⌘⇧W` or the chip's `×` closes it; the last one can't be closed. Closing a
   workspace **kills its sessions** (after one confirm) and closes its other
   tabs — nothing is moved to another workspace. Sessions started outside clash

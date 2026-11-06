@@ -1070,9 +1070,97 @@ function renderWorkspaceBar() {
     chip.onclick = () => switchWorkspace(i);
     chip.ondblclick = () => renameWorkspace(i);
     chip.oncontextmenu = (ev) => workspaceMenu(ev, i);
+    wireWorkspaceDrag(chip, i, "x");
     chips.appendChild(chip);
   });
   if (typeof syncSidebarRail === "function") syncSidebarRail();
+}
+
+/// Drag a workspace (a sidebar chip, `axis` "x", or a rail button, "y") to
+/// reorder. Mouse-driven like the pane drag: the rail repaints on every badge
+/// change, which would orphan an HTML5 drag source mid-drag.
+function wireWorkspaceDrag(el, i, axis) {
+  el.dataset.wsIndex = String(i);
+  el.addEventListener("mousedown", (ev) => {
+    if (ev.button !== 0 || ev.target.closest(".ws-close")) return;
+    const box = el.parentElement;
+    const x0 = ev.clientX;
+    const y0 = ev.clientY;
+    let dragging = false;
+    let before;
+    const onMove = (e) => {
+      if (e.buttons === 0) return onUp(e);
+      if (!dragging) {
+        if (Math.hypot(e.clientX - x0, e.clientY - y0) < PANE_DRAG_THRESHOLD_PX) return;
+        dragging = true;
+        window.getSelection()?.removeAllRanges();
+        document.body.classList.add("ws-dragging");
+      }
+      e.preventDefault();
+      before = workspaceDropBefore(box, axis, e.clientX, e.clientY);
+      markWorkspaceDrop(box, i, before);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("mouseup", onUp, true);
+      if (!dragging) return;
+      document.body.classList.remove("ws-dragging");
+      markWorkspaceDrop(box, i, undefined);
+      // The release clicks whatever is under it: it must not also switch.
+      const swallow = (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+      };
+      window.addEventListener("click", swallow, { capture: true, once: true });
+      setTimeout(() => window.removeEventListener("click", swallow, true), 0);
+      if (before !== undefined) reorderWorkspace(i, before);
+    };
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("mouseup", onUp, true);
+  });
+}
+
+/// Where a workspace drag at (x, y) over `box` lands: the index of the
+/// workspace it goes in front of, null for the end, undefined when the
+/// pointer is over no workspace.
+function workspaceDropBefore(box, axis, x, y) {
+  const hit = document.elementFromPoint(x, y)?.closest("[data-ws-index]");
+  if (!hit || hit.parentElement !== box) return undefined;
+  const r = hit.getBoundingClientRect();
+  const after = axis === "y" ? y > r.top + r.height / 2 : x > r.left + r.width / 2;
+  const at = Number(hit.dataset.wsIndex) + (after ? 1 : 0);
+  return at >= state.workspaces.length ? null : at;
+}
+
+function markWorkspaceDrop(box, from, before) {
+  for (const el of box.querySelectorAll(".ws-drop-before, .ws-drop-after")) {
+    el.classList.remove("ws-drop-before", "ws-drop-after");
+  }
+  if (before === undefined || !workspaceOrderAfter(from, before)) return;
+  const all = box.querySelectorAll("[data-ws-index]");
+  const el = before === null ? all[all.length - 1] : all[before];
+  if (el) el.classList.add(before === null ? "ws-drop-after" : "ws-drop-before");
+}
+
+/// The workspace list with `from` moved in front of index `before` (null =
+/// the end), or null when that changes nothing — TabOrder's rule.
+function workspaceOrderAfter(from, before) {
+  const list = state.workspaces;
+  return TabOrder.moveKey(list, list[from], before === null ? null : list[before]);
+}
+
+/// Reorder the workspaces; the active one stays active wherever it lands.
+/// Ownership lives on the workspace objects, so only indices move.
+function reorderWorkspace(from, before) {
+  const order = workspaceOrderAfter(from, before);
+  if (!order) return;
+  const active = ws();
+  state.workspaces.splice(0, state.workspaces.length, ...order);
+  state.activeWs = state.workspaces.indexOf(active);
+  saveWorkspaces();
+  renderWorkspaceBar();
+  renderTabs();
+  renderSidebar();
 }
 
 /// A workspace's right-click menu — shared by the sidebar chips and the
@@ -15096,6 +15184,7 @@ function syncSidebarRail() {
     );
     b.ondblclick = () => renameWorkspace(i);
     b.oncontextmenu = (ev) => workspaceMenu(ev, i);
+    wireWorkspaceDrag(b, i, "y");
   });
   button("rail-ws rail-add", svgIcon("plus", 14), "New workspace (⌘N)", () => $("new-ws-btn").click());
   rail.appendChild(Object.assign(document.createElement("div"), { className: "rail-sep" }));

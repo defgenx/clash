@@ -111,6 +111,7 @@ test("the window tour speaks the layout: rail buttons, one-at-a-time panels, dra
   assert.match(body("flyout", "files"), /drawer over the terminals/);
   assert.match(body("flyout", "sessions"), /slides out from the rail/);
   assert.match(body("classic", "inspector"), /beside Files/);
+  for (const l of ["classic", "rail", "tabbed", "flyout"]) assert.match(body(l, "workspaces"), /drag one to reorder/, l);
   assert.match(body("rail", "settings"), /⚙ at the foot of the rail/);
   assert.match(body("flyout", "settings"), /⚙ at the foot of the rail/);
   assert.match(body("classic", "settings"), /Quick settings live here/);
