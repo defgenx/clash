@@ -25,6 +25,10 @@ pub mod fs;
 #[allow(dead_code)]
 pub mod gh;
 pub mod git;
+/// Refs, log and blame for the GUI's diff viewer and Files panel — same
+/// dead-code allowance as `gh`/`forge`.
+#[allow(dead_code)]
+pub mod git_log;
 pub mod hooks;
 pub mod ide;
 /// Jira transport is consumed only through the lib crate (the GUI share

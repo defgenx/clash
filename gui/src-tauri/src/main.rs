@@ -1142,15 +1142,112 @@ fn session_dir(state: &GuiState, session_id: &str) -> Result<String, String> {
         .ok_or_else(|| "No working directory for session".to_string())
 }
 
-/// `git diff HEAD` for a session's working directory (same as the TUI's diff view).
+/// What the diff viewer asks for. `target`: `head` (uncommitted changes),
+/// `staged`, `unstaged`, `merge-base` (since the branch left `rev`), `ref`
+/// (the working tree against `rev`) or `commit` (`rev`'s own changes).
+/// `paths` (relative to the directory) narrow it to some files.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct DiffRequest {
+    target: String,
+    rev: Option<String>,
+    ignore_whitespace: bool,
+    untracked: bool,
+    context: Option<u32>,
+    paths: Vec<String>,
+}
+
+/// A directory's diff, with the repository root its paths are relative to
+/// (`None` outside a repository) and what it was taken against.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirDiff {
+    text: String,
+    top: Option<String>,
+    against: String,
+}
+
+/// The diff viewer's one source: the session diff tab, the Files panel's
+/// "Show changes" and a file history's commits all diff a directory.
 #[tauri::command]
-async fn get_diff(state: State<'_, GuiState>, session_id: String) -> Result<String, String> {
-    let dir = session_dir(&state, &session_id)?;
-    clash::infrastructure::git::git_diff(
+async fn diff_dir(dir: String, opts: DiffRequest) -> Result<DirDiff, String> {
+    use clash::infrastructure::git::{self, DiffOptions, DiffTarget};
+    let path = std::path::Path::new(&dir);
+    let rev = || {
+        opts.rev
+            .clone()
+            .filter(|r| !r.is_empty())
+            .ok_or_else(|| format!("`{}` needs a revision", opts.target))
+    };
+    let (target, against) = match opts.target.as_str() {
+        "staged" => (DiffTarget::Staged, "index ↔ HEAD".to_string()),
+        "unstaged" => (DiffTarget::Unstaged, "working tree ↔ index".to_string()),
+        "merge-base" => {
+            let r = rev()?;
+            let base = git::merge_base_with(path, &r)
+                .await
+                .ok_or_else(|| format!("no common ancestor with {r}"))?;
+            (DiffTarget::WorkTree(base), format!("since {r}"))
+        }
+        "ref" => {
+            let r = rev()?;
+            (DiffTarget::WorkTree(r.clone()), r)
+        }
+        "commit" => {
+            let r = rev()?;
+            (DiffTarget::Commit(r.clone()), r)
+        }
+        _ => (DiffTarget::WorkTree("HEAD".into()), "HEAD".to_string()),
+    };
+    let text = git::git_diff_target(
+        path,
+        &target,
+        &DiffOptions {
+            ignore_whitespace: opts.ignore_whitespace,
+            untracked: opts.untracked,
+            context: opts.context,
+        },
+        &opts.paths,
+    )
+    .await?;
+    Ok(DirDiff {
+        text,
+        top: git::toplevel(path).await,
+        against,
+    })
+}
+
+/// Branches and tags a diff can be compared with, plus the default branch.
+#[tauri::command]
+async fn git_refs(dir: String) -> Result<serde_json::Value, String> {
+    let refs = clash::infrastructure::git_log::refs(std::path::Path::new(&dir)).await?;
+    let default_branch = origin_default_branch(&dir).await;
+    Ok(serde_json::json!({ "refs": refs, "defaultBranch": default_branch }))
+}
+
+/// Recent commits of HEAD, or of one file (`path` relative to `dir`).
+#[tauri::command]
+async fn git_log(
+    dir: String,
+    path: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<clash::infrastructure::git_log::CommitInfo>, String> {
+    clash::infrastructure::git_log::log(
         std::path::Path::new(&dir),
-        &clash::infrastructure::git::DiffBase::Head,
+        None,
+        path.as_deref(),
+        limit.unwrap_or(50),
     )
     .await
+}
+
+/// Per-line blame of `path` (relative to `dir`).
+#[tauri::command]
+async fn git_blame(
+    dir: String,
+    path: String,
+) -> Result<clash::infrastructure::git_log::Blame, String> {
+    clash::infrastructure::git_log::blame(std::path::Path::new(&dir), &path).await
 }
 
 /// User's home directory — last-resort prefill for the new-session cwd.
@@ -3735,7 +3832,10 @@ fn main() {
             close_terminal,
             create_new_session,
             create_worktree_session,
-            get_diff,
+            diff_dir,
+            git_refs,
+            git_log,
+            git_blame,
             get_repo_url,
             get_default_branch,
             get_home_dir,

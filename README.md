@@ -41,7 +41,11 @@ the terminal-native fallback, backed by the same core.
   step, multi-repo PRs, ticket links and sharing to Slack, Discord, Jira or
   Linear.
 - **Attention inbox** — one ordered list (`⌘I`) of everything waiting on you.
-- **Files panel** — a git-aware file explorer with fuzzy find and previews.
+- **Files panel** — a git-aware file explorer with fuzzy find, previews, a
+  changed-files view, file history and blame.
+- **Diff viewer** — unified or side by side, changed words highlighted,
+  compared with local changes, any branch, tag or commit.
+  [Diff viewer](docs/gui.md#diff-viewer)
 - **Queued follow-ups** — type the next instruction while an agent works; clash
   delivers it once the session is idle, never to a tool-approval question.
 - **Takeover of outside sessions** — `claude` processes started elsewhere show

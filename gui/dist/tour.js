@@ -104,16 +104,18 @@
       body: {
         classic:
           "A file explorer for the focused session's folder (⌘E), with git status on every " +
-          "file. ⌘P finds a file by name; click to preview it, right-click to @-mention it in " +
-          "the session. It docks on the right, beside the Inspector if that is open too.",
+          "file. ⌘P finds a file; click to preview it, right-click for its changes, history, " +
+          "blame or an @-mention. The commit button lists only changed files. It docks on the " +
+          "right, beside the Inspector if that is open too.",
         rail:
           "A file explorer for the focused session's folder (⌘E), with git status on every " +
-          "file and ⌘P to find one. It docks on the right one panel at a time: its header " +
-          "switches between Files and the Inspector.",
+          "file and ⌘P to find one; right-click a file for its changes, history or blame. It " +
+          "docks on the right one panel at a time: its header switches between Files and the " +
+          "Inspector.",
         flyout:
           "A file explorer for the focused session's folder (⌘E), with git status on every " +
-          "file and ⌘P to find one. It opens as a drawer over the terminals; Esc or a click " +
-          "outside closes it.",
+          "file and ⌘P to find one; right-click a file for its changes, history or blame. It " +
+          "opens as a drawer over the terminals; Esc or a click outside closes it.",
       },
     },
     {

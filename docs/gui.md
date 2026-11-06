@@ -29,6 +29,7 @@ the workflow item tour*.
 - [Terminals](#terminals)
 - [Browser and links](#browser-and-links)
 - [Files](#files)
+- [Diff viewer](#diff-viewer)
 - [Scratches](#scratches)
 - [Teams](#teams)
 - [Attention inbox](#attention-inbox)
@@ -231,11 +232,17 @@ The **Files** panel (`⌘E`, or the folder button in the topbar) is a file
 explorer docked to the right of the panes.
 
 - **Root**: it shows the focused session's folder and follows you as you switch
-  sessions. 📌 pins the current folder; the folder button shows any other one
-  (pinned). Click the folder name to reveal it in Finder.
+  sessions. The pin button pins the current folder; the folder button shows any
+  other one (pinned). Click the folder name to reveal it in Finder.
 - **Tree**: folders load as you expand them and remember what was open per
-  folder. Git-ignored files are hidden (◌ shows them, dimmed), `.git` never
-  appears, and the panel refreshes every few seconds while it is open.
+  folder. Each file's icon says what it is (code, markup, data, docs, images,
+  scripts, tests, lockfiles, config, git files), tinted by kind. Git-ignored
+  files are hidden (the eye button shows them, dimmed), `.git` never appears,
+  and the panel refreshes every few seconds while it is open.
+- **Changed files only** (the commit button): the tree becomes a flat list of
+  what git reports as changed, each with its folder. A click opens that file's
+  changes in the [diff viewer](#diff-viewer), like IntelliJ's *Local Changes*.
+  The **±** button opens the diff viewer for the whole folder.
 - **Git status**: the header shows the branch and ahead/behind counts. Files are
   marked **M**odified, **A**dded, **D**eleted, **R**enamed, **U**ntracked or
   **!** (conflict), and a collapsed folder holding changes shows `•`.
@@ -250,12 +257,55 @@ explorer docked to the right of the panes.
   included) with a *Source* toggle, and images are shown. Binary files and text
   over 2 MB are not previewed.
   - Clicking another file replaces the preview (its tab is in *italics*).
-    Double-click, `↵` or 📌 *Keep* keeps a tab open.
+    Double-click, `↵` or *Keep* keeps a tab open.
+  - **Annotate** (git blame) adds a gutter naming who last changed each line
+    and when, the commit named where its run of lines starts and tinted by
+    age (uncommitted lines in green). Click a line's commit to open it.
 - **Actions** (right-click a row, or the preview's toolbar): *Mention in
-  session* types `@path` into the session (relative to its folder), *Open in
-  editor…* (the scratch editor picker), copy the absolute or relative path or
-  the name, reveal in Finder, and for folders *New terminal here* and *Show as
-  root*. Dragging a row into a terminal types its path.
+  session* types `@path` into the session (relative to its folder), *Show
+  changes* (the file's or folder's diff), *Show history* (the commits that
+  touched the file, each with its diff), *Annotate*, *Open in editor…* (the
+  scratch editor picker), copy the absolute or relative path or the name,
+  reveal in Finder, and for folders *New terminal here* and *Show as root*.
+  Dragging a row into a terminal types its path.
+
+## Diff viewer
+
+One viewer shows every diff of a folder: a session's **±** (*Diff* in the
+Inspector), the Files panel's *Show changes*, a file history's commits and a
+blamed line's commit. It fills its tab: a toolbar over a file list and the
+files.
+
+- **Compare with…** (the button at the left of the toolbar) picks what the
+  working tree is compared with, searchable and keyboard-driven:
+  - *Local changes*: uncommitted changes (working tree ↔ HEAD, the default),
+    *Staged* (index ↔ HEAD) or *Unstaged* (working tree ↔ index).
+  - *Since branched from* a branch: everything this branch changed since it
+    left that branch (the merge base), committed or not. The default branch
+    comes first.
+  - *Compare with branch* or *tag*: the working tree against that tip.
+  - *Show a commit*: one of the 30 newest commits, against its first parent.
+- **Files**: each file is a card with its status (**A**dded, **M**odified,
+  **D**eleted, **R**enamed), its path, `+`/`−` counts and a change bar, and
+  buttons to copy the path, open the file, open it in an editor or show its
+  history. Click the header to fold it; files over 600 changed lines (or every
+  file past 6000) start folded. The file list on the left is a folder tree
+  with the same badges; click a file to jump to it, filter by path above it.
+- **Layout**: *Unified* or *Side by side*. Changed words are highlighted inside
+  changed lines in both.
+- **Options**: context lines (3, 10, 25 or the whole file), soft wrap, ignore
+  whitespace, include untracked files (only when the working tree is
+  compared), and show or hide the file list. They are remembered.
+- **Navigate**: `F7` / `⇧F7` (or the arrows) step to the next or previous
+  change; *Expand all* / *Collapse all* fold every file; refresh re-reads git.
+- **History** (*Show history* on a file): the file's commits beside the diff
+  of the one you select, with its working-tree changes first. Right-click a
+  commit to open the whole commit or copy its id. A commit from before a
+  rename shows the whole commit.
+
+A workflow item's **Diff** tab has the same file list, filter, status badges,
+change bars, changed-word highlights, wrap and expand/collapse controls. It
+stays unified because line comments anchor to unified rows.
 
 ## Scratches
 
@@ -387,6 +437,7 @@ face and tagged *mono* or *proportional*. *Monospace only* is on by default, and
 | `⌘W` | close the active tab (agent: stash, shell: kill) |
 | `⌘B` | toggle the sidebar (Flyout: slide its panel in and out) |
 | `⌘E` / `⌘P` | toggle the Files panel / find a file |
+| `F7` / `⇧F7` | next / previous change in the diff viewer |
 | `⌘⇧B` | new browser tab |
 | `⌘F` or `/` | search |
 | `⌘I` | inbox |

@@ -92,6 +92,53 @@
     return dot > 0 ? LANG_BY_EXT[name.slice(dot + 1)] || null : null;
   }
 
+  // File name → which icon it gets and its tint (a theme colour, see style.css
+  // `.fk-*`). Tests and lockfiles are recognised by name before extension.
+  // Tables as Maps: the highlighter test reads every quoted object value in
+  // this file as a highlight.js language.
+  const KIND_BY_EXT = new Map();
+  for (const [kind, exts] of [
+    ["code", "rs js mjs cjs jsx ts tsx py rb go java kt kts swift c h cc cpp cxx hpp cs m php pl lua r scala ex exs erl hs ml clj dart zig nim vue svelte"],
+    ["markup", "html htm css scss less sass xml svg"],
+    ["data", "json jsonl json5 yaml yml toml ini cfg csv tsv sql graphql gql proto"],
+    ["doc", "md markdown mdx txt rst adoc org tex log"],
+    ["image", "png jpg jpeg gif webp bmp ico icns tiff heic avif"],
+    ["shell", "sh bash zsh fish ps1 bat cmd"],
+    ["archive", "zip tar gz tgz bz2 xz 7z rar jar dmg"],
+    ["lock", "lock"],
+  ])
+    for (const e of exts.split(" ")) KIND_BY_EXT.set(e, kind);
+  const KIND_ICONS = new Map([
+    ["code", "file-code"],
+    ["markup", "file-code"],
+    ["data", "file-data"],
+    ["doc", "file-text"],
+    ["image", "file-image"],
+    ["shell", "file-shell"],
+    ["archive", "file-archive"],
+    ["lock", "file-lock"],
+    ["config", "file-config"],
+    ["test", "file-test"],
+    ["git", "file-git"],
+    ["plain", "file"],
+  ]);
+
+  /// `{ icon, tone }` for a file row: the icon name (app.js ICONS) and the
+  /// tint class suffix.
+  function fileKind(name) {
+    const n = String(name || "").toLowerCase();
+    let kind = "plain";
+    const dot = n.lastIndexOf(".");
+    const ext = dot > 0 ? n.slice(dot + 1) : "";
+    if (n.startsWith(".git")) kind = "git";
+    else if (/(^|[._-])(test|spec)s?\.[^.]+$/.test(n) || /_test\.[^.]+$/.test(n)) kind = "test";
+    else if (n === "package-lock.json" || n === "yarn.lock" || n === "pnpm-lock.yaml" || n === "cargo.lock") kind = "lock";
+    else if (n === "dockerfile" || n === "makefile" || n.startsWith(".env") || /^\.[a-z0-9]+rc$/.test(n) || n === ".editorconfig") kind = "config";
+    else if (ext && KIND_BY_EXT.has(ext)) kind = KIND_BY_EXT.get(ext);
+    else if (n.startsWith(".")) kind = "config";
+    return { icon: KIND_ICONS.get(kind), tone: kind };
+  }
+
   /// `abs` relative to `base` when it lies under it, else `abs` unchanged.
   function relativeTo(base, abs) {
     const b = String(base || "").replace(/\/+$/, "");
@@ -179,6 +226,7 @@
   }
 
   const api = {
+    fileKind,
     fileTreeRows,
     statusIndex,
     markFor,

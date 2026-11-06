@@ -40,32 +40,245 @@ pub async fn is_repository(dir: &Path) -> bool {
 /// diff. `Err` carries a human-readable message (git's stderr, or the spawn
 /// failure).
 pub async fn git_diff(dir: &Path, base: &DiffBase) -> Result<String, String> {
+    git_diff_with(dir, base, &DiffOptions::default()).await
+}
+
+/// What a working-tree diff shows beyond its base.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DiffOptions {
+    /// `-w`: whitespace-only changes disappear.
+    pub ignore_whitespace: bool,
+    /// Files git does not track yet, appended as new-file diffs (`git diff`
+    /// never shows them, which hides exactly what an agent just created).
+    /// Only working-tree targets have any.
+    pub untracked: bool,
+    /// Lines of context around each change (`-U<n>`); `None` is git's 3.
+    pub context: Option<u32>,
+}
+
+/// What a diff compares — the targets of the GUI's diff viewer. `dead_code`
+/// allowed: the TUI only diffs the working tree (`WorkTree`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum DiffTarget {
+    /// The working tree against a revision (`git diff <rev>`); `HEAD` is
+    /// "uncommitted changes".
+    WorkTree(String),
+    /// The index against HEAD (`git diff --cached`).
+    Staged,
+    /// The working tree against the index (`git diff`).
+    Unstaged,
+    /// One commit's own changes, against its first parent (`git show`).
+    Commit(String),
+}
+
+impl DiffTarget {
+    fn includes_untracked(&self) -> bool {
+        matches!(self, DiffTarget::WorkTree(_) | DiffTarget::Unstaged)
+    }
+}
+
+/// Pure: whether `rev` may be handed to git as a revision. Revisions come
+/// from the frontend, so one starting with `-` would be read as an option.
+pub fn valid_rev(rev: &str) -> bool {
+    !rev.is_empty()
+        && rev.len() < 256
+        && !rev.starts_with('-')
+        && !rev.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// Untracked files appended to a diff, at most; the rest are left out.
+pub const UNTRACKED_MAX_FILES: usize = 200;
+/// An untracked file larger than this appears as a header without content.
+pub const UNTRACKED_MAX_BYTES: u64 = 512 * 1024;
+
+/// Pure: the `git` arguments of a working-tree diff against `against`.
+/// Colour and external diff drivers are off whatever the user's config says:
+/// the output is parsed, not shown.
+pub fn diff_args(target: &DiffTarget, opts: &DiffOptions, paths: &[String]) -> Vec<String> {
+    let mut args: Vec<String> = match target {
+        DiffTarget::Commit(_) => vec![
+            "show".into(),
+            "--format=".into(),
+            "--diff-merges=first-parent".into(),
+        ],
+        _ => vec!["diff".into()],
+    };
+    args.extend(["--no-color".into(), "--no-ext-diff".into(), "-M".into()]);
+    if opts.ignore_whitespace {
+        args.push("-w".into());
+    }
+    if let Some(n) = opts.context {
+        args.push(format!("-U{n}"));
+    }
+    match target {
+        DiffTarget::WorkTree(rev) | DiffTarget::Commit(rev) => args.push(rev.clone()),
+        DiffTarget::Staged => args.push("--cached".into()),
+        DiffTarget::Unstaged => {}
+    }
+    if !paths.is_empty() {
+        args.push("--".into());
+        args.extend(paths.iter().cloned());
+    }
+    args
+}
+
+/// Pure: `git ls-files -z` output into paths, at most `cap` of them.
+pub fn parse_nul_paths(out: &str, cap: usize) -> Vec<String> {
+    out.split('\0')
+        .filter(|p| !p.is_empty())
+        .take(cap)
+        .map(str::to_string)
+        .collect()
+}
+
+/// Pure: the diff header of an untracked file too large to show.
+pub fn untracked_header(path: &str) -> String {
+    format!("diff --git a/{path} b/{path}\nnew file mode 100644\n")
+}
+
+/// [`git_diff`] with [`DiffOptions`].
+pub async fn git_diff_with(
+    dir: &Path,
+    base: &DiffBase,
+    opts: &DiffOptions,
+) -> Result<String, String> {
     let against = match base {
         DiffBase::Head => "HEAD".to_string(),
         DiffBase::MergeBase(branch) => merge_base(dir, branch)
             .await
             .unwrap_or_else(|| "HEAD".to_string()),
     };
+    git_diff_target(dir, &DiffTarget::WorkTree(against), opts, &[]).await
+}
 
+/// The diff of any [`DiffTarget`], restricted to `paths` (relative to `dir`)
+/// when there are any.
+pub async fn git_diff_target(
+    dir: &Path,
+    target: &DiffTarget,
+    opts: &DiffOptions,
+    paths: &[String],
+) -> Result<String, String> {
+    if let DiffTarget::WorkTree(rev) | DiffTarget::Commit(rev) = target {
+        if !valid_rev(rev) {
+            return Err(format!("not a revision: {rev}"));
+        }
+    }
     let start = std::time::Instant::now();
     let output = tokio::process::Command::new("git")
-        .args(["diff", &against])
+        .args(diff_args(target, opts, paths))
         .current_dir(dir)
         .output()
         .await
         .map_err(|e| format!("Failed to run git: {}", e))?;
     tracing::debug!(
-        "git diff {} in {} took {:?}",
-        against,
+        "git diff {:?} in {} took {:?}",
+        target,
         dir.display(),
         start.elapsed()
     );
 
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    if opts.untracked && target.includes_untracked() {
+        text.push_str(&untracked_diff(dir, opts, paths).await);
+    }
+    Ok(text)
+}
+
+/// `git merge-base <rev> HEAD`, if resolvable — "since this branch left
+/// `rev`". `dead_code` allowed: only the GUI's diff viewer calls it.
+#[allow(dead_code)]
+pub async fn merge_base_with(dir: &Path, rev: &str) -> Option<String> {
+    if !valid_rev(rev) {
+        return None;
+    }
+    let output = tokio::process::Command::new("git")
+        .args(["merge-base", rev, "HEAD"])
+        .current_dir(dir)
+        .output()
+        .await
+        .ok()?;
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (output.status.success() && !sha.is_empty()).then_some(sha)
+}
+
+/// The repository's top-level directory, if `dir` is inside one.
+pub async fn toplevel(dir: &Path) -> Option<String> {
+    let out = tokio::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(dir)
+        .output()
+        .await
+        .ok()?;
+    let top = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !top.is_empty()).then_some(top)
+}
+
+/// Every untracked, non-ignored file under `dir` as a new-file diff, with
+/// paths relative to the repository root like the rest of `git diff`.
+async fn untracked_diff(dir: &Path, opts: &DiffOptions, paths: &[String]) -> String {
+    let Some(top) = toplevel(dir).await else {
+        return String::new();
+    };
+    let mut ls = vec![
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "--full-name",
+        "-z",
+    ];
+    if !paths.is_empty() {
+        ls.push("--");
+        ls.extend(paths.iter().map(String::as_str));
+    }
+    let Ok(listed) = tokio::process::Command::new("git")
+        .args(&ls)
+        .current_dir(dir)
+        .output()
+        .await
+    else {
+        return String::new();
+    };
+    let mut text = String::new();
+    for path in parse_nul_paths(
+        &String::from_utf8_lossy(&listed.stdout),
+        UNTRACKED_MAX_FILES,
+    ) {
+        let abs = Path::new(&top).join(&path);
+        if std::fs::metadata(&abs).map(|m| m.len()).unwrap_or(0) > UNTRACKED_MAX_BYTES {
+            text.push_str(&untracked_header(&path));
+            continue;
+        }
+        let mut args = vec![
+            "diff".to_string(),
+            "--no-color".into(),
+            "--no-ext-diff".into(),
+            "--no-index".into(),
+        ];
+        if opts.ignore_whitespace {
+            args.push("-w".into());
+        }
+        if let Some(n) = opts.context {
+            args.push(format!("-U{n}"));
+        }
+        args.extend(["--".into(), "/dev/null".into(), path.clone()]);
+        // `--no-index` exits 1 when the files differ, which they always do here.
+        if let Ok(out) = tokio::process::Command::new("git")
+            .args(&args)
+            .current_dir(&top)
+            .output()
+            .await
+        {
+            if matches!(out.status.code(), Some(0) | Some(1)) {
+                text.push_str(&String::from_utf8_lossy(&out.stdout));
+            }
+        }
+    }
+    text
 }
 
 /// `git merge-base origin/<branch> HEAD`, if resolvable.
@@ -543,6 +756,183 @@ detached
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diff_args_per_target() {
+        let plain = DiffOptions::default();
+        let head = DiffTarget::WorkTree("HEAD".into());
+        assert_eq!(
+            diff_args(&head, &plain, &[]),
+            ["diff", "--no-color", "--no-ext-diff", "-M", "HEAD"]
+        );
+        assert_eq!(
+            diff_args(&DiffTarget::Staged, &plain, &[]),
+            ["diff", "--no-color", "--no-ext-diff", "-M", "--cached"]
+        );
+        assert_eq!(
+            diff_args(&DiffTarget::Unstaged, &plain, &[]),
+            ["diff", "--no-color", "--no-ext-diff", "-M"]
+        );
+        let knobs = DiffOptions {
+            ignore_whitespace: true,
+            untracked: true,
+            context: Some(10),
+        };
+        assert_eq!(
+            diff_args(
+                &DiffTarget::Commit("abc123".into()),
+                &knobs,
+                &["src/a.rs".into()]
+            ),
+            [
+                "show",
+                "--format=",
+                "--diff-merges=first-parent",
+                "--no-color",
+                "--no-ext-diff",
+                "-M",
+                "-w",
+                "-U10",
+                "abc123",
+                "--",
+                "src/a.rs"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_revision_cannot_smuggle_an_option() {
+        for ok in [
+            "HEAD",
+            "origin/main",
+            "abc123",
+            "v1.2.0",
+            "HEAD~3",
+            "feature/x",
+        ] {
+            assert!(valid_rev(ok), "{ok}");
+        }
+        for bad in ["", "-p", "--output=/tmp/x", "a b", "a\nb"] {
+            assert!(!valid_rev(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn nul_paths_are_split_and_capped() {
+        assert_eq!(
+            parse_nul_paths("a.rs\0dir/b c.txt\0", 10),
+            ["a.rs", "dir/b c.txt"]
+        );
+        assert_eq!(parse_nul_paths("a\0b\0c\0", 2), ["a", "b"]);
+        assert!(parse_nul_paths("", 5).is_empty());
+        assert_eq!(
+            untracked_header("x/y.bin"),
+            "diff --git a/x/y.bin b/x/y.bin\nnew file mode 100644\n"
+        );
+    }
+
+    /// Untracked files appear only when asked, as root-relative new-file
+    /// diffs even from a subdirectory, and ignored files never do.
+    #[test]
+    fn untracked_files_join_the_diff_when_asked() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {:?}: {:?}", args, out);
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::create_dir_all(repo.join("sub")).unwrap();
+        std::fs::write(repo.join("tracked.txt"), "one\n").unwrap();
+        std::fs::write(repo.join(".gitignore"), "skip.log\n").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "seed"]);
+        std::fs::write(repo.join("tracked.txt"), "one  \n").unwrap();
+        std::fs::write(repo.join("sub/new.txt"), "hello\n").unwrap();
+        std::fs::write(repo.join("skip.log"), "noise\n").unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let diff = |d: &Path, opts: DiffOptions| {
+            rt.block_on(git_diff_with(d, &DiffBase::Head, &opts))
+                .unwrap()
+        };
+        let plain = diff(repo, DiffOptions::default());
+        assert!(plain.contains("tracked.txt"));
+        assert!(!plain.contains("sub/new.txt"));
+
+        let all = diff(
+            &repo.join("sub"),
+            DiffOptions {
+                untracked: true,
+                ..Default::default()
+            },
+        );
+        assert!(all.contains("+++ b/sub/new.txt"), "{all}");
+        assert!(all.contains("+hello"));
+        assert!(!all.contains("skip.log"));
+
+        let ws = diff(
+            repo,
+            DiffOptions {
+                ignore_whitespace: true,
+                ..Default::default()
+            },
+        );
+        assert!(
+            !ws.contains("tracked.txt"),
+            "a whitespace-only change is gone: {ws}"
+        );
+
+        // A path restricts both halves; staged sees nothing until `git add`.
+        let only = rt
+            .block_on(git_diff_target(
+                repo,
+                &DiffTarget::WorkTree("HEAD".into()),
+                &DiffOptions {
+                    untracked: true,
+                    ..Default::default()
+                },
+                &["sub".into()],
+            ))
+            .unwrap();
+        assert!(
+            only.contains("sub/new.txt") && !only.contains("tracked.txt"),
+            "{only}"
+        );
+        let staged = |rt: &tokio::runtime::Runtime| {
+            rt.block_on(git_diff_target(
+                repo,
+                &DiffTarget::Staged,
+                &DiffOptions::default(),
+                &[],
+            ))
+            .unwrap()
+        };
+        assert!(staged(&rt).is_empty());
+        run(&["add", "tracked.txt"]);
+        assert!(staged(&rt).contains("tracked.txt"));
+        let seed = rt
+            .block_on(merge_base_with(repo, "HEAD"))
+            .expect("merge-base");
+        let commit = rt
+            .block_on(git_diff_target(
+                repo,
+                &DiffTarget::Commit(seed),
+                &DiffOptions::default(),
+                &[],
+            ))
+            .unwrap();
+        assert!(
+            commit.contains("+++ b/tracked.txt") && commit.contains("+one"),
+            "{commit}"
+        );
+    }
 
     #[test]
     fn checkout_progress_reads_gits_own_counts() {

@@ -23,6 +23,7 @@ const FUNCTIONS = [
   "visibleFileRows",
   "renderFilesPanel",
   "buildFileRow",
+  "showFileChanges",
   "mentionTarget",
   "mentionInSession",
   "fileContextMenu",
@@ -69,6 +70,9 @@ function sandboxFor({ replies = {}, sessions = [] } = {}) {
     ensureHighlight: async () => false,
     showContextMenu: (_x, _y, items) => menus.push(items),
     renderTabs: () => {},
+    openDiffViewer: (spec) => calls.push(["openDiffViewer", spec]),
+    openFileHistory: (dir, rel) => calls.push(["openFileHistory", dir, rel]),
+    renderBlameGutter: async (_code, abs) => calls.push(["renderBlameGutter", abs]),
     ensureFreePane: () => {
       if (workspace.panes[workspace.focused] != null) {
         workspace.panes.push(null);
@@ -99,7 +103,7 @@ function sandboxFor({ replies = {}, sessions = [] } = {}) {
   vm.createContext(sandbox);
   vm.runInContext(
     `var filesPanel = { open: true, root: null, rootSession: null, pinned: false,
-      showIgnored: false, children: {}, expanded: new Set(), expandedByRoot: new Map(),
+      showIgnored: false, changedOnly: false, children: {}, expanded: new Set(), expandedByRoot: new Map(),
       status: null, index: null, query: "", matches: null, capped: false,
       selected: null, error: null, seq: 0, sig: "" };`,
     sandbox
@@ -249,4 +253,47 @@ test("a mention with no running session explains instead of failing", async () =
   const { sandbox, calls } = sandboxFor();
   await sandbox.mentionInSession("/r/a.rs");
   assert.ok(!calls.some((c) => c[0] === "send_input"));
+});
+
+test("the changed-files list: flat rows, a click shows what changed, the menu offers history", async () => {
+  const { sandbox, els, calls, menus } = sandboxFor({
+    replies: {
+      explorer_list: { "": [entry("src", true)] },
+      explorer_git_status: {
+        branch: "main",
+        ahead: 0,
+        behind: 0,
+        entries: [
+          { rel: "src/a.rs", mark: "modified", staged: false },
+          { rel: "new/", mark: "untracked", staged: false },
+        ],
+      },
+    },
+  });
+  sandbox.setFilesRoot("/r/clash");
+  await new Promise((r) => setTimeout(r, 0));
+  sandbox.filesPanel.changedOnly = true;
+  sandbox.renderFilesPanel();
+  const rows = els.get("files-list").children;
+  assert.equal(JSON.stringify(rows.map((r) => r.dataset.rel)), JSON.stringify(["src/a.rs", "new"]));
+  rows[0].onclick();
+  const opened = calls.find((c) => c[0] === "openDiffViewer");
+  assert.equal(JSON.stringify(opened[1]), JSON.stringify({ title: "a.rs", dir: "/r/clash", paths: ["src/a.rs"] }));
+
+  sandbox.fileContextMenu({ rel: "src/a.rs", name: "a.rs", isDir: false, changed: "modified" }, 0, 0);
+  const labels = menus[0].filter(Boolean).map((it) => it.label);
+  assert.ok(labels.includes("Show changes") && labels.includes("Show history") && labels.includes("Annotate"));
+  menus[0].find((it) => it && it.label === "Show history").action();
+  assert.equal(JSON.stringify(calls.find((c) => c[0] === "openFileHistory")), JSON.stringify(["openFileHistory", "/r/clash", "src/a.rs"]));
+
+  // A clean tree says so instead of showing nothing.
+  sandbox.filesPanel.status = { branch: "main", entries: [] };
+  sandbox.renderFilesPanel();
+  assert.match(els.get("files-list").innerHTML, /working tree is clean/);
+});
+
+test("Annotate asks for the blame gutter on a text preview", async () => {
+  const { sandbox, calls } = sandboxFor({ replies: { explorer_read: { kind: "text", size: 3, text: "a\nb\n" } } });
+  await sandbox.renderFilePreview(stubEl(), "/r/main.rs", { blame: true });
+  assert.equal(JSON.stringify(calls.find((c) => c[0] === "renderBlameGutter")), JSON.stringify(["renderBlameGutter", "/r/main.rs"]));
 });

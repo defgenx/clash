@@ -1194,3 +1194,22 @@ test("workspaces reorder by drag in every layout, through TabOrder's rule", () =
   // A drag's release must not also switch workspace.
   assert.match(extractFunction(APP, "wireWorkspaceDrag"), /addEventListener\("click", swallow/);
 });
+
+test("the diff viewer talks only to registered commands, and the session tab uses it", () => {
+  const start = APP.indexOf("// ── Diff viewer ──");
+  const end = APP.indexOf("// ── Details panel ──");
+  assert.ok(start > 0 && end > start);
+  const section = APP.slice(start, end);
+  const main = fs.readFileSync(path.join(__dirname, "..", "src-tauri", "src", "main.rs"), "utf8");
+  const handler = main.slice(main.indexOf("generate_handler!["));
+  const used = [...section.matchAll(/invoke\("([a-z_]+)"/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(used)].sort(), ["diff_dir", "git_blame", "git_log", "git_refs"]);
+  for (const cmd of used) assert.match(handler, new RegExp(`\\b${cmd},`), `${cmd} is not registered`);
+  assert.match(extractFunction(APP, "openDiffTab"), /openDiffViewer\(\{ key: `view:diff:\$\{s\.id\}`/);
+  // Preferences persist next to the tour flags and are validated on load.
+  assert.match(APP, /diffView: diffPrefs,/);
+  assert.match(APP, /DiffView\.diffPrefsFrom\(data\.diffView\)/);
+  // The workflow diff shares the navigator and the word marks.
+  assert.match(extractFunction(APP, "renderWfDiffView"), /wfDiffTools\(head, layout, container, files\)/);
+  assert.match(extractFunction(APP, "wfFillFileBody"), /DiffView\.hunkWordMarks\(h\.lines\)/);
+});

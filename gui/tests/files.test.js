@@ -15,6 +15,7 @@ const {
   highlightMatch,
   formatSize,
   foldersToRefresh,
+  fileKind,
 } = require("../dist/files.js");
 
 const e = (rel, isDir = false) => ({ rel, name: rel.split("/").pop(), isDir });
@@ -143,4 +144,23 @@ test("fileUriPaths keeps local file URLs only", () => {
     ["/Users/me/Screen Shot.png", "/tmp/b"],
   );
   assert.deepEqual(fileUriPaths(""), []);
+});
+
+test("file kinds: tests and lockfiles by name, the rest by extension", () => {
+  const k = (n) => fileKind(n).tone;
+  assert.equal(k("main.rs"), "code");
+  assert.equal(k("app.test.js"), "test");
+  assert.equal(k("auth_test.go"), "test");
+  assert.equal(k("Cargo.lock"), "lock");
+  assert.equal(k("package-lock.json"), "lock");
+  assert.equal(k("config.toml"), "data");
+  assert.equal(k("README.md"), "doc");
+  assert.equal(k("logo.PNG"), "image");
+  assert.equal(k("deploy.sh"), "shell");
+  assert.equal(k(".gitignore"), "git");
+  assert.equal(k(".env.local"), "config");
+  assert.equal(k("Dockerfile"), "config");
+  assert.equal(k("LICENSE"), "plain");
+  assert.equal(fileKind("index.html").icon, "file-code");
+  assert.equal(fileKind("LICENSE").icon, "file");
 });

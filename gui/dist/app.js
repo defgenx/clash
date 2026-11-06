@@ -139,6 +139,34 @@ const ICONS = {
     '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>',
   chevron: '<polyline points="9 18 15 12 9 6"/>',
+  "folder-open": '<path d="M2 19V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v2"/><path d="M2 19l2.6-7.1A2 2 0 0 1 6.5 10.5H21a1 1 0 0 1 .95 1.3l-2.3 7A2 2 0 0 1 17.75 20H3a1 1 0 0 1-1-1z"/>',
+  "file-code": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><polyline points="10 12.5 8 14.5 10 16.5"/><polyline points="14 12.5 16 14.5 14 16.5"/>',
+  "file-text": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/>',
+  "file-data": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M10 11.5c-1 0-1.5.5-1.5 1.4v.6c0 .6-.4 1-1 1 .6 0 1 .4 1 1v.6c0 .9.5 1.4 1.5 1.4"/><path d="M14 11.5c1 0 1.5.5 1.5 1.4v.6c0 .6.4 1 1 1-.6 0-1 .4-1 1v.6c0 .9-.5 1.4-1.5 1.4"/>',
+  "file-image": '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>',
+  "file-lock": '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  "file-shell": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><polyline points="8 13 10.5 15 8 17"/><line x1="12" y1="17.5" x2="16" y2="17.5"/>',
+  "file-config": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><circle cx="12" cy="15" r="2"/><path d="M12 11.5v1M12 17.5v1M8.5 15h1M14.5 15h1"/>',
+  "file-archive": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="10" y1="10" x2="12" y2="10"/><line x1="12" y1="12" x2="10" y2="12"/><rect x="9.5" y="14" width="3" height="4" rx="1"/>',
+  "file-test": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M10 11v3.5L7.8 18.4A1 1 0 0 0 8.7 20h6.6a1 1 0 0 0 .9-1.6L14 14.5V11"/><line x1="9.5" y1="11" x2="14.5" y2="11"/>',
+  "file-git": '<circle cx="6" cy="18" r="2.5"/><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="9" r="2.5"/><path d="M6 8.5v7"/><path d="M18 11.5c0 3-3 3.5-9.5 5"/>',
+  pin: '<line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24z"/>',
+  eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+  "git-commit": '<circle cx="12" cy="12" r="4"/><line x1="1.05" y1="12" x2="7" y2="12"/><line x1="17.01" y1="12" x2="22.96" y2="12"/>',
+  diff: '<path d="M12 3v10"/><path d="M7 8h10"/><path d="M7 19h10"/>',
+  history: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/><polyline points="12 7 12 12 15 14"/>',
+  wrap: '<line x1="3" y1="6" x2="21" y2="6"/><path d="M3 12h15a3 3 0 1 1 0 6h-4"/><polyline points="16 16 14 18 16 20"/><line x1="3" y1="18" x2="10" y2="18"/>',
+  space: '<path d="M4 10v4h16v-4"/>',
+  "file-plus": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>',
+  "arrow-up": '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>',
+  "arrow-down": '<line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/>',
+  expand: '<polyline points="7 15 12 20 17 15"/><polyline points="7 9 12 4 17 9"/>',
+  collapse: '<polyline points="7 20 12 15 17 20"/><polyline points="7 4 12 9 17 4"/>',
+  rows: '<line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>',
+  sidebar: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/>',
+  "git-branch": '<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
+  annotate: '<line x1="3" y1="6" x2="7" y2="6"/><line x1="3" y1="12" x2="7" y2="12"/><line x1="3" y1="18" x2="7" y2="18"/><line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="18" y2="12"/><line x1="10" y1="18" x2="20" y2="18"/>',
+  at: '<circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/>',
   gear:
     '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
@@ -685,6 +713,8 @@ function workspacesJson() {
     sidebar: sidebarPersistState(),
     // First-run guided tour: shown once, rerunnable from Settings.
     tour: { seen: tourSeen, itemSeen: itemTourSeen },
+    // The diff viewer's layout and options (diff-view.js diffPrefsFrom).
+    diffView: diffPrefs,
   });
 }
 
@@ -719,7 +749,7 @@ function sidebarPersistState() {
       settings: !$("settings-body").classList.contains("hidden"),
       files: filesPanel.open,
     },
-    files: { showIgnored: filesPanel.showIgnored },
+    files: { showIgnored: filesPanel.showIgnored, changedOnly: filesPanel.changedOnly },
     view: sidebarView,
     sizes,
   };
@@ -812,6 +842,7 @@ function applyWorkspacesData(data, { migratable = false } = {}) {
   }
   if (data.tour && data.tour.seen) tourSeen = true;
   if (data.tour && data.tour.itemSeen) itemTourSeen = true;
+  if (data.diffView) Object.assign(diffPrefs, DiffView.diffPrefsFrom(data.diffView));
   // Settings ride along with the workspaces blob but load independently — a
   // fresh install with no workspaces yet still gets its saved settings. First
   // source wins: loadWorkspaces tries disk before the localStorage fallback,
@@ -3939,16 +3970,647 @@ async function buildSubagentsList(el, s) {
   }
 }
 
+// ── Diff viewer ─────────────────────────────────────────────────
+// One viewer for every directory diff: the session ± tab, Files' "Show
+// changes", a file history's commits and a blame line's commit. Pure half:
+// diff-view.js (parsing: wf-diff.js); backend: diff_dir / git_refs / git_log /
+// git_blame. Behaviour: docs/gui.md → Diff viewer.
+
+const diffPrefs = { ...DiffView.DIFF_PREF_DEFAULTS };
+// Past this many changed lines a file opens collapsed; past the total, all do.
+const DV_FILE_COLLAPSE = 600;
+const DV_TOTAL_COLLAPSE = 6000;
+
 function openDiffTab(s) {
-  openViewTab(`view:diff:${s.id}`, `± ${displayName(s)}`, async (el) => {
-    el.innerHTML = "<h4>GIT DIFF (HEAD)</h4><div class='diff'>loading…</div>";
-    try {
-      const diff = await invoke("get_diff", { sessionId: s.id });
-      el.querySelector(".diff").innerHTML = renderDiff(diff);
-    } catch (e) {
-      el.querySelector(".diff").textContent = `diff failed: ${e}`;
+  const dir = sessionDir(s);
+  if (!dir) {
+    flashToast("This session has no working directory");
+    return;
+  }
+  openDiffViewer({ key: `view:diff:${s.id}`, title: displayName(s), dir });
+}
+
+/// A diff viewer tab. `spec`: `{ title, dir, target?, rev?, paths?, key? }`,
+/// `target`/`rev` as `diff_dir` takes them (default: uncommitted changes).
+function openDiffViewer(spec) {
+  const paths = spec.paths || [];
+  const key =
+    spec.key || `view:changes:${spec.dir}${spec.rev ? `@${spec.rev}` : ""}${paths.length ? `|${paths.join(",")}` : ""}`;
+  openViewTab(key, `± ${spec.title}`, (el) =>
+    mountDiffViewer(el, { target: "head", rev: null, ...spec, paths })
+  );
+}
+
+/// One commit's own changes (a blame line, a history row).
+function openCommitDiff(dir, sha, subject = "") {
+  openDiffViewer({
+    key: `view:commit:${dir}@${sha}`,
+    title: `${sha.slice(0, 7)}${subject ? ` ${subject}` : ""}`,
+    dir,
+    target: "commit",
+    rev: sha,
+  });
+}
+
+/// Build a viewer into `el`. `embedded`: inside the file history, which owns
+/// the target and shows one file, so no compare picker and no navigator.
+function mountDiffViewer(el, spec, { embedded = false } = {}) {
+  el.classList.add("dv-host");
+  if (embedded) el.classList.add("dv-embedded");
+  el.tabIndex = -1;
+  el.innerHTML = `
+    <div class="dv-toolbar">
+      <button class="dv-compare" type="button" title="Compare with… — local changes, a branch, a tag or a commit"></button>
+      <span class="dv-summary"></span>
+      <span class="spacer"></span>
+      <span class="dv-seg" role="group" aria-label="Layout">
+        <button type="button" data-mode="unified" title="Unified">${svgIcon("rows", 13)}</button>
+        <button type="button" data-mode="split" title="Side by side">${svgIcon("columns", 13)}</button>
+      </span>
+      <select class="dv-context" title="Lines of context around each change"></select>
+      <button type="button" class="icon-btn mini dv-pref" data-pref="wrap" title="Soft-wrap long lines">${svgIcon("wrap", 13)}</button>
+      <button type="button" class="icon-btn mini dv-pref" data-pref="ignoreWhitespace" title="Ignore whitespace changes">${svgIcon("space", 13)}</button>
+      <button type="button" class="icon-btn mini dv-pref" data-pref="untracked" title="Include untracked files">${svgIcon("file-plus", 13)}</button>
+      <span class="dv-sep"></span>
+      <button type="button" class="icon-btn mini" data-act="prev" title="Previous change (⇧F7)">${svgIcon("arrow-up", 13)}</button>
+      <button type="button" class="icon-btn mini" data-act="next" title="Next change (F7)">${svgIcon("arrow-down", 13)}</button>
+      <button type="button" class="icon-btn mini" data-act="expand" title="Expand all files">${svgIcon("expand", 13)}</button>
+      <button type="button" class="icon-btn mini" data-act="collapse" title="Collapse all files">${svgIcon("collapse", 13)}</button>
+      <button type="button" class="icon-btn mini dv-pref" data-pref="nav" title="Show the file list">${svgIcon("sidebar", 13)}</button>
+      <button type="button" class="icon-btn mini" data-act="reload" title="Refresh">${svgIcon("reload", 13)}</button>
+    </div>
+    <div class="dv-main">
+      <nav class="dv-nav">
+        <input class="dv-filter" type="search" placeholder="Filter files…" autocomplete="off" spellcheck="false" />
+        <div class="dv-tree"></div>
+      </nav>
+      <div class="dv-files"></div>
+    </div>`;
+  const v = {
+    el,
+    spec,
+    embedded,
+    files: [],
+    top: null,
+    error: null,
+    query: "",
+    collapsed: new Set(), // paths
+    navClosed: new Set(), // navigator folders
+    active: null,
+    loaded: false,
+    seq: 0,
+    choices: null,
+  };
+  const ctx = el.querySelector(".dv-context");
+  for (const n of DiffView.CONTEXT_CHOICES) {
+    const o = document.createElement("option");
+    o.value = n === null ? "" : String(n);
+    o.textContent = n === null ? "3 lines" : n >= 100000 ? "Whole file" : `${n} lines`;
+    ctx.appendChild(o);
+  }
+  ctx.onchange = () => setDiffPref(v, "context", ctx.value === "" ? null : Number(ctx.value));
+  el.querySelector(".dv-compare").onclick = (ev) => openComparePicker(v, ev.currentTarget);
+  for (const b of el.querySelectorAll(".dv-seg button")) b.onclick = () => setDiffPref(v, "mode", b.dataset.mode);
+  for (const b of el.querySelectorAll(".dv-pref")) b.onclick = () => setDiffPref(v, b.dataset.pref, !diffPrefs[b.dataset.pref]);
+  for (const b of el.querySelectorAll("[data-act]")) b.onclick = () => diffViewerAction(v, b.dataset.act);
+  const filter = el.querySelector(".dv-filter");
+  filter.addEventListener("input", () => {
+    v.query = filter.value.trim();
+    renderDiffNav(v);
+    applyDiffFilter(v);
+  });
+  const files = el.querySelector(".dv-files");
+  let ticking = false;
+  files.addEventListener("scroll", () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => {
+      ticking = false;
+      trackActiveDiffFile(v);
+    });
+  });
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "F7") {
+      e.preventDefault();
+      diffStep(v, e.shiftKey ? -1 : 1);
     }
   });
+  syncDiffToolbar(v);
+  loadDiffViewer(v);
+  return v;
+}
+
+async function loadDiffViewer(v) {
+  const seq = ++v.seq;
+  const filesEl = v.el.querySelector(".dv-files");
+  if (!v.loaded) filesEl.innerHTML = "<p class='hint dv-pad'>loading…</p>";
+  const spec = v.spec;
+  const request = (paths) =>
+    invoke("diff_dir", {
+      dir: spec.dir,
+      opts: {
+        target: spec.target,
+        rev: spec.rev,
+        paths,
+        ignoreWhitespace: diffPrefs.ignoreWhitespace,
+        untracked: diffPrefs.untracked,
+        context: diffPrefs.context,
+      },
+    });
+  try {
+    let res = await request(spec.paths);
+    // A history row of a file that was renamed since: show the whole commit.
+    if (spec.target === "commit" && spec.paths.length && !res.text.trim()) res = await request([]);
+    if (seq !== v.seq) return;
+    v.top = res.top;
+    v.files = parseUnifiedDiff(res.text);
+    v.error = null;
+  } catch (e) {
+    if (seq !== v.seq) return;
+    v.files = [];
+    v.error = String(e);
+  }
+  const total = v.files.reduce((n, f) => n + diffFileChangedLines(f), 0);
+  const seen = new Set(v.files.map(diffFilePath));
+  for (const p of [...v.collapsed]) if (!seen.has(p)) v.collapsed.delete(p);
+  // One file (a history row, a file's own changes) is the point of the view: never folded.
+  if (!v.loaded && v.files.length > 1) {
+    for (const f of v.files) {
+      if (total > DV_TOTAL_COLLAPSE || diffFileChangedLines(f) > DV_FILE_COLLAPSE) v.collapsed.add(diffFilePath(f));
+    }
+  }
+  v.loaded = true;
+  renderDiffViewer(v);
+}
+
+/// A preference change: layout and wrapping repaint, the rest re-run git.
+function setDiffPref(v, key, value) {
+  diffPrefs[key] = value;
+  saveWorkspaces();
+  syncDiffToolbar(v);
+  if (key === "mode") renderDiffFiles(v);
+  else if (key === "wrap" || key === "nav") return;
+  else loadDiffViewer(v);
+}
+
+function diffViewerAction(v, act) {
+  if (act === "reload") loadDiffViewer(v);
+  else if (act === "next") diffStep(v, 1);
+  else if (act === "prev") diffStep(v, -1);
+  else if (act === "expand" || act === "collapse") {
+    v.collapsed = act === "collapse" ? new Set(v.files.map(diffFilePath)) : new Set();
+    renderDiffFiles(v);
+  }
+}
+
+function syncDiffToolbar(v) {
+  const el = v.el;
+  el.classList.toggle("dv-wrap", diffPrefs.wrap);
+  el.classList.toggle("dv-no-nav", !diffPrefs.nav || v.embedded);
+  const cmp = el.querySelector(".dv-compare");
+  cmp.innerHTML = `${svgIcon("git-branch", 12)}<span>${escapeHtml(DiffView.targetLabel(v.spec.target, v.spec.rev))}</span>${svgIcon("chevron", 10)}`;
+  cmp.classList.toggle("hidden", v.embedded);
+  for (const b of el.querySelectorAll(".dv-seg button")) b.classList.toggle("on", b.dataset.mode === diffPrefs.mode);
+  for (const b of el.querySelectorAll(".dv-pref")) b.classList.toggle("on", !!diffPrefs[b.dataset.pref]);
+  const untracked = el.querySelector('[data-pref="untracked"]');
+  untracked.disabled = !DiffView.hasWorkTree(v.spec.target);
+  untracked.classList.toggle("hidden", v.embedded);
+  el.querySelector('[data-pref="nav"]').classList.toggle("hidden", v.embedded);
+  el.querySelector(".dv-context").value = diffPrefs.context === null ? "" : String(diffPrefs.context);
+}
+
+function renderDiffViewer(v) {
+  syncDiffToolbar(v);
+  const sum = v.el.querySelector(".dv-summary");
+  let adds = 0;
+  let dels = 0;
+  for (const f of v.files) {
+    const s = DiffView.fileStats(f);
+    adds += s.adds;
+    dels += s.dels;
+  }
+  sum.innerHTML = v.files.length
+    ? `${v.files.length} file${v.files.length === 1 ? "" : "s"} <span class="add">+${adds}</span> <span class="del">−${dels}</span>`
+    : "";
+  renderDiffNav(v);
+  renderDiffFiles(v);
+}
+
+/// The navigator: the changed files as a folder tree, filtered like the
+/// cards; a click jumps to (and opens) the file.
+function renderDiffNav(v) {
+  const tree = v.el.querySelector(".dv-tree");
+  tree.innerHTML = "";
+  const paths = v.files.map(diffFilePath);
+  let skipBelow = Infinity;
+  for (const row of DiffView.navRows(paths)) {
+    if (row.depth > skipBelow) continue;
+    skipBelow = Infinity;
+    const item = document.createElement("div");
+    item.style.paddingLeft = `${8 + row.depth * 12}px`;
+    if (row.kind === "dir") {
+      const closed = v.navClosed.has(row.path);
+      if (closed) skipBelow = row.depth;
+      item.className = "dv-tree-dir";
+      item.innerHTML = `<span class="note-caret ${closed ? "" : "open"}">${svgIcon("chevron", 10)}</span>${svgIcon(
+        closed ? "folder" : "folder-open",
+        12
+      )}<span class="dv-tree-name">${escapeHtml(row.name)}</span>`;
+      item.onclick = () => {
+        if (closed) v.navClosed.delete(row.path);
+        else v.navClosed.add(row.path);
+        renderDiffNav(v);
+      };
+    } else {
+      const f = v.files[row.index];
+      const path = paths[row.index];
+      if (!DiffView.matchesQuery(path, v.query)) continue;
+      const status = DiffView.fileStatus(f);
+      const s = DiffView.fileStats(f);
+      item.className = "dv-tree-file" + (v.active === path ? " active" : "");
+      item.dataset.path = path;
+      item.title = path;
+      item.innerHTML = `<span class="dv-badge s-${status}">${DiffView.STATUS_LETTERS[status]}</span><span class="dv-tree-name">${escapeHtml(
+        row.name
+      )}</span><span class="dv-tree-stat"><span class="add">+${s.adds}</span><span class="del">−${s.dels}</span></span>`;
+      item.onclick = () => (v.onPick ? v.onPick(path) : revealDiffFile(v, path));
+    }
+    tree.appendChild(item);
+  }
+}
+
+function applyDiffFilter(v) {
+  for (const card of v.el.querySelectorAll(".dv-file")) {
+    card.classList.toggle("hidden", !DiffView.matchesQuery(card.dataset.path, v.query));
+  }
+}
+
+function revealDiffFile(v, path) {
+  if (v.collapsed.delete(path)) renderDiffFiles(v);
+  const card = [...v.el.querySelectorAll(".dv-file")].find((c) => c.dataset.path === path);
+  if (!card) return;
+  v.el.querySelector(".dv-files").scrollTop = card.offsetTop;
+  v.active = path;
+  renderDiffNav(v);
+}
+
+/// The navigator highlights the file whose card is at the top of the view.
+function trackActiveDiffFile(v) {
+  const box = v.el.querySelector(".dv-files");
+  let active = null;
+  for (const card of box.querySelectorAll(".dv-file:not(.hidden)")) {
+    if (card.offsetTop <= box.scrollTop + 4) active = card.dataset.path;
+    else break;
+  }
+  if (active === v.active) return;
+  v.active = active;
+  for (const row of v.el.querySelectorAll(".dv-tree-file")) row.classList.toggle("active", row.dataset.path === active);
+}
+
+/// The absolute path of a diff path (diff paths are repo-root relative).
+function diffAbsPath(v, path) {
+  return v.top ? `${v.top}/${path}` : joinPath(v.spec.dir, path);
+}
+
+function renderDiffFiles(v) {
+  const box = v.el.querySelector(".dv-files");
+  const scroll = box.scrollTop;
+  box.innerHTML = "";
+  if (v.error) {
+    box.innerHTML = `<p class="hint dv-pad">${escapeHtml(v.error)}</p>`;
+    return;
+  }
+  if (!v.files.length) {
+    const what = DiffView.targetLabel(v.spec.target, v.spec.rev).toLowerCase();
+    box.innerHTML = `<div class="dv-empty">${svgIcon("git-commit", 28)}<p>No changes</p><p class="dim">${escapeHtml(what)}</p></div>`;
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for (const f of v.files) frag.appendChild(buildDiffFile(v, f));
+  box.appendChild(frag);
+  applyDiffFilter(v);
+  box.scrollTop = scroll;
+}
+
+function buildDiffFile(v, f) {
+  const path = diffFilePath(f);
+  const status = DiffView.fileStatus(f);
+  const { adds, dels } = DiffView.fileStats(f);
+  const collapsed = v.collapsed.has(path);
+  const card = document.createElement("section");
+  card.className = "dv-file" + (collapsed ? " collapsed" : "");
+  card.dataset.path = path;
+  const slash = path.lastIndexOf("/");
+  const blocks = DiffView.statBlocks(adds, dels)
+    .map((b) => `<i class="dv-block ${b}"></i>`)
+    .join("");
+  const head = document.createElement("div");
+  head.className = "dv-file-head";
+  head.innerHTML =
+    `<span class="note-caret ${collapsed ? "" : "open"}">${svgIcon("chevron", 11)}</span>` +
+    `<span class="dv-badge s-${status}" title="${status}">${DiffView.STATUS_LETTERS[status]}</span>` +
+    `<span class="dv-file-path"><span class="dim">${escapeHtml(slash >= 0 ? path.slice(0, slash + 1) : "")}</span>${escapeHtml(
+      path.slice(slash + 1)
+    )}</span>` +
+    (f.renamedFrom ? `<span class="dim dv-renamed">← ${escapeHtml(f.renamedFrom)}</span>` : "") +
+    `<span class="dv-file-stat"><span class="add">+${adds}</span> <span class="del">−${dels}</span><span class="dv-blocks">${blocks}</span></span>` +
+    `<span class="dv-file-actions"></span>`;
+  const actions = head.querySelector(".dv-file-actions");
+  const action = (icon, title, fn) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "icon-btn mini";
+    b.innerHTML = svgIcon(icon, 12);
+    b.title = title;
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      fn(ev);
+    };
+    actions.appendChild(b);
+  };
+  const abs = diffAbsPath(v, path);
+  action("copy", "Copy path", () => copyText(path, "path"));
+  if (status !== "deleted") {
+    action("file", "Open the file", () => openFilePreview(abs, { keep: true }));
+    action("pencil", "Open in an editor…", (ev) => openScratchInEditor({ title: path, path: abs }, ev.clientX, ev.clientY));
+  }
+  if (v.top && !v.embedded) action("history", "Show history", () => openFileHistory(v.top, path));
+  head.onclick = () => {
+    if (v.collapsed.has(path)) v.collapsed.delete(path);
+    else v.collapsed.add(path);
+    const fresh = buildDiffFile(v, f);
+    card.replaceWith(fresh);
+  };
+  card.appendChild(head);
+  if (!collapsed) card.appendChild(buildDiffFileBody(f, status));
+  return card;
+}
+
+/// A file's hunks in the current layout, word changes marked. Rows that start
+/// a run of changes carry `dv-start` — what F7 steps through.
+function buildDiffFileBody(f, status) {
+  const body = document.createElement("div");
+  body.className = "dv-file-body";
+  if (f.binary || !f.hunks.length) {
+    const note = f.binary
+      ? "Binary file"
+      : status === "renamed"
+        ? "Renamed, content unchanged"
+        : status === "added"
+          ? "Empty or too large to show"
+          : "Mode change only";
+    body.innerHTML = `<div class="dv-note">${escapeHtml(note)}</div>`;
+    return body;
+  }
+  const split = diffPrefs.mode === "split";
+  const html = [];
+  const num = (n) => `<span class="dv-ln">${n ?? ""}</span>`;
+  for (const h of f.hunks) {
+    const m = /^(@@[^@]*@@)(.*)$/.exec(h.header);
+    html.push(
+      `<div class="dv-hunk"><span>${escapeHtml(m ? m[1] : h.header)}</span><span class="dim">${escapeHtml(m ? m[2] : "")}</span></div>`
+    );
+    const marks = DiffView.hunkWordMarks(h.lines);
+    const text = (k) => DiffView.markedHtml(h.lines[k].text, marks.get(k));
+    if (!split) {
+      h.lines.forEach((l, k) => {
+        const start = l.kind !== "ctx" && (k === 0 || h.lines[k - 1].kind === "ctx");
+        const sign = l.kind === "add" ? "+" : l.kind === "del" ? "−" : " ";
+        html.push(
+          `<div class="dv-row ${l.kind}${start ? " dv-start" : ""}">${num(l.oldNo)}${num(l.newNo)}<span class="dv-sign">${sign}</span><span class="dv-code">${text(k)}</span></div>`
+        );
+      });
+    } else {
+      let prevCtx = true;
+      for (const r of DiffView.splitRows(h.lines)) {
+        const ctx = r.left !== null && r.left === r.right;
+        const half = (k, side) => {
+          if (k === null) return `<div class="dv-half empty"><span class="dv-ln"></span><span class="dv-code"></span></div>`;
+          const l = h.lines[k];
+          const kind = ctx ? "ctx" : l.kind;
+          return `<div class="dv-half ${kind}">${num(side === "old" ? l.oldNo : l.newNo)}<span class="dv-code">${text(k)}</span></div>`;
+        };
+        html.push(
+          `<div class="dv-row split${!ctx && prevCtx ? " dv-start" : ""}">${half(r.left, "old")}${half(r.right, "new")}</div>`
+        );
+        prevCtx = ctx;
+      }
+    }
+  }
+  body.innerHTML = html.join("");
+  return body;
+}
+
+/// F7 / ⇧F7: the next or previous run of changes below or above the top of
+/// the view, wrapping around. Collapsed files are skipped.
+function diffStep(v, dir) {
+  const box = v.el.querySelector(".dv-files");
+  const starts = [...box.querySelectorAll(".dv-file:not(.hidden) .dv-start")];
+  if (!starts.length) {
+    flashToast("No changes to step through");
+    return;
+  }
+  const top = box.getBoundingClientRect().top + 48;
+  const pos = starts.map((s) => s.getBoundingClientRect().top - top);
+  let i = dir > 0 ? pos.findIndex((p) => p > 2) : pos.map((p) => p < -2).lastIndexOf(true);
+  if (i < 0) i = DiffView.stepChange(starts.length, -1, dir);
+  const el = starts[i];
+  el.scrollIntoView({ block: "center" });
+  el.classList.remove("dv-flash");
+  void el.offsetWidth;
+  el.classList.add("dv-flash");
+}
+
+/// The Compare with… picker: searchable, grouped, keyboard-driven. Refs and
+/// recent commits are read on first open.
+async function openComparePicker(v, anchor) {
+  v.el.querySelector(".dv-picker")?.remove();
+  const pop = document.createElement("div");
+  pop.className = "dv-picker";
+  pop.innerHTML = `<input type="search" placeholder="Branch, tag or commit…" autocomplete="off" spellcheck="false" /><div class="dv-picker-list"><p class="hint dv-pad">loading…</p></div>`;
+  const r = anchor.getBoundingClientRect();
+  const host = v.el.getBoundingClientRect();
+  pop.style.left = `${r.left - host.left}px`;
+  pop.style.top = `${r.bottom - host.top + 4}px`;
+  v.el.appendChild(pop);
+  const input = pop.querySelector("input");
+  const list = pop.querySelector(".dv-picker-list");
+  input.focus();
+  const close = () => {
+    pop.remove();
+    document.removeEventListener("mousedown", outside, true);
+  };
+  const outside = (e) => {
+    if (!pop.contains(e.target) && e.target !== anchor && !anchor.contains(e.target)) close();
+  };
+  document.addEventListener("mousedown", outside, true);
+  if (!v.choices) {
+    try {
+      const [refs, commits] = await Promise.all([
+        invoke("git_refs", { dir: v.spec.dir }),
+        invoke("git_log", { dir: v.spec.dir, path: null, limit: 30 }),
+      ]);
+      v.choices = DiffView.compareChoices({ refs: refs.refs, defaultBranch: refs.defaultBranch, commits });
+    } catch (e) {
+      dlog(`compare picker: ${e}`);
+      v.choices = DiffView.compareChoices({});
+    }
+  }
+  if (!pop.isConnected) return;
+  let sel = 0;
+  let flat = [];
+  const pick = (it) => {
+    close();
+    v.spec.target = it.target;
+    v.spec.rev = it.rev ?? null;
+    v.loaded = false;
+    v.collapsed.clear();
+    syncDiffToolbar(v);
+    loadDiffViewer(v);
+  };
+  const paint = () => {
+    list.innerHTML = "";
+    flat = [];
+    for (const g of v.choices) {
+      const items = g.items.filter((it) => DiffView.matchesQuery(`${it.label} ${it.detail || ""}`, input.value));
+      if (!items.length) continue;
+      const h = document.createElement("div");
+      h.className = "dv-picker-group";
+      h.textContent = g.label;
+      list.appendChild(h);
+      for (const it of items) {
+        const row = document.createElement("div");
+        const current = it.target === v.spec.target && (it.rev ?? null) === (v.spec.rev ?? null);
+        row.className = "dv-picker-row" + (flat.length === sel ? " sel" : "") + (current ? " current" : "");
+        row.innerHTML = `<span class="dv-picker-label">${escapeHtml(it.label)}</span><span class="dim">${escapeHtml(it.detail || "")}</span>`;
+        row.onclick = () => pick(it);
+        flat.push(it);
+        list.appendChild(row);
+      }
+    }
+    if (!flat.length) list.innerHTML = "<p class='hint dv-pad'>Nothing matches.</p>";
+    list.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
+  };
+  input.oninput = () => {
+    sel = 0;
+    paint();
+  };
+  input.onkeydown = (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      sel = Math.max(0, Math.min(flat.length - 1, sel + (e.key === "ArrowDown" ? 1 : -1)));
+      paint();
+    } else if (e.key === "Enter" && flat[sel]) {
+      e.preventDefault();
+      pick(flat[sel]);
+    } else if (e.key === "Escape") {
+      e.stopPropagation();
+      close();
+    }
+  };
+  paint();
+}
+
+/// A file's history (IntelliJ's Show History): its commits on the left — the
+/// working tree's changes first — and the selected one's diff of that file.
+/// `dir` is where git runs, `rel` the file relative to it.
+function openFileHistory(dir, rel) {
+  const abs = joinPath(dir, rel);
+  openViewTab(`view:history:${abs}`, `◷ ${rel.split("/").pop()}`, (el) => mountFileHistory(el, dir, rel));
+}
+
+async function mountFileHistory(el, dir, rel) {
+  el.classList.add("dv-history-host");
+  el.innerHTML = `<div class="dv-history">
+      <aside class="dv-commits">
+        <div class="dv-commits-head">${svgIcon("history", 12)}<span title="${escapeHtml(rel)}">${escapeHtml(rel)}</span></div>
+        <div class="dv-commit-list"><p class="hint dv-pad">loading…</p></div>
+      </aside>
+      <div class="dv-history-diff"></div>
+    </div>`;
+  const list = el.querySelector(".dv-commit-list");
+  const pane = el.querySelector(".dv-history-diff");
+  let commits = [];
+  try {
+    commits = await invoke("git_log", { dir, path: rel, limit: 200 });
+  } catch (e) {
+    list.innerHTML = `<p class="hint dv-pad">${escapeHtml(String(e))}</p>`;
+    return;
+  }
+  const rows = [
+    { target: "head", rev: null, label: "Working tree", detail: "uncommitted changes" },
+    ...commits.map((c) => ({
+      target: "commit",
+      rev: c.sha,
+      label: c.subject,
+      detail: `${c.short} · ${c.author} · ${DiffView.relTime(c.time)}`,
+    })),
+  ];
+  list.innerHTML = "";
+  const select = (row, item) => {
+    for (const x of list.querySelectorAll(".dv-commit")) x.classList.toggle("active", x === item);
+    pane.innerHTML = "";
+    const host = document.createElement("div");
+    pane.appendChild(host);
+    mountDiffViewer(host, { dir, target: row.target, rev: row.rev, paths: [rel], title: rel }, { embedded: true });
+  };
+  rows.forEach((row, i) => {
+    const item = document.createElement("div");
+    item.className = "dv-commit" + (row.target === "head" ? " worktree" : "");
+    item.innerHTML = `<div class="dv-commit-subject">${escapeHtml(row.label)}</div><div class="dim">${escapeHtml(row.detail)}</div>`;
+    item.onclick = () => select(row, item);
+    if (row.rev) {
+      item.oncontextmenu = (ev) => {
+        ev.preventDefault();
+        showContextMenu(ev.clientX, ev.clientY, [
+          { label: "Show the whole commit", icon: "git-commit", action: () => openCommitDiff(dir, row.rev, row.label) },
+          { label: "Copy commit id", icon: "copy", action: () => copyText(row.rev, "commit id") },
+        ]);
+      };
+    }
+    list.appendChild(item);
+    if (i === 0) select(row, item);
+  });
+  if (!commits.length) {
+    const none = document.createElement("p");
+    none.className = "hint dv-pad";
+    none.textContent = "No commits touch this file yet.";
+    list.appendChild(none);
+  }
+}
+
+/// The preview's Annotate gutter (IntelliJ's blame): who last changed each
+/// line, the commit named where its run starts, tinted by age; a click opens
+/// that commit.
+async function renderBlameGutter(code, abs) {
+  const dir = abs.slice(0, abs.lastIndexOf("/")) || "/";
+  const name = abs.split("/").pop();
+  let blame;
+  try {
+    blame = await invoke("git_blame", { dir, path: name });
+  } catch (e) {
+    flashToast(`Annotate: ${e}`);
+    return false;
+  }
+  if (!code.isConnected) return false;
+  const rows = DiffView.blameRows(blame);
+  const gutter = document.createElement("pre");
+  gutter.className = "file-blame";
+  gutter.innerHTML = rows
+    .map((r) => {
+      const label = r.first ? `${r.short || "·······"} ${r.author.split(" ")[0].slice(0, 10).padEnd(10)} ${r.when}` : "";
+      const tip = r.uncommitted ? "Not committed yet" : `${r.short} ${r.author} · ${r.when}\n${r.summary}`;
+      return `<span class="ba-${r.age}${r.uncommitted ? " ba-new" : ""}" data-sha="${r.uncommitted ? "" : r.sha}" title="${escapeHtml(tip)}">${escapeHtml(label) || " "}</span>`;
+    })
+    .join("\n");
+  gutter.onclick = (ev) => {
+    const sha = ev.target.closest("[data-sha]")?.dataset.sha;
+    if (!sha) return;
+    const r = rows.find((x) => x.sha === sha);
+    openCommitDiff(dir, sha, r ? r.summary : "");
+  };
+  code.prepend(gutter);
+  return true;
 }
 
 // ── Details panel ───────────────────────────────────────────────
@@ -4458,23 +5120,6 @@ async function showIdePicker(s) {
     };
     out.appendChild(row);
   }
-}
-
-function renderDiff(text) {
-  if (!text.trim()) return "no changes";
-  return text
-    .split("\n")
-    .map((line) => {
-      const esc = escapeHtml(line);
-      if (line.startsWith("+++") || line.startsWith("---"))
-        return `<span class="file">${esc}</span>`;
-      if (line.startsWith("@@")) return `<span class="hunk">${esc}</span>`;
-      if (line.startsWith("diff ")) return `<span class="file">${esc}</span>`;
-      if (line.startsWith("+")) return `<span class="add">${esc}</span>`;
-      if (line.startsWith("-")) return `<span class="del">${esc}</span>`;
-      return esc;
-    })
-    .join("\n");
 }
 
 // ── Teams ───────────────────────────────────────────────────────
@@ -5012,6 +5657,7 @@ const filesPanel = {
   rootSession: null, // session the root was taken from — the mention target
   pinned: false,
   showIgnored: false,
+  changedOnly: false, // list only what git reports as changed
   children: {}, // folder rel ("" = root) -> sorted entries
   expanded: new Set(),
   expandedByRoot: new Map(), // each root's open folders, kept across switches
@@ -5184,6 +5830,12 @@ function visibleFileRows() {
       match: m,
     }));
   }
+  if (filesPanel.changedOnly && filesPanel.status) {
+    return filesPanel.status.entries.map((e) => {
+      const rel = e.rel.replace(/\/$/, "");
+      return { rel, name: rel.split("/").pop(), isDir: e.rel.endsWith("/"), changed: e.mark };
+    });
+  }
   return fileTreeRows(filesPanel.children, filesPanel.expanded);
 }
 
@@ -5206,6 +5858,8 @@ function renderFilesPanel() {
     ? "Pinned to this folder — click to follow the focused session again"
     : "Following the focused session — click to pin this folder";
   $("files-ignored-btn").classList.toggle("on", filesPanel.showIgnored);
+  $("files-changed-btn").classList.toggle("on", filesPanel.changedOnly);
+  $("files-changed-btn").disabled = !st;
 
   const list = $("files-list");
   const scroll = list.scrollTop;
@@ -5221,6 +5875,10 @@ function renderFilesPanel() {
   const rows = visibleFileRows();
   if (filesPanel.matches && !rows.length) {
     list.innerHTML = "<p class='hint files-empty'>No matching files.</p>";
+    return;
+  }
+  if (!filesPanel.matches && filesPanel.changedOnly && st && !rows.length) {
+    list.innerHTML = "<p class='hint files-empty'>No changes — the working tree is clean.</p>";
     return;
   }
   for (const row of rows) list.appendChild(buildFileRow(row));
@@ -5243,22 +5901,25 @@ function buildFileRow(row) {
   item.dataset.rel = row.rel;
   const mark = markFor(filesPanel.index, row.rel, row.isDir);
   const glyph = mark && markGlyph(mark);
-  if (row.match) {
+  const open = row.isDir && filesPanel.expanded.has(row.rel);
+  const kind = row.isDir ? { icon: open ? "folder-open" : "folder", tone: "folder" } : fileKind(row.name);
+  const icon = `<span class="file-icon fk-${kind.tone}">${svgIcon(kind.icon, 14)}</span>`;
+  if (row.match || row.changed) {
+    // A flat list (finder results, changed files): the folder rides after the name.
     item.style.paddingLeft = "10px";
     const dir = row.rel.includes("/") ? row.rel.slice(0, row.rel.lastIndexOf("/")) : "";
-    item.innerHTML = `<span class="team-icon">${svgIcon("file", 13)}</span><span class="team-name file-match">${highlightMatch(
-      row.rel,
-      row.match.positions
-    )}</span>`;
+    const name = row.match ? highlightMatch(row.rel, row.match.positions) : escapeHtml(row.name);
+    const where = row.changed && dir ? ` <span class="file-dir">${escapeHtml(dir)}</span>` : "";
+    item.innerHTML = `${icon}<span class="team-name file-match">${name}${where}</span>`;
     item.title = dir ? row.rel : row.name;
   } else {
     item.style.paddingLeft = `${8 + row.depth * 14}px`;
     const caret = row.isDir
-      ? `<span class="note-caret ${filesPanel.expanded.has(row.rel) ? "open" : ""}">${svgIcon("chevron", 12)}</span>`
+      ? `<span class="note-caret ${open ? "open" : ""}">${svgIcon("chevron", 12)}</span>`
       : `<span class="note-caret note-caret-spacer"></span>`;
-    item.innerHTML = `${caret}<span class="team-icon">${svgIcon(row.isDir ? "folder" : "file", 13)}</span><span class="team-name">${escapeHtml(
-      row.name
-    )}${row.isSymlink ? " <span class='dim'>↪</span>" : ""}</span>`;
+    item.innerHTML = `${caret}${icon}<span class="team-name">${escapeHtml(row.name)}${
+      row.isSymlink ? " <span class='dim'>↪</span>" : ""
+    }</span>`;
     item.title = row.isDir ? row.rel : `${row.rel} · ${formatSize(row.size)}`;
   }
   if (glyph) {
@@ -5270,7 +5931,12 @@ function buildFileRow(row) {
   }
   item.onclick = () => {
     filesPanel.selected = row.rel;
-    if (row.isDir) toggleFilesDir(row.rel);
+    // In the changed-files list a click is "what changed here", IntelliJ's
+    // Local Changes; everywhere else it previews.
+    if (row.changed) {
+      showFileChanges(row.rel);
+      renderFilesPanel();
+    } else if (row.isDir) toggleFilesDir(row.rel);
     else {
       openFilePreview(joinPath(filesPanel.root, row.rel));
       renderFilesPanel();
@@ -5291,6 +5957,15 @@ function buildFileRow(row) {
     ev.dataTransfer.effectAllowed = "copy";
   });
   return item;
+}
+
+/// The diff viewer narrowed to `rel` (a file or a folder under the root),
+/// or the whole root when `rel` is empty.
+function showFileChanges(rel) {
+  const root = filesPanel.root;
+  if (!root) return;
+  const name = rel ? rel.split("/").pop() : root.split("/").pop() || root;
+  openDiffViewer({ title: name, dir: root, paths: rel ? [rel] : [] });
 }
 
 /// The session a mention goes to: the focused one, else the session the
@@ -5345,10 +6020,25 @@ function fileContextMenu(row, x, y) {
   }
   items.push({
     label: "Mention in session",
-    icon: "plus",
+    icon: "at",
     hint: target ? displayName(target) : "",
     action: () => mentionInSession(abs),
   });
+  if (filesPanel.status) {
+    items.push(null);
+    items.push({
+      label: "Show changes",
+      icon: "diff",
+      hint: markFor(filesPanel.index, row.rel, row.isDir) ? "" : "unchanged",
+      action: () => showFileChanges(row.rel),
+    });
+    if (!row.isDir) {
+      items.push({ label: "Show history", icon: "history", action: () => openFileHistory(filesPanel.root, row.rel) });
+      if (row.changed !== "deleted" && row.changed !== "untracked") {
+        items.push({ label: "Annotate", icon: "annotate", action: () => openFilePreview(abs, { keep: true, blame: true }) });
+      }
+    }
+  }
   items.push(null);
   items.push({ label: "Copy absolute path", icon: "copy", action: () => copyText(abs, "absolute path") });
   items.push({ label: "Copy relative path", icon: "copy", action: () => copyText(row.rel, "relative path") });
@@ -5446,7 +6136,18 @@ function initFilesPanel() {
     filesPanel.expanded.clear();
     renderFilesPanel();
   };
-  $("files-pick-btn").innerHTML = svgIcon("folder", 12);
+  $("files-pick-btn").innerHTML = svgIcon("folder-open", 12);
+  $("files-pin-btn").innerHTML = svgIcon("pin", 12);
+  $("files-ignored-btn").innerHTML = svgIcon("eye", 12);
+  $("files-changed-btn").innerHTML = svgIcon("git-commit", 12);
+  $("files-changed-btn").onclick = () => {
+    filesPanel.changedOnly = !filesPanel.changedOnly;
+    filesPanel.selected = null;
+    saveWorkspaces();
+    renderFilesPanel();
+  };
+  $("files-diff-btn").innerHTML = svgIcon("diff", 12);
+  $("files-diff-btn").onclick = () => showFileChanges("");
   $("files-pick-btn").onclick = pickFilesRoot;
   $("files-pin-btn").onclick = () => {
     filesPanel.pinned = !filesPanel.pinned;
@@ -5499,7 +6200,7 @@ function openFilePreview(abs, opts = {}) {
       ensureFreePane();
     }
   }
-  openViewTab(key, `▤ ${name}`, (el) => renderFilePreview(el, abs));
+  openViewTab(key, `▤ ${name}`, (el) => renderFilePreview(el, abs, { blame: !!opts.blame }));
   const entry = state.open.get(key);
   entry.transient = opts.keep ? false : entry.transient ?? true;
   renderTabs();
@@ -5538,10 +6239,11 @@ async function renderFilePreview(el, abs, opts = {}) {
   const body = el.querySelector(".file-view-body");
   const actions = el.querySelector(".file-view-actions");
   const key = `view:file:${abs}`;
-  const btn = (label, title, fn) => {
+  // An icon, and a label when there is one; `on` marks a toggle that is set.
+  const btn = (icon, label, title, fn, on = false) => {
     const b = document.createElement("button");
-    b.className = "mini-btn";
-    b.textContent = label;
+    b.className = "mini-btn" + (on ? " on" : "");
+    b.innerHTML = `${svgIcon(icon, 12)}${label ? `<span>${escapeHtml(label)}</span>` : ""}`;
     b.title = title;
     b.onclick = fn;
     actions.appendChild(b);
@@ -5552,29 +6254,35 @@ async function renderFilePreview(el, abs, opts = {}) {
     p = await invoke("explorer_read", { root: dir, rel: name });
   } catch (e) {
     body.innerHTML = `<p class="hint">${escapeHtml(String(e))}</p>`;
-    btn("⟳ Reload", "Read the file again", () => renderFilePreview(el, abs));
+    btn("reload", "Reload", "Read the file again", () => renderFilePreview(el, abs));
     return;
   }
   el.querySelector(".file-view-size").textContent = formatSize(p.size);
   const showSource = opts.source ?? false;
+  const isText = p.kind === "text" || (p.kind === "markdown" && showSource);
   if (p.kind === "markdown") {
-    btn(showSource ? "◧ Rendered" : "‹› Source", "Switch between rendered and source", () =>
+    btn(showSource ? "eye" : "file-code", showSource ? "Rendered" : "Source", "Switch between rendered and source", () =>
       renderFilePreview(el, abs, { source: !showSource })
     );
   }
   const entry = state.open.get(key);
   if (entry && entry.transient) {
-    const keep = btn("📌 Keep", "Keep this tab open — the next file you click opens beside it", () => {
+    const keep = btn("pin", "Keep", "Keep this tab open — the next file you click opens beside it", () => {
       entry.transient = false;
       keep.remove();
     });
   }
-  btn("@ Mention", "Type @path into the session (⌥↵ in Files)", () => mentionInSession(abs));
-  btn("✎ Editor…", "Open in an editor", (ev) =>
-    openScratchInEditor({ title: name, path: abs }, ev.clientX, ev.clientY)
-  );
-  btn("⧉ Path", "Copy the absolute path", () => copyText(abs, "absolute path"));
-  btn("⟳", "Reload from disk", () => renderFilePreview(el, abs, opts));
+  if (isText) {
+    btn("annotate", "Annotate", "Who last changed each line (git blame)", () =>
+      renderFilePreview(el, abs, { ...opts, blame: !opts.blame }), !!opts.blame
+    );
+  }
+  btn("history", "", "Show history — the commits that touched this file", () => openFileHistory(dir, name));
+  btn("diff", "", "Show changes in this file", () => openDiffViewer({ title: name, dir, paths: [name] }));
+  btn("at", "", "Mention in the session — types @path (⌥↵ in Files)", () => mentionInSession(abs));
+  btn("pencil", "", "Open in an editor", (ev) => openScratchInEditor({ title: name, path: abs }, ev.clientX, ev.clientY));
+  btn("copy", "", "Copy the absolute path", () => copyText(abs, "absolute path"));
+  btn("reload", "", "Reload from disk", () => renderFilePreview(el, abs, opts));
 
   if (p.kind === "image") {
     body.innerHTML = `<div class="file-image"><img alt="${escapeHtml(name)}" src="data:${p.mime};base64,${p.base64}" /></div>`;
@@ -5604,6 +6312,7 @@ async function renderFilePreview(el, abs, opts = {}) {
     .map((_, i) => i + 1)
     .join("\n")}</pre><pre class="file-text"></pre></div>`;
   body.querySelector(".file-text").appendChild(code);
+  if (opts.blame) renderBlameGutter(body.querySelector(".file-code"), abs);
   const lang = hljsLanguage(abs);
   if (lang && text.length <= HIGHLIGHT_MAX_CHARS && (await ensureHighlight()) && code.isConnected) {
     try {
@@ -12822,9 +13531,14 @@ async function renderWfDiffView(body, root, item, ts) {
     return;
   }
   const totalLines = files.reduce((n, f) => n + diffFileChangedLines(f), 0);
+  const layout = document.createElement("div");
+  layout.className = "wf-diff-layout" + (diffPrefs.nav ? "" : " dv-no-nav");
+  layout.innerHTML = `<nav class="wf-diff-nav"><input class="dv-filter" type="search" placeholder="Filter files…" autocomplete="off" spellcheck="false" /><div class="dv-tree"></div></nav>`;
   const container = document.createElement("div");
-  container.className = "wf-diff" + (locked ? " locked" : "");
-  body.appendChild(container);
+  container.className = "wf-diff" + (locked ? " locked" : "") + (diffPrefs.wrap ? " dv-wrap" : "");
+  layout.appendChild(container);
+  body.appendChild(layout);
+  wfDiffTools(head, layout, container, files);
   buildWorkflowDiff(container, files, anchored, {
     item,
     ts,
@@ -12838,6 +13552,59 @@ async function renderWfDiffView(body, root, item, ts) {
     body.scrollTop = ts.scrollTop;
     ts.scrollTop = 0;
   }
+}
+
+/// The workflow diff's navigator and view controls, shared with the diff
+/// viewer (`renderDiffNav`, `diffPrefs`): filter, jump to a file, expand or
+/// collapse every file, soft-wrap, hide the file list.
+function wfDiffTools(head, layout, container, files) {
+  const nav = { el: layout, files, navClosed: new Set(), query: "", active: null };
+  const fileEl = (path) => [...container.querySelectorAll(".wf-file")].find((x) => x.dataset.file === path);
+  const setOpen = (el, open) => {
+    const bodyEl = el.querySelector(".wf-file-body");
+    if (bodyEl.classList.contains("hidden") === open) el.querySelector(".wf-file-head").click();
+  };
+  nav.onPick = (path) => {
+    const el = fileEl(path);
+    if (!el) return;
+    setOpen(el, true);
+    el.scrollIntoView({ block: "start" });
+  };
+  const filter = layout.querySelector(".dv-filter");
+  filter.addEventListener("input", () => {
+    nav.query = filter.value.trim();
+    renderDiffNav(nav);
+    for (const el of container.querySelectorAll(".wf-file")) {
+      el.classList.toggle("hidden", !DiffView.matchesQuery(el.dataset.file, nav.query));
+    }
+  });
+  renderDiffNav(nav);
+  const tool = (icon, title, fn, on) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "icon-btn mini" + (on ? " on" : "");
+    b.innerHTML = svgIcon(icon, 13);
+    b.title = title;
+    b.onclick = () => fn(b);
+    head.appendChild(b);
+  };
+  const spacer = document.createElement("span");
+  spacer.className = "spacer";
+  head.appendChild(spacer);
+  tool("expand", "Expand all files", () => container.querySelectorAll(".wf-file").forEach((el) => setOpen(el, true)));
+  tool("collapse", "Collapse all files", () => container.querySelectorAll(".wf-file").forEach((el) => setOpen(el, false)));
+  tool("wrap", "Soft-wrap long lines", (b) => {
+    diffPrefs.wrap = !diffPrefs.wrap;
+    saveWorkspaces();
+    b.classList.toggle("on", diffPrefs.wrap);
+    container.classList.toggle("dv-wrap", diffPrefs.wrap);
+  }, diffPrefs.wrap);
+  tool("sidebar", "Show the file list", (b) => {
+    diffPrefs.nav = !diffPrefs.nav;
+    saveWorkspaces();
+    b.classList.toggle("on", diffPrefs.nav);
+    layout.classList.toggle("dv-no-nav", !diffPrefs.nav);
+  }, diffPrefs.nav);
 }
 
 /// The agent owns annotations.json in these phases (review A2). Mirrors
@@ -12882,11 +13649,16 @@ function buildWorkflowDiff(container, files, anchored, opts) {
         if (l.kind === "add") adds++;
         else if (l.kind === "del") dels++;
       }
+    const status = DiffView.fileStatus(f);
+    const blocks = DiffView.statBlocks(adds, dels)
+      .map((b) => `<i class="dv-block ${b}"></i>`)
+      .join("");
     head.innerHTML =
       `<span class="wf-file-caret">${collapsed ? "▸" : "▾"}</span>` +
+      `<span class="dv-badge s-${status}" title="${status}">${DiffView.STATUS_LETTERS[status]}</span>` +
       `<span class="wf-file-path">${escapeHtml(path)}</span>` +
       (f.renamedFrom ? `<span class="dim">← ${escapeHtml(f.renamedFrom)}</span>` : "") +
-      `<span class="wf-file-stats"><span class="add">+${adds}</span> <span class="del">−${dels}</span>` +
+      `<span class="wf-file-stats"><span class="add">+${adds}</span> <span class="del">−${dels}</span><span class="dv-blocks">${blocks}</span>` +
       (openHere ? ` · 💬${openHere}` : "") +
       (collapsed && changed > WF_FILE_COLLAPSE_LINES ? ` · big file (${changed} lines)` : "") +
       `</span>`;
@@ -12913,7 +13685,8 @@ function wfFillFileBody(bodyEl, f, fileAnns, opts) {
     hh.className = "wf-hunk-head";
     hh.textContent = h.header;
     hunkEl.appendChild(hh);
-    for (const l of h.lines) {
+    const marks = DiffView.hunkWordMarks(h.lines);
+    for (const [k, l] of h.lines.entries()) {
       const side = l.kind === "del" ? "old" : "new";
       const lineNo = side === "old" ? l.oldNo : l.newNo;
       const row = document.createElement("div");
@@ -12926,7 +13699,7 @@ function wfFillFileBody(bodyEl, f, fileAnns, opts) {
         `<span class="wf-gut">${l.oldNo ?? ""}</span>` +
         `<span class="wf-gut">${l.newNo ?? ""}</span>` +
         `<span class="wf-plus" data-wf-act="compose" title="Comment on this line">+</span>` +
-        `<span class="wf-text">${escapeHtml(l.text)}</span>`;
+        `<span class="wf-text">${DiffView.markedHtml(l.text, marks.get(k))}</span>`;
       hunkEl.appendChild(row);
       // Threads anchored to this exact line render right under it.
       for (const a of fileAnns) {
@@ -15301,6 +16074,7 @@ async function restoreSidebarState() {
   if (open.teams && !state.teamsOpen) jobs.push(toggleTeams());
   if (open.settings) toggleSettings(true);
   filesPanel.showIgnored = !!savedSidebar.files?.showIgnored;
+  filesPanel.changedOnly = !!savedSidebar.files?.changedOnly;
   if (open.files) toggleFilesPanel(true);
   await Promise.all(jobs).catch(() => {});
   if (SidebarLayout.viewOf(savedSidebar.view)) sidebarView = savedSidebar.view;

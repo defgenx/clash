@@ -21,6 +21,8 @@
 
   /// Parse a unified diff into files → hunks → numbered lines.
   /// Line shape: { kind: "add"|"del"|"ctx", oldNo: number|null, newNo: number|null, text }.
+  /// A file also says whether it is new, deleted or binary (from git's
+  /// metadata lines, so a content-less file still has a status).
   /// Mirrors the Rust structural parser's semantics (git prefixes stripped,
   /// /dev/null → "", `rename from` tracked, metadata lines skipped).
   function parseUnifiedDiff(text) {
@@ -39,7 +41,7 @@
       if (line.startsWith("diff --git ")) {
         inHunk = false;
         hunk = null;
-        file = { oldPath: "", newPath: "", renamedFrom: null, hunks: [] };
+        file = { oldPath: "", newPath: "", renamedFrom: null, newFile: false, deletedFile: false, binary: false, hunks: [] };
         const rest = line.slice("diff --git ".length);
         const sp = rest.indexOf(" ");
         if (sp > 0) {
@@ -52,7 +54,7 @@
       if (!file) {
         // Headerless diff: synthesize a file on "---".
         if (line.startsWith("--- ")) {
-          file = { oldPath: "", newPath: "", renamedFrom: null, hunks: [] };
+          file = { oldPath: "", newPath: "", renamedFrom: null, newFile: false, deletedFile: false, binary: false, hunks: [] };
           files.push(file);
         } else {
           continue;
@@ -65,6 +67,18 @@
         }
         if (line.startsWith("rename to ")) {
           file.newPath = line.slice("rename to ".length);
+          continue;
+        }
+        if (line.startsWith("new file mode")) {
+          file.newFile = true;
+          continue;
+        }
+        if (line.startsWith("deleted file mode")) {
+          file.deletedFile = true;
+          continue;
+        }
+        if (line.startsWith("Binary files ")) {
+          file.binary = true;
           continue;
         }
         if (line.startsWith("--- ")) {

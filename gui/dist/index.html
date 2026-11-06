@@ -122,8 +122,10 @@
             <span id="files-root" class="files-root" title="">No folder</span>
             <span id="files-branch" class="files-branch hidden"></span>
             <span class="spacer"></span>
-            <button id="files-pin-btn" class="icon-btn mini" title="Pin this folder">📌</button>
-            <button id="files-ignored-btn" class="icon-btn mini" title="Show git-ignored files">◌</button>
+            <button id="files-changed-btn" class="icon-btn mini" title="Only changed files — click one to see what changed"></button>
+            <button id="files-diff-btn" class="icon-btn mini" title="Show changes — the diff viewer for this folder"></button>
+            <button id="files-pin-btn" class="icon-btn mini" title="Pin this folder"></button>
+            <button id="files-ignored-btn" class="icon-btn mini" title="Show git-ignored files"></button>
             <button id="files-pick-btn" class="icon-btn mini" title="Show another folder…"></button>
             <button id="files-collapse-btn" class="icon-btn mini" title="Collapse all folders"></button>
             <button id="files-refresh-btn" class="icon-btn mini" title="Refresh"></button>
@@ -536,6 +538,7 @@
   <script src="vendor/marked.js"></script>
   <script src="vendor/purify.js"></script>
   <script src="wf-diff.js"></script>
+  <script src="diff-view.js"></script>
   <script src="wf-compose.js"></script>
   <script src="wf-pipeline.js"></script>
   <script src="wf-review.js"></script>
