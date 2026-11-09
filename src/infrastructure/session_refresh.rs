@@ -559,7 +559,7 @@ fn collapse_registry_aliases(
     daemon_infos: &Option<Vec<SessionInfo>>,
     previous: &[Session],
 ) {
-    if sessions.len() < 2 || registry.is_empty() {
+    if registry.is_empty() {
         return;
     }
     let aliases = registry_alias_map(registry);
@@ -579,6 +579,16 @@ fn collapse_registry_aliases(
                 group_of.insert(key, groups.len());
                 keys.push(key);
                 groups.push(vec![i]);
+            }
+        }
+    }
+    // The entry's name is the one `registry::rename` writes. A row known by a
+    // lineage id (the live PTY after a `/clear`) carries the daemon's
+    // spawn-time name instead, and the survivor below keeps its own name.
+    for (g, group) in groups.iter().enumerate() {
+        if let Some(entry) = registry.get(keys[g]).filter(|e| !e.name.is_empty()) {
+            for &i in group {
+                sessions[i].name = Some(entry.name.clone());
             }
         }
     }
@@ -1570,6 +1580,37 @@ mod tests {
         // ...but the content of the conversation it is actually in.
         assert_eq!(sessions[0].summary, "work after the clear");
         assert!(sessions[0].is_running);
+    }
+
+    /// A rename writes the registry entry, which after a `/clear` no longer
+    /// answers to the live PTY's id except through its lineage — so the row
+    /// showed the daemon's spawn-time name and the rename never appeared.
+    #[test]
+    fn a_cleared_session_shows_the_name_it_was_renamed_to() {
+        for with_new_transcript in [true, false] {
+            let mut entry = make_registry_entry("new-conv", "renamed", "/home/user/proj");
+            entry.previous_ids = vec!["old-conv".to_string()];
+            let mut input = empty_input(&[]);
+            input.registry = HashMap::from([("new-conv".to_string(), entry)]);
+            input.disk_sessions = vec![make_disk_session("old-conv", "proj", "before")];
+            if with_new_transcript {
+                input
+                    .disk_sessions
+                    .push(make_disk_session("new-conv", "proj", "after"));
+            }
+            input.daemon_infos = Some(vec![make_daemon_info(
+                "old-conv",
+                "/home/user/proj",
+                "thinking",
+                true,
+            )]);
+            let sessions = build_session_list(&input);
+            let row = sessions
+                .iter()
+                .find(|s| s.id == "old-conv")
+                .expect("live row");
+            assert_eq!(row.name.as_deref(), Some("renamed"), "{sessions:?}");
+        }
     }
 
     /// Same cleared session, but the daemon did not answer this cycle. The

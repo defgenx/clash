@@ -10469,7 +10469,9 @@ async function wfSyncAgentLiveness() {
   for (const it of state.workflows) {
     const sid = wfSid(it, it.meta.sessionId);
     if (sid) refs.add(sid);
-    if (it.agentAlive && sid && !running.has(sid)) graced = true;
+    // agentAlive is only computed for working items; elsewhere it is a default.
+    const working = ["planning", "implementing", "reviewing"].includes(it.meta.status);
+    if (working && it.agentAlive && sid && !running.has(sid)) graced = true;
     for (const e of it.explainers || []) {
       const esid = wfSid(it, e.sessionId);
       refs.add(esid);
