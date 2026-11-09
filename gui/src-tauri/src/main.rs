@@ -3531,6 +3531,7 @@ async fn stash_and_wait(state: &GuiState) {
         tracing::info!("shutdown: sessions already stashed, skipping");
         return;
     }
+    SHUTDOWN_BEGAN.store(true, std::sync::atomic::Ordering::SeqCst);
     let ids: Vec<String> = {
         let mut control = state.control.lock().await;
         ensure_connected(&mut control).await;
@@ -3651,6 +3652,7 @@ fn main() {
             .with_max_level(tracing::Level::INFO)
             .init(),
     }
+    install_exit_diagnostics();
 
     // Launched from Finder/Dock the app gets launchd's minimal PATH —
     // without this, `claude` can't be found and session spawns fail.
@@ -3985,12 +3987,89 @@ fn main() {
             // a logout all terminate the app without a `CloseRequested`, and
             // the PTYs then die by SIGHUP when the daemon goes with the
             // process — mid-write, so the conversation comes back errored
-            // instead of resumable. `ExitRequested` is the one event every
-            // route passes through.
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                shutdown_app(app);
+            // instead of resumable. Two events cover every route: tauri's own
+            // exits raise `ExitRequested`, while AppKit's `terminate:` (Dock
+            // Quit, logout, an AppleScript or MDM quit) reaches tauri as `Exit`
+            // alone. The stash flag makes the second of the two a no-op.
+            match event {
+                tauri::RunEvent::ExitRequested { .. } => shutdown_app(app),
+                tauri::RunEvent::Exit
+                    if !SHUTDOWN_BEGAN.load(std::sync::atomic::Ordering::SeqCst) =>
+                {
+                    tracing::warn!("shutdown: system terminate without ExitRequested");
+                    shutdown_app(app);
+                }
+                _ => {}
             }
         });
+}
+
+/// Set when clash's own shutdown starts (`stash_and_wait` claiming its flag),
+/// so the exit diagnostics can tell a clean exit from one that bypassed it.
+static SHUTDOWN_BEGAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// clash.log's path, resolved once at startup for the atexit hook.
+static EXIT_LOG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The calling thread's name via pthreads. Unlike `std::thread::current()`
+/// it works inside an atexit hook, after the thread's TLS is destroyed
+/// (`current()` panics there, and a panic in an `extern "C"` fn aborts).
+fn os_thread_name() -> String {
+    let mut buf = [0 as libc::c_char; 64];
+    // SAFETY: the buffer outlives the call and its length is passed.
+    let rc = unsafe { libc::pthread_getname_np(libc::pthread_self(), buf.as_mut_ptr(), buf.len()) };
+    // SAFETY: on success pthread_getname_np wrote a NUL-terminated string.
+    let name = (rc == 0).then(|| unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) });
+    match name.map(|n| n.to_string_lossy().into_owned()) {
+        Some(n) if !n.is_empty() => n,
+        _ => "<unnamed>".into(),
+    }
+}
+
+/// A Finder/Dock launch has no stderr, so a panic or an `exit()` from
+/// anywhere but clash's shutdown otherwise leaves clash.log silent — which is
+/// exactly how an instance vanished with nothing to go on. Both now log the
+/// thread and a backtrace.
+fn install_exit_diagnostics() {
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!(
+            "panic on thread {}: {}\n{}",
+            os_thread_name(),
+            info,
+            std::backtrace::Backtrace::force_capture()
+        );
+        default_panic(info);
+    }));
+    let _ = EXIT_LOG.set(clash::infrastructure::logging::log_path());
+    // Writes the file directly: tracing's dispatch is thread-local state,
+    // which may already be gone this late in the exit.
+    extern "C" fn log_exit() {
+        use std::io::Write;
+        let msg = if SHUTDOWN_BEGAN.load(std::sync::atomic::Ordering::SeqCst) {
+            "INFO exit: process exiting\n".to_string()
+        } else {
+            format!(
+                "ERROR exit: exit() called on thread {} before clash's shutdown ran; \
+                 sessions were not stashed. Caller:\n{}\n",
+                os_thread_name(),
+                std::backtrace::Backtrace::force_capture()
+            )
+        };
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        if let Some(path) = EXIT_LOG.get() {
+            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
+                let _ = write!(f, "[unix {secs}] {msg}");
+            }
+        }
+    }
+    // SAFETY: registers a plain `extern "C"` fn with no captured state.
+    if unsafe { libc::atexit(log_exit) } != 0 {
+        tracing::warn!("exit diagnostics: atexit registration failed");
+    }
 }
 
 /// Stash every running session, then release the daemon. Idempotent: the
@@ -4022,7 +4101,36 @@ mod tests {
     /// `ExitRequested` that `restart()` triggers then ran a *second*
     /// quit-stash, on the main thread, which blocked on its first await: the
     /// event loop that was going to perform the restart never came back, and
-    /// the app could only be killed.
+    /// AppKit's `terminate:` (Dock Quit, logout, AppleScript/MDM quit) raises
+    /// `RunEvent::Exit` without `ExitRequested`; handling only the latter let
+    /// the app vanish with its sessions unstashed and clash.log silent.
+    #[test]
+    fn a_system_terminate_stashes_and_every_exit_is_logged() {
+        const SRC: &str = include_str!("main.rs");
+        let run = SRC
+            .split_once(".run(|app, event| {")
+            .expect("the run closure must exist")
+            .1;
+        let run = &run[..run.find("\n        });").unwrap_or(run.len())];
+        assert!(
+            run.contains("RunEvent::ExitRequested") && run.contains("RunEvent::Exit\n"),
+            "both exit events must reach shutdown_app"
+        );
+        let hook = SRC
+            .split_once("extern \"C\" fn log_exit() {")
+            .expect("the atexit hook must exist")
+            .1;
+        let hook = &hook[..hook.find("\n    }\n").unwrap_or(hook.len())];
+        assert!(
+            !hook.contains("thread::current") && !hook.contains("tracing::"),
+            "the atexit hook runs after TLS teardown: no thread::current(), no tracing"
+        );
+        assert!(
+            SRC.contains("libc::atexit(log_exit)"),
+            "the hook must be registered"
+        );
+    }
+
     #[test]
     fn the_quit_stash_runs_once_and_cannot_freeze_the_exit() {
         const SRC: &str = include_str!("main.rs");
