@@ -1380,7 +1380,8 @@ const pendingOpens = new Map();
 /// workspace its tab was moved to, else the one holding one of its agents.
 function wfHomeWs(project, slug) {
   const key = wfKey(project, slug);
-  const latest = wfItem(project, slug)?.meta?.sessionId;
+  const it = wfItem(project, slug);
+  const latest = it && wfSid(it, it.meta.sessionId);
   const ids = [
     `view:workflow:${key}`,
     ...(latest ? [latest] : []),
@@ -2082,6 +2083,7 @@ async function refreshSessions() {
     renderTabs();
     syncInbox();
     if (state.detailsFor) renderDetails();
+    wfSyncAgentLiveness();
 
     // Teams change on disk when Claude spawns/retires agents, and members go
     // live/idle as sessions come and go — keep the open section AND the open
@@ -10430,18 +10432,80 @@ async function endWfExplainer(item, root, target) {
 /// launch the session list has not caught up with yet.
 function wfLiveAgents(item) {
   const key = `${item.project}/${item.slug}`;
-  const ids = new Set((item.explainers || []).filter((e) => e.running).map((e) => e.sessionId));
+  const ids = new Set(
+    (item.explainers || []).filter((e) => e.running).map((e) => wfSid(item, e.sessionId))
+  );
   const working = ["planning", "implementing", "reviewing"].includes(item.meta.status);
-  if (working && item.agentAlive && item.meta.sessionId) ids.add(item.meta.sessionId);
+  if (working && item.agentAlive && item.meta.sessionId) ids.add(wfSid(item, item.meta.sessionId));
   for (const s of state.sessions)
     if (s.is_running && s.workflow_item === key) ids.add(s.id);
   return [...ids];
+}
+
+/// The id a session the item recorded is listed under now: a `/clear`, a
+/// resume fork or a restart re-keys the row, so the recorded id alone opens a
+/// second agent on the same conversation (`sessionRows`, backend-resolved).
+function wfSid(item, sid) {
+  return (sid && item.sessionRows && item.sessionRows[sid]) || sid;
+}
+
+/// What an item's agent affordances (■ Stop agent, ⚠ Relaunch) are drawn from.
+function wfAgentSig(item) {
+  return `${item.agentAlive}|${item.agentResumable}|${wfLiveAgents(item).sort().join(",")}`;
+}
+
+/// Agent liveness comes from the session list, but item views are rebuilt on
+/// file changes — and an agent that exits, is stashed or crashes writes no
+/// file. Re-derive it on each session tick: re-list the items when a running
+/// set they depend on moved (or one still rides its launch grace) and rebuild
+/// only the tabs whose agent state changed.
+let wfLivenessSig = null;
+let wfLivenessBusy = false;
+async function wfSyncAgentLiveness() {
+  if (wfLivenessBusy || !state.workflows.length) return;
+  const running = new Set(state.sessions.filter((s) => s.is_running).map((s) => s.id));
+  const refs = new Set();
+  let graced = false;
+  for (const it of state.workflows) {
+    const sid = wfSid(it, it.meta.sessionId);
+    if (sid) refs.add(sid);
+    if (it.agentAlive && sid && !running.has(sid)) graced = true;
+    for (const e of it.explainers || []) {
+      const esid = wfSid(it, e.sessionId);
+      refs.add(esid);
+      if (e.running && !running.has(esid)) graced = true;
+    }
+  }
+  const sig = state.sessions
+    .filter((s) => s.is_running && (s.workflow_item || refs.has(s.id)))
+    .map((s) => s.id)
+    .sort()
+    .join(",");
+  if (sig === wfLivenessSig && !graced) return;
+  wfLivenessSig = sig;
+  wfLivenessBusy = true;
+  try {
+    const before = new Map(state.workflows.map((it) => [wfKey(it.project, it.slug), wfAgentSig(it)]));
+    await refreshWorkflows();
+    for (const it of state.workflows) {
+      const key = wfKey(it.project, it.slug);
+      if (before.get(key) === wfAgentSig(it)) continue;
+      const entry = state.open.get(`view:workflow:${key}`);
+      if (!entry) continue;
+      if (entry.el.isConnected) rebuildViewTab(`view:workflow:${key}`, entry);
+      else entry.rebuildWhenShown = true;
+    }
+  } finally {
+    wfLivenessBusy = false;
+  }
 }
 
 /// Stop every running agent of `item`, each kept resumable. A stash, never a
 /// kill: a kill unregisters the session the item still records, and reopening
 /// it then has nothing to resume.
 async function wfStopAgents(item, root) {
+  // The button's `item` is the snapshot it was drawn from.
+  item = wfItem(item.project, item.slug) || item;
   const agents = wfLiveAgents(item);
   if (!agents.length) return;
   const one = agents.length === 1 && state.sessions.find((s) => s.id === agents[0]);
@@ -11225,7 +11289,7 @@ function renderWfActions(bar, root, item) {
       add(
         `◫ Explaining ${what}… · open`,
         "",
-        () => openSession(running.sessionId),
+        () => openSession(wfSid(item, running.sessionId)),
         `An agent is writing the ${what} explanation alongside this item's other work — open its session. The tab updates when it finishes.`,
         "step"
       );
@@ -11307,14 +11371,14 @@ function renderWfActions(bar, root, item) {
       const r = item.meta.review || {};
       const via = r.returnStatus ? wfStatusInfo(r.returnStatus).label : "where it started";
       if (item.agentResumable) {
-        add("▶ Resume reviewer", "primary", () => openSession(item.meta.sessionId),
+        add("▶ Resume reviewer", "primary", () => openSession(wfSid(item, item.meta.sessionId)),
           "The reviewer was stopped — resume its session where it left off", "step",
           "open-session");
       } else if (item.agentAlive === false) {
         add("⚠ End review round", "primary", () => cancelWfReview(item, root),
           "The reviewer session is gone — unlock the item", "step", "end-round");
       } else if (item.meta.sessionId) {
-        add("Open review session", "primary", () => openSession(item.meta.sessionId),
+        add("Open review session", "primary", () => openSession(wfSid(item, item.meta.sessionId)),
           `Review round ${r.round || 1} — ${r.depth || "standard"} ${r.target || ""}`.trim(), "step",
           "open-session");
       }
@@ -11329,7 +11393,7 @@ function renderWfActions(bar, root, item) {
         add(
           "▶ Resume agent",
           "primary",
-          () => openSession(item.meta.sessionId),
+          () => openSession(wfSid(item, item.meta.sessionId)),
           "The agent was stopped — resume its conversation where it left off",
           "step",
           "open-session"
@@ -11363,7 +11427,7 @@ function renderWfActions(bar, root, item) {
         add(
           "Open agent session",
           "primary",
-          () => openSession(item.meta.sessionId),
+          () => openSession(wfSid(item, item.meta.sessionId)),
           "Open the running agent's terminal — watch it work or answer its questions",
           "step",
           "open-session"
@@ -11891,7 +11955,10 @@ function wfRunStrip(item) {
   const running = batch.passes.find(
     (p) => p.sessionId && ["launching", "running"].includes(p.state)
   );
-  if (running) btn("Open session", "", "Open the running check's session", () => openSession(running.sessionId));
+  if (running)
+    btn("Open session", "", "Open the running check's session", () =>
+      openSession(wfSid(item, running.sessionId))
+    );
   if (sum.canStop) {
     btn("Skip next", "", `Skip ${sum.next.label.toLowerCase()} — the rest still run`, () =>
       control({ op: "skip", pass: sum.next.index })
@@ -12682,7 +12749,8 @@ function renderWfExplainPartPage(body, root, item, ts, which, target, tree, prev
       const open = document.createElement("button");
       open.className = "wf-part-action";
       open.textContent = "▸ Watch the explainer work";
-      open.onclick = () => openSession(run.sessionId, wfSessionName(item, `explain part ${part.id}`));
+      open.onclick = () =>
+        openSession(wfSid(item, run.sessionId), wfSessionName(item, `explain part ${part.id}`));
       section("Being explained").appendChild(open);
     }
   }

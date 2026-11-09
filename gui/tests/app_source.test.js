@@ -500,7 +500,7 @@ test("explain runs alongside other agents, gated only on its own artifact", () =
     APP.indexOf("// The item's PRs are one set")
   );
   assert.match(bar, /runningExplainer\(item, target\)/);
-  assert.match(bar, /openSession\(running\.sessionId\)/);
+  assert.match(bar, /openSession\(wfSid\(item, running\.sessionId\)\)/);
   assert.match(bar, /endWfExplainer\(item, root, target\)/);
   // Called once, outside the switch — not remembered per case.
   assert.equal((APP.match(/^\s*explainRunning\(\);$/gm) || []).length, 1);

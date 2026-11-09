@@ -56,17 +56,53 @@ pub(crate) async fn list_workflow_items(
     // forever: cross-reference against the last session list (the
     // `rebuild_all_members` liveness precedent).
     let live = live_session_ids(&state);
-    let listed: HashSet<String> = state
+    let rows: Vec<(String, bool)> = state
         .previous
         .lock()
         .unwrap()
         .iter()
-        .map(|s| s.id.clone())
+        .map(|s| (s.id.clone(), s.is_running))
         .collect();
+    // An item records the id its agent was launched under, but a `/clear`, a
+    // resume fork or a restart lists that session under another id. Compared
+    // raw, a running agent read as gone and opening it resumed a second one.
+    let registry = clash::infrastructure::hooks::registry::load();
+    let resolve = |sid: &str| {
+        let aliases = clash::infrastructure::hooks::registry::session_aliases(&registry, sid);
+        clash::application::workflow::listed_row(&aliases, &rows).cloned()
+    };
     let now = now_ms();
     for item in &mut items {
+        let recorded = item
+            .meta
+            .session_id
+            .iter()
+            .chain(item.explainers.iter().map(|e| &e.session_id))
+            .chain(
+                item.run
+                    .iter()
+                    .flat_map(|b| b.passes.iter().map(|p| &p.session_id)),
+            )
+            .filter(|sid| !sid.is_empty())
+            .cloned()
+            .collect::<HashSet<_>>();
+        for sid in recorded {
+            if let Some((row, _)) = resolve(&sid).filter(|(row, _)| *row != sid) {
+                item.session_rows.insert(sid, row);
+            }
+        }
+        let row_of = |sid: &str| {
+            item.session_rows
+                .get(sid)
+                .cloned()
+                .unwrap_or(sid.to_string())
+        };
         for e in &mut item.explainers {
-            e.running = explainer_running(e, &live, now);
+            let listed = clash::domain::workflow::ExplainerState {
+                session_id: row_of(&e.session_id),
+                ..e.clone()
+            };
+            e.running = explainer_running(&listed, &live, now);
         }
         let (stacking, stack) = item_stack(&state, &item.meta);
         item.pr_stacking = stacking;
@@ -84,21 +120,18 @@ pub(crate) async fn list_workflow_items(
             // The launch grace is load-bearing, not a nicety: see
             // `workflow::agent_alive`. A launch records its session id before
             // the process exists, so the list has not caught up yet.
+            let sid = item.meta.session_id.as_deref();
+            let row = sid.and_then(&resolve);
             item.agent_alive = clash::application::workflow::agent_alive(
-                item.meta.session_id.is_some(),
-                item.meta
-                    .session_id
-                    .as_ref()
-                    .is_some_and(|sid| live.contains(sid)),
-                item.meta.updated_at,
+                sid.is_some(),
+                row.as_ref().is_some_and(|(_, running)| *running),
+                clash::application::workflow::agent_launched_at(
+                    sid.unwrap_or_default(),
+                    item.meta.updated_at,
+                ),
                 now,
             );
-            item.agent_resumable = !item.agent_alive
-                && item
-                    .meta
-                    .session_id
-                    .as_ref()
-                    .is_some_and(|sid| listed.contains(sid));
+            item.agent_resumable = !item.agent_alive && row.is_some();
         }
     }
 

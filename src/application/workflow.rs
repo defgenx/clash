@@ -1017,11 +1017,38 @@ pub const AGENT_LAUNCH_GRACE_MS: i64 = 20_000;
 pub fn agent_alive(
     session_recorded: bool,
     listed_running: bool,
-    meta_updated_at: i64,
+    launched_at: i64,
     now_ms: i64,
 ) -> bool {
     session_recorded
-        && (listed_running || now_ms.saturating_sub(meta_updated_at) < AGENT_LAUNCH_GRACE_MS)
+        && (listed_running || now_ms.saturating_sub(launched_at) < AGENT_LAUNCH_GRACE_MS)
+}
+
+/// When the recorded agent was launched, for [`agent_alive`]'s grace: the
+/// timestamp of its UUIDv7 session id, else `fallback`. Never `meta.updated_at`
+/// alone — every meta write bumps it, which re-armed the grace on a dead agent.
+pub fn agent_launched_at(session_id: &str, fallback: i64) -> i64 {
+    uuid::Uuid::parse_str(session_id)
+        .ok()
+        .filter(|u| u.get_version_num() == 7)
+        .and_then(|u| u.get_timestamp())
+        .map(|t| {
+            let (secs, nanos) = t.to_unix();
+            (secs as i64) * 1000 + (nanos / 1_000_000) as i64
+        })
+        .unwrap_or(fallback)
+}
+
+/// The listed session row a recorded id belongs to now. `aliases` is every id
+/// its registry entry answers to (`registry::session_aliases`); `rows` is the
+/// session list as `(id, is_running)`. A running row wins over a stopped one.
+pub fn listed_row<'a>(
+    aliases: &[String],
+    rows: &'a [(String, bool)],
+) -> Option<&'a (String, bool)> {
+    rows.iter()
+        .filter(|(id, _)| aliases.contains(id))
+        .max_by_key(|(_, running)| *running)
 }
 
 /// Pure: the listing view of an item's recorded explainers. `running` is
@@ -1609,6 +1636,49 @@ mod tests {
         // A clock that moved backwards (a meta stamp from the future) must not
         // read as an expired grace.
         assert!(agent_alive(true, false, now + 60_000, now));
+    }
+
+    #[test]
+    fn a_recorded_session_is_found_under_the_id_it_is_listed_as_now() {
+        // After a resume fork the row is listed under the new conversation id,
+        // not the clash id the item recorded at launch.
+        let aliases = vec!["clash-id".to_string(), "conv-2".to_string()];
+        let rows = vec![("other".to_string(), true), ("conv-2".to_string(), true)];
+        assert_eq!(
+            listed_row(&aliases, &rows).map(|r| r.0.as_str()),
+            Some("conv-2")
+        );
+        // A running row wins over a stale stopped one of the same entry.
+        let rows = vec![
+            ("clash-id".to_string(), false),
+            ("conv-2".to_string(), true),
+        ];
+        assert_eq!(
+            listed_row(&aliases, &rows),
+            Some(&("conv-2".to_string(), true))
+        );
+        assert_eq!(listed_row(&aliases, &[("other".to_string(), true)]), None);
+    }
+
+    #[test]
+    fn the_launch_grace_runs_from_the_session_id_not_the_last_meta_write() {
+        // A v7 id carries its launch time; an unrelated meta write a second ago
+        // (PR refresh, settings save) must not make an hour-old dead agent
+        // read alive.
+        let id = uuid::Uuid::now_v7().to_string();
+        let launched = agent_launched_at(&id, 0);
+        let now = launched + 3_600_000;
+        assert!(launched > 0);
+        assert!(!agent_alive(
+            true,
+            false,
+            agent_launched_at(&id, now - 1_000),
+            now
+        ));
+        // An id with no timestamp falls back to what the caller has.
+        let v4 = "9b2c7d1e-4f3a-4b6c-8d9e-0a1b2c3d4e5f";
+        assert_eq!(agent_launched_at(v4, 42), 42);
+        assert_eq!(agent_launched_at("not-a-uuid", 42), 42);
     }
 
     #[test]

@@ -1586,6 +1586,11 @@ pub struct WorkflowItem {
     /// resumes its conversation instead of a relaunch starting over.
     #[serde(default)]
     pub agent_resumable: bool,
+    /// Recorded session id (agent, explainers, check-run passes) → the id its
+    /// session is listed under now, for each one that moved: a `/clear`, a
+    /// resume fork or a restart re-keys the row. Computed by the GUI layer.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub session_rows: std::collections::BTreeMap<String, String>,
     /// Latest *judging* round parsed from `agent-review.md`, when one exists
     /// — explanation rounds are skipped, since they land whenever they finish.
     #[serde(default, skip_serializing_if = "Option::is_none")]

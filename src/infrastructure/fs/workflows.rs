@@ -229,6 +229,7 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         history_iterations,
         agent_alive: true, // cross-checked against live sessions by the GUI layer
         agent_resumable: false,
+        session_rows: Default::default(),
         last_agent_review,
         review_rounds,
         explainers: explainer_states,
