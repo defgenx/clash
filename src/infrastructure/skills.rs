@@ -754,6 +754,28 @@ mod tests {
     }
 
     #[test]
+    fn the_executor_knows_every_stacking_clause() {
+        // `build_agent_prompt` states stacking in three shapes and says
+        // nothing when it is off; the executor opens the PRs, so it must
+        // read all four — an unread "off" is how PRs end up stacked anyway.
+        let exec = SKILLS
+            .iter()
+            .find(|s| s.name == "clash-workflow")
+            .expect("executor");
+        for clause in [
+            "**Absent — stacking is off.**",
+            "**`Stacking: on.`**",
+            "**`Stacking: on (base: <branch>).`**",
+            "**`Stacking: on (unclear: <reason>).`**",
+        ] {
+            assert!(
+                exec.content.contains(clause),
+                "clash-workflow misses {clause}"
+            );
+        }
+    }
+
+    #[test]
     fn skill_names_are_unique_and_never_retired() {
         // Two entries with the same name would silently install over each
         // other; a name both shipped and retired would install then delete

@@ -1287,6 +1287,21 @@ pub struct ExecutorKickoff<'a> {
     pub delegation: Delegation<'a>,
     /// `WorkDir::kickoff_field` — `None` means the item's worktree.
     pub workspace: Option<&'a str>,
+    /// PR stacking for this item (`pr_stack::stacking_enabled`); `None` is
+    /// off, and states nothing.
+    pub stacking: Option<StackingClause<'a>>,
+}
+
+/// What the executor is told about PR stacking (`Stacking:`), from
+/// `pr_stack::item_stack_base`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StackingClause<'a> {
+    /// On, and nothing below this item yet: it is the bottom layer.
+    Bottom,
+    /// On: the item's PR targets this branch, its parent layer's head.
+    Base(&'a str),
+    /// On, but the parent cannot be determined; the reason, verbatim.
+    Unclear(&'a str),
 }
 
 /// Build the initial prompt for a workflow agent session. The skill owns the
@@ -1309,6 +1324,16 @@ pub fn build_agent_prompt(item_dir: &str, kickoff: &ExecutorKickoff) -> String {
     prompt.push_str(&kickoff.delegation.clause());
     if let Some(w) = kickoff.workspace {
         prompt.push_str(&format!(" Workspace: {}.", w));
+    }
+    match kickoff.stacking {
+        Some(StackingClause::Base(base)) => {
+            prompt.push_str(&format!(" Stacking: on (base: {}).", base))
+        }
+        Some(StackingClause::Bottom) => prompt.push_str(" Stacking: on."),
+        Some(StackingClause::Unclear(why)) => {
+            prompt.push_str(&format!(" Stacking: on (unclear: {}).", why))
+        }
+        None => {}
     }
     if let Some(s) = kickoff.pr_skill.map(str::trim).filter(|s| !s.is_empty()) {
         prompt.push_str(&format!(" PR skill: {}.", s));
@@ -3161,6 +3186,27 @@ Tighten the API.\n\n\
             },
         );
         assert!(p.ends_with("PR skill: hivebrite-engineering:github-pr."));
+    }
+
+    #[test]
+    fn prompt_states_stacking_only_when_it_is_on() {
+        let p = build_agent_prompt("/x/i", &kickoff("pr", WorkflowMode::Full));
+        assert!(!p.contains("Stacking:"), "absent means off: {p}");
+        let on = |stacking| {
+            build_agent_prompt(
+                "/x/i",
+                &ExecutorKickoff {
+                    stacking,
+                    pr_skill: Some("org:pr"),
+                    ..kickoff("pr", WorkflowMode::Full)
+                },
+            )
+        };
+        assert!(on(Some(StackingClause::Bottom)).contains(" Stacking: on. PR skill: org:pr."));
+        assert!(on(Some(StackingClause::Base("feat/parent")))
+            .contains(" Stacking: on (base: feat/parent)."));
+        assert!(on(Some(StackingClause::Unclear("two parents")))
+            .contains(" Stacking: on (unclear: two parents)."));
     }
 
     #[test]

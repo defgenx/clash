@@ -262,10 +262,8 @@ pub(crate) async fn workflow_diff_text(
     };
     // A stacked PR's own change starts at its parent layer's head; measured
     // from the trunk it would include every layer below it.
-    let stacked_base = match (&meta.pr, item_stack(state, &meta).1) {
-        (Some(pr), Ok(Some(stack))) => {
-            clash::application::pr_stack::stack_parent_head(&stack, &pr.url).map(str::to_string)
-        }
+    let stacked_base = match item_stack_base_for(state, &meta).await {
+        Some(Ok(Some(b))) => Some(b.branch),
         _ => None,
     };
     let base = if !meta.base.trim().is_empty() {
@@ -1725,6 +1723,12 @@ pub(crate) async fn start_workflow_agent(
     );
     let interactive = interactive
         .or_else(|| clash::application::workflow::interaction_param(&meta.interaction_default));
+    // Only the phases that open PRs need to know where the item's PR goes.
+    let stack_base = if matches!(phase.as_str(), "implement" | "pr") {
+        item_stack_base_for(&state, &meta).await
+    } else {
+        None
+    };
     crate::launch_stage(&app, &key, "spawn", None);
     let spawned = spawn_item_session(
         &state,
@@ -1752,6 +1756,14 @@ pub(crate) async fn start_workflow_agent(
                         clash::domain::entities::AgentKind::parse(&meta.agent),
                     ),
                     workspace: work_dir.kickoff_field(),
+                    stacking: stack_base.as_ref().map(|b| {
+                        use clash::application::workflow::StackingClause;
+                        match b {
+                            Ok(Some(base)) => StackingClause::Base(&base.branch),
+                            Ok(None) => StackingClause::Bottom,
+                            Err(why) => StackingClause::Unclear(why),
+                        }
+                    }),
                 },
             ) + &state.config.get().ticket_links_clause()
         },
@@ -2885,6 +2897,56 @@ fn item_stack(
     )
 }
 
+/// What the item's own change builds on when stacking is on for it
+/// (`pr_stack::item_stack_base`): `None` when stacking is off, else the
+/// parent layer's head (`Ok(None)` for a bottom layer) or why it is unclear.
+/// The item's repository is its primary PR's, else its `origin` remote's.
+async fn item_stack_base_for(
+    state: &GuiState,
+    meta: &clash::domain::workflow::WorkflowMeta,
+) -> Option<Result<Option<clash::application::pr_stack::StackBase>, String>> {
+    use clash::application::pr_stack;
+    let global = state.config.get().workflows.pr_stacking;
+    let wanted = match meta.pr_stacking.as_str() {
+        "on" => true,
+        "off" => false,
+        _ => global,
+    };
+    let dir = pr_dir(meta).ok()?;
+    if !wanted
+        || !pr_stack::stacking_enabled(&meta.pr_stacking, global, state.forge_for_dir(&dir).kind())
+    {
+        return None;
+    }
+    let repo_of = |url: &str| {
+        clash::infrastructure::gh::parse_pr_url(url)
+            .map(|(repo, _)| repo)
+            .unwrap_or_default()
+    };
+    let inputs = pr_stack::stack_inputs(meta, repo_of);
+    let primary = meta
+        .pr
+        .as_ref()
+        .map(|p| p.url.as_str())
+        .filter(|u| !u.is_empty());
+    let item_repo = match primary {
+        Some(url) => repo_of(url),
+        None => tokio::process::Command::new("git")
+            .args(["remote", "get-url", "origin"])
+            .current_dir(&dir)
+            .output()
+            .await
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| pr_stack::remote_repo(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_default(),
+    };
+    Some(
+        pr_stack::item_stack_base(&inputs, primary, &item_repo, &meta.branch)
+            .map_err(|e| e.to_string()),
+    )
+}
+
 /// Create a draft PR for the item's branch via `gh pr create --draft`,
 /// record it in meta, and move the item to `pr-draft`.
 #[tauri::command]
@@ -2900,10 +2962,16 @@ pub(crate) async fn workflow_create_pr(
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
     let dir = pr_dir(&meta)?;
-    let base = if meta.base.trim().is_empty() {
-        crate::origin_default_branch(&dir).await
-    } else {
+    // An explicit diff base wins; with stacking on, a new layer goes on top
+    // of its parent, and a parent nobody can name is asked for, not guessed.
+    let base = if !meta.base.trim().is_empty() {
         meta.base.clone()
+    } else {
+        match item_stack_base_for(&state, &meta).await {
+            Some(Ok(Some(b))) => b.branch,
+            Some(Err(why)) => return Err(format!("stack-unclear: {why}")),
+            _ => crate::origin_default_branch(&dir).await,
+        }
     };
     let pr_title = title
         .filter(|t| !t.trim().is_empty())

@@ -1250,9 +1250,18 @@ When a stack exists:
   (`prStackUrls`); *Answer PR comments* pre-ticks the stack plus any PR with
   threads waiting; self-review already ticks every open PR. Mark-ready, post
   and open keep their own rules — readying a whole stack is a release.
-- **The item's own diff** is taken from the primary's parent head when
-  `meta.base` is empty (`stack_parent_head`); from the trunk it would contain
-  every layer below.
+- **The item's own diff** is taken from its parent layer's head when
+  `meta.base` is empty (`item_stack_base`); from the trunk it would contain
+  every layer below. Without a PR of its own yet the item is the *next*
+  layer: its parent is the tip of the stack its linked PRs in the same
+  repository form, or the only such PR.
+- **Opening PRs.** *Create draft PR* targets `meta.base`, else that parent's
+  head; when several linked PRs could be the parent it asks for the branch and
+  saves it as the diff base instead of guessing (`stack-unclear:`). The
+  executor's `implement` and `pr` kickoffs state the same answer as
+  `Stacking: on.` (bottom layer), `Stacking: on (base: <branch>).` or
+  `Stacking: on (unclear: <reason>).` — and say nothing when stacking is off,
+  which the skill reads as "never base a PR on another PR's branch".
 - **Kickoff.** Every review round records `meta.review.stack` and states it as
   `Stack: <url1> > <url2> > <url3>` (base → tip). It is context, not scope:
   `PR:` still says which PRs the round was pointed at. `clash-code-review`
@@ -1264,9 +1273,8 @@ When a stack exists:
   standalone, `clash-pr-review` finds the stack itself with `gh pr list
   --head/--base`, bounded to 10 layers and stopping at a fork.
 
-A draft PR clash creates targets `meta.base`: to open a new PR on top of its
-parent, set the item's diff base (⚙ Settings → Diff base) to the parent's
-branch.
+An explicit diff base (⚙ Settings → Diff base) always wins over the stack's
+answer.
 
 ### Sharing, export and webhook notifications (clash-side, informative)
 

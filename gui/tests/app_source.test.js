@@ -175,6 +175,12 @@ test("PR-identity errors recover in place instead of dead-ending", () => {
   // Mark ready, Post round to PR, and a check run's failed pass.
   const uses = APP.match(/await wfPrRecovery\(/g) || [];
   assert.ok(uses.length >= 3, `expected ≥3 wfPrRecovery call sites, got ${uses.length}`);
+  // A stacked PR whose parent is unclear asks for the branch, saves it as
+  // the diff base and retries the creation.
+  const stack = extractFunction(APP, "wfStackRecovery");
+  assert.match(stack, /msg\.startsWith\("stack-unclear:"\)/);
+  assert.match(stack, /set_workflow_item_settings", \{ project: item\.project, slug: item\.slug, base:/);
+  assert.match(APP, /if \(await wfStackRecovery\(item, e, createNow\)\) return;/);
   // A run's no-pr failure offers the local downgrade, not just attach.
   assert.match(extractFunction(APP, "wfRunRecover"), /Run it locally instead/);
   assert.match(extractFunction(APP, "wfRunRecover"), /op: "local", pass: i/);

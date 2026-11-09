@@ -8811,6 +8811,26 @@ async function wfPrRecovery(item, err, retry) {
   return true;
 }
 
+/// A new PR whose parent layer cannot be told (`stack-unclear:` — stacking is
+/// on and several linked PRs could be it): ask which branch it builds on,
+/// save that as the item's diff base, and retry. True when handled.
+async function wfStackRecovery(item, err, retry) {
+  const msg = String(err);
+  if (!msg.startsWith("stack-unclear:")) return false;
+  const branch = await uiPrompt(
+    `PR stacking is on, but ${msg.slice("stack-unclear:".length).trim()}\n\nWhich branch does this item's PR build on? It is saved as the item's diff base (⚙ Settings).`
+  );
+  if (!branch || !branch.trim()) return true;
+  try {
+    await invoke("set_workflow_item_settings", { project: item.project, slug: item.slug, base: branch.trim() });
+    await refreshWorkflows();
+    if (retry) await retry(wfItem(item.project, item.slug) || item);
+  } catch (e) {
+    uiAlert(wfGhHint(e) || `${e}`);
+  }
+  return true;
+}
+
 /// Launch one explanation round alongside whatever the item is doing, so its
 /// session is registered, named and opened like every other round's. Every
 /// *judging* round goes through a check run instead (`wfStartRun`).
@@ -11398,17 +11418,21 @@ function renderWfActions(bar, root, item) {
             await launchWfAgent(item, "pr", root);
             return;
           }
-          try {
+          const createNow = async (it) => {
             await invoke("workflow_create_pr", {
-              project: item.project,
-              slug: item.slug,
+              project: it.project,
+              slug: it.slug,
               title: null,
               body: null,
             });
             flashToast("Draft PR created");
             await refreshWorkflows();
-            buildWorkflowView(root, item.project, item.slug);
+            buildWorkflowView(root, it.project, it.slug);
+          };
+          try {
+            await createNow(item);
           } catch (e) {
+            if (await wfStackRecovery(item, e, createNow)) return;
             uiAlert(wfGhHint(e) || `Create PR failed: ${e}`);
           }
         }, "Open a draft PR for this branch — from the plan (free, instant) or written by the workflow agent (reads the real diff, spends tokens); you pick next",

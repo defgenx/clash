@@ -24,6 +24,9 @@ The kickoff prompt gives you:
   a missing value means `full`)
 - **PR skill** — optional; the skill to open pull requests with (see the PR
   steps below)
+- **Stacking** — optional, only in `implement` and `pr` phases; whether this
+  item's PRs form a GitHub stack, and what its PR builds on. See "PR stacking"
+  below — it decides every PR's `--base`.
 - **Interactive** — optional; see the opening question below
 - **Delegation** — `team` (also what an absent field means) or `solo`,
   optionally naming the subagent model: `team (subagents on <model>)`. See
@@ -165,6 +168,34 @@ findings into `agent-review.md` and `annotations.json` and never touch
     a fix round that only commits locally leaves the PR silently stale.
     Never force-push, never rewrite published history; if the push is
     rejected, stop and report it instead of forcing.
+
+## PR stacking — every PR's `--base`
+
+The `Stacking` field is the human's setting (Settings → Workflows → PR
+stacking, overridden per item), stated for you. It is a rule, not a hint:
+
+- **Absent — stacking is off.** Every PR you open targets `meta.json.base`
+  when set, else the repository's default branch. Never pass `--base` naming
+  another PR's branch, and never split the work into PRs that build on each
+  other. If the human asks for a stack in-session, tell them to turn PR
+  stacking on for the item (⚙ Settings) instead of building one.
+- **`Stacking: on.`** — this item is the stack's bottom layer: its PR targets
+  `meta.json.base` when set, else the default branch.
+- **`Stacking: on (base: <branch>).`** — this item is a layer on top of
+  `<branch>` (its parent PR's head): its PR targets `meta.json.base` when set,
+  else `<branch>` — `gh pr create --base <branch>`, and tell a PR skill the
+  same base. Its diff is `git diff <branch>...HEAD`: only this layer.
+- **`Stacking: on (unclear: <reason>).`** — clash cannot tell which PR this
+  item builds on. Open **no** PR: say why in `handoff.md` and your final
+  message (the human sets the item's diff base, then reruns), and finish at
+  `diff-review`.
+
+With stacking on you may split a large change into several PRs in this
+repository **only when the plan says so**. Chain them: each PR's `--base` is
+the previous one's head branch, the first one's is the base above, one PR on
+each parent (two children of one PR is a fork, which clash reports instead of
+ordering). This item's own branch is the tip and its PR is `pr.url`; append
+every lower layer to `linkedPrs`.
 
 ## Hand-off note — `handoff.md`, every phase
 
@@ -405,7 +436,8 @@ describes something else — the human amends it by taking the item back to
    draft PR. When the kickoff prompt names a **PR skill**, invoke that skill to
    open it (it encodes the org's house style; if it is not available in this
    session, fall back to the `gh` path below and say so); otherwise
-   `gh pr create --draft --title "<item title>" --body "<summary>"`. Either
+   `gh pr create --draft --title "<item title>" --body "<summary>"`, with the
+   `--base` "PR stacking" above gives. Either
    way, read-modify-write `meta.json` setting `pr.url` to the created URL
    (clash fills number/state on its next refresh). Otherwise **skip this**: a
    PR is not required to finish, the human approves the diff either way, and an
@@ -426,7 +458,8 @@ here". If you find something wrong, say so in your final message and leave it �
 the human decides whether that becomes a new round.
 
 1. Read the actual diff against the base branch (`git diff <base>...HEAD`, base
-   from `meta.json.base`, else the repo's default branch) and the commit
+   from `meta.json.base`, else the stack base the `Stacking` field names, else
+   the repo's default branch — see "PR stacking") and the commit
    messages. Read `plan.md` and `review.md` for intent, but describe what the
    diff *does*, not what the plan promised.
 2. **When the kickoff prompt names a PR skill, use it.** Invoke that skill to
@@ -446,8 +479,8 @@ the human decides whether that becomes a new round.
    gets a short body. In interactive runs, show the title and body before
    creating anything.
 4. Push the branch if it is not on the remote, then
-   `gh pr create --draft --title "<title>" --body "<body>"` (add `--base` when
-   `meta.json.base` is set).
+   `gh pr create --draft --title "<title>" --body "<body>"` with the `--base`
+   "PR stacking" gives (`meta.json.base`, else the stack base, else none).
 5. Write `handoff.md` (see "Hand-off note"), then read-modify-write
    `meta.json`: set `pr.url` to the created URL and `status = "pr-draft"`. Leave `iteration` and `reviewRound` alone — those are
    clash's.

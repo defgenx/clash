@@ -21,6 +21,9 @@ pub struct StackPr {
     pub base: String,
     /// Closed without merging: abandoned, so never a layer.
     pub closed: bool,
+    /// Merged: still a layer until GitHub retargets its child, but nothing
+    /// new is built on it.
+    pub merged: bool,
 }
 
 /// Why an item's PRs do not order into one stack.
@@ -45,6 +48,10 @@ pub enum StackError {
     /// the other: a layer between them is missing from the item.
     #[error("{} start from different branches and none builds on another — a layer between them is not linked to this item", .roots.iter().map(|(u, b)| format!("{} → `{}`", label(u), b)).collect::<Vec<_>>().join(", "))]
     Gap { roots: Vec<(String, String)> },
+    /// A new layer could go on top of any of these PRs: none builds on
+    /// another, so which one is this item's parent is the human's call.
+    #[error("{} could each be the PR this item builds on — link only its parent, or set the item's diff base", labels(.urls))]
+    Ambiguous { urls: Vec<String> },
 }
 
 /// `repo#42` from a PR URL; the URL itself when it is not one.
@@ -87,6 +94,7 @@ pub fn stack_inputs(meta: &WorkflowMeta, repo_of: impl Fn(&str) -> String) -> Ve
             head: p.head_ref.clone(),
             base: p.base_ref.clone(),
             closed: p.state == "CLOSED",
+            merged: p.state == "MERGED",
         })
         .collect()
 }
@@ -213,12 +221,84 @@ pub fn order_stack(prs: &[StackPr]) -> Result<Option<PrStack>, StackError> {
     }
 }
 
-/// Pure: the branch a stacked PR's own change is measured from — its parent
-/// layer's head. `None` for the bottom layer and for a PR outside the stack,
-/// whose diff base is whatever it was without stacking.
-pub fn stack_parent_head<'a>(stack: &'a PrStack, url: &str) -> Option<&'a str> {
-    let i = stack.layers.iter().position(|l| l.url == url)?;
-    (i > 0).then(|| stack.layers[i - 1].head_ref.as_str())
+/// What an item's own change builds on when its PRs are stacked: the parent
+/// layer's head branch and that PR's URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackBase {
+    pub branch: String,
+    pub parent: String,
+}
+
+/// Pure: where this item's change sits in its stack — what its diff is
+/// measured from and what a new PR for it targets.
+///
+/// With a PR (`primary`), it is that PR's parent layer (none for the bottom
+/// layer). Without one, the item is the next layer: it goes on the tip of the
+/// stack its open PRs in `item_repo` form — or on the only such PR — and
+/// several PRs none of which builds on another is [`StackError::Ambiguous`],
+/// never a guess. `item_branch` is left out: it is this item's own head.
+pub fn item_stack_base(
+    prs: &[StackPr],
+    primary: Option<&str>,
+    item_repo: &str,
+    item_branch: &str,
+) -> Result<Option<StackBase>, StackError> {
+    if let Some(url) = primary.filter(|u| prs.iter().any(|p| p.url == *u)) {
+        let Some(stack) = order_stack(prs)? else {
+            return Ok(None);
+        };
+        let Some(i) = stack.layers.iter().position(|l| l.url == url) else {
+            return Ok(None);
+        };
+        return Ok((i > 0).then(|| StackBase {
+            branch: stack.layers[i - 1].head_ref.clone(),
+            parent: stack.layers[i - 1].url.clone(),
+        }));
+    }
+    let candidates: Vec<StackPr> = prs
+        .iter()
+        .filter(|p| {
+            !p.closed
+                && !p.merged
+                && p.repo == item_repo
+                && !p.head.trim().is_empty()
+                && !p.base.trim().is_empty()
+                && p.head != item_branch
+        })
+        .cloned()
+        .collect();
+    match (order_stack(&candidates)?, candidates.as_slice()) {
+        (Some(stack), _) => {
+            let tip = stack.layers.last().expect("a stack has layers");
+            Ok(Some(StackBase {
+                branch: tip.head_ref.clone(),
+                parent: tip.url.clone(),
+            }))
+        }
+        (None, []) => Ok(None),
+        (None, [one]) => Ok(Some(StackBase {
+            branch: one.head.clone(),
+            parent: one.url.clone(),
+        })),
+        (None, many) => Err(StackError::Ambiguous {
+            urls: many.iter().map(|p| p.url.clone()).collect(),
+        }),
+    }
+}
+
+/// Pure: `owner/repo` of a git remote URL on any host (scp-like, `https://`,
+/// `ssh://`), the same identity PR URLs carry — GitHub Enterprise included.
+pub fn remote_repo(remote: &str) -> Option<String> {
+    let raw = remote.trim().trim_end_matches('/');
+    let raw = raw.strip_suffix(".git").unwrap_or(raw);
+    let rest = raw.split_once("://").map(|(_, r)| r).unwrap_or(raw);
+    let rest = rest.split_once('@').map(|(_, r)| r).unwrap_or(rest);
+    let (_host, path) = rest.split_once([':', '/'])?;
+    let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+    match parts.as_slice() {
+        [.., owner, name] => Some(format!("{owner}/{name}")),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -238,6 +318,7 @@ mod tests {
             head: head.to_string(),
             base: base.to_string(),
             closed: false,
+            merged: false,
         }
     }
 
@@ -254,8 +335,17 @@ mod tests {
         let stack = order_stack(&prs).unwrap().unwrap();
         assert_eq!(urls(&stack), vec![1, 2, 3]);
         assert_eq!(stack.layers[1].base_ref, "a");
-        assert_eq!(stack_parent_head(&stack, &prs[0].url), Some("b"));
-        assert_eq!(stack_parent_head(&stack, &prs[1].url), None);
+        assert_eq!(
+            item_stack_base(&prs, Some(&prs[0].url), API, "c")
+                .unwrap()
+                .unwrap()
+                .branch,
+            "b"
+        );
+        assert_eq!(
+            item_stack_base(&prs, Some(&prs[1].url), API, "a").unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -408,5 +498,79 @@ mod tests {
         assert!(inputs[2].closed);
         let stack = order_stack(&inputs).unwrap().unwrap();
         assert_eq!(urls(&stack), vec![1, 2]);
+    }
+
+    #[test]
+    fn a_new_layer_goes_on_the_tip_of_its_linked_stack() {
+        // No PR of its own yet: the tip of the chain its linked PRs form.
+        let prs = [pr(1, "main", "a"), pr(2, "a", "b")];
+        assert_eq!(
+            item_stack_base(&prs, None, API, "mine").unwrap(),
+            Some(StackBase {
+                branch: "b".into(),
+                parent: prs[1].url.clone()
+            })
+        );
+        // One linked PR is a stack of one: build on it.
+        let one = [pr(1, "main", "a")];
+        assert_eq!(
+            item_stack_base(&one, None, API, "mine")
+                .unwrap()
+                .unwrap()
+                .branch,
+            "a"
+        );
+        // Other repositories, merged, closed and our own branch never count.
+        let mut merged = pr(3, "main", "m");
+        merged.merged = true;
+        let mut closed = pr(4, "main", "c");
+        closed.closed = true;
+        let skip = [
+            pr_in("acme/web", 5, "main", "w"),
+            merged,
+            closed,
+            pr(6, "main", "mine"),
+        ];
+        assert_eq!(item_stack_base(&skip, None, API, "mine").unwrap(), None);
+        // Two PRs, neither on the other: which is the parent is not ours to guess.
+        let two = [pr(1, "main", "a"), pr(2, "main", "b")];
+        assert!(matches!(
+            item_stack_base(&two, None, API, "mine"),
+            Err(StackError::Ambiguous { urls }) if urls.len() == 2
+        ));
+    }
+
+    #[test]
+    fn with_its_own_pr_the_item_builds_on_its_parent_layer() {
+        let prs = [pr(1, "main", "a"), pr(2, "a", "b"), pr(3, "b", "c")];
+        let base = item_stack_base(&prs, Some(&prs[2].url), API, "c")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (base.branch.as_str(), base.parent.as_str()),
+            ("b", prs[1].url.as_str())
+        );
+        assert_eq!(
+            item_stack_base(&prs, Some(&prs[0].url), API, "a").unwrap(),
+            None,
+            "the bottom layer"
+        );
+        let lone = [pr(1, "main", "a")];
+        assert_eq!(
+            item_stack_base(&lone, Some(&lone[0].url), API, "a").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn remote_repo_reads_any_host() {
+        let want = Some("acme/api".to_string());
+        assert_eq!(remote_repo("git@github.com:acme/api.git"), want);
+        assert_eq!(remote_repo("https://ghe.corp.example/acme/api"), want);
+        assert_eq!(
+            remote_repo("ssh://git@ghe.corp.example:22/acme/api.git"),
+            want
+        );
+        assert_eq!(remote_repo("nonsense"), None);
     }
 }
