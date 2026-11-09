@@ -21,6 +21,7 @@ use clash::infrastructure::fs::backend::{encode_project_dir, FsBackend};
 use clash::infrastructure::session_refresh;
 use tauri::{Emitter, Manager, State};
 
+mod pty_outbox;
 mod workflows;
 
 /// Shared backend state for all Tauri commands.
@@ -103,6 +104,8 @@ struct GuiState {
     /// per instance, like the TUI's: the queue belongs to the same process as
     /// the daemon holding the PTY it will be written to.
     prompt_queue: Mutex<clash::application::prompt_queue::PromptQueue>,
+    /// Terminal output and exits waiting for the frontend's `pty_drain`.
+    pty_outbox: std::sync::Arc<pty_outbox::PtyOutbox>,
     /// Workflow items (`<project>/<slug>`) with an agent launch in flight.
     ///
     /// A first launch creates the item's worktree, which is a full checkout —
@@ -167,20 +170,6 @@ impl GuiState {
 /// grace + 5s daemon reaper + a wild-scan tick ≈ 12s. At the frontend's
 /// 2s poll cadence, 10 cycles ≈ 20s.
 const RECENTLY_REMOVED_TTL: u8 = 10;
-
-/// Payload for `pty-output` events pushed to the webview.
-#[derive(Clone, serde::Serialize)]
-struct PtyOutput {
-    session_id: String,
-    /// Base64-encoded raw terminal bytes (as received from the daemon).
-    data: String,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct PtyExited {
-    session_id: String,
-    exit_code: Option<i32>,
-}
 
 /// Fire a native desktop notification. Uses platform tools that work from a
 /// bare (unbundled) binary: `osascript` on macOS, `notify-send` on Linux.
@@ -562,15 +551,17 @@ async fn open_session(
         .take_stream_rx()
         .ok_or_else(|| "No stream channel from daemon".to_string())?;
     let sid = session_id.clone();
+    // Not an event per chunk: see `pty_outbox` for what that cost.
+    let outbox = state.pty_outbox.clone();
     tokio::spawn(async move {
         while let Some(event) = stream_rx.recv().await {
             match event {
                 Event::Output { session_id, data } => {
-                    // cmux-style in-band notifications: OSC 9 / OSC 777
-                    // escape sequences in the output trigger desktop alerts.
                     if let Ok(bytes) =
                         base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &data)
                     {
+                        // cmux-style in-band notifications: OSC 9 / OSC 777
+                        // escape sequences in the output trigger desktop alerts.
                         if let Some((title, body)) = parse_osc_notification(&bytes) {
                             native_notify(&title, &body);
                             let _ = app.emit(
@@ -581,20 +572,14 @@ async fn open_session(
                                 },
                             );
                         }
+                        outbox.push_output(&session_id, &bytes);
                     }
-                    let _ = app.emit("pty-output", PtyOutput { session_id, data });
                 }
                 Event::Exited {
                     session_id,
                     exit_code,
                 } => {
-                    let _ = app.emit(
-                        "pty-exited",
-                        PtyExited {
-                            session_id,
-                            exit_code,
-                        },
-                    );
+                    outbox.push_exited(&session_id, exit_code);
                     break;
                 }
                 _ => {}
@@ -605,6 +590,16 @@ async fn open_session(
 
     attached.insert(session_id, client);
     Ok(())
+}
+
+/// Terminal output and exits since the last call, in order; waits up to 20s
+/// for the first item. The frontend calls it in a loop (`pumpPtyOutput`).
+#[tauri::command]
+async fn pty_drain(state: State<'_, GuiState>) -> Result<Vec<pty_outbox::PtyItem>, String> {
+    Ok(state
+        .pty_outbox
+        .drain(std::time::Duration::from_secs(20))
+        .await)
 }
 
 /// Send keyboard input (raw bytes as typed in xterm.js) to a session.
@@ -3691,6 +3686,7 @@ fn main() {
         pr_checked: Mutex::new(HashMap::new()),
         forge_cache: Mutex::new(HashMap::new()),
         prompt_queue: Mutex::new(clash::application::prompt_queue::PromptQueue::default()),
+        pty_outbox: std::sync::Arc::new(pty_outbox::PtyOutbox::default()),
         launching: Mutex::new(std::collections::HashSet::new()),
     };
 
@@ -3966,6 +3962,7 @@ fn main() {
             workflows::get_workflow_pr_skill,
             workflows::set_workflow_pr_skill,
             check_update,
+            pty_drain,
             get_update_check,
             set_update_check,
             workflows::get_workflow_forge,

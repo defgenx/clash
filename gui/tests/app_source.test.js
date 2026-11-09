@@ -1219,3 +1219,66 @@ test("the diff viewer talks only to registered commands, and the session tab use
   assert.match(extractFunction(APP, "renderWfDiffView"), /wfDiffTools\(head, layout, container, files\)/);
   assert.match(extractFunction(APP, "wfFillFileBody"), /DiffView\.hunkWordMarks\(h\.lines\)/);
 });
+
+test("only on-screen terminals hold a WebGL renderer, and releasing one frees its context", () => {
+  // Every open tab of every workspace used to keep its own WebGL context —
+  // Retina-sized drawing buffers plus glyph atlases — which was most of the
+  // web view's footprint. The layout pass reconciles them.
+  assert.match(extractFunction(APP, "fitAll"), /syncTerminalRenderers\(\)/);
+  const sync = extractFunction(APP, "syncTerminalRenderers");
+  assert.match(sync, /isConnected\) attachWebgl\(/);
+  assert.match(sync, /else releaseWebgl\(/);
+  // The addon's dispose never loses the context; without this the buffers wait for a GC.
+  const release = extractFunction(APP, "releaseWebgl");
+  assert.ok(release.indexOf("webgl.dispose()") < release.indexOf("loseContext()"), "dispose first, so the addon's own loss handler is gone");
+  // attachWebgl is the only constructor of the addon.
+  assert.equal((APP.match(/new WebglAddon\.WebglAddon\(\)/g) || []).length, 1);
+  assert.match(extractFunction(APP, "attachWebgl"), /entry\.webgl \|\| entry\.webglGaveUp\) return/);
+});
+
+test("terminal output is pulled through pty_drain, never listened for as an event", async () => {
+  // Tauri delivers an event by evaluating a script that embeds the payload,
+  // and WebKit kept every one: the web view grew by all the output it received.
+  assert.doesNotMatch(APP, /listen\("pty-output"/);
+  assert.doesNotMatch(APP, /listen\("pty-exited"/);
+  const vm = require("node:vm");
+  const calls = [];
+  let n = 0;
+  const ctx = {
+    calls,
+    invoke: async (cmd) => {
+      assert.equal(cmd, "pty_drain");
+      if (n++ === 0)
+        return [
+          { kind: "output", session_id: "a", data: "aGk=" },
+          { kind: "exited", session_id: "a", exit_code: 0 },
+          { kind: "output", session_id: "b", data: "eA==" },
+        ];
+      return new Promise(() => {}); // the next long-poll never returns in the test
+    },
+    onPtyOutput: (sid, data) => calls.push(["out", sid, data]),
+    onPtyExited: (sid, code) => calls.push(["exit", sid, code]),
+    dlog: () => {},
+    console,
+    setTimeout,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(extractFunction(APP, "pumpPtyOutput") + "\npumpPtyOutput();", ctx);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(calls, [
+    ["out", "a", "aGk="],
+    ["exit", "a", 0],
+    ["out", "b", "eA=="],
+  ]);
+  assert.equal(n, 2, "it asks again right after a batch");
+});
+
+test("a repaint that changes nothing leaves the panes mounted, and hidden workflow tabs rebuild when shown", () => {
+  const rp = extractFunction(APP, "renderPanes");
+  const skip = rp.indexOf("last.sig === sig");
+  assert.ok(skip > 0 && skip < rp.indexOf("entry.el.remove()"), "the no-op check runs before anything is detached");
+  assert.match(rp, /lastPaneRender = \{ w, sig, root \}/);
+  assert.match(rp, /rebuildWhenShown[\s\S]*rebuildViewTab\(p, e\)/);
+  const rebuild = extractFunction(APP, "rebuildOpenWorkflowTabs");
+  assert.match(rebuild, /if \(entry\.el\.isConnected\) rebuildViewTab\(key, entry\);\s*else entry\.rebuildWhenShown = true;/);
+});

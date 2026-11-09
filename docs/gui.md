@@ -189,7 +189,10 @@ elsewhere is described in [sessions.md](sessions.md).
 ## Terminals
 
 - Terminals are xterm.js with GPU (WebGL) rendering; a lost GL context is
-  reacquired automatically.
+  reacquired automatically. Only terminals on screen hold a GL context: one
+  that leaves the screen (another tab, another workspace) releases it and gets
+  a new one when shown, which keeps clash under WebKit's limit of about 16
+  live contexts, past which it drops the oldest.
 - **Shell terminals**: the topbar button picks among the machine's shells, and
   `⌘⇧T` reopens the last one. Closing the tab kills the shell.
 - **Keyboard**:
@@ -211,7 +214,28 @@ elsewhere is described in [sessions.md](sessions.md).
   errors (not while the window is focused). Any process can raise one with
   `printf '\e]777;notify;Title;Body\a'` (OSC 9 / 777).
 
-## Browser and links
+### Terminal output
+
+Terminal output is **pulled** by the frontend, never pushed as a tauri event.
+Tauri delivers an event by evaluating `(function () { … payload … })()` in the
+page, and WebKit keeps the source of every such script alive, payload
+included: with one event per PTY chunk, the web view grew by about the volume
+of all terminal output it ever received. A window open for a couple of hours
+held 60,000 of those scripts and over 1 GB; in a bare WKWebView, 20,000
+events of 6 KB took the process from 12 MB to 107 MB, while the same data
+fetched over a URL scheme ended at 22 MB.
+
+So the attach forwarders queue output and exits in one ordered outbox
+(`gui/src-tauri/src/pty_outbox.rs`; consecutive chunks of a session merge,
+and a frontend that stops draining loses its oldest output past 32 MB, never
+an exit), and the frontend's `pumpPtyOutput` long-polls `pty_drain`: it
+returns at once when anything is queued, else after 20s. An `invoke` reply
+arrives over the IPC custom protocol and evaluates nothing. Output that
+arrives while a reply is in flight is batched into the next one.
+
+**Do not stream anything through events.** An event is fine for something
+that happens a few times a minute (attention, launch stages, workflow
+changes); anything that fires per chunk or per frame belongs in a drain.
 
 - Browser tabs are first-class tabs. `⌘⇧B` opens a blank one in its own split.
 - Full chrome: back/forward, reload/stop, an address bar taking URLs or

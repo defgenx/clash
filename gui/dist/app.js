@@ -2623,6 +2623,10 @@ function renderTabs() {
 
 // ── Panes (split layout) ────────────────────────────────────────
 
+/// What the last `renderPanes` built — the workspace, the inputs it read and
+/// the root it mounted — so a repaint that would rebuild the same thing can skip.
+let lastPaneRender = null;
+
 function renderPanes() {
   // A tab or pane drag is in flight: repainting would detach its source and
   // the drop overlays, cancelling it. `endPaneDrag` repaints once it lands.
@@ -2637,6 +2641,35 @@ function renderPanes() {
   delete w.colFracs;
   delete w.rowFracs;
   const multi = w.panes.length > 1;
+
+  // Nothing this paint depends on changed and every pane's content is still
+  // mounted where it was: leave the DOM alone. A rebuild detaches every tab's
+  // element, and a detached iframe (the explanation drawings) is destroyed and
+  // reloaded on re-insertion — with ~15 callers, the 2s refresh among them,
+  // that reload churn is what grew the web view's memory in steps.
+  const sig = JSON.stringify([
+    state.activeWs,
+    w.layout,
+    w.panes,
+    w.focused,
+    !!w.zoomed,
+    w.panes.map((p) => (p && state.open.get(p)?.name) || null),
+  ]);
+  const shown = w.zoomed && multi ? [w.panes[w.focused]] : w.panes;
+  const last = lastPaneRender;
+  if (
+    last &&
+    last.w === w &&
+    last.sig === sig &&
+    last.root.isConnected &&
+    shown.every((p) => {
+      const e = p && state.open.get(p);
+      return !e || last.root.contains(e.el);
+    })
+  ) {
+    fitAll();
+    return;
+  }
 
   // Detach term elements first so re-appending doesn't destroy them.
   // Detaching an ancestor of the focused node blurs it, so remember what had
@@ -2739,6 +2772,15 @@ function renderPanes() {
   const root = w.zoomed && multi ? buildPane(w.focused) : build(w.layout);
   root.classList.add("pane-root");
   host.appendChild(root);
+  lastPaneRender = { w, sig, root };
+  // Workflow tabs whose files changed while they were off screen rebuild now.
+  for (const p of shown) {
+    const e = p && state.open.get(p);
+    if (e && e.rebuildWhenShown) {
+      e.rebuildWhenShown = false;
+      rebuildViewTab(p, e);
+    }
+  }
 
   // Give focus back to what the detach above blurred — but only when it lives
   // in the pane that still holds focus, so a repaint caused by a pane switch
@@ -3056,6 +3098,7 @@ function fitAll() {
       const entry = sid && state.open.get(sid);
       if (entry && entry.fitAddon) entry.fitAddon.fit();
     }
+    syncTerminalRenderers();
     if (typeof syncBrowserWebviews === "function") syncBrowserWebviews();
   });
 }
@@ -3532,19 +3575,23 @@ async function adoptWild(s) {
 /// badly" symptom — with nothing in clash.log to say it happened. Losses are
 /// routinely transient, so try to get the context back a couple of times;
 /// only then settle for the DOM renderer, and say so in the log either way.
-function attachWebgl(term, label, attempt = 0) {
-  if (!window.WebglAddon) return;
+function attachWebgl(entry, label, attempt = 0) {
+  if (!window.WebglAddon || entry.webgl || entry.webglGaveUp) return;
+  const term = entry.term;
   try {
     const webgl = new WebglAddon.WebglAddon();
     webgl.onContextLoss(() => {
+      if (entry.webgl === webgl) entry.webgl = null;
       webgl.dispose();
       if (attempt < 2) {
         dlog(`webgl context lost on "${label}" — reacquiring (attempt ${attempt + 1})`);
         setTimeout(() => {
-          // The terminal may have been closed while we waited.
-          if (term.element && term.element.isConnected) attachWebgl(term, label, attempt + 1);
+          // The terminal may have been closed or moved off screen while we
+          // waited; syncTerminalRenderers attaches it when it is shown again.
+          if (term.element && term.element.isConnected) attachWebgl(entry, label, attempt + 1);
         }, 1500);
       } else {
+        entry.webglGaveUp = true;
         dlog(
           `webgl context lost on "${label}" ${attempt + 1}× — staying on the DOM renderer ` +
             `(rapid redraws like statuslines will look rougher until this terminal reopens)`
@@ -3552,8 +3599,43 @@ function attachWebgl(term, label, attempt = 0) {
       }
     });
     term.loadAddon(webgl);
+    entry.webgl = webgl;
   } catch (e) {
     dlog(`webgl unavailable on "${label}": ${e} — DOM renderer in use`);
+  }
+}
+
+/// Give an off-screen terminal's GPU memory back. Each WebGL renderer holds
+/// Retina-sized drawing buffers for its pane plus glyph-atlas textures, and
+/// every open tab of every workspace kept one alive — the bulk of the web
+/// view's footprint. The addon's dispose never calls `loseContext`, so the
+/// context (and its buffers) would otherwise wait for a GC; lose it
+/// explicitly, after dispose has removed the addon's own context-loss handler.
+function releaseWebgl(entry) {
+  const webgl = entry.webgl;
+  if (!webgl) return;
+  entry.webgl = null;
+  const canvases = entry.term.element ? [...entry.term.element.querySelectorAll("canvas")] : [];
+  webgl.dispose();
+  for (const c of canvases) {
+    try {
+      c.getContext("webgl2")?.getExtension("WEBGL_lose_context")?.loseContext();
+    } catch {
+      /* not a WebGL canvas */
+    }
+  }
+}
+
+/// WebGL only for terminals on screen: attach when a terminal's element is
+/// mounted in a pane, release it when it is not (another tab, another
+/// workspace, a zoomed-away pane). Runs after every layout pass (`fitAll`).
+/// A hidden terminal keeps its buffer and keeps receiving output; xterm pauses
+/// its rendering while the element is not visible.
+function syncTerminalRenderers() {
+  for (const [sid, entry] of state.open) {
+    if (!entry.term) continue;
+    if (entry.el.isConnected) attachWebgl(entry, entry.name || sid);
+    else releaseWebgl(entry);
   }
 }
 
@@ -3727,7 +3809,7 @@ async function openSession(sid, label, opts = {}) {
   // progressive tokens, statusline redraws), leaves stale/half-refreshed
   // glyphs — the "not native, badly refreshed text" symptom. The WebGL
   // renderer draws the whole grid to one GPU-backed canvas each frame.
-  attachWebgl(term, label || sid);
+  if (el.isConnected) attachWebgl(state.open.get(sid), label || sid);
   fitAddon.fit();
 
   if (defer) {
@@ -14313,13 +14395,40 @@ function sniffPrUrl(sid, bytes) {
   }
 }
 
-listen("pty-output", (event) => {
-  const { session_id, data } = event.payload;
+function onPtyOutput(session_id, data) {
   const bytes = base64ToBytes(data);
   const entry = state.open.get(session_id);
   if (entry && entry.term) entry.term.write(bytes);
   sniffPrUrl(session_id, bytes);
-});
+}
+
+/// Terminal output is pulled, never pushed as an event: tauri delivers an
+/// event by evaluating a script that embeds its payload, and WebKit kept every
+/// one alive — the web view grew by all the terminal output it ever received.
+/// `pty_drain` long-polls (returns at once when output is queued, else after
+/// 20s) and its reply evaluates nothing. Full rationale: docs/gui.md →
+/// *Terminal output*.
+async function pumpPtyOutput() {
+  for (;;) {
+    let items;
+    try {
+      items = await invoke("pty_drain");
+    } catch (e) {
+      dlog(`pty_drain failed: ${e} — retrying`);
+      await new Promise((r) => setTimeout(r, 500));
+      continue;
+    }
+    for (const it of items) {
+      try {
+        if (it.kind === "output") onPtyOutput(it.session_id, it.data);
+        else if (it.kind === "exited") onPtyExited(it.session_id, it.exit_code);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  }
+}
+pumpPtyOutput();
 
 listen("session-attention", (event) => {
   const { session_id } = event.payload;
@@ -14346,8 +14455,7 @@ listen("prompt-delivered", (event) => {
   refreshQueuedPrompts();
 });
 
-listen("pty-exited", (event) => {
-  const { session_id, exit_code } = event.payload;
+function onPtyExited(session_id, exit_code) {
   if (isShellTerm(session_id)) {
     // `exit` in a shell terminal closes its tab, like a real terminal.
     dropTerminal(session_id);
@@ -14360,7 +14468,7 @@ listen("pty-exited", (event) => {
     );
   }
   refreshSessions();
-});
+}
 
 // ── Wiring ──────────────────────────────────────────────────────
 
@@ -15196,49 +15304,57 @@ let wfSelfWriteAt = 0;
 /// Skipped while any of the tab's own text fields has focus — a rebuild
 /// replaces the DOM, which eats an unsent composer draft and a ⚙ Settings
 /// value that only commits on blur; a banner offers a manual refresh instead.
+/// Rebuild every open workflow view against the files on disk. Only views on
+/// screen rebuild now; the rest are marked and rebuild when `renderPanes`
+/// shows them — re-rendering hidden tabs (markdown, diff highlighting,
+/// mermaid, explanation iframes) on every file change was pure churn.
 function rebuildOpenWorkflowTabs() {
-  const board = state.open.get("view:wfboard");
-  if (board) renderWorkflowBoard(board.el);
-  const prs = state.open.get("view:wfprs");
-  if (prs) renderWorkflowPrDashboard(prs.el);
   for (const [key, entry] of state.open) {
-    if (!key.startsWith("view:workflow:")) continue;
-    const rest = key.slice("view:workflow:".length);
-    const slash = rest.indexOf("/");
-    if (slash < 0) continue;
-    const project = rest.slice(0, slash);
-    const slug = rest.slice(slash + 1);
-    const el = entry.el;
-    const active = document.activeElement;
-    const composer = el.querySelector(".wf-composer");
-    // Anywhere in an open comment composer (its buttons included — the draft
-    // lives in the textarea either way), or any focused text field on the tab.
-    const editing =
-      !!active &&
-      ((composer && composer.contains(active)) ||
-        (el.contains(active) &&
-          (active.tagName === "INPUT" ||
-            active.tagName === "TEXTAREA" ||
-            active.isContentEditable)));
-    if (editing) {
-      if (Date.now() - wfSelfWriteAt < 3000) continue; // our own save echoing back
-      if (!el.querySelector(".wf-stale-banner")) {
-        const banner = document.createElement("div");
-        banner.className = "wf-stale-banner";
-        banner.innerHTML = `content changed on disk — <a href="#">refresh</a>`;
-        banner.querySelector("a").onclick = (ev) => {
-          ev.preventDefault();
-          buildWorkflowView(el, project, slug);
-        };
-        el.prepend(banner);
-      }
-      continue;
-    }
-    const body = el.querySelector(".wf-body");
-    const ts = wfTabState.get(wfKey(project, slug));
-    if (body && ts) ts.scrollTop = body.scrollTop;
-    buildWorkflowView(el, project, slug);
+    if (key !== "view:wfboard" && key !== "view:wfprs" && !key.startsWith("view:workflow:")) continue;
+    if (entry.el.isConnected) rebuildViewTab(key, entry);
+    else entry.rebuildWhenShown = true;
   }
+}
+
+/// Rebuild one workflow view (item, board or PR dashboard) in place.
+function rebuildViewTab(key, entry) {
+  if (key === "view:wfboard") return renderWorkflowBoard(entry.el);
+  if (key === "view:wfprs") return renderWorkflowPrDashboard(entry.el);
+  const rest = key.slice("view:workflow:".length);
+  const slash = rest.indexOf("/");
+  if (slash < 0) return;
+  const project = rest.slice(0, slash);
+  const slug = rest.slice(slash + 1);
+  const el = entry.el;
+  const active = document.activeElement;
+  const composer = el.querySelector(".wf-composer");
+  // Anywhere in an open comment composer (its buttons included — the draft
+  // lives in the textarea either way), or any focused text field on the tab.
+  const editing =
+    !!active &&
+    ((composer && composer.contains(active)) ||
+      (el.contains(active) &&
+        (active.tagName === "INPUT" ||
+          active.tagName === "TEXTAREA" ||
+          active.isContentEditable)));
+  if (editing) {
+    if (Date.now() - wfSelfWriteAt < 3000) return; // our own save echoing back
+    if (!el.querySelector(".wf-stale-banner")) {
+      const banner = document.createElement("div");
+      banner.className = "wf-stale-banner";
+      banner.innerHTML = `content changed on disk — <a href="#">refresh</a>`;
+      banner.querySelector("a").onclick = (ev) => {
+        ev.preventDefault();
+        buildWorkflowView(el, project, slug);
+      };
+      el.prepend(banner);
+    }
+    return;
+  }
+  const body = el.querySelector(".wf-body");
+  const ts = wfTabState.get(wfKey(project, slug));
+  if (body && ts) ts.scrollTop = body.scrollTop;
+  buildWorkflowView(el, project, slug);
 }
 
 // Decision-needed transitions (agent writes only — clash's own clicks are
