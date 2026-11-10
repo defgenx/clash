@@ -7543,20 +7543,9 @@ async function buildSkillsView(el, selectName) {
   if (first) show(first.skill, first.row);
 }
 
-/// How many finished items the board's DONE lane shows before "Show N more".
-const WF_BOARD_DONE_SHOWN = 6;
-
-// Board columns: display name → statuses bucketed into it.
-const WF_BOARD_COLUMNS = [
-  ["DRAFT / PLANNING", ["draft", "planning"]],
-  ["PLAN REVIEW", ["plan-review"]],
-  // `reviewing` is an agent-working state like implementing: an item in a
-  // review round is in flight, not waiting on the human.
-  ["CHANGES / IMPL.", ["changes-requested", "implementing", "reviewing"]],
-  ["DIFF REVIEW", ["diff-review"]],
-  ["PR", ["pr-draft", "pr-ready"]],
-  ["DONE", ["done", "abandoned"]],
-];
+/// The board's filters — per window, kept across the rebuilds every workflow
+/// change triggers, so a search survives an agent writing its meta.
+const wfBoardFilter = { project: null, query: "", showDone: false };
 
 /// Kanban-style board over all workflow items (singleton tab).
 function openWorkflowBoardTab() {
@@ -7568,63 +7557,185 @@ function openWorkflowBoardTab() {
   });
 }
 
+/// The board: a header (what needs you, project filter, search) over one
+/// lane per stage, filling the tab's width. Decisions are the pure
+/// `boardModel` (wf-board.js). The header is built once and only repainted,
+/// so a rebuild never steals the search field's focus mid-word.
 function renderWorkflowBoard(el) {
-  el.innerHTML = "";
-  const board = document.createElement("div");
-  board.className = "wf-board";
-  for (const [name, statuses] of WF_BOARD_COLUMNS) {
-    const items = state.workflows.filter((w) => statuses.includes(w.meta.status));
-    const col = document.createElement("div");
-    col.className = "wf-col" + (items.length ? "" : " empty");
-    col.innerHTML = `<div class="wf-col-head"><span>${name}</span><span class="wf-col-count">${items.length}</span></div>`;
-    if (!items.length) {
-      const none = document.createElement("div");
-      none.className = "wf-col-empty";
-      none.textContent = "Nothing here";
-      col.appendChild(none);
-    }
-    // A lane of finished work grows forever; its first cards say enough.
-    const fold = statuses.includes("done") && items.length > WF_BOARD_DONE_SHOWN;
-    const visible = fold ? items.slice(0, WF_BOARD_DONE_SHOWN) : items;
-    for (const item of visible) col.appendChild(buildWorkflowCard(item));
-    if (fold) {
-      const more = document.createElement("button");
-      more.className = "wf-col-more";
-      more.textContent = `Show ${items.length - WF_BOARD_DONE_SHOWN} more`;
-      more.onclick = () => {
-        more.remove();
-        for (const item of items.slice(WF_BOARD_DONE_SHOWN)) col.appendChild(buildWorkflowCard(item));
-      };
-      col.appendChild(more);
-    }
-    board.appendChild(col);
+  let head = el.querySelector(".wf-board-head");
+  let lanesEl = el.querySelector(".wf-board");
+  if (!head || !lanesEl) {
+    el.innerHTML = "";
+    el.classList.add("wf-board-view");
+    head = document.createElement("div");
+    head.className = "wf-board-head";
+    const top = document.createElement("div");
+    top.className = "wf-board-top";
+    const h = document.createElement("h2");
+    h.textContent = "Workflows";
+    const sum = document.createElement("div");
+    sum.className = "wf-board-summary";
+    const search = document.createElement("input");
+    search.type = "search";
+    search.className = "wf-board-search";
+    search.placeholder = "Filter by title, project, branch, ticket…";
+    search.value = wfBoardFilter.query;
+    search.oninput = () => {
+      wfBoardFilter.query = search.value;
+      renderWorkflowBoard(el);
+    };
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "icon-btn wide";
+    add.innerHTML = `${svgIcon("plus", 12)}<span>New item</span>`;
+    add.onclick = () => $("new-wf-btn")?.click();
+    top.append(h, sum, search, add);
+    const projects = document.createElement("div");
+    projects.className = "wf-board-projects";
+    head.append(top, projects);
+    lanesEl = document.createElement("div");
+    lanesEl.className = "wf-board";
+    el.append(head, lanesEl);
   }
-  el.appendChild(board);
+  const m = boardModel(state.workflows, wfBoardFilter);
+
+  // Counts that say what the board is for: what waits on you, first.
+  const sum = head.querySelector(".wf-board-summary");
+  sum.innerHTML = "";
+  for (const [n, label, cls] of [
+    [m.summary.needsYou, m.summary.needsYou === 1 ? "needs you" : "need you", "you"],
+    [m.summary.working, m.summary.working === 1 ? "agent working" : "agents working", "agent"],
+    [m.summary.inPr, "in PR", "pr"],
+    [m.summary.done, "done", "done"],
+  ]) {
+    const pill = document.createElement("span");
+    pill.className = `wf-board-pill k-${cls}${n ? "" : " zero"}`;
+    pill.innerHTML = `<b>${n}</b> ${escapeHtml(label)}`;
+    sum.appendChild(pill);
+  }
+
+  const projects = head.querySelector(".wf-board-projects");
+  projects.innerHTML = "";
+  const chip = (name, count, value) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `wf-board-proj${wfBoardFilter.project === value ? " on" : ""}`;
+    b.innerHTML = `${escapeHtml(name)} <span>${count}</span>`;
+    b.onclick = () => {
+      wfBoardFilter.project = wfBoardFilter.project === value ? null : value;
+      renderWorkflowBoard(el);
+    };
+    projects.appendChild(b);
+  };
+  chip("All projects", state.workflows.length, null);
+  for (const p of m.projects) chip(p.name, p.count, p.name);
+
+  // Lanes fill the width; an empty one shrinks to a labelled strip.
+  lanesEl.innerHTML = "";
+  lanesEl.style.gridTemplateColumns = m.lanes
+    .map((l) => (l.count ? "minmax(250px, 1fr)" : "44px"))
+    .join(" ");
+  for (const lane of m.lanes) {
+    const col = document.createElement("section");
+    col.className = `wf-lane k-${lane.kind}${lane.count ? "" : " empty"}`;
+    const lh = document.createElement("div");
+    lh.className = "wf-lane-head";
+    lh.innerHTML = `<span class="wf-lane-dot"></span><span class="wf-lane-name">${escapeHtml(
+      lane.label
+    )}</span><span class="wf-lane-count">${lane.count}</span>`;
+    col.appendChild(lh);
+    const list = document.createElement("div");
+    list.className = "wf-lane-cards";
+    for (const c of lane.cards) {
+      const item = state.workflows.find((w) => `${w.project}/${w.slug}` === c.key);
+      if (item) list.appendChild(buildWorkflowCard(item, c));
+    }
+    if (lane.hidden) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "wf-lane-more";
+      more.textContent = `Show ${lane.hidden} older`;
+      more.onclick = () => {
+        wfBoardFilter.showDone = true;
+        renderWorkflowBoard(el);
+      };
+      list.appendChild(more);
+    } else if (lane.id === "done" && wfBoardFilter.showDone && lane.count > DONE_SHOWN) {
+      const less = document.createElement("button");
+      less.type = "button";
+      less.className = "wf-lane-more";
+      less.textContent = "Show fewer";
+      less.onclick = () => {
+        wfBoardFilter.showDone = false;
+        renderWorkflowBoard(el);
+      };
+      list.appendChild(less);
+    }
+    col.appendChild(list);
+    lanesEl.appendChild(col);
+  }
+  if (!m.summary.total) {
+    const none = document.createElement("p");
+    none.className = "hint wf-board-none";
+    none.textContent = state.workflows.length
+      ? "No item matches the filter."
+      : "No workflow items yet — + New item starts one.";
+    lanesEl.appendChild(none);
+  }
 }
 
-function buildWorkflowCard(item) {
-  const info = wfStatusInfo(item.meta.status);
+/// One board card (`c` is its `boardCard` model): stage and age, title,
+/// project, then what it carries — waves, PRs, comments — and why it waits
+/// on you, if it does.
+function buildWorkflowCard(item, c = boardCard(item)) {
   const card = document.createElement("div");
-  card.className = "wf-card";
-  const bits = [`it.${item.meta.iteration || 1}`];
-  if (item.openAnnotations > 0) bits.push(`💬${item.openAnnotations}`);
-  {
-    const prs = itemPrs(item.meta);
-    if (prs.length > 1) bits.push(`PR×${prs.length}`);
-    else if (prs.length) bits.push(prs[0].draft ? "PR·draft" : "PR");
+  card.className =
+    "wf-card" + (c.needs.length ? " needs-you" : "") + (c.working ? " working" : "") + (c.gone ? " gone" : "");
+  card.dataset.status = c.status;
+  const top = document.createElement("div");
+  top.className = "wf-card-top";
+  top.innerHTML =
+    `<span class="wf-card-stage st-${escapeHtml(c.status)}">${c.working ? '<i class="wf-card-pulse"></i>' : ""}${escapeHtml(
+      c.stage
+    )}</span>` + `<span class="wf-card-ago">${escapeHtml(c.ago)}</span>`;
+  const title = document.createElement("div");
+  title.className = "wf-card-title";
+  title.textContent = c.title;
+  const sub = document.createElement("div");
+  sub.className = "wf-card-sub";
+  sub.textContent = `${c.project} · it.${c.iteration}`;
+  card.append(top, title, sub);
+  if (c.waves) {
+    const w = document.createElement("div");
+    w.className = "wf-card-waves";
+    w.title = c.waves.text;
+    w.innerHTML = `<span class="wf-card-bar"><i style="width:${Math.round(
+      (100 * c.waves.done) / Math.max(1, c.waves.total)
+    )}%"></i></span><span>${c.waves.done}/${c.waves.total} waves</span>`;
+    card.appendChild(w);
   }
-  const waves = waveSummary(item);
-  if (waves) bits.push(waves.text.split(" · ")[0]);
-  if (item.agentAlive === false) bits.push("⚠ agent gone");
-  if ((item.explainers || []).some((e) => e.running)) bits.push("◫ explaining");
-  card.dataset.status = item.meta.status;
-  card.innerHTML =
-    `<div class="wf-card-title"><span class="status-ring wf-ring ${info.cls}"></span>${escapeHtml(
-      item.meta.title || item.slug
-    )}</div>` +
-    `<div class="wf-card-sub"><span class="wf-card-project">${escapeHtml(item.project)}</span>${bits
-      .map((b) => `<span class="wf-card-tag">${escapeHtml(b)}</span>`)
-      .join("")}</div>`;
+  const facts = [];
+  if (c.prs)
+    facts.push(
+      `<span class="wf-card-fact" title="${c.prs.total} PRs · ${c.prs.merged} merged · ${c.prs.open} open">${svgIcon(
+        "pr",
+        11
+      )}${c.prs.total === 1 ? (c.prs.merged ? "merged" : c.prs.drafts ? "draft" : "open") : `${c.prs.merged}/${c.prs.total}`}</span>`
+    );
+  if (c.comments) facts.push(`<span class="wf-card-fact" title="Open diff comments">💬 ${c.comments}</span>`);
+  if (c.running) facts.push(`<span class="wf-card-fact" title="A check run is in flight">◌ checks</span>`);
+  if (facts.length) {
+    const f = document.createElement("div");
+    f.className = "wf-card-facts";
+    f.innerHTML = facts.join("");
+    card.appendChild(f);
+  }
+  if (c.needs.length) {
+    const n = document.createElement("div");
+    n.className = "wf-card-needs";
+    n.textContent = c.needs.join(" · ");
+    card.appendChild(n);
+  }
   card.onclick = () => openWorkflowTab(item);
   card.oncontextmenu = (ev) => {
     ev.preventDefault();
@@ -7657,117 +7768,200 @@ function wfAgo(ms) {
   return `${Math.round(s / 86400)}d ago`;
 }
 
+/// The PR dashboard's filters, kept across rebuilds like the board's.
+const wfPrsFilter = { view: "active", project: null, query: "" };
+
+/// The cross-project PR dashboard: a header (counts, Active / Needs you /
+/// All, projects, search) over one section per item, one row per PR —
+/// state, repo#number, branch, threads, actions. Filtering is the pure
+/// `prDashboardView` over `prDashboardModel` (wf-prs.js); the header is built
+/// once and repainted, so a rebuild never steals the search field's focus.
 function renderWorkflowPrDashboard(el) {
-  el.innerHTML = "";
-  const rows = prDashboardModel(state.workflows);
+  const all = prDashboardModel(state.workflows);
   // Passive state refresh for what's on screen: backend-throttled (30s/item,
   // write-on-change only), so redraws never churn gh or the FS watcher.
-  for (const r of rows) {
-    invoke("refresh_workflow_pr", { project: r.project, slug: r.slug, force: false }).catch(
-      () => {}
-    );
+  for (const r of all) {
+    if (r.allSettled) continue;
+    invoke("refresh_workflow_pr", { project: r.project, slug: r.slug, force: false }).catch(() => {});
   }
-  const wrap = document.createElement("div");
-  wrap.className = "wf-prs";
-  const head = document.createElement("div");
-  head.className = "wf-prs-head";
-  head.innerHTML = `<h4>PULL REQUESTS</h4><span class="dim">${rows.length} item${
-    rows.length === 1 ? "" : "s"
-  } across all projects</span>`;
-  // A peer's PR is not an item yet; this is how it becomes one.
-  const explain = document.createElement("button");
-  explain.className = "wf-prs-explain";
-  explain.textContent = "◫ Explain a PR…";
-  explain.title = "Paste any pull request URL — clash checks it out and explains what it does";
-  explain.onclick = () => explainPrFlow();
-  head.appendChild(explain);
-  wrap.appendChild(head);
-  if (!rows.length) {
+  let head = el.querySelector(".wf-prd-head");
+  let body = el.querySelector(".wf-prd-body");
+  if (!head || !body) {
+    el.innerHTML = "";
+    el.classList.add("wf-board-view", "wf-prd-view");
+    head = document.createElement("div");
+    head.className = "wf-board-head wf-prd-head";
+    const top = document.createElement("div");
+    top.className = "wf-board-top";
+    const h = document.createElement("h2");
+    h.textContent = "Pull requests";
+    const sum = document.createElement("div");
+    sum.className = "wf-board-summary";
+    const search = document.createElement("input");
+    search.type = "search";
+    search.className = "wf-board-search";
+    search.placeholder = "Filter by item, repo, number, branch…";
+    search.value = wfPrsFilter.query;
+    search.oninput = () => {
+      wfPrsFilter.query = search.value;
+      renderWorkflowPrDashboard(el);
+    };
+    // A peer's PR is not an item yet; this is how it becomes one.
+    const explain = document.createElement("button");
+    explain.type = "button";
+    explain.className = "icon-btn wide";
+    explain.textContent = "◫ Explain a PR…";
+    explain.title = "Paste any pull request URL — clash checks it out and explains what it does";
+    explain.onclick = () => explainPrFlow();
+    top.append(h, sum, search, explain);
+    const bar = document.createElement("div");
+    bar.className = "wf-prd-bar";
+    const views = document.createElement("div");
+    views.className = "wf-waves-modes wf-prd-views";
+    const projects = document.createElement("div");
+    projects.className = "wf-board-projects";
+    bar.append(views, projects);
+    head.append(top, bar);
+    body = document.createElement("div");
+    body.className = "wf-prd-body";
+    el.append(head, body);
+  }
+  const v = prDashboardView(all, wfPrsFilter);
+
+  const sum = head.querySelector(".wf-board-summary");
+  sum.innerHTML = "";
+  for (const [n, label, cls] of [
+    [v.summary.open, "open", "agent"],
+    [v.summary.drafts, v.summary.drafts === 1 ? "draft" : "drafts", "pr"],
+    [v.summary.threads, v.summary.threads === 1 ? "thread waiting on you" : "threads waiting on you", "you"],
+    [v.summary.merged, "merged", "done"],
+  ]) {
+    const pill = document.createElement("span");
+    pill.className = `wf-board-pill k-${cls}${n ? "" : " zero"}`;
+    pill.innerHTML = `<b>${n}</b> ${escapeHtml(label)}`;
+    sum.appendChild(pill);
+  }
+  const views = head.querySelector(".wf-prd-views");
+  views.innerHTML = "";
+  for (const [id, label] of [
+    ["active", "Active"],
+    ["attention", "Needs you"],
+    ["all", "All"],
+  ]) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `wf-seg${wfPrsFilter.view === id ? " on" : ""}`;
+    b.innerHTML = `${escapeHtml(label)} <span class="wf-seg-n">${v.counts[id]}</span>`;
+    b.onclick = () => {
+      wfPrsFilter.view = id;
+      renderWorkflowPrDashboard(el);
+    };
+    views.appendChild(b);
+  }
+  const projects = head.querySelector(".wf-board-projects");
+  projects.innerHTML = "";
+  const chip = (name, count, value) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `wf-board-proj${wfPrsFilter.project === value ? " on" : ""}`;
+    b.innerHTML = `${escapeHtml(name)} <span>${count}</span>`;
+    b.onclick = () => {
+      wfPrsFilter.project = wfPrsFilter.project === value ? null : value;
+      renderWorkflowPrDashboard(el);
+    };
+    projects.appendChild(b);
+  };
+  chip("All projects", all.length, null);
+  for (const p of v.projects) chip(p.name, p.count, p.name);
+
+  body.innerHTML = "";
+  if (!v.rows.length) {
     const empty = document.createElement("p");
-    empty.className = "hint";
-    empty.textContent =
-      "no workflow item has a pull request yet — create one from an item's DIFF REVIEW stage, or link existing PRs to an item";
-    wrap.appendChild(empty);
-    el.appendChild(wrap);
+    empty.className = "hint wf-prd-empty";
+    empty.textContent = !all.length
+      ? "No workflow item has a pull request yet — open one from an item's code review stage, or link existing PRs to an item."
+      : wfPrsFilter.view === "attention"
+        ? "Nothing waits on you: no open PR has unanswered threads or a decision pending."
+        : "No item matches the filter.";
+    body.appendChild(empty);
     return;
   }
-  for (const r of rows) {
-    const info = wfStatusInfo(r.status);
-    const row = document.createElement("div");
-    row.className = "wf-prs-row" + (r.allSettled ? " settled" : "");
-    const left = document.createElement("div");
-    left.className = "wf-prs-item";
-    left.innerHTML =
-      `<span class="status-ring wf-ring ${info.cls}" title="${info.label}"></span>` +
-      `<span class="wf-prs-title">${escapeHtml(r.title)}</span>` +
-      `<span class="wf-prs-meta dim">${escapeHtml(r.project)} · ${info.label}${
-        r.unanswered ? ` · 💬${r.unanswered} unanswered` : ""
-      }${r.updatedAt ? ` · ${wfAgo(r.updatedAt)}` : ""}</span>`;
-    left.onclick = () => {
-      const item = wfItem(r.project, r.slug);
-      if (item) openWorkflowTab(item);
+  for (const r of v.rows) body.appendChild(wfPrdSection(r));
+}
+
+/// One item of the PR dashboard: its header (title, project, stage, age,
+/// why it waits on you) and one row per PR, the open ones first and the
+/// merged/closed folded behind a line while anything is open.
+function wfPrdSection(r) {
+  const item = wfItem(r.project, r.slug);
+  const sec = document.createElement("section");
+  sec.className = "wf-prd-item" + (r.allSettled ? " settled" : "") + (r.needsDecision || r.unanswered ? " needs-you" : "");
+  const head = document.createElement("div");
+  head.className = "wf-prd-item-head";
+  const c = item ? boardCard(item) : null;
+  head.innerHTML =
+    `<span class="wf-card-stage st-${escapeHtml(r.status)}">${escapeHtml(c ? c.stage : r.status)}</span>` +
+    `<span class="wf-prd-item-title">${escapeHtml(r.title)}</span>` +
+    `<span class="wf-prd-item-meta">${escapeHtml(r.project)}${r.updatedAt ? ` · ${escapeHtml(wfAgo(r.updatedAt))}` : ""}</span>` +
+    (r.needsDecision && !r.allSettled ? `<span class="wf-prd-needs">your decision</span>` : "");
+  head.title = "Open the item";
+  head.onclick = () => item && openWorkflowTab(item);
+  if (r.stackIssue) head.appendChild(wfStackIssueChip(r.stackIssue));
+  sec.appendChild(head);
+  const settledPr = (p) => p.state === "MERGED" || p.state === "CLOSED";
+  const live = r.prs.filter((p) => !settledPr(p));
+  const done = r.prs.filter(settledPr);
+  const list = document.createElement("div");
+  list.className = "wf-prd-rows";
+  for (const pr of live.length ? live : r.prs) list.appendChild(wfPrdRow(item, pr));
+  if (live.length && done.length) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "wf-prd-more";
+    more.textContent = `${done.length} merged or closed`;
+    more.onclick = () => {
+      more.remove();
+      for (const pr of done) list.appendChild(wfPrdRow(item, pr));
     };
-    row.appendChild(left);
-    const chips = document.createElement("div");
-    chips.className = "wf-prs-chips";
-    // What still needs work leads; merged and closed PRs fold behind one
-    // chip when there is something open — they are history, not a decision.
-    const settledPr = (p) => p.state === "MERGED" || p.state === "CLOSED";
-    const live = r.prs.filter((p) => !settledPr(p));
-    const done = r.prs.filter(settledPr);
-    const shown = live.length && done.length ? live : r.prs;
-    for (const pr of shown) {
-      const chip = document.createElement("button");
-      const stateBit = prStateLabel(pr);
-      chip.className = `wf-prs-chip${stateBit ? ` pr-${stateBit}` : ""}`;
-      chip.innerHTML = `${svgIcon("pr", 11)}<span>${escapeHtml(prChipLabel(pr))}${
-        stateBit && stateBit !== "open" ? ` · ${escapeHtml(stateBit)}` : ""
-      }${pr.stack ? ` · ${prStackLabel(pr)}` : ""}</span>`;
-      chip.title =
-        `${pr.url} (${pr.primary ? "primary" : "linked"})${wfPrStackHint(pr)}` +
-        " — right-click for this PR's own actions";
-      chip.onclick = (ev) => {
-        ev.stopPropagation();
-        openLink(pr.url);
-      };
-      // Deciding per PR is most of what this dashboard is for: it is the one
-      // place every item's PRs are listed side by side, so "mark that one
-      // ready, review this one" must be reachable without opening each item.
-      chip.oncontextmenu = (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        const item = wfItem(r.project, r.slug);
-        if (item) showContextMenu(ev.clientX, ev.clientY, wfPrMenu(item, pr, null));
-      };
-      chips.appendChild(chip);
-    }
-    if (shown !== r.prs) {
-      const more = document.createElement("button");
-      more.className = "wf-prs-chip pr-settled-more";
-      more.textContent = `+${done.length} merged or closed`;
-      more.title = done.map((p) => `${prChipLabel(p)} · ${prStateLabel(p)}`).join("\n");
-      more.onclick = (ev) => {
-        ev.stopPropagation();
-        more.remove();
-        for (const pr of done) {
-          const chip = document.createElement("button");
-          chip.className = `wf-prs-chip pr-${prStateLabel(pr)}`;
-          chip.innerHTML = `${svgIcon("pr", 11)}<span>${escapeHtml(prChipLabel(pr))} · ${escapeHtml(prStateLabel(pr))}</span>`;
-          chip.title = pr.url;
-          chip.onclick = (e) => {
-            e.stopPropagation();
-            openLink(pr.url);
-          };
-          chips.appendChild(chip);
-        }
-      };
-      chips.appendChild(more);
-    }
-    if (r.stackIssue) chips.appendChild(wfStackIssueChip(r.stackIssue));
-    row.appendChild(chips);
-    wrap.appendChild(row);
+    list.appendChild(more);
   }
-  el.appendChild(wrap);
+  sec.appendChild(list);
+  return sec;
+}
+
+/// One PR row: state, repo#number (and its place in a stack), branch,
+/// threads waiting on you, then open and the PR's own menu.
+function wfPrdRow(item, pr) {
+  const st = prStateLabel(pr) || "open";
+  const row = document.createElement("div");
+  row.className = `wf-prd-row st-${st}`;
+  row.title = `${pr.url}${pr.primary ? " · primary" : ""}${wfPrStackHint(pr)}`;
+  row.innerHTML =
+    `<span class="wf-prd-state">${escapeHtml(st)}</span>` +
+    `<span class="wf-prd-name">${svgIcon("pr", 12)}<b>${escapeHtml(prChipLabel(pr))}</b>${
+      pr.primary ? '<span class="wf-prd-tag">primary</span>' : ""
+    }${pr.stack ? `<span class="wf-prd-tag">${escapeHtml(prStackLabel(pr))}</span>` : ""}</span>` +
+    `<span class="wf-prd-branch">${escapeHtml(pr.headRef || "")}</span>` +
+    `<span class="wf-prd-threads">${pr.unanswered > 0 ? `💬 ${pr.unanswered} waiting on you` : ""}</span>`;
+  const menu = document.createElement("button");
+  menu.type = "button";
+  menu.className = "icon-btn mini wf-prd-menu";
+  menu.textContent = "⋯";
+  menu.title = "This PR's actions";
+  menu.onclick = (ev) => {
+    ev.stopPropagation();
+    if (!item) return;
+    const r = menu.getBoundingClientRect();
+    showContextMenu(r.left, r.bottom + 2, wfPrMenu(item, pr, null));
+  };
+  row.appendChild(menu);
+  row.onclick = () => openLink(pr.url);
+  row.oncontextmenu = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (item) showContextMenu(ev.clientX, ev.clientY, wfPrMenu(item, pr, null));
+  };
+  return row;
 }
 
 // ── Attention inbox ─────────────────────────────────────────────

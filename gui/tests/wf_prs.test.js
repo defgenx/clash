@@ -161,6 +161,7 @@ test("browser branch publishes every global app.js reads", () => {
     "itemPrs",
     "prStackLabel",
     "prDashboardModel",
+    "prDashboardView",
   ]) {
     assert.ok(name in sandbox.window, `${name} must be published to window`);
   }
@@ -215,4 +216,37 @@ test("freshness is said in words", () => {
   assert.equal(checkedAgo(1000, 20000), "checked just now");
   assert.equal(checkedAgo(0 + 1, 1 + 5 * 60000), "checked 5 min ago");
   assert.equal(checkedAgo(1, 1 + 3 * 3600000), "checked 3 h ago");
+});
+
+const { prDashboardView } = require("../dist/wf-prs.js");
+
+test("the dashboard filters: active by default, what needs you, everything", () => {
+  const row = (slug, extra) => ({
+    project: "p",
+    slug,
+    title: `${slug} title`,
+    status: "pr-ready",
+    needsDecision: false,
+    unanswered: 0,
+    allSettled: false,
+    prs: [{ url: `u-${slug}`, repo: "o/r", number: 1, state: "OPEN", headRef: `feat/${slug}`, unanswered: 0 }],
+    ...extra,
+  });
+  const rows = [
+    row("quiet"),
+    row("threads", { unanswered: 2, prs: [{ url: "u2", repo: "o/api", number: 7, state: "OPEN", headRef: "fix/x", unanswered: 2, draft: true }] }),
+    row("decide", { needsDecision: true, project: "web" }),
+    row("merged", { allSettled: true, prs: [{ url: "u3", repo: "o/r", number: 3, state: "MERGED", headRef: "" }] }),
+  ];
+  const v = prDashboardView(rows);
+  assert.deepEqual(v.rows.map((r) => r.slug), ["quiet", "threads", "decide"], "active hides settled items");
+  assert.deepEqual(v.counts, { active: 3, attention: 2, all: 4 });
+  assert.deepEqual(v.summary, { open: 3, drafts: 1, threads: 2, merged: 1 });
+  assert.deepEqual(prDashboardView(rows, { view: "attention" }).rows.map((r) => r.slug), ["threads", "decide"]);
+  assert.equal(prDashboardView(rows, { view: "all" }).rows.length, 4);
+  // Project and search narrow, and the tab counts follow them.
+  assert.deepEqual(prDashboardView(rows, { project: "web" }).counts, { active: 1, attention: 1, all: 1 });
+  assert.deepEqual(prDashboardView(rows, { query: "api #7" }).rows.map((r) => r.slug), ["threads"]);
+  assert.deepEqual(prDashboardView(rows, { query: "feat/quiet" }).rows.map((r) => r.slug), ["quiet"]);
+  assert.deepEqual(v.projects, [{ name: "p", count: 3 }, { name: "web", count: 1 }]);
 });

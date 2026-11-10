@@ -589,12 +589,25 @@ all/none toggle):
 | **⇄ Answer PR threads…** | every PR with open threads |
 
 Every PR chip also has a right-click menu with that PR's actions. The **⇄ PR
-dashboard** (button on the WORKFLOWS section) lists every item holding a PR
-across all projects as a card, decisions first and merged last; on a card
-whose item still has open PRs, the merged and closed ones fold behind a
-*+N merged or closed* chip. The ⊞ **board** shows items by stage, one lane
-each with its count; the DONE lane shows the latest few and folds the rest
-behind *Show N more*.
+dashboard** (button on the WORKFLOWS section) lists every PR of every item
+across projects: a header counts what is open, the drafts, the threads
+waiting on you and what merged; **Active** (items with a PR still open, the
+default), **Needs you** (an open PR with unanswered threads or a decision
+pending) and **All** filter it, as do the project chips and a search over
+item, repo, number and branch. Each item is a section with one row per PR —
+its state, repo#number, branch and the threads waiting on you; click a row
+to open the PR, ⋯ (or right-click) for that PR's actions; merged and closed
+PRs fold behind one line while anything is open.
+
+The ⊞ **board** shows every item by stage, one lane per stage across the
+full width (an empty lane shrinks to a labelled strip). Its header counts
+what **needs you** (a decision, a fix round to launch, an agent gone, PR
+threads to answer — the inbox's rule; finished items never count), the
+agents working, what is in PR and what is done, with project chips and a
+search. Each card shows its stage and how long ago it moved, its project,
+wave progress, PRs and open comments, an accent edge and the reason when it
+waits on you, and a pulse while an agent works it; inside a lane, what needs
+you comes first. Done shows the latest eight (*Show older* for the rest).
 
 ## PR stacks
 

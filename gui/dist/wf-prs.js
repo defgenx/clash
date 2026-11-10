@@ -125,6 +125,49 @@
     return rows;
   }
 
+  /// The dashboard's filters over `prDashboardModel` rows. `view` is
+  /// `active` (items with a PR still open — the default), `attention`
+  /// (an open PR waiting on you: unanswered threads, or the item parked on
+  /// your decision) or `all`; `project` and `query` narrow further (every word
+  /// of the query must appear in the title, project or a PR's repo/branch).
+  /// Returns `{ rows, counts: { active, attention, all }, summary, projects }`
+  /// — counts and projects over the project/query-filtered set, so a tab's
+  /// number is what clicking it shows.
+  function prDashboardView(rows, { view = "active", project = null, query = "" } = {}) {
+    const words = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
+    const hay = (r) =>
+      [r.title, r.project, ...r.prs.map((p) => `${p.repo} #${p.number} ${p.headRef}`)]
+        .join(" ")
+        .toLowerCase();
+    const counts = new Map();
+    for (const r of rows || []) counts.set(r.project, (counts.get(r.project) || 0) + 1);
+    const projects = [...counts]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    const base = (rows || []).filter(
+      (r) => (!project || r.project === project) && words.every((w) => hay(r).includes(w))
+    );
+    const active = (r) => !r.allSettled;
+    const attention = (r) => active(r) && (r.unanswered > 0 || r.needsDecision);
+    const pick = view === "attention" ? attention : view === "all" ? () => true : active;
+    const live = base.flatMap((r) => r.prs.filter((p) => p.state !== "MERGED" && p.state !== "CLOSED"));
+    return {
+      rows: base.filter(pick),
+      counts: {
+        active: base.filter(active).length,
+        attention: base.filter(attention).length,
+        all: base.length,
+      },
+      summary: {
+        open: live.length,
+        drafts: live.filter((p) => p.draft).length,
+        threads: live.reduce((n, p) => n + (p.unanswered > 0 ? p.unanswered : 0), 0),
+        merged: base.flatMap((r) => r.prs).filter((p) => p.state === "MERGED").length,
+      },
+      projects,
+    };
+  }
+
   /// Counts over a PR list, for the summaries that stand in for a row of
   /// chips: `{ total, merged, closed, open, draft, threads }` — `open`
   /// includes drafts, `threads` sums the known unanswered counts.
@@ -206,6 +249,7 @@
     itemPrs,
     prStackLabel,
     prDashboardModel,
+    prDashboardView,
     prCounts,
     prCountsText,
     prBoard,
