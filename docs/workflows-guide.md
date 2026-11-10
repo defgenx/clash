@@ -75,9 +75,8 @@ diff-review → pr-draft → pr-ready → done`, plus `abandoned` from anywhere 
 ## The action bar
 
 Every item has an action bar in three labeled zones — at the bottom in the
-Tabs view, as the next-step card in Workbench (where the Item zone is its
-**More** menu; on top of the content in a narrow tab, in the right-hand rail
-in a wide one):
+Tabs view, as the next-step card on top of the content in Workbench (where
+the Item zone is its **More** menu):
 
 - **This step · stays here** — **🔍 Check…** and **▾** (every review and
   explanation, see [Check runs](#check-runs)), opening the PR or the session.
@@ -133,16 +132,14 @@ view*), over the same documents and actions:
   share, abandon…) folded into its **More** menu, so "where am I" (the stepper)
   and "what now" sit together above the content.
 
-  When the tab is wide (about 1180px and up), Workbench becomes a cockpit:
-  the outline on the left, the document at full height in the middle, and a
-  **rail** on the right that stays put whatever you read. It holds the
-  next-step card, the last review, and three cards: **Waves** (where the
-  project stands, a chip per wave), **Pull requests** (counts, when they were
-  last checked, a chip per PR with its state, refresh) and **Agents** (the
-  item's sessions, running first — click to open). The header then drops its
-  PR and wave chips, which the rail repeats. A card whose tab is open is left
-  out of the rail. In a narrow tab (a split pane, a small window) the layout
-  is the one above.
+  When the tab is wide (about 1180px and up), a **rail** on the right keeps
+  the item's context in view whatever you read, beside the next-step card and
+  the content: **Waves** (where the project stands, a chip per wave), **Pull
+  requests** (counts, when they were last checked, a chip per PR with its
+  state, refresh) and **Agents** (the item's sessions, running first — click to
+  open). The header then drops its PR and wave chips, which the rail repeats,
+  and a card whose tab is open is left out. In a narrow tab (a split pane, a
+  small window) there is no rail.
 - **Tabs** — one row of tabs above the content and the action bar below it.
 
 The grouping is the pure `gui/dist/wf-outline.js` (tested); both views are
@@ -195,7 +192,8 @@ A project in waves opens on its **Waves** tab, a roadmap:
 - At the top, in plain sentences, what is happening and what you do next
   ("w1 · Foundations is waiting for your approval. 2 of 8 PRs merged, 6 still
   open. Next: get its PRs merged, then approve it — that unlocks w2."), a
-  track of every wave's state, and the approve/start buttons.
+  track of every wave's state, and — in the Tabs view — the approve/start
+  buttons (the Workbench's next-step card above already carries them).
 - Then the steps in order. Each wave shows what it delivers, its state, how
   many of its PRs are merged, its tickets (linked to your tracker) and its PRs
   (click to open, right-click for the PR's actions). *Scheduling* folds away
@@ -203,8 +201,9 @@ A project in waves opens on its **Waves** tab, a roadmap:
 
 The tab uses the space it has: in a wide tab the "now" panel and a summary
 of the PRs stay on the left while the steps fill the rest, with a step's waves
-side by side; in a narrow one (a split pane, a small window) it is a single
-column.
+side by side (the PR summary steps aside when the item's right-hand rail
+shows the same counts); in a narrow one (a split pane, a small window) it is
+a single column.
 
 A PR belongs to a wave when the wave lists it (the agent adds each PR it
 opens) or when its branch names a ticket only that wave lists. The header
@@ -552,7 +551,11 @@ all/none toggle):
 
 Every PR chip also has a right-click menu with that PR's actions. The **⇄ PR
 dashboard** (button on the WORKFLOWS section) lists every item holding a PR
-across all projects, decisions first and merged last.
+across all projects as a card, decisions first and merged last; on a card
+whose item still has open PRs, the merged and closed ones fold behind a
+*+N merged or closed* chip. The ⊞ **board** shows items by stage, one lane
+each with its count; the DONE lane shows the latest few and folds the rest
+behind *Show N more*.
 
 ## PR stacks
 
@@ -714,7 +717,9 @@ configured webhook. Your own clicks never post.
   asks (*Keep my edits* / *Overwrite*) only when an upgrade would replace a
   skill you edited by hand; `general.skills_update` (*Settings → Workflows →
   Skill updates*) pins the answer. The ☰ button on the WORKFLOWS section lists
-  every installed skill and badges the ones clash manages.
+  every installed skill — clash's own first, under *Managed by clash* — and
+  opens each on its name and description (from the frontmatter), then the
+  body.
 
 ## Storage
 

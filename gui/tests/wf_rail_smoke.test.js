@@ -68,8 +68,7 @@ test("the rail carries the waves, the PRs and the item's agents", () => {
   assert.ok(t.includes("api#1 · open") && t.includes("web#2 · merged"));
   assert.ok(t.includes("All pull requests →"));
   assert.ok(t.includes("S · code review r3") && t.includes("thinking"));
-  // Cards are context: hidden in a narrow tab by CSS.
-  assert.ok(rail.children.every((c) => /\bwf-rail-ctx\b/.test(c.className)));
+  assert.ok(rail.children.every((c) => c.className === "wf-rail-card"));
 });
 
 test("the rail leaves out the card of the tab beside it", () => {
@@ -78,16 +77,30 @@ test("the rail leaves out the card of the tab beside it", () => {
   assert.ok(texts(run("plan")).includes("No agent session yet."));
 });
 
-test("the workbench is outline | content | rail, the bar in the rail", () => {
+test("the workbench is outline | content | rail, the actions on top of the content", () => {
+  // The next-step card stays where it always was, above the content, at
+  // every width; the rail only adds context beside it when there is room.
   const view = extractFunction(APP, "buildWorkflowView");
   assert.match(view, /wrap\.append\(wfRenderOutline\(subViews, ts\.subView, selectSubView\), rail, main\);/);
-  assert.match(view, /if \(rail\) rail\.insertBefore\(actions, rail\.firstChild\);/);
-  assert.match(view, /\(rail \|\| host\)\.appendChild\(strip\);/);
+  assert.match(view, /if \(bench\) host\.insertBefore\(actions, host\.firstChild\);/);
+  assert.match(view, /host\.appendChild\(strip\);/);
+  assert.doesNotMatch(view, /rail\.insertBefore\(actions/);
   assert.match(view, /if \(rail\) wfRenderRail\(rail, el, item, ts\);/);
   const css = dist("style.css");
   assert.match(css, /\.wf-view\.wf-bench-view \{ container: wfitem \/ inline-size; \}/);
+  assert.match(css, /\.wf-bench > \.wf-rail \{ grid-area: rail; display: none; \}/);
   assert.match(css, /@container wfitem \(min-width: 1180px\) \{[\s\S]*?grid-template-areas: "outline main rail";/);
-  // Narrow keeps the old order: the bar above the content.
-  assert.match(css, /grid-template-areas: "outline rail" "outline main";/);
-  assert.match(css, /\.wf-rail-ctx \{ display: none; \}/);
+  assert.match(css, /grid-template-areas: "outline main";/);
+});
+
+test("nothing in the item tab is pushed past its right edge", () => {
+  // The tab clips (.wf-view overflow: hidden), so a row that cannot wrap
+  // hides its last buttons with no way to scroll to them.
+  const css = dist("style.css");
+  assert.match(css, /\.wf-view \{[^}]*overflow: hidden;/);
+  assert.match(css, /\.wf-head \{[^}]*flex-wrap: wrap;/);
+  assert.match(css, /\.wf-title \{[^}]*text-overflow: ellipsis;/);
+  assert.match(css, /\.wf-head \.wf-meta \{[^}]*text-overflow: ellipsis;/);
+  // The stepper scrolls rather than clips.
+  assert.match(css, /\.wf-pipeline \{[^}]*overflow-x: auto;/);
 });

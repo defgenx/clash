@@ -261,8 +261,8 @@
         workbench:
           "The suggested next step and why, this step's actions (🔍 Check… runs reviews and " +
           "explanations), then the decisions that move the item. Back, share and abandon are " +
-          "under More. In a wide tab it sits in the right-hand rail, with the item's waves, " +
-          "pull requests and agents under it.",
+          "under More. In a wide tab, a rail on the right keeps the item's waves, pull " +
+          "requests and agents in view.",
         tabs:
           "The suggested next step and why, this step's actions (🔍 Check… runs reviews and " +
           "explanations), the decisions that move the item, and on the right back, share and " +

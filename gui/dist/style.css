@@ -1154,14 +1154,21 @@ body.pane-dragging, body.pane-dragging * { cursor: grabbing !important; user-sel
 
 /* Workflow item detail tab */
 .wf-view { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+/* The header wraps instead of overflowing: the tab clips (overflow: hidden),
+   so a row wider than the tab used to push its last buttons — the PR chips,
+   the ? — out of reach with no scrollbar to bring them back. Title and meta
+   shrink with an ellipsis first; the chips move to a second line after. */
 .wf-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   padding: 10px 16px 8px;
   border-bottom: 1px solid var(--border);
+  min-width: 0;
 }
-.wf-title { font-size: 14px; font-weight: 600; }
+.wf-title { font-size: 14px; font-weight: 600; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-head .wf-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
 .wf-chip {
   font-size: 10px;
   letter-spacing: 0.5px;
@@ -3339,48 +3346,39 @@ body.layout-flyout #sidebar-resizer { display: none; }
 
 /* ── Workflow item view: Workbench (wf-outline.js + buildWorkflowView) ──
    A grouped outline beside a main column that opens on the next step. */
-/* Workbench = a cockpit: outline | content | context rail. The rail (the
-   next-step card, the last round, waves/PRs/agents cards) sits above the
-   content in a narrow tab — the layout this view always had — and beside it
-   in a wide one. Sized by the tab (container wfitem), not the window. */
+/* Workbench: outline | content (its next-step card on top) | context rail.
+   The rail — waves, PRs and agents cards — exists only when the tab is wide;
+   in a narrow tab the header carries those facts. Sized by the tab
+   (container wfitem), not the window, so a split pane gets no rail. */
 .wf-view.wf-bench-view { container: wfitem / inline-size; }
 .wf-bench {
   flex: 1;
   min-height: 0;
   display: grid;
   grid-template-columns: 196px minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
-  grid-template-areas: "outline rail" "outline main";
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "outline main";
 }
 .wf-bench > .wf-outline { grid-area: outline; }
-.wf-bench > .wf-rail { grid-area: rail; display: flex; flex-direction: column; min-width: 0; }
 .wf-bench > .wf-bench-main { grid-area: main; }
 .wf-bench-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-/* The context cards repeat the header's chips: only worth their room when
-   the rail has its own column. */
-.wf-rail-ctx { display: none; }
+.wf-bench > .wf-rail { grid-area: rail; display: none; }
 @container wfitem (min-width: 1180px) {
   .wf-bench {
-    grid-template-columns: 196px minmax(0, 1fr) minmax(300px, 360px);
-    grid-template-rows: minmax(0, 1fr);
+    grid-template-columns: 196px minmax(0, 1fr) minmax(280px, 340px);
     grid-template-areas: "outline main rail";
   }
   .wf-bench > .wf-rail {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
     border-left: 1px solid var(--border);
     background: var(--bg-sidebar);
+    overflow-x: hidden;
     overflow-y: auto;
     padding-bottom: 12px;
   }
-  .wf-rail-ctx { display: block; }
   .wf-bench-view .wf-head-ctx { display: none; }
-  /* The next-step card, stacked: its zones one under the other. */
-  .wf-rail .wf-actions { margin: 12px; flex-direction: column; align-items: stretch; box-shadow: none; }
-  .wf-rail .wf-actions-group + .wf-actions-group { border-left: none; padding-left: 0; border-top: 1px solid var(--border); padding-top: 8px; }
-  .wf-rail .wf-actions-item { margin-left: 0; }
-  .wf-rail .wf-actions > .wf-next { padding-right: 0; padding-top: 18px; }
-  .wf-rail .wf-review-strip { margin: 0 12px 4px; flex-direction: column; align-items: stretch; gap: 2px; border: 1px solid var(--border); }
-  .wf-rail .wf-review-strip-verdict { white-space: normal; }
-  .wf-rail .wf-review-strip-published { white-space: normal; }
 }
 .wf-rail-card { margin: 10px 12px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
 .wf-rail-card-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 6px; }
@@ -3466,8 +3464,8 @@ body.layout-flyout #sidebar-resizer { display: none; }
 @media (max-width: 760px) {
   .wf-bench {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto minmax(0, 1fr);
-    grid-template-areas: "outline" "rail" "main";
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "outline" "main";
   }
   .wf-outline { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--border); }
   .wf-outline .spacer, .wf-outline-group { display: none; }
@@ -3962,3 +3960,214 @@ button.wf-chip:hover, a.wf-chip:hover { color: var(--fg); border-color: var(--fg
 .wf-itemprs-facts { flex: 1; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-itemprs-threads { font-size: 11px; color: var(--accent); }
 .wf-itemprs-error { font-size: 11px; }
+
+/* ══ Design refresh — workflow surfaces, Skills and dialogs ══════════════════
+   One set of building blocks for the item tab, the board, the PR dashboard,
+   the Skills view and every dialog: three radii, one surface per level, one
+   caption style, quiet secondary buttons and a single filled one. Colours
+   come only from the theme tokens, so every palette keeps working. Later in
+   the file than the rules it refines, on purpose. */
+:root {
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+}
+
+/* ── Dialogs ── */
+.dialog-backdrop { backdrop-filter: blur(2px); }
+.dialog-box {
+  padding: 20px 22px 18px;
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-strong);
+}
+/* The first line of every dialog is its question: a title, not body text. */
+.dialog-box > p:first-child { font-size: 14px; font-weight: 600; line-height: 1.4; margin-bottom: 8px; }
+.dialog-box p.dialog-detail {
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg-dim);
+  background: none;
+  border: 0;
+  padding: 0;
+  margin-bottom: 14px;
+}
+.modal-actions { margin-top: 18px; gap: 8px; }
+.modal-actions button {
+  padding: 7px 14px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  background: var(--bg-hover);
+}
+.dialog-box.wf-review { width: min(600px, calc(100vw - 48px)); }
+/* Option groups: a caption, then each choice as a selectable row. */
+.wf-review-group { border: 0; padding: 0; margin: 0 0 16px; }
+.wf-review-group legend {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  padding: 0;
+  margin-bottom: 6px;
+}
+.wf-review-opt {
+  gap: 10px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.wf-review-opt:has(input:checked) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.wf-review-opt:has(input:disabled) { opacity: 0.5; cursor: default; }
+.wf-review-opt-label { font-weight: 500; }
+.wf-review-apply { border-radius: var(--r-md); padding: 8px 10px; }
+/* The checklist's rows already frame their option: no box inside a box. */
+.wf-checks .wf-check-row { border-radius: var(--r-md); padding: 6px 8px; }
+.wf-checks .wf-check-row .wf-review-opt { border: 0; margin: 0; padding: 4px 2px; background: none; }
+/* An unticked check keeps its options folded: `display: flex` above would
+   otherwise outrank the `hidden` attribute and show every row's settings. */
+/* In the Workbench the next-step card sits on top of every tab, so the
+   roadmap's own decision row would repeat it; the rail, when shown, already
+   carries the PR counts. */
+.wf-bench .wf-waves-aside .wf-inline-actions { display: none; }
+@container wfitem (min-width: 1180px) {
+  .wf-bench .wf-waves-stats { display: none; }
+}
+/* A choice dialog's answers stay one line each; three of them wrap as a row. */
+.dialog-box { width: min(480px, calc(100vw - 48px)); }
+.modal-actions { flex-wrap: wrap; }
+.modal-actions button { white-space: nowrap; }
+.modal-actions button:not(.primary):not(.danger-primary):hover { background: var(--bg-active); }
+.wf-checks .wf-check-opts[hidden],
+.wf-checks .wf-check-opts [hidden] { display: none; }
+.wf-checks .wf-check-opts { padding: 6px 0 4px 26px; }
+.wf-checks .wf-check-opts select,
+.wf-checks .wf-check-opts input[type="text"] { flex: 1 1 100%; min-width: 0; max-width: 100%; }
+.wf-checks .wf-check-only,
+.wf-checks .wf-check-opts button {
+  font-size: 11.5px;
+  padding: 3px 9px;
+  border-radius: var(--r-sm);
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.wf-checks .wf-check-only:hover,
+.wf-checks .wf-check-opts button:hover { color: var(--fg); border-color: var(--fg-dim); background: var(--bg-hover); }
+.wf-checks .wf-check-row.on { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+
+/* ── Item tab: the next-step card ── */
+.wf-bench .wf-actions {
+  margin: 14px 18px 6px;
+  padding: 14px 16px;
+  gap: 12px 18px;
+  border-radius: var(--r-lg);
+  box-shadow: none;
+}
+/* The suggestion reads as a sentence, its buttons after it. */
+.wf-next { gap: 8px 10px; }
+.wf-next > .wf-actions-caption { order: 0; }
+.wf-next > .wf-next-why { order: 1; flex: 1 1 240px; font-size: 13px; font-weight: 600; line-height: 1.4; }
+.wf-next > .wf-next-chips { order: 2; }
+.wf-next > .wf-next-go { order: 3; }
+.wf-next > .wf-next-more { order: 4; }
+.wf-next > .wf-next-settled { order: 5; }
+/* This step's tools on the left, the decisions on the right. */
+.wf-bench .wf-actions-group + .wf-actions-group { border-left: 0; padding-left: 0; }
+.wf-bench .wf-actions-advance { margin-left: auto; }
+.wf-actions button { border-radius: var(--r-sm); padding: 6px 12px; }
+.wf-actions-step button:not(.primary) { background: transparent; }
+.wf-actions-step button:not(.primary):hover { background: var(--bg-hover); }
+/* The last review: one line that never runs under the rail. */
+.wf-review-strip { overflow: hidden; }
+.wf-review-strip-published { min-width: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; }
+.wf-bench .wf-review-strip { margin: 4px 18px 0; border-radius: var(--r-md); }
+/* One card radius across the item's views. */
+.wf-tl-card, .wf-rail-card { border-radius: 10px; }
+.wf-rail-card { padding: 12px 14px; }
+
+/* ── Board ── */
+.wf-board { gap: 12px; padding: 16px 18px; }
+.wf-col {
+  flex: 1 1 220px;
+  min-width: 220px;
+  max-width: 340px;
+  border: 0;
+  border-radius: var(--r-lg);
+  padding: 8px;
+}
+.wf-col.empty { flex: 0 0 170px; min-width: 170px; }
+.wf-col-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  padding: 4px 6px 10px;
+}
+.wf-col-count {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  padding: 0 7px;
+  border-radius: 10px;
+  background: var(--bg-active);
+}
+.wf-col-empty { font-size: 12px; color: var(--fg-dim); padding: 4px 6px 8px; }
+.wf-col-more {
+  width: 100%;
+  padding: 6px;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+.wf-col-more:hover { color: var(--fg); border-color: var(--fg-dim); }
+.wf-card { border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+.wf-card-title { font-size: 12.5px; line-height: 1.35; }
+
+/* ── PR dashboard: a card per item ── */
+.wf-prs { grid-template-columns: repeat(auto-fill, minmax(min(100%, 460px), 1fr)); gap: 10px; padding: 18px 20px; }
+.wf-prs-row { flex-direction: column; align-items: stretch; gap: 10px; padding: 12px 14px; border-radius: 10px; }
+.wf-prs-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 8px;
+  row-gap: 2px;
+  align-items: center;
+  /* In a column card `flex: 1` would grow the header to the row's height. */
+  flex: 0 0 auto;
+}
+.wf-prs-title { white-space: normal; font-weight: 600; line-height: 1.35; }
+.wf-prs-item .wf-prs-meta { grid-column: 2; white-space: normal; }
+.wf-prs-chips { justify-content: flex-start; }
+.wf-prs-chip.pr-merged { text-decoration: none; }
+.wf-prs-chip.pr-settled-more { color: var(--fg-dim); border-style: dashed; background: transparent; }
+
+/* ── Skills ── */
+.skills-list { width: 280px; min-width: 280px; padding: 10px 8px; }
+.skills-group {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  padding: 12px 10px 6px;
+}
+.skills-group:first-child { padding-top: 2px; }
+.skills-row { border-left: 0; border-radius: var(--r-md); padding: 8px 10px; margin-bottom: 2px; }
+.skills-row.active { background: var(--bg-active); box-shadow: inset 2px 0 0 var(--accent); }
+.skills-badge { border-radius: 4px; padding: 0 5px; }
+.skills-content { padding: 20px 28px 32px; }
+.skills-head { border-bottom: 1px solid var(--border); padding-bottom: 14px; margin-bottom: 16px; }
+.skills-head h2 { display: flex; align-items: center; gap: 8px; font-size: 18px; margin: 0 0 6px; }
+.skills-head-desc { font-size: 13px; line-height: 1.5; color: var(--fg-dim); margin: 0 0 10px; max-width: 100ch; }
+.skills-head .wf-doc-tools { justify-content: flex-start; gap: 10px; margin: 0; flex-wrap: wrap; }

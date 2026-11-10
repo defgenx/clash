@@ -7404,6 +7404,18 @@ function openWorkflowTab(item, opts = {}) {
   );
 }
 
+/// Split a SKILL.md into its frontmatter's `name` / `description` and the
+/// markdown body. A file without frontmatter is all body.
+function skillFrontmatter(text) {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text || "");
+  if (!m) return { name: "", description: "", body: text || "" };
+  const field = (k) => {
+    const f = new RegExp(`^${k}:\\s*(.*)$`, "m").exec(m[1]);
+    return f ? f[1].trim().replace(/^["']|["']$/g, "") : "";
+  };
+  return { name: field("name"), description: field("description"), body: text.slice(m[0].length) };
+}
+
 /// Skills viewer: the Claude Code skills clash ships (managed, auto-updated
 /// at startup) and any other skills under ~/.claude/skills. Singleton tab.
 function openSkillsTab(selectName = null) {
@@ -7469,15 +7481,48 @@ async function buildSkillsView(el, selectName) {
     open.onclick = (ev) =>
       openScratchInEditor({ path: skill.path, title: skill.name }, ev.clientX, ev.clientY);
     tools.appendChild(open);
-    content.appendChild(tools);
+    // The frontmatter is the skill's identity card, not its first heading:
+    // rendered as markdown it came out as one giant bold paragraph of YAML.
+    const { name: fmName, description: fmDesc, body } = skillFrontmatter(text);
+    const head = document.createElement("div");
+    head.className = "skills-head";
+    const h = document.createElement("h2");
+    h.textContent = fmName || skill.name;
+    if (skill.managed) {
+      const b = document.createElement("span");
+      b.className = `skills-badge${skill.upToDate ? "" : " stale"}`;
+      b.textContent = skill.upToDate ? "clash" : "clash·stale";
+      h.appendChild(b);
+    }
+    head.appendChild(h);
+    if (fmDesc) {
+      const d = document.createElement("p");
+      d.className = "skills-head-desc";
+      d.textContent = fmDesc;
+      head.appendChild(d);
+    }
+    head.appendChild(tools);
+    content.replaceChildren(head);
     const md = document.createElement("div");
     md.className = "wf-md";
-    renderMarkdown(md, text);
+    renderMarkdown(md, body);
     content.appendChild(md);
   };
 
   let first = null;
-  for (const skill of skills) {
+  // clash's own skills first, under their own heading: they are the ones the
+  // workflows run, and the ones whose updates clash manages.
+  const ordered = [...skills.filter((s) => s.managed), ...skills.filter((s) => !s.managed)];
+  let group = null;
+  for (const skill of ordered) {
+    const g = skill.managed ? "Managed by clash" : "Other skills";
+    if (g !== group) {
+      group = g;
+      const gh = document.createElement("div");
+      gh.className = "skills-group";
+      gh.textContent = g;
+      list.appendChild(gh);
+    }
     const row = document.createElement("div");
     row.className = "skills-row";
     const badge = skill.managed
@@ -7488,15 +7533,17 @@ async function buildSkillsView(el, selectName) {
     row.innerHTML =
       `<div class="skills-row-name">${escapeHtml(skill.name)}${badge}</div>` +
       `<div class="skills-row-desc">${escapeHtml(
-        (skill.description || "").slice(0, 140)
+        (skill.description || "").replace(/^["']|["']$/g, "").slice(0, 140)
       )}</div>`;
     row.onclick = () => show(skill, row);
     list.appendChild(row);
     if (!first || skill.name === selectName) first = { skill, row };
-    if (skill.name === selectName) first = { skill, row };
   }
   if (first) show(first.skill, first.row);
 }
+
+/// How many finished items the board's DONE lane shows before "Show N more".
+const WF_BOARD_DONE_SHOWN = 6;
 
 // Board columns: display name → statuses bucketed into it.
 const WF_BOARD_COLUMNS = [
@@ -7527,9 +7574,28 @@ function renderWorkflowBoard(el) {
   for (const [name, statuses] of WF_BOARD_COLUMNS) {
     const items = state.workflows.filter((w) => statuses.includes(w.meta.status));
     const col = document.createElement("div");
-    col.className = "wf-col";
-    col.innerHTML = `<div class="wf-col-head">${name} <span class="dim">${items.length}</span></div>`;
-    for (const item of items) col.appendChild(buildWorkflowCard(item));
+    col.className = "wf-col" + (items.length ? "" : " empty");
+    col.innerHTML = `<div class="wf-col-head"><span>${name}</span><span class="wf-col-count">${items.length}</span></div>`;
+    if (!items.length) {
+      const none = document.createElement("div");
+      none.className = "wf-col-empty";
+      none.textContent = "Nothing here";
+      col.appendChild(none);
+    }
+    // A lane of finished work grows forever; its first cards say enough.
+    const fold = statuses.includes("done") && items.length > WF_BOARD_DONE_SHOWN;
+    const visible = fold ? items.slice(0, WF_BOARD_DONE_SHOWN) : items;
+    for (const item of visible) col.appendChild(buildWorkflowCard(item));
+    if (fold) {
+      const more = document.createElement("button");
+      more.className = "wf-col-more";
+      more.textContent = `Show ${items.length - WF_BOARD_DONE_SHOWN} more`;
+      more.onclick = () => {
+        more.remove();
+        for (const item of items.slice(WF_BOARD_DONE_SHOWN)) col.appendChild(buildWorkflowCard(item));
+      };
+      col.appendChild(more);
+    }
     board.appendChild(col);
   }
   el.appendChild(board);
@@ -7628,7 +7694,7 @@ function renderWorkflowPrDashboard(el) {
     left.innerHTML =
       `<span class="status-ring wf-ring ${info.cls}" title="${info.label}"></span>` +
       `<span class="wf-prs-title">${escapeHtml(r.title)}</span>` +
-      `<span class="dim">${escapeHtml(r.project)} · ${info.label}${
+      `<span class="wf-prs-meta dim">${escapeHtml(r.project)} · ${info.label}${
         r.unanswered ? ` · 💬${r.unanswered} unanswered` : ""
       }${r.updatedAt ? ` · ${wfAgo(r.updatedAt)}` : ""}</span>`;
     left.onclick = () => {
@@ -7638,7 +7704,13 @@ function renderWorkflowPrDashboard(el) {
     row.appendChild(left);
     const chips = document.createElement("div");
     chips.className = "wf-prs-chips";
-    for (const pr of r.prs) {
+    // What still needs work leads; merged and closed PRs fold behind one
+    // chip when there is something open — they are history, not a decision.
+    const settledPr = (p) => p.state === "MERGED" || p.state === "CLOSED";
+    const live = r.prs.filter((p) => !settledPr(p));
+    const done = r.prs.filter(settledPr);
+    const shown = live.length && done.length ? live : r.prs;
+    for (const pr of shown) {
       const chip = document.createElement("button");
       const stateBit = prStateLabel(pr);
       chip.className = `wf-prs-chip${stateBit ? ` pr-${stateBit}` : ""}`;
@@ -7662,6 +7734,28 @@ function renderWorkflowPrDashboard(el) {
         if (item) showContextMenu(ev.clientX, ev.clientY, wfPrMenu(item, pr, null));
       };
       chips.appendChild(chip);
+    }
+    if (shown !== r.prs) {
+      const more = document.createElement("button");
+      more.className = "wf-prs-chip pr-settled-more";
+      more.textContent = `+${done.length} merged or closed`;
+      more.title = done.map((p) => `${prChipLabel(p)} · ${prStateLabel(p)}`).join("\n");
+      more.onclick = (ev) => {
+        ev.stopPropagation();
+        more.remove();
+        for (const pr of done) {
+          const chip = document.createElement("button");
+          chip.className = `wf-prs-chip pr-${prStateLabel(pr)}`;
+          chip.innerHTML = `${svgIcon("pr", 11)}<span>${escapeHtml(prChipLabel(pr))} · ${escapeHtml(prStateLabel(pr))}</span>`;
+          chip.title = pr.url;
+          chip.onclick = (e) => {
+            e.stopPropagation();
+            openLink(pr.url);
+          };
+          chips.appendChild(chip);
+        }
+      };
+      chips.appendChild(more);
     }
     if (r.stackIssue) chips.appendChild(wfStackIssueChip(r.stackIssue));
     row.appendChild(chips);
@@ -8141,11 +8235,10 @@ async function buildWorkflowView(el, project, slug) {
   const bench = !bigDrawing && WfOutline.itemViewOf(state.settings.workflowView).id === "workbench";
   el.classList.toggle("wf-bench-view", bench);
   let host = el;
-  // Workbench is a cockpit: the outline, the content, and a context rail that
-  // holds the next step (the action bar), the last round and the item's
-  // waves, PRs and agents. The rail sits beside the content when the tab is
-  // wide and above it — today's layout — when it is not (a container query
-  // on the tab, so a split pane gets the narrow form). See wf-rail.js.
+  // Workbench: the outline, the content under its next-step card, and — when
+  // the tab is wide — a context rail with the item's waves, PRs and agents
+  // (a container query on the tab, so a split pane gets no rail; the header
+  // carries the same facts there). See wf-rail.js.
   let rail = null;
   if (bench) {
     const wrap = document.createElement("div");
@@ -8216,7 +8309,7 @@ async function buildWorkflowView(el, project, slug) {
       ts.subView = "agentReview";
       buildWorkflowView(el, project, slug);
     };
-    (rail || host).appendChild(strip);
+    host.appendChild(strip);
   }
 
   // ── Content ──
@@ -8230,7 +8323,7 @@ async function buildWorkflowView(el, project, slug) {
   if (!bigDrawing) {
     const actions = document.createElement("div");
     actions.className = "wf-actions";
-    if (rail) rail.insertBefore(actions, rail.firstChild);
+    if (bench) host.insertBefore(actions, host.firstChild);
     else el.appendChild(actions);
     renderWfActions(actions, el, item);
     if (bench) wfFoldItemZone(actions);
@@ -8251,9 +8344,9 @@ async function buildWorkflowView(el, project, slug) {
 /// Workbench's outline: the item's sub-views grouped (Build, Feedback,
 /// Explained, History) with counts as badges, Settings at the bottom. The
 /// grouping is the pure `WfOutline.wfOutline`, fed the same list as the tabs.
-/// The cockpit rail's context cards — shown only when the tab is wide (the
-/// header and the bar carry the same facts otherwise): the waves, the PRs at
-/// a glance and the item's agents. Decided by `railModel` (wf-rail.js); each
+/// The context rail's cards — the rail shows only when the tab is wide (the
+/// header carries the same facts otherwise): the waves, the PRs at a glance
+/// and the item's agents. Decided by `railModel` (wf-rail.js); each
 /// card leads to the tab that holds the full story.
 function wfRenderRail(rail, el, item, ts) {
   const m = railModel(item, state.sessions, { subView: ts.subView });
@@ -8263,7 +8356,7 @@ function wfRenderRail(rail, el, item, ts) {
   };
   const card = (title, action) => {
     const c = document.createElement("section");
-    c.className = "wf-rail-card wf-rail-ctx";
+    c.className = "wf-rail-card";
     const h = document.createElement("div");
     h.className = "wf-rail-card-head";
     const t = document.createElement("span");
@@ -12347,12 +12440,19 @@ function wfRenderNextStep(bar, item) {
     const target = buttons.find((b) => b.dataset.act === step.id);
     for (const b of bar.querySelectorAll("button.primary")) b.classList.remove("primary");
     target.classList.add("primary");
-    const go = document.createElement("button");
-    go.className = "wf-next-go";
-    go.textContent = target.textContent;
-    go.title = target.title;
-    go.onclick = () => target.click();
-    strip.append(cap, go, why);
+    // The suggested button is already on the bar, highlighted; a copy of it
+    // here only doubled every label. It is copied only when it lives in the
+    // Item zone, which Workbench folds into More.
+    if (target.closest(".wf-actions-item")) {
+      const go = document.createElement("button");
+      go.className = "wf-next-go";
+      go.textContent = target.textContent;
+      go.title = target.title;
+      go.onclick = () => target.click();
+      strip.append(cap, why, go);
+    } else {
+      strip.append(cap, why);
+    }
   }
   if (step.settled.length) {
     const ok = document.createElement("span");

@@ -1007,7 +1007,9 @@ starts with what is happening and what to do next, in sentences
 (`waveNarrative`: "w1 · Foundations is waiting for your approval. 2 of 8 PRs
 merged, 6 still open. Next: … then approve it — that unlocks w2."), a track
 of every wave's state and the same approve/start buttons as the bar
-(`wfWaveDecisionButtons`, one set of handlers). Then the steps in order —
+(`wfWaveDecisionButtons`, one set of handlers — hidden by CSS in the
+Workbench, whose next-step card is already on top; the aside's PR summary,
+`.wf-waves-stats`, likewise hides where the rail shows it). Then the steps in order —
 waves grouped by dependency level, saying which of a step's waves may share
 a round — each wave with its state, PR progress (`merged/total`), summary,
 linked tickets (URLs resolved from `[trackers]` by the GUI layer) and PR
@@ -1017,11 +1019,11 @@ existing pieces (Timeline cards, `.wf-chip` states, the action bar's buttons
 via `.wf-inline-actions`, `.icon-btn` tools) and lay out by the **tab's**
 width through a container query (`.wf-wide-view`): one column below 980px,
 the now-panel sticky beside the steps above it, waves and PR groups in
-auto-filled grids. The item tab's Workbench view is the cockpit around them:
-`buildWorkflowView` assembles `outline | rail | main` and the `wfitem`
-container query places the rail (`wfRenderRail`, cards decided by the pure
-`railModel` in `gui/dist/wf-rail.js`) above the content below 1180px and as a
-third column above it, where the header's `.wf-head-ctx` chips are hidden. The header chip reads `Waves 2/5 · w3
+auto-filled grids. The item tab's Workbench view frames them: `buildWorkflowView` assembles
+`outline | main | rail`, the next-step card always on top of `main`, and the
+`wfitem` container query shows the rail (`wfRenderRail`, cards decided by the
+pure `railModel` in `gui/dist/wf-rail.js`) as a third column from 1180px,
+where the header's `.wf-head-ctx` chips are hidden; below it there is no rail. The header chip reads `Waves 2/5 · w3
 in progress`.
 
 **Many PRs.** Past `WF_HEAD_PR_LIMIT` (3) PRs the header shows the primary
