@@ -247,6 +247,9 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         pr_stack_issue: None,
         // `waves.json` against `meta.waves` and the status: the GUI layer.
         waves: None,
+        // The forge's answers live in the GUI process.
+        pr_checked_at: 0,
+        pr_errors: Default::default(),
         meta,
     })
 }

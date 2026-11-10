@@ -57,6 +57,8 @@
         draft: !!pr.draft,
         state: pr.state || "",
         unanswered: typeof pr.unansweredComments === "number" ? pr.unansweredComments : null,
+        headRef: pr.headRef || "",
+        baseRef: pr.baseRef || "",
         primary,
         stack: null,
       });
@@ -123,7 +125,92 @@
     return rows;
   }
 
-  const api = { prRepo, prChipLabel, prStateLabel, itemPrs, prStackLabel, prDashboardModel };
+  /// Counts over a PR list, for the summaries that stand in for a row of
+  /// chips: `{ total, merged, closed, open, draft, threads }` — `open`
+  /// includes drafts, `threads` sums the known unanswered counts.
+  function prCounts(prs) {
+    const n = (f) => (prs || []).filter(f).length;
+    return {
+      total: (prs || []).length,
+      merged: n((p) => p.state === "MERGED"),
+      closed: n((p) => p.state === "CLOSED"),
+      open: n((p) => p.state !== "MERGED" && p.state !== "CLOSED"),
+      draft: n((p) => p.draft && p.state !== "MERGED" && p.state !== "CLOSED"),
+      threads: (prs || []).reduce((t, p) => t + (p.unanswered > 0 ? p.unanswered : 0), 0),
+    };
+  }
+
+  /// "10 PRs · 2 merged · 1 closed · 7 open" — the header's stand-in for a
+  /// chip per PR, which stops being readable past a handful.
+  function prCountsText(c) {
+    if (!c.total) return "No PR";
+    const parts = [`${c.total} PR${c.total === 1 ? "" : "s"}`];
+    if (c.merged) parts.push(`${c.merged} merged`);
+    if (c.closed) parts.push(`${c.closed} closed`);
+    if (c.open) parts.push(`${c.open} open`);
+    if (c.threads) parts.push(`${c.threads} thread${c.threads === 1 ? "" : "s"} to answer`);
+    return parts.join(" · ");
+  }
+
+  /// The item's PRs grouped for its Pull requests tab: by wave when the item
+  /// has waves (in wave order, then the PRs no wave claims), else one group.
+  /// Each row carries the last refresh's error for that PR, if any. Settled
+  /// PRs sort after open ones inside a group, so what needs work reads first.
+  function prBoard(item) {
+    const prs = itemPrs((item && item.meta) || {}, item && item.prStack).map((p) => ({
+      ...p,
+      error: ((item && item.prErrors) || {})[p.url] || "",
+    }));
+    const settled = (p) => p.state === "MERGED" || p.state === "CLOSED";
+    const order = (list) =>
+      // Stable: the stack/primary order holds inside each half.
+      [...list.filter((p) => !settled(p)), ...list.filter(settled)];
+    const board = item && item.waves && !item.waves.issue ? item.waves : null;
+    let groups;
+    if (board && board.waves && board.waves.length) {
+      groups = board.waves.map((w) => ({
+        key: w.id,
+        title: w.title ? `${w.id} · ${w.title}` : w.id,
+        state: w.state,
+        prs: order(prs.filter((p) => (w.prs || []).includes(p.url))),
+      }));
+      const loose = prs.filter((p) => !board.waves.some((w) => (w.prs || []).includes(p.url)));
+      if (loose.length) groups.push({ key: "", title: "Not in a wave", state: "", prs: order(loose) });
+      groups = groups.filter((g) => g.prs.length || g.state === "active" || g.state === "review");
+    } else {
+      groups = prs.length ? [{ key: "", title: "", state: "", prs: order(prs) }] : [];
+    }
+    return {
+      groups,
+      counts: prCounts(prs),
+      errors: prs.filter((p) => p.error).length,
+      checkedAt: (item && item.prCheckedAt) || 0,
+    };
+  }
+
+  /// "checked 3 min ago" / "not checked yet".
+  function checkedAgo(at, now) {
+    if (!at) return "not checked yet";
+    const s = Math.max(0, Math.round(((now || Date.now()) - at) / 1000));
+    if (s < 60) return "checked just now";
+    const m = Math.round(s / 60);
+    if (m < 60) return `checked ${m} min ago`;
+    const h = Math.round(m / 60);
+    return `checked ${h} h ago`;
+  }
+
+  const api = {
+    prRepo,
+    prChipLabel,
+    prStateLabel,
+    itemPrs,
+    prStackLabel,
+    prDashboardModel,
+    prCounts,
+    prCountsText,
+    prBoard,
+    checkedAgo,
+  };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else Object.assign(window, api);

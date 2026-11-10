@@ -110,9 +110,51 @@ pub(crate) async fn list_workflow_items(
             Ok(s) => item.pr_stack = s,
             Err(issue) => item.pr_stack_issue = Some(issue),
         }
+        let pr_refs: Vec<clash::application::waves::PrRef> = item
+            .meta
+            .pr
+            .iter()
+            .chain(item.meta.linked_prs.iter())
+            .filter(|p| !p.url.is_empty())
+            .map(|p| clash::application::waves::PrRef {
+                url: p.url.clone(),
+                head_ref: p.head_ref.clone(),
+            })
+            .collect();
         item.waves = load_wave_plan(Path::new(&item.path)).map(|plan| {
-            clash::application::waves::wave_board(plan, &item.meta.waves, item.meta.status)
+            let mut board = clash::application::waves::wave_board(
+                plan,
+                &item.meta.waves,
+                item.meta.status,
+                &pr_refs,
+            );
+            let trackers = state.config.get().trackers();
+            for w in &mut board.waves {
+                for key in &w.tickets {
+                    if let Some(url) = trackers.link(key) {
+                        w.ticket_urls.insert(key.clone(), url);
+                    }
+                }
+            }
+            board
         });
+        {
+            let key = (item.project.clone(), item.slug.clone());
+            item.pr_checked_at = state
+                .pr_checked
+                .lock()
+                .unwrap()
+                .get(&key)
+                .copied()
+                .unwrap_or(0);
+            item.pr_errors = state
+                .pr_errors
+                .lock()
+                .unwrap()
+                .get(&key)
+                .cloned()
+                .unwrap_or_default();
+        }
         // `Reviewing` is included so a dead reviewer surfaces the same "the
         // agent is gone" affordance — without it a crashed round would leave
         // the item gated with no visible way out.
@@ -3236,38 +3278,82 @@ pub(crate) async fn refresh_workflow_pr(
     type LinkedRefresh = (usize, clash::domain::forge::ChangeView, Option<u64>);
     let forge = state.forge_for_dir(&dir);
     let dir_owned = dir.clone();
-    let (primary_result, linked_results) = tauri::async_runtime::spawn_blocking(move || {
-        let d = Path::new(&dir_owned);
-        let primary = primary_selector.map(|(selector, repo)| {
-            forge.view(d, &selector, repo.as_deref()).map(|view| {
-                // Best-effort: a failed count keeps the previous value rather
-                // than failing the refresh — a button label, not PR state.
-                let unanswered = (view.number > 0)
-                    .then(|| {
-                        forge
-                            .unanswered_review_comments(d, view.number, repo.as_deref())
-                            .ok()
-                    })
-                    .flatten();
-                (view, unanswered)
-            })
-        });
-        let linked: Vec<LinkedRefresh> = linked_ids
-            .into_iter()
-            .filter_map(|(i, repo, n)| {
-                let view = forge.view(d, &n.to_string(), Some(&repo)).ok()?;
-                let unanswered = forge.unanswered_review_comments(d, n, Some(&repo)).ok();
-                Some((i, view, unanswered))
-            })
-            .collect();
-        (primary, linked)
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+    let linked_urls: Vec<String> = meta.linked_prs.iter().map(|p| p.url.clone()).collect();
+    let (primary_result, linked_results, linked_errors) =
+        tauri::async_runtime::spawn_blocking(move || {
+            let d = Path::new(&dir_owned);
+            let primary = primary_selector.map(|(selector, repo)| {
+                forge.view(d, &selector, repo.as_deref()).map(|view| {
+                    // Best-effort: a failed count keeps the previous value rather
+                    // than failing the refresh — a button label, not PR state.
+                    let unanswered = (view.number > 0)
+                        .then(|| {
+                            forge
+                                .unanswered_review_comments(d, view.number, repo.as_deref())
+                                .ok()
+                        })
+                        .flatten();
+                    (view, unanswered)
+                })
+            });
+            // Linked PRs are asked about side by side: on an item with ten of
+            // them, one after another (two `gh` calls each) is half a minute of a
+            // stale list. A few at a time, so a big item does not trip GitHub's
+            // secondary rate limit.
+            const AT_ONCE: usize = 6;
+            let mut linked: Vec<LinkedRefresh> = Vec::new();
+            let mut errors: Vec<(usize, String)> = Vec::new();
+            for chunk in linked_ids.chunks(AT_ONCE) {
+                let answers: Vec<_> = std::thread::scope(|scope| {
+                    let jobs: Vec<_> = chunk
+                        .iter()
+                        .map(|(i, repo, n)| {
+                            let forge = &forge;
+                            scope.spawn(move || {
+                                let view = forge.view(d, &n.to_string(), Some(repo));
+                                let unanswered = view.as_ref().ok().and_then(|_| {
+                                    forge.unanswered_review_comments(d, *n, Some(repo)).ok()
+                                });
+                                (*i, view, unanswered)
+                            })
+                        })
+                        .collect();
+                    jobs.into_iter().filter_map(|j| j.join().ok()).collect()
+                });
+                for (i, view, unanswered) in answers {
+                    match view {
+                        Ok(view) => linked.push((i, view, unanswered)),
+                        Err(e) => errors.push((i, e.to_string())),
+                    }
+                }
+            }
+            (primary, linked, errors)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    // What failed this time, by URL — the list says which PR is stale and
+    // why, instead of showing its last known state as if it were current.
+    let mut failures: std::collections::BTreeMap<String, String> = linked_errors
+        .into_iter()
+        .filter_map(|(i, e)| linked_urls.get(i).map(|u| (u.clone(), e)))
+        .collect();
 
     let mut changed = false;
     if let Some(result) = primary_result {
-        let (view, unanswered) = result.map_err(forge_err)?;
+        let (view, unanswered) = match result {
+            Ok(ok) => ok,
+            Err(e) => {
+                if let Some(pr) = primary.as_ref() {
+                    failures.insert(pr.url.clone(), e.to_string());
+                }
+                state
+                    .pr_errors
+                    .lock()
+                    .unwrap()
+                    .insert((project.clone(), slug.clone()), failures);
+                return Err(forge_err(e));
+            }
+        };
         changed |= merge_pr_view(&mut meta, &view);
         if let (Some(n), Some(pr)) = (unanswered, meta.pr.as_mut()) {
             if pr.unanswered_comments != Some(n) {
@@ -3288,6 +3374,11 @@ pub(crate) async fn refresh_workflow_pr(
             }
         }
     }
+    state
+        .pr_errors
+        .lock()
+        .unwrap()
+        .insert((project.clone(), slug.clone()), failures);
     // Decided on the merged record, not on this cycle's views: a state that was
     // observed earlier but could not move the item then (a round was in
     // flight) still moves it now.
@@ -4818,6 +4909,47 @@ mod tests {
         assert!(
             derived < parked,
             "the phase must be derived before the status is overwritten"
+        );
+    }
+
+    /// An item with many PRs is refreshed side by side, and a PR the forge
+    /// could not answer about is reported rather than shown as current.
+    #[test]
+    fn linked_prs_refresh_in_parallel_and_failures_are_recorded() {
+        const SRC: &str = include_str!("workflows.rs");
+        let refresh = SRC
+            .split_once("pub(crate) async fn refresh_workflow_pr(")
+            .expect("refresh_workflow_pr")
+            .1;
+        let refresh = &refresh[..refresh.find("\n}\n").expect("end of fn")];
+        assert!(
+            refresh.contains("linked_ids.chunks(AT_ONCE)"),
+            "fetch in bounded batches"
+        );
+        assert!(
+            refresh.contains("std::thread::scope"),
+            "fetch each batch concurrently"
+        );
+        assert!(
+            refresh.contains("Err(e) => errors.push((i, e.to_string()))"),
+            "a failed fetch is kept, not dropped"
+        );
+        assert_eq!(
+            refresh.matches(".pr_errors").count(),
+            2,
+            "errors are recorded on success and on a failed primary"
+        );
+        let list = SRC
+            .split_once("pub(crate) async fn list_workflow_items(")
+            .expect("list_workflow_items")
+            .1;
+        assert!(
+            list.contains("item.pr_checked_at = state"),
+            "the item says when it was checked"
+        );
+        assert!(
+            list.contains("item.pr_errors = state"),
+            "the item carries the failures"
         );
     }
 

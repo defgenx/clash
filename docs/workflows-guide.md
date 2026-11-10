@@ -24,6 +24,7 @@ design behind each rule are in [workflows.md](workflows.md).
 - [Code review and PR verdicts](#code-review-and-pr-verdicts)
 - [Going back](#going-back)
 - [Pull requests](#pull-requests)
+- [Many pull requests](#many-pull-requests)
 - [Multi-repo work](#multi-repo-work)
 - [PR stacks](#pr-stacks)
 - [Ticket trackers and sharing](#ticket-trackers-and-sharing)
@@ -177,11 +178,21 @@ touches. A single task has no waves and works as before.
   are in review, and approve them on the way. You can open the PR whenever you
   like; it collects the waves as they land.
 
-The **Waves** tab shows the plan as columns: the first waves, then the ones
-that wait for them, and so on. Each card says whether it is approved, in
-review, in progress, ready or waiting, what it waits for, what it can run
-with and which files it touches. The header shows `Waves 2/5 · w3 in
-progress`, and the suggested next step points at the wave buttons. A
+A project in waves opens on its **Waves** tab, a roadmap:
+
+- At the top, in plain sentences, what is happening and what you do next
+  ("w1 · Foundations is waiting for your approval. 2 of 8 PRs merged, 6 still
+  open. Next: get its PRs merged, then approve it — that unlocks w2."), a
+  track of every wave's state, and the approve/start buttons.
+- Then the steps in order. Each wave shows what it delivers, its state, how
+  many of its PRs are merged, its tickets (linked to your tracker) and its PRs
+  (click to open, right-click for the PR's actions). *Scheduling* folds away
+  what it waits for, what it can share a round with and the code it touches.
+
+A PR belongs to a wave when the wave lists it (the agent adds each PR it
+opens) or when its branch names a ticket only that wave lists. The header
+shows `Waves 2/5 · w3 in progress`, and the suggested next step points at
+the wave buttons. A
 `waves.json` that can't be used (a wave that depends on itself, a loop, an
 unknown wave) shows the reason and blocks starting: request changes on the
 plan so the planner fixes it.
@@ -488,6 +499,21 @@ or abandoned item offers **↩ Reopen at diff review**.
   the origin remote (GitHub Enterprise included). `none` hides every PR feature.
 - A command that needs a PR the item doesn't know asks for its URL, attaches it
   and retries. A review round can run locally instead.
+
+## Many pull requests
+
+With more than three PRs, the item's header shows the primary PR and one
+summary — `10 PRs · 2 merged · 7 open` — instead of a chip per PR. Click it
+for the **Pull requests** tab, which every item with two PRs or more has:
+
+- every PR in one list, grouped by wave when the item has waves, open ones
+  first;
+- per PR: its state, whether it is the primary, its place in a stack, its
+  branch and base, threads waiting for an answer, and the error if the last
+  refresh could not reach it;
+- **↻ Refresh all** asks GitHub about every PR at once, and the list says
+  when it was last checked;
+- **Open N open PRs**, and **⋯** on each row for that PR's actions.
 
 ## Multi-repo work
 

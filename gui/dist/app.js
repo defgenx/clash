@@ -7858,8 +7858,13 @@ async function buildWorkflowView(el, project, slug) {
   // because the mode is only known once the item is loaded. A restored tab can
   // also carry a "plan" sub-view the item no longer offers — coerce it, or the
   // view would render a doc with no tab to leave it by.
+  // A project in waves opens on its roadmap: where it stands and what is
+  // next is the first question about one.
+  if (!ts.subView && item.waves) ts.subView = "waves";
   if (!ts.subView || (ts.subView === "plan" && !wfHasPlanPhase(item)))
     ts.subView = wfHasPlanPhase(item) ? "plan" : "diff";
+  if (ts.subView === "waves" && !item.waves) ts.subView = wfHasPlanPhase(item) ? "plan" : "diff";
+  if (ts.subView === "prs" && itemPrs(item.meta).length < 2) ts.subView = "diff";
   // Same coercion for the agent-reviews tab, which only exists once a round has
   // run: a tab restored from a state where it did would otherwise render a doc
   // with no tab to leave it by.
@@ -7938,8 +7943,28 @@ async function buildWorkflowView(el, project, slug) {
   // PR's own action menu — on a multi-repo item the per-repo decisions have
   // to live somewhere, and the PR itself is the only surface that identifies
   // which repository they are about.
-  // A stacked item lists its PRs base → tip, each with its layer.
-  for (const pr of itemPrs(item.meta, item.prStack)) {
+  // A stacked item lists its PRs base → tip, each with its layer. Past a
+  // handful the row stops being readable — ten chips with ten states — so a
+  // bigger item shows its primary and one summary that opens the Pull
+  // requests tab, where every PR has a row of its own.
+  const headPrs = itemPrs(item.meta, item.prStack);
+  const manyPrs = headPrs.length > WF_HEAD_PR_LIMIT;
+  if (manyPrs) {
+    const sum = document.createElement("button");
+    sum.className = "icon-btn wide wf-prs-summary";
+    const counts = prCounts(headPrs);
+    const errs = Object.keys(item.prErrors || {}).length;
+    sum.innerHTML = `${svgIcon("pr", 12)}<span>${escapeHtml(prCountsText(counts))}${
+      errs ? ` <span class="wf-warn">· ${errs} not refreshed</span>` : ""
+    }</span>`;
+    sum.title = `Every PR of this item, by ${item.waves ? "wave" : "repository"} — ${checkedAgo(item.prCheckedAt)}`;
+    sum.onclick = () => {
+      ts.subView = "prs";
+      buildWorkflowView(el, item.project, item.slug);
+    };
+    head.appendChild(sum);
+  }
+  for (const pr of manyPrs ? headPrs.filter((p) => p.primary) : headPrs) {
     const prBtn = document.createElement("button");
     prBtn.className = "icon-btn wide" + (pr.primary ? "" : " wf-linked-pr");
     const label = pr.primary ? `#${pr.number || "PR"}` : prChipLabel(pr);
@@ -8058,6 +8083,11 @@ async function buildWorkflowView(el, project, slug) {
     // next and what may run alongside it.
     ...(item.waves
       ? [["waves", wavesIssue(item) ? "Waves ⚠" : (waveSummary(item) || { text: "Waves" }).text.split(" · ")[0]]]
+      : []),
+    // Several PRs get a list of their own: state, threads, stack, wave and
+    // whether the last refresh reached them.
+    ...(itemPrs(item.meta).length > 1
+      ? [["prs", `Pull requests (${itemPrs(item.meta).length})`]]
       : []),
     // "Review" and "Agent reviews" side by side told you nothing about which
     // was which. One holds your notes, the other the reviewer's findings.
@@ -10673,6 +10703,9 @@ async function wfTransition(item, root, status) {
   }
 }
 
+/// Past this many PRs the item header summarizes instead of listing.
+const WF_HEAD_PR_LIMIT = 3;
+
 /// Pick the waves the next implementation round covers. Ready waves only;
 /// the first is ticked (waves go in order), and ticking another is possible
 /// only when the backend found the two compatible — no dependency between
@@ -13285,93 +13318,296 @@ function wfGuardExplainFrame(frame, srcdoc, onPart) {
   });
 }
 
-/// The Waves tab: a multi-wave item's schedule as columns of dependency
-/// levels — what is approved, in review, in progress, ready, or waiting, and
-/// which waves may run alongside which. The same decisions as the action bar
-/// (approve the round, start the next) sit on top, so the tab is where waves
-/// are driven from as well as read.
+/// A PR as a small state chip: opens on click, its own menu on right-click.
+function wfPrStateChip(item, root, pr) {
+  const b = document.createElement("button");
+  const st = prStateLabel(pr) || "open";
+  b.className = `wf-pr-chip wf-pr-${st}`;
+  b.textContent = `${prChipLabel(pr)} · ${st}`;
+  b.title = `${pr.url}${pr.error ? ` — not refreshed: ${pr.error}` : ""}; right-click for this PR's actions`;
+  if (pr.error) b.classList.add("wf-pr-stale");
+  b.onclick = () => openLink(pr.url);
+  b.oncontextmenu = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    showContextMenu(ev.clientX, ev.clientY, wfPrMenu(item, pr, root));
+  };
+  return b;
+}
+
+/// The wave decisions the bar offers, as buttons for the roadmap — the same
+/// handlers, so the tab and the bar cannot disagree.
+function wfWaveDecisionButtons(item, root) {
+  const out = [];
+  const bar = waveBarState(item);
+  const parked = ["plan-review", "diff-review", "pr-draft", "pr-ready"].includes(item.meta.status);
+  if (!bar || !parked) return out;
+  const mk = (label, cls, fn, title) => {
+    const b = document.createElement("button");
+    if (cls) b.className = cls;
+    b.textContent = label;
+    b.title = title;
+    b.onclick = () => busyButton(b, fn);
+    out.push(b);
+  };
+  if (bar.kind === "approve") {
+    mk(`✓ Approve ${waveList(bar.review)} → next waves…`, "primary", () => wfApproveWaves(item, root), "Approve and pick what starts next");
+    mk(`✓ Approve ${waveList(bar.review)} only`, "", () => wfApproveWaves(item, root, { next: false }), "Approve and start nothing yet");
+  } else if (bar.kind === "start") {
+    const label = item.meta.status === "plan-review" ? "✓ Approve plan → start waves…" : "▶ Start next waves…";
+    mk(label, "primary", () => wfStartWaves(item, root), "Pick the waves of the next round — spends tokens");
+  }
+  return out;
+}
+
+/// The Waves tab: a project's roadmap. It opens on what is happening and
+/// what to do next (in sentences, `waveNarrative`), then walks the steps in
+/// order — each wave with its state, what it delivers, its tickets and PRs
+/// and how far those have landed — so the plan, the PRs and the decision in
+/// front of you read as one story instead of three tabs.
 function renderWfWavesView(body, root, item) {
   body.innerHTML = "";
+  const prs = itemPrs(item.meta, item.prStack).map((p) => ({ ...p, error: (item.prErrors || {})[p.url] || "" }));
+  const story = waveNarrative(item, prs);
+  const card = document.createElement("div");
+  card.className = "wf-waves-now";
+  if (story) {
+    const now = document.createElement("p");
+    now.className = "wf-waves-now-line";
+    now.textContent = story.now;
+    const next = document.createElement("p");
+    next.className = "wf-waves-next-line";
+    next.textContent = `Next: ${story.next}`;
+    card.append(now, next);
+  }
+  const summary = waveSummary(item);
+  if (summary) {
+    const track = document.createElement("div");
+    track.className = "wf-waves-track";
+    for (const w of waveBoard(item).waves) {
+      const dot = document.createElement("a");
+      dot.className = `wf-waves-dot wf-wave-${w.state}`;
+      dot.href = `#wave-${w.id}`;
+      dot.title = `${waveLabel(w)} — ${waveStateLabel(w.state)}`;
+      dot.textContent = w.id;
+      dot.onclick = (e) => {
+        e.preventDefault();
+        body.querySelector(`#wave-${CSS.escape(w.id)}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
+      track.appendChild(dot);
+    }
+    card.appendChild(track);
+  }
+  const buttons = wfWaveDecisionButtons(item, root);
+  if (buttons.length) {
+    const row = document.createElement("div");
+    row.className = "wf-waves-actions";
+    row.append(...buttons);
+    card.appendChild(row);
+  }
+  body.appendChild(card);
+  if (wavesIssue(item) || !summary) return;
+
   const caption = document.createElement("p");
   caption.className = "wf-doc-caption dim";
   caption.textContent =
-    "This item is a project in waves (waves.json, written by the planner). Each wave is implemented and approved on its own, after the waves it depends on. Waves in one column may run in the same round when they touch different areas.";
+    "Waves come from waves.json, written by the planner. Each is implemented and approved on its own, after the waves it depends on; waves of one step can share a round when they touch different code. A PR belongs to the wave that lists it, or whose ticket its branch names.";
   body.appendChild(caption);
-  const issue = wavesIssue(item);
-  if (issue) {
-    const p = document.createElement("p");
-    p.className = "wf-waves-issue";
-    p.textContent = `waves.json can't be used: ${issue}. Nothing starts until it is fixed — request changes on the plan so the planner rewrites it.`;
-    body.appendChild(p);
-    return;
-  }
-  const summary = waveSummary(item);
-  if (!summary) return;
-  const head = document.createElement("div");
-  head.className = "wf-waves-head";
-  const line = document.createElement("span");
-  line.textContent = summary.text;
-  head.appendChild(line);
-  const bar = waveBarState(item);
-  const parked = ["diff-review", "pr-draft", "pr-ready"].includes(item.meta.status);
-  if (bar && parked && bar.kind === "approve") {
-    const b = document.createElement("button");
-    b.className = "primary";
-    b.textContent = `✓ Approve ${waveList(bar.review)} → next waves…`;
-    b.onclick = () => busyButton(b, () => wfApproveWaves(item, root));
-    head.appendChild(b);
-  } else if (bar && parked && bar.kind === "start") {
-    const b = document.createElement("button");
-    b.className = "primary";
-    b.textContent = "▶ Start next waves…";
-    b.onclick = () => busyButton(b, () => wfStartWaves(item, root));
-    head.appendChild(b);
-  }
-  body.appendChild(head);
-  const cols = document.createElement("div");
-  cols.className = "wf-waves-cols";
-  for (const col of waveColumns(item)) {
-    const c = document.createElement("div");
-    c.className = "wf-waves-col";
-    const t = document.createElement("div");
-    t.className = "wf-waves-col-title dim";
-    t.textContent = col.title;
-    c.appendChild(t);
-    for (const w of col.waves) {
-      const card = document.createElement("div");
-      card.className = `wf-wave wf-wave-${w.state}`;
+
+  for (const step of waveColumns(item)) {
+    const sec = document.createElement("section");
+    sec.className = "wf-waves-step";
+    const h = document.createElement("h4");
+    h.textContent = step.title;
+    if (step.detail) {
+      const d = document.createElement("span");
+      d.className = "dim";
+      d.textContent = ` — ${step.detail}`;
+      h.appendChild(d);
+    }
+    sec.appendChild(h);
+    for (const w of step.waves) {
+      const c = wavePrs(w, prs);
+      const wave = document.createElement("div");
+      wave.className = `wf-wave wf-wave-${w.state}`;
+      wave.id = `wave-${w.id}`;
       const top = document.createElement("div");
       top.className = "wf-wave-top";
       const name = document.createElement("strong");
       name.textContent = waveLabel(w);
       const badge = document.createElement("span");
       badge.className = "wf-wave-badge";
-      badge.textContent = waveStateLabel(w.state);
+      badge.textContent = waveStateLabel(w.state) + (c.total ? ` · ${c.merged}/${c.total} PRs merged` : "");
       top.append(name, badge);
-      card.appendChild(top);
+      wave.appendChild(top);
+      if (c.total) {
+        const bar = document.createElement("div");
+        bar.className = "wf-wave-progress";
+        const fill = document.createElement("span");
+        fill.style.width = `${Math.round((100 * (c.merged + c.closed)) / c.total)}%`;
+        bar.appendChild(fill);
+        wave.appendChild(bar);
+      }
       if (w.summary) {
         const p = document.createElement("div");
         p.className = "wf-wave-summary";
         p.textContent = w.summary;
-        card.appendChild(p);
+        wave.appendChild(p);
       }
+      if (w.tickets && w.tickets.length) {
+        const t = document.createElement("div");
+        t.className = "wf-wave-tickets";
+        for (const key of w.tickets) {
+          const url = (w.ticketUrls || {})[key];
+          const a = document.createElement(url ? "a" : "span");
+          a.className = "wf-wave-ticket";
+          a.textContent = key;
+          if (url) {
+            a.href = url;
+            a.onclick = (e) => {
+              e.preventDefault();
+              openLink(url);
+            };
+          }
+          t.appendChild(a);
+        }
+        wave.appendChild(t);
+      }
+      if (c.prs.length) {
+        const list = document.createElement("div");
+        list.className = "wf-wave-prs";
+        for (const pr of c.prs) list.appendChild(wfPrStateChip(item, root, pr));
+        wave.appendChild(list);
+      }
+      // The scheduling facts are reference, not the story: folded.
       const facts = [];
       if (w.blockedBy.length) facts.push(`Waits for ${w.blockedBy.join(", ")}`);
       else if (w.dependsOn.length) facts.push(`After ${w.dependsOn.join(", ")}`);
-      if (w.compatibleWith.length) facts.push(`Can run with ${w.compatibleWith.join(", ")}`);
+      if (w.compatibleWith.length) facts.push(`Can share a round with ${w.compatibleWith.join(", ")}`);
       facts.push(w.areas.length ? `Touches ${w.areas.join(", ")}` : "No areas declared — runs alone");
       if (w.start) facts.push(`Started at ${w.start.slice(0, 8)}`);
+      const det = document.createElement("details");
+      det.className = "wf-wave-facts";
+      const sum = document.createElement("summary");
+      sum.textContent = "Scheduling";
+      det.appendChild(sum);
       for (const f of facts) {
         const d = document.createElement("div");
         d.className = "wf-wave-fact dim";
         d.textContent = f;
-        card.appendChild(d);
+        det.appendChild(d);
       }
-      c.appendChild(card);
+      wave.appendChild(det);
+      sec.appendChild(wave);
     }
-    cols.appendChild(c);
+    body.appendChild(sec);
   }
-  body.appendChild(cols);
+  const loose = (waveBoard(item).unassignedPrs || []).length;
+  if (loose) {
+    const p = document.createElement("p");
+    p.className = "dim";
+    p.textContent = `${loose} PR${loose === 1 ? " belongs" : "s belong"} to no wave: list ${loose === 1 ? "it" : "them"} in a wave's "prs" (or name a wave's ticket in the branch) to place ${loose === 1 ? "it" : "them"}.`;
+    body.appendChild(p);
+  }
+}
+
+/// The Pull requests tab: every PR of the item in one list, grouped by wave
+/// (else one group), each row saying its state, its threads, its place in a
+/// stack and whether the last refresh reached it. Refresh asks the forge
+/// about all of them at once — the header can no longer show ten chips, and
+/// a list that only one refresh feeds has to say how fresh it is.
+async function renderWfPrsView(body, root, item) {
+  body.innerHTML = "";
+  const board = prBoard(item);
+  const bar = document.createElement("div");
+  bar.className = "wf-prs-bar";
+  const line = document.createElement("span");
+  line.textContent = `${prCountsText(board.counts)} · ${checkedAgo(board.checkedAt)}`;
+  if (board.errors) {
+    const w = document.createElement("span");
+    w.className = "wf-warn";
+    w.textContent = ` · ${board.errors} not reached on the last refresh`;
+    line.appendChild(w);
+  }
+  const refresh = document.createElement("button");
+  refresh.textContent = "↻ Refresh all";
+  refresh.title = "Ask GitHub about every PR of this item now, several at a time";
+  refresh.onclick = () =>
+    busyButton(refresh, async () => {
+      try {
+        await invoke("refresh_workflow_pr", { project: item.project, slug: item.slug, force: true });
+      } catch (e) {
+        flashToast(`Refresh failed: ${e}`);
+      }
+      await refreshWorkflows();
+      const fresh = wfItem(item.project, item.slug) || item;
+      renderWfPrsView(body, root, fresh);
+    });
+  const openAll = document.createElement("button");
+  const live = board.groups.flatMap((g) => g.prs).filter((p) => p.state !== "MERGED" && p.state !== "CLOSED");
+  openAll.textContent = `Open ${live.length} open PR${live.length === 1 ? "" : "s"}`;
+  openAll.disabled = !live.length;
+  openAll.onclick = () => openLinks(live.map((p) => p.url));
+  bar.append(line, refresh, openAll);
+  body.appendChild(bar);
+
+  for (const g of board.groups) {
+    const sec = document.createElement("section");
+    sec.className = "wf-prs-group";
+    if (g.title) {
+      const h = document.createElement("h4");
+      h.textContent = g.title;
+      if (g.state) {
+        const b = document.createElement("span");
+        b.className = `wf-wave-badge wf-wave-${g.state}`;
+        b.textContent = ` ${waveStateLabel(g.state)}`;
+        h.appendChild(b);
+      }
+      sec.appendChild(h);
+    }
+    if (!g.prs.length) {
+      const p = document.createElement("p");
+      p.className = "dim";
+      p.textContent = "No PR yet.";
+      sec.appendChild(p);
+    }
+    for (const pr of g.prs) {
+      const row = document.createElement("div");
+      row.className = "wf-prs-row";
+      row.appendChild(wfPrStateChip(item, root, pr));
+      const facts = document.createElement("span");
+      facts.className = "wf-prs-facts dim";
+      const bits = [pr.primary ? "primary" : "linked"];
+      if (pr.stack) bits.push(`stack ${prStackLabel(pr)}`);
+      if (pr.headRef) bits.push(pr.baseRef ? `${pr.headRef} → ${pr.baseRef}` : pr.headRef);
+      facts.textContent = bits.join(" · ");
+      row.appendChild(facts);
+      if (pr.unanswered > 0) {
+        const t = document.createElement("span");
+        t.className = "wf-prs-threads";
+        t.textContent = `${pr.unanswered} thread${pr.unanswered === 1 ? "" : "s"} to answer`;
+        row.appendChild(t);
+      }
+      if (pr.error) {
+        const e = document.createElement("span");
+        e.className = "wf-warn wf-prs-error";
+        e.textContent = `not refreshed: ${pr.error}`;
+        row.appendChild(e);
+      }
+      const more = document.createElement("button");
+      more.className = "icon-btn";
+      more.textContent = "⋯";
+      more.title = "This PR's actions";
+      more.onclick = (ev) => {
+        ev.stopPropagation();
+        const r = more.getBoundingClientRect();
+        showContextMenu(r.left, r.bottom, wfPrMenu(item, pr, root));
+      };
+      row.appendChild(more);
+      sec.appendChild(row);
+    }
+    body.appendChild(sec);
+  }
 }
 
 async function renderWfSubView(body, root, item, ts) {
@@ -13381,6 +13617,7 @@ async function renderWfSubView(body, root, item, ts) {
   if (ts.subView === "plan") return renderWfPlanView(body, root, item, ts);
   if (ts.subView === "revisions") return renderWfRevisionsView(body, root, item, ts);
   if (ts.subView === "waves") return renderWfWavesView(body, root, item, ts);
+  if (ts.subView === "prs") return renderWfPrsView(body, root, item, ts);
   if (ts.subView === "explainPlan") return renderWfExplainView(body, root, item, ts, "plan");
   if (ts.subView === "explainDiff") return renderWfExplainView(body, root, item, ts, "diff");
   if (ts.subView === "drift") return renderWfExplainView(body, root, item, ts, "drift");

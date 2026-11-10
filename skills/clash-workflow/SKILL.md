@@ -130,7 +130,8 @@ findings into `agent-review.md` and `annotations.json` and never touch
 
 - **Never** touch `history/`, `plan-history/`, or `iteration`, `reviewRound`,
   `appliedReviewKey` and `waves` in meta.json — clash owns all six.
-  `waves.json` is yours, but only in phases `plan` and `revise`.
+  `waves.json` is yours in phases `plan` and `revise`; in `implement` and
+  `pr` the only edit allowed is appending a PR URL to a wave's `prs`.
   The four `explain-*.{md,html}` documents belong to the explainer: read them
   freely when they exist (`explain-plan.*` is a picture of the work you are
   about to do, and worth a minute), write none of them. They are the
@@ -194,11 +195,12 @@ wave, `## Wave <n> — <title>`, holding that wave's work units. Then write
 {
   "waves": [
     { "id": "w1", "title": "Schema", "summary": "Tables and migration for audit logs.",
-      "dependsOn": [], "areas": ["db/migrations/", "src/models/audit.rs"] },
+      "dependsOn": [], "areas": ["db/migrations/", "src/models/audit.rs"],
+      "tickets": ["PS-101"] },
     { "id": "w2", "title": "API", "summary": "Write and list endpoints.",
-      "dependsOn": ["w1"], "areas": ["src/api/audit/"] },
+      "dependsOn": ["w1"], "areas": ["src/api/audit/"], "tickets": ["PS-102"] },
     { "id": "w3", "title": "Admin screen", "summary": "List view in the admin app.",
-      "dependsOn": ["w1"], "areas": ["web/src/admin/audit/"] }
+      "dependsOn": ["w1"], "areas": ["web/src/admin/audit/"], "tickets": ["PS-103"] }
   ]
 }
 ```
@@ -213,6 +215,13 @@ wave, `## Wave <n> — <title>`, holding that wave's work units. Then write
   round only when neither depends on the other and their areas are disjoint,
   so an area you leave out is a conflict nobody sees coming. A wave whose
   areas you cannot bound gets none, and then always runs alone.
+- `summary`: one or two sentences a human reads on the roadmap to know what
+  the wave delivers and why it comes where it does — not the unit list.
+- `tickets`: the ticket keys the wave delivers, when the work is ticketed. A
+  PR whose branch names a ticket of exactly one wave is shown under that
+  wave; a key two waves share places nothing.
+- `prs`: the PR URLs that deliver the wave. Leave it empty when planning; the
+  implementation fills it (below).
 - Order waves the way you would implement them. Make each one leave the code
   building and its tests passing: a wave is approved on its own.
 
@@ -225,7 +234,11 @@ launched together), each staying inside its own areas. If a wave turns out to
 need a file outside its areas, or another wave's work, stop that part and say
 so in `handoff.md` rather than crossing over. Commit each wave separately,
 its id first in the message (`feat(w2): audit API`), and say per wave in
-`handoff.md` what landed and what is left. A change round keeps the same
+`handoff.md` what landed and what is left. **Every PR you open for a wave —
+in this repository or another — is appended to that wave's `prs` in
+`waves.json`** (read-modify-write, keep every field), besides `meta.pr` /
+`linkedPrs` as usual: that is how the roadmap and the Pull requests tab know
+which wave a PR delivers, and a PR no wave claims shows up as unplaced. A change round keeps the same
 `Waves:`. `Waves: none of N (a fix round …)` means changes were requested
 between waves: address the note and the open annotations, and start no wave.
 

@@ -94,6 +94,8 @@ struct GuiState {
     /// — keeps concurrent viewports from stacking gh subprocesses, without
     /// persisting a timestamp on every poll (which would churn the watcher).
     pr_checked: Mutex<HashMap<(String, String), i64>>,
+    /// Per item, why each PR failed its last refresh (URL → error).
+    pr_errors: Mutex<HashMap<(String, String), std::collections::BTreeMap<String, String>>>,
     /// Detected forge per repo directory. Detection is one local `git
     /// remote get-url` subprocess; the PR poll resolves a forge every 30s per
     /// visible item, so the answer is cached (a repo's origin host does not
@@ -3684,6 +3686,7 @@ fn main() {
         watcher: Mutex::new(None),
         attention: Mutex::new(clash::application::workflow::AttentionLedger::default()),
         pr_checked: Mutex::new(HashMap::new()),
+        pr_errors: Mutex::new(HashMap::new()),
         forge_cache: Mutex::new(HashMap::new()),
         prompt_queue: Mutex::new(clash::application::prompt_queue::PromptQueue::default()),
         pty_outbox: std::sync::Arc::new(pty_outbox::PtyOutbox::default()),

@@ -1072,6 +1072,14 @@ pub struct Wave {
     /// an empty list never runs alongside anything.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub areas: Vec<String>,
+    /// Ticket keys the wave delivers (`TT-15360`). A PR whose branch names a
+    /// ticket of exactly one wave belongs to that wave.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tickets: Vec<String>,
+    /// PR URLs the wave delivers — the explicit answer, which wins over the
+    /// ticket match. The executor appends the PRs it opens for the wave.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prs: Vec<String>,
 }
 
 /// `waves.json`: the item's waves, in the planner's order.
@@ -1143,6 +1151,13 @@ pub struct WaveView {
     /// The commit it started from, once it has.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub start: String,
+    pub tickets: Vec<String>,
+    /// Each ticket's URL, from the configured trackers. Filled by the GUI
+    /// layer; a key with no tracker has none.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub ticket_urls: std::collections::BTreeMap<String, String>,
+    /// The item's PRs that belong to this wave (see `application::waves`).
+    pub prs: Vec<String>,
 }
 
 /// The item's waves as the GUI shows them.
@@ -1154,6 +1169,9 @@ pub struct WaveBoard {
     /// unknown dependency, a cycle). Nothing starts while it is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issue: Option<String>,
+    /// The item's PRs no wave claims.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unassigned_prs: Vec<String>,
 }
 
 /// Persisted shape of a workflow item's `meta.json`. Lenient serde like
@@ -1741,6 +1759,20 @@ pub struct WorkflowItem {
     /// Computed by the GUI layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waves: Option<WaveBoard>,
+    /// When this process last asked the forge about the item's PRs (epoch
+    /// ms; 0 = not yet). A PR record's own `lastCheckedAt` moves only when
+    /// its state changed, so it cannot answer "how fresh is this".
+    /// Computed by the GUI layer.
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub pr_checked_at: i64,
+    /// Why a PR could not be refreshed on the last check, by URL. Computed
+    /// by the GUI layer.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub pr_errors: std::collections::BTreeMap<String, String>,
+}
+
+fn is_zero_i64(v: &i64) -> bool {
+    *v == 0
 }
 
 /// Resolution state of a diff annotation.

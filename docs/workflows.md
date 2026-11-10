@@ -944,6 +944,15 @@ wave in `plan.md` and a `waves.json` beside it; a single task gets neither.
 ] }
 ```
 
+Two optional fields tie waves to the work outside the item: `tickets` (keys
+the wave delivers) and `prs` (PR URLs that deliver it — empty when planning,
+appended by the executor as it opens each wave's PRs, the only `waves.json`
+edit allowed in `implement`/`pr`). `assign_prs` places each of the item's
+PRs: a wave listing its URL claims it; else a ticket key in its head branch
+claims it for the **one** wave listing that ticket (a key two waves share
+places nothing, and `TT-1536` is not `TT-15360`); a PR nothing claims is
+*unplaced*, which the roadmap says rather than guessing.
+
 `waves.json` is the planner's (phases `plan`/`revise`); where the waves stand
 is clash's, in `meta.waves`: `done` (approved ids), `scope` (the current or
 latest round's ids) and `starts` (the commit each wave began from). The
@@ -993,9 +1002,34 @@ The flow, on the GUI's buttons:
    approve its waves on the way (`wfTransition`). The PR may be opened at any
    point: it simply carries more waves as they land.
 
-The **Waves** tab (and the header chip, `Waves 2/5 · w3 in progress`) draws
-the board — columns by level, each wave's state, what it waits for, what it
-can run with and what it touches — with the same approve/start buttons. The
+The **Waves** tab is a roadmap, and the tab a multi-wave item opens on. It
+starts with what is happening and what to do next, in sentences
+(`waveNarrative`: "w1 · Foundations is waiting for your approval. 2 of 8 PRs
+merged, 6 still open. Next: … then approve it — that unlocks w2."), a track
+of every wave's state and the same approve/start buttons as the bar
+(`wfWaveDecisionButtons`, one set of handlers). Then the steps in order —
+waves grouped by dependency level, saying which of a step's waves may share
+a round — each wave with its state, PR progress (`merged/total`), summary,
+linked tickets (URLs resolved from `[trackers]` by the GUI layer) and PR
+chips; the scheduling facts (waits for, can share a round with, areas, start
+commit) are folded under *Scheduling*. The header chip reads `Waves 2/5 · w3
+in progress`.
+
+**Many PRs.** Past `WF_HEAD_PR_LIMIT` (3) PRs the header shows the primary
+and one summary (`10 PRs · 2 merged · 7 open · 1 not refreshed`) instead of a
+chip per PR; it opens the **Pull requests** tab (any item with two PRs or
+more): every PR in one list, grouped by wave (open before settled, unplaced
+last) or as one group without waves, each row with its state, role, stack
+position, `head → base`, unanswered threads, the error of its last refresh
+and its action menu, plus **↻ Refresh all** and *Open N open PRs*.
+`refresh_workflow_pr` asks about linked PRs side by side, six at a time (one
+after another, two `gh` calls each, a ten-PR item took half a minute), and
+records each failure per URL in memory (`GuiState.pr_errors` →
+`WorkflowItem.prErrors`) instead of dropping it, so a PR that could not be
+reached is marked stale rather than shown as current. The time of the last
+check is `WorkflowItem.prCheckedAt`, from the refresh throttle — a PR
+record's own `lastCheckedAt` moves only when its state changed, so it cannot
+say how fresh the list is. The
 next-step strip suggests *approve waves* once the round is reviewed and
 *start waves* when nothing waits; neither runs on autopilot. GUI model:
 `gui/dist/wf-waves.js` (`gui/tests/wf_waves.test.js`,

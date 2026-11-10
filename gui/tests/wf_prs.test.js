@@ -165,3 +165,54 @@ test("browser branch publishes every global app.js reads", () => {
     assert.ok(name in sandbox.window, `${name} must be published to window`);
   }
 });
+
+const { prCounts, prCountsText, prBoard, checkedAgo } = require("../dist/wf-prs.js");
+
+test("many PRs read as one summary and a board grouped by wave", () => {
+  const meta = {
+    pr: { url: "https://github.com/o/saturn/pull/457", number: 457, state: "OPEN", headRef: "main-branch" },
+    linkedPrs: [
+      { url: "https://github.com/o/saturn/pull/454", number: 454, state: "OPEN", unansweredComments: 2 },
+      { url: "https://github.com/o/k8s/pull/9313", number: 9313, state: "MERGED" },
+      { url: "https://github.com/o/api/pull/979", number: 979, state: "CLOSED" },
+      { url: "https://github.com/o/api/pull/977", number: 977, state: "OPEN", draft: true },
+    ],
+  };
+  const c = prCounts(itemPrs(meta));
+  assert.deepEqual(c, { total: 5, merged: 1, closed: 1, open: 3, draft: 1, threads: 2 });
+  assert.equal(prCountsText(c), "5 PRs · 1 merged · 1 closed · 3 open · 2 threads to answer");
+  assert.equal(prCountsText(prCounts([])), "No PR");
+
+  const item = {
+    meta,
+    prCheckedAt: 1000,
+    prErrors: { "https://github.com/o/api/pull/977": "HTTP 502" },
+    waves: {
+      waves: [
+        { id: "w1", title: "Foundations", state: "review", prs: [meta.linkedPrs[0].url, meta.linkedPrs[1].url, meta.linkedPrs[3].url] },
+        { id: "w2", title: "Pipeline", state: "blocked", prs: [meta.pr.url] },
+        { id: "w3", title: "Later", state: "blocked", prs: [] },
+      ],
+    },
+  };
+  const b = prBoard(item);
+  // A wave with no PRs and nothing going on is left out; unclaimed PRs last.
+  assert.deepEqual(b.groups.map((g) => g.key), ["w1", "w2", ""]);
+  assert.equal(b.groups[0].title, "w1 · Foundations");
+  // Open before settled inside a group.
+  assert.deepEqual(b.groups[0].prs.map((p) => p.number), [454, 977, 9313]);
+  assert.equal(b.groups[0].prs[1].error, "HTTP 502");
+  assert.equal(b.groups[2].title, "Not in a wave");
+  assert.equal(b.errors, 1);
+  assert.equal(b.checkedAt, 1000);
+  // Without waves: one group.
+  assert.equal(prBoard({ meta }).groups.length, 1);
+  assert.equal(itemPrs(meta)[0].headRef, "main-branch");
+});
+
+test("freshness is said in words", () => {
+  assert.equal(checkedAgo(0, 5), "not checked yet");
+  assert.equal(checkedAgo(1000, 20000), "checked just now");
+  assert.equal(checkedAgo(0 + 1, 1 + 5 * 60000), "checked 5 min ago");
+  assert.equal(checkedAgo(1, 1 + 3 * 3600000), "checked 3 h ago");
+});

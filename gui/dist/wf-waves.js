@@ -133,8 +133,9 @@
     return order.filter((x) => cur.has(x));
   }
 
-  /// The board's columns: waves grouped by dependency level, so a column
-  /// holds the waves that may run side by side once the previous ones land.
+  /// The roadmap's steps: waves grouped by dependency level, so a step holds
+  /// the waves that become startable together once the previous step lands.
+  /// `parallel` names the pairs of that step which may share a round.
   function waveColumns(item) {
     const board = waveBoard(item);
     if (!board) return [];
@@ -143,10 +144,112 @@
       const l = w.level || 0;
       (cols[l] = cols[l] || []).push(w);
     }
-    return cols.filter(Boolean).map((waves, i) => ({
-      title: i === 0 ? "First" : `Then (after ${waveList(cols[i - 1] || [])})`,
-      waves,
-    }));
+    return cols.filter(Boolean).map((waves, i) => {
+      const together = waves.filter((w) =>
+        waves.some((o) => o.id !== w.id && (w.compatibleWith || []).includes(o.id))
+      );
+      return {
+        title: `Step ${i + 1}`,
+        detail:
+          waves.length < 2
+            ? ""
+            : together.length === waves.length
+              ? "These can run in the same round."
+              : together.length
+                ? `${waveList(together)} can run in the same round; the others one at a time.`
+                : "One at a time: they overlap or depend on each other.",
+        waves,
+      };
+    });
+  }
+
+  /// A wave's PRs, as `itemPrs` records (`prs` is the item's list), with
+  /// their counts — what "how far along is this wave" is measured in.
+  function wavePrs(w, prs) {
+    const mine = (prs || []).filter((p) => (w.prs || []).includes(p.url));
+    const n = (f) => mine.filter(f).length;
+    return {
+      prs: mine,
+      total: mine.length,
+      merged: n((p) => p.state === "MERGED"),
+      closed: n((p) => p.state === "CLOSED"),
+      open: n((p) => p.state !== "MERGED" && p.state !== "CLOSED"),
+    };
+  }
+
+  /// The waves that become ready once `ids` are approved: waiting waves
+  /// whose every missing dependency (`blockedBy`, from the backend) is one of
+  /// them.
+  function unlockedBy(board, ids) {
+    return board.waves.filter(
+      (w) =>
+        w.state === "blocked" &&
+        (w.blockedBy || []).length > 0 &&
+        w.blockedBy.every((d) => ids.includes(d))
+    );
+  }
+
+  /// Where the project stands, in sentences: what is happening now, and what
+  /// you do next. `prs` is `itemPrs(item.meta)`. The roadmap opens on it, so
+  /// nobody has to work out the state from badges.
+  function waveNarrative(item, prs) {
+    const issue = wavesIssue(item);
+    if (issue)
+      return {
+        now: `waves.json can't be used: ${issue}.`,
+        next: "Request changes on the plan so the planner fixes it. Nothing starts until then.",
+      };
+    const board = waveBoard(item);
+    if (!board) return null;
+    const s = waveSummary(item);
+    const named = (ids) => ids.map((id) => waveLabel(board.waves.find((w) => w.id === id))).join(" and ");
+    const status = (item.meta && item.meta.status) || "";
+    if (s.allDone)
+      return {
+        now: `All ${s.total} waves are approved.`,
+        next: "Finish the item: approve it, or mark it done once its PRs are merged.",
+      };
+    if (s.active.length)
+      return {
+        now: `The agent is implementing ${named(s.active)}${status === "changes-requested" ? " (a fix round is queued)" : ""}.`,
+        next: "When it hands back, review the round, then approve the wave.",
+      };
+    if (s.review.length) {
+      const waves = s.review.map((id) => board.waves.find((w) => w.id === id));
+      const p = waves.reduce(
+        (acc, w) => {
+          const c = wavePrs(w, prs);
+          return { total: acc.total + c.total, merged: acc.merged + c.merged, open: acc.open + c.open };
+        },
+        { total: 0, merged: 0, open: 0 }
+      );
+      const prBit = p.total
+        ? ` ${p.merged} of ${p.total} PR${p.total === 1 ? "" : "s"} merged${p.open ? `, ${p.open} still open` : ""}.`
+        : "";
+      const unlocks = unlockedBy(board, s.review);
+      const after = unlocks.length ? ` — that unlocks ${waveList(unlocks)}` : "";
+      return {
+        now: `${named(s.review)} ${s.review.length > 1 ? "are" : "is"} waiting for your approval.${prBit}`,
+        next:
+          p.open > 0
+            ? `Review it, get its PRs merged (or decide they can land later), then approve it${after}.`
+            : `Approve it${after}.`,
+      };
+    }
+    if (s.ready.length) {
+      const ready = board.waves.filter((w) => w.state === "ready");
+      const pairs = ready.filter((w) => ready.some((o) => o.id !== w.id && w.compatibleWith.includes(o.id)));
+      return {
+        now: `${s.done.length} of ${s.total} waves approved. Ready to start: ${waveList(ready)}.`,
+        next: pairs.length
+          ? `Start ${ready[0].id} — or ${waveList(pairs)} together: they touch different code.`
+          : `Start ${ready[0].id}.`,
+      };
+    }
+    return {
+      now: "No wave is ready: each one waits for a wave that isn't approved yet.",
+      next: "Approve the wave in review, or request changes on the plan if the order is wrong.",
+    };
   }
 
   /// A wave state's badge text.
@@ -178,6 +281,8 @@
     toggleWavePick,
     waveColumns,
     waveStateLabel,
+    wavePrs,
+    waveNarrative,
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;

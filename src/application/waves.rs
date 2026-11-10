@@ -185,12 +185,63 @@ fn state_of(
     }
 }
 
-/// The board the GUI renders: every wave with its state, level and the
-/// waves it may run alongside, or the reason `waves.json` cannot be used.
+/// One of the item's PRs, as the wave matching sees it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrRef {
+    pub url: String,
+    /// The PR's head branch, where ticket keys usually live.
+    pub head_ref: String,
+}
+
+/// Does `text` name `key` as a whole ticket key? `TT-1536` is not in
+/// `feat/TT-15360-cache`: the next character must not extend the number.
+fn names_ticket(text: &str, key: &str) -> bool {
+    let (hay, key) = (text.to_ascii_uppercase(), key.trim().to_ascii_uppercase());
+    if key.is_empty() {
+        return false;
+    }
+    hay.match_indices(&key).any(|(i, _)| {
+        let before = hay[..i].chars().next_back();
+        let after = hay[i + key.len()..].chars().next();
+        !before.is_some_and(|c| c.is_ascii_alphanumeric())
+            && !after.is_some_and(|c| c.is_ascii_alphanumeric())
+    })
+}
+
+/// Which wave each PR belongs to: a wave listing the PR's URL claims it;
+/// otherwise a ticket key in the PR's branch claims it for the one wave that
+/// lists that ticket. A ticket several waves share decides nothing, and a PR
+/// nothing claims is left out — guessing would file work under the wrong
+/// wave.
+pub fn assign_prs(plan: &WavePlan, prs: &[PrRef]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for pr in prs {
+        let explicit = plan
+            .waves
+            .iter()
+            .find(|w| w.prs.iter().any(|u| u.trim() == pr.url));
+        let by_ticket = || {
+            let hits: Vec<&Wave> = plan
+                .waves
+                .iter()
+                .filter(|w| w.tickets.iter().any(|t| names_ticket(&pr.head_ref, t)))
+                .collect();
+            (hits.len() == 1).then(|| hits[0])
+        };
+        if let Some(w) = explicit.or_else(by_ticket) {
+            out.insert(pr.url.clone(), w.id.trim().to_string());
+        }
+    }
+    out
+}
+
+/// The board the GUI renders: every wave with its state, level, its PRs and
+/// the waves it may run alongside, or the reason `waves.json` cannot be used.
 pub fn wave_board(
     plan: Result<WavePlan, String>,
     progress: &WaveProgress,
     status: WorkflowStatus,
+    prs: &[PrRef],
 ) -> WaveBoard {
     let plan = match plan {
         Ok(p) => p,
@@ -198,9 +249,11 @@ pub fn wave_board(
             return WaveBoard {
                 waves: Vec::new(),
                 issue: Some(issue),
+                unassigned_prs: Vec::new(),
             }
         }
     };
+    let owner = assign_prs(&plan, prs);
     let lv = levels(&plan);
     let waves = plan
         .waves
@@ -227,10 +280,25 @@ pub fn wave_board(
                     .get(w.id.trim())
                     .cloned()
                     .unwrap_or_default(),
+                tickets: w.tickets.iter().map(|t| t.trim().to_string()).collect(),
+                ticket_urls: Default::default(),
+                prs: prs
+                    .iter()
+                    .filter(|p| owner.get(&p.url).map(String::as_str) == Some(w.id.trim()))
+                    .map(|p| p.url.clone())
+                    .collect(),
             }
         })
         .collect();
-    WaveBoard { waves, issue: None }
+    WaveBoard {
+        waves,
+        issue: None,
+        unassigned_prs: prs
+            .iter()
+            .filter(|p| !owner.contains_key(&p.url))
+            .map(|p| p.url.clone())
+            .collect(),
+    }
 }
 
 /// Validate a request to start `ids` in one round, and return them in plan
@@ -411,6 +479,7 @@ mod tests {
             Ok(project()),
             &progress(&[], &[]),
             WorkflowStatus::PlanReview,
+            &[],
         );
         let st: Vec<_> = b
             .waves
@@ -432,6 +501,7 @@ mod tests {
             Ok(project()),
             &progress(&["w1"], &[]),
             WorkflowStatus::DiffReview,
+            &[],
         );
         assert_eq!(b.waves[1].state, WaveState::Ready);
         assert_eq!(b.waves[2].state, WaveState::Ready);
@@ -441,7 +511,7 @@ mod tests {
     #[test]
     fn a_rounds_waves_follow_the_item_status() {
         let p = progress(&["w1"], &["w2", "w3"]);
-        let at = |s| wave_board(Ok(project()), &p, s).waves[1].state;
+        let at = |s| wave_board(Ok(project()), &p, s, &[]).waves[1].state;
         assert_eq!(at(WorkflowStatus::Implementing), WaveState::Active);
         assert_eq!(at(WorkflowStatus::ChangesRequested), WaveState::Active);
         assert_eq!(at(WorkflowStatus::DiffReview), WaveState::Review);
@@ -469,6 +539,7 @@ mod tests {
             Ok(project()),
             &WaveProgress::default(),
             WorkflowStatus::Draft,
+            &[],
         );
         assert_eq!(b.waves[1].compatible_with, vec!["w3"]);
         assert!(b.waves[0].compatible_with.is_empty());
@@ -520,6 +591,48 @@ mod tests {
         assert!(next.scope.is_empty());
         assert_eq!(next.starts.get("w2").map(String::as_str), Some("abc"));
         assert_eq!(remaining(&project(), &next), vec!["w4"]);
+    }
+
+    #[test]
+    fn prs_belong_to_the_wave_that_lists_them_or_names_their_ticket() {
+        let mut plan = project();
+        plan.waves[0].tickets = vec!["TT-15360".into(), "TT-14998".into()];
+        plan.waves[1].tickets = vec!["TT-14998".into()];
+        plan.waves[2].prs = vec!["https://github.com/o/web/pull/9".into()];
+        let pr = |url: &str, head: &str| PrRef {
+            url: url.into(),
+            head_ref: head.into(),
+        };
+        let prs = vec![
+            pr(
+                "https://github.com/o/api/pull/1",
+                "fix/TT-15360-cache-expiry",
+            ),
+            // A ticket two waves share decides nothing.
+            pr("https://github.com/o/api/pull/2", "feat/TT-14998-contract"),
+            // The explicit list wins over any branch name.
+            pr("https://github.com/o/web/pull/9", "feat/TT-15360-web"),
+            // A longer number is another ticket.
+            pr("https://github.com/o/api/pull/3", "feat/TT-153601-other"),
+        ];
+        let owner = assign_prs(&plan, &prs);
+        assert_eq!(owner.get(&prs[0].url).map(String::as_str), Some("w1"));
+        assert_eq!(owner.get(&prs[1].url), None);
+        assert_eq!(owner.get(&prs[2].url).map(String::as_str), Some("w3"));
+        assert_eq!(owner.get(&prs[3].url), None);
+        let b = wave_board(
+            Ok(plan),
+            &WaveProgress::default(),
+            WorkflowStatus::DiffReview,
+            &prs,
+        );
+        assert_eq!(b.waves[0].prs, vec![prs[0].url.clone()]);
+        assert_eq!(b.waves[2].prs, vec![prs[2].url.clone()]);
+        assert_eq!(
+            b.unassigned_prs,
+            vec![prs[1].url.clone(), prs[3].url.clone()]
+        );
+        assert_eq!(b.waves[0].tickets, vec!["TT-15360", "TT-14998"]);
     }
 
     #[test]

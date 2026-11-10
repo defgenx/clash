@@ -102,8 +102,8 @@ test("a wave that cannot run with the pick is disabled, with the reason", () => 
 test("the board's columns follow dependency levels", () => {
   const cols = waveColumns(item(["done", "ready", "ready", "blocked"]));
   assert.deepEqual(cols.map((c) => c.waves.map((x) => x.id)), [["w1"], ["w2", "w3"], ["w4"]]);
-  assert.equal(cols[0].title, "First");
-  assert.equal(cols[2].title, "Then (after w2, w3)");
+  assert.equal(cols[0].title, "Step 1");
+  assert.equal(cols[2].title, "Step 3");
 });
 
 test("the browser branch publishes every name app.js calls", () => {
@@ -123,6 +123,48 @@ test("the browser branch publishes every name app.js calls", () => {
     "toggleWavePick",
     "waveColumns",
     "waveStateLabel",
+    "wavePrs",
+    "waveNarrative",
   ])
     assert.ok(win[name], name);
+});
+
+const { wavePrs, waveNarrative } = require("../dist/wf-waves.js");
+
+test("the roadmap says what is happening and what to do next", () => {
+  const it = item(["review", "blocked", "blocked", "blocked"]);
+  it.waves.waves[0].prs = ["u1", "u2", "u3"];
+  it.waves.waves[1].blockedBy = ["w1"];
+  it.waves.waves[2].blockedBy = ["w1"];
+  it.waves.waves[3].blockedBy = ["w2", "w3"];
+  const prs = [
+    { url: "u1", state: "MERGED" },
+    { url: "u2", state: "OPEN" },
+    { url: "u3", state: "OPEN", draft: true },
+  ];
+  assert.deepEqual(
+    { ...wavePrs(it.waves.waves[0], prs), prs: undefined },
+    { prs: undefined, total: 3, merged: 1, closed: 0, open: 2 }
+  );
+  const n = waveNarrative(it, prs);
+  assert.match(n.now, /w1 · w1 title is waiting for your approval\. 1 of 3 PRs merged, 2 still open\./);
+  assert.match(n.next, /get its PRs merged .* then approve it — that unlocks w2, w3\./);
+  // Merged: just approve.
+  const merged = waveNarrative(it, prs.map((p) => ({ ...p, state: "MERGED" })));
+  assert.equal(merged.next, "Approve it — that unlocks w2, w3.");
+  // Ready siblings that can share a round are offered together.
+  const ready = waveNarrative(item(["done", "ready", "ready", "blocked"]), []);
+  assert.match(ready.now, /1 of 4 waves approved\. Ready to start: w2, w3\./);
+  assert.match(ready.next, /or w2, w3 together/);
+  assert.match(waveNarrative(item(["done", "active", "blocked", "blocked"]), []).now, /implementing w2/);
+  assert.match(waveNarrative(item(["done", "done", "done", "done"]), []).now, /All 4 waves are approved/);
+  assert.match(waveNarrative({ waves: { waves: [], issue: "a cycle" } }, []).now, /can't be used: a cycle/);
+  assert.equal(waveNarrative({}, []), null);
+});
+
+test("steps say which of their waves can share a round", () => {
+  const cols = waveColumns(item(["done", "ready", "ready", "blocked"]));
+  assert.equal(cols[1].title, "Step 2");
+  assert.equal(cols[1].detail, "These can run in the same round.");
+  assert.equal(cols[0].detail, "");
 });
