@@ -1,8 +1,8 @@
 // Check runs — the pure half.
 //
 // One launcher for every agent pass that judges or explains a workflow item
-// without moving it: the stage's review, plan vs changes, the two
-// explanations, answering PR comments, the self-review. Any subset runs as one
+// without moving it: the stage's review (which may end in a verdict on the
+// PR), plan vs changes, the two explanations, answering PR comments. Any subset runs as one
 // check run (`run.json`, driven by the backend's `workflow_run_*` commands):
 // explainers alongside, judging passes one after another over the same
 // iteration, then at most one change round for all of their findings. One
@@ -50,7 +50,9 @@
         // The thread count rides the label wherever it is known.
         return dep("answerCommentsLabel")(ctx.unanswered);
       case "self-review":
-        return "Self-review";
+        // A code review that ends in a verdict — the same reviewer, so the
+        // same name, with what it posts.
+        return "Code review · verdict";
       default:
         return id;
     }
@@ -86,7 +88,7 @@
       case "respond":
         return "Reads the PR's review threads, fixes the small ones, and replies on each thread.";
       case "self-review":
-        return "Reviews the PR until a full pass finds nothing new, then posts approve or request changes.";
+        return "Reviews the PR until a full pass finds nothing new, then posts a verdict: approve or request changes.";
       default:
         return "";
     }
@@ -94,7 +96,8 @@
 
   /// The passes this stage allows, in launch order. `ctx` carries the bar's
   /// own gates: `{ status, canReview, reviewTarget, hasPlan, canExplainPlan,
-  /// canExplainDiff, hasPrs, canSelfReview }`.
+  /// canExplainDiff, hasPrs, canSelfReview }`. This is what the recommender
+  /// may suggest; `listedPasses` is what a menu or the checklist shows.
   function availablePasses(ctx) {
     const built = !["draft", "plan-review"].includes(ctx.status);
     const out = [];
@@ -105,6 +108,25 @@
     if (ctx.canReview && ctx.hasPrs) out.push("respond");
     if (ctx.canSelfReview) out.push("self-review");
     return out;
+  }
+
+  /// The passes a menu or the checklist lists as rows. The verdict is not one
+  /// of them: it is how a code review may end, so it is the review row's
+  /// "post a verdict" option rather than a second reviewer next to it.
+  function listedPasses(ctx) {
+    return availablePasses(ctx).filter((id) => id !== "self-review");
+  }
+
+  /// The row a pass id is shown on — the verdict's is the code review's.
+  function listedPassOf(id) {
+    return id === "self-review" ? "review" : id;
+  }
+
+  /// Does this pass, with these options, say something on GitHub in your
+  /// name? Such passes are never pre-ticked and never started by autopilot.
+  function passPosts(id, params = {}) {
+    if (BY_ID[id] && BY_ID[id].posts) return true;
+    return id === "review" && ["pr-comments", "verdict"].includes(params.publish);
   }
 
   /// The backend `PassSpec` for a pass and its options.
@@ -118,6 +140,8 @@
     const urls = Array.isArray(opts.prUrls) ? opts.prUrls : [];
     switch (id) {
       case "review":
+        // A code review that ends in a verdict is a verdict round.
+        if (own === "diff" && opts.publish === "verdict") return passSpec("self-review", opts, ctx);
         return {
           target: own,
           depth: opts.depth || "standard",
@@ -168,7 +192,7 @@
       id: p.id,
       params: p.params || {},
       reason: p.reason || "",
-      ticked: !BY_ID[p.id].posts,
+      ticked: !passPosts(p.id, p.params || {}),
     }));
     if (out.some((p) => p.id === "drift")) {
       for (const s of stale) {
@@ -187,7 +211,7 @@
   /// What autopilot may start from a selection: the ticked passes that post
   /// nothing.
   function autopilotSelection(selection) {
-    return selection.filter((p) => p.ticked && !BY_ID[p.id].posts);
+    return selection.filter((p) => p.ticked && !passPosts(p.id, p.params || {}));
   }
 
   const isExplain = (p) => p.target === "explain-plan" || p.target === "explain-diff";
@@ -267,6 +291,9 @@
     passBadge,
     passDetail,
     availablePasses,
+    listedPasses,
+    listedPassOf,
+    passPosts,
     passSpec,
     passIdOf,
     recommendedSelection,

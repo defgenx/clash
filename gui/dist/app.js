@@ -7252,8 +7252,8 @@ async function newReviewWorkflow({ project, repoPath }) {
 /// ◫ Explain a PR… — a peer's pull request explained in one step: paste the
 /// URL, pick how much to open up front, and clash finds the local checkout
 /// whose origin is that repository, creates the review-only item and starts
-/// the explanation. The item is an ordinary review-only one, so a review or a
-/// self-review of the same PR is one click away afterwards.
+/// the explanation. The item is an ordinary review-only one, so a review of
+/// the same PR — or a verdict on it — is one click away afterwards.
 async function explainPrFlow() {
   await sidebarShow("workflows");
   const url = ((await uiPrompt("Pull request to explain — paste its URL")) || "").trim();
@@ -8383,7 +8383,7 @@ function wfPrMenu(item, pr, root) {
     });
     if (wfCanSelfReview(item) && prLive(pr)) {
       entries.push({
-        label: `Self-review ${name}…`,
+        label: `Post a verdict on ${name}…`,
         icon: "search",
         action: () => launchWfSelfReview(item, root, { scope }),
       });
@@ -8784,7 +8784,9 @@ async function launchWfReview(item, root, opts = {}) {
   // A one-pass check run (plus any explanation refresh ticked alongside), so
   // a standalone round resumes and applies exactly like a batch of them.
   const ctx = wfChecksCtx(item);
-  const id = opts.target === "drift" || opts.target === "self-review" ? opts.target : "review";
+  // A code review that ends in a verdict is passSpec("review", { publish:
+  // "verdict" }) — the catalogue turns it into the verdict round.
+  const id = opts.target === "drift" ? "drift" : "review";
   const passes = [
     passSpec(id, { depth: picked.depth, publish: picked.publish, prUrls: picked.prUrls }, ctx),
     ...(picked.refresh || []).map((t) => passSpec(t, {}, ctx)),
@@ -8796,18 +8798,26 @@ async function launchWfReview(item, root, opts = {}) {
   });
 }
 
-/// Launch a self-review over the PRs you pick — all of the item's open PRs,
-/// or some — through the same scope dialog as every other PR action, then the
-/// round's composer. `scope` lets a caller that already picked (the per-PR
-/// menu) skip the dialog. One open PR asks nothing.
+/// Open the code-review composer with "post a verdict" picked, scoped to the
+/// PRs a caller already chose (a PR chip's menu). The composer still shows
+/// every other way the round can end: a verdict is an outcome of the code
+/// review, not a reviewer of its own.
 async function launchWfSelfReview(item, root, { scope = null } = {}) {
-  const sel = scope || (await pickPrScope(item, "selfReview"));
-  if (!sel || !sel.urls.length) return;
-  await launchWfReview(item, root, { target: "self-review", prUrls: sel.urls });
+  await launchWfReview(item, root, { target: "self-review", prUrls: scope ? scope.urls : null });
 }
 
-/// Whether a self-review can start: a reviewable stage with a built change
-/// (nothing exists at draft or plan-review) and an open PR to post on.
+/// The PRs a verdict round posts on: the composer's ticked PR rows when it
+/// has any (kept to the PRs a verdict can be posted on), else the scope
+/// rule's default — every open PR of the item.
+function wfVerdictUrls(item, ticked) {
+  const open = new Set(prActionCandidates(itemPrs(item.meta), "selfReview").map((p) => p.url));
+  const picked = (ticked || []).filter((u) => open.has(u));
+  return picked.length ? picked : wfDefaultPrUrls(item, "selfReview");
+}
+
+/// Whether a code review may end in a verdict: a reviewable stage with a
+/// built change (nothing exists at draft or plan-review) and an open PR to
+/// post on.
 function wfCanSelfReview(item) {
   if (!wfCanReview(item)) return false;
   if (["draft", "plan-review"].includes(item.meta.status)) return false;
@@ -8861,7 +8871,7 @@ function wfRoundJob(target, publish) {
   if (target === "explain-diff") return "explain changes";
   if (target === "explain-plan") return "explain plan";
   if (target === "drift") return "plan vs changes";
-  if (target === "self-review") return "self-review";
+  if (target === "self-review") return "PR verdict";
   return publish === "respond-pr-comments" ? "answer PR comments" : "review";
 }
 
@@ -9224,8 +9234,8 @@ async function wfRunRecover(project, slug, batch) {
     const item = wfItem(project, slug);
     if (!item) return;
     // Never a dead end: attach the PR and retry, keep the findings local, or
-    // walk away. Only a review that chose to post has a local form — a
-    // self-review's verdict and a reply to a thread *are* the post.
+    // walk away. Only a review that chose to post comments has a local form —
+    // a verdict and a reply to a thread *are* the post.
     const local = passIdOf(p) === "review" && p.publish === "pr-comments";
     const how = await uiChoice({
       message: `${passLabel(passIdOf(p), wfChecksCtx(item))} needs a pull request, and this item has none recorded.`,
@@ -9390,13 +9400,12 @@ function wfSoloChecks(item, root, ctx) {
     review: () => launchWfReview(item, root),
     drift: () => launchWfReview(item, root, { target: "drift" }),
     respond: () => launchWfReviewRespond(item, root),
-    "self-review": () => launchWfSelfReview(item, root),
     "explain-plan": () => wfLaunchExplain(item, root, "explain-plan"),
     "explain-diff": () => wfLaunchExplain(item, root, "explain-diff"),
   };
   const explains = (id) => id === "explain-plan" || id === "explain-diff";
   const again = { "explain-plan": item.planExplain, "explain-diff": item.diffExplain };
-  return availablePasses(ctx)
+  return listedPasses(ctx)
     .filter((id) => !item.run || explains(id))
     .map((id) => ({
       label: `${passLabel(id, ctx)}${explains(id) && wfExplainAny(again[id]) ? " again" : ""}…`,
@@ -9418,20 +9427,30 @@ function wfDefaultPrUrls(item, action) {
 /// check run; "only this" runs one row on its own.
 async function wfComposeChecks(item, { preselect = null } = {}) {
   const ctx = wfChecksCtx(item);
-  const ids = availablePasses(ctx).filter(() => ctx.canReview);
+  // The recommender reads every pass the stage allows; the rows are the
+  // listed ones, a verdict riding on the code review's row.
+  const ids = listedPasses(ctx).filter(() => ctx.canReview);
   if (!ids.length) return;
   const detailDefault = (await wfAgentSettings()).explainDetail || "critical";
   const step = wfNextStep(item, {
     available: new Set(),
-    passes: new Set(ids),
+    passes: new Set(availablePasses(ctx)),
     pending: pendingReviewRound(item),
     prs: itemPrs(item.meta),
     hasPlan: ctx.hasPlan,
   });
-  const rec = recommendedSelection(step, wfStaleExplanations(item));
-  const ticked = new Set(preselect || rec.filter((r) => r.ticked).map((r) => r.id));
+  // A recommended verdict is the code review row with "post a verdict"
+  // picked — never ticked for you, since it posts.
+  const rec = recommendedSelection(step, wfStaleExplanations(item)).map((r) =>
+    r.id === "self-review"
+      ? { ...r, id: "review", params: { ...r.params, publish: "verdict", depth: r.params.depth || "deep" } }
+      : r
+  );
+  const ticked = new Set((preselect || rec.filter((r) => r.ticked).map((r) => r.id)).map(listedPassOf));
   const reasons = Object.fromEntries(rec.map((r) => [r.id, r.reason]));
   const recParams = Object.fromEntries(rec.map((r) => [r.id, r.params || {}]));
+  if (preselect && preselect.includes("self-review"))
+    recParams.review = { ...(recParams.review || {}), publish: "verdict" };
 
   const picked = await new Promise((resolve) => {
     const backdrop = document.createElement("div");
@@ -9501,8 +9520,8 @@ async function wfComposeChecks(item, { preselect = null } = {}) {
       if (id === "review") {
         const depth = mkSelect(
           [
-            ["standard", "Standard — the artifact and what it names"],
-            ["deep", "Deep — trace the subsystems it touches"],
+            ["standard", "Standard — one pass, every finding verified"],
+            ["deep", "Deep — pass after pass until one finds nothing new"],
           ],
           recParams.review && recParams.review.depth === "deep" ? "deep" : "standard"
         );
@@ -9513,11 +9532,38 @@ async function wfComposeChecks(item, { preselect = null } = {}) {
             [
               ["local", "Findings stay here"],
               ["pr-comments", "Also post them on the PR"],
+              ...(ctx.canSelfReview ? [["verdict", "Post a verdict on the PR — approve or request changes"]] : []),
             ],
-            "local"
+            recParams.review && recParams.review.publish === "verdict" && ctx.canSelfReview
+              ? "verdict"
+              : "local"
           );
           opts.appendChild(publish);
           read.publish = () => publish.value;
+          // Which PRs a verdict is posted on — the scope rule's answer, shown
+          // and changeable only while the row ends in a verdict.
+          let urls = wfDefaultPrUrls(item, "selfReview");
+          const line = document.createElement("span");
+          line.className = "wf-check-scope";
+          const change = document.createElement("button");
+          change.textContent = "Change…";
+          change.onclick = async () => {
+            const sel = await pickPrScope(item, "selfReview", { selected: urls });
+            if (sel && sel.urls.length) {
+              urls = sel.urls;
+              show();
+            }
+          };
+          const show = () => {
+            const on = publish.value === "verdict";
+            line.hidden = !on;
+            change.hidden = !on || itemPrs(item.meta).length < 2;
+            line.textContent = `PRs: ${prScopeSummary({ urls, all: false }, itemPrs(item.meta))}`;
+          };
+          publish.addEventListener("change", show);
+          show();
+          opts.append(line, change);
+          read.prUrls = () => (publish.value === "verdict" ? urls : []);
         }
       } else if (id === "explain-plan" || id === "explain-diff") {
         const detail = mkSelect(
@@ -9531,8 +9577,8 @@ async function wfComposeChecks(item, { preselect = null } = {}) {
         focus.placeholder = "Anything to concentrate on? (optional)";
         opts.appendChild(focus);
         read.focus = () => focus.value;
-      } else if (id === "respond" || id === "self-review") {
-        const action = id === "respond" ? "respond" : "selfReview";
+      } else if (id === "respond") {
+        const action = "respond";
         let urls = wfDefaultPrUrls(item, action);
         const line = document.createElement("span");
         line.className = "wf-check-scope";
@@ -10109,15 +10155,19 @@ async function wfShareExplanations(item, depth, render) {
 /// launches. Replaces two stacked uiChoice dialogs, which never showed the
 /// publish question and the depth question on the same screen. Pure model in
 /// wf-review.js. Resolves { depth, publish } or null on cancel.
-/// `target` overrides the derived one for the rounds that have their own
-/// action button (`drift`, `self-review`). Plan/diff stay derived — the backend
-/// ignores an explicit value for them anyway, so asking would be theatre.
+/// `target` overrides the derived one for `drift`, and `self-review` opens
+/// the code review with "post a verdict" picked. Plan/diff stay derived — the
+/// backend ignores an explicit value for them anyway, so asking would be
+/// theatre.
 function wfComposeReviewRound(item, { prUrls = null, target = null, refresh = [] } = {}) {
   return new Promise((resolve) => {
-    const t = target || wfReviewTarget(item);
+    const t = target === "self-review" && !wfCanSelfReview(item) ? null : target;
+    const own = t || wfReviewTarget(item);
     const model = reviewRoundModel({
-      round: wfNextReviewRound(item, t),
-      target: t,
+      round: wfNextReviewRound(item, own === "self-review" ? "diff" : own),
+      target: own,
+      canVerdict: wfCanSelfReview(item),
+      verdictRound: wfNextReviewRound(item, "self-review"),
       hasPr: wfHasPr(item),
       prNumber: item.meta.pr ? item.meta.pr.number : 0,
       prDraft: !!(item.meta.pr && item.meta.pr.draft),
@@ -10131,7 +10181,7 @@ function wfComposeReviewRound(item, { prUrls = null, target = null, refresh = []
       // having picked. A stacked item's code round reads the whole stack.
       prUrls:
         prUrls ||
-        (t === "diff" || t === "drift"
+        (own === "diff" || own === "drift"
           ? prStackUrls(itemPrs(item.meta, item.prStack))
           : null),
       interactionDefault: item.meta.interactionDefault || "",
@@ -10152,12 +10202,13 @@ function wfComposeReviewRound(item, { prUrls = null, target = null, refresh = []
     intro.className = "dialog-detail";
     intro.textContent = model.intro;
     box.appendChild(intro);
-    if (model.notice) {
-      const notice = document.createElement("p");
-      notice.className = "dialog-detail";
-      notice.textContent = model.notice;
-      box.appendChild(notice);
-    }
+    // Shown while the round ends in a verdict: what will be posted where,
+    // and the two cases GitHub changes.
+    const notice = document.createElement("p");
+    notice.className = "dialog-detail";
+    notice.hidden = true;
+    if (model.verdict) notice.textContent = model.verdict.notice;
+    box.appendChild(notice);
     // The choices scroll, the actions don't: a multi-repo item adds a scope
     // group with a row per PR, and the fourth group was enough to push
     // "Launch round" off the bottom of a short window.
@@ -10228,7 +10279,7 @@ function wfComposeReviewRound(item, { prUrls = null, target = null, refresh = []
         text.append(label, detail);
         row.append(input, text);
         fs.appendChild(row);
-        rows.push({ input, local, linked: !!c.linked });
+        rows.push({ input, local, linked: !!c.linked, label, detail });
         return input;
       };
       mk(group.local, true);
@@ -10270,6 +10321,7 @@ function wfComposeReviewRound(item, { prUrls = null, target = null, refresh = []
     };
     const scopeUrls = () =>
       scope ? scope.rows.filter((r) => !r.local && r.input.checked).map((r) => r.input.value) : [];
+    const isVerdict = () => picked(publishGroup, "local") === "verdict";
     // Scoping a round to a *linked* PR moves the findings' only sane
     // destination: that PR's files are in another repository, so they cannot
     // be annotations on this item's diff. Pre-select "post to the PR" rather
@@ -10278,6 +10330,8 @@ function wfComposeReviewRound(item, { prUrls = null, target = null, refresh = []
     if (scope && publishGroup) {
       scope.fs.addEventListener("change", () => {
         if (!scope.rows.some((r) => r.linked && r.input.checked)) return;
+        // A verdict already posts on the PRs it is about.
+        if (isVerdict()) return;
         const post = publishGroup.querySelector('input[value="pr-comments"]');
         if (post) post.checked = true;
       });
@@ -10302,6 +10356,24 @@ function wfComposeReviewRound(item, { prUrls = null, target = null, refresh = []
     applyText.append(applyLabel, applyDetail);
     applyRow.append(applyBox, applyText);
     body.appendChild(applyRow);
+
+    // A verdict is the same round ending differently: its own numbering
+    // (verdict rounds are counted among themselves), the notice, and what
+    // "no PR picked" means in the scope group.
+    const localRow = scope ? scope.rows.find((r) => r.local) : null;
+    const syncOutcome = () => {
+      const v = isVerdict() && model.verdict;
+      msg.textContent = v ? model.verdict.title : model.title;
+      notice.hidden = !v;
+      applyLabel.textContent = v ? model.verdict.autoApplyLabel : model.autoApply.label;
+      if (launch) launch.textContent = v ? model.verdict.launchLabel : model.launchLabel;
+      if (localRow) {
+        localRow.label.textContent = v ? model.prScope.local.verdictLabel : model.prScope.local.label;
+        localRow.detail.textContent = v ? model.prScope.local.verdictDetail : model.prScope.local.detail;
+      }
+    };
+    if (publishGroup) publishGroup.addEventListener("change", syncOutcome);
+    let launch = null;
 
     const refreshBoxes = refresh.map((r) => {
       const row = document.createElement("label");
@@ -10335,22 +10407,26 @@ function wfComposeReviewRound(item, { prUrls = null, target = null, refresh = []
     const cancel = document.createElement("button");
     cancel.textContent = "Cancel";
     cancel.onclick = () => done(null);
-    const launch = document.createElement("button");
+    launch = document.createElement("button");
     launch.className = "primary";
     launch.textContent = model.launchLabel;
+    syncOutcome();
     launch.onclick = () =>
       done({
         depth: picked(depthGroup, "standard"),
-        // No group = one real answer: local, except for a self-review, which
-        // always posts (the backend forces it either way).
-        publish: picked(publishGroup, t === "self-review" ? "pr-comments" : "local"),
+        // No group = one real answer: local.
+        publish: picked(publishGroup, "local"),
         interactive: interactiveParam(picked(interactionGroup, "ask")),
         autoApply: applyBox.checked,
         agent: agentGroup.value(),
         // Empty = the item's own diff (no PR scope); URLs pin the round to
-        // those PRs, however many. A self-review's were picked before the
-        // composer opened.
-        prUrls: scope ? scopeUrls() : t === "self-review" ? prUrls || [] : [],
+        // those PRs, however many. A verdict is always about PRs: the ticked
+        // ones, else every open PR of the item.
+        prUrls: isVerdict()
+          ? wfVerdictUrls(item, scope ? scopeUrls() : prUrls || [])
+          : scope
+            ? scopeUrls()
+            : [],
         refresh: refreshBoxes.filter((b) => b.checked).map((b) => b.value),
       });
     actions.appendChild(cancel);
@@ -11245,8 +11321,8 @@ function renderWfActions(bar, root, item) {
   };
 
   // Every agent pass that judges or explains this item without moving it —
-  // the stage's review, plan vs changes, the explanations, answering PR
-  // comments, the self-review — goes through one launcher. `🔍 Check…` runs
+  // the stage's review (which may end in a verdict on the PR), plan vs
+  // changes, the explanations, answering PR comments — goes through one launcher. `🔍 Check…` runs
   // any subset as one check run, whose findings become one change round; `▾`
   // runs one pass on its own. Catalogue and gates: wf-checks.js. The run:
   // run.json, see docs/workflows.md → Check runs.
@@ -11855,7 +11931,7 @@ function wfRenderNextStep(bar, item) {
       };
       chip.title =
         `${p.reason}${p.reason ? " — " : ""}${passBadge(p.id)}` +
-        (p.ticked ? "" : ". Starts unticked: it posts on GitHub in your name.");
+        (passPosts(p.id, p.params) ? ". Starts unticked: it posts on GitHub in your name." : "");
       chip.onclick = () => {
         p.ticked = !p.ticked;
         paint();
@@ -11875,7 +11951,7 @@ function wfRenderNextStep(bar, item) {
               {
                 ...p.params,
                 prUrls:
-                  p.id === "respond" || p.id === "self-review"
+                  p.id === "respond" || p.id === "self-review" || p.params.publish === "verdict"
                     ? wfDefaultPrUrls(item, p.id === "respond" ? "respond" : "selfReview")
                     : [],
               },

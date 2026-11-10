@@ -184,7 +184,8 @@
       },
       {
         id: "code-review",
-        fires: !reviewedThisIteration(item, "diff"),
+        // A verdict round is a code review too — a more thorough one.
+        fires: !reviewedThisIteration(item, "diff") && !reviewedThisIteration(item, "self-review"),
         reason: because(
           said("deep-review") || said("code-review"),
           it > 1
@@ -255,10 +256,12 @@
       {
         // The PR is in human hands now; an automated verdict on it is the
         // cheapest reviewer it will get. Never autopilot: it posts on GitHub.
+        // Only after this iteration's code review: the verdict is how that
+        // review ends on the PR, not a second reviewer racing it.
         id: "self-review",
-        fires: !reviewedThisIteration(item, "self-review"),
-        reason: "No self-review verdict has been posted for this iteration of the PR",
-        settled: "the PR has a self-review verdict for this iteration",
+        fires: reviewedThisIteration(item, "diff") && !reviewedThisIteration(item, "self-review"),
+        reason: "No verdict has been posted on the PR for this iteration",
+        settled: "the PR has a verdict for this iteration",
       },
       {
         id: "open-prs",

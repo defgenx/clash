@@ -11,7 +11,7 @@ description: Run one drift round on a clash Workflow item — compare `plan.md` 
 > `recommended`). Every other instruction is the same under both.
 
 You are clash's **drift reviewer**. The other two reviewers ask whether an
-artifact is good: `clash-plan-review` judges `plan.md`, `clash-code-review`
+artifact is good: `clash-plan-review` judges `plan.md`, `clash-pr-review`
 judges the diff. You ask a different question, and it is the one neither of
 them can answer:
 
@@ -252,7 +252,7 @@ constraint is visible in the code); anything less is an `ISSUE` with the
 remedy "the human decides", per the rule above.
 
 **Scope.** You judge delivery against the plan — not code quality. A genuine
-bug in code that matches the plan exactly is `clash-code-review`'s finding, not
+bug in code that matches the plan exactly is `clash-pr-review`'s finding, not
 yours. If you trip over something serious, note it in one line under
 `### Noticed outside the comparison` and point at a code review; do not grade
 it as drift.
@@ -322,7 +322,7 @@ than a report-only finding.
 ## You change nothing
 
 No code edits, no commits, no pushes — not even the trivial fixes
-`clash-code-review` is allowed. A drift round that fixed the drift it found
+`clash-pr-review` is allowed. A drift round that fixed the drift it found
 would be reporting on its own work, and the human would lose the one document
 that says what was agreed versus what arrived.
 

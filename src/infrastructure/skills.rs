@@ -55,10 +55,6 @@ pub const SKILLS: &[EmbeddedSkill] = &[
         content: include_str!("../../skills/clash-plan-review/SKILL.md"),
     },
     EmbeddedSkill {
-        name: "clash-code-review",
-        content: include_str!("../../skills/clash-code-review/SKILL.md"),
-    },
-    EmbeddedSkill {
         name: "clash-explain",
         content: include_str!("../../skills/clash-explain/SKILL.md"),
     },
@@ -75,8 +71,9 @@ pub const SKILLS: &[EmbeddedSkill] = &[
 /// Skills clash used to ship and no longer does. Removed when an update
 /// decision applies (never on `keep`) — a retired skill left behind would
 /// keep matching kickoff prompts its replacements now own (`clash-review`
-/// was split into `clash-plan-review` + `clash-code-review`).
-pub const RETIRED_SKILLS: &[&str] = &["clash-review"];
+/// was split into `clash-plan-review` + `clash-code-review`, and
+/// `clash-code-review` was folded into `clash-pr-review`).
+pub const RETIRED_SKILLS: &[&str] = &["clash-review", "clash-code-review"];
 
 /// Manifest file written next to the skill directories.
 const MANIFEST_FILE: &str = ".clash-skills.json";

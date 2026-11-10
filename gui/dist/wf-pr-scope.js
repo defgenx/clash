@@ -100,7 +100,7 @@
       defaultStack: true,
     },
     selfReview: {
-      message: "Self-review which pull requests?",
+      message: "Post a verdict on which pull requests?",
       allLabel: (n) => `All ${n} open pull requests`,
       okLabel: "Continue",
       detail:

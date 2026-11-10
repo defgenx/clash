@@ -93,7 +93,7 @@ fn agent_reviews_documented_everywhere_they_are_specified() {
     let contract = read("docs/workflows.md");
     for needle in [
         "clash-plan-review",
-        "clash-code-review",
+        "clash-pr-review",
         "agent-review.md",
         "reviewing",
         "returnStatus",
@@ -108,7 +108,7 @@ fn agent_reviews_documented_everywhere_they_are_specified() {
 
     // Plan review and code review are two self-contained skills; each must
     // keep the whole reviewer contract on its own.
-    for name in ["clash-plan-review", "clash-code-review"] {
+    for name in ["clash-plan-review", "clash-pr-review"] {
         let reviewer = read(&format!("skills/{name}/SKILL.md"));
         assert!(
             reviewer.contains(&format!("name: {name}")),
@@ -142,14 +142,16 @@ fn agent_reviews_documented_everywhere_they_are_specified() {
     assert!(
         executor.contains("agent-review.md")
             && executor.contains("clash-plan-review")
-            && executor.contains("clash-code-review"),
+            && executor.contains("clash-pr-review"),
         "clash-workflow must reference the reviewers' artifacts as input-only."
     );
-    // The retired harness must not linger anywhere it could be re-installed.
-    assert!(
-        !repo_root().join("skills/clash-review").exists(),
-        "skills/clash-review was retired — it must not come back."
-    );
+    // Retired skills must not linger anywhere they could be re-installed.
+    for retired in ["clash-review", "clash-code-review"] {
+        assert!(
+            !repo_root().join(format!("skills/{retired}")).exists(),
+            "skills/{retired} was retired — it must not come back."
+        );
+    }
 }
 
 #[test]

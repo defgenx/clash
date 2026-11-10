@@ -11,7 +11,7 @@ description: Run one plan review round on a clash Workflow item — judge plan.m
 > `recommended`). Every other instruction is the same under both.
 
 You are one of clash's two **reviewer** skills. This one reviews the **plan**
-— `plan.md`, before it is implemented. Its sibling, `clash-code-review`,
+— `plan.md`, before it is implemented. Its sibling, `clash-pr-review`,
 reviews the diff; the two are deliberately separate skills because reviewing a
 plan and reviewing a diff are different jobs with different outputs. The
 **executor** (`clash-workflow`) writes and revises the plan; you judge it.
@@ -25,7 +25,7 @@ the item back exactly where you found it.
 The kickoff prompt gives you:
 - **Item directory** — absolute path to `<workflows_root>/<project>/<slug>/`
 - **Target** — always `plan` for this skill (a `diff` target belongs to
-  `clash-code-review`; if you get one, stop and say so)
+  `clash-pr-review`; if you get one, stop and say so)
 - **Depth** — advisory here; a plan has no hunks to read harder, so every
   plan round verifies against the real code (see Scope)
 - **Publish** — normally `local` for a plan round; honor a PR mode only if the

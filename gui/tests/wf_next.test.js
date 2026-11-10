@@ -221,3 +221,21 @@ test("a PR in human hands is offered a self-review once per iteration, never on 
   assert.equal(wfNextStep(done, facts()).id, "open-prs");
   assert.ok(!AUTO_ACTIONS.has("self-review"));
 });
+
+test("a verdict follows this iteration's code review instead of racing it", () => {
+  // Nothing reviewed yet: the code review comes first, and alone — a verdict
+  // is how that review ends on the PR, not a second reviewer next to it.
+  const passes = new Set(["review", "drift", "respond", "self-review"]);
+  const fresh = wfNextStep(item("pr-ready", { reviewRounds: { drift: 1 } }, {
+    reviewMarks: { drift: { iteration: 1, round: 1 } },
+  }), facts({ passes }));
+  assert.equal(fresh.id, "code-review");
+  assert.ok(!fresh.passes.some((p) => p.id === "self-review"));
+  // A verdict round at this iteration counts as the code review.
+  const verdicted = item(
+    "diff-review",
+    { reviewRounds: { drift: 1, "self-review": 1 } },
+    { reviewMarks: { drift: { iteration: 1, round: 1 }, "self-review": { iteration: 1, round: 1 } } }
+  );
+  assert.notEqual(wfNextStep(verdicted, facts()).id, "code-review");
+});

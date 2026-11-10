@@ -386,16 +386,16 @@
               <input id="set-wf-subagent-model" type="text" placeholder="claude-sonnet-5-5" autocomplete="off" spellcheck="false" title="Model the lead's subagents run on under Team delegation — forced (CLAUDE_CODE_SUBAGENT_MODEL + CLAUDE_CODE_SUBAGENT_MODEL_FORCE), so neither an agent definition nor the lead can pick another. Claude Code's built-in Explore agent keeps its own model. Empty resets to the shipped default." />
             </label>
             <label class="setting-row inline">Review sizing
-              <select id="set-wf-review-sizing" title="Code reviews and self-reviews measure the change they read at launch. Small (≤150 changed lines and ≤5 files, one PR) runs its lead on the small-review model; large (≥800 lines or ≥25 files) runs its subagents on the large-review model; anything else uses the models above. A resumed round keeps the models it was launched with. Off measures nothing. Claude Code only — OMP sessions keep their own models.">
+              <select id="set-wf-review-sizing" title="Code reviews (verdict rounds included) measure the change they read at launch. Small (≤150 changed lines and ≤5 files, one PR) runs its lead on the small-review model; large (≥800 lines or ≥25 files) runs its subagents on the large-review model; anything else uses the models above. A resumed round keeps the models it was launched with. Off measures nothing. Claude Code only — OMP sessions keep their own models.">
                 <option value="auto">By change size</option>
                 <option value="off">Off (always the models above)</option>
               </select>
             </label>
             <label class="setting-row" id="set-wf-small-review-row">Small review · lead
-              <input id="set-wf-small-review-model" type="text" placeholder="claude-sonnet-5-5" autocomplete="off" spellcheck="false" title="Lead model of a small code review or self-review; its subagents keep the subagent model above. Claude Code only. Empty resets to the shipped default." />
+              <input id="set-wf-small-review-model" type="text" placeholder="claude-sonnet-5-5" autocomplete="off" spellcheck="false" title="Lead model of a small code review (verdict rounds included); its subagents keep the subagent model above. Claude Code only. Empty resets to the shipped default." />
             </label>
             <label class="setting-row" id="set-wf-large-review-row">Large review · subagents
-              <input id="set-wf-large-review-subagent-model" type="text" placeholder="claude-opus-5-5" autocomplete="off" spellcheck="false" title="Subagent model of a large code review or self-review, so a big change gets stronger finders; its lead keeps the lead model above. Claude Code only. Empty resets to the shipped default." />
+              <input id="set-wf-large-review-subagent-model" type="text" placeholder="claude-opus-5-5" autocomplete="off" spellcheck="false" title="Subagent model of a large code review (verdict rounds included), so a big change gets stronger finders; its lead keeps the lead model above. Claude Code only. Empty resets to the shipped default." />
             </label>
             <div class="settings-group">Models · OMP</div>
             <p class="settings-note">What a workflow session launched on OMP runs on — names are matched by omp, against the providers you configured there. Applied at launch and on every resume.</p>

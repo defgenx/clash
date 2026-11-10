@@ -114,7 +114,7 @@ point they may answer "continue autonomously" — from then on, stop asking.
 ## You are the executor, not the reviewer
 
 Two separate skills run review rounds on the same item — `clash-plan-review`
-(judges `plan.md`) and `clash-code-review` (judges the diff). They write
+(judges `plan.md`) and `clash-pr-review` (judges the diff). They write
 findings into `agent-review.md` and `annotations.json` and never touch
 `plan.md` or the code beyond trivial fixes. Two consequences for you:
 

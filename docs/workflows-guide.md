@@ -20,7 +20,7 @@ design behind each rule are in [workflows.md](workflows.md).
 - [Applying a round](#applying-a-round)
 - [Explaining](#explaining)
 - [Comparing plan vs changes](#comparing-plan-vs-changes)
-- [Self-review](#self-review)
+- [Code review and PR verdicts](#code-review-and-pr-verdicts)
 - [Going back](#going-back)
 - [Pull requests](#pull-requests)
 - [Multi-repo work](#multi-repo-work)
@@ -91,7 +91,8 @@ with what it already checked:
    **⌕ Code review**
 5. nothing has compared the change with the plan → **⇄ Compare plan vs
    changes**
-6. a ready PR has no self-review verdict for this iteration → **⚖ Self-review**
+6. a ready PR has no verdict for this iteration (after its code review) →
+   **⌕ Code review** ending in *Post a verdict on the PR*
 7. otherwise → **Approve**
 
 Due checks (3–6) are suggested **together**, as chips with one **▶ Run N
@@ -191,9 +192,10 @@ When the item has a PR, the fix round pushes so the PR follows.
 Every review and explanation starts from one place on the action bar:
 
 - **🔍 Check…** opens a checklist of every check the stage allows (plan or code
-  review, plan vs changes, explain plan, explain changes, answer PR comments,
-  self-review), the suggested ones ticked. Each row has its own options (depth,
-  where findings go, focus, which PRs) and a **Run only this →** link; at the
+  review, plan vs changes, explain plan, explain changes, answer PR comments),
+  the suggested ones ticked. Each row has its own options (depth, how a code
+  review ends — findings kept here, posted as comments, or a verdict on the PR —
+  focus, which PRs) and a **Run only this →** link; at the
   bottom, which agent, how the rounds run, and whether to apply the findings
   when the run finishes.
 - **▾** runs one check on its own, through that check's own dialog.
@@ -202,7 +204,7 @@ A pick runs as one **check run**:
 
 - explanations start at once, alongside everything else;
 - the other checks run one after another over the same code, in a fixed order
-  (the self-review last);
+  (a verdict last);
 - then at most **one** change round for every round worth applying, instead of
   one fix round per check — automatically if you allowed it, otherwise through
   **↻ Apply** on the strip (apply now, or edit the note first).
@@ -343,7 +345,8 @@ context.
 **◫ Explain a PR…** (the ◫ button on the WORKFLOWS header, or the PR dashboard)
 explains anyone's pull request. Paste the URL, and clash finds your local
 checkout of that repository, opens a review-only item for the PR and starts the
-explanation. A review or self-review of the same PR is then one click away.
+explanation. A code review of the same PR, or a verdict on it, is then one
+click away.
 
 ## Comparing plan vs changes
 
@@ -362,14 +365,29 @@ Launching it offers to refresh any explanation written for an older iteration
 alongside it, pre-ticked; it runs in parallel, and the comparison doesn't wait
 for it.
 
-## Self-review
+## Code review and PR verdicts
 
-**⚖ Self-review** reviews the PR like a human reviewer and posts the verdict on
-it: **approve** or **request changes**, as one GitHub review with line comments
-on the code concerned and a summary.
+**⌕ Code review** has one reviewer, and you choose how the round ends:
 
-- It reviews in a loop, pass after pass, each pass hunting for what the earlier
-  ones missed, and stops when a full pass finds nothing new.
+- **Keep the findings local** — they land as diff comments on the item and in
+  *Agent reviews*. Nothing leaves your machine.
+- **Also post them to the PR** — one review of line comments. It never approves
+  or requests changes.
+- **Post a verdict on the PR** — the round reviews the PR like a human reviewer
+  and posts **approve** or **request changes**, as one GitHub review with line
+  comments on the code concerned and a summary. Offered once an open PR exists.
+
+**Answer PR comments** is its own check: it replies in every open thread and
+fixes what the comments ask for.
+
+How hard the round looks is the depth: **standard** is one pass with every
+finding verified; **deep** reviews in a loop, pass after pass, each hunting for
+what the earlier ones missed, until a full pass finds nothing new. A verdict
+always loops. Every round on an item with a PR also reads the PR's discussion,
+so it doesn't re-raise what was settled there.
+
+What a verdict round does:
+
 - It reads everything already on the PR (review threads, comments, reviews and
   fix commits) and checks each claimed fix against the code. A thread marked
   resolved whose problem is still there becomes a finding credited to the
@@ -389,19 +407,22 @@ on the code concerned and a summary.
 - How hard it looks depends on the size of the change: a small PR gets a lighter
   model and no fan-out, a large one stronger reviewers on every pass.
 
-On an item with several PRs, the click asks which of the open ones to review,
-with all of them ticked; one round then posts a verdict on each. A PR's own
-right-click menu offers *Self-review* for that PR alone. Like every review
-composer, it then asks which agent runs the round (Claude Code or OMP) unless
-the agent setting fixes one.
+On an item with several PRs, the composer's *Which change?* rows pick the PRs; a
+verdict with none ticked posts on every open one, one verdict each. A PR's own
+right-click menu offers *Post a verdict on <PR>…*, which opens the composer with
+that PR ticked. Like every review composer, it also asks which agent runs the
+round (Claude Code or OMP) unless the agent setting fixes one. Verdict rounds
+are numbered among themselves: *PR verdict 2* is the item's second verdict.
 
 It needs a PR, not a plan, so review-only items get it too. GitHub doesn't let a
 PR's author approve or request changes on it, and a draft takes no review, so in
 those cases the verdict is posted as a comment that states it. The findings also
 land as diff comments, so a change request can become a fix round.
 
-The skill behind it, `clash-pr-review`, works outside workflows too: ask Claude
-Code to "review PR <url>" (or run `/clash-pr-review 123`) on any PR.
+The skill behind every code review, `clash-pr-review`, works outside workflows
+too: ask Claude Code to "review PR <url>" (or run `/clash-pr-review 123`) on
+any PR. On its own it posts a verdict unless you ask for comments only or for
+nothing to be posted.
 
 ## Going back
 
@@ -594,7 +615,7 @@ configured webhook. Your own clicks never post.
 
   The models are applied at launch and again every time the session is resumed
   (after a restart, an update or a reload).
-- **Sized reviews**: code reviews and self-reviews are sized by the change they
+- **Sized reviews**: code reviews (verdict rounds included) are sized by the change they
   read (`workflows.review_sizing`, default `auto`, Claude Code only): a small
   change (≤150 lines, ≤5 files, one PR) runs its lead on
   `workflows.small_review_model` (default `claude-sonnet-5-5`), a large one
@@ -602,15 +623,14 @@ configured webhook. Your own clicks never post.
   `workflows.large_review_subagent_model` (default `claude-opus-5-5`), and a
   resumed round keeps the models it launched with.
   [Details](workflows.md#sized-review-rounds).
-- **Skills**: the agent side is six skills embedded in the binary:
+- **Skills**: the agent side is five skills embedded in the binary:
   - `clash-workflow` — the executor: plans, implements, opens PRs, writes the
     hand-off;
   - `clash-plan-review` — the plan reviewer;
-  - `clash-code-review` — the code reviewer;
   - `clash-explain` — the explainer;
   - `clash-drift-review` — plan vs changes;
-  - `clash-pr-review` — the self-review: loops over a PR, then approves or
-    requests changes (also usable on its own).
+  - `clash-pr-review` — the code reviewer, for every outcome: local findings,
+    PR comments, answered threads, or a verdict (also usable on its own).
 
   Startup installs missing skills and refreshes the ones you never edited. clash
   asks (*Keep my edits* / *Overwrite*) only when an upgrade would replace a

@@ -85,7 +85,7 @@ assist = "suggest"         # suggest: highlight the next step | autopilot: also 
 explain_detail = "critical"  # how much an explanation writes up front: overview | critical | full
 subagent_model = "claude-sonnet-5-5" # model those subagents run on (Claude Code); empty = inherit the lead's
 omp_subagent_model = ""    # model those subagents run on (OMP); empty = omp's own task model
-review_sizing = "auto"     # size code reviews / self-reviews by the change: auto | off (Claude Code only)
+review_sizing = "auto"     # size code reviews (verdicts included) by the change: auto | off (Claude Code only)
 small_review_model = "claude-sonnet-5-5"          # lead of a small sized review; empty = lead_model
 large_review_subagent_model = "claude-opus-5-5"   # subagents of a large sized review; empty = subagent_model
 pr_skill = "hivebrite-engineering:github-pr"  # skill the PR phase opens PRs with; "none" disables

@@ -235,8 +235,8 @@ clash. Workflows are GUI-only.
   change round.
 - **Explanations**: a written walk-through and a drawing of what the plan will
   do or what the change did, as a tree you can zoom into part by part.
-- **Self-review**: a reviewer that reads the PR and its whole discussion, then
-  posts an approve or request-changes review.
+- **PR verdicts**: a code review can end by posting an approve or
+  request-changes review on the PR, after reading its whole discussion.
 - **Suggested next step** on every item, with an optional autopilot for the
   checks that post nothing.
 - **Pull requests**: draft PRs written through your org's PR skill, multi-repo
@@ -245,10 +245,11 @@ clash. Workflows are GUI-only.
   so agents link every ticket they mention; one composed document to the
   clipboard, `.md` / `.html`, Slack, Discord, or a Jira or Linear ticket.
 
-The agent side is six skills embedded in the binary and installed at startup:
-`clash-workflow` (the executor), `clash-plan-review`, `clash-code-review`,
-`clash-explain`, `clash-drift-review` (plan vs changes) and `clash-pr-review`
-(the self-review, also usable on any PR with `/clash-pr-review`).
+The agent side is five skills embedded in the binary and installed at startup:
+`clash-workflow` (the executor), `clash-plan-review`, `clash-pr-review` (the
+code reviewer, verdicts included, also usable on any PR with
+`/clash-pr-review`), `clash-explain` and `clash-drift-review` (plan vs
+changes).
 
 The user guide is [docs/workflows-guide.md](docs/workflows-guide.md); the file
 contract the agents follow is [docs/workflows.md](docs/workflows.md).

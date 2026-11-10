@@ -1,7 +1,8 @@
 // Agent-review launcher — the pure half.
 //
 // A review round has three dimensions: what is reviewed (derived from the
-// item's status), how deep, and where the findings go. They used to be asked
+// item's status), how deep, and how it ends — findings kept here, posted as
+// comments, or a verdict on the PR. They used to be asked
 // as two stacked dialogs, which meant the full shape of the round was never
 // on screen at once — and "answer the PR's review comments", a different job
 // entirely, hid as the third option of the second dialog. The model here
@@ -37,7 +38,20 @@
     // A pre-picked scope (a launch that started from one PR's own menu) —
     // pre-checks those rows instead of "this repository's own diff".
     prUrls = null,
+    // Whether a code round may end in a verdict on the PR (an open PR at a
+    // built stage), and the number that round would carry: verdict rounds
+    // are numbered among themselves (`self-review` in agent-review.md).
+    canVerdict = false,
+    verdictRound = 1,
   } = {}) {
+    // A verdict is an outcome of the code review, not a reviewer of its own:
+    // `self-review` opens the code-review composer with the verdict picked.
+    const verdictDefault = target === "self-review";
+    if (verdictDefault) {
+      target = "diff";
+      canVerdict = true;
+    }
+    canVerdict = canVerdict && target === "diff" && hasPr;
     // A plan is one document however many repos implement it, so a plan round
     // has no PR scope. A code round on a multi-repo item does — and its
     // answer is a **set**: a cross-repo change is one change, and reviewing
@@ -49,15 +63,11 @@
     // instead of being left implicit: "leave everything unchecked" is not a
     // thing anyone reads off a dialog.
     const seeded = (prUrls || []).filter((u) => (prs || []).some((p) => p.url === u));
-    // A self-review's PRs are picked before the composer opens, by the same
-    // scope dialog as every other PR action — so here they are stated, not
-    // asked again.
-    const self = target === "self-review";
     // A drift round keeps the scope for the same reason a code round does: a
     // plan split across an API repo and the web repo that consumes it drifts
     // *between* the repos as often as inside one.
     const prScope =
-      target === "plan" || self || (prs || []).length < 2
+      target === "plan" || (prs || []).length < 2
         ? null
         : {
             legend: "Which change?",
@@ -67,6 +77,10 @@
               value: "",
               label: "This repository's own diff",
               detail: "Every file on the branch — findings land as diff comments you can triage here.",
+              // What the same row means once the round posts a verdict: a
+              // verdict is about PRs, so "no PR picked" is every open one.
+              verdictLabel: "Every open PR of this item",
+              verdictDetail: "One verdict per PR, each posted on that PR.",
               checked: seeded.length === 0,
             },
             choices: (prs || []).map((pr) => ({
@@ -94,38 +108,48 @@
             ? `#${prNumber}`
             : "the PR";
     // Which of them is a draft decides how a verdict can be posted there.
-    const anyDraft = chosen.length ? chosen.some((p) => p.draft) : prDraft;
+    const anyDraft = prScope
+      ? (prs || []).some((p) => p.draft)
+      : chosen.length
+        ? chosen.some((p) => p.draft)
+        : prDraft;
     const drift = target === "drift";
+    const verdict = canVerdict
+      ? {
+          title: `PR verdict — round ${verdictRound}`,
+          launchLabel: `Launch verdict round ${verdictRound}`,
+          // Said where the round is shaped, because it is the part that
+          // leaves the machine: GitHub changes how a verdict can be posted
+          // in two common cases.
+          notice:
+            `Posts a verdict to ${prName}. Always loops until a full pass finds nothing new, reads the PR head and its whole discussion, and fixes nothing. ` +
+            (anyDraft
+              ? chosen.length > 1 || prScope
+                ? "A draft cannot take a formal review: on a draft, the verdict is posted as a comment. "
+                : "This PR is a draft, which cannot take a formal review: the verdict is posted as a comment. "
+              : "") +
+            "If the PR is yours, GitHub does not let its author approve or request changes, so the verdict is posted as a comment review that states it.",
+          autoApplyLabel: "Start a fix round when the verdict requests changes",
+        }
+      : null;
     return {
       prScope,
       // Named for the question it answers. "Agent review — round 3" on a
       // drift round would put two different jobs behind one heading.
       title: drift
         ? `Plan vs changes — round ${round}`
-        : self
-          ? `Self-review — round ${round}`
-          : `Agent review — round ${round}`,
+        : target === "plan"
+          ? `Plan review — round ${round}`
+          : `Code review — round ${round}`,
       intro:
         (target === "plan"
           ? "Reviews this item's plan against the real codebase, then returns the item here."
           : drift
             ? "Compares this item's plan with the change that was built from it, grades every divergence as intended, harmless or a problem, then returns the item here."
-            : self
-              ? "Reviews the PR pass after pass until a full pass finds nothing new, then posts a verdict — approve or request changes — with line comments and a summary marked as an automated review. Then returns the item here."
-              : "Reviews this item's code diff, then returns the item here.") +
+            : "Reviews this item's code against the real codebase — and the PR's discussion when there is one — then returns the item here.") +
         " Findings land in this item either way. Spends tokens.",
-      // Said where the round is shaped, because it is the part that leaves the
-      // machine: a self-review has no "keep local", and GitHub changes how
-      // its verdict can be posted in two common cases.
-      notice: self
-        ? `Posts to ${prName} — there is no local-only self-review. ` +
-          (anyDraft
-            ? chosen.length > 1
-              ? "A draft cannot take a formal review: on a draft, the verdict is posted as a comment. "
-              : "This PR is a draft, which cannot take a formal review: the verdict is posted as a comment. "
-            : "") +
-          "If the PR is yours, GitHub does not let its author approve or request changes, so the verdict is posted as a comment review that states it."
-        : null,
+      notice: null,
+      verdict,
       launchLabel: `Launch round ${round}`,
       depth:
         target === "plan"
@@ -139,41 +163,47 @@
                   label: drift ? "Deep comparison" : "Deep review",
                   detail: drift
                     ? "Traces every planned action into the code that implements it, instead of matching plan bullets against file names."
-                    : self
-                      ? "At least three passes, every hunk read from two angles, up to eight passes — callers, invariants and tests traced before the verdict."
-                      : "Traces every subsystem the change touches — callers, invariants, existing tests — before judging it.",
+                    : "Pass after pass until one finds nothing new (three at least, up to eight) — callers, invariants and tests traced before judging.",
                 },
                 {
                   value: "standard",
                   label: drift ? "Standard comparison" : "Standard review",
                   detail: drift
                     ? "Walks the plan against the diff in context. Faster, lighter."
-                    : self
-                      ? "At least two passes, up to five, each hunk read at least once. Faster, lighter."
-                      : "Reviews the diff in context. Faster, lighter.",
+                    : canVerdict
+                      ? "One pass over the change in context, every finding verified. Faster, lighter — a verdict still takes two passes at least."
+                      : "One pass over the change in context, every finding verified. Faster, lighter.",
                 },
               ],
             },
-      // A self-review always posts (the backend forces it), so there is no
-      // destination to pick.
-      publish: !hasPr || self
+      publish: !hasPr
         ? null
         : {
-            legend: "Where do the findings go?",
-            default: "local",
+            legend: "How does the round end?",
+            default: verdictDefault ? "verdict" : "local",
             choices: [
               {
                 value: "local",
-                label: "Keep local",
+                label: "Keep the findings local",
                 detail: "Findings stay in this item. Nothing leaves the machine.",
               },
               {
                 value: "pr-comments",
-                label: `Also post to ${prName}`,
+                label: `Also post them to ${prName}`,
                 detail: prDraft
                   ? `Line comments on ${prName} plus a summary comment — a draft cannot take a formal review, so the summary goes as a comment. Never approves or requests changes; that stays yours.`
                   : `One review with line comments on ${prName}. Never approves or requests changes — that stays yours.`,
               },
+              ...(canVerdict
+                ? [
+                    {
+                      value: "verdict",
+                      label: `Post a verdict on ${prName}`,
+                      detail:
+                        "Approve or request changes, the way a reviewer would: line comments plus a summary marked as an automated review. Findings still land here too.",
+                    },
+                  ]
+                : []),
             ],
           },
       interaction: {
@@ -210,9 +240,7 @@
         label:
           target === "plan"
             ? "Apply the findings to the plan when the round finishes"
-            : self
-              ? "Start a fix round when the verdict requests changes"
-              : "Start a fix round when this one finishes",
+            : "Start a fix round when this one finishes",
         detail:
           "The round decides whether its findings are worth it — cosmetic ones are reported, not applied. " +
           (target === "plan"

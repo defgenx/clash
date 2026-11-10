@@ -12,6 +12,9 @@ const path = require("node:path");
 const {
   PASSES,
   availablePasses,
+  listedPasses,
+  listedPassOf,
+  passPosts,
   passSpec,
   passIdOf,
   passLabel,
@@ -76,6 +79,28 @@ test("only passes with something to read are offered", () => {
     "explain-plan",
     "explain-diff",
   ]);
+});
+
+test("a verdict rides on the code review's row and is never pre-ticked", () => {
+  // The recommender may suggest a verdict; the menus and the checklist list
+  // it as the review's outcome, not as a second reviewer.
+  assert.ok(availablePasses(ctx()).includes("self-review"));
+  assert.ok(!listedPasses(ctx()).includes("self-review"));
+  assert.equal(listedPassOf("self-review"), "review");
+  // "review" + publish verdict is the verdict round, on the code target only.
+  const v = passSpec("review", { publish: "verdict", prUrls: ["u"], depth: "deep" }, ctx());
+  assert.equal(v.target, "self-review");
+  assert.equal(v.publish, "pr-comments");
+  assert.deepEqual(v.prUrls, ["u"]);
+  assert.equal(passIdOf(v), "self-review");
+  assert.equal(passSpec("review", { publish: "verdict" }, ctx({ reviewTarget: "plan" })).target, "plan");
+  // Anything that posts starts unticked and never runs on autopilot.
+  assert.ok(passPosts("review", { publish: "verdict" }));
+  assert.ok(passPosts("review", { publish: "pr-comments" }));
+  assert.ok(!passPosts("review", { publish: "local" }));
+  assert.ok(passPosts("self-review"));
+  const sel = [{ id: "review", params: { publish: "verdict" }, ticked: true }];
+  assert.deepEqual(autopilotSelection(sel), []);
 });
 
 test("the stage's review names the target the launcher derives", () => {
@@ -220,7 +245,7 @@ test("the strip line says what runs, what is next and what is alongside", () => 
   );
   assert.equal(
     s.text,
-    "Checks · 1 of 3 done · plan vs changes running · next: self-review · explain changes alongside"
+    "Checks · 1 of 3 done · plan vs changes running · next: code review · verdict · explain changes alongside"
   );
   assert.ok(s.canStop);
   assert.equal(s.next.index, 3);

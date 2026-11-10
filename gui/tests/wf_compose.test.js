@@ -247,7 +247,7 @@ test("a round's label names its phase, since the number alone cannot", () => {
   // The drift round judges, so "Review 2" would not be a lie — but it would
   // hide which two things were compared, which is the round's whole point.
   assert.equal(roundLabel({ round: 2, target: "drift" }), "Plan vs changes 2");
-  assert.equal(roundLabel({ round: 3, target: "self-review" }), "Self-review 3");
+  assert.equal(roundLabel({ round: 3, target: "self-review" }), "PR verdict 3");
   // An unlabelled round (a report predating the target in its heading) still
   // reads sensibly rather than claiming a phase it never named.
   assert.equal(roundLabel({ round: 4, target: "" }), "Review 4");

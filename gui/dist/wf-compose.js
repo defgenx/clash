@@ -229,7 +229,7 @@
     // A drift round judges, so "Review N" would not be a lie — but it would
     // hide which two things were compared, which is the round's whole point.
     if (t === "drift") return `Plan vs changes ${n}`;
-    if (t === "self-review") return `Self-review ${n}`;
+    if (t === "self-review") return `PR verdict ${n}`;
     return `Review ${n}`;
   }
 

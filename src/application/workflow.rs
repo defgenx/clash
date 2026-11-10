@@ -955,7 +955,7 @@ pub fn review_job(review: &crate::domain::workflow::WorkflowReview) -> String {
         // Named for the comparison, not the file: "drift" alone in a sessions
         // sidebar says nothing about which two things are being compared.
         ReviewTarget::Drift => format!("plan vs changes r{}", review.round.max(1)),
-        ReviewTarget::SelfReview => format!("self-review r{}", review.round.max(1)),
+        ReviewTarget::SelfReview => format!("PR verdict r{}", review.round.max(1)),
         ReviewTarget::Plan => format!("plan review r{}", review.round.max(1)),
         ReviewTarget::Diff | ReviewTarget::Unknown => {
             format!("code review r{}", review.round.max(1))
@@ -1417,13 +1417,12 @@ pub fn review_engine_for(target: crate::domain::workflow::ReviewTarget) -> &'sta
         // different questions, and one skill answering both answers neither
         // sharply.
         ReviewTarget::Drift => "clash-drift-review",
-        // The PR reviewer: an extension of the code reviewer that loops until
-        // a pass finds nothing new and ends in a posted verdict. Its own skill
-        // because it is also used outside workflows, on anyone's PR.
-        ReviewTarget::SelfReview => "clash-pr-review",
-        // Unknown degrades to the code reviewer: every mode has a diff to
-        // read, while a plan may not exist at all.
-        ReviewTarget::Diff | ReviewTarget::Unknown => "clash-code-review",
+        // The code reviewer, for every outcome: findings kept local, posted
+        // as comments, threads answered, or a verdict (`SelfReview`). One
+        // skill, because the review itself is the same job however it ends.
+        // Unknown degrades to it: every mode has a diff to read, while a plan
+        // may not exist at all.
+        ReviewTarget::Diff | ReviewTarget::SelfReview | ReviewTarget::Unknown => "clash-pr-review",
     }
 }
 
@@ -1955,20 +1954,18 @@ mod tests {
         // Plan review and code review are separate skills — that split is a
         // correctness property, not packaging.
         assert_eq!(review_engine_for(ReviewTarget::Plan), "clash-plan-review");
-        assert_eq!(review_engine_for(ReviewTarget::Diff), "clash-code-review");
+        assert_eq!(review_engine_for(ReviewTarget::Diff), "clash-pr-review");
         // The explainer writes structure.md instead of findings.
         assert_eq!(
             review_engine_for(ReviewTarget::ExplainDiff),
             "clash-explain"
         );
         // Unknown degrades to the code reviewer: every mode has a diff.
-        assert_eq!(
-            review_engine_for(ReviewTarget::Unknown),
-            "clash-code-review"
-        );
+        assert_eq!(review_engine_for(ReviewTarget::Unknown), "clash-pr-review");
         // The drift reviewer is its own skill: "is this code good" and "is
         // this the code we agreed to" are different questions.
         assert_eq!(review_engine_for(ReviewTarget::Drift), "clash-drift-review");
+        // A verdict is an outcome of the code review, not another reviewer.
         assert_eq!(
             review_engine_for(ReviewTarget::SelfReview),
             "clash-pr-review"
@@ -1999,7 +1996,7 @@ mod tests {
         assert!(p.contains("Target: self-review."), "{p}");
         assert!(p.contains("Publish: pr-comments."), "{p}");
         assert!(p.contains("Return to: pr-ready."), "{p}");
-        assert_eq!(review_job(&review), "self-review r1");
+        assert_eq!(review_job(&review), "PR verdict r1");
     }
 
     /// Every target's session name says what the agent is doing. `drift`
@@ -2078,7 +2075,7 @@ mod tests {
             WorkflowMode::Full,
             &Delegation::default(),
         );
-        assert!(p.contains("Use the clash-code-review skill"));
+        assert!(p.contains("Use the clash-pr-review skill"));
 
         let plan = WorkflowReview {
             target: ReviewTarget::Plan,
@@ -3014,7 +3011,7 @@ Tighten the API.\n\n\
             &Delegation::default(),
         );
         // A different skill than the executor — reviewing is not implementing.
-        assert!(p.contains("clash-code-review skill"));
+        assert!(p.contains("clash-pr-review skill"));
         assert!(!p.contains("clash-workflow skill"));
         assert!(p.contains("/x/workflows/clash/auth"));
         assert!(p.contains("Target: diff."));

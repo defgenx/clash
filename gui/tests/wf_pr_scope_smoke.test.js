@@ -313,7 +313,7 @@ test("the review composer opens with a scope group and pre-selects the pick", as
   await new Promise((r) => setImmediate(r));
   assert.equal(rejected, null, `the composer must open: ${rejected}`);
 
-  // A self-review opens over a scope picked beforehand: no scope group.
+  // A verdict launch opens the same composer, verdict picked, scope seeded.
   let selfRejected = null;
   box.wfComposeReviewRound(ITEM, { target: "self-review", prUrls: ["https://github.com/o/web/pull/2"] })
     .catch((e) => (selfRejected = e));

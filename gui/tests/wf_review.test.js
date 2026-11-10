@@ -15,7 +15,7 @@ const {
 
 test("a code round with a PR offers both dimensions on one screen", () => {
   const m = reviewRoundModel({ round: 3, target: "diff", hasPr: true, prNumber: 42 });
-  assert.equal(m.title, "Agent review — round 3");
+  assert.equal(m.title, "Code review — round 3");
   assert.equal(m.launchLabel, "Launch round 3");
   assert.deepEqual(
     m.depth.choices.map((c) => c.value),
@@ -94,7 +94,7 @@ test("the interaction choice maps to the backend tri-state", () => {
 
 test("the model tolerates an empty call", () => {
   const m = reviewRoundModel();
-  assert.equal(m.title, "Agent review — round 1");
+  assert.equal(m.title, "Code review — round 1");
   assert.equal(m.publish, null);
 });
 
@@ -267,57 +267,67 @@ test("a drift round keeps the PR scope, because drift happens between repos", ()
   assert.equal(reviewRoundModel({ target: "drift", prs: [prs[0]] }).prScope, null);
 });
 
-test("a self-review always posts, so it asks no destination and says where it goes", () => {
-  const m = reviewRoundModel({ target: "self-review", round: 2, hasPr: true, prNumber: 41 });
-  assert.match(m.title, /Self-review — round 2/);
-  // The loop and the verdict are the round's whole shape.
-  assert.match(m.intro, /until a full pass finds nothing new/);
-  assert.match(m.intro, /approve or request changes/);
-  assert.match(m.intro, /automated review/);
-  // No "keep local": the post is the output.
-  assert.equal(m.publish, null);
-  assert.match(m.notice, /Posts to #41/);
+test("a verdict is one way a code round ends, offered only where it can be posted", () => {
+  // Without an open PR at a built stage there is nothing to post a verdict on.
+  const plain = reviewRoundModel({ target: "diff", round: 3, hasPr: true, prNumber: 41 });
+  assert.equal(plain.verdict, null);
+  assert.ok(!plain.publish.choices.some((c) => c.value === "verdict"));
+  const m = reviewRoundModel({
+    target: "diff",
+    round: 3,
+    hasPr: true,
+    prNumber: 41,
+    canVerdict: true,
+    verdictRound: 2,
+  });
+  assert.deepEqual(
+    m.publish.choices.map((c) => c.value),
+    ["local", "pr-comments", "verdict"]
+  );
+  assert.equal(m.publish.default, "local");
+  assert.match(m.publish.choices[2].label, /verdict on #41/);
+  // Verdict rounds are numbered among themselves, and the composer says what
+  // will be posted where before anything is launched.
+  assert.equal(m.verdict.title, "PR verdict — round 2");
+  assert.equal(m.verdict.launchLabel, "Launch verdict round 2");
+  assert.match(m.verdict.notice, /Posts a verdict to #41/);
+  assert.match(m.verdict.notice, /until a full pass finds nothing new/);
   // GitHub refuses an author's own approval — the common case for an item's
-  // PR — and the composer says so before the round is launched.
-  assert.match(m.notice, /author approve or request changes/);
-  assert.doesNotMatch(m.notice, /draft/);
+  // PR — and the composer says so.
+  assert.match(m.verdict.notice, /author approve or request changes/);
+  assert.doesNotMatch(m.verdict.notice, /draft/);
   assert.match(
-    reviewRoundModel({ target: "self-review", hasPr: true, prDraft: true }).notice,
+    reviewRoundModel({ target: "diff", hasPr: true, prDraft: true, canVerdict: true }).verdict.notice,
     /draft/
   );
-  assert.ok(m.depth, "a self-review has a depth");
-  assert.match(m.depth.choices.find((c) => c.value === "deep").detail, /passes/);
-  assert.match(m.autoApply.label, /verdict requests changes/);
-  // The other rounds carry no notice.
-  for (const target of ["plan", "diff", "drift"]) {
-    assert.equal(reviewRoundModel({ target, hasPr: true }).notice, null, target);
+  assert.match(m.verdict.autoApplyLabel, /verdict requests changes/);
+  // A plan or drift round never ends in a verdict, and nothing carries a
+  // standing notice.
+  for (const target of ["plan", "drift"]) {
+    const other = reviewRoundModel({ target, hasPr: true, canVerdict: true });
+    assert.equal(other.verdict, null, target);
+    assert.equal(other.notice, null, target);
   }
 });
 
-test("a self-review's PRs are picked before the composer, which names them", () => {
-  // The scope is the shared PR-scope dialog's answer (all or some of the
-  // item's open PRs), so the composer must not ask it a second time.
+test("self-review opens the code round with the verdict picked", () => {
   const prs = [
     { url: "https://github.com/o/api/pull/1", repo: "o/api", number: 1, primary: true },
     { url: "https://github.com/o/web/pull/2", repo: "o/web", number: 2, primary: false, draft: true },
   ];
-  const both = reviewRoundModel({
-    target: "self-review",
-    prs,
-    prUrls: prs.map((p) => p.url),
-    hasPr: true,
-    prNumber: 1,
-  });
-  assert.equal(both.prScope, null);
-  assert.match(both.notice, /Posts to 2 pull requests \(api#1, web#2\)/);
-  // One of the picks is a draft: said, though the primary is not one.
-  assert.match(both.notice, /on a draft, the verdict is posted as a comment/);
-  const linked = reviewRoundModel({ target: "self-review", prs, prUrls: [prs[1].url], hasPr: true, prNumber: 1 });
-  assert.match(linked.notice, /Posts to web#2/);
-  assert.match(linked.notice, /This PR is a draft/);
-  const primary = reviewRoundModel({ target: "self-review", prs, prUrls: [prs[0].url], hasPr: true, prNumber: 1 });
-  assert.match(primary.notice, /Posts to #1/);
-  assert.doesNotMatch(primary.notice, /draft/);
-  // A code round on the same item still asks its scope in the composer.
-  assert.ok(reviewRoundModel({ target: "diff", prs, hasPr: true }).prScope);
+  const m = reviewRoundModel({ target: "self-review", prs, prUrls: [prs[1].url], hasPr: true, prNumber: 1 });
+  assert.equal(m.title.startsWith("Code review"), true);
+  assert.equal(m.publish.default, "verdict");
+  assert.ok(m.verdict);
+  // The scope is on the same screen, seeded with the pick, and its "no PR"
+  // row reads as every open PR once the round ends in a verdict.
+  assert.ok(m.prScope);
+  assert.equal(m.prScope.choices.find((c) => c.value === prs[1].url).checked, true);
+  assert.equal(m.prScope.local.verdictLabel, "Every open PR of this item");
+  // One of the item's PRs is a draft: said.
+  assert.match(m.verdict.notice, /on a draft, the verdict is posted as a comment/);
+  // A single-PR item names its PR.
+  const one = reviewRoundModel({ target: "self-review", hasPr: true, prNumber: 7 });
+  assert.equal(one.prScope, null);
+  assert.match(one.verdict.notice, /Posts a verdict to #7/);
 });

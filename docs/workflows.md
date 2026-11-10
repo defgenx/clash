@@ -3,10 +3,10 @@
 The Workflows feature manages a plan → review → implement → PR pipeline per
 item. clash's GUI renders and mutates the files below; Claude Code agents co-edit
 them — the executor (`clash-workflow` skill) does the work, the reviewers
-(`clash-plan-review` for plans, `clash-code-review` for diffs) judge it, and
-`clash-drift-review` judges the two against each other, and `clash-pr-review`
-reviews the PR for a verdict it posts (the **Self-review** round). This
-document is the contract all sides follow.
+(`clash-plan-review` for plans, `clash-pr-review` for code — including the
+code review that ends in a **verdict** posted on the PR) judge it, and
+`clash-drift-review` judges the two against each other. This document is the
+contract all sides follow.
 
 What the GUI shows and how to use it is in the user guide,
 [workflows-guide.md](workflows-guide.md).
@@ -397,8 +397,8 @@ is the next round's prompt. Approving never applies findings — approval is
 
 ### Finding confidence
 
-Every finding of every reviewer (`clash-plan-review`, `clash-code-review`,
-`clash-drift-review`, `clash-pr-review`) carries a **confidence** — how sure
+Every finding of every reviewer (`clash-plan-review`, `clash-pr-review`,
+`clash-drift-review`) carries a **confidence** — how sure
 the reviewer is that it is real — so the human knows which findings to
 believe and which to dig into. It is graded by evidence, and it is
 orthogonal to severity: a `low`-confidence blocker is the one to look at
@@ -424,9 +424,8 @@ dropped. One shape per surface:
 A finding that reaches clash **without** a confidence is shown as one, never
 silently: an agent annotation with none badges `confidence ?` and its digest
 line says `[confidence: unknown — the reviewer gave none]` (human comments
-carry none by design). On the PR side, `clash-pr-review` (and
-`clash-code-review`'s `pr-comments` posts) run a `jq` check over the review
-before sending it and refuse to post a line comment missing its footer.
+carry none by design). On the PR side, `clash-pr-review` runs a `jq` check
+over every review it posts (comments or a verdict) before sending it and refuse to post a line comment missing its footer.
 
 clash reads it leniently: `FindingConfidence` is case-insensitive, an
 unrecognized value loads as `unknown` and a non-string one costs the field,
@@ -441,9 +440,9 @@ anyway is right, and `clash-pr-review` never requests changes on a `low`
 finding alone. A drift round's `INTENDED` grade needs `high` confidence in
 the authorization; anything less is an `ISSUE` for the human to decide.
 
-### The review agent contract (clash-plan-review / clash-code-review skills)
+### The review agent contract (clash-plan-review / clash-pr-review skills)
 
-`Use the <clash-plan-review|clash-code-review> skill. Workflow item directory: <abs path>. Target: <plan|diff>. Depth: <standard|deep>. Publish: <local|pr-comments|respond-pr-comments>. Round: <n>. Return to: <status>. Mode: <mode>.`
+`Use the <clash-plan-review|clash-pr-review> skill. Workflow item directory: <abs path>. Target: <plan|diff>. Depth: <standard|deep>. Publish: <local|pr-comments|respond-pr-comments>. Round: <n>. Return to: <status>. Mode: <mode>.`
 
 Every value is also in `meta.json.review`; repeating it in the prompt lets the
 reviewer refuse impossible work before reading anything (a `plan` target with no
@@ -454,8 +453,8 @@ the launcher picked one of several (multi-repo items answer reviewers per PR;
 absent means the primary `meta.pr.url`, and a linked PR's calls must be
 repo-scoped since it lives in another repository) — and `Interactive: yes|no`
 — **absent means the skill asks in-session** before starting (the GUI
-composer's "ask me when it starts" default omits the field). A code review or
-self-review also carries `Size: <small|medium|large> (<N> lines, <F> files).`
+composer's "ask me when it starts" default omits the field). A code review
+(verdict rounds included) also carries `Size: <small|medium|large> (<N> lines, <F> files).`
 right after `Depth:` when the change was measured — see *Sized review rounds*.
 
 Plan review and code review are **two separate, self-contained skills** — each
@@ -466,20 +465,45 @@ delegating diff judgement to the `/code-review` / `/review` built-ins), which
 entangled the two review jobs through the shared harness and made neither
 describable on its own.
 
+**Code has one reviewer, `clash-pr-review`, whatever the round's outcome.**
+There used to be two: `clash-code-review` for findings (local, posted as
+comments, or answering threads) and `clash-pr-review` for a verdict, which
+read the first skill and overrode parts of it. That split coupled things that
+are independent — the convergence loop, the reading of the PR's discussion
+and of the surroundings were only available with a verdict posted on GitHub,
+so a thorough review before opening a PR, or one that respected settled
+threads without posting anything, did not exist — while the two files
+cross-referenced each other for the grades, the stack rules and the posting
+voice. One skill now owns the review, and the **outcome** decides what differs:
+
+| Outcome | Passes | May fix | Leaves the machine |
+|---|---|---|---|
+| `local` | `standard`: one pass + verification · `deep`: the loop | trivial mechanical fixes | nothing |
+| `pr-comments` | as `local` | trivial mechanical fixes | one `COMMENT` review of line comments |
+| `respond-pr-comments` | the threads are the work | bounded fixes the threads ask for | a reply in every open thread |
+| verdict (`self-review`) | always the loop | nothing | `APPROVE` / `REQUEST_CHANGES` / `COMMENT` per PR |
+
+Whenever the round has a PR, every outcome reads its discussion and verifies
+each thread's outcome against the code. `clash-code-review` is in
+`RETIRED_SKILLS`, so an unedited installed copy is removed at startup. The
+wire targets did not change: a verdict round is still `Target: self-review`,
+recorded under its own heading and numbered among the verdict rounds, so
+existing items keep their history.
+
 | Target | Engine |
 |--------|--------|
 | `plan` | `clash-plan-review` (embedded skill) |
-| `diff` | `clash-code-review` (embedded skill) |
+| `diff` | `clash-pr-review` (embedded skill) |
 | `explain-diff` / `explain-plan` | `clash-explain` (embedded skill — explains, never judges) |
 | `drift` | `clash-drift-review` (embedded skill — compares the plan with what was built, and grades the gap) |
-| `self-review` | `clash-pr-review` (embedded skill — loops until a pass finds nothing new, then approves or requests changes on the PR) |
+| `self-review` | `clash-pr-review` (embedded skill — the code review ending in a verdict: loops until a pass finds nothing new, then approves or requests changes on the PR) |
 
 Every engine is a skill clash itself installs, so a review round needs no
 third-party plugin present. A unit test asserts any skill named by
 `review_engine_for` is in `SKILLS`; otherwise the round would die on an
-unresolvable skill *after* a full session spawn. The retired `clash-review` is
-removed from `<claude_dir>/skills/` at startup (`RETIRED_SKILLS`) so it can
-never shadow its replacements.
+unresolvable skill *after* a full session spawn. The retired `clash-review` and
+`clash-code-review` are removed from `<claude_dir>/skills/` at startup
+(`RETIRED_SKILLS`) so they can never shadow their replacements.
 
 `clash-plan-review` is derived from the public `plan-review` skill and carries its
 four sections (architecture, code quality, tests, performance), its engineering
@@ -496,7 +520,8 @@ what round N already settled.)
 
 Depth does not select the engine: the mapping is the pure
 `application::workflow::review_engine_for(target)`. For a code round the
-`Depth:` field tunes how hard the diff is read inside `clash-code-review`; a
+`Depth:` field tunes how hard the diff is read inside `clash-pr-review` (and
+`deep` makes the round loop); a
 plan has no hunks to read harder, so the GUI does not ask for depth on a plan
 round — a choice with one real answer is not a choice.
 
@@ -768,33 +793,36 @@ for. Comparing two explanations
 would measure drift between two *documents*: an `explain-diff.md` written three
 rounds ago describes code that no longer exists.
 
-### Self-review rounds (clash-pr-review skill)
+### Verdict rounds (clash-pr-review skill)
 
-A **self-review** (`⚖ Self-review`, `Target: self-review`) reviews the PR the
-way a human reviewer would and **posts a verdict on it** — `APPROVE` or
-`REQUEST_CHANGES`, one GitHub review carrying line comments on the code
-concerned and a summary. It is the only round allowed to approve or request
-changes: every other reviewer is forbidden to, because its findings go to the
-human first. Here the post *is* the output, so:
+A **verdict round** (`Target: self-review`, called a *self-review* before the
+code reviewers were merged) is a code review that ends by **posting a verdict
+on the PR** — `APPROVE` or `REQUEST_CHANGES`, one GitHub review carrying line
+comments on the code concerned and a summary. It is not a separate check: the
+code review's composer and its checklist row offer it as the round's last
+outcome, **Post a verdict on the PR**, whenever an open PR exists at a built
+stage, and each PR chip's menu has *Post a verdict on <pr>…*, which opens that
+composer with the verdict picked and the PR ticked. It is the only round
+allowed to approve or request changes: every other outcome is forbidden to,
+because its findings go to the human first. Here the post *is* the output, so:
 
 - **It always publishes.** `ReviewTarget::publishes()` makes the launcher force
   `Publish: pr-comments` whatever the caller sent, and refuse an item with no
   PR before spawning (`no-pr:` — whose recovery offers only *Attach PR*, since
-  a local self-review would be bounced straight back to the missing PR).
+  a local verdict would be bounced straight back to the missing PR).
 - **Gated like a code review, plus a PR.** `can_request_review`, `needs_diff`
   (never at `draft`/`plan-review`), and at least one PR on the item — but no
   plan (`needs_plan` is false): `review-only` items are its most common
   customer. In practice `diff-review`, `pr-draft`, `pr-ready`.
-- **Its scope is a set of the item's open PRs, asked like every PR action.**
-  The click goes through `pickPrScope(item, "selfReview")` — the same
-  multi-select as *Open PRs* / *Mark ready* / *Answer comments*, with an
-  "All N" toggle — whose candidates are the live PRs (a verdict on a merged
-  one approves nothing) and whose default is **all of them**, because the
-  round's subject is the whole change. One open PR asks nothing. The pick
-  rides `meta.review.pr_urls` and the kickoff's `PR:` line, and the skill
-  posts one verdict per PR; the composer that follows states the set instead
-  of asking it again. Each PR chip's menu offers *Self-review <pr>…* with
-  that PR pre-picked.
+- **Its scope is a set of the item's open PRs.** On a multi-PR item the
+  composer's scope group is the answer (its "this repository's own diff" row
+  reads *Every open PR of this item* while the verdict is picked); the
+  checklist row states the set and changes it through `pickPrScope(item,
+  "selfReview")`. Candidates are the live PRs (a verdict on a merged one
+  approves nothing) and the default is **all of them**, because the round's
+  subject is the whole change (`wfVerdictUrls`). The pick rides
+  `meta.review.pr_urls` and the kickoff's `PR:` line, and the skill posts one
+  verdict per PR.
 - **It loops.** One reading of a PR finds what that reading looked for, so the
   skill runs a Ralph loop over a ledger **outside the item directory**
   (`$TMPDIR/clash-pr-review/<owner>-<repo>-<n>-<sha7>/ledger.md` — the item
@@ -830,8 +858,8 @@ human first. Here the post *is* the output, so:
   (never a guessed URL), and it never writes "LGTM" — the pre-post check
   refuses one. No description of the change, no praise, no pass
   count: those live in the ledger and the item's report. The skill's *Post*
-  section is the style guide; `clash-code-review`'s `pr-comments` posts follow
-  it too.
+  section is the style guide for everything it posts — comments, replies and
+  verdicts alike.
 - **The other side is read before it is blamed.** The skill lists the
   services, repositories and libraries the changed code reaches across a
   boundary and reads them at the version the change runs against (the pinned
@@ -878,14 +906,23 @@ human first. Here the post *is* the output, so:
   `↻ Apply review` like any code review (`meta.appliedReviewKey` =
   `self-review:<n>`), and `### Passes` (the loop record) is omitted from the
   pasted findings.
-- **Next-step assist** suggests it at `pr-ready` once per iteration, and never
-  runs it on autopilot — it posts on GitHub.
+- **Next-step assist** suggests it at `pr-ready` once per iteration — only
+  after that iteration's code review, since the verdict is how that review
+  ends on the PR rather than a second reviewer racing it — and a verdict round
+  at an iteration counts as its code review. It is the code review row with
+  the verdict picked, never pre-ticked and never run on autopilot: it posts on
+  GitHub.
+- **Numbered among themselves.** Verdict rounds keep the `self-review` heading,
+  key (`self-review:<n>`) and tally, so the composer's title switches to
+  *PR verdict — round n* when the verdict is picked, and the Timeline labels
+  them *PR verdict n*.
 
-The skill is written as an **extension of `clash-code-review`**: it reads that
-skill's grades, depth, delegation and diff-reading rules and overrides publish,
-fixing and the single pass. It also runs **outside workflows** — "review PR
-<url>" or `/clash-pr-review 123` on anyone's PR — where it writes nothing but
-its ledger and reports in chat.
+The loop, the discussion and the surroundings are not verdict-only: a `deep`
+code review runs the same loop, and every round with a PR reads its
+discussion. What a verdict adds is the decision and the post. The skill also
+runs **outside workflows** — "review PR <url>" or `/clash-pr-review 123` on
+anyone's PR posts a verdict unless asked for comments only or nothing posted —
+where it writes nothing but its ledger and reports in chat.
 
 ## Entry modes
 
@@ -1248,7 +1285,7 @@ When a stack exists:
   fan-outs walk parent before child.
 - **Defaults.** A code or drift round's composer pre-ticks the whole stack
   (`prStackUrls`); *Answer PR comments* pre-ticks the stack plus any PR with
-  threads waiting; self-review already ticks every open PR. Mark-ready, post
+  threads waiting; a verdict already posts on every open PR. Mark-ready, post
   and open keep their own rules — readying a whole stack is a release.
 - **The item's own diff** is taken from its parent layer's head when
   `meta.base` is empty (`item_stack_base`); from the trunk it would contain
@@ -1264,8 +1301,8 @@ When a stack exists:
   which the skill reads as "never base a PR on another PR's branch".
 - **Kickoff.** Every review round records `meta.review.stack` and states it as
   `Stack: <url1> > <url2> > <url3>` (base → tip). It is context, not scope:
-  `PR:` still says which PRs the round was pointed at. `clash-code-review`
-  and `clash-pr-review` then review **every layer** when `PR:` is absent (in
+  `PR:` still says which PRs the round was pointed at. `clash-pr-review` then
+  reviews **every layer** when `PR:` is absent (in
   an interactive round they first ask, multi-select, whole stack or which
   layers), measure each layer against its parent (`gh pr diff`, or
   `git diff origin/<parent head>...HEAD` locally), check sibling layers
@@ -1446,10 +1483,10 @@ description is the whole deliverable.
 ## Check runs
 
 Every agent pass that judges or explains an item **without moving it** — the
-stage's review, plan vs changes, the two explanations, answering PR comments,
-the self-review — is launched through one entry point on the action bar:
-**🔍 Check…** opens a checklist (any subset, each row with its own options:
-depth, findings destination, focus, PRs; shared: agent, interaction mode,
+stage's review (which may end in a verdict on the PR), plan vs changes, the
+two explanations, answering PR comments — is launched through one entry point
+on the action bar: **🔍 Check…** opens a checklist (any subset, each row with
+its own options: depth, how the review ends, focus, PRs; shared: agent, interaction mode,
 auto-apply), and **▾** runs one pass on its own through that pass's own
 composer. A pick runs as one **check run**, recorded in the item's clash-only
 `run.json`:
@@ -1458,8 +1495,10 @@ composer. A pick runs as one **check run**, recorded in the item's clash-only
   never block the run.
 - **Judging passes run one after another**, in a fixed order whatever was
   ticked first (`workflow_run::pass_rank`: plan review → code review → plan vs
-  changes → answer comments → self-review, the self-review last because its
-  verdict should include everything found before it). Only one judging agent
+  changes → answer comments → verdict, the verdict last because it should
+  include everything found before it). A verdict is the code review row with
+  *Post a verdict on the PR* picked, recorded as a `self-review` pass
+  (`listedPasses` keeps it off the menus as a row of its own). Only one judging agent
   owns an item at a time, which is why they cannot run in parallel.
 - **Every pass judges the same iteration.** Nothing is applied between them,
   even when a round says `Apply: yes`. A run whose iteration moves under it
@@ -1508,8 +1547,8 @@ plan vs changes` with **Skip next**, **Stop after this one**, **Retry** /
 **Skip** on a failed pass, **↻ Apply** when findings wait, and **✕** to close
 the run (a round already running carries on as an ordinary round). A pass that
 failed for want of a PR asks for it and retries; a code review that was to post
-its findings can run locally instead (`local` control) — a self-review or a
-reply to a thread cannot, because their output is the post.
+its findings can run locally instead (`local` control) — a verdict or a reply
+to a thread cannot, because their output is the post.
 
 ## Next-step assist
 
@@ -1531,8 +1570,8 @@ The first that fires wins, except that **every check pass that is due is
 recommended together**: when the winner is a check (3–5), the strip shows all
 due checks as chips with one **▶ Run N checks** button, plus a refresh of any
 explanation describing an older iteration when the comparison is among them.
-Passes that post on GitHub (answering threads, the self-review) are shown
-unticked. Unticking a chip shrinks the run before it starts; **Options…** opens
+Passes that post on GitHub (answering threads, a code review posting comments
+or a verdict — `passPosts`) are shown unticked. Unticking a chip shrinks the run before it starts; **Options…** opens
 the checklist with that pick. A run in flight replaces the recommendation with
 its own strip (see *Check runs*).
 
@@ -1598,9 +1637,8 @@ ceremony. The table is the split **at full scale**:
 | `clash-workflow` · `plan` | one explorer per area the task touches | the lead checks the facts the plan rests on |
 | `clash-workflow` · `implement` | the plan's non-trivial work units, in waves of disjoint files | one verifier over the whole diff (the lead's own re-read for a small one) |
 | `clash-plan-review` | one reviewer per area, split by section (architecture, quality, tests, performance) only for a large plan | refutation, batched per area |
-| `clash-code-review` | one reviewer per area/PR applying every lens (correctness, tests, conventions, security/perf), split by lens only when large or `deep` | refutation, batched per file or area |
 | `clash-drift-review` | tracers over the plan's actions grouped by area, + one over unexplained hunks for a large diff | refutation, batched per file or area |
-| `clash-pr-review` | a fresh wave of reviewers **per pass**, each briefed with the pass's angle and the ledger's findings as "already found" | refutation of every new candidate, every pass |
+| `clash-pr-review` | one reviewer per area/PR applying every lens (correctness, tests, conventions, security/perf), split by lens only when large or `deep`; a looping round (`deep`, a verdict) takes a fresh wave **per pass**, each briefed with the pass's angle and the ledger's findings as "already found" | refutation of every new candidate, every pass |
 | `clash-explain` | one mapper per area too big to read in a few files | the lead spot-checks every name it writes |
 
 Verification is proportional too: the lead settles a claim itself when one
@@ -1655,7 +1693,7 @@ role).
 
 ### Sized review rounds
 
-A code review (`diff`) and a self-review (`self-review`) pick their models
+A code review (`diff`, and its verdict rounds, `self-review`) picks its models
 from the **size of the change** they read, so a big change gets stronger
 finders and a tiny one does not burn the most expensive lead. Plan, drift and
 explain rounds keep the regular pins. `launch_review` measures the change
@@ -1689,8 +1727,8 @@ round does not change models halfway through because the pins moved.
 
 ## Embedded skills — install as a decision
 
-The six skills (`clash-workflow`, `clash-plan-review`, `clash-code-review`,
-`clash-explain`, `clash-drift-review`, `clash-pr-review`) are compiled into both binaries. Installing them under
+The five skills (`clash-workflow`, `clash-plan-review`, `clash-pr-review`,
+`clash-explain`, `clash-drift-review`) are compiled into both binaries. Installing them under
 `<claude_dir>/skills/` becomes a **decision only where it could lose work**:
 
 - `sync_unattended` runs at every startup and needs no permission: it

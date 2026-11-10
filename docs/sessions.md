@@ -86,7 +86,7 @@ comments, explanations, drift, shares — follows one setting: the item's ⚙
 Settings tab, else `workflows.agent` (`ask` by default, or `claude` / `omp`). A
 fixed agent runs every step unasked; `ask` asks at every start — a picker for
 one-click starts, a *Which agent runs it?* group in the review composer (code
-review, drift, self-review) and a *Run on* row in the change-request composer —
+review, drift) and a *Run on* row in the change-request composer —
 pre-selecting the agent the item last ran on, which is also what a relaunch or
 an auto-applied round uses without asking. An agent whose binary does not
 resolve is greyed out with the reason, in these pickers and in the new-session

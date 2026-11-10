@@ -564,7 +564,7 @@ test("the drift round is gated and applied as a review, never as an explainer", 
   assert.match(extractFunction(APP, "wfSoloChecks"), /drift: \(\) => launchWfReview\(item, root, \{ target: "drift" \}\)/);
   // …and that composer starts a one-pass check run, the pass named by target.
   const launch = extractFunction(APP, "launchWfReview");
-  assert.match(launch, /opts\.target === "drift" \|\| opts\.target === "self-review" \? opts\.target : "review"/);
+  assert.match(launch, /const id = opts\.target === "drift" \? "drift" : "review";/);
   assert.match(launch, /await wfStartRun\(item, passes,/);
   // The pure side must not treat it as an explanation.
   const plan = fs.readFileSync(
@@ -643,7 +643,7 @@ test("a review round's PR scope is a row in the composer, not a second dialog", 
     composer.includes("prs: itemPrs(item.meta, item.prStack)"),
     "the model needs the item's PRs, in stack order"
   );
-  assert.ok(composer.includes("prUrls: scope ? scopeUrls()"), "the launch payload must carry the picks");
+  assert.match(composer, /prUrls: isVerdict\(\)[\s\S]*: scope\s*\? scopeUrls\(\)/, "the launch payload must carry the picks");
   // The scope is a SET — checkboxes, not radios: a cross-repo change is one
   // change, and reviewing the API PR without the web PR that consumes it
   // leaves the contract between them unchecked.
@@ -921,37 +921,41 @@ test("every user-facing reload goes through the busy-session confirm", () => {
   assert.match(APP, /return s \? reloadSessionInteractive\(s\) : reloadSession\(sid\);/);
 });
 
-test("the self-review needs an open PR and a built change, and has no local fallback", () => {
+test("a verdict needs an open PR and a built change, and has no local fallback", () => {
   const gate = extractFunction(APP, "wfCanSelfReview");
   assert.match(gate, /if \(!wfCanReview\(item\)\) return false;/);
   assert.match(gate, /\["draft", "plan-review"\]\.includes\(item\.meta\.status\)/);
-  // It posts a verdict, so no open PR means no check — but no plan is fine:
+  // It posts a verdict, so no open PR means no verdict — but no plan is fine:
   // review-only items are its most common customer.
   assert.match(gate, /prActionCandidates\(itemPrs\(item\.meta\), "selfReview"\)\.length > 0/);
   assert.doesNotMatch(gate, /hasPlan/);
   assert.match(extractFunction(APP, "wfChecksCtx"), /canSelfReview: wfCanSelfReview\(item\),/);
-  assert.match(extractFunction(APP, "wfSoloChecks"), /"self-review": \(\) => launchWfSelfReview\(item, root\)/);
-  // The no-PR recovery must not offer a local self-review (or a local reply
-  // to a thread): their output is the post, so that choice would loop.
+  // The no-PR recovery must not offer a local verdict (or a local reply to a
+  // thread): their output is the post, so that choice would loop.
   const recover = extractFunction(APP, "wfRunRecover");
   assert.match(recover, /const local = passIdOf\(p\) === "review" && p\.publish === "pr-comments";/);
   assert.match(recover, /\.\.\.\(local \? \[\{ label: "Run it locally instead"/);
   assert.match(recover, /op: "retry", pass: i/);
 });
 
-test("a self-review asks which PRs like every PR action, then which agent", () => {
-  // The scope is the shared dialog's answer — all open PRs, or some — and
-  // reaches the backend as the round's PR set.
+test("a verdict is how a code review ends, not a reviewer of its own", () => {
+  // One reviewer, one row: no menu or checklist lists the verdict beside the
+  // code review — it is the review's "post a verdict" outcome.
+  const solo = extractFunction(APP, "wfSoloChecks");
+  assert.match(solo, /return listedPasses\(ctx\)/);
+  assert.doesNotMatch(solo, /"self-review"/);
+  const checks = extractFunction(APP, "wfComposeChecks");
+  assert.match(checks, /const ids = listedPasses\(ctx\)/);
+  assert.match(checks, /\["verdict", "Post a verdict on the PR — approve or request changes"\]/);
+  // A PR chip's "post a verdict" opens the same composer with it picked.
   const launch = extractFunction(APP, "launchWfSelfReview");
-  assert.match(launch, /scope \|\| \(await pickPrScope\(item, "selfReview"\)\)/);
-  assert.match(launch, /target: "self-review", prUrls: sel\.urls/);
-  // Every surface goes through that one launcher, the per-PR menu included.
-  assert.doesNotMatch(APP, /launchWfReview\(item, root, \{ target: "self-review" \}\)/);
+  assert.match(launch, /launchWfReview\(item, root, \{ target: "self-review", prUrls: scope \? scope\.urls : null \}\)/);
   assert.match(extractFunction(APP, "wfPrMenu"), /launchWfSelfReview\(item, root, \{ scope \}\)/);
-  // The composer carries the picked PRs through, and asks the agent as one of
-  // its groups rather than a dropdown under the fold.
+  // The composer posts a verdict on the ticked PRs, else every open one, and
+  // asks the agent as one of its groups rather than a dropdown under the fold.
   const compose = extractFunction(APP, "wfComposeReviewRound");
-  assert.match(compose, /t === "self-review" \? prUrls \|\| \[\] : \[\]/);
+  assert.match(compose, /canVerdict: wfCanSelfReview\(item\),/);
+  assert.match(compose, /wfVerdictUrls\(item, scope \? scopeUrls\(\) : prUrls \|\| \[\]\)/);
   assert.match(compose, /const agentGroup = wfAgentGroup\(item\);/);
   assert.match(compose, /agent: agentGroup\.value\(\),/);
   assert.doesNotMatch(compose, /wfAgentSelect/);
