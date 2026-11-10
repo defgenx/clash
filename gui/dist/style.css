@@ -4062,28 +4062,120 @@ button.wf-chip:hover, a.wf-chip:hover { color: var(--fg); border-color: var(--fg
 .wf-checks .wf-check-opts button:hover { color: var(--fg); border-color: var(--fg-dim); background: var(--bg-hover); }
 .wf-checks .wf-check-row.on { background: color-mix(in srgb, var(--accent) 6%, transparent); }
 
-/* ── Item tab: the next-step card ── */
-.wf-bench .wf-actions {
-  margin: 14px 18px 6px;
-  padding: 14px 16px;
-  gap: 12px 18px;
-  border-radius: var(--r-lg);
-  box-shadow: none;
-}
-/* The suggestion reads as a sentence, its buttons after it. */
-.wf-next { gap: 8px 10px; }
-.wf-next > .wf-actions-caption { order: 0; }
-.wf-next > .wf-next-why { order: 1; flex: 1 1 240px; font-size: 13px; font-weight: 600; line-height: 1.4; }
-.wf-next > .wf-next-chips { order: 2; }
-.wf-next > .wf-next-go { order: 3; }
-.wf-next > .wf-next-more { order: 4; }
-.wf-next > .wf-next-settled { order: 5; }
-/* This step's tools on the left, the decisions on the right. */
-.wf-bench .wf-actions-group + .wf-actions-group { border-left: 0; padding-left: 0; }
-.wf-bench .wf-actions-advance { margin-left: auto; }
+/* ── Item tab: the next-step card ──
+   Three bands read top to bottom: the suggestion (its reason, then its one
+   button), the decisions that move the item, then this step's tools as a
+   quiet footer. The folded Item zone (More ▾) is the card's corner menu.
+   Every band is a zone of the bar, so an empty one simply isn't drawn. */
 .wf-actions button { border-radius: var(--r-sm); padding: 6px 12px; }
-.wf-actions-step button:not(.primary) { background: transparent; }
-.wf-actions-step button:not(.primary):hover { background: var(--bg-hover); }
+.wf-bench .wf-actions {
+  display: flex;
+  flex-direction: column;
+  /* Never wrap: a column that wraps puts the bands side by side. */
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 0;
+  margin: 14px 18px 6px;
+  padding: 0;
+  border-radius: var(--r-lg);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--fg) 4%, transparent) inset, var(--shadow-sm, 0 2px 10px rgba(0, 0, 0, 0.18));
+}
+.wf-bench .wf-actions > * { flex: none; }
+.wf-bench .wf-actions > .wf-next { order: 0; }
+.wf-bench .wf-actions > .wf-actions-advance { order: 1; }
+.wf-bench .wf-actions > .wf-actions-step { order: 2; }
+.wf-bench .wf-actions-group + .wf-actions-group { border-left: 0; padding-left: 0; }
+.wf-bench .wf-actions-group:not(.wf-actions-item):not(:has(.wf-actions-btns > button)) { display: none; }
+
+/* Band 1 — the suggestion: a caption, the sentence, what was already
+   checked, then the button (or the checks to run). */
+.wf-bench .wf-actions > .wf-next {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 104px 16px 20px;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  background: linear-gradient(115deg, color-mix(in srgb, var(--accent) 12%, transparent), transparent 60%);
+}
+.wf-bench .wf-next > .wf-actions-caption,
+.wf-bench .wf-next > .wf-next-why,
+.wf-bench .wf-next > .wf-next-settled { flex: 0 0 100%; }
+.wf-bench .wf-next > .wf-actions-caption {
+  order: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.wf-bench .wf-next > .wf-actions-caption::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.wf-bench .wf-next > .wf-next-why { order: 1; font-size: 16px; font-weight: 600; line-height: 1.35; letter-spacing: -0.005em; }
+.wf-bench .wf-next > .wf-next-settled { order: 2; padding: 0 0 4px; font-size: 11.5px; color: var(--fg-dim); }
+.wf-bench .wf-next > .wf-next-chips { order: 3; }
+.wf-bench .wf-next > .wf-next-go { order: 4; }
+.wf-bench .wf-next > .wf-next-more { order: 5; }
+.wf-bench .wf-actions .wf-next-go {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: var(--r-md);
+  box-shadow: 0 1px 8px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.wf-bench .wf-actions .wf-next-more { padding: 7px 12px; background: transparent; }
+.wf-bench .wf-actions .wf-next .wf-chip { padding: 4px 10px; font-size: 12px; border-radius: 999px; }
+.wf-bench .wf-run.wf-next { background: linear-gradient(115deg, color-mix(in srgb, var(--blue) 12%, transparent), transparent 60%); }
+
+/* Band 2 — the decisions: what moves the item, at full strength. */
+.wf-bench .wf-actions > .wf-actions-advance {
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+.wf-bench .wf-actions-advance > .wf-actions-caption { flex: 0 0 auto; padding: 0; }
+.wf-bench .wf-actions-advance > .wf-actions-caption::after { content: ""; }
+
+/* Band 3 — this step's tools: quiet, compact, never competing. */
+.wf-bench .wf-actions > .wf-actions-step {
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 20px;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--r-lg) var(--r-lg);
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+}
+.wf-bench .wf-actions-step > .wf-actions-caption { flex: 0 0 auto; padding: 0; }
+.wf-bench .wf-actions-step .wf-actions-btns { gap: 2px; }
+.wf-bench .wf-actions-step button:not(.primary) {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg-dim);
+  padding: 5px 9px;
+  font-size: 12px;
+}
+.wf-bench .wf-actions-step button:not(.primary):hover { color: var(--fg); background: var(--bg-hover); }
+/* Its first band also rounds the card's top when there is no suggestion. */
+.wf-bench .wf-actions:not(:has(> .wf-next)) > .wf-actions-advance { border-top: 0; padding-top: 16px; padding-right: 104px; }
+.wf-bench .wf-actions:not(:has(> .wf-next)):not(:has(> .wf-actions-advance .wf-actions-btns > button)) > .wf-actions-step {
+  border-top: 0;
+  border-radius: var(--r-lg);
+  padding-right: 104px;
+}
+.wf-bench .wf-actions-item.wf-actions-folded { top: 12px; right: 14px; }
+.wf-bench .wf-actions .wf-more-btn { background: transparent; color: var(--fg-dim); padding: 5px 10px; }
+.wf-bench .wf-actions .wf-more-btn:hover { color: var(--fg); background: var(--bg-hover); }
 /* The last review: one line that never runs under the rail. */
 .wf-review-strip { overflow: hidden; }
 .wf-review-strip-published { min-width: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; }
@@ -4171,3 +4263,329 @@ button.wf-chip:hover, a.wf-chip:hover { color: var(--fg); border-color: var(--fg
 .skills-head h2 { display: flex; align-items: center; gap: 8px; font-size: 18px; margin: 0 0 6px; }
 .skills-head-desc { font-size: 13px; line-height: 1.5; color: var(--fg-dim); margin: 0 0 10px; max-width: 100ch; }
 .skills-head .wf-doc-tools { justify-content: flex-start; gap: 10px; margin: 0; flex-wrap: wrap; }
+
+/* ── Review composer: the PRs a round reads, as tiles ── */
+.wf-scope-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.wf-scope-grid .wf-review-opt.wf-scope-tile { margin: 0; padding: 7px 9px; align-items: center; }
+.wf-scope-grid .wf-review-opt.wf-scope-tile[hidden] { display: none; }
+.wf-scope-tile .wf-review-opt-text { flex-direction: row; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+.wf-scope-tile .wf-review-opt-label { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wf-scope-tile .wf-chip { font-size: 10px; padding: 0 6px; line-height: 16px; }
+.wf-scope-more {
+  font-size: 11.5px;
+  color: var(--fg-dim);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-sm);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.wf-scope-more:hover { color: var(--fg); border-color: var(--fg-dim); }
+/* 🔍 Check… and its ▾ read as one split button. */
+.wf-actions-btns > button[data-act="checks"]:has(+ .wf-caret-btn) { border-top-right-radius: 0; border-bottom-right-radius: 0; margin-right: -2px; }
+.wf-actions-btns > .wf-caret-btn { border-top-left-radius: 0; border-bottom-left-radius: 0; padding-left: 7px; padding-right: 7px; }
+
+/* ── Waves roadmap: steps on a rail, waves as state-tinted cards ── */
+.wf-waves-main { gap: 0; }
+.wf-waves-step { position: relative; padding: 0 0 18px 30px; gap: 10px; }
+/* The rail: one line through every step, a numbered node per step. */
+.wf-waves-step::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 22px;
+  bottom: -2px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--border);
+}
+.wf-waves-step:last-child::before { display: none; }
+.wf-waves-step-title { position: relative; padding: 3px 0 0; font-size: 10px; font-weight: 700; }
+.wf-waves-step-title::before {
+  content: "";
+  position: absolute;
+  left: -26px;
+  top: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: var(--bg);
+}
+.wf-waves-step:has(.wf-wave-done):not(:has(.wf-wave:not(.wf-wave-done))) .wf-waves-step-title::before { background: var(--green); border-color: var(--green); }
+.wf-waves-step:has(.wf-wave-review) .wf-waves-step-title::before { border-color: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent); }
+.wf-waves-step:has(.wf-wave-active) .wf-waves-step-title::before { border-color: var(--blue); box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 20%, transparent); }
+.wf-waves-step:has(.wf-wave-ready) .wf-waves-step-title::before { border-color: var(--purple); }
+
+.wf-wave.wf-tl-card { padding: 12px 14px; transition: border-color 0.15s; }
+.wf-wave .wf-tl-head { gap: 8px; }
+.wf-wave .wf-tl-title { font-size: 13.5px; font-weight: 600; }
+.wf-wave-review { border-color: color-mix(in srgb, var(--accent) 60%, var(--border)); background: linear-gradient(115deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 55%); }
+.wf-wave-active { border-color: color-mix(in srgb, var(--blue) 55%, var(--border)); background: linear-gradient(115deg, color-mix(in srgb, var(--blue) 7%, transparent), transparent 55%); }
+.wf-wave.wf-wave-done { opacity: 0.8; }
+.wf-wave.wf-wave-blocked { opacity: 0.7; }
+.wf-wave-progress { height: 4px; margin: 8px 0 4px 24px; }
+.wf-wave-summary { font-size: 12.5px; line-height: 1.5; color: var(--fg-dim); padding-top: 6px; }
+.wf-wave-summary.clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  cursor: pointer;
+}
+.wf-wave-summary.clamped:hover { color: var(--fg); }
+.wf-wave-tickets { padding-top: 8px; }
+.wf-wave-ticket.wf-chip { font-family: var(--mono, ui-monospace, monospace); font-size: 10.5px; color: var(--fg-dim); }
+a.wf-wave-ticket.wf-chip:hover { color: var(--accent); border-color: var(--accent); }
+.wf-wave-prs { padding-top: 6px; }
+
+/* ── Board cards: the title, then the facts as small tags ── */
+.wf-card {
+  background: var(--bg-raised, var(--bg-sidebar));
+  border: 1px solid var(--border);
+  transition: border-color 0.12s, transform 0.12s, box-shadow 0.12s;
+}
+.wf-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm, 0 2px 10px rgba(0, 0, 0, 0.18)); }
+.wf-card-title { margin-bottom: 6px; }
+.wf-card-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding-left: 16px; }
+.wf-card-project { color: var(--fg-dim); margin-right: 2px; }
+.wf-card-tag {
+  font-size: 10.5px;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--bg-active);
+  color: var(--fg-dim);
+}
+.wf-card[data-status="done"], .wf-card[data-status="abandoned"] { opacity: 0.75; }
+.wf-card[data-status="done"]:hover, .wf-card[data-status="abandoned"]:hover { opacity: 1; }
+/* Waves: the caption explains the file format — reference, so it is quiet. */
+.wf-waves-aside > .wf-doc-caption { font-size: 11.5px; line-height: 1.5; color: var(--fg-dim); }
+
+/* ── The next-step card at every width ──
+   Sized by its own column (a container), not the window: a split pane, a
+   small window and a wide screen each get a layout that fits. Narrow: every
+   band stacks its caption above its buttons. Wide: captions sit beside. */
+.wf-bench-main { container: wfmain / inline-size; }
+.wf-actions button { white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.wf-bench .wf-actions > .wf-next { padding-right: 20px; }
+/* Only the caption line shares its row with the corner menu. */
+.wf-bench .wf-next > .wf-actions-caption { min-height: 26px; padding-right: 96px; }
+.wf-bench .wf-actions > .wf-actions-advance,
+.wf-bench .wf-actions > .wf-actions-step { flex-direction: column; align-items: flex-start; gap: 6px; }
+.wf-bench .wf-actions-btns { gap: 6px; }
+.wf-bench .wf-actions:not(:has(> .wf-next)) > .wf-actions-advance,
+.wf-bench .wf-actions:not(:has(> .wf-next)):not(:has(> .wf-actions-advance .wf-actions-btns > button)) > .wf-actions-step { padding-right: 20px; }
+.wf-bench .wf-actions:not(:has(> .wf-next)) > .wf-actions-advance > .wf-actions-caption,
+.wf-bench .wf-actions:not(:has(> .wf-next)):not(:has(> .wf-actions-advance .wf-actions-btns > button)) > .wf-actions-step > .wf-actions-caption { min-height: 22px; padding-right: 90px; }
+@container wfmain (min-width: 860px) {
+  .wf-bench .wf-actions > .wf-actions-advance,
+  .wf-bench .wf-actions > .wf-actions-step { flex-direction: row; align-items: center; gap: 14px; }
+  .wf-bench .wf-actions-advance > .wf-actions-caption,
+  .wf-bench .wf-actions-step > .wf-actions-caption { flex: 0 0 168px; min-height: 0; padding-right: 0; }
+  .wf-bench .wf-actions:not(:has(> .wf-next)) > .wf-actions-advance { padding-right: 104px; }
+}
+@container wfmain (max-width: 520px) {
+  .wf-bench .wf-actions { margin: 10px 10px 4px; }
+  .wf-bench .wf-actions > .wf-next,
+  .wf-bench .wf-actions > .wf-actions-advance,
+  .wf-bench .wf-actions > .wf-actions-step { padding-left: 14px; padding-right: 14px; }
+  .wf-bench .wf-next > .wf-next-why { font-size: 14.5px; }
+}
+/* The stepper's counters repeat the outline's badges: they step aside before
+   the stages would scroll out of view. */
+@container wfitem (max-width: 1000px) {
+  .wf-pipeline > .spacer ~ * { display: none; }
+}
+/* A narrow item tab keeps every stage of the stepper in view: the passed and
+   coming stages shrink to their dots (the label is the tooltip's job), the
+   current one keeps its words. */
+.wf-view { container: wfview / inline-size; }
+.wf-view.wf-bench-view { container-name: wfitem wfview; }
+@container wfview (max-width: 820px) {
+  .wf-pipeline { gap: 4px; }
+  .wf-pipe-node:not(.current) .wf-pipe-label,
+  .wf-pipe-node:not(.current) .wf-pipe-sub,
+  .wf-pipeline > .spacer ~ * { display: none; }
+  .wf-pipe-sep { width: 10px; }
+}
+
+/* ── Roadmap: All waves / One at a time, and the live panel ── */
+.wf-waves-modes {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 2px;
+  margin: 0 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-sidebar);
+}
+.wf-seg {
+  font-size: 12px;
+  padding: 5px 12px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.wf-seg:hover { color: var(--fg); }
+.wf-seg.on { background: var(--bg-active); color: var(--fg); font-weight: 600; }
+.wf-waves-nav { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; }
+.wf-waves-nav-where { flex: 1; text-align: center; font-size: 12px; color: var(--fg-dim); }
+.wf-waves-nav .icon-btn:disabled { opacity: 0.35; cursor: default; }
+.wf-waves-track .wf-chip.focused { color: var(--fg); border-color: var(--fg); background: var(--bg-active); }
+
+.wf-waves-live { margin: 0 0 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+.wf-waves-live[hidden] { display: none; }
+.wf-waves-live { --live: var(--blue); border-color: color-mix(in srgb, var(--live) 55%, var(--border)); background: linear-gradient(115deg, color-mix(in srgb, var(--live) 10%, transparent), transparent 60%); }
+.wf-waves-live.live-attention { --live: var(--accent); }
+.wf-waves-live.live-idle { --live: var(--green); }
+.wf-waves-live.live-stopped, .wf-waves-live.live-gone { --live: var(--fg-dim); }
+.wf-waves-live.live-gone { --live: var(--red); }
+.wf-waves-live-head { display: flex; align-items: center; gap: 8px; }
+.wf-waves-live-head .wf-actions-caption { color: var(--live); font-weight: 700; font-size: 10px; padding: 0; }
+.wf-waves-live-title { font-size: 14px; font-weight: 600; }
+.wf-live-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--live);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 60%, transparent);
+  animation: wf-live-pulse 1.8s ease-out infinite;
+}
+.live-stopped .wf-live-pulse, .live-gone .wf-live-pulse, .live-idle .wf-live-pulse { animation: none; }
+@keyframes wf-live-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 55%, transparent); }
+  70% { box-shadow: 0 0 0 7px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.wf-waves-live-waves { display: flex; flex-wrap: wrap; gap: 6px; }
+.wf-waves-live-shared { margin: 0; font-size: 12px; }
+.wf-waves-live-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wf-waves-live-line { flex: 1 1 220px; font-size: 12.5px; }
+/* A wave being built pulses on its card too. */
+.wf-wave-active .wf-tl-dot { animation: wf-live-blink 1.8s ease-in-out infinite; }
+@keyframes wf-live-blink { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .wf-live-pulse, .wf-wave-active .wf-tl-dot { animation: none; }
+}
+
+/* ── Wave cards: blockers and actions ── */
+.wf-wave-blockers {
+  margin: 10px 0 0 24px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.wf-wave-blockers .wf-actions-caption { padding: 0 0 2px; }
+.wf-wave-blockers { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.wf-wave-blockers .wf-actions-caption { color: var(--accent); }
+.wf-wave-blockers.err { border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
+.wf-wave-blockers.err .wf-actions-caption { color: var(--red); }
+.wf-wave-wait { margin: 8px 0 0 24px; font-size: 12px; color: var(--fg-dim); }
+.wf-wave-wait::before { content: "⏳ "; }
+.wf-wave-wait.link { cursor: pointer; }
+.wf-wave-wait.link:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
+.wf-wave-blocker { font-size: 12px; padding-left: 14px; position: relative; }
+.wf-wave-blocker::before { position: absolute; left: 0; }
+.wf-wave-blocker.soft::before { content: "•"; color: var(--accent); }
+.wf-wave-blocker.k-error::before { content: "!"; color: var(--red); font-weight: 700; }
+.wf-wave-blocker.link { cursor: pointer; }
+.wf-wave-blocker.link:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.wf-wave-actions-row { margin: 10px 0 0 24px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.wf-wave .wf-wave-details {
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.wf-wave .wf-wave-details:hover { color: var(--fg); background: var(--bg-hover); }
+/* The overview: two lines of summary, the full view the rest. */
+.wf-waves-grid .wf-wave-summary.clamped { -webkit-line-clamp: 2; }
+.wf-wave.flash { animation: wf-wave-flash 1.2s ease-out; }
+@keyframes wf-wave-flash { 0% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
+.wf-waves-how { margin: 0; font-size: 11.5px; color: var(--fg-dim); }
+.wf-waves-how > summary { cursor: pointer; width: max-content; }
+.wf-waves-how > summary:hover { color: var(--fg); }
+.wf-waves-how > p { margin: 6px 0 0; line-height: 1.5; max-width: 80ch; }
+/* A wave's header wraps instead of squeezing: the title keeps its line, the
+   state, progress and Details fall in after it. */
+.wf-wave .wf-tl-head { flex-wrap: wrap; row-gap: 4px; }
+.wf-wave .wf-tl-head .wf-tl-title { min-width: 0; }
+.wf-wave .wf-tl-head .wf-tl-date, .wf-wave .wf-wave-details { white-space: nowrap; }
+
+/* ── Roadmap: Flow — steps left to right, parallel waves side by side ── */
+.wf-waves-flow {
+  display: flex;
+  align-items: flex-start;
+  gap: 28px;
+  overflow-x: auto;
+  padding: 4px 2px 14px;
+  scroll-snap-type: x proximity;
+}
+.wf-flow-col {
+  flex: 0 0 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: relative;
+  scroll-snap-align: start;
+}
+/* The arrow from one step to the next. */
+.wf-flow-col + .wf-flow-col::before {
+  content: "→";
+  position: absolute;
+  left: -21px;
+  top: 2px;
+  color: var(--fg-dim);
+  font-size: 13px;
+}
+.wf-flow-col.parallel {
+  padding: 10px;
+  margin: -10px;
+  border: 1px dashed color-mix(in srgb, var(--purple) 55%, var(--border));
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--purple) 4%, transparent);
+}
+.wf-flow-col.parallel + .wf-flow-col::before, .wf-flow-col + .wf-flow-col.parallel::before { top: 12px; }
+.wf-flow-head { display: flex; align-items: center; gap: 8px; min-height: 18px; }
+.wf-flow-head .wf-actions-caption { padding: 0; font-weight: 700; font-size: 10px; }
+.wf-flow-par { color: var(--purple); border-color: var(--purple); font-size: 10.5px; padding: 0 7px; }
+.wf-flow-detail { font-size: 11.5px; margin-top: -4px; }
+/* In a column, a card is its own width: the step's indent and the PR rows wrap. */
+.wf-flow-col .wf-wave .wf-wave-progress,
+.wf-flow-col .wf-wave .wf-wave-summary,
+.wf-flow-col .wf-wave .wf-wave-tickets,
+.wf-flow-col .wf-wave .wf-wave-prs,
+.wf-flow-col .wf-wave .wf-wave-wait,
+.wf-flow-col .wf-wave .wf-wave-blockers,
+.wf-flow-col .wf-wave .wf-wave-actions-row { margin-left: 0; padding-left: 0; }
+.wf-flow-col .wf-wave .wf-tl-head .wf-tl-date { margin-left: 0; }
+.wf-flow-col .wf-wave .wf-wave-details { margin-left: auto; }
+/* List mode: a step's parallel waves share the row when there is room. */
+.wf-waves-step .wf-waves-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); }
+.wf-step-together { margin: 0; }
+.wf-waves-step .wf-step-together { margin: 0 0 2px; }
+
+/* ── Sign-off: the seal on a card, and the dialog that says what it does ── */
+.wf-wave-seal { margin: 8px 0 0 24px; font-size: 11.5px; color: var(--green); }
+.wf-wave-seal::before { content: "🔒 "; }
+.wf-flow-col .wf-wave .wf-wave-seal { margin-left: 0; }
+.wf-signoff ul { margin: 0 0 12px; padding-left: 18px; font-size: 12.5px; line-height: 1.55; }
+.wf-signoff .wf-signoff-effects li::marker { content: "✓  "; color: var(--green); }
+.wf-signoff .wf-signoff-warnings li::marker { content: "•  "; color: var(--accent); }
+.wf-signoff .wf-signoff-warn-cap { color: var(--accent); padding: 0 0 4px; }

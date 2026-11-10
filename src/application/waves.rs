@@ -280,6 +280,8 @@ pub fn wave_board(
                     .get(w.id.trim())
                     .cloned()
                     .unwrap_or_default(),
+                end: progress.ends.get(w.id.trim()).cloned().unwrap_or_default(),
+                signed_off_at: progress.signed_off.get(w.id.trim()).copied().unwrap_or(0),
                 tickets: w.tickets.iter().map(|t| t.trim().to_string()).collect(),
                 ticket_urls: Default::default(),
                 prs: prs
@@ -359,15 +361,52 @@ pub fn check_start(
 /// Approve the current round's waves: they join `done`, and the scope is
 /// cleared for the next round. Their start commits are kept (the record of
 /// what each wave changed).
-pub fn approve_scope(progress: &WaveProgress) -> WaveProgress {
+pub fn approve_scope(progress: &WaveProgress, head: Option<&str>, now_ms: i64) -> WaveProgress {
     let mut next = progress.clone();
     for id in &progress.scope {
         if !next.done.contains(id) {
             next.done.push(id.clone());
         }
+        // Sealed at the commit the sign-off saw: with its start, the wave's
+        // range. No commit (not a git checkout) still records the moment.
+        if let Some(sha) = head.filter(|h| !h.is_empty()) {
+            next.ends.insert(id.clone(), sha.to_string());
+        }
+        next.signed_off.insert(id.clone(), now_ms);
     }
     next.scope.clear();
     next
+}
+
+/// `abc1234..def5678` for a signed-off wave, from what was recorded.
+fn wave_range(progress: &WaveProgress, id: &str) -> Option<String> {
+    let short = |s: &String| s.chars().take(7).collect::<String>();
+    match (progress.starts.get(id), progress.ends.get(id)) {
+        (Some(a), Some(b)) => Some(format!("{}..{}", short(a), short(b))),
+        (None, Some(b)) => Some(format!("up to {}", short(b))),
+        _ => None,
+    }
+}
+
+/// The signed-off waves, for a kickoff: `w1 (abc1234..def5678), w2` — the
+/// work the human accepted, which an executor must not rework on its own
+/// initiative. Empty when none is signed off.
+fn signed_off_clause(progress: &WaveProgress) -> String {
+    if progress.done.is_empty() {
+        return String::new();
+    }
+    let named: Vec<String> = progress
+        .done
+        .iter()
+        .map(|id| match wave_range(progress, id) {
+            Some(r) => format!("{id} ({r})"),
+            None => id.clone(),
+        })
+        .collect();
+    format!(
+        " Signed off: {} — accepted work: leave it alone unless the note asks.",
+        named.join(", ")
+    )
 }
 
 /// Waves not approved yet, in plan order.
@@ -386,8 +425,9 @@ pub fn executor_clause(plan: &WavePlan, progress: &WaveProgress) -> String {
         // A fix round between waves: the executor must not take the next
         // wave on its own initiative — starting one is the human's call.
         return format!(
-            " Waves: none of {} (a fix round over the approved waves; start no wave).",
-            plan.waves.len()
+            " Waves: none of {} (a fix round over the signed-off waves; start no wave).{}",
+            plan.waves.len(),
+            signed_off_clause(progress)
         );
     }
     let named: Vec<String> = progress
@@ -398,7 +438,12 @@ pub fn executor_clause(plan: &WavePlan, progress: &WaveProgress) -> String {
             _ => id.clone(),
         })
         .collect();
-    format!(" Waves: {} of {}.", named.join(", "), plan.waves.len())
+    format!(
+        " Waves: {} of {}.{}",
+        named.join(", "),
+        plan.waves.len(),
+        signed_off_clause(progress)
+    )
 }
 
 /// The review kickoff's `Waves:` field: the round's waves and the commit
@@ -586,11 +631,23 @@ mod tests {
     fn approving_a_round_moves_its_waves_to_done() {
         let mut p = progress(&["w1"], &["w2", "w3"]);
         p.starts.insert("w2".into(), "abc".into());
-        let next = approve_scope(&p);
+        let next = approve_scope(&p, Some("def4567890"), 42);
         assert_eq!(next.done, vec!["w1", "w2", "w3"]);
         assert!(next.scope.is_empty());
         assert_eq!(next.starts.get("w2").map(String::as_str), Some("abc"));
+        // A sign-off seals the round's waves at the commit it saw.
+        assert_eq!(next.ends.get("w2").map(String::as_str), Some("def4567890"));
+        assert_eq!(next.signed_off.get("w3"), Some(&42));
+        assert_eq!(
+            next.ends.get("w1"),
+            None,
+            "an earlier wave keeps its own seal"
+        );
         assert_eq!(remaining(&project(), &next), vec!["w4"]);
+        // Outside git the moment is still recorded.
+        let bare = approve_scope(&p, None, 7);
+        assert!(bare.ends.is_empty());
+        assert_eq!(bare.signed_off.get("w2"), Some(&7));
     }
 
     #[test]
@@ -640,14 +697,19 @@ mod tests {
         let mut p = progress(&["w1"], &["w2", "w3"]);
         assert_eq!(
             executor_clause(&project(), &p),
-            " Waves: w2 (w2 title), w3 (w3 title) of 4."
+            " Waves: w2 (w2 title), w3 (w3 title) of 4. Signed off: w1 — accepted work: leave it alone unless the note asks."
         );
+        // A sealed wave names its range.
+        let mut sealed = p.clone();
+        sealed.starts.insert("w1".into(), "1111111aaaa".into());
+        sealed.ends.insert("w1".into(), "2222222bbbb".into());
+        assert!(executor_clause(&project(), &sealed).contains("Signed off: w1 (1111111..2222222)"));
         assert_eq!(review_clause(&p), " Waves: w2, w3.");
         p.starts.insert("w2".into(), "abc123".into());
         assert_eq!(review_clause(&p), " Waves: w2, w3 (changes since abc123).");
         assert_eq!(
             executor_clause(&project(), &WaveProgress::default()),
-            " Waves: none of 4 (a fix round over the approved waves; start no wave)."
+            " Waves: none of 4 (a fix round over the signed-off waves; start no wave)."
         );
         assert_eq!(review_clause(&WaveProgress::default()), "");
     }

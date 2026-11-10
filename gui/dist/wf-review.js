@@ -87,6 +87,11 @@
               value: pr.url,
               label: prScopeRowLabel(pr),
               detail: prScopeRowDetail(pr),
+              state: prScopeRowState(pr),
+              // Merged and closed PRs are rarely what a round is about: the
+              // dialog folds them unless one is already picked.
+              settled: pr.state === "MERGED" || pr.state === "CLOSED",
+              repo: pr.repo || "",
               checked: seeded.includes(pr.url),
               // A linked PR's files are in another repository, so its
               // findings cannot be annotations on this item's diff — they
@@ -274,21 +279,16 @@
     return pr.primary ? `${chip} · primary` : chip;
   }
 
-  /// Composer detail for one PR: enough to tell two of an item's PRs apart,
-  /// plus what reviewing *that* PR means — its own diff, read from the forge.
+  /// A PR's state as one word: `draft`, `open`, `merged`, `closed`.
+  function prScopeRowState(pr) {
+    if (typeof prStateLabel === "function") return prStateLabel(pr);
+    return pr.draft ? "draft" : String(pr.state || "").toLowerCase();
+  }
+
+  /// Composer detail for one PR: what reviewing *that* PR reads. The URL is
+  /// the row's tooltip, not its text — ten rows of URLs was a wall nobody read.
   function prScopeRowDetail(pr) {
-    const st =
-      typeof prStateLabel === "function"
-        ? prStateLabel(pr)
-        : pr.draft
-          ? "draft"
-          : String(pr.state || "").toLowerCase();
-    const bits = [];
-    if (st) bits.push(st);
-    bits.push(
-      pr.primary ? "this repository's PR diff" : "that repository's diff, read from GitHub"
-    );
-    return `${bits.join(" · ")} — ${pr.url}`;
+    return pr.primary ? "this repository's PR diff" : "that repository's diff, read from GitHub";
   }
 
   /// Map the composer's interaction choice to the backend's tri-state

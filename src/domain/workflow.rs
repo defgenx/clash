@@ -1104,11 +1104,23 @@ pub struct WaveProgress {
     /// changes.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub starts: std::collections::BTreeMap<String, String>,
+    /// The commit each wave was signed off at. With `starts`, the range a
+    /// signed-off wave's changes cover — sealed: later executor rounds are
+    /// told to leave it alone (`application::waves::executor_clause`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub ends: std::collections::BTreeMap<String, String>,
+    /// When each wave was signed off, in epoch millis.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub signed_off: std::collections::BTreeMap<String, i64>,
 }
 
 impl WaveProgress {
     pub fn is_empty(&self) -> bool {
-        self.done.is_empty() && self.scope.is_empty() && self.starts.is_empty()
+        self.done.is_empty()
+            && self.scope.is_empty()
+            && self.starts.is_empty()
+            && self.ends.is_empty()
+            && self.signed_off.is_empty()
     }
 }
 
@@ -1151,6 +1163,12 @@ pub struct WaveView {
     /// The commit it started from, once it has.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub start: String,
+    /// The commit it was signed off at, once it has been.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub end: String,
+    /// When it was signed off (epoch millis), 0 before.
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub signed_off_at: i64,
     pub tickets: Vec<String>,
     /// Each ticket's URL, from the configured trackers. Filled by the GUI
     /// layer; a key with no tracker has none.
@@ -1731,6 +1749,11 @@ pub struct WorkflowItem {
     /// plan rounds behind it). A `BTreeMap` so the JSON is stable.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub review_rounds: std::collections::BTreeMap<String, u32>,
+    /// Per judging target, the latest unbroken run of rounds that asked to be
+    /// applied ([`crate::application::workflow::review_streaks`]) — what lets
+    /// the next-step recommender stop a review → fix loop.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub review_streaks: std::collections::BTreeMap<String, u32>,
     /// The explainer rounds recorded in `explainers.json`, one per target.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub explainers: Vec<ExplainerState>,

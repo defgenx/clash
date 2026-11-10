@@ -1950,10 +1950,13 @@ async fn record_wave_scope(
     meta.waves.scope = ordered;
 }
 
-/// Approve the waves of the item's current round: they join the approved
-/// set and the scope is cleared, so the next round can start whichever waves
-/// that made ready. The status does not move — the bar then offers the next
-/// waves, or, once none remain, the item's own approval.
+/// Sign off the waves of the item's current round: they join the signed-off
+/// set, sealed at the worktree's HEAD (the end of their range, beside the
+/// start recorded at launch) with the moment, and the scope is cleared — so
+/// the next round can start whichever waves that made ready, and every later
+/// executor kickoff names the sealed waves as accepted work. The status does
+/// not move — the bar then offers the next waves, or, once none remain, the
+/// item's own approval.
 #[tauri::command]
 pub(crate) async fn approve_workflow_waves(
     state: State<'_, GuiState>,
@@ -1968,10 +1971,16 @@ pub(crate) async fn approve_workflow_waves(
         return Err("An agent is working on this item — let it finish first".into());
     }
     if meta.waves.scope.is_empty() {
-        return Err("No wave is waiting for approval".into());
+        return Err("No wave is waiting for sign-off".into());
     }
     let approved = meta.waves.scope.clone();
-    meta.waves = clash::application::waves::approve_scope(&meta.waves);
+    // The seal: the commit the waves' work ends at, read where they were built.
+    let cwd = meta
+        .worktree
+        .clone()
+        .unwrap_or_else(|| meta.repo_path.clone());
+    let head = clash::infrastructure::git::head_sha(Path::new(&cwd)).await;
+    meta.waves = clash::application::waves::approve_scope(&meta.waves, head.as_deref(), now_ms());
     state
         .backend
         .write_workflow_meta(&project, &slug, &meta)
@@ -4273,6 +4282,63 @@ pub(crate) async fn share_workflow_via_agent(
                 &payload,
                 &title,
                 ticket.as_deref(),
+            )
+        },
+    )
+    .await?;
+    Ok(session_id)
+}
+
+/// Start a **discussion** about an item: a session with the item's context
+/// that talks rather than works (`application::workflow::discussion_prompt`).
+/// It parks nothing and writes no meta — like a share, it is not a round, so
+/// the item keeps its status and its recorded agent while you talk.
+#[tauri::command]
+pub(crate) async fn start_workflow_discussion(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    topic: Option<String>,
+    agent: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<String, String> {
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    // Not persisted: a discussion does not re-point the item's agent.
+    launch_agent(&state, agent.as_deref(), &mut meta)?;
+    let session_id = uuid::Uuid::now_v7().to_string();
+    let cwd = meta
+        .worktree
+        .clone()
+        .filter(|w| !w.is_empty())
+        .unwrap_or_else(|| meta.repo_path.clone());
+    let name = clash::application::workflow::workflow_session_name(&meta, &slug, "discuss");
+    let topic = topic
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
+    let prompt_meta = meta.clone();
+    spawn_item_session(
+        &state,
+        ItemSessionSpawn {
+            project: &project,
+            slug: &slug,
+            session_id: &session_id,
+            name: &name,
+            meta: &meta,
+            cwd: &cwd,
+            cols,
+            rows,
+            round: Default::default(),
+        },
+        |item_dir| {
+            clash::application::workflow::discussion_prompt(
+                &prompt_meta,
+                &slug,
+                item_dir,
+                topic.as_deref(),
             )
         },
     )

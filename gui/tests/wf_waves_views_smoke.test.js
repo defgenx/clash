@@ -76,13 +76,20 @@ function sandbox() {
     wfStartWaves: () => {},
     refreshWorkflows: async () => {},
     wfItem: () => ITEM,
+    wfKey: (p, s) => `${p}/${s}`,
+    wfTabState: new Map(),
+    state: { sessions: [] },
+    openSession: () => {},
+    wfSid: (_, id) => id,
+    wfComposeReviewRound: () => {},
+    setTimeout,
     flashToast: () => {},
     svgIcon: (name) => `<svg data-icon="${name}"></svg>`,
   };
   box.window = box;
   vm.createContext(box);
   for (const f of ["wf-prs.js", "wf-waves.js"]) vm.runInContext(dist(f), box);
-  for (const fn of ["wfPrStateChip", "wfWaveDecisionButtons", "renderWfWavesView", "renderWfPrsView"])
+  for (const fn of ["wfPrStateChip", "wfWaveDecisionButtons", "wfWaveCard", "wfStepTogether", "wfRenderWaveLive", "renderWfWavesView", "renderWfPrsView"])
     vm.runInContext(extractFunction(APP, fn), box);
   return box;
 }
@@ -94,14 +101,38 @@ test("the roadmap opens on what is happening, then walks the waves with their PR
   const body = stubEl();
   box.renderWfWavesView(body, {}, ITEM);
   const t = texts(body);
-  assert.ok(t.some((x) => /w1 · w1 title is waiting for your approval\. 2 of 8 PRs merged, 5 still open\./.test(x)), t.join("\n"));
+  assert.ok(t.some((x) => /w1 · w1 title is waiting for your sign-off\. 2 of 8 PRs merged, 5 still open\./.test(x)), t.join("\n"));
   assert.ok(t.some((x) => /^Next: .*unlocks w2/.test(x)));
-  assert.ok(t.includes("✓ Approve w1 → next waves…"), "the decision sits on the roadmap");
+  assert.ok(t.includes("✓ Sign off w1 → next waves…"), "the decision sits on the roadmap");
   assert.ok(t.includes("Step 1") && t.includes("Step 3"));
   assert.ok(t.includes("2/8 PRs merged"));
   assert.ok(t.includes("TT-0"), "tickets are shown");
   assert.ok(t.includes("saturn#456 · open"), "a wave's PRs are chips");
-  assert.ok(t.includes("api#979 · closed"));
+  // The overview lists what still needs landing; the wave's Details, all.
+  assert.ok(!t.includes("api#979 · closed"), "settled PRs wait in Details");
+  box.wfTabState.set("p/s", { waveMode: "one", waveFocus: "w1" });
+  const one = stubEl();
+  box.renderWfWavesView(one, {}, ITEM);
+  const t1 = texts(one);
+  assert.ok(t1.includes("api#979 · closed"));
+  assert.ok(t1.some((x) => /^Wave 1 of 3/.test(x)), t1.join("\n"));
+});
+
+test("a wave card says what blocks it and binds the bar's actions", () => {
+  const box = sandbox();
+  const body = stubEl();
+  box.renderWfWavesView(body, {}, ITEM);
+  const t = texts(body);
+  // Soft blockers before approving, a waiting wave's dependency as one line.
+  assert.ok(t.includes("Before you sign off"));
+  assert.ok(t.some((x) => /^5 PRs not merged yet$/.test(x)), t.join("\n"));
+  assert.ok(t.some((x) => /^1 PR not reached on the last refresh$/.test(x)));
+  assert.ok(t.includes("Waits for w1 · w1 title — to sign off"));
+  // The round's decisions and the wave's PR tools are on its card.
+  assert.equal(t.filter((x) => x === "✓ Sign off w1 → next waves…").length, 2, "the roadmap's and the card's");
+  assert.ok(t.includes("⌕ Review its 5 PRs…"));
+  assert.ok(t.includes("Open 5 PRs"));
+  assert.ok(["Flow", "List", "One at a time"].every((m) => t.includes(m)));
 });
 
 test("the Pull requests tab lists every PR by wave, with freshness and failures", async () => {
@@ -181,4 +212,30 @@ test("past a handful of PRs the header summarizes and points at the tab", () => 
   assert.match(view, /ts\.subView = "prs";/);
   // A project in waves opens on its roadmap.
   assert.match(view, /if \(!ts\.subView && item\.waves\) ts\.subView = "waves";/);
+});
+
+test("a plan with parallel waves opens on the Flow, and together-or-alone is yours", () => {
+  // w2 and w3 may share a round and are both ready: the step offers them
+  // together once, each card offers itself alone.
+  const par = JSON.parse(JSON.stringify(ITEM));
+  par.meta.status = "diff-review";
+  par.waves.waves = [
+    wave("w1", "done", 0, []),
+    wave("w2", "ready", 1, [], { dependsOn: ["w1"], compatibleWith: ["w3"] }),
+    wave("w3", "ready", 1, [], { dependsOn: ["w1"], compatibleWith: ["w2"] }),
+  ];
+  const box = sandbox();
+  const body = stubEl();
+  box.renderWfWavesView(body, {}, par);
+  const t = texts(body);
+  assert.ok(t.includes("⇉ parallel"), "the step says its waves can run in parallel");
+  assert.equal(t.filter((x) => x === "▶ Start w2 + w3 together…").length, 1, "together is offered once, for the step");
+  assert.ok(t.includes("▶ Start w2 alone…") && t.includes("▶ Start w3 alone…"));
+  const cls = descendants(body).map((e) => e.className || "");
+  assert.ok(cls.includes("wf-waves-flow"), "Flow is where a parallel plan opens");
+  assert.ok(cls.includes("wf-flow-col parallel"));
+  // A straight chain opens on the List.
+  const chain = stubEl();
+  sandbox().renderWfWavesView(chain, {}, ITEM);
+  assert.ok(!descendants(chain).some((e) => e.className === "wf-waves-flow"));
 });

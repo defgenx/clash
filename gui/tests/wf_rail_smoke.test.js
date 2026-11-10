@@ -63,7 +63,7 @@ test("the rail carries the waves, the PRs and the item's agents", () => {
   ]);
   const t = texts(rail);
   for (const h of ["Waves", "Pull requests", "Agents"]) assert.ok(t.includes(h), h);
-  assert.ok(t.some((x) => /w1 · Schema is waiting for your approval/.test(x)));
+  assert.ok(t.some((x) => /w1 · Schema is waiting for your sign-off/.test(x)));
   assert.ok(t.some((x) => /^2 PRs · 1 merged · 1 open · checked just now$/.test(x)), t.join("\n"));
   assert.ok(t.includes("api#1 · open") && t.includes("web#2 · merged"));
   assert.ok(t.includes("All pull requests →"));

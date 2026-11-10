@@ -53,6 +53,7 @@ function sandbox(over = {}) {
     "wfDefaultPrUrls",
     "wfRunStrip",
     "wfRenderNextStep",
+    "wfAgentStatus",
     "wfSid",
   ]) {
     vm.runInContext(extractFunction(APP, fn), box);

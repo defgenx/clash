@@ -259,13 +259,15 @@
       title: "What now",
       body: {
         workbench:
-          "The suggested next step and why, this step's actions (🔍 Check… runs reviews and " +
-          "explanations), then the decisions that move the item. Back, share and abandon are " +
+          "The suggested next step and why, then the decisions that move the item, then this " +
+          "step's tools (🔍 Check… runs reviews and explanations; 💬 Discuss… opens a " +
+          "conversation about the item that changes nothing). Back, share and abandon are " +
           "under More. In a wide tab, a rail on the right keeps the item's waves, pull " +
           "requests and agents in view.",
         tabs:
-          "The suggested next step and why, this step's actions (🔍 Check… runs reviews and " +
-          "explanations), the decisions that move the item, and on the right back, share and " +
+          "The suggested next step and why, this step's tools (🔍 Check… runs reviews and " +
+          "explanations; 💬 Discuss… opens a conversation about the item that changes " +
+          "nothing), the decisions that move the item, and on the right back, share and " +
           "abandon.",
       },
     },

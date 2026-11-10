@@ -990,16 +990,30 @@ The flow, on the GUI's buttons:
    `Waves: w2, w3 (changes since <sha>).`: they judge the waves' commits, with
    the rest of the branch as context — a drift round does not call a wave
    that has not started *missing*.
-3. At `diff-review` / `pr-draft` / `pr-ready`, **✓ Approve w2, w3 → next
+3. At `diff-review` / `pr-draft` / `pr-ready`, **✓ Sign off w2, w3 → next
    waves…** (`approve_workflow_waves`: scope → done, status unchanged) then
-   offers the waves that became ready; **… only** approves without starting.
+   offers the waves that became ready; **… only** signs off without starting.
+   A sign-off is not a label. `approve_scope` **seals** each wave: it records
+   the worktree's HEAD as the wave's end (`meta.waves.ends`, beside the start
+   recorded at launch) and the moment (`meta.waves.signedOff`), and every
+   later executor kickoff carries `Signed off: w2 (abc1234..def5678), w3 —
+   accepted work: leave it alone unless the note asks.` — the `clash-workflow`
+   skill then must not rework a signed-off wave on its own initiative, and
+   lists any change it had to make there in `handoff.md` under *Touches
+   signed-off waves*. It also unlocks the waves that depended on it. The
+   dialog (`signOffModel`) says all of that before the click, lists what is
+   still open (comments, PRs not merged, threads, unreachable PRs — said,
+   never enforced), and offers the one effect that leaves clash: marking the
+   waves' draft PRs ready for review, unticked by default and run through the
+   one mark-ready path (`wfMarkPrReady`). The card of a signed-off wave shows
+   when and at which range it was sealed.
    With nothing waiting, **▶ Start next waves…** starts the next round. A
    change request keeps the round's scope (the fix round continues the same
    waves); one made between waves launches with
    `Waves: none of N (a fix round …; start no wave)`.
 4. The item's own approvals — **Approve → done**, **Approve → PR draft**,
    **Mark done** — are hidden while waves remain; on the last round they
-   approve its waves on the way (`wfTransition`). The PR may be opened at any
+   sign off its waves on the way (`wfTransition`). The PR may be opened at any
    point: it simply carries more waves as they land.
 
 The **Waves** tab is a roadmap, and the tab a multi-wave item opens on. It
@@ -1009,7 +1023,29 @@ merged, 6 still open. Next: … then approve it — that unlocks w2."), a track
 of every wave's state and the same approve/start buttons as the bar
 (`wfWaveDecisionButtons`, one set of handlers — hidden by CSS in the
 Workbench, whose next-step card is already on top; the aside's PR summary,
-`.wf-waves-stats`, likewise hides where the rail shows it). Then the steps in order —
+`.wf-waves-stats`, likewise hides where the rail shows it). Below it, a
+**live panel** (`waveLive`) appears while any wave is being built: the waves
+of the round in flight — several when they run in parallel, which is still
+one round, one agent and one worktree — the agent's state (working, waiting
+for you, at its prompt, stopped, gone) and its last activity, repainted on
+every session refresh (`syncWaveLive`) rather than on a rebuild. The waves
+themselves show in three modes, remembered per tab: **Flow** (the steps as
+columns left to right, a step whose waves may share a round framed as
+*parallel* — where a plan with parallel steps opens), **List** (the steps one
+under the other — where a straight chain opens; a step's waves still share a
+row when there is room) and **One at a time** (`waveFocus` opens on the wave
+that needs you; ← → step through, everything unfolded). Whether parallel
+waves *run* in parallel stays the human's call: a step whose ready waves are
+mutually compatible offers **▶ Start w2 + w3 together…** once
+(`wfStepTogether`), and each card **▶ Start wN alone…**, both through the wave
+picker pre-ticked (`wfPickWaves`' `preselect`). Every card carries what blocks it
+(`waveBlockers`: an unapproved dependency as one quiet line that links to it,
+and before approving the PRs not merged, threads waiting on you and PRs the
+last refresh missed — said, never enforced) and its actions (`waveActions`:
+the round's approve buttons, start a ready wave — together with its
+compatible ready siblings or alone — pre-picked in the wave picker,
+a code review over its open PRs, open them, the agent's session), bound to the
+bar's own handlers so a card and the bar cannot disagree. Then the steps in order —
 waves grouped by dependency level, saying which of a step's waves may share
 a round — each wave with its state, PR progress (`merged/total`), summary,
 linked tickets (URLs resolved from `[trackers]` by the GUI layer) and PR
@@ -1672,6 +1708,26 @@ failed for want of a PR asks for it and retries; a code review that was to post
 its findings can run locally instead (`local` control) — a verdict or a reply
 to a thread cannot, because their output is the post.
 
+## Discussions
+
+**💬 Discuss…** (every stage, *This step*) opens a session to talk about the
+item, not to work on it — a question ("why this order?", "what is left in
+w2?") is not a change request, and typing one into the change-request
+composer would make the next executor round act on it.
+`start_workflow_discussion` spawns it through `spawn_item_session` (so it is
+named `<title> · discuss`, registered with the item and listed among its
+agents) in the item's worktree, with the pure
+`application::workflow::discussion_prompt`: the item directory and its facts
+(status, iteration, branch, PRs, signed-off and in-flight waves, ticket),
+which files hold what, and three rules — write nothing in the item directory
+and never change the status; edit, commit, push or post only when asked in
+the conversation; and when the talk reaches a decision, suggest recording it
+as a change request (with the note it would write), because the change
+request is what the next round reads. An optional topic opens the
+conversation; without one the agent starts with where the item stands. Like a
+share, it parks nothing and writes no meta, so it runs beside whatever the
+item is doing.
+
 ## Next-step assist
 
 Every item's action bar opens with a **Suggested next** strip: what to do now,
@@ -1700,8 +1756,9 @@ its own strip (see *Check runs*).
 Three properties are the design. The recommender is **the one owner of the
 primary button**: `wfRenderNextStep` runs after the bar is rendered, picks
 among the buttons that are actually there (`data-act`) or the checks the stage
-allows, and moves the highlight, so a suggestion is always clickable and the
-bar's gates stay the only gates; the per-stage `primary` classes survive only
+allows, and moves that button beside its reason (the real button, never a
+copy), so a suggestion is always clickable and the bar's gates stay the only
+gates; the per-stage `primary` classes survive only
 for `assist = off`.
 **Agents advise, clash ranks**: a round's or a hand-off's `**Next:**` is
 consulted only where clash's own checks are silent, so no agent can recommend
@@ -1723,6 +1780,27 @@ there is nothing to apply; `WF_AUTOPILOT_BUDGET` (3 runs per item, counted in
 `run.json` so a restart cannot reset it) stops a reviewer that never does, and
 any click on the item's bar resets the budget. Autopilot never starts a run
 while one is open.
+
+**A working agent's suggestion follows its live state.** At `planning`,
+`implementing` and `reviewing` the reason comes from the recorded session's
+status (`facts.agentStatus`, `wfAgentStatus`): *waiting for you — a question
+or a permission is open* while it prompts, *finished its turn and is at its
+prompt* when it is idle, and "working" only while it works.
+
+**Review and fix cannot circle forever, in either mode.** Each item carries
+`reviewStreaks` (`application::workflow::review_streaks`, derived from
+`agent-review.md`): per judging target, how many of its latest rounds in a row
+said `Apply: yes`. Once a target reaches `REVIEW_LOOP_LIMIT` (3), the
+recommender stops proposing another round of it — plan review, code review
+(verdict rounds count toward the same loop), plan vs changes — and an agent's
+`Next:` cannot restart it; the stage's own decision becomes the suggestion,
+with the reason ("3 code review rounds in a row each asked for changes —
+another one is unlikely to settle it. Read the latest findings and decide"),
+and the round that reached the cap is applied only by a click. A round that
+judges its findings not worth applying ends the streak, so a review that
+converges never meets the cap. This is a second guard beside the autopilot
+budget, and the one that also protects `suggest`: the budget counts runs, the
+streak counts rounds that did not converge.
 
 **Explanations follow the comparison.** A plan-vs-changes round is read next
 to the two explanations, so launching one offers to refresh every existing

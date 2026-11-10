@@ -68,6 +68,20 @@
   }
 
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  const ordinal = (n) => {
+    const t = n % 100;
+    const suf = t >= 11 && t <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th";
+    return `${n}${suf}`;
+  };
+
+  /// How many review rounds of one target in a row may each ask for changes
+  /// before the recommender stops proposing another. A review → fix → review
+  /// cycle that has not converged by then needs a person's judgement, not a
+  /// fourth round: without this cap a suggestion (and autopilot, which follows
+  /// it) could circle the same item forever. The streak comes from the
+  /// backend (`review_streaks`); a round that says its findings are not worth
+  /// applying ends it, so a review that converges never hits the cap.
+  const REVIEW_LOOP_LIMIT = 3;
 
   /// The ordered checks for `item`'s stage. Each is `{ id, fires, reason,
   /// settled, params? }` — `settled` is what the check reads as when it does
@@ -81,19 +95,40 @@
     const said = (what) => (hint && hint.next === what ? hint : null);
     const because = (h, fallback) =>
       h ? `${h.from} recommends it${h.reason ? `: ${h.reason}` : ""}` : fallback;
+    const streak = (t) => ((item.reviewStreaks || {})[t]) || 0;
+    const looping = (t) => streak(t) >= REVIEW_LOOP_LIMIT;
+    const loopReason = (t, what) =>
+      `${plural(streak(t), `${what} round`, `${what} rounds`)} in a row each asked for changes — another one is unlikely to settle it. Read the latest findings and decide`;
+    const loopSettled = (t, what) => `${what} paused: ${streak(t)} rounds in a row asked for changes`;
+    // What the agent is doing *right now* (its session's live status), so the
+    // suggestion says "it is waiting for you" instead of "it is working".
+    const live = String(facts.agentStatus || "").toLowerCase();
+    const agentLine = (who, fallback) =>
+      live === "prompting"
+        ? `The ${who} is waiting for you — a question or a permission is open in its session`
+        : live === "waiting"
+          ? `The ${who} finished its turn and is at its prompt — read what it said, or give it the next instruction`
+          : fallback;
     const open = item.openAnnotations || 0;
     const unanswered = prs.reduce((n, p) => n + (p.unanswered > 0 ? p.unanswered : 0), 0);
     const it = meta.iteration || 0;
 
+    // The round that hits the cap is still worth applying — its findings are
+    // real — but never without a click: it is the turn a loop would take.
+    const pendingLoop = !!pending && looping(pending.target || "");
     const applyCheck = {
       id: "apply-review",
       fires: !!pending && pending.apply !== false,
       reason: pending
         ? `Review round ${pending.round} came back with findings that are not applied yet` +
-          (pending.applyReason ? ` — ${pending.applyReason}` : "")
+          (pendingLoop
+            ? ` — the ${ordinal(streak(pending.target))} round in a row to ask for changes: read it before applying`
+            : pending.applyReason
+              ? ` — ${pending.applyReason}`
+              : "")
         : "",
       settled: "no review waiting to be applied",
-      auto: !!pending && pending.apply === true,
+      auto: !!pending && pending.apply === true && !pendingLoop,
     };
 
     switch (st) {
@@ -119,7 +154,7 @@
             fires: true,
             reason: item.agentResumable
               ? "The agent was stopped — resume its conversation where it left off"
-              : "An agent is working — watch it, or answer its questions",
+              : agentLine("agent", "An agent is working — watch it, or answer its questions"),
           },
         ];
       case "reviewing":
@@ -135,7 +170,7 @@
             fires: true,
             reason: item.agentResumable
               ? "The reviewer was stopped — resume it, or end the round"
-              : "A review round is running",
+              : agentLine("reviewer", "A review round is running"),
           },
         ];
       case "changes-requested":
@@ -151,29 +186,36 @@
           applyCheck,
           {
             id: "plan-review",
-            fires: !reviewedThisIteration(item, "plan"),
+            fires: !reviewedThisIteration(item, "plan") && !looping("plan"),
             reason: because(
               said("plan-review"),
               it > 1
                 ? "This revision of the plan has not been reviewed — the last round changed it"
                 : "No agent has reviewed this plan yet — a plan is the cheapest place to catch a mistake"
             ),
-            settled: "the plan was reviewed at this iteration",
+            settled: looping("plan")
+              ? loopSettled("plan", "plan review")
+              : "the plan was reviewed at this iteration",
             auto: true,
           },
           {
             id: "approve-plan",
             fires: true,
-            reason: because(
-              said("approve"),
-              "The plan was reviewed at this iteration and nothing is waiting on it"
-            ),
+            reason: looping("plan")
+              ? loopReason("plan", "plan review")
+              : because(
+                  said("approve"),
+                  "The plan was reviewed at this iteration and nothing is waiting on it"
+                ),
           },
         ];
     }
 
     if (!["diff-review", "pr-draft", "pr-ready"].includes(st)) return [];
 
+    // A verdict round is a code review too: both count toward the loop.
+    const codeLoop = looping("diff") || looping("self-review");
+    const codeLoopTarget = looping("diff") ? "diff" : "self-review";
     const deep = !!said("deep-review");
     const lastDiff = meta.review && meta.review.target === "diff" ? meta.review : null;
     const neverDrift = !((item.reviewRounds || {}).drift > 0);
@@ -194,14 +236,19 @@
       {
         id: "code-review",
         // A verdict round is a code review too — a more thorough one.
-        fires: !reviewedThisIteration(item, "diff") && !reviewedThisIteration(item, "self-review"),
+        fires:
+          !codeLoop &&
+          !reviewedThisIteration(item, "diff") &&
+          !reviewedThisIteration(item, "self-review"),
         reason: because(
           said("deep-review") || said("code-review"),
           it > 1
             ? "The code changed since its last review — the fix round has not been checked"
             : "No agent has reviewed this code yet"
         ),
-        settled: "the code was reviewed at this iteration",
+        settled: codeLoop
+          ? loopSettled(codeLoopTarget, "code review")
+          : "the code was reviewed at this iteration",
         params: { depth: deep ? "deep" : "standard" },
         auto: true,
       },
@@ -209,7 +256,7 @@
         // A standard round already ran at this iteration, but something said
         // the change warrants a deep one.
         id: "code-review",
-        fires: deep && !!lastDiff && lastDiff.depth !== "deep",
+        fires: !codeLoop && deep && !!lastDiff && lastDiff.depth !== "deep",
         reason: because(said("deep-review"), ""),
         settled: "no deep review asked for",
         params: { depth: "deep" },
@@ -219,6 +266,7 @@
         id: "drift",
         fires:
           !!facts.hasPlan &&
+          !looping("drift") &&
           !reviewedThisIteration(item, "drift") &&
           (neverDrift || !!said("drift")),
         reason: because(
@@ -230,7 +278,9 @@
       },
     ];
 
-    const settledReason = "Reviewed at this iteration, with nothing open or waiting";
+    const settledReason = codeLoop
+      ? loopReason(codeLoopTarget, "code review")
+      : "Reviewed at this iteration, with nothing open or waiting";
     // A multi-wave item is approved wave by wave: once the round's waves are
     // reviewed, approving them (and starting the next) comes before anything
     // that finishes the item. The bar hides the item's own approvals while
@@ -241,8 +291,8 @@
           {
             id: "approve-waves",
             fires: waves.kind === "approve",
-            reason: `${waves.review.join(", ")} reviewed — approve and start the next waves`,
-            settled: "no wave waiting for approval",
+            reason: `${waves.review.join(", ")} reviewed — sign ${waves.review.length > 1 ? "them" : "it"} off to seal the work and start the next waves`,
+            settled: "no wave waiting for sign-off",
           },
           {
             id: "start-waves",
@@ -291,7 +341,10 @@
         // Only after this iteration's code review: the verdict is how that
         // review ends on the PR, not a second reviewer racing it.
         id: "self-review",
-        fires: reviewedThisIteration(item, "diff") && !reviewedThisIteration(item, "self-review"),
+        fires:
+          !codeLoop &&
+          reviewedThisIteration(item, "diff") &&
+          !reviewedThisIteration(item, "self-review"),
         reason: "No verdict has been posted on the PR for this iteration",
         settled: "the PR has a verdict for this iteration",
       },
@@ -329,7 +382,9 @@
   ///   are recommended as buttons like any other action;
   /// - `pending` — `pendingReviewRound(item)`;
   /// - `prs` — `itemPrs(item.meta)`;
-  /// - `hasPlan` — the item has a plan phase and a written plan.
+  /// - `hasPlan` — the item has a plan phase and a written plan;
+  /// - `agentStatus` — the live status of the item's recorded session
+  ///   (`Thinking`, `Prompting`, `Waiting`…), when one is listed.
   function wfNextStep(item, facts) {
     if (!item || !item.meta) return null;
     const available = (facts && facts.available) || new Set();
@@ -401,6 +456,7 @@
   }
 
   const api = {
+    REVIEW_LOOP_LIMIT,
     NEXT_ACTIONS,
     AUTO_ACTIONS,
     CHECK_PASS,

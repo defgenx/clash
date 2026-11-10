@@ -331,3 +331,18 @@ test("self-review opens the code round with the verdict picked", () => {
   assert.equal(one.prScope, null);
   assert.match(one.verdict.notice, /Posts a verdict to #7/);
 });
+
+test("the scope rows stay short: state as a word, the URL only as a tooltip", () => {
+  // Ten rows each ending in a full URL buried the one thing that differs
+  // between them; merged and closed PRs are flagged so the dialog can fold them.
+  const prs = [
+    { url: "https://github.com/o/api/pull/1", repo: "o/api", number: 1, primary: true, state: "OPEN" },
+    { url: "https://github.com/o/web/pull/2", repo: "o/web", number: 2, state: "MERGED" },
+    { url: "https://github.com/o/ops/pull/3", repo: "o/ops", number: 3, state: "OPEN", draft: true },
+  ];
+  const m = reviewRoundModel({ target: "diff", prs, hasPr: true, prNumber: 1 });
+  const rows = m.prScope.choices;
+  for (const r of rows) assert.doesNotMatch(r.detail, /https?:/);
+  assert.deepEqual(rows.map((r) => r.state), ["open", "merged", "draft"]);
+  assert.deepEqual(rows.map((r) => r.settled), [false, true, false]);
+});

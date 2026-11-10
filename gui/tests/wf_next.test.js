@@ -10,6 +10,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const {
+  REVIEW_LOOP_LIMIT,
   NEXT_ACTIONS,
   AUTO_ACTIONS,
   wfNextStep,
@@ -262,4 +263,71 @@ test("a multi-wave item approves its waves before the item, then starts the next
   assert.ok(!["approve-waves", "start-waves"].includes(wfNextStep(last, facts()).id));
   // Never on autopilot: approving and starting waves is the human's call.
   assert.ok(!AUTO_ACTIONS.has("approve-waves") && !AUTO_ACTIONS.has("start-waves"));
+});
+
+test("review and fix cannot circle forever: a non-converging target hands the call back", () => {
+  // Three code reviews in a row each asked for changes and were applied; the
+  // code changed again (iteration 4), so "review the fix round" would fire
+  // forever. At the cap the recommender stops proposing another round.
+  assert.equal(REVIEW_LOOP_LIMIT, 3);
+  const looping = item(
+    "diff-review",
+    { reviewRounds: { diff: 3, drift: 1 }, reviewStreaks: { diff: 3 } },
+    { iteration: 4, reviewMarks: { diff: { iteration: 3, round: 3 }, drift: { iteration: 1, round: 1 } } }
+  );
+  const step = wfNextStep(looping, facts());
+  assert.notEqual(step.kind, "check", "no further review is proposed");
+  assert.equal(step.id, "approve-pr-draft");
+  assert.match(step.reason, /3 code review rounds in a row each asked for changes/);
+  assert.ok(step.settled.includes("code review paused: 3 rounds in a row asked for changes"));
+  assert.equal(step.auto, false, "autopilot has nothing to start");
+  // Below the cap, the fix round is reviewed as before.
+  const two = { ...looping, reviewStreaks: { diff: 2 } };
+  assert.equal(wfNextStep(two, facts({ passes: new Set(["review", "drift"]) })).kind, "check");
+  // A round that judged its findings not worth applying ends the streak
+  // (the backend resets it), so a converging review never hits the cap.
+  const converged = { ...looping, reviewStreaks: {} };
+  assert.equal(wfNextStep(converged, facts()).id, "code-review");
+});
+
+test("the round that reaches the cap is applied only by a click", () => {
+  const pending = { round: 3, target: "diff", apply: true, applyReason: "x" };
+  const it = item("diff-review", { reviewStreaks: { diff: 3 } });
+  const step = wfNextStep(it, facts({ pending }));
+  assert.equal(step.id, "apply-review");
+  assert.equal(step.auto, false);
+  assert.match(step.reason, /the 3rd round in a row to ask for changes: read it before applying/);
+  // Under the cap it still applies itself under autopilot.
+  assert.equal(wfNextStep(item("diff-review", { reviewStreaks: { diff: 2 } }), facts({ pending })).auto, true);
+});
+
+test("plan reviews, verdicts and drift stop at the cap too", () => {
+  const plan = item("plan-review", { reviewRounds: { plan: 3 }, reviewStreaks: { plan: 3 } }, {
+    iteration: 4,
+    reviewMarks: { plan: { iteration: 3, round: 3 } },
+  });
+  const p = wfNextStep(plan, facts());
+  assert.equal(p.id, "approve-plan");
+  assert.match(p.reason, /3 plan review rounds in a row/);
+  // Verdict rounds count as code reviews.
+  const verdicts = item("pr-ready", { reviewRounds: { diff: 1, "self-review": 3, drift: 1 }, reviewStreaks: { "self-review": 3 } }, {
+    iteration: 5,
+    reviewMarks: { diff: { iteration: 1, round: 1 }, drift: { iteration: 1, round: 1 } },
+  });
+  assert.equal(wfNextStep(verdicts, facts()).id, "open-prs");
+  // An agent asking for drift again cannot restart a drift loop.
+  const drift = item(
+    "diff-review",
+    { reviewRounds: { diff: 1, drift: 3 }, reviewStreaks: { drift: 3 }, lastAgentReview: { target: "diff", round: 1, next: "drift" } },
+    { iteration: 2, reviewMarks: { diff: { iteration: 2, round: 1 }, drift: { iteration: 1, round: 3 } } }
+  );
+  assert.equal(wfNextStep(drift, facts()).id, "approve-pr-draft");
+});
+
+test("a working agent's suggestion follows what it is doing right now", () => {
+  const it = item("implementing");
+  assert.match(wfNextStep(it, facts()).reason, /An agent is working/);
+  assert.match(wfNextStep(it, facts({ agentStatus: "Prompting" })).reason, /waiting for you — a question or a permission/);
+  assert.match(wfNextStep(it, facts({ agentStatus: "Waiting" })).reason, /finished its turn and is at its prompt/);
+  assert.match(wfNextStep(item("reviewing"), facts({ agentStatus: "Prompting" })).reason, /The reviewer is waiting for you/);
 });

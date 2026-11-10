@@ -99,8 +99,11 @@ with what it already checked:
 
 Due checks (3–6) are suggested **together**, as chips with one **▶ Run N
 checks** button: untick a chip to leave it out, or **Options…** for the full
-checklist. Checks that post on GitHub start unticked. Anything else points at a
-button that is on the bar and moves the highlight there. While a check run is in
+checklist. Checks that post on GitHub start unticked. Anything else is a
+button of the bar, which moves up beside the reason. In the Workbench the card
+reads top to bottom: the suggestion, then the decisions that move the item,
+then this step's tools as a quiet footer; on a narrow tab each band stacks its
+caption above its buttons. While a check run is in
 flight, the strip shows its progress instead. The agents advise too, through a
 `**Next:**` line at the end of every review round and of the executor's
 hand-off, but clash's own checks rank first. "Reviewed" means reviewed **at this
@@ -116,6 +119,22 @@ assist*):
   GitHub post, and after 3 runs on an item until you click something there (the
   count survives a restart).
 - `off` gives the plain bar.
+
+Neither mode loops: when three review rounds of the same kind in a row each
+asked for changes, the suggestion stops proposing a fourth and hands you the
+decision instead, saying so. A round that finds nothing worth applying resets
+that count.
+
+## Talking about an item
+
+Not everything is a change request. **💬 Discuss…** (in *This step*, at every
+stage) opens a session with the item's context — plan, change requests,
+review rounds, comments, hand-off, waves, PRs and the code — to ask a
+question or think something through. Give it a topic or leave it empty (it
+then starts by saying where the item stands). It reads, it changes nothing
+unless you ask, it never moves the item, and when the conversation reaches a
+decision it suggests the change request to record. It runs beside whatever
+the item is doing and shows among the item's agents.
 
 ## Reading an item
 
@@ -175,16 +194,22 @@ touches. A single task has no waves and works as before.
 - **Approve plan → start waves…** asks which waves to start. The first ready
   one is ticked. You can tick another only when it doesn't depend on the
   first and touches different code; the agent then builds them in parallel,
-  in one round, and you approve them together.
+  in one round, and you sign them off together.
 - When the round comes back, review it as usual (your diff review, a code
   review, plan vs changes). The reviewers look at the round's waves.
-- **✓ Approve w2 → next waves…** approves the round's waves and offers the
-  ones that became ready. **✓ Approve w2 only** approves without starting
-  anything; **▶ Start next waves…** picks up from there later.
+- **✓ Sign off w2 → next waves…** signs off the round's waves and offers the
+  ones that became ready; **✓ Sign off w2 only** signs off without starting
+  anything; **▶ Start next waves…** picks up from there later. Signing off
+  **seals** the wave: clash records the commit its work ends at, and every
+  later agent round is told that work is accepted and must be left alone
+  (anything it has to touch there, it reports). It unlocks the waves that
+  waited for it. The dialog lists what is still open (comments, PRs not
+  merged, threads) and can also mark the wave's draft PRs ready for review on
+  GitHub — unticked unless you tick it.
 - **Request changes** during a wave sends the fix round back to the same
   waves.
 - **Approve → done** and **Approve → PR draft** appear once the last waves
-  are in review, and approve them on the way. You can open the PR whenever you
+  are in review, and sign them off on the way. You can open the PR whenever you
   like; it collects the waves as they land.
 
 A project in waves opens on its **Waves** tab, a roadmap:
@@ -194,10 +219,24 @@ A project in waves opens on its **Waves** tab, a roadmap:
   open. Next: get its PRs merged, then approve it — that unlocks w2."), a
   track of every wave's state, and — in the Tabs view — the approve/start
   buttons (the Workbench's next-step card above already carries them).
-- Then the steps in order. Each wave shows what it delivers, its state, how
-  many of its PRs are merged, its tickets (linked to your tracker) and its PRs
-  (click to open, right-click for the PR's actions). *Scheduling* folds away
-  what it waits for, what it can share a round with and the code it touches.
+- While waves are being built, a **Live** panel says which ones (several when
+  they run in parallel — still one agent, one worktree), what the agent is
+  doing right now and when it last did something, with a button to its session.
+- Then the waves, as a **Flow** (steps left to right; waves the plan allows
+  to run in parallel sit in one column framed *⇉ parallel*), a **List** (steps
+  top to bottom) or **One at a time** (one wave unfolded, ← → to step through;
+  *Details →* on any card opens it there). A plan with parallel steps opens on
+  the Flow, a straight chain on the List. Running parallel waves in parallel is
+  your call: the step offers **▶ Start w2 + w3 together…**, each card **▶ Start
+  w2 alone…**. Each wave shows what it delivers, its state, how many of
+  its PRs are merged, its tickets (linked to your tracker) and the PRs still
+  open (click to open, right-click for the PR's actions). It also says what is
+  in its way — the wave it waits for (click to go there), or before approving:
+  PRs not merged yet, threads waiting on you, PRs the last refresh missed —
+  and carries its own actions: approve the round, start it, review its open
+  PRs, open them, open the agent's session. *Scheduling* (in the unfolded
+  view) lists what it waits for, what it can share a round with and the code
+  it touches.
 
 The tab uses the space it has: in a wide tab the "now" panel and a summary
 of the PRs stay on the left while the steps fill the rest, with a step's waves

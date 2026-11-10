@@ -428,6 +428,10 @@ test("the recommender owns the primary button and only autopilot acts on it", ()
   assert.match(APP, /return wfRenderNextStep\(bar, item\);\n\}/);
   const strip = extractFunction(APP, "wfRenderNextStep");
   assert.match(strip, /available: new Set\(buttons\.map\(\(b\) => b\.dataset\.act\)\)/);
+  // The suggested action is the bar's own button, moved beside its reason —
+  // never a copy (two labels for one action), never left in its zone.
+  assert.match(strip, /strip\.append\(cap, why, target\);/);
+  assert.doesNotMatch(strip, /go\.onclick = \(\) => target\.click\(\)/);
   // A run in flight is the next step, and nothing is recommended over it.
   assert.match(strip, /if \(item\.run\) \{\n\s+bar\.prepend\(wfRunStrip\(item\)\);\n\s+return null;/);
   // Checks are recommended as a set the strip can untick, never one by one.
@@ -1285,4 +1289,15 @@ test("a repaint that changes nothing leaves the panes mounted, and hidden workfl
   assert.match(rp, /rebuildWhenShown[\s\S]*rebuildViewTab\(p, e\)/);
   const rebuild = extractFunction(APP, "rebuildOpenWorkflowTabs");
   assert.match(rebuild, /if \(entry\.el\.isConnected\) rebuildViewTab\(key, entry\);\s*else entry\.rebuildWhenShown = true;/);
+});
+
+test("every item can be discussed, and a discussion is a session, not a round", () => {
+  // Outside the status switch: questions come up at every stage.
+  const bar = extractFunction(APP, "renderWfActions");
+  const at = bar.indexOf('"💬 Discuss…"');
+  assert.ok(at > 0 && at > bar.lastIndexOf("switch (st)"), "offered after the per-stage switch");
+  const fn = extractFunction(APP, "wfDiscuss");
+  assert.match(fn, /invoke\("start_workflow_discussion"/);
+  assert.match(fn, /pickWfAgent\(item, "discuss"\)/);
+  assert.doesNotMatch(fn, /update_workflow_status|workflow_request_changes/, "it moves nothing");
 });

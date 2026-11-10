@@ -199,6 +199,11 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
     // The latest judging round's verdict/published lines, so the GUI can say
     // what a finished round concluded without the user opening the whole
     // report.
+    let review_streaks = if terminal {
+        Default::default()
+    } else {
+        crate::application::workflow::review_streaks(&rounds)
+    };
     let (last_agent_review, review_rounds) = if !terminal {
         // Per-target tally from the same parse: round numbers restart per
         // target, so the GUI needs the count of *this* target to label the
@@ -235,6 +240,7 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         session_rows: Default::default(),
         last_agent_review,
         review_rounds,
+        review_streaks,
         explainers: explainer_states,
         handoff: crate::application::workflow::parse_handoff(
             &std::fs::read_to_string(dir.join(HANDOFF_FILE)).unwrap_or_default(),

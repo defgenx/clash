@@ -96,7 +96,7 @@ point they may answer "continue autonomously" — from then on, stop asking.
    when present, it outranks the title as the intent). Parse leniently.
 2. `plan.md` — the current plan, and `waves.json` when the item is a
    multi-wave project (see "Waves"), with `meta.waves.done` saying which
-   waves are approved.
+   waves are signed off.
 3. `review.md` — **top to bottom**: it is the accumulated decision history
    (`## Iteration N` sections with the human's notes + the open annotations
    at each round). Later sections override earlier ones.
@@ -176,9 +176,9 @@ findings into `agent-review.md` and `annotations.json` and never touch
 ## Waves — a project in slices
 
 Some items are one task; some are a whole project. A project is planned as
-**waves**: slices of the plan that are implemented, reviewed and approved one
+**waves**: slices of the plan that are implemented, reviewed and signed off one
 after another, inside this one item (same worktree, same branch). The human
-approves each wave before the waves that depend on it can start, and clash
+signs off each wave before the waves that depend on it can start, and clash
 may start several waves in one round when they are independent.
 
 **When to plan waves.** When the work has parts that are worth reviewing and
@@ -207,7 +207,7 @@ wave, `## Wave <n> — <title>`, holding that wave's work units. Then write
 
 - `id` short and stable (`w1`, `w2`…) — clash records approvals by it, so
   never renumber a wave a revision did not remove.
-- `dependsOn`: the waves that must be **approved** first. Only real
+- `dependsOn`: the waves that must be **signed off** first. Only real
   dependencies — every one you add serializes work that could run in
   parallel.
 - `areas`: the repo-relative paths the wave will touch (directories, files,
@@ -223,7 +223,7 @@ wave, `## Wave <n> — <title>`, holding that wave's work units. Then write
 - `prs`: the PR URLs that deliver the wave. Leave it empty when planning; the
   implementation fills it (below).
 - Order waves the way you would implement them. Make each one leave the code
-  building and its tests passing: a wave is approved on its own.
+  building and its tests passing: a wave is signed off on its own.
 
 **Implementing them (phase `implement`).** The kickoff names the round's
 waves: `Waves: w2 (API), w3 (Admin screen) of 3.` Implement **only those
@@ -242,7 +242,14 @@ which wave a PR delivers, and a PR no wave claims shows up as unplaced. A change
 `Waves:`. `Waves: none of N (a fix round …)` means changes were requested
 between waves: address the note and the open annotations, and start no wave.
 
-Never write `meta.waves` — which waves are approved and which a round covers
+`Signed off: w1 (abc1234..def5678), w2 …` lists the waves the human signed
+off — their work is **accepted**, sealed at that commit range. Do not rework,
+refactor or "tidy" a signed-off wave's code on your own initiative. When the
+note or your own wave genuinely needs to change it, make the smallest change
+that does, and list it in `handoff.md` under **Touches signed-off waves**
+(wave, file, why) so the human sees that accepted work moved.
+
+Never write `meta.waves` — which waves are signed off and which a round covers
 is clash's record, set by the human's clicks.
 
 ## PR stacking — every PR's `--base`
@@ -334,7 +341,7 @@ Never launch more subagents than there are independent units of real work, and
 never one whose whole job is a file read or a grep — do that yourself. The
 batches below describe the split **at full scale**; shrink them to the size you
 picked. (A *batch* is a group of subagents you launch together. It is not a
-*wave*: waves are slices of a project the human approves one by one — see
+*wave*: waves are slices of a project the human signs off one by one — see
 "Waves".)
 
 What gets split, per phase (details in each phase below):

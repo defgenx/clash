@@ -316,6 +316,111 @@ pub fn all_agent_reviews(md: &str) -> Vec<AgentReviewSummary> {
         .collect()
 }
 
+/// Pure: the kickoff of a **discussion** session — a conversation about a
+/// workflow item, not a round. Change requests carry decisions; this carries
+/// questions ("why did the plan pick X?", "what is left in w2?"), so it gives
+/// the session the item's context and keeps it from acting: it reads every
+/// file it likes, changes none of the item's and none of the code unless the
+/// human asks in the conversation, and never moves the item. A decision that
+/// comes out of it is recorded the way every decision is — as a change
+/// request in clash — so the item's history stays the one record. `topic` is
+/// what the human wanted to talk about, if they said.
+pub fn discussion_prompt(
+    meta: &crate::domain::workflow::WorkflowMeta,
+    slug: &str,
+    item_dir: &str,
+    topic: Option<&str>,
+) -> String {
+    let title = if meta.title.trim().is_empty() {
+        slug
+    } else {
+        meta.title.trim()
+    };
+    let mut facts = vec![format!(
+        "status `{}` (iteration {})",
+        meta.status.as_str(),
+        meta.iteration.max(1)
+    )];
+    if !meta.branch.trim().is_empty() {
+        facts.push(format!("branch `{}`", meta.branch.trim()));
+    }
+    let prs: Vec<&str> = meta
+        .pr
+        .iter()
+        .chain(meta.linked_prs.iter())
+        .map(|p| p.url.trim())
+        .filter(|u| !u.is_empty())
+        .collect();
+    if !prs.is_empty() {
+        facts.push(format!("PRs {}", prs.join(", ")));
+    }
+    if !meta.waves.done.is_empty() {
+        facts.push(format!("waves signed off: {}", meta.waves.done.join(", ")));
+    }
+    if !meta.waves.scope.is_empty() {
+        facts.push(format!(
+            "waves in the current round: {}",
+            meta.waves.scope.join(", ")
+        ));
+    }
+    if !meta.ticket.trim().is_empty() {
+        facts.push(format!("ticket {}", meta.ticket.trim()));
+    }
+    let opening = match topic.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => format!("The human wants to talk about: {t}\n\nAnswer that first."),
+        None => "Open with three or four lines on where the item stands and what is \
+                 waiting on whom, then ask what they want to discuss."
+            .to_string(),
+    };
+    format!(
+        "This is a conversation about the clash workflow item \"{title}\" — not a \
+         workflow round. Workflow item directory: {item_dir} ({facts}).\n\n\
+         Read whatever helps: meta.json, plan.md, waves.json, review.md (the human's \
+         change requests, newest last), agent-review.md (the review rounds), \
+         annotations.json (diff comments), handoff.md (the last agent's hand-off), the \
+         explain-*.md / drift.md documents when they exist, and the code in the current \
+         directory (git log / git diff against the item's base for what changed).\n\n\
+         Rules for this session:\n\
+         - Do not write any file in the item directory, and never change the item's \
+         status — clash and the workflow rounds own those.\n\
+         - Do not edit code, commit, push or post anywhere unless the human asks for \
+         it in this conversation.\n\
+         - When the conversation reaches a decision about the work, say so and suggest \
+         recording it in clash as a change request (Request changes…), with the note \
+         you would write — that is what the next round reads.\n\n\
+         {opening}",
+        facts = facts.join(", ")
+    )
+}
+
+/// Pure: per judging target, how many of its latest rounds in a row — counted
+/// back from the newest — asked for their findings to be applied
+/// (`**Apply:** yes`). It measures an unbroken review → fix → review run: a
+/// round that judged its findings not worth applying, or declared nothing,
+/// ends it. The next-step recommender stops proposing another round of a
+/// target once its streak reaches its limit, so neither a suggestion nor
+/// autopilot can circle review and fix forever. Explanations judge nothing
+/// and are left out.
+pub fn review_streaks(rounds: &[AgentReviewSummary]) -> std::collections::BTreeMap<String, u32> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut closed = std::collections::BTreeSet::new();
+    for r in rounds.iter().rev() {
+        let target = crate::domain::workflow::ReviewTarget::canonical(&r.target);
+        if target.is_empty()
+            || crate::domain::workflow::ReviewTarget::name_explains(&target)
+            || closed.contains(&target)
+        {
+            continue;
+        }
+        if r.apply == Some(true) {
+            *out.entry(target).or_insert(0) += 1;
+        } else {
+            closed.insert(target);
+        }
+    }
+    out
+}
+
 /// Indices and round numbers of every `## Review <n>` heading.
 fn round_starts(lines: &[&str]) -> Vec<(usize, u32)> {
     lines
@@ -2507,6 +2612,62 @@ not landing in the branch: the commit message still ships a MAJOR.\n\n\
     fn latest_agent_review_none_when_no_rounds() {
         assert!(latest_agent_review("").is_none());
         assert!(latest_agent_review("# notes\n\njust prose\n").is_none());
+    }
+
+    #[test]
+    fn a_discussion_gives_context_and_keeps_the_session_from_acting() {
+        let mut meta = crate::domain::workflow::WorkflowMeta {
+            title: "Saturn audit".into(),
+            status: WorkflowStatus::PrReady,
+            iteration: 15,
+            branch: "saturn-audit".into(),
+            pr: Some(crate::domain::workflow::WorkflowPr {
+                url: "https://github.com/o/s/pull/1".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        meta.waves.done = vec!["w1".into()];
+        let p = discussion_prompt(&meta, "s", "/w/p/s", None);
+        assert!(p.contains("not a workflow round"), "{p}");
+        assert!(p.contains("Workflow item directory: /w/p/s (status `pr-ready` (iteration 15), branch `saturn-audit`, PRs https://github.com/o/s/pull/1, waves signed off: w1)"), "{p}");
+        assert!(p.contains("Do not write any file in the item directory"));
+        assert!(p.contains("never change the item's status"));
+        assert!(p.contains("unless the human asks for it in this conversation"));
+        assert!(p.contains("recording it in clash as a change request"));
+        assert!(p.contains("then ask what they want to discuss"));
+        let t = discussion_prompt(&meta, "s", "/w/p/s", Some("why is w2 blocked?"));
+        assert!(
+            t.ends_with("The human wants to talk about: why is w2 blocked?\n\nAnswer that first."),
+            "{t}"
+        );
+        // An untitled item is named by its slug.
+        meta.title.clear();
+        assert!(discussion_prompt(&meta, "s", "/d", None).contains("item \"s\""));
+    }
+
+    #[test]
+    fn review_streaks_count_the_latest_unbroken_run_of_rounds_asking_to_apply() {
+        let r = |target: &str, apply: Option<bool>| AgentReviewSummary {
+            target: target.into(),
+            apply,
+            ..Default::default()
+        };
+        let rounds = vec![
+            r("diff", Some(true)),
+            r("diff", Some(false)), // ends the earlier run
+            r("plan", Some(true)),
+            r("diff", Some(true)),
+            r("structure", Some(true)), // an explanation: never counted
+            r("diff", Some(true)),
+            r("drift", None), // declared nothing: no streak
+        ];
+        let s = review_streaks(&rounds);
+        assert_eq!(s.get("diff"), Some(&2));
+        assert_eq!(s.get("plan"), Some(&1));
+        assert_eq!(s.get("drift"), None);
+        assert_eq!(s.get("explain-diff"), None);
+        assert!(review_streaks(&[]).is_empty());
     }
 
     #[test]

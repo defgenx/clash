@@ -3961,6 +3961,7 @@ fn main() {
             workflows::share_workflow_webhook,
             workflows::share_workflow_ticket,
             workflows::share_workflow_via_agent,
+            workflows::start_workflow_discussion,
             workflows::export_workflow_share,
             workflows::default_share_export_path,
             workflows::get_workflow_pr_skill,

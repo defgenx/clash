@@ -172,7 +172,7 @@ elsewhere is described in [sessions.md](sessions.md).
   process is killed and its conversation opens under clash. See
   [Wild sessions](sessions.md#wild-sessions).
 - **Section buttons**: every section header has `✕` (kill the whole group, one
-  confirm). The topbar's **⏸ all** stashes every running session.
+  confirm). The topbar's **⏸** button stashes every running session.
 - **⟳ Reload** hot-restarts a session on the newest `claude` binary, resuming
   its latest conversation. It is on rows, tabs and section headers, and `⌘R`
   reloads the focused session. Busy sessions are skipped by group reloads, and
