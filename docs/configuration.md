@@ -191,6 +191,9 @@ The config directory is a watch root in both frontends.
   `refit` (font family/size, line height, letter spacing) — coalesced to one
   animation frame. At a 200 ms debounce, an editor saving per keystroke would
   otherwise become a burst of refits across every pane.
+  A changed `remote.*` key calls `remote::apply`, which starts, moves or stops
+  the remote server (`docs/remote.md`); the Settings commands call it too,
+  since their own write reloads nothing.
 
 Only `config.toml` itself triggers a reload. The advisory lock and
 `write_atomic`'s temp file are siblings in the same directory, and reacting to

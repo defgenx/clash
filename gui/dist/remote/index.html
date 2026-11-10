@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="referrer" content="no-referrer" />
+<meta name="theme-color" content="#16171a" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<title>clash remote</title>
+<style>
+  :root {
+    --bg: #f6f6f4;
+    --bg-raised: #ffffff;
+    --fg: #1c1d20;
+    --fg-dim: #6b6d74;
+    --border: #e2e2de;
+    --accent: #d9822b;
+    --on-accent: #1c1d20;
+    --green: #2f9e5b;
+    --blue: #3a7bd5;
+    --red: #d1453b;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #16171a;
+      --bg-raised: #1f2024;
+      --fg: #e8e8e6;
+      --fg-dim: #8d8f96;
+      --border: #2d2f34;
+      --accent: #f0a04b;
+      --on-accent: #1c1d20;
+      --green: #4cc27a;
+      --blue: #6aa0f0;
+      --red: #ef6b61;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #16171a;
+    --bg-raised: #1f2024;
+    --fg: #e8e8e6;
+    --fg-dim: #8d8f96;
+    --border: #2d2f34;
+    --accent: #f0a04b;
+    --on-accent: #1c1d20;
+    --green: #4cc27a;
+    --blue: #6aa0f0;
+    --red: #ef6b61;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  body {
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    padding: env(safe-area-inset-top) 16px calc(24px + env(safe-area-inset-bottom));
+    overflow-x: hidden;
+    max-width: 640px;
+    margin: 0 auto;
+  }
+  header {
+    position: sticky; top: 0; z-index: 2;
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 0 10px; background: var(--bg);
+  }
+  header h1 { font-size: 17px; margin: 0; flex: 1; letter-spacing: 0.01em; }
+  .conn {
+    --c: var(--fg-dim);
+    display: inline-flex; align-items: center; gap: 6px; max-width: 70%;
+    font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 7px;
+    color: var(--c);
+    background: color-mix(in srgb, var(--c) 13%, transparent);
+    border: 1px solid color-mix(in srgb, var(--c) 30%, transparent);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .conn::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--c); flex: none; }
+  .conn.connected { --c: var(--green); }
+  .conn.reconnecting { --c: var(--accent); }
+  .conn.lost { --c: var(--red); }
+  .conn.reconnecting::before { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-dim); margin: 18px 0 8px; }
+  .card {
+    background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px;
+    padding: 12px 14px; margin-bottom: 8px; min-width: 0;
+  }
+  .machine { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 10px; align-items: center; cursor: pointer; }
+  .machine.selected { border-color: var(--accent); }
+  .dot { --c: var(--fg-dim); width: 10px; height: 10px; border-radius: 50%; background: var(--c); grid-row: span 2; }
+  .dot.connected { --c: var(--green); }
+  .dot.reconnecting, .dot.checking { --c: var(--accent); }
+  .dot.unreachable, .dot.unpaired { --c: var(--red); }
+  .m-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-detail { font-size: 13px; color: var(--fg-dim); grid-column: 2 / 4; min-width: 0; overflow-wrap: anywhere; }
+  .m-facts { font-size: 12px; color: var(--fg-dim); grid-column: 2 / 4; overflow-wrap: anywhere; }
+  .badge {
+    --c: var(--accent);
+    font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 6px; white-space: nowrap;
+    color: var(--c); background: color-mix(in srgb, var(--c) 14%, transparent);
+  }
+  .badge.zero { --c: var(--fg-dim); }
+  .row { display: flex; flex-direction: column; gap: 2px; }
+  .row .title { font-weight: 600; overflow-wrap: anywhere; }
+  .row .ctx { font-size: 12px; color: var(--fg-dim); overflow-wrap: anywhere; }
+  .row .why { font-size: 13px; }
+  .row.band-0 .why, .row.band-1 .why, .row.band-2 .why { color: var(--red); }
+  .row.band-3 .why { color: var(--accent); }
+  .empty { color: var(--fg-dim); font-size: 14px; padding: 8px 2px; }
+  form { display: flex; gap: 8px; margin-top: 8px; }
+  input[type="url"] {
+    flex: 1; min-width: 0; font: inherit; font-size: 14px; color: var(--fg);
+    background: var(--bg-raised); border: 1px solid var(--border); border-radius: 9px; padding: 9px 10px;
+  }
+  button {
+    font: inherit; font-size: 14px; font-weight: 600; border-radius: 9px; padding: 9px 12px;
+    border: 1px solid var(--border); background: var(--bg-raised); color: var(--fg); cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  button.link { border: 0; background: none; color: var(--fg-dim); padding: 4px 0; font-weight: 500; font-size: 13px; }
+  .note { font-size: 12px; color: var(--fg-dim); margin: 6px 2px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>clash</h1>
+    <span id="conn" class="conn" role="status" aria-live="polite">No instance paired</span>
+  </header>
+
+  <h2>Instances</h2>
+  <div id="machines"></div>
+  <form id="pair-form" autocomplete="off">
+    <input id="pair-link" type="url" placeholder="Paste a pairing link from clash Settings" inputmode="url" />
+    <button class="primary" type="submit">Pair</button>
+  </form>
+  <p id="pair-note" class="note"></p>
+
+  <h2 id="inbox-title">Waiting on you</h2>
+  <div id="inbox"></div>
+  <p class="note">Read-only for now: decisions are made in clash on the machine.</p>
+
+  <script src="attention.js"></script>
+  <script src="remote-model.js"></script>
+  <script src="remote.js"></script>
+</body>
+</html>

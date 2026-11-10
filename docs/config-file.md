@@ -76,6 +76,10 @@ tui_terminal = ""          # TUI launcher target; empty = auto-detect
 enabled = true
 title_attention = true     # "clash (2!)" in the window title
 
+[remote]                   # the remote page and read-only API (docs/remote.md); applied live
+enabled = false            # serve it from the GUI
+bind = "127.0.0.1:7878"    # host:port; loopback = this machine only, a Tailscale address = your tailnet
+
 [workflows]
 agent = "ask"              # agent CLI workflow sessions run on: ask | claude | omp (per-item override)
 omp_model = ""             # --model for OMP workflow sessions; empty = omp's default

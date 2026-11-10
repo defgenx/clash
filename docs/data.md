@@ -47,6 +47,8 @@ clash maintains its own state in `~/.claude/clash/`:
 │   └── {folder}/{name}.md              #   user-created folders
 ├── workflows/<project>/<item>/        # Workflow items (see the Workflows guide → Storage)
 ├── drops/                             # Copies of files dropped on a GUI terminal (kept 7 days)
+├── remote-token                       # The remote page's pairing token (0600; see remote.md)
+├── remote-peers.json                  # Paired clash instances and their tokens (0600)
 └── share/                             # Payloads handed to share sessions
 ```
 

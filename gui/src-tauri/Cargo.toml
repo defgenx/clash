@@ -26,6 +26,14 @@ tracing-subscriber = "0.3"
 dirs = "6"
 uuid = { version = "1", features = ["v7"] }
 libc = "0.2"
+# The phone remote's HTTP server (docs/remote.md). hyper 1 / tower are already
+# in the tree through tauri.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+# The Machines view polls paired clash instances from the backend (the token
+# never goes back to the webview). Already in the tree through tauri.
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

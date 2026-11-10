@@ -337,6 +337,22 @@ pub const PROPS: &[Prop] = &[
         "Show a count of sessions needing input in the window title, e.g. `clash (2!)`.",
     )
     .gui("titleAttention"),
+    // ── [remote] ────────────────────────────────────────────────────
+    Prop::new(
+        "remote.enabled",
+        Kind::Bool,
+        Val::Bool(false),
+        "Serve clash's phone page and its read-only API from the GUI, so a phone can see this \
+         instance (connected, sessions, items waiting on you). Every API call needs the pairing \
+         token. See docs/remote.md.",
+    ),
+    Prop::new(
+        "remote.bind",
+        Kind::Str,
+        Val::Str("127.0.0.1:7878"),
+        "Address the remote server listens on, `host:port`. The default is loopback only; set \
+         your Tailscale address (`100.x.y.z:7878`) to reach it from your phone.",
+    ),
     // ── [workflows] ─────────────────────────────────────────────────
     Prop::new(
         "workflows.agent",
