@@ -8325,7 +8325,7 @@ async function buildWorkflowView(el, project, slug) {
     // look to ask "where am I", so it is where you reach when the answer is
     // "further along than I should be". Only the parked stages behind the item
     // qualify — see wfRewindTargets.
-    const back = wfRewindTargets(item.meta.status, item.meta.mode || "full");
+    const back = wfMoveTargets(item);
     model.nodes.forEach((n, i) => {
       if (i) {
         const sep = document.createElement("span");
@@ -11098,7 +11098,43 @@ async function wfStopAgents(item, root) {
     : agents.length === 1
       ? "this item's agent"
       : `${agents.length} agent sessions`;
-  if (
+  // An executor or reviewer stopped mid-round leaves the item in a working
+  // stage, so the stop is also where to say where the item goes next.
+  const owner =
+    ["planning", "implementing", "reviewing"].includes(item.meta.status) &&
+    item.agentAlive &&
+    item.meta.sessionId
+      ? wfSid(item, item.meta.sessionId)
+      : null;
+  const moves = owner ? wfMoveTargets(item) : [];
+  if (moves.length) {
+    const here = wfStatusInfo(item.meta.status).label;
+    const pick = await uiListChoice({
+      message: `Stop ${what}? The conversation is kept either way.`,
+      items: [
+        {
+          label: `Stop — keep it at ${here}`,
+          detail: "Resume picks the agent up where it left off",
+          value: "__keep",
+        },
+        ...moves.map((t) => ({
+          label: `Stop and move to ${wfStatusInfo(t).label}`,
+          detail: wfStageBlurb(t),
+          value: t,
+        })),
+      ],
+    });
+    if (!pick) return;
+    if (pick !== "__keep") {
+      const others = agents.filter((sid) => sid !== owner);
+      await Promise.allSettled(
+        others.map((sid) => invoke("stash_session", { sessionId: sid, wait: true }))
+      );
+      for (const sid of others) dropTerminal(sid);
+      await wfMoveTo(item, root, pick, owner);
+      return;
+    }
+  } else if (
     !(await uiConfirm(
       `Stop ${what}? The item stays where it is and the conversation is kept — Resume picks it up where it left off.`,
       "Stop"
@@ -11402,42 +11438,72 @@ async function wfApproveWaves(item, root, { next = true } = {}) {
     await wfStartWaves(fresh, root, { home, message: "Start the next waves?" });
 }
 
-/// Move an item **back** to an earlier stage.
+/// Move an item to another stage — back from a parked one, or, while an agent
+/// works, forward to where its round hands back or anywhere behind it.
 ///
 /// Backwards is a normal move — a diff review that shows the plan was wrong, a
-/// PR opened a stage too early, a done item that needs another look — and it
-/// used to exist only as two hardcoded buttons (pr-draft → diff-review, and
-/// Reopen on a finished item). From anywhere else the pipeline was a one-way
-/// street, and the only way back was editing meta.json by hand.
-///
-/// The picker names the stage *and* what it is for: "pr-draft" is a label,
-/// "the draft PR is the thing under validation" is a reason to pick it.
-/// Nothing is deleted or rewritten — the plan, the diff, the annotations, the
-/// PR and every recorded round stay exactly where they are; only the stage
-/// moves, which is why this needs no confirmation beyond the pick.
+/// PR opened a stage too early, a done item that needs another look. The
+/// picker names the stage *and* what it is for. Nothing is deleted or
+/// rewritten; only the stage moves. From a working stage the item's agent is
+/// stopped first (stashed, so its conversation stays resumable): it owns the
+/// item's files while it works.
 async function wfMoveBack(item, root, status = null) {
-  const targets = wfRewindTargets(item.meta.status, item.meta.mode || "full");
+  item = wfItem(item.project, item.slug) || item;
+  const m = item.meta;
+  const working = ["planning", "implementing", "reviewing"].includes(m.status);
+  const targets = wfMoveTargets(item);
   if (!targets.length) return;
+  const owner = working && item.agentAlive && m.sessionId ? wfSid(item, m.sessionId) : null;
+  const title = m.title || item.slug;
   let pick = status;
   if (!pick) {
     pick = await uiListChoice({
-      message: `Move "${item.meta.title || item.slug}" back to which stage?`,
+      message: working
+        ? `${owner ? "Stop the agent and move" : "Move"} "${title}" to which stage?${
+            owner ? " Its conversation is kept." : ""
+          }`
+        : `Move "${title}" back to which stage?`,
       items: targets.map((t) => ({
         label: wfStatusInfo(t).label,
         detail: wfStageBlurb(t),
         value: t,
       })),
     });
-  }
+  } else if (
+    owner &&
+    !(await uiConfirm(
+      `Stop the agent and move "${title}" to ${wfStatusInfo(pick).label}? Its conversation is kept.`,
+      "Stop and move"
+    ))
+  )
+    return;
   if (!pick) return;
+  await wfMoveTo(item, root, pick, owner);
+}
+
+/// Where an item can be moved from its current stage (see wfMoveBack).
+function wfMoveTargets(item) {
+  const m = item.meta;
+  const mode = m.mode || "full";
+  return ["planning", "implementing", "reviewing"].includes(m.status)
+    ? wfStopTargets(m.status, mode, m.phase || "", m.review && m.review.returnStatus)
+    : wfRewindTargets(m.status, mode);
+}
+
+async function wfMoveTo(item, root, pick, owner) {
   try {
+    if (owner) {
+      await invoke("stash_session", { sessionId: owner, wait: true });
+      dropTerminal(owner);
+    }
     await invoke("rewind_workflow_item", { project: item.project, slug: item.slug, status: pick });
-    flashToast(`Moved back to ${wfStatusInfo(pick).label}`);
-    await refreshWorkflows();
-    buildWorkflowView(root, item.project, item.slug);
+    flashToast(`${owner ? "Agent stopped — moved" : "Moved"} to ${wfStatusInfo(pick).label}`);
   } catch (e) {
     uiAlert(`Move failed: ${e}`);
   }
+  if (owner) await refreshSessions();
+  await refreshWorkflows();
+  if (root) buildWorkflowView(root, item.project, item.slug);
 }
 
 /// In-memory change-request drafts, keyed by item.
@@ -12680,15 +12746,16 @@ function renderWfActions(bar, root, item) {
   // switch: every parked stage has somewhere behind it, and which stages
   // those are is one rule (wfRewindTargets), not nine cases.
   {
-    const back = wfRewindTargets(st, item.meta.mode || "full");
+    const back = wfMoveTargets(item);
+    const working = ["planning", "implementing", "reviewing"].includes(st);
     if (back.length) {
       add(
-        "↩ Move back to…",
+        working ? "↩ Move to…" : "↩ Move back to…",
         "",
         () => wfMoveBack(item, root),
-        `Send this item back to an earlier stage — ${back
+        `${working ? "Stop the agent (its conversation is kept) and move this item to" : "Send this item back to an earlier stage —"} ${back
           .map((t) => wfStatusInfo(t).label.toLowerCase())
-          .join(", ")}. Nothing is deleted or rewritten; no agent, no tokens.`,
+          .join(", ")}. Nothing is deleted or rewritten; no tokens.`,
         "item"
       );
     }

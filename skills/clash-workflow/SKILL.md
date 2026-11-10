@@ -187,6 +187,35 @@ before the screens that call it — or is too big for one review to judge
 well. Not for a task that one round implements and one review judges: then
 write no `waves.json` at all.
 
+**Several releases always means waves — one release per wave, at least.**
+Work that cannot ship in one deploy is a multi-wave project, however small
+each part looks: a migration that must be live before the code reading it, an
+expand → migrate → contract change, a contract or SDK that consumers pick up
+in their own release, a service that has to deploy before its gateway route
+or its frontend, a flag flipped once the code behind it is out, infra (k8s,
+helm) applied before the app that needs it. For each one, ask: *can this
+reach production together with the part before it?* If not, they are
+different waves.
+
+- A wave never spans two releases: everything in it ships in the same
+  deploy. A release may hold several waves (parallel ones in different
+  repos, say), never the other way round.
+- `dependsOn` follows the **deploy order**, not just the code dependency: a
+  wave that must not reach production before another is out depends on it,
+  even when it compiles without it.
+- Title and summary name the release (`R1 — Schema migration`, "ships
+  first, alone: the API in R2 reads these columns"), and `plan.md` gets a
+  **Release order** section before the waves: one line per release — what
+  ships, in which repos, what must be live before it, and how to roll it
+  back.
+- Every wave must be safe in production on its own, with only the earlier
+  releases deployed: old code against the new schema, the new client against
+  the old server. Say in the wave how that holds (backward-compatible change,
+  flag off, unused until R3…).
+- Not sure whether two parts can share a release? Ask in `plan` (interactive)
+  or split them and say why in the summary — merging two waves later costs a
+  click, discovering a broken deploy order costs an incident.
+
 **Planning them (phases `plan` and `revise`).** In `plan.md`, one section per
 wave, `## Wave <n> — <title>`, holding that wave's work units. Then write
 `waves.json` in the item directory:
@@ -436,9 +465,10 @@ and say so instead of writing a plan.
    markdown; the GUI renders it. Write the steps as **work units** — each
    names the files it owns and the units it depends on — so the implement
    phase can dispatch them in parallel batches without re-deriving the split.
-   **A whole project, not one task?** Split it into waves (see "Waves") and
-   write `waves.json` beside `plan.md`; a single task has no waves and no
-   file.
+   **A whole project, not one task — or anything that ships in more than
+   one release?** Split it into waves, one release per wave at least (see
+   "Waves"), and write `waves.json` beside `plan.md`; a single task that
+   ships in one deploy has no waves and no file.
 4. Finish: write `handoff.md` (see "Hand-off note"), then set
    `meta.json.status = "plan-review"`. Stop — the human reviews.
 

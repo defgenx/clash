@@ -133,6 +133,21 @@
       );
   }
 
+  /// Where an item whose agent is working may go once the agent is stopped,
+  /// nearest first: the stage the round hands back to, then the parked
+  /// stages behind it. Mirrors `WorkflowStatus::stop_targets` (the authority).
+  function wfStopTargets(status, mode, phase = "", returnStatus = null) {
+    const parked = ["plan-review", "diff-review", "pr-draft", "pr-ready"];
+    let anchor = {
+      planning: "plan-review",
+      implementing: phase === "revise" ? "plan-review" : "diff-review",
+      reviewing: parked.includes(returnStatus) ? returnStatus : "diff-review",
+    }[status];
+    if (!anchor) return [];
+    if (anchor === "plan-review" && mode === "review-only") anchor = "diff-review";
+    return [anchor, ...wfRewindTargets(anchor, mode)];
+  }
+
   /// One line about what a stage *is*, for the "move back to…" picker. A bare
   /// status name is a label; this is the reason to pick it.
   function wfStageBlurb(status) {
@@ -159,6 +174,7 @@
     wfPipelineAnchor,
     wfPipelineModel,
     wfRewindTargets,
+    wfStopTargets,
     wfStageBlurb,
     wfNodeRewindStatus,
   };

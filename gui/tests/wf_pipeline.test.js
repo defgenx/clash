@@ -10,6 +10,7 @@ const {
   wfPipelineAnchor,
   wfPipelineModel,
   wfRewindTargets,
+  wfStopTargets,
   wfStageBlurb,
   wfNodeRewindStatus,
 } = require("../dist/wf-pipeline.js");
@@ -151,7 +152,7 @@ test("the browser branch publishes every name app.js calls", () => {
   vm.runInNewContext(src, { window: win });
 
   const app = fs.readFileSync(path.join(__dirname, "..", "dist", "app.js"), "utf8");
-  for (const name of ["wfPipelineModel", "wfRewindTargets", "wfStageBlurb", "wfNodeRewindStatus"]) {
+  for (const name of ["wfPipelineModel", "wfRewindTargets", "wfStopTargets", "wfStageBlurb", "wfNodeRewindStatus"]) {
     assert.equal(typeof win[name], "function", `${name} must be on window`);
     assert.ok(app.includes(name), `app.js is expected to use ${name}`);
   }
@@ -162,4 +163,24 @@ test("the browser branch publishes every name app.js calls", () => {
     "wf-pipeline.js must load before app.js"
   );
   assert.ok(html.indexOf("wf-pipeline.js") > 0, "index.html must include wf-pipeline.js");
+});
+
+test("a stopped agent's item can go forward to its hand-back stage or back", () => {
+  assert.deepEqual(wfStopTargets("planning", "full", "plan"), ["plan-review", "draft"]);
+  assert.deepEqual(wfStopTargets("implementing", "full", "implement"), [
+    "diff-review",
+    "plan-review",
+    "draft",
+  ]);
+  assert.deepEqual(wfStopTargets("implementing", "full", "revise"), ["plan-review", "draft"]);
+  assert.deepEqual(wfStopTargets("reviewing", "full", "", "pr-draft"), [
+    "pr-draft",
+    "diff-review",
+    "plan-review",
+    "draft",
+  ]);
+  assert.deepEqual(wfStopTargets("reviewing", "review-only", "", null), ["diff-review"]);
+  assert.deepEqual(wfStopTargets("implementing", "review-only", "revise"), ["diff-review"]);
+  for (const st of ["draft", "plan-review", "diff-review", "changes-requested", "done"])
+    assert.deepEqual(wfStopTargets(st, "full"), [], st);
 });

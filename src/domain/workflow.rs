@@ -208,6 +208,42 @@ impl WorkflowStatus {
             .collect()
     }
 
+    /// Where an item whose agent is working may be put once that agent is
+    /// **stopped**, nearest first; empty for a parked status.
+    ///
+    /// The stage the round would have handed back to (forward: planning →
+    /// plan review, implementing → code review) and every parked stage behind
+    /// it. Not part of [`Self::rewind_targets`]: a move from a working stage is
+    /// only safe once the agent is gone, so the GUI stops it first and the
+    /// command takes these only from a working status. `phase` is `meta.phase`
+    /// (an `implementing` revise round hands back to plan review), and
+    /// `review_return` is where a `reviewing` round returns to.
+    pub fn stop_targets(
+        &self,
+        mode: WorkflowMode,
+        phase: &str,
+        review_return: Option<WorkflowStatus>,
+    ) -> Vec<WorkflowStatus> {
+        use WorkflowStatus::*;
+        let anchor = match self {
+            Planning => PlanReview,
+            Implementing if phase == "revise" => PlanReview,
+            Implementing => DiffReview,
+            Reviewing => review_return
+                .filter(|s| s.can_request_review())
+                .unwrap_or(DiffReview),
+            _ => return Vec::new(),
+        };
+        let anchor = if anchor == PlanReview && !mode.has_plan_phase() {
+            DiffReview
+        } else {
+            anchor
+        };
+        std::iter::once(anchor)
+            .chain(anchor.rewind_targets(mode))
+            .collect()
+    }
+
     /// May an explainer on `target` start now, alongside whatever else the
     /// item is doing?
     ///
@@ -2149,6 +2185,50 @@ mod tests {
             WorkflowStatus::Unknown,
         ] {
             assert!(st.rewind_targets(WorkflowMode::Full).is_empty(), "{st}");
+        }
+    }
+
+    #[test]
+    fn a_stopped_agent_lets_the_item_go_forward_or_back() {
+        use WorkflowStatus::*;
+        let full = WorkflowMode::Full;
+        // Forward to the stage the round hands back to, then everything behind.
+        assert_eq!(
+            Planning.stop_targets(full, "plan", None),
+            vec![PlanReview, Draft]
+        );
+        assert_eq!(
+            Implementing.stop_targets(full, "implement", None),
+            vec![DiffReview, PlanReview, Draft]
+        );
+        assert_eq!(
+            Implementing.stop_targets(full, "revise", None),
+            vec![PlanReview, Draft]
+        );
+        assert_eq!(
+            Reviewing.stop_targets(full, "", Some(PrDraft)),
+            vec![PrDraft, DiffReview, PlanReview, Draft]
+        );
+        // A review with no usable return falls back to code review.
+        assert_eq!(
+            Reviewing.stop_targets(WorkflowMode::ReviewOnly, "", None),
+            vec![DiffReview]
+        );
+        // No plan stages without a plan phase, even for a revise round.
+        assert_eq!(
+            Implementing.stop_targets(WorkflowMode::ReviewOnly, "revise", None),
+            vec![DiffReview]
+        );
+        // Parked stages have nothing to stop.
+        for st in [
+            Draft,
+            PlanReview,
+            DiffReview,
+            PrDraft,
+            ChangesRequested,
+            Done,
+        ] {
+            assert!(st.stop_targets(full, "", None).is_empty(), "{st}");
         }
     }
 

@@ -983,8 +983,10 @@ pub(crate) fn update_workflow_status(
 /// its own entry mode — so "back to plan review from a PR" is one move
 /// instead of an impossibility.
 ///
-/// It refuses while an agent is working, because the agent owns the item's
-/// files; the GUI offers End round / relaunch there instead.
+/// From a working status (`planning` / `implementing` / `reviewing`) it
+/// takes [`WorkflowStatus::stop_targets`] instead — forward to the stage the
+/// round hands back to, or anywhere behind it. The agent owns the item's files
+/// while it works, so the GUI stops it before calling this (`wfMoveBack`).
 #[tauri::command]
 pub(crate) fn rewind_workflow_item(
     state: State<'_, GuiState>,
@@ -996,18 +998,24 @@ pub(crate) fn rewind_workflow_item(
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
-    if !meta.status.rewind_targets(meta.mode).contains(&status) {
-        return Err(if meta.status.is_working() {
-            format!(
-                "an agent is working on this item ({}) — end the round or let it finish first",
-                meta.status
-            )
-        } else {
-            format!(
-                "cannot move this item back to {} from {}",
-                status, meta.status
-            )
-        });
+    // The agent stopped for this move may have handed back on its way out.
+    if meta.status == status {
+        return Ok(meta);
+    }
+    let allowed = if meta.status.is_working() {
+        meta.status.stop_targets(
+            meta.mode,
+            &meta.phase,
+            meta.review.as_ref().map(|r| r.return_status),
+        )
+    } else {
+        meta.status.rewind_targets(meta.mode)
+    };
+    if !allowed.contains(&status) {
+        return Err(format!(
+            "cannot move this item to {} from {}",
+            status, meta.status
+        ));
     }
     meta.status = status;
     state

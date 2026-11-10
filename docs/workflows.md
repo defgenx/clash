@@ -219,8 +219,15 @@ pr-draft / pr-ready likewise
   (the reviewer writes annotations). The GUI always offers "End round", and
   abandon stays available, so a dead reviewer can never wedge an item.
 - **■ Stop agent** stashes every running agent of the item (recorded agent,
-  explainers, any session whose registry `workflow_item` names it) and moves
-  nothing. A stopped recorded agent is `agentResumable` — still a listed
+  explainers, any session whose registry `workflow_item` names it). While the
+  item is in a working stage the dialog also offers **Stop and move to…**:
+  `WorkflowStatus::stop_targets` (mirrored by `wfStopTargets`) — the stage the
+  round hands back to (planning → plan-review, implementing → diff-review or,
+  for a `revise` round, plan-review, reviewing → its `returnStatus`) and every
+  parked stage behind it. **↩ Move to…** offers the same list, and
+  `rewind_workflow_item` accepts it only from a working status; the GUI stashes
+  the recorded agent first, since it owns the files while it works. Otherwise
+  a stop moves nothing. A stopped recorded agent is `agentResumable` — still a listed
   session — so the bar offers **▶ Resume** (act `open-session`, which resumes
   the same conversation) ahead of Relaunch / End round. A stopped round stays
   `running` in a check run until the item parks, so nothing relaunches it.
@@ -935,6 +942,11 @@ Some items are one task; some are a whole project. A project is planned as
 after another, **inside the one item** (same worktree, same branch, same PR).
 The planner decides: a project gets a `## Wave <n> — <title>` section per
 wave in `plan.md` and a `waves.json` beside it; a single task gets neither.
+**Work that ships in more than one release is always waves** — one release
+per wave at least, `dependsOn` following the deploy order, a *Release order*
+section in `plan.md`, and each wave safe in production with only the earlier
+releases out (`clash-workflow` → *Waves*); the plan reviewer raises a
+multi-release plan without them as an Architecture issue.
 
 ```json
 { "waves": [

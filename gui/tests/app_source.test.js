@@ -298,13 +298,20 @@ test("going back a stage is one mechanism, offered from two places", () => {
   // command, or one of them ends up skipping its validation.
   assert.match(APP, /async function wfMoveBack\(item, root, status = null\)/);
   const calls = [...APP.matchAll(/invoke\("rewind_workflow_item"/g)].length;
-  assert.equal(calls, 1, "only wfMoveBack may invoke rewind_workflow_item");
-  assert.match(APP, /add\(\s*"↩ Move back to…"/);
+  assert.equal(calls, 1, "only wfMoveTo (wfMoveBack's mover) may invoke rewind_workflow_item");
+  assert.match(APP, /working \? "↩ Move to…" : "↩ Move back to…"/);
   assert.match(APP, /node\.onclick = \(\) => wfMoveBack\(item, el, to\)/);
   // What may be clicked comes from the shared rule, never from a status list
   // written out at the call site.
   assert.match(APP, /wfNodeRewindStatus\(n\.id, back\)/);
-  assert.match(APP, /const back = wfRewindTargets\(item\.meta\.status/);
+  assert.match(APP, /const back = wfMoveTargets\(item\);\n    model\.nodes/);
+  // A working item's agent is stopped (stashed) before the item moves: it
+  // owns the files while it works.
+  const mover = APP.slice(APP.indexOf("async function wfMoveTo("));
+  assert.ok(
+    mover.indexOf('invoke("stash_session"') < mover.indexOf('invoke("rewind_workflow_item"'),
+    "the agent must be stopped before the move"
+  );
   // The stage-specific back button is gone — it was the thing this replaces.
   assert.doesNotMatch(APP, /"↩ Back to diff review"/);
 });

@@ -198,7 +198,14 @@ with nothing wrong gets one line saying so — padding it dilutes the rest.
 
 1. **Architecture** — component boundaries, coupling and the dependency
    direction, data flow, scaling characteristics, single points of failure,
-   security boundaries (auth, data access, API surface).
+   security boundaries (auth, data access, API surface), and **release
+   order**: work that cannot ship in one deploy (a migration before the code
+   reading it, a contract before its consumers, a service before its gateway
+   route or frontend, infra before the app) must be split into waves, one
+   release per wave, `dependsOn` following the deploy order, each wave safe in
+   production with only the earlier releases out. A plan that ships several
+   releases with no `waves.json`, or a wave that mixes two releases, is an
+   issue here — say which parts cannot go out together and why.
 2. **Code quality** — organization and module structure, DRY violations, error
    handling and missing edge cases, technical-debt hotspots, anything over- or
    under-engineered relative to the preferences above.

@@ -357,8 +357,11 @@ reviews** (`agent-review.md`).
   always unlocks them, so a crashed reviewer can't wedge an item; a dead
   executor gets **⚠ Relaunch agent**.
 - **■ Stop agent** stops any agent running on the item (executor, reviewer or
-  explainer) without moving the item and keeps the conversation, so
-  **▶ Resume agent** carries on where it left off. Stop a workflow agent this
+  explainer) and keeps the conversation, so **▶ Resume agent** carries on
+  where it left off. While the agent is planning, implementing or reviewing,
+  it also offers **Stop and move to…** — forward to the stage the round would
+  have handed back to (plan review, code review) or back to any stage before
+  it; **↩ Move to…** does the same in one step. Stop a workflow agent this
   way rather than with *Kill session*, which removes the session the item still
   records.
 
@@ -527,7 +530,9 @@ nothing to be posted.
 
 **↩ Move back to…** lists the stages behind the current one, with what each is
 for. Clicking a passed stage in the stepper does the same. Only the stage moves:
-the plan, diff, comments, PR and rounds all stay, and no agent runs. A finished
+the plan, diff, comments, PR and rounds all stay, and no agent runs. While an
+agent is working it reads **↩ Move to…**: the agent is stopped first (its
+conversation kept), then the item goes to the stage you pick. A finished
 or abandoned item offers **↩ Reopen at diff review**.
 
 ## Pull requests
