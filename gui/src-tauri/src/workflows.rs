@@ -124,7 +124,7 @@ pub(crate) async fn list_workflow_items(
             // `workflow::agent_alive`. A launch records its session id before
             // the process exists, so the list has not caught up yet.
             let sid = item.meta.session_id.as_deref();
-            let row = sid.and_then(&resolve);
+            let row = sid.and_then(resolve);
             item.agent_alive = clash::application::workflow::agent_alive(
                 sid.is_some(),
                 row.as_ref().is_some_and(|(_, running)| *running),
