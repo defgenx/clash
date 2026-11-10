@@ -3927,6 +3927,7 @@ fn main() {
             workflows::workflow_request_changes,
             workflows::delete_workflow_item,
             workflows::start_workflow_agent,
+            workflows::approve_workflow_waves,
             workflows::start_workflow_review_agent,
             workflows::workflow_run_start,
             workflows::workflow_run_step,

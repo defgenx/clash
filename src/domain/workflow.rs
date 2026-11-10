@@ -116,12 +116,18 @@ impl WorkflowStatus {
             // its default branch has no PR to shepherd, and review-only items
             // track a PR clash doesn't own.
             DiffReview => matches!(next, PrDraft | ChangesRequested | Implementing | Done),
-            PrDraft => matches!(next, PrReady | Done | DiffReview | ChangesRequested),
+            // `Implementing` from both PR states starts a multi-wave item's
+            // next wave on a branch whose PR is already open (see
+            // `application::waves`).
+            PrDraft => matches!(
+                next,
+                PrReady | Done | DiffReview | ChangesRequested | Implementing
+            ),
             // `ChangesRequested` is reachable from both PR states: review
             // feedback (agent rounds, GitHub review comments) keeps arriving
             // after the PR exists, and without this edge those findings could
             // never become a fix round — the item was a dead end.
-            PrReady => matches!(next, Done | PrDraft | ChangesRequested),
+            PrReady => matches!(next, Done | PrDraft | ChangesRequested | Implementing),
             // Reopen path for finished items.
             Done => matches!(next, DiffReview),
             Abandoned => matches!(next, DiffReview | Draft),
@@ -1046,6 +1052,110 @@ pub struct PrStack {
     pub layers: Vec<StackLayer>,
 }
 
+/// One wave of a multi-wave item, as the planner declared it in
+/// `waves.json`. A wave is a slice of the plan that is implemented and
+/// approved on its own, in dependency order. Agent-owned (plan phases).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Wave {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    /// Waves that must be approved before this one may start.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+    /// Repo-relative paths (a directory, a file, or a `dir/**` glob) the wave
+    /// will touch. Two waves run together only when theirs are disjoint, so
+    /// an empty list never runs alongside anything.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub areas: Vec<String>,
+}
+
+/// `waves.json`: the item's waves, in the planner's order.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WavePlan {
+    #[serde(default)]
+    pub waves: Vec<Wave>,
+}
+
+/// Where the item's waves stand. Clash-only: the executor never writes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveProgress {
+    /// Waves the human approved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub done: Vec<String>,
+    /// The waves of the current (or latest) implementation round.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope: Vec<String>,
+    /// The commit each wave started from — what scopes its review to its own
+    /// changes.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub starts: std::collections::BTreeMap<String, String>,
+}
+
+impl WaveProgress {
+    pub fn is_empty(&self) -> bool {
+        self.done.is_empty() && self.scope.is_empty() && self.starts.is_empty()
+    }
+}
+
+/// Where one wave stands, derived from `waves.json`, [`WaveProgress`] and
+/// the item's status. Never stored.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WaveState {
+    /// A dependency is not approved yet.
+    #[default]
+    Blocked,
+    /// Every dependency is approved; it may start.
+    Ready,
+    /// In the round an agent is implementing now (or that is queued).
+    Active,
+    /// Implemented, waiting for the human's approval.
+    Review,
+    /// Approved.
+    Done,
+}
+
+/// One wave on the item's board. Computed by the GUI layer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveView {
+    pub id: String,
+    pub title: String,
+    pub summary: String,
+    pub depends_on: Vec<String>,
+    pub areas: Vec<String>,
+    pub state: WaveState,
+    /// The dependencies not approved yet.
+    pub blocked_by: Vec<String>,
+    /// Dependency depth: 0 for a wave with no dependencies. Waves of one
+    /// level are the ones that *may* run side by side.
+    pub level: u32,
+    /// The other waves this one may run alongside: no dependency path between
+    /// them and disjoint areas.
+    pub compatible_with: Vec<String>,
+    /// The commit it started from, once it has.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub start: String,
+}
+
+/// The item's waves as the GUI shows them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveBoard {
+    pub waves: Vec<WaveView>,
+    /// Why `waves.json` could not be used (unreadable, a duplicate id, an
+    /// unknown dependency, a cycle). Nothing starts while it is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<String>,
+}
+
 /// Persisted shape of a workflow item's `meta.json`. Lenient serde like
 /// [`crate::domain::entities::Task`]: missing fields default, unknown fields
 /// survive round-trips via `extra` (the agent and clash both read-modify-write
@@ -1190,6 +1300,9 @@ pub struct WorkflowMeta {
     /// code was reviewed". Clash-only.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub review_marks: std::collections::BTreeMap<String, ReviewMark>,
+    /// Wave progress of a multi-wave item (`waves.json`). Clash-only.
+    #[serde(default, skip_serializing_if = "WaveProgress::is_empty")]
+    pub waves: WaveProgress,
     /// Review iteration, starting at 1. Bumped only by clash on
     /// request-changes (never by the agent).
     #[serde(default)]
@@ -1624,6 +1737,10 @@ pub struct WorkflowItem {
     /// layer), when stacking is on. Computed by the GUI layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_stack_issue: Option<String>,
+    /// The item's waves, when its plan declares some (`waves.json`).
+    /// Computed by the GUI layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waves: Option<WaveBoard>,
 }
 
 /// Resolution state of a diff annotation.

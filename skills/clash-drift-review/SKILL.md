@@ -52,6 +52,12 @@ The kickoff prompt gives you:
   consumes it drifts *between* the repos as often as inside one, so read every
   named PR. Scope every `gh` call with `--repo <owner/repo>` from the URL, and
   never edit files for a repository that is not your cwd.
+- **Waves** — optional; `Waves: w2, w3 (changes since <sha>).` on a
+  multi-wave item (`waves.json`): compare **those waves'** sections of
+  `plan.md` against their commits (`git diff <sha>...HEAD`). Waves not
+  started yet are not `MISSING` — they are later rounds' work; approved waves
+  were compared already. An in-scope wave that reaches into another wave's
+  areas is a divergence worth grading.
 - **Interactive** — optional; see the opening question below.
 - **Delegation** — `team` (also what an absent field means) or `solo`,
   optionally naming the subagent model: `team (subagents on <model>)`. See
@@ -163,7 +169,7 @@ The round runs in two waves:
 
 How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
 
-- **Parallel means one message.** Launch every independent subagent of a wave
+- **Parallel means one message.** Launch every independent subagent of a batch
   in a single response with several tool calls; one call per message runs
   them one after another.
 - **Never pass a `model`, and use the general-purpose agent.** clash pins the

@@ -3812,3 +3812,20 @@ mark.dv-word { color: inherit; border-radius: 2px; }
 .file-blame .ba-3 { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 28%, transparent); }
 .file-blame .ba-4 { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 12%, transparent); }
 .file-blame .ba-new { box-shadow: inset 3px 0 0 var(--green); color: var(--green); }
+
+/* Waves tab — a multi-wave item's schedule (renderWfWavesView). */
+.wf-waves-head { display: flex; align-items: center; gap: 10px; margin: 6px 0 12px; }
+.wf-waves-issue { color: var(--red); }
+.wf-waves-cols { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto; padding-bottom: 8px; }
+.wf-waves-col { flex: 0 0 240px; display: flex; flex-direction: column; gap: 8px; }
+.wf-waves-col-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.wf-wave { border: 1px solid var(--border); border-left-width: 3px; border-radius: 6px; padding: 8px 10px; background: var(--bg-raised); }
+.wf-wave-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.wf-wave-badge { font-size: 10px; color: var(--fg-dim); white-space: nowrap; }
+.wf-wave-summary { margin: 4px 0; font-size: 12px; }
+.wf-wave-fact { font-size: 11px; }
+.wf-wave-done { border-left-color: var(--green); }
+.wf-wave-review { border-left-color: var(--accent); }
+.wf-wave-active { border-left-color: var(--blue); }
+.wf-wave-ready { border-left-color: var(--purple); }
+.wf-wave-blocked { opacity: 0.75; }

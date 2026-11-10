@@ -13,6 +13,7 @@ design behind each rule are in [workflows.md](workflows.md).
 - [The pipeline](#the-pipeline)
 - [The action bar](#the-action-bar)
 - [Reading an item](#reading-an-item)
+- [Projects in waves](#projects-in-waves)
 - [Reviewing the diff yourself](#reviewing-the-diff-yourself)
 - [Requesting changes](#requesting-changes)
 - [Check runs](#check-runs)
@@ -152,6 +153,38 @@ also runs by itself the first time you open an item).
 Workflow sessions are named by item and job (`Auth refactor · implement`,
 `· plan review r2`, `· code review r1`, `· explain plan`, `· plan vs changes r1`,
 `· answer PR comments`), so the sessions list says what each agent is doing.
+
+## Projects in waves
+
+An item can be one task or a whole project. When the planner sees a project,
+it splits the plan into **waves**: slices you implement, review and approve
+one at a time, in order, inside the same item (one branch, one worktree, one
+PR). Each wave says which waves it needs first and which parts of the code it
+touches. A single task has no waves and works as before.
+
+- **Approve plan → start waves…** asks which waves to start. The first ready
+  one is ticked. You can tick another only when it doesn't depend on the
+  first and touches different code; the agent then builds them in parallel,
+  in one round, and you approve them together.
+- When the round comes back, review it as usual (your diff review, a code
+  review, plan vs changes). The reviewers look at the round's waves.
+- **✓ Approve w2 → next waves…** approves the round's waves and offers the
+  ones that became ready. **✓ Approve w2 only** approves without starting
+  anything; **▶ Start next waves…** picks up from there later.
+- **Request changes** during a wave sends the fix round back to the same
+  waves.
+- **Approve → done** and **Approve → PR draft** appear once the last waves
+  are in review, and approve them on the way. You can open the PR whenever you
+  like; it collects the waves as they land.
+
+The **Waves** tab shows the plan as columns: the first waves, then the ones
+that wait for them, and so on. Each card says whether it is approved, in
+review, in progress, ready or waiting, what it waits for, what it can run
+with and which files it touches. The header shows `Waves 2/5 · w3 in
+progress`, and the suggested next step points at the wave buttons. A
+`waves.json` that can't be used (a wave that depends on itself, a loop, an
+unknown wave) shows the reason and blocks starting: request changes on the
+plan so the planner fixes it.
 
 ## Reviewing the diff yourself
 

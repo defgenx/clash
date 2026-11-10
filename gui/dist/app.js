@@ -7959,6 +7959,22 @@ async function buildWorkflowView(el, project, slug) {
     head.appendChild(prBtn);
   }
   if (item.prStackIssue) head.appendChild(wfStackIssueChip(item.prStackIssue));
+  // A project in waves says where it stands from the header, one click from
+  // its board.
+  if (item.waves) {
+    const summary = waveSummary(item);
+    const chip = document.createElement("button");
+    chip.className = "icon-btn wide wf-waves-chip";
+    chip.textContent = wavesIssue(item) ? "Waves ⚠" : summary.text;
+    chip.title = wavesIssue(item)
+      ? `waves.json can't be used: ${wavesIssue(item)}`
+      : "Open the waves board";
+    chip.onclick = () => {
+      ts.subView = "waves";
+      buildWorkflowView(el, item.project, item.slug);
+    };
+    head.appendChild(chip);
+  }
   {
     const tourBtn = document.createElement("button");
     tourBtn.className = "icon-btn wf-tour-btn";
@@ -8037,6 +8053,11 @@ async function buildWorkflowView(el, project, slug) {
           // one must always open on the current text.
           ["revisions", "◫ Revisions"],
         ]
+      : []),
+    // A project planned as waves: the schedule, what is approved, what runs
+    // next and what may run alongside it.
+    ...(item.waves
+      ? [["waves", wavesIssue(item) ? "Waves ⚠" : (waveSummary(item) || { text: "Waves" }).text.split(" · ")[0]]]
       : []),
     // "Review" and "Agent reviews" side by side told you nothing about which
     // was which. One holds your notes, the other the reviewer's findings.
@@ -8721,6 +8742,9 @@ async function launchWfAgent(item, phase, root, branch = null, opts = {}) {
       skill: opts.skill || null,
       interactive: opts.interactive ?? null,
       agent: opts.agent,
+      // A multi-wave item's round: the waves picked for it. Null keeps the
+      // current scope (a change round, a relaunch).
+      waves: opts.waves || null,
       cols: 120,
       rows: 40,
     });
@@ -10632,6 +10656,11 @@ async function cancelWfReview(item, root) {
 /// which snapshots the iteration first.
 async function wfTransition(item, root, status) {
   try {
+    // The item's own approval of a multi-wave item whose last waves wait:
+    // those waves are approved by the same click.
+    const waves = waveBarState(item);
+    if (waves && waves.kind === "approve-last" && ["done", "pr-draft", "pr-ready"].includes(status))
+      await invoke("approve_workflow_waves", { project: item.project, slug: item.slug });
     await invoke("update_workflow_status", {
       project: item.project,
       slug: item.slug,
@@ -10642,6 +10671,126 @@ async function wfTransition(item, root, status) {
   } catch (e) {
     uiAlert(`Transition failed: ${e}`);
   }
+}
+
+/// Pick the waves the next implementation round covers. Ready waves only;
+/// the first is ticked (waves go in order), and ticking another is possible
+/// only when the backend found the two compatible — no dependency between
+/// them, disjoint areas — in which case the executor works them in parallel.
+/// Resolves the ids, or null on cancel.
+function wfPickWaves(item, { message = "Which waves does this round implement?" } = {}) {
+  return new Promise((resolve) => {
+    let picked = defaultWavePick(item);
+    const backdrop = document.createElement("div");
+    backdrop.className = "dialog-backdrop";
+    const box = document.createElement("div");
+    box.className = "dialog-box wf-review";
+    const msg = document.createElement("p");
+    msg.textContent = message;
+    const intro = document.createElement("p");
+    intro.className = "dialog-detail";
+    intro.textContent =
+      "Waves go one after another. Waves that don't depend on each other and touch different areas can run in the same round — the agent then works them in parallel, and you approve them together.";
+    const body = document.createElement("div");
+    body.className = "wf-review-body";
+    box.append(msg, intro, body);
+    const done = (val) => {
+      backdrop.remove();
+      resolve(val);
+      if (typeof fitAll === "function") fitAll();
+    };
+    const go = document.createElement("button");
+    go.className = "primary";
+    const paint = () => {
+      body.innerHTML = "";
+      const rows = wavePickRows(item, picked);
+      if (!rows.length) {
+        const none = document.createElement("p");
+        none.className = "dialog-detail";
+        none.textContent = "No wave is ready: each one waits for a wave that isn't approved yet.";
+        body.appendChild(none);
+      }
+      for (const r of rows) {
+        const row = document.createElement("label");
+        row.className = "wf-review-opt";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = r.checked;
+        input.disabled = r.disabled;
+        input.onchange = () => {
+          picked = toggleWavePick(item, picked, r.id);
+          paint();
+        };
+        const text = document.createElement("span");
+        text.className = "wf-review-opt-text";
+        const label = document.createElement("span");
+        label.className = "wf-review-opt-label";
+        label.textContent = r.label;
+        const detail = document.createElement("span");
+        detail.className = "wf-review-opt-detail";
+        detail.textContent = r.reason ? `${r.reason}. ${r.detail}` : r.detail;
+        text.append(label, detail);
+        row.append(input, text);
+        body.appendChild(row);
+      }
+      go.disabled = !picked.length;
+      go.textContent =
+        picked.length > 1 ? `Start ${picked.length} waves in parallel` : `Start ${picked[0] || "wave"}`;
+    };
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.onclick = () => done(null);
+    go.onclick = () => picked.length && done(picked);
+    actions.append(cancel, go);
+    box.appendChild(actions);
+    backdrop.appendChild(box);
+    paint();
+    if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
+    document.body.appendChild(backdrop);
+    wireBackdropDismiss(backdrop, () => done(null));
+    backdrop.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") done(null);
+    });
+    setTimeout(() => go.focus(), 0);
+  });
+}
+
+/// Start the next waves: pick them, then launch the implementation round
+/// over exactly those (the backend validates the pick against the schedule).
+async function wfStartWaves(item, root, opts = {}) {
+  const home = opts.home || ws();
+  const picks = await wfPickWaves(item, opts);
+  if (!picks) return;
+  await launchWfAgent(item, "implement", root, null, { waves: picks, home });
+}
+
+/// Approve the waves of the round in review, then offer the waves that made
+/// ready. Approving without starting is the other button: the waves stay
+/// approved either way.
+async function wfApproveWaves(item, root, { next = true } = {}) {
+  const home = ws();
+  const bar = waveBarState(item);
+  if (!bar || !bar.review.length) return;
+  const extra =
+    item.openAnnotations > 0
+      ? ` ${item.openAnnotations} comment${item.openAnnotations > 1 ? "s are" : " is"} still open.`
+      : "";
+  if (!(await uiConfirm(`Approve ${waveList(bar.review)}?${extra}`, "Approve"))) return;
+  try {
+    await invoke("approve_workflow_waves", { project: item.project, slug: item.slug });
+  } catch (e) {
+    uiAlert(`Could not approve the waves: ${e}`);
+    return;
+  }
+  await refreshWorkflows();
+  const fresh = wfItem(item.project, item.slug) || item;
+  if (root) buildWorkflowView(root, fresh.project, fresh.slug);
+  flashToast(`${waveList(bar.review)} approved`);
+  if (next && waveBarState(fresh) && waveBarState(fresh).kind === "start")
+    await wfStartWaves(fresh, root, { home, message: "Start the next waves?" });
 }
 
 /// Move an item **back** to an earlier stage.
@@ -11181,10 +11330,16 @@ function renderWfActions(bar, root, item) {
     bar.appendChild(g);
     zones[key] = { group: g, btns };
   }
+  // A multi-wave item is approved wave by wave: its own approvals wait
+  // until no wave remains (the last waves are approved by the same click —
+  // see wfTransition).
+  const holdApproval = wavesHoldApproval(item);
+  const FINAL_ACTS = new Set(["approve-done", "approve-pr-draft", "mark-done"]);
   // `act` names the action for the next-step recommender (wf-next.js); an
   // action without one is never recommended.
   const add = (label, cls, fn, title = "", zone = "advance", act = "") => {
     const b = document.createElement("button");
+    if (holdApproval && FINAL_ACTS.has(act)) return b;
     b.textContent = label;
     if (cls) b.className = cls;
     if (title) b.title = title;
@@ -11204,6 +11359,39 @@ function renderWfActions(bar, root, item) {
     };
     zones[zone].btns.appendChild(b);
     return b;
+  };
+  // The waves of a multi-wave item, at every parked code stage: approve the
+  // round in review (and start the next), or start the next when nothing
+  // waits. Wave approvals come before the stage's own.
+  const waveButtons = () => {
+    const wv = waveBarState(item);
+    if (!wv) return;
+    if (wv.kind === "approve") {
+      add(
+        `✓ Approve ${waveList(wv.review)} → next waves…`,
+        reviewPending ? "" : "primary",
+        () => wfApproveWaves(item, root),
+        `Approve ${waveList(wv.review)} and pick the waves that start next — ${wv.text}`,
+        "advance",
+        "approve-waves"
+      );
+      add(
+        `✓ Approve ${waveList(wv.review)} only`,
+        "",
+        () => wfApproveWaves(item, root, { next: false }),
+        "Approve these waves and start nothing yet",
+        "advance"
+      );
+    } else if (wv.kind === "start") {
+      add(
+        "▶ Start next waves…",
+        reviewPending ? "" : "primary",
+        () => wfStartWaves(item, root),
+        `Pick the next waves — ready: ${waveList(wv.ready)}. Compatible ones can run in parallel. Spends tokens.`,
+        "advance",
+        "start-waves"
+      );
+    }
   };
   // Empty zones vanish at the end of the render (see the tail of this fn).
   const abandon = () =>
@@ -11516,6 +11704,35 @@ function renderWfActions(bar, root, item) {
 
     case "plan-review":
       applyReviewButton();
+      if (waveBoard(item) || wavesIssue(item)) {
+        add(
+          "✓ Approve plan → start waves…",
+          reviewPending ? "" : "primary",
+          async () => {
+            const issue = wavesIssue(item);
+            if (issue) {
+              uiAlert(
+                `This plan's waves.json can't be used: ${issue}. Request changes so the planner fixes it.`
+              );
+              return;
+            }
+            await wfStartWaves(item, root, { message: "Approve the plan and start which waves?" });
+          },
+          `Accept plan.md and its ${(waveSummary(item) || { total: 0 }).total} waves, and pick the first ones to implement — spends tokens`,
+          "advance",
+          "approve-plan"
+        );
+        add(
+          "✎ Request changes…",
+          "",
+          () => requestChanges("plan"),
+          "Say what should change in your own words — your note becomes the next round's instructions, and the current plan is frozen as a version first",
+          "advance",
+          "request-changes"
+        );
+        abandon();
+        break;
+      }
       add(
         "✓ Approve plan → implement",
         reviewPending ? "" : "primary",
@@ -11582,6 +11799,7 @@ function renderWfActions(bar, root, item) {
       const hasPr = !!(item.meta.pr && item.meta.pr.url);
 
       applyReviewButton();
+      waveButtons();
 
       const approveDone = () =>
         add(
@@ -11679,6 +11897,7 @@ function renderWfActions(bar, root, item) {
 
     case "pr-draft": {
       applyReviewButton();
+      waveButtons();
       const prs = itemPrs(item.meta);
       // The primary is already ready-for-review while the item still says
       // draft — flipped on GitHub, or opened non-draft by a PR skill. The poll
@@ -11771,7 +11990,8 @@ function renderWfActions(bar, root, item) {
 
     case "pr-ready":
       applyReviewButton();
-      openPrsButton(reviewPending ? "" : "primary");
+      waveButtons();
+      openPrsButton(reviewPending || waveBarState(item) ? "" : "primary");
       add(
         "✓ Mark done",
         "",
@@ -13065,12 +13285,102 @@ function wfGuardExplainFrame(frame, srcdoc, onPart) {
   });
 }
 
+/// The Waves tab: a multi-wave item's schedule as columns of dependency
+/// levels — what is approved, in review, in progress, ready, or waiting, and
+/// which waves may run alongside which. The same decisions as the action bar
+/// (approve the round, start the next) sit on top, so the tab is where waves
+/// are driven from as well as read.
+function renderWfWavesView(body, root, item) {
+  body.innerHTML = "";
+  const caption = document.createElement("p");
+  caption.className = "wf-doc-caption dim";
+  caption.textContent =
+    "This item is a project in waves (waves.json, written by the planner). Each wave is implemented and approved on its own, after the waves it depends on. Waves in one column may run in the same round when they touch different areas.";
+  body.appendChild(caption);
+  const issue = wavesIssue(item);
+  if (issue) {
+    const p = document.createElement("p");
+    p.className = "wf-waves-issue";
+    p.textContent = `waves.json can't be used: ${issue}. Nothing starts until it is fixed — request changes on the plan so the planner rewrites it.`;
+    body.appendChild(p);
+    return;
+  }
+  const summary = waveSummary(item);
+  if (!summary) return;
+  const head = document.createElement("div");
+  head.className = "wf-waves-head";
+  const line = document.createElement("span");
+  line.textContent = summary.text;
+  head.appendChild(line);
+  const bar = waveBarState(item);
+  const parked = ["diff-review", "pr-draft", "pr-ready"].includes(item.meta.status);
+  if (bar && parked && bar.kind === "approve") {
+    const b = document.createElement("button");
+    b.className = "primary";
+    b.textContent = `✓ Approve ${waveList(bar.review)} → next waves…`;
+    b.onclick = () => busyButton(b, () => wfApproveWaves(item, root));
+    head.appendChild(b);
+  } else if (bar && parked && bar.kind === "start") {
+    const b = document.createElement("button");
+    b.className = "primary";
+    b.textContent = "▶ Start next waves…";
+    b.onclick = () => busyButton(b, () => wfStartWaves(item, root));
+    head.appendChild(b);
+  }
+  body.appendChild(head);
+  const cols = document.createElement("div");
+  cols.className = "wf-waves-cols";
+  for (const col of waveColumns(item)) {
+    const c = document.createElement("div");
+    c.className = "wf-waves-col";
+    const t = document.createElement("div");
+    t.className = "wf-waves-col-title dim";
+    t.textContent = col.title;
+    c.appendChild(t);
+    for (const w of col.waves) {
+      const card = document.createElement("div");
+      card.className = `wf-wave wf-wave-${w.state}`;
+      const top = document.createElement("div");
+      top.className = "wf-wave-top";
+      const name = document.createElement("strong");
+      name.textContent = waveLabel(w);
+      const badge = document.createElement("span");
+      badge.className = "wf-wave-badge";
+      badge.textContent = waveStateLabel(w.state);
+      top.append(name, badge);
+      card.appendChild(top);
+      if (w.summary) {
+        const p = document.createElement("div");
+        p.className = "wf-wave-summary";
+        p.textContent = w.summary;
+        card.appendChild(p);
+      }
+      const facts = [];
+      if (w.blockedBy.length) facts.push(`Waits for ${w.blockedBy.join(", ")}`);
+      else if (w.dependsOn.length) facts.push(`After ${w.dependsOn.join(", ")}`);
+      if (w.compatibleWith.length) facts.push(`Can run with ${w.compatibleWith.join(", ")}`);
+      facts.push(w.areas.length ? `Touches ${w.areas.join(", ")}` : "No areas declared — runs alone");
+      if (w.start) facts.push(`Started at ${w.start.slice(0, 8)}`);
+      for (const f of facts) {
+        const d = document.createElement("div");
+        d.className = "wf-wave-fact dim";
+        d.textContent = f;
+        card.appendChild(d);
+      }
+      c.appendChild(card);
+    }
+    cols.appendChild(c);
+  }
+  body.appendChild(cols);
+}
+
 async function renderWfSubView(body, root, item, ts) {
   const { project, slug } = item;
   // The plan is the one doc with versions, so it gets two readers of its own:
   // the live document, and its history.
   if (ts.subView === "plan") return renderWfPlanView(body, root, item, ts);
   if (ts.subView === "revisions") return renderWfRevisionsView(body, root, item, ts);
+  if (ts.subView === "waves") return renderWfWavesView(body, root, item, ts);
   if (ts.subView === "explainPlan") return renderWfExplainView(body, root, item, ts, "plan");
   if (ts.subView === "explainDiff") return renderWfExplainView(body, root, item, ts, "diff");
   if (ts.subView === "drift") return renderWfExplainView(body, root, item, ts, "drift");

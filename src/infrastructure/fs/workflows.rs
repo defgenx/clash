@@ -75,6 +75,9 @@ pub const HANDOFF_FILE: &str = "handoff.md";
 pub const EXPLAINERS_FILE: &str = "explainers.json";
 /// clash-only record of the check run in flight — see `RunBatch`.
 pub const RUN_FILE: &str = "run.json";
+/// The waves of a multi-wave item, written by the planner (plan phases) —
+/// see `application::waves`. Absent on a single-task item.
+pub const WAVES_FILE: &str = "waves.json";
 pub const HISTORY_DIR: &str = "history";
 /// Per-item plan revision store: `plan-history/index.json` + `NNNN.md`.
 pub const PLAN_HISTORY_DIR: &str = "plan-history";
@@ -242,6 +245,8 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         pr_stacking: false,
         pr_stack: None,
         pr_stack_issue: None,
+        // `waves.json` against `meta.waves` and the status: the GUI layer.
+        waves: None,
         meta,
     })
 }

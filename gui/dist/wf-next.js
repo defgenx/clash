@@ -44,6 +44,15 @@
     return (mark.iteration || 0) === (meta.iteration || 0) && tally >= (mark.round || 0);
   }
 
+  /// The waves' bar state (`wf-waves.js`), when the module is loaded.
+  function waveState(item) {
+    const f =
+      typeof module !== "undefined" && module.exports
+        ? require("./wf-waves.js").waveBarState
+        : typeof window !== "undefined" && window.waveBarState;
+    return f ? f(item) : null;
+  }
+
   /// The agents' own recommendation, freshest source first: the latest
   /// judging round when it is about this stage's artifact, else the
   /// executor's hand-off. Unknown words were already dropped by the parser.
@@ -222,9 +231,30 @@
     ];
 
     const settledReason = "Reviewed at this iteration, with nothing open or waiting";
+    // A multi-wave item is approved wave by wave: once the round's waves are
+    // reviewed, approving them (and starting the next) comes before anything
+    // that finishes the item. The bar hides the item's own approvals while
+    // waves remain, so these are what the walk lands on.
+    const waves = waveState(item);
+    const waveChecks = waves
+      ? [
+          {
+            id: "approve-waves",
+            fires: waves.kind === "approve",
+            reason: `${waves.review.join(", ")} reviewed — approve and start the next waves`,
+            settled: "no wave waiting for approval",
+          },
+          {
+            id: "start-waves",
+            fires: waves.kind === "start",
+            reason: `${waves.ready.join(", ")} ready to start`,
+          },
+        ]
+      : [];
     if (st === "diff-review") {
       return [
         ...code,
+        ...waveChecks,
         {
           id: "approve-pr-draft",
           fires: true,
@@ -237,6 +267,7 @@
     if (st === "pr-draft") {
       return [
         ...code,
+        ...waveChecks,
         {
           id: "pr-is-ready",
           fires: true,
@@ -253,6 +284,7 @@
     }
     return [
       ...code,
+      ...waveChecks,
       {
         // The PR is in human hands now; an automated verdict on it is the
         // cheapest reviewer it will get. Never autopilot: it posts on GitHub.

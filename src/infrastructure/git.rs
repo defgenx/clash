@@ -206,6 +206,21 @@ pub async fn merge_base_with(dir: &Path, rev: &str) -> Option<String> {
     (output.status.success() && !sha.is_empty()).then_some(sha)
 }
 
+/// The commit `HEAD` points at in `dir`, or `None` outside a repository (or
+/// before the first commit). GUI-only (wave start commits), hence the allow
+/// for the binary's build.
+#[allow(dead_code)]
+pub async fn head_sha(dir: &Path) -> Option<String> {
+    let out = tokio::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .await
+        .ok()?;
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !sha.is_empty()).then_some(sha)
+}
+
 /// The repository's top-level directory, if `dir` is inside one.
 pub async fn toplevel(dir: &Path) -> Option<String> {
     let out = tokio::process::Command::new("git")

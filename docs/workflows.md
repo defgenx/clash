@@ -22,6 +22,7 @@ workflows are a structured store.
 <root>/<project>/<slug>/
 ├── meta.json          # status, PR info, session, iteration, review round(s), timestamps
 ├── plan.md            # the plan (freely editable markdown)
+├── waves.json         # a project's waves: ids, dependencies, areas (planner writes; absent on one task)
 ├── review.md          # append-only iteration audit trail (clash writes, agent reads)
 ├── agent-review.md    # append-only agent review rounds (agent writes, clash renders)
 ├── explain-plan.md    # what the plan WILL DO — prose + mermaid (clash-explain overwrites)
@@ -127,7 +128,10 @@ published, and a fix that only commits locally leaves the PR silently stale.
   `reviewing` round hands back where it started and the next refresh moves it.
   Linked PRs never drive either move.
 - **Everything else is clash-owned** (buttons in the GUI): approve, request
-  changes, mark PR ready, done, abandon, reopen, and launching a review round.
+  changes, mark PR ready, done, abandon, reopen, launching a review round, and
+  approving or starting the waves of a multi-wave item (see *Waves*).
+  `pr-draft → implementing` and `pr-ready → implementing` exist for the last
+  one: the next wave may start on a branch whose PR is already open.
 
 ### The change-request note is a prompt
 
@@ -924,6 +928,79 @@ runs **outside workflows** — "review PR <url>" or `/clash-pr-review 123` on
 anyone's PR posts a verdict unless asked for comments only or nothing posted —
 where it writes nothing but its ledger and reports in chat.
 
+## Waves
+
+Some items are one task; some are a whole project. A project is planned as
+**waves** — slices of the plan that are implemented, reviewed and approved one
+after another, **inside the one item** (same worktree, same branch, same PR).
+The planner decides: a project gets a `## Wave <n> — <title>` section per
+wave in `plan.md` and a `waves.json` beside it; a single task gets neither.
+
+```json
+{ "waves": [
+  { "id": "w1", "title": "Schema", "summary": "…", "dependsOn": [], "areas": ["db/migrations/"] },
+  { "id": "w2", "title": "API", "dependsOn": ["w1"], "areas": ["src/api/audit/"] },
+  { "id": "w3", "title": "Admin screen", "dependsOn": ["w1"], "areas": ["web/src/admin/audit/"] }
+] }
+```
+
+`waves.json` is the planner's (phases `plan`/`revise`); where the waves stand
+is clash's, in `meta.waves`: `done` (approved ids), `scope` (the current or
+latest round's ids) and `starts` (the commit each wave began from). The
+schedule is the pure `application::waves`:
+
+- **Order.** A wave is *ready* when every `dependsOn` wave is approved,
+  *blocked* otherwise; *active* while its round is being implemented
+  (`implementing`/`changes-requested`), *in review* once the round handed
+  back (`diff-review`, a review round, the PR stages), *approved* after the
+  human's click. Its *level* (dependency depth) is the board's column.
+- **Together.** Two waves are *compatible* when no dependency chain links
+  them and their `areas` are disjoint (path prefixes; anything after a glob
+  character is dropped, which only widens an area). A wave with no areas is
+  compatible with nothing. Compatible ready waves may be picked for **one**
+  round: the executor implements them side by side — one batch of
+  implementers per wave — and the human approves them together. One round,
+  not one session per wave, because the waves share a worktree and a git
+  index: two agents committing in one checkout is two writers on one branch.
+- **Validation.** `parse_wave_plan` rejects a missing or duplicate id, an
+  unknown dependency and a cycle; the GUI shows the reason and nothing
+  starts. `check_start` refuses a pick whose waves are not ready or not
+  pairwise compatible — before the launch creates a worktree, so a refusal
+  leaves nothing behind.
+
+The flow, on the GUI's buttons:
+
+1. At `plan-review`, **✓ Approve plan → start waves…** opens the wave
+   picker (the first ready wave ticked; another can be ticked only when
+   compatible with the pick) and launches the `implement` round over the pick
+   — `start_workflow_agent(phase: "implement", waves)`, which records
+   `meta.waves.scope` and each wave's start commit in the pre-spawn meta write
+   and adds `Waves: w2 (API), w3 (Admin screen) of 3.` to the kickoff.
+2. The executor implements only those waves, commits each separately, and
+   hands back at `diff-review` (or `pr-draft`). Reviews and drift rounds get
+   `Waves: w2, w3 (changes since <sha>).`: they judge the waves' commits, with
+   the rest of the branch as context — a drift round does not call a wave
+   that has not started *missing*.
+3. At `diff-review` / `pr-draft` / `pr-ready`, **✓ Approve w2, w3 → next
+   waves…** (`approve_workflow_waves`: scope → done, status unchanged) then
+   offers the waves that became ready; **… only** approves without starting.
+   With nothing waiting, **▶ Start next waves…** starts the next round. A
+   change request keeps the round's scope (the fix round continues the same
+   waves); one made between waves launches with
+   `Waves: none of N (a fix round …; start no wave)`.
+4. The item's own approvals — **Approve → done**, **Approve → PR draft**,
+   **Mark done** — are hidden while waves remain; on the last round they
+   approve its waves on the way (`wfTransition`). The PR may be opened at any
+   point: it simply carries more waves as they land.
+
+The **Waves** tab (and the header chip, `Waves 2/5 · w3 in progress`) draws
+the board — columns by level, each wave's state, what it waits for, what it
+can run with and what it touches — with the same approve/start buttons. The
+next-step strip suggests *approve waves* once the round is reviewed and
+*start waves* when nothing waits; neither runs on autopilot. GUI model:
+`gui/dist/wf-waves.js` (`gui/tests/wf_waves.test.js`,
+`gui/tests/wf_waves_smoke.test.js`).
+
 ## Entry modes
 
 `meta.json.mode` records how the item entered the pipeline. It is fixed at
@@ -1094,8 +1171,8 @@ via ↩ Move back to… → plan-review.
   only commits locally leaves the PR silently stale. An unpublished branch
   (`full`/`from-plan`, no PR) is still never pushed.
 - Never touch `history/`, `plan-history/`, `explainers.json` or `run.json`,
-  and never change `iteration`, `reviewRound`, `appliedReviewKey(s)` or `phase` — clash
-  owns all of them (of the fields, the first two are written atomically by the
+  and never change `iteration`, `reviewRound`, `appliedReviewKey(s)`, `phase`
+  or `waves` — clash owns all of them (of the fields, the first two are written atomically by the
   request-changes flow, the third by the review launcher, the last by
   whichever of the two started the round).
 - Write `annotations.json` **only** while status is `changes-requested` or
@@ -1635,7 +1712,7 @@ ceremony. The table is the split **at full scale**:
 | Skill | Fan-out | Second pass |
 |-------|---------|-------------|
 | `clash-workflow` · `plan` | one explorer per area the task touches | the lead checks the facts the plan rests on |
-| `clash-workflow` · `implement` | the plan's non-trivial work units, in waves of disjoint files | one verifier over the whole diff (the lead's own re-read for a small one) |
+| `clash-workflow` · `implement` | the plan's non-trivial work units, in batches of disjoint files (one batch per wave when a round covers several compatible waves) | one verifier over the whole diff (the lead's own re-read for a small one) |
 | `clash-plan-review` | one reviewer per area, split by section (architecture, quality, tests, performance) only for a large plan | refutation, batched per area |
 | `clash-drift-review` | tracers over the plan's actions grouped by area, + one over unexplained hunks for a large diff | refutation, batched per file or area |
 | `clash-pr-review` | one reviewer per area/PR applying every lens (correctness, tests, conventions, security/perf), split by lens only when large or `deep`; a looping round (`deep`, a verdict) takes a fresh wave **per pass**, each briefed with the pass's angle and the ledger's findings as "already found" | refutation of every new candidate, every pass |

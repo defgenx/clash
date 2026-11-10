@@ -24,6 +24,9 @@ pub mod store;
 /// workflow and share commands in v1.
 #[allow(dead_code)]
 pub mod trackers;
+/// Same allowance as `workflow`: multi-wave items are driven by the GUI in v1.
+#[allow(dead_code)]
+pub mod waves;
 /// Pure workflow logic is consumed only through the lib crate in v1 (GUI
 /// Tauri commands); the binary's private-`mod` compilation would otherwise
 /// flag it as dead code. Remove the `allow` once the TUI grows its read-only

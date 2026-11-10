@@ -22,7 +22,7 @@ const ALL = new Set([
   "apply-review", "plan-review", "code-review", "drift", "request-changes",
   "answer-comments", "approve-plan", "approve-pr-draft", "approve-done",
   "create-pr", "pr-is-ready", "mark-ready", "attach-pr", "mark-done", "open-prs",
-  "self-review",
+  "self-review", "approve-waves", "start-waves",
 ]);
 
 const item = (status, extra = {}, meta = {}) => ({
@@ -238,4 +238,28 @@ test("a verdict follows this iteration's code review instead of racing it", () =
     { reviewMarks: { drift: { iteration: 1, round: 1 }, "self-review": { iteration: 1, round: 1 } } }
   );
   assert.notEqual(wfNextStep(verdicted, facts()).id, "code-review");
+});
+
+test("a multi-wave item approves its waves before the item, then starts the next", () => {
+  const board = (states) => ({
+    waves: {
+      waves: states.map((state, i) => ({
+        id: `w${i + 1}`, title: "", summary: "", dependsOn: [], areas: [`w${i + 1}`],
+        state, blockedBy: [], level: i, compatibleWith: [],
+      })),
+    },
+  });
+  const reviewed = {
+    reviewRounds: { diff: 1, drift: 1 },
+  };
+  const marks = { reviewMarks: { diff: { iteration: 1, round: 1 }, drift: { iteration: 1, round: 1 } } };
+  const inReview = item("diff-review", { ...reviewed, ...board(["done", "review", "blocked"]) }, marks);
+  assert.equal(wfNextStep(inReview, facts()).id, "approve-waves");
+  const next = item("diff-review", { ...reviewed, ...board(["done", "done", "ready"]) }, marks);
+  assert.equal(wfNextStep(next, facts()).id, "start-waves");
+  // The last waves: the item's own approval, as for any item.
+  const last = item("diff-review", { ...reviewed, ...board(["done", "done", "review"]) }, marks);
+  assert.ok(!["approve-waves", "start-waves"].includes(wfNextStep(last, facts()).id));
+  // Never on autopilot: approving and starting waves is the human's call.
+  assert.ok(!AUTO_ACTIONS.has("approve-waves") && !AUTO_ACTIONS.has("start-waves"));
 });

@@ -110,6 +110,9 @@ pub(crate) async fn list_workflow_items(
             Ok(s) => item.pr_stack = s,
             Err(issue) => item.pr_stack_issue = Some(issue),
         }
+        item.waves = load_wave_plan(Path::new(&item.path)).map(|plan| {
+            clash::application::waves::wave_board(plan, &item.meta.waves, item.meta.status)
+        });
         // `Reviewing` is included so a dead reviewer surfaces the same "the
         // agent is gone" affordance — without it a crashed round would leave
         // the item gated with no visible way out.
@@ -1653,6 +1656,9 @@ pub(crate) async fn start_workflow_agent(
     skill: Option<String>,
     interactive: Option<bool>,
     agent: Option<String>,
+    // The waves an `implement` round covers, on a multi-wave item. `None`
+    // keeps the current scope (a change round, a relaunch).
+    waves: Option<Vec<String>>,
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
@@ -1679,6 +1685,14 @@ pub(crate) async fn start_workflow_agent(
         return Err("This item has no repository path — set repoPath in meta.json".to_string());
     }
     launch_agent(&state, agent.as_deref(), &mut meta)?;
+    // A multi-wave item implements the waves the human picked, and nothing
+    // else — checked before the worktree exists, so a refusal costs nothing.
+    let item_dir = state.backend.workflows_dir().join(&project).join(&slug);
+    let wave_scope = if phase == "implement" {
+        plan_wave_scope(&meta, &item_dir, waves.as_deref())?
+    } else {
+        None
+    };
 
     // The first round that writes code isolates the item in its own worktree
     // + branch; planning, an in-place item and a non-git directory run in
@@ -1713,6 +1727,14 @@ pub(crate) async fn start_workflow_agent(
         }
         _ => meta.repo_path.clone(),
     };
+    let rollback_waves = meta.waves.clone();
+    let waves_clause = match wave_scope {
+        Some((plan, ordered)) => {
+            record_wave_scope(&mut meta, &cwd, ordered).await;
+            clash::application::waves::executor_clause(&plan, &meta.waves)
+        }
+        None => String::new(),
+    };
     let session_id = uuid::Uuid::now_v7().to_string();
 
     // Persist the launch BEFORE spawning (session id + phase-appropriate
@@ -1724,7 +1746,8 @@ pub(crate) async fn start_workflow_agent(
     // this same write, so a failed spawn can't strand them unrecorded either.
     // A review-only item has no planning phase, so its agent always lands in
     // `implementing`.
-    let rollback = meta.clone();
+    let mut rollback = meta.clone();
+    rollback.waves = rollback_waves;
     meta.session_id = Some(session_id.clone());
     // The phase of the round now in flight. A relaunch after the agent dies
     // has to resume the same one, and the status cannot say which it was:
@@ -1798,7 +1821,8 @@ pub(crate) async fn start_workflow_agent(
                         }
                     }),
                 },
-            ) + &state.config.get().ticket_links_clause()
+            ) + &waves_clause
+                + &state.config.get().ticket_links_clause()
         },
     )
     .await;
@@ -1827,6 +1851,91 @@ pub(crate) async fn start_workflow_agent(
     }
 
     Ok(session_id)
+}
+
+// ── Waves ───────────────────────────────────────────────────────────────
+
+/// The item's `waves.json`, when its plan declares waves: `None` for a
+/// single-task item, `Some(Err)` for a file that cannot be used.
+fn load_wave_plan(item_dir: &Path) -> Option<Result<clash::domain::workflow::WavePlan, String>> {
+    let raw =
+        std::fs::read_to_string(item_dir.join(clash::infrastructure::fs::workflows::WAVES_FILE))
+            .ok()?;
+    Some(clash::application::waves::parse_wave_plan(&raw))
+}
+
+/// The waves the implementation round about to launch covers, validated
+/// against the schedule: `waves`, or the current scope when `None` (a change
+/// round or a relaunch continues the same waves; with no scope, a fix round
+/// that starts no wave). `None` for an item without `waves.json`. Runs before anything is created or recorded, so a refusal
+/// leaves nothing behind.
+fn plan_wave_scope(
+    meta: &clash::domain::workflow::WorkflowMeta,
+    item_dir: &Path,
+    waves: Option<&[String]>,
+) -> Result<Option<(clash::domain::workflow::WavePlan, Vec<String>)>, String> {
+    let Some(plan) = load_wave_plan(item_dir) else {
+        return Ok(None);
+    };
+    let plan = plan?;
+    let ids = match waves {
+        Some(ids) => ids.to_vec(),
+        None if !meta.waves.scope.is_empty() => meta.waves.scope.clone(),
+        // A fix round between waves (changes requested after the last
+        // round's waves were approved): it starts no wave, and says so.
+        None => return Ok(Some((plan, Vec::new()))),
+    };
+    let ordered = clash::application::waves::check_start(&plan, &meta.waves, &ids)?;
+    Ok(Some((plan, ordered)))
+}
+
+/// Record a validated scope on `meta`, with the commit each wave starts from
+/// — kept from the wave's first round, so a change round does not move it.
+async fn record_wave_scope(
+    meta: &mut clash::domain::workflow::WorkflowMeta,
+    cwd: &str,
+    ordered: Vec<String>,
+) {
+    let head = clash::infrastructure::git::head_sha(Path::new(cwd)).await;
+    for id in &ordered {
+        if let Some(sha) = &head {
+            meta.waves
+                .starts
+                .entry(id.clone())
+                .or_insert_with(|| sha.clone());
+        }
+    }
+    meta.waves.scope = ordered;
+}
+
+/// Approve the waves of the item's current round: they join the approved
+/// set and the scope is cleared, so the next round can start whichever waves
+/// that made ready. The status does not move — the bar then offers the next
+/// waves, or, once none remain, the item's own approval.
+#[tauri::command]
+pub(crate) async fn approve_workflow_waves(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+) -> Result<Vec<String>, String> {
+    let mut meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    if meta.status.is_working() {
+        return Err("An agent is working on this item — let it finish first".into());
+    }
+    if meta.waves.scope.is_empty() {
+        return Err("No wave is waiting for approval".into());
+    }
+    let approved = meta.waves.scope.clone();
+    meta.waves = clash::application::waves::approve_scope(&meta.waves);
+    state
+        .backend
+        .write_workflow_meta(&project, &slug, &meta)
+        .map_err(e2s)?;
+    seed_local(&state, &project, &slug, meta.status);
+    Ok(approved)
 }
 
 // ── Agent review rounds ─────────────────────────────────────────────────
@@ -2124,6 +2233,16 @@ pub(crate) async fn launch_review(
         .map_err(e2s)?;
     seed_local(state, &project, &slug, meta.status);
 
+    // A round over a multi-wave item's code judges the waves in review —
+    // their commits — with the rest of the branch as context.
+    let waves_clause = if matches!(
+        review.target,
+        ReviewTarget::Diff | ReviewTarget::SelfReview | ReviewTarget::Drift
+    ) {
+        clash::application::waves::review_clause(&meta.waves)
+    } else {
+        String::new()
+    };
     crate::launch_stage(app, &key, "spawn", None);
     let spawned = spawn_item_session(
         state,
@@ -2149,7 +2268,8 @@ pub(crate) async fn launch_review(
                 mode,
                 &cfg.workflow_delegation(agent_kind)
                     .with_subagent(round_models.subagent.as_deref()),
-            ) + &ticket_links
+            ) + &waves_clause
+                + &ticket_links
         },
     )
     .await;
@@ -4698,6 +4818,47 @@ mod tests {
         assert!(
             derived < parked,
             "the phase must be derived before the status is overwritten"
+        );
+    }
+
+    /// A multi-wave launch is refused before anything exists: the pick is
+    /// validated before the worktree is created (a refusal after it would
+    /// leave a branch the next attempt trips over as `branch-exists:`), and
+    /// recorded by the pre-spawn meta write, with the kickoff naming it.
+    #[test]
+    fn a_wave_pick_is_validated_before_the_worktree_and_recorded_before_the_spawn() {
+        const SRC: &str = include_str!("workflows.rs");
+        let launch = SRC
+            .split_once("pub(crate) async fn start_workflow_agent(")
+            .expect("start_workflow_agent")
+            .1;
+        let checked = launch
+            .find("plan_wave_scope(&meta, &item_dir, waves.as_deref())?")
+            .expect("the launch validates the wave pick");
+        let worktree = launch
+            .find("crate::create_worktree(")
+            .expect("the launch creates the worktree");
+        assert!(
+            checked < worktree,
+            "validate the waves before creating anything"
+        );
+        let recorded = launch
+            .find("record_wave_scope(&mut meta, &cwd, ordered).await;")
+            .expect("the launch records the scope");
+        let written = launch
+            .find("write_workflow_meta")
+            .expect("start_workflow_agent writes meta");
+        assert!(
+            recorded < written,
+            "the scope rides the pre-spawn meta write"
+        );
+        assert!(
+            launch.contains("+ &waves_clause"),
+            "the kickoff names the waves"
+        );
+        assert!(
+            launch.contains("rollback.waves = rollback_waves;"),
+            "a failed spawn restores the previous scope"
         );
     }
 

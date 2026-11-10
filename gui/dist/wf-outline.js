@@ -20,7 +20,7 @@
   /// The outline's groups: what is being built, what was said about it, what
   /// explains it, and how it got here. Settings stand apart, at the bottom.
   const OUTLINE_GROUPS = [
-    { id: "build", label: "Build", ids: ["plan", "diff"] },
+    { id: "build", label: "Build", ids: ["plan", "waves", "diff"] },
     { id: "feedback", label: "Feedback", ids: ["review", "agentReview", "handoff"] },
     { id: "explained", label: "Explained", ids: ["explainPlan", "explainDiff", "drift"] },
     { id: "history", label: "History", ids: ["revisions", "history"] },

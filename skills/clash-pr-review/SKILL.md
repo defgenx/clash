@@ -66,6 +66,11 @@ gives:
   the local diff for a code review, the primary `meta.pr.url` for a verdict.
 - **Stack** — optional; `Stack: <url1> > <url2> > <url3>`, the item's PRs as a
   GitHub stack, **base → tip** (also in `meta.review.stack`). See "PR stacks".
+- **Waves** — optional; `Waves: w2, w3 (changes since <sha>).` on a
+  multi-wave item (`waves.json`): the round judges those waves — the commits
+  since `<sha>` (`git diff <sha>...HEAD`) — with the rest of the branch as
+  context only. Approved waves were reviewed already; report on them only
+  when a wave in review breaks them. Name the wave on every finding.
 - **Interactive**, **Auto-apply**, **Focus** — optional; see below.
 - **Size** — optional; `small|medium|large (<N> lines, <F> files)`. See "Size".
 - **Delegation** — `team` (also what an absent field means) or `solo`,

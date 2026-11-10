@@ -233,6 +233,8 @@ clash. Workflows are GUI-only.
   where it started, so you can run as many as you like. Findings land as diff
   comments and in `agent-review.md`; one click applies a round as the next
   change round.
+- **Projects in waves**: a project-sized item is planned as waves approved one
+  by one in dependency order, and independent waves can run in parallel.
 - **Explanations**: a written walk-through and a drawing of what the plan will
   do or what the change did, as a tree you can zoom into part by part.
 - **PR verdicts**: a code review can end by posting an approve or

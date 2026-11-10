@@ -94,7 +94,9 @@ point they may answer "continue autonomously" — from then on, stop asking.
 1. `meta.json` — mode, status, iteration, branch/base, PR info, and
    `description` (the human's own statement of what this item is about —
    when present, it outranks the title as the intent). Parse leniently.
-2. `plan.md` — the current plan.
+2. `plan.md` — the current plan, and `waves.json` when the item is a
+   multi-wave project (see "Waves"), with `meta.waves.done` saying which
+   waves are approved.
 3. `review.md` — **top to bottom**: it is the accumulated decision history
    (`## Iteration N` sections with the human's notes + the open annotations
    at each round). Later sections override earlier ones.
@@ -126,8 +128,9 @@ findings into `agent-review.md` and `annotations.json` and never touch
 
 ## Hard rules (violating these corrupts the pipeline)
 
-- **Never** touch `history/`, `plan-history/`, or `iteration`, `reviewRound`
-  and `appliedReviewKey` in meta.json — clash owns all five.
+- **Never** touch `history/`, `plan-history/`, or `iteration`, `reviewRound`,
+  `appliedReviewKey` and `waves` in meta.json — clash owns all six.
+  `waves.json` is yours, but only in phases `plan` and `revise`.
   The four `explain-*.{md,html}` documents belong to the explainer: read them
   freely when they exist (`explain-plan.*` is a picture of the work you are
   about to do, and worth a minute), write none of them. They are the
@@ -168,6 +171,66 @@ findings into `agent-review.md` and `annotations.json` and never touch
     a fix round that only commits locally leaves the PR silently stale.
     Never force-push, never rewrite published history; if the push is
     rejected, stop and report it instead of forcing.
+
+## Waves — a project in slices
+
+Some items are one task; some are a whole project. A project is planned as
+**waves**: slices of the plan that are implemented, reviewed and approved one
+after another, inside this one item (same worktree, same branch). The human
+approves each wave before the waves that depend on it can start, and clash
+may start several waves in one round when they are independent.
+
+**When to plan waves.** When the work has parts that are worth reviewing and
+approving on their own — a schema before the API that uses it, a backend
+before the screens that call it — or is too big for one review to judge
+well. Not for a task that one round implements and one review judges: then
+write no `waves.json` at all.
+
+**Planning them (phases `plan` and `revise`).** In `plan.md`, one section per
+wave, `## Wave <n> — <title>`, holding that wave's work units. Then write
+`waves.json` in the item directory:
+
+```json
+{
+  "waves": [
+    { "id": "w1", "title": "Schema", "summary": "Tables and migration for audit logs.",
+      "dependsOn": [], "areas": ["db/migrations/", "src/models/audit.rs"] },
+    { "id": "w2", "title": "API", "summary": "Write and list endpoints.",
+      "dependsOn": ["w1"], "areas": ["src/api/audit/"] },
+    { "id": "w3", "title": "Admin screen", "summary": "List view in the admin app.",
+      "dependsOn": ["w1"], "areas": ["web/src/admin/audit/"] }
+  ]
+}
+```
+
+- `id` short and stable (`w1`, `w2`…) — clash records approvals by it, so
+  never renumber a wave a revision did not remove.
+- `dependsOn`: the waves that must be **approved** first. Only real
+  dependencies — every one you add serializes work that could run in
+  parallel.
+- `areas`: the repo-relative paths the wave will touch (directories, files,
+  or `dir/**`). **Be honest and complete**: clash runs two waves in the same
+  round only when neither depends on the other and their areas are disjoint,
+  so an area you leave out is a conflict nobody sees coming. A wave whose
+  areas you cannot bound gets none, and then always runs alone.
+- Order waves the way you would implement them. Make each one leave the code
+  building and its tests passing: a wave is approved on its own.
+
+**Implementing them (phase `implement`).** The kickoff names the round's
+waves: `Waves: w2 (API), w3 (Admin screen) of 3.` Implement **only those
+waves'** work units — the other waves are not yours to start, even when
+they look small. With several, they are independent by construction:
+implement them side by side (under `team`, one batch of implementers per wave,
+launched together), each staying inside its own areas. If a wave turns out to
+need a file outside its areas, or another wave's work, stop that part and say
+so in `handoff.md` rather than crossing over. Commit each wave separately,
+its id first in the message (`feat(w2): audit API`), and say per wave in
+`handoff.md` what landed and what is left. A change round keeps the same
+`Waves:`. `Waves: none of N (a fix round …)` means changes were requested
+between waves: address the note and the open annotations, and start no wave.
+
+Never write `meta.waves` — which waves are approved and which a round covers
+is clash's record, set by the human's clicks.
 
 ## PR stacking — every PR's `--base`
 
@@ -256,15 +319,17 @@ then pick the smallest split that keeps quality:
 
 Never launch more subagents than there are independent units of real work, and
 never one whose whole job is a file read or a grep — do that yourself. The
-waves below describe the split **at full scale**; shrink them to the size you
-picked.
+batches below describe the split **at full scale**; shrink them to the size you
+picked. (A *batch* is a group of subagents you launch together. It is not a
+*wave*: waves are slices of a project the human approves one by one — see
+"Waves".)
 
 What gets split, per phase (details in each phase below):
 
 - `plan` — **exploration**: one read-only explorer per area the task touches,
   when there is more than one area worth exploring. You write `plan.md`
   yourself — a plan is one voice.
-- `implement` — **the plan's work units**, dispatched in waves of parallel
+- `implement` — **the plan's work units**, dispatched in batches of parallel
   implementers when several units are independent and each is more than a
   small edit, then one independent verifier over the whole diff.
 - `revise` and `pr` — done by you: one document, one author. Delegate only
@@ -272,7 +337,7 @@ What gets split, per phase (details in each phase below):
 
 How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
 
-- **Parallel means one message.** Launch every independent subagent of a wave
+- **Parallel means one message.** Launch every independent subagent of a batch
   in a single response with several tool calls; one call per message runs
   them one after another.
 - **Never pass a `model`, and use the general-purpose agent.** clash pins the
@@ -299,7 +364,7 @@ How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
   tracing (callers, cross-file invariants, another repo), and batch those per
   file or area — never one verifier per trivial finding.
 - **Disjoint files.** Two implementers running at the same time never own
-  the same file; a unit that needs another's output waits for the next wave.
+  the same file; a unit that needs another's output waits for the next batch.
   Implementers edit code only — no git, no item-directory writes.
 - **Report the split.** Your final message says how you sized the round, how
   the work was divided (or why it was not), and what verification dropped
@@ -350,7 +415,10 @@ and say so instead of writing a plan.
    approach, files to touch, ordered steps, testing strategy, risks. Plain
    markdown; the GUI renders it. Write the steps as **work units** — each
    names the files it owns and the units it depends on — so the implement
-   phase can dispatch them in parallel waves without re-deriving the split.
+   phase can dispatch them in parallel batches without re-deriving the split.
+   **A whole project, not one task?** Split it into waves (see "Waves") and
+   write `waves.json` beside `plan.md`; a single task has no waves and no
+   file.
 4. Finish: write `handoff.md` (see "Hand-off note"), then set
    `meta.json.status = "plan-review"`. Stop — the human reviews.
 
@@ -398,17 +466,17 @@ describes something else — the human amends it by taking the item back to
    section of `review.md`) in the worktree. Follow the repo's own CLAUDE.md
    conventions. Run the project's tests/linters. Under `team`:
    - Turn the plan's work units (or the round's requested changes) into
-     **waves**: units with no unmet dependency and disjoint files go in the
-     same wave. Dispatch each wave's implementers together. Do small units
+     **batches**: units with no unmet dependency and disjoint files go in the
+     same batch. Dispatch each wave's implementers together. Do small units
      yourself, and merge units that touch the same few files into one — a
      one-file change is not worth a brief, and a chain of dependent units
      gains nothing from a subagent per link.
    - Give every implementer its unit's plan text, the open annotations on its
      files (step 3), the test command that proves it, and the rule that it
      touches only its files and runs no git.
-   - After each wave: read every implementer's diff, run the tests yourself,
-     fix or re-dispatch what is wrong, then start the next wave.
-   - When the last wave lands, launch one **verifier** — read-only, briefed
+   - After each batch: read every implementer's diff, run the tests yourself,
+     fix or re-dispatch what is wrong, then start the next batch.
+   - When the last batch lands, launch one **verifier** — read-only, briefed
      with `plan.md`, the round's notes and the open annotations — to check the
      whole diff for what is missing, wrong or unasked-for. Resolve what it
      confirms before you commit. For a small diff, skip it: run the tests and
