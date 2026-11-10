@@ -1474,7 +1474,8 @@ body.pane-dragging, body.pane-dragging * { cursor: grabbing !important; user-sel
 
 /* Timeline: one newest-first feed of change rounds, review rounds and the
    item's creation, drawn as cards on a left rail. */
-.wf-timeline { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 20px; max-width: 860px; }
+/* Wide enough for the plan diffs a round carries; a feed, so one column. */
+.wf-timeline { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 20px; max-width: 1280px; }
 .wf-tl-card {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1579,17 +1580,8 @@ body.pane-dragging, body.pane-dragging * { cursor: grabbing !important; user-sel
 }
 .wf-actions-btns { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .wf-actions-group + .wf-actions-group { border-left: 1px solid var(--border); padding-left: 10px; }
-.wf-actions button {
-  background: var(--bg-hover);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  color: var(--fg);
-  font-size: 12px;
-  padding: 5px 12px;
-  cursor: pointer;
-}
-.wf-actions button:hover { background: var(--bg-active); }
-.wf-actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+/* .wf-actions button: shared with the in-tab decision rows, see the Waves
+   section at the end of this file. */
 .wf-actions button.danger { color: var(--red); border-color: var(--red); background: none; }
 
 /* Busy state for any text button running async work (busyButton() in app.js).
@@ -1884,7 +1876,10 @@ button.busy:disabled { opacity: 1; }
 .wf-thread-actions button.danger:hover { color: var(--red); }
 
 /* Rendered markdown (workflow plan/review) */
-.wf-md { font-size: 13px; line-height: 1.55; max-width: 860px; }
+/* Prose stays at a readable measure; tables, code and diagrams take the
+   whole width — plans carry wide tables that a prose cap squeezed. */
+.wf-md { font-size: 13px; line-height: 1.55; max-width: none; }
+.wf-md > :where(p, ul, ol, h1, h2, h3, h4, h5, blockquote, hr) { max-width: 100ch; }
 .wf-md h1, .wf-md h2, .wf-md h3 { color: var(--fg); margin: 14px 0 6px; line-height: 1.25; }
 .wf-md h1 { font-size: 17px; }
 .wf-md h2 { font-size: 15px; border-bottom: 1px solid var(--border); padding-bottom: 3px; }
@@ -2592,7 +2587,17 @@ button.busy:disabled { opacity: 1; }
 .wf-share-outline { font-size: 11px; }
 
 /* ── PR dashboard ─────────────────────────────────────────────── */
-.wf-prs { padding: 14px 18px; max-width: 980px; display: flex; flex-direction: column; gap: 6px; }
+/* The PR dashboard is a list that becomes a grid when there is room: the
+   header and hint span the width, rows flow row by row, so the order
+   (decisions first) still reads left to right. */
+.wf-prs {
+  padding: 14px 18px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 560px), 1fr));
+  gap: 6px 10px;
+  align-content: start;
+}
+.wf-prs > .wf-prs-head, .wf-prs > .hint { grid-column: 1 / -1; }
 .wf-prs-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
 .wf-prs-head h4 { font-size: 12px; letter-spacing: 0.06em; }
 .wf-prs-row {
@@ -3334,8 +3339,66 @@ body.layout-flyout #sidebar-resizer { display: none; }
 
 /* ── Workflow item view: Workbench (wf-outline.js + buildWorkflowView) ──
    A grouped outline beside a main column that opens on the next step. */
-.wf-bench { flex: 1; min-height: 0; display: grid; grid-template-columns: 196px minmax(0, 1fr); }
+/* Workbench = a cockpit: outline | content | context rail. The rail (the
+   next-step card, the last round, waves/PRs/agents cards) sits above the
+   content in a narrow tab — the layout this view always had — and beside it
+   in a wide one. Sized by the tab (container wfitem), not the window. */
+.wf-view.wf-bench-view { container: wfitem / inline-size; }
+.wf-bench {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 196px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: "outline rail" "outline main";
+}
+.wf-bench > .wf-outline { grid-area: outline; }
+.wf-bench > .wf-rail { grid-area: rail; display: flex; flex-direction: column; min-width: 0; }
+.wf-bench > .wf-bench-main { grid-area: main; }
 .wf-bench-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+/* The context cards repeat the header's chips: only worth their room when
+   the rail has its own column. */
+.wf-rail-ctx { display: none; }
+@container wfitem (min-width: 1180px) {
+  .wf-bench {
+    grid-template-columns: 196px minmax(0, 1fr) minmax(300px, 360px);
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: "outline main rail";
+  }
+  .wf-bench > .wf-rail {
+    border-left: 1px solid var(--border);
+    background: var(--bg-sidebar);
+    overflow-y: auto;
+    padding-bottom: 12px;
+  }
+  .wf-rail-ctx { display: block; }
+  .wf-bench-view .wf-head-ctx { display: none; }
+  /* The next-step card, stacked: its zones one under the other. */
+  .wf-rail .wf-actions { margin: 12px; flex-direction: column; align-items: stretch; box-shadow: none; }
+  .wf-rail .wf-actions-group + .wf-actions-group { border-left: none; padding-left: 0; border-top: 1px solid var(--border); padding-top: 8px; }
+  .wf-rail .wf-actions-item { margin-left: 0; }
+  .wf-rail .wf-actions > .wf-next { padding-right: 0; padding-top: 18px; }
+  .wf-rail .wf-review-strip { margin: 0 12px 4px; flex-direction: column; align-items: stretch; gap: 2px; border: 1px solid var(--border); }
+  .wf-rail .wf-review-strip-verdict { white-space: normal; }
+  .wf-rail .wf-review-strip-published { white-space: normal; }
+}
+.wf-rail-card { margin: 10px 12px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.wf-rail-card-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 6px; }
+.wf-rail-text { margin: 0 0 6px; font-size: 12px; line-height: 1.4; }
+.wf-rail-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.wf-rail-link { background: none; border: 0; padding: 0; font-size: 11px; color: var(--accent); cursor: pointer; }
+.wf-rail-link:hover { text-decoration: underline; }
+.wf-rail-agent { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: 0; border-radius: 5px; padding: 4px 6px; color: var(--fg); font-size: 12px; text-align: left; cursor: pointer; }
+.wf-rail-agent:hover { background: var(--bg-hover); }
+.wf-rail-agent-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--st-idle); flex: none; }
+.wf-rail-agent.running .wf-rail-agent-dot { background: var(--st-running); }
+.wf-rail-agent-dot.st-thinking { background: var(--st-thinking); }
+.wf-rail-agent-dot.st-prompting { background: var(--st-prompting); }
+.wf-rail-agent-dot.st-waiting { background: var(--st-waiting); }
+.wf-rail-agent-dot.st-starting { background: var(--st-starting); }
+.wf-rail-agent-dot.st-errored { background: var(--st-error); }
+.wf-rail-agent-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-rail-agent-status { font-size: 11px; white-space: nowrap; }
 .wf-bench-main > .wf-body { flex: 1; min-height: 0; }
 .wf-outline {
   display: flex;
@@ -3401,7 +3464,11 @@ body.layout-flyout #sidebar-resizer { display: none; }
 .wf-bench .wf-review-strip { margin: 4px 16px 0; border-radius: 8px; }
 .wf-actions-folded .wf-actions-btns > button:not(.wf-more-btn) { display: none; }
 @media (max-width: 760px) {
-  .wf-bench { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .wf-bench {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-areas: "outline" "rail" "main";
+  }
   .wf-outline { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--border); }
   .wf-outline .spacer, .wf-outline-group { display: none; }
   .wf-outline-item { width: auto; border-left: 0; border-radius: 6px; }
@@ -3813,46 +3880,85 @@ mark.dv-word { color: inherit; border-radius: 2px; }
 .file-blame .ba-4 { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 12%, transparent); }
 .file-blame .ba-new { box-shadow: inset 3px 0 0 var(--green); color: var(--green); }
 
-/* Waves tab — a project's roadmap (renderWfWavesView). */
-.wf-waves-now { border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin: 6px 0 12px; background: var(--bg-raised); }
-.wf-waves-now-line { margin: 0 0 4px; font-weight: 600; }
-.wf-waves-next-line { margin: 0 0 8px; color: var(--fg-dim); }
-.wf-waves-track { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 8px; }
-.wf-waves-dot { font-size: 11px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--border); color: var(--fg); text-decoration: none; }
-.wf-waves-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Waves tab and Pull requests tab. Built from the app's existing pieces —
+   the Timeline's feed and cards (.wf-timeline / .wf-tl-*), the action bar's
+   buttons, .wf-chip for every state and .icon-btn for tools — so only what
+   those lack is styled here. */
+.wf-inline-actions { margin-top: 8px; }
+.wf-actions button,
+.wf-inline-actions button {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.wf-actions button:hover,
+.wf-inline-actions button:hover { background: var(--bg-active); }
+.wf-actions button.primary,
+.wf-inline-actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+/* A chip that is a button (or a link) reads as a chip, not a form control. */
+button.wf-chip, a.wf-chip { background: transparent; color: var(--fg-dim); cursor: pointer; font-family: inherit; text-decoration: none; }
+button.wf-chip:hover, a.wf-chip:hover { color: var(--fg); border-color: var(--fg-dim); }
+/* Wide views fill the tab: the body is a size container, so the layout
+   follows the tab's own width — a tab in a split pane stays one column on a
+   wide screen. */
+.wf-wide-view { container-type: inline-size; padding: 12px 16px 20px; }
+.wf-waves-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
+.wf-waves-aside, .wf-waves-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.wf-waves-aside .wf-doc-caption { margin: 0; }
+.wf-waves-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.wf-waves-stats { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.wf-itemprs-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-items: start; }
+@container (min-width: 980px) {
+  .wf-waves-layout { grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); }
+  .wf-waves-aside { position: sticky; top: 0; }
+  .wf-waves-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+  .wf-itemprs-grid { grid-template-columns: repeat(auto-fill, minmax(480px, 1fr)); }
+}
+@container (min-width: 1500px) {
+  .wf-waves-layout { grid-template-columns: minmax(320px, 420px) minmax(0, 1fr); }
+}
+.wf-waves-now { border-color: var(--accent); }
+.wf-waves-now-line { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
+.wf-waves-next-line { margin: 0; font-size: 12px; color: var(--fg-dim); }
+.wf-waves-track { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0 0; }
 .wf-waves-issue { color: var(--red); }
-.wf-waves-step { margin: 12px 0; }
-.wf-waves-step > h4 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
-.wf-waves-step > h4 .dim { text-transform: none; letter-spacing: 0; font-weight: normal; }
-.wf-wave { border: 1px solid var(--border); border-left-width: 3px; border-radius: 6px; padding: 8px 12px; margin: 0 0 8px; background: var(--bg-raised); max-width: 900px; }
-.wf-wave-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.wf-wave-badge { font-size: 11px; color: var(--fg-dim); white-space: nowrap; }
-.wf-wave-progress { height: 4px; border-radius: 2px; background: var(--bg-hover); margin: 6px 0 4px; overflow: hidden; }
+.wf-waves-step { display: flex; flex-direction: column; gap: 8px; }
+.wf-waves-step-title { padding: 4px 0 0 2px; }
+.wf-waves-step-title .dim { text-transform: none; letter-spacing: 0; }
+.wf-wave .wf-tl-head .wf-tl-date { margin-left: auto; }
+.wf-wave-progress { height: 3px; border-radius: 2px; background: var(--bg-active); margin: 6px 0 2px 24px; overflow: hidden; }
 .wf-wave-progress > span { display: block; height: 100%; background: var(--green); }
-.wf-wave-summary { margin: 4px 0; font-size: 12px; }
-.wf-wave-tickets, .wf-wave-prs { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
-.wf-wave-ticket { font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--bg-hover); color: var(--fg); text-decoration: none; }
-.wf-wave-facts { margin-top: 4px; font-size: 11px; }
+.wf-wave-summary { padding: 4px 0 0 24px; font-size: 12px; }
+.wf-wave-tickets, .wf-wave-prs { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 0 0 24px; }
+.wf-wave-facts { padding: 6px 0 0 24px; font-size: 11px; }
 .wf-wave-facts > summary { cursor: pointer; color: var(--fg-dim); }
-.wf-wave-fact { font-size: 11px; }
-.wf-wave-done, .wf-waves-dot.wf-wave-done { border-left-color: var(--green); border-color: var(--green); }
-.wf-wave-review, .wf-waves-dot.wf-wave-review { border-left-color: var(--accent); border-color: var(--accent); }
-.wf-wave-active, .wf-waves-dot.wf-wave-active { border-left-color: var(--blue); border-color: var(--blue); }
-.wf-wave-ready, .wf-waves-dot.wf-wave-ready { border-left-color: var(--purple); border-color: var(--purple); }
-.wf-wave-blocked { opacity: 0.8; }
-.wf-waves-dot.wf-wave-blocked { opacity: 0.6; }
-
-/* PR chips and the Pull requests tab (renderWfPrsView). */
-.wf-pr-chip { font-size: 11px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; }
-.wf-pr-chip.wf-pr-merged { border-color: var(--purple); color: var(--purple); }
-.wf-pr-chip.wf-pr-closed { opacity: 0.6; text-decoration: line-through; }
-.wf-pr-chip.wf-pr-draft { border-style: dashed; }
-.wf-pr-chip.wf-pr-open { border-color: var(--green); }
-.wf-pr-chip.wf-pr-stale { box-shadow: inset 0 0 0 1px var(--red); }
-.wf-prs-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 6px 0 12px; }
-.wf-prs-group { margin: 10px 0; max-width: 1000px; }
-.wf-prs-group > h4 { margin: 0 0 6px; font-size: 12px; }
-.wf-prs-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--border); }
-.wf-prs-facts { flex: 1; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wf-prs-threads { font-size: 11px; color: var(--accent); }
-.wf-prs-error { font-size: 11px; }
+.wf-wave-fact { font-size: 11px; padding-left: 12px; }
+.wf-wave.wf-wave-blocked { opacity: 0.75; }
+.wf-wave.wf-wave-done .wf-tl-dot { color: var(--green); }
+.wf-wave.wf-wave-active .wf-tl-dot { color: var(--blue); }
+.wf-wave.wf-wave-ready .wf-tl-dot { color: var(--purple); }
+.wf-wave.wf-wave-blocked .wf-tl-dot { color: var(--fg-dim); }
+/* Wave states on the same palette as the item's status chips. */
+.wf-chip.wf-wave-chip-done { color: var(--green); border-color: var(--green); }
+.wf-chip.wf-wave-chip-review { color: var(--accent); border-color: var(--accent); }
+.wf-chip.wf-wave-chip-active { color: var(--blue); border-color: var(--blue); }
+.wf-chip.wf-wave-chip-ready { color: var(--purple); border-color: var(--purple); }
+.wf-chip.wf-wave-chip-blocked { color: var(--fg-dim); }
+/* PR states: open, draft, merged, closed — and stale when the last refresh
+   could not reach it. */
+.wf-chip.wf-pr-state-open { color: var(--green); border-color: var(--green); }
+.wf-chip.wf-pr-state-draft { color: var(--fg-dim); border-style: dashed; }
+.wf-chip.wf-pr-state-merged { color: var(--purple); border-color: var(--purple); }
+.wf-chip.wf-pr-state-closed { color: var(--fg-dim); text-decoration: line-through; }
+.wf-chip.wf-pr-state-stale { box-shadow: inset 0 0 0 1px var(--red); }
+.wf-itemprs-bar { align-items: center; gap: 6px; justify-content: flex-start; flex-wrap: wrap; }
+.wf-itemprs-summary-line { font-size: 12px; margin-right: auto; }
+.wf-itemprs-row { display: flex; align-items: center; gap: 10px; padding: 4px 0 4px 24px; border-top: 1px solid var(--border); }
+.wf-itemprs-group .wf-tl-head + .wf-itemprs-row { margin-top: 6px; }
+.wf-itemprs-facts { flex: 1; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-itemprs-threads { font-size: 11px; color: var(--accent); }
+.wf-itemprs-error { font-size: 11px; }

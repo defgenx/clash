@@ -7951,7 +7951,7 @@ async function buildWorkflowView(el, project, slug) {
   const manyPrs = headPrs.length > WF_HEAD_PR_LIMIT;
   if (manyPrs) {
     const sum = document.createElement("button");
-    sum.className = "icon-btn wide wf-prs-summary";
+    sum.className = "icon-btn wide wf-itemprs-summary wf-head-ctx";
     const counts = prCounts(headPrs);
     const errs = Object.keys(item.prErrors || {}).length;
     sum.innerHTML = `${svgIcon("pr", 12)}<span>${escapeHtml(prCountsText(counts))}${
@@ -7966,7 +7966,7 @@ async function buildWorkflowView(el, project, slug) {
   }
   for (const pr of manyPrs ? headPrs.filter((p) => p.primary) : headPrs) {
     const prBtn = document.createElement("button");
-    prBtn.className = "icon-btn wide" + (pr.primary ? "" : " wf-linked-pr");
+    prBtn.className = "icon-btn wide wf-head-ctx" + (pr.primary ? "" : " wf-linked-pr");
     const label = pr.primary ? `#${pr.number || "PR"}` : prChipLabel(pr);
     const stateBit = prStateLabel(pr);
     prBtn.innerHTML = `${svgIcon("pr", 12)}<span>${escapeHtml(label)}${
@@ -7989,7 +7989,7 @@ async function buildWorkflowView(el, project, slug) {
   if (item.waves) {
     const summary = waveSummary(item);
     const chip = document.createElement("button");
-    chip.className = "icon-btn wide wf-waves-chip";
+    chip.className = "icon-btn wide wf-waves-chip wf-head-ctx";
     chip.textContent = wavesIssue(item) ? "Waves ⚠" : summary.text;
     chip.title = wavesIssue(item)
       ? `waves.json can't be used: ${wavesIssue(item)}`
@@ -8141,12 +8141,20 @@ async function buildWorkflowView(el, project, slug) {
   const bench = !bigDrawing && WfOutline.itemViewOf(state.settings.workflowView).id === "workbench";
   el.classList.toggle("wf-bench-view", bench);
   let host = el;
+  // Workbench is a cockpit: the outline, the content, and a context rail that
+  // holds the next step (the action bar), the last round and the item's
+  // waves, PRs and agents. The rail sits beside the content when the tab is
+  // wide and above it — today's layout — when it is not (a container query
+  // on the tab, so a split pane gets the narrow form). See wf-rail.js.
+  let rail = null;
   if (bench) {
     const wrap = document.createElement("div");
     wrap.className = "wf-bench";
     const main = document.createElement("div");
     main.className = "wf-bench-main";
-    wrap.append(wfRenderOutline(subViews, ts.subView, selectSubView), main);
+    rail = document.createElement("aside");
+    rail.className = "wf-rail";
+    wrap.append(wfRenderOutline(subViews, ts.subView, selectSubView), rail, main);
     el.appendChild(wrap);
     host = main;
   } else {
@@ -8208,7 +8216,7 @@ async function buildWorkflowView(el, project, slug) {
       ts.subView = "agentReview";
       buildWorkflowView(el, project, slug);
     };
-    host.appendChild(strip);
+    (rail || host).appendChild(strip);
   }
 
   // ── Content ──
@@ -8222,11 +8230,12 @@ async function buildWorkflowView(el, project, slug) {
   if (!bigDrawing) {
     const actions = document.createElement("div");
     actions.className = "wf-actions";
-    if (bench) host.insertBefore(actions, host.firstChild);
+    if (rail) rail.insertBefore(actions, rail.firstChild);
     else el.appendChild(actions);
     renderWfActions(actions, el, item);
     if (bench) wfFoldItemZone(actions);
   }
+  if (rail) wfRenderRail(rail, el, item, ts);
 
   renderWfSubView(body, el, item, ts);
 
@@ -8242,6 +8251,116 @@ async function buildWorkflowView(el, project, slug) {
 /// Workbench's outline: the item's sub-views grouped (Build, Feedback,
 /// Explained, History) with counts as badges, Settings at the bottom. The
 /// grouping is the pure `WfOutline.wfOutline`, fed the same list as the tabs.
+/// The cockpit rail's context cards — shown only when the tab is wide (the
+/// header and the bar carry the same facts otherwise): the waves, the PRs at
+/// a glance and the item's agents. Decided by `railModel` (wf-rail.js); each
+/// card leads to the tab that holds the full story.
+function wfRenderRail(rail, el, item, ts) {
+  const m = railModel(item, state.sessions, { subView: ts.subView });
+  const go = (view) => {
+    ts.subView = view;
+    buildWorkflowView(el, item.project, item.slug);
+  };
+  const card = (title, action) => {
+    const c = document.createElement("section");
+    c.className = "wf-rail-card wf-rail-ctx";
+    const h = document.createElement("div");
+    h.className = "wf-rail-card-head";
+    const t = document.createElement("span");
+    t.className = "wf-actions-caption";
+    t.textContent = title;
+    h.appendChild(t);
+    if (action) h.appendChild(action);
+    c.appendChild(h);
+    rail.appendChild(c);
+    return c;
+  };
+  const link = (label, fn, title = "") => {
+    const b = document.createElement("button");
+    b.className = "wf-rail-link";
+    b.textContent = label;
+    if (title) b.title = title;
+    b.onclick = fn;
+    return b;
+  };
+  if (m.waves) {
+    const c = card("Waves", link("Roadmap →", () => go("waves")));
+    const now = document.createElement("p");
+    now.className = "wf-rail-text";
+    now.textContent = m.waves.now;
+    c.appendChild(now);
+    const track = document.createElement("div");
+    track.className = "wf-rail-chips";
+    for (const w of m.waves.track) {
+      const chip = document.createElement("button");
+      chip.className = `wf-chip wf-wave-chip wf-wave-chip-${w.state}`;
+      chip.textContent = w.id;
+      chip.title = `${w.label} — ${waveStateLabel(w.state)}`;
+      chip.onclick = () => go("waves");
+      track.appendChild(chip);
+    }
+    c.appendChild(track);
+  }
+  if (m.prs) {
+    const refresh = document.createElement("button");
+    refresh.className = "icon-btn mini";
+    refresh.innerHTML = svgIcon("reload", 12);
+    refresh.title = `Refresh every PR now — ${m.prs.fresh}`;
+    refresh.onclick = () =>
+      spinButton(refresh, async () => {
+        try {
+          await invoke("refresh_workflow_pr", { project: item.project, slug: item.slug, force: true });
+        } catch (e) {
+          flashToast(`Refresh failed: ${e}`);
+        }
+        await refreshWorkflows();
+        buildWorkflowView(el, item.project, item.slug);
+      });
+    const c = card("Pull requests", refresh);
+    const line = document.createElement("p");
+    line.className = "wf-rail-text";
+    line.textContent = `${m.prs.text} · ${m.prs.fresh}`;
+    if (m.prs.errors) {
+      const w = document.createElement("span");
+      w.className = "wf-warn";
+      w.textContent = ` · ${m.prs.errors} not refreshed`;
+      line.appendChild(w);
+    }
+    c.appendChild(line);
+    const chips = document.createElement("div");
+    chips.className = "wf-rail-chips";
+    for (const pr of m.prs.chips) chips.appendChild(wfPrStateChip(item, el, pr));
+    c.appendChild(chips);
+    if (m.prs.many)
+      c.appendChild(
+        link(m.prs.more ? `All pull requests (+${m.prs.more}) →` : "All pull requests →", () => go("prs"))
+      );
+  }
+  const c = card("Agents");
+  if (!m.agents.length) {
+    const none = document.createElement("p");
+    none.className = "wf-rail-text dim";
+    none.textContent = "No agent session yet.";
+    c.appendChild(none);
+  }
+  for (const a of m.agents) {
+    const row = document.createElement("button");
+    row.className = "wf-rail-agent" + (a.running ? " running" : "");
+    row.title = a.running ? "Open this session" : "Resume this session";
+    const dot = document.createElement("span");
+    dot.className = `wf-rail-agent-dot st-${a.status}`;
+    const name = document.createElement("span");
+    name.className = "wf-rail-agent-name";
+    name.textContent = a.name;
+    const st = document.createElement("span");
+    st.className = "wf-rail-agent-status dim";
+    st.textContent = a.running ? a.status || "running" : "stashed";
+    row.append(dot, name, st);
+    row.onclick = () => openSession(a.id, a.name);
+    c.appendChild(row);
+  }
+}
+
 function wfRenderOutline(subViews, active, onPick) {
   const nav = document.createElement("nav");
   nav.className = "wf-outline";
@@ -13322,10 +13441,10 @@ function wfGuardExplainFrame(frame, srcdoc, onPart) {
 function wfPrStateChip(item, root, pr) {
   const b = document.createElement("button");
   const st = prStateLabel(pr) || "open";
-  b.className = `wf-pr-chip wf-pr-${st}`;
+  b.className = `wf-chip wf-pr-state wf-pr-state-${st}`;
   b.textContent = `${prChipLabel(pr)} · ${st}`;
   b.title = `${pr.url}${pr.error ? ` — not refreshed: ${pr.error}` : ""}; right-click for this PR's actions`;
-  if (pr.error) b.classList.add("wf-pr-stale");
+  if (pr.error) b.classList.add("wf-pr-state-stale");
   b.onclick = () => openLink(pr.url);
   b.oncontextmenu = (ev) => {
     ev.preventDefault();
@@ -13369,8 +13488,21 @@ function renderWfWavesView(body, root, item) {
   body.innerHTML = "";
   const prs = itemPrs(item.meta, item.prStack).map((p) => ({ ...p, error: (item.prErrors || {})[p.url] || "" }));
   const story = waveNarrative(item, prs);
+  // Cards like the Timeline's, so the tabs read as one product; the layout
+  // follows the tab's own width (a container, not the window: a tab in a
+  // split pane is narrow on a wide screen) — one column when narrow, the
+  // now-panel beside the steps when there is room.
+  body.classList.add("wf-wide-view");
+  const layout = document.createElement("div");
+  layout.className = "wf-waves-layout";
+  body.appendChild(layout);
+  const aside = document.createElement("div");
+  aside.className = "wf-waves-aside";
+  const main = document.createElement("div");
+  main.className = "wf-waves-main";
+  layout.append(aside, main);
   const card = document.createElement("div");
-  card.className = "wf-waves-now";
+  card.className = "wf-tl-card wf-waves-now";
   if (story) {
     const now = document.createElement("p");
     now.className = "wf-waves-now-line";
@@ -13386,7 +13518,7 @@ function renderWfWavesView(body, root, item) {
     track.className = "wf-waves-track";
     for (const w of waveBoard(item).waves) {
       const dot = document.createElement("a");
-      dot.className = `wf-waves-dot wf-wave-${w.state}`;
+      dot.className = `wf-chip wf-wave-chip wf-wave-chip-${w.state}`;
       dot.href = `#wave-${w.id}`;
       dot.title = `${waveLabel(w)} — ${waveStateLabel(w.state)}`;
       dot.textContent = w.id;
@@ -13400,24 +13532,51 @@ function renderWfWavesView(body, root, item) {
   }
   const buttons = wfWaveDecisionButtons(item, root);
   if (buttons.length) {
+    // The action bar's own buttons, so a decision looks the same wherever it
+    // is offered.
     const row = document.createElement("div");
-    row.className = "wf-waves-actions";
+    row.className = "wf-inline-actions wf-actions-btns";
     row.append(...buttons);
     card.appendChild(row);
   }
-  body.appendChild(card);
+  aside.appendChild(card);
   if (wavesIssue(item) || !summary) return;
+  // The PRs at a glance, beside the story they belong to.
+  if (prs.length) {
+    const stats = document.createElement("div");
+    stats.className = "wf-tl-card wf-waves-stats";
+    const line = document.createElement("div");
+    line.className = "wf-tl-title";
+    line.textContent = prCountsText(prCounts(prs));
+    const fresh = document.createElement("div");
+    fresh.className = "wf-tl-date";
+    fresh.textContent = checkedAgo(item.prCheckedAt);
+    stats.append(line, fresh);
+    if (prs.length > 1) {
+      const open = document.createElement("button");
+      open.className = "icon-btn wide";
+      open.innerHTML = `${svgIcon("pr", 12)}<span>All pull requests</span>`;
+      open.onclick = () => {
+        const ts = wfTabState.get(wfKey(item.project, item.slug));
+        if (ts) ts.subView = "prs";
+        if (root) buildWorkflowView(root, item.project, item.slug);
+      };
+      stats.appendChild(open);
+    }
+    aside.appendChild(stats);
+  }
 
   const caption = document.createElement("p");
   caption.className = "wf-doc-caption dim";
   caption.textContent =
     "Waves come from waves.json, written by the planner. Each is implemented and approved on its own, after the waves it depends on; waves of one step can share a round when they touch different code. A PR belongs to the wave that lists it, or whose ticket its branch names.";
-  body.appendChild(caption);
+  aside.appendChild(caption);
 
   for (const step of waveColumns(item)) {
     const sec = document.createElement("section");
     sec.className = "wf-waves-step";
-    const h = document.createElement("h4");
+    const h = document.createElement("div");
+    h.className = "wf-actions-caption wf-waves-step-title";
     h.textContent = step.title;
     if (step.detail) {
       const d = document.createElement("span");
@@ -13426,19 +13585,30 @@ function renderWfWavesView(body, root, item) {
       h.appendChild(d);
     }
     sec.appendChild(h);
+    // A step's waves side by side when the tab is wide enough.
+    const grid = document.createElement("div");
+    grid.className = "wf-waves-grid";
+    sec.appendChild(grid);
     for (const w of step.waves) {
       const c = wavePrs(w, prs);
       const wave = document.createElement("div");
-      wave.className = `wf-wave wf-wave-${w.state}`;
+      wave.className = `wf-tl-card wf-wave wf-wave-${w.state}`;
       wave.id = `wave-${w.id}`;
       const top = document.createElement("div");
-      top.className = "wf-wave-top";
-      const name = document.createElement("strong");
+      top.className = "wf-tl-head";
+      const mark = document.createElement("span");
+      mark.className = "wf-tl-dot";
+      mark.textContent = w.state === "done" ? "✓" : w.state === "active" ? "◐" : w.state === "review" ? "●" : "○";
+      const name = document.createElement("span");
+      name.className = "wf-tl-title";
       name.textContent = waveLabel(w);
       const badge = document.createElement("span");
-      badge.className = "wf-wave-badge";
-      badge.textContent = waveStateLabel(w.state) + (c.total ? ` · ${c.merged}/${c.total} PRs merged` : "");
-      top.append(name, badge);
+      badge.className = `wf-chip wf-wave-chip wf-wave-chip-${w.state}`;
+      badge.textContent = waveStateLabel(w.state);
+      const prog = document.createElement("span");
+      prog.className = "wf-tl-date";
+      prog.textContent = c.total ? `${c.merged}/${c.total} PRs merged` : "";
+      top.append(mark, name, badge, prog);
       wave.appendChild(top);
       if (c.total) {
         const bar = document.createElement("div");
@@ -13460,7 +13630,7 @@ function renderWfWavesView(body, root, item) {
         for (const key of w.tickets) {
           const url = (w.ticketUrls || {})[key];
           const a = document.createElement(url ? "a" : "span");
-          a.className = "wf-wave-ticket";
+          a.className = "wf-chip wf-wave-ticket";
           a.textContent = key;
           if (url) {
             a.href = url;
@@ -13498,16 +13668,16 @@ function renderWfWavesView(body, root, item) {
         det.appendChild(d);
       }
       wave.appendChild(det);
-      sec.appendChild(wave);
+      grid.appendChild(wave);
     }
-    body.appendChild(sec);
+    main.appendChild(sec);
   }
   const loose = (waveBoard(item).unassignedPrs || []).length;
   if (loose) {
     const p = document.createElement("p");
     p.className = "dim";
     p.textContent = `${loose} PR${loose === 1 ? " belongs" : "s belong"} to no wave: list ${loose === 1 ? "it" : "them"} in a wave's "prs" (or name a wave's ticket in the branch) to place ${loose === 1 ? "it" : "them"}.`;
-    body.appendChild(p);
+    main.appendChild(p);
   }
 }
 
@@ -13519,9 +13689,11 @@ function renderWfWavesView(body, root, item) {
 async function renderWfPrsView(body, root, item) {
   body.innerHTML = "";
   const board = prBoard(item);
+  body.classList.add("wf-wide-view");
   const bar = document.createElement("div");
-  bar.className = "wf-prs-bar";
+  bar.className = "wf-doc-tools wf-itemprs-bar";
   const line = document.createElement("span");
+  line.className = "wf-itemprs-summary-line";
   line.textContent = `${prCountsText(board.counts)} · ${checkedAgo(board.checkedAt)}`;
   if (board.errors) {
     const w = document.createElement("span");
@@ -13530,7 +13702,8 @@ async function renderWfPrsView(body, root, item) {
     line.appendChild(w);
   }
   const refresh = document.createElement("button");
-  refresh.textContent = "↻ Refresh all";
+  refresh.className = "icon-btn wide";
+  refresh.innerHTML = `${svgIcon("reload", 12)}<span>Refresh all</span>`;
   refresh.title = "Ask GitHub about every PR of this item now, several at a time";
   refresh.onclick = () =>
     busyButton(refresh, async () => {
@@ -13544,25 +13717,38 @@ async function renderWfPrsView(body, root, item) {
       renderWfPrsView(body, root, fresh);
     });
   const openAll = document.createElement("button");
+  openAll.className = "icon-btn wide";
   const live = board.groups.flatMap((g) => g.prs).filter((p) => p.state !== "MERGED" && p.state !== "CLOSED");
-  openAll.textContent = `Open ${live.length} open PR${live.length === 1 ? "" : "s"}`;
+  openAll.innerHTML = `${svgIcon("external-link", 12)}<span>Open ${live.length} open PR${live.length === 1 ? "" : "s"}</span>`;
   openAll.disabled = !live.length;
   openAll.onclick = () => openLinks(live.map((p) => p.url));
   bar.append(line, refresh, openAll);
   body.appendChild(bar);
+  // Groups flow into columns when the tab is wide enough.
+  const grid = document.createElement("div");
+  grid.className = "wf-itemprs-grid";
+  body.appendChild(grid);
 
   for (const g of board.groups) {
     const sec = document.createElement("section");
-    sec.className = "wf-prs-group";
+    sec.className = "wf-tl-card wf-itemprs-group";
     if (g.title) {
-      const h = document.createElement("h4");
-      h.textContent = g.title;
+      const h = document.createElement("div");
+      h.className = "wf-tl-head";
+      const t = document.createElement("span");
+      t.className = "wf-tl-title";
+      t.textContent = g.title;
+      h.appendChild(t);
       if (g.state) {
         const b = document.createElement("span");
-        b.className = `wf-wave-badge wf-wave-${g.state}`;
-        b.textContent = ` ${waveStateLabel(g.state)}`;
+        b.className = `wf-chip wf-wave-chip wf-wave-chip-${g.state}`;
+        b.textContent = waveStateLabel(g.state);
         h.appendChild(b);
       }
+      const n = document.createElement("span");
+      n.className = "wf-tl-date";
+      n.textContent = `${g.prs.length} PR${g.prs.length === 1 ? "" : "s"}`;
+      h.appendChild(n);
       sec.appendChild(h);
     }
     if (!g.prs.length) {
@@ -13573,10 +13759,10 @@ async function renderWfPrsView(body, root, item) {
     }
     for (const pr of g.prs) {
       const row = document.createElement("div");
-      row.className = "wf-prs-row";
+      row.className = "wf-itemprs-row";
       row.appendChild(wfPrStateChip(item, root, pr));
       const facts = document.createElement("span");
-      facts.className = "wf-prs-facts dim";
+      facts.className = "wf-itemprs-facts dim";
       const bits = [pr.primary ? "primary" : "linked"];
       if (pr.stack) bits.push(`stack ${prStackLabel(pr)}`);
       if (pr.headRef) bits.push(pr.baseRef ? `${pr.headRef} → ${pr.baseRef}` : pr.headRef);
@@ -13584,19 +13770,19 @@ async function renderWfPrsView(body, root, item) {
       row.appendChild(facts);
       if (pr.unanswered > 0) {
         const t = document.createElement("span");
-        t.className = "wf-prs-threads";
+        t.className = "wf-itemprs-threads";
         t.textContent = `${pr.unanswered} thread${pr.unanswered === 1 ? "" : "s"} to answer`;
         row.appendChild(t);
       }
       if (pr.error) {
         const e = document.createElement("span");
-        e.className = "wf-warn wf-prs-error";
+        e.className = "wf-warn wf-itemprs-error";
         e.textContent = `not refreshed: ${pr.error}`;
         row.appendChild(e);
       }
       const more = document.createElement("button");
-      more.className = "icon-btn";
-      more.textContent = "⋯";
+      more.className = "icon-btn mini";
+      more.innerHTML = svgIcon("kebab", 14);
       more.title = "This PR's actions";
       more.onclick = (ev) => {
         ev.stopPropagation();
@@ -13606,7 +13792,7 @@ async function renderWfPrsView(body, root, item) {
       row.appendChild(more);
       sec.appendChild(row);
     }
-    body.appendChild(sec);
+    grid.appendChild(sec);
   }
 }
 

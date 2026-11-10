@@ -1012,7 +1012,16 @@ waves grouped by dependency level, saying which of a step's waves may share
 a round — each wave with its state, PR progress (`merged/total`), summary,
 linked tickets (URLs resolved from `[trackers]` by the GUI layer) and PR
 chips; the scheduling facts (waits for, can share a round with, areas, start
-commit) are folded under *Scheduling*. The header chip reads `Waves 2/5 · w3
+commit) are folded under *Scheduling*. Both tabs are built from the app's
+existing pieces (Timeline cards, `.wf-chip` states, the action bar's buttons
+via `.wf-inline-actions`, `.icon-btn` tools) and lay out by the **tab's**
+width through a container query (`.wf-wide-view`): one column below 980px,
+the now-panel sticky beside the steps above it, waves and PR groups in
+auto-filled grids. The item tab's Workbench view is the cockpit around them:
+`buildWorkflowView` assembles `outline | rail | main` and the `wfitem`
+container query places the rail (`wfRenderRail`, cards decided by the pure
+`railModel` in `gui/dist/wf-rail.js`) above the content below 1180px and as a
+third column above it, where the header's `.wf-head-ctx` chips are hidden. The header chip reads `Waves 2/5 · w3
 in progress`.
 
 **Many PRs.** Past `WF_HEAD_PR_LIMIT` (3) PRs the header shows the primary

@@ -77,6 +77,7 @@ function sandbox() {
     refreshWorkflows: async () => {},
     wfItem: () => ITEM,
     flashToast: () => {},
+    svgIcon: (name) => `<svg data-icon="${name}"></svg>`,
   };
   box.window = box;
   vm.createContext(box);
@@ -97,7 +98,7 @@ test("the roadmap opens on what is happening, then walks the waves with their PR
   assert.ok(t.some((x) => /^Next: .*unlocks w2/.test(x)));
   assert.ok(t.includes("✓ Approve w1 → next waves…"), "the decision sits on the roadmap");
   assert.ok(t.includes("Step 1") && t.includes("Step 3"));
-  assert.ok(t.some((x) => /to approve · 2\/8 PRs merged/.test(x)));
+  assert.ok(t.includes("2/8 PRs merged"));
   assert.ok(t.includes("TT-0"), "tickets are shown");
   assert.ok(t.includes("saturn#456 · open"), "a wave's PRs are chips");
   assert.ok(t.includes("api#979 · closed"));
@@ -110,12 +111,66 @@ test("the Pull requests tab lists every PR by wave, with freshness and failures"
   const t = texts(body);
   assert.ok(t.some((x) => /^10 PRs · 2 merged · 1 closed · 7 open · checked 5 min ago$/.test(x)), t.join("\n"));
   assert.ok(t.some((x) => / · 1 not reached on the last refresh/.test(x)));
-  assert.ok(t.includes("↻ Refresh all") && t.includes("Open 7 open PRs"));
+  const html = descendants(body).map((e) => e.innerHTML || "").join("\n");
+  assert.match(html, /data-icon="reload".*Refresh all/);
+  assert.match(html, /Open 7 open PRs/);
   // Groups follow the waves; a wave with nothing yet is left out.
   const heads = t.filter((x) => /^w\d · /.test(x));
   assert.deepEqual(heads, ["w1 · w1 title", "w2 · w2 title"]);
   assert.ok(t.includes("not refreshed: HTTP 502"));
   assert.ok(t.some((x) => /^primary · x → y$/.test(x)));
+});
+
+test("the new tabs are built from the app's own pieces", () => {
+  // Decision rows use the action bar's buttons, states are .wf-chip, tools
+  // are .icon-btn and the cards are the Timeline's — a hand-rolled look is
+  // how these tabs ended up not matching the rest of the app.
+  const box = sandbox();
+  const roadmap = stubEl();
+  box.renderWfWavesView(roadmap, {}, ITEM);
+  const cls = (root) => descendants(root).map((e) => e.className || "");
+  const r = cls(roadmap);
+  assert.ok(r.some((c) => /\bwf-inline-actions\b/.test(c) && /\bwf-actions-btns\b/.test(c)));
+  assert.ok(r.some((c) => /^wf-tl-card wf-wave\b/.test(c)));
+  assert.ok(r.some((c) => /^wf-chip wf-pr-state wf-pr-state-open$/.test(c)));
+  assert.ok(r.every((c) => !/wf-pr-chip|wf-waves-dot|wf-waves-actions/.test(c)), "no retired one-off classes");
+  const prs = stubEl();
+  box.renderWfPrsView(prs, {}, ITEM);
+  const p = cls(prs);
+  assert.ok(p.filter((c) => c === "icon-btn wide").length >= 2, "toolbar buttons are icon buttons");
+  assert.ok(p.includes("icon-btn mini"), "the row menu is an icon button");
+  assert.ok(p.some((c) => /^wf-tl-card wf-itemprs-group$/.test(c)));
+  // The action bar and the inline rows share one button rule.
+  const css = fs.readFileSync(path.join(__dirname, "..", "dist", "style.css"), "utf8");
+  assert.match(css, /\.wf-actions button,\s*\.wf-inline-actions button \{/);
+  assert.match(css, /\.wf-actions button\.primary,\s*\.wf-inline-actions button\.primary \{/);
+});
+
+test("the tabs use the width they are given", () => {
+  // One column in a narrow tab, the now-panel beside the steps and groups in
+  // columns in a wide one — sized by the tab (a container query), not the
+  // window, because a tab in a split pane is narrow on a wide screen.
+  const box = sandbox();
+  const roadmap = stubEl();
+  box.renderWfWavesView(roadmap, {}, ITEM);
+  const top = roadmap.children[0];
+  assert.match(roadmap.className, /\bwf-wide-view\b/);
+  assert.equal(top.className, "wf-waves-layout");
+  assert.deepEqual(top.children.map((c) => c.className), ["wf-waves-aside", "wf-waves-main"]);
+  const cls = (root) => descendants(root).map((e) => e.className || "");
+  assert.ok(cls(top.children[1]).includes("wf-waves-grid"), "a step's waves sit in a grid");
+  assert.ok(cls(top.children[0]).some((c) => /wf-waves-stats/.test(c)), "PR counts beside the story");
+  const prs = stubEl();
+  box.renderWfPrsView(prs, {}, ITEM);
+  assert.ok(cls(prs).includes("wf-itemprs-grid"));
+  const css = fs.readFileSync(path.join(__dirname, "..", "dist", "style.css"), "utf8");
+  assert.match(css, /\.wf-wide-view \{ container-type: inline-size;/);
+  assert.match(css, /@container \(min-width: 980px\) \{[\s\S]*?\.wf-waves-layout \{ grid-template-columns: minmax\(280px, 360px\) minmax\(0, 1fr\); \}/);
+  // The other lists stop at no fixed width either.
+  assert.doesNotMatch(css, /\.wf-prs \{[^}]*max-width/);
+  assert.match(css, /\.wf-md \{[^}]*max-width: none;/);
+  // The dashboard's rows keep their own class: the item tab must not restyle them.
+  assert.doesNotMatch(css, /\.wf-prs-row \{ display: flex; align-items: center; gap: 10px; padding: 4px 0/);
 });
 
 test("past a handful of PRs the header summarizes and points at the tab", () => {
