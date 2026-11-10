@@ -4342,10 +4342,26 @@ pub(crate) async fn start_workflow_discussion(
             round: Default::default(),
         },
         |item_dir| {
+            // Top-level names only: the session gets a map, never the contents.
+            let files: Vec<String> = std::fs::read_dir(item_dir)
+                .map(|rd| {
+                    rd.filter_map(Result::ok)
+                        .map(|e| {
+                            let name = e.file_name().to_string_lossy().into_owned();
+                            if e.path().is_dir() {
+                                format!("{name}/")
+                            } else {
+                                name
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             clash::application::workflow::discussion_prompt(
                 &prompt_meta,
                 &slug,
                 item_dir,
+                &files,
                 topic.as_deref(),
             )
         },

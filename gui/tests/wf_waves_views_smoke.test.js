@@ -101,9 +101,9 @@ test("the roadmap opens on what is happening, then walks the waves with their PR
   const body = stubEl();
   box.renderWfWavesView(body, {}, ITEM);
   const t = texts(body);
-  assert.ok(t.some((x) => /w1 · w1 title is waiting for your sign-off\. 2 of 8 PRs merged, 5 still open\./.test(x)), t.join("\n"));
-  assert.ok(t.some((x) => /^Next: .*unlocks w2/.test(x)));
-  assert.ok(t.includes("✓ Sign off w1 → next waves…"), "the decision sits on the roadmap");
+  assert.ok(t.some((x) => /Wave 1 · w1 title is waiting for your sign-off\. 2 of 8 PRs merged, 5 still open\./.test(x)), t.join("\n"));
+  assert.ok(t.some((x) => /^Next: .*unlocks Wave 2/.test(x)));
+  assert.ok(t.includes("✓ Sign off Wave 1 → next waves…"), "the decision sits on the roadmap");
   assert.ok(t.includes("Step 1") && t.includes("Step 3"));
   assert.ok(t.includes("2/8 PRs merged"));
   assert.ok(t.includes("TT-0"), "tickets are shown");
@@ -127,9 +127,9 @@ test("a wave card says what blocks it and binds the bar's actions", () => {
   assert.ok(t.includes("Before you sign off"));
   assert.ok(t.some((x) => /^5 PRs not merged yet$/.test(x)), t.join("\n"));
   assert.ok(t.some((x) => /^1 PR not reached on the last refresh$/.test(x)));
-  assert.ok(t.includes("Waits for w1 · w1 title — to sign off"));
+  assert.ok(t.includes("Waits for Wave 1 · w1 title — to sign off"));
   // The round's decisions and the wave's PR tools are on its card.
-  assert.equal(t.filter((x) => x === "✓ Sign off w1 → next waves…").length, 2, "the roadmap's and the card's");
+  assert.equal(t.filter((x) => x === "✓ Sign off Wave 1 → next waves…").length, 2, "the roadmap's and the card's");
   assert.ok(t.includes("⌕ Review its 5 PRs…"));
   assert.ok(t.includes("Open 5 PRs"));
   assert.ok(["Flow", "List", "One at a time"].every((m) => t.includes(m)));
@@ -146,8 +146,8 @@ test("the Pull requests tab lists every PR by wave, with freshness and failures"
   assert.match(html, /data-icon="reload".*Refresh all/);
   assert.match(html, /Open 7 open PRs/);
   // Groups follow the waves; a wave with nothing yet is left out.
-  const heads = t.filter((x) => /^w\d · /.test(x));
-  assert.deepEqual(heads, ["w1 · w1 title", "w2 · w2 title"]);
+  const heads = t.filter((x) => /^Wave \d · /.test(x));
+  assert.deepEqual(heads, ["Wave 1 · w1 title", "Wave 2 · w2 title"]);
   assert.ok(t.includes("not refreshed: HTTP 502"));
   assert.ok(t.some((x) => /^primary · x → y$/.test(x)));
 });
@@ -229,8 +229,8 @@ test("a plan with parallel waves opens on the Flow, and together-or-alone is you
   box.renderWfWavesView(body, {}, par);
   const t = texts(body);
   assert.ok(t.includes("⇉ parallel"), "the step says its waves can run in parallel");
-  assert.equal(t.filter((x) => x === "▶ Start w2 + w3 together…").length, 1, "together is offered once, for the step");
-  assert.ok(t.includes("▶ Start w2 alone…") && t.includes("▶ Start w3 alone…"));
+  assert.equal(t.filter((x) => x === "▶ Start Waves 2 and 3 together…").length, 1, "together is offered once, for the step");
+  assert.ok(t.includes("▶ Start Wave 2 alone…") && t.includes("▶ Start Wave 3 alone…"));
   const cls = descendants(body).map((e) => e.className || "");
   assert.ok(cls.includes("wf-waves-flow"), "Flow is where a parallel plan opens");
   assert.ok(cls.includes("wf-flow-col parallel"));

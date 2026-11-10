@@ -199,7 +199,7 @@ test("many PRs read as one summary and a board grouped by wave", () => {
   const b = prBoard(item);
   // A wave with no PRs and nothing going on is left out; unclaimed PRs last.
   assert.deepEqual(b.groups.map((g) => g.key), ["w1", "w2", ""]);
-  assert.equal(b.groups[0].title, "w1 · Foundations");
+  assert.equal(b.groups[0].title, "Wave 1 · Foundations");
   // Open before settled inside a group.
   assert.deepEqual(b.groups[0].prs.map((p) => p.number), [454, 977, 9313]);
   assert.equal(b.groups[0].prs[1].error, "HTTP 502");

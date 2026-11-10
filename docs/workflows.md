@@ -1730,8 +1730,10 @@ composer would make the next executor round act on it.
 named `<title> · discuss`, registered with the item and listed among its
 agents) in the item's worktree, with the pure
 `application::workflow::discussion_prompt`: the item directory and its facts
-(status, iteration, branch, PRs, signed-off and in-flight waves, ticket),
-which files hold what, and three rules — write nothing in the item directory
+(status, iteration, branch, PRs, signed-off and in-flight waves, ticket), a
+map of the files the item directory actually holds and what each one is for,
+the instruction to read none of them up front — only the one a question
+needs, and only the part that answers it — and three rules — write nothing in the item directory
 and never change the status; edit, commit, push or post only when asked in
 the conversation; and when the talk reaches a decision, suggest recording it
 as a change request (with the note it would write), because the change

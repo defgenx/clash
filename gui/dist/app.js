@@ -8590,7 +8590,7 @@ function wfRenderRail(rail, el, item, ts) {
     for (const w of m.waves.track) {
       const chip = document.createElement("button");
       chip.className = `wf-chip wf-wave-chip wf-wave-chip-${w.state}`;
-      chip.textContent = w.id;
+      chip.textContent = waveName(w.id);
       chip.title = `${w.label} — ${waveStateLabel(w.state)}`;
       chip.onclick = () => go("waves");
       track.appendChild(chip);
@@ -14342,7 +14342,7 @@ function renderWfWavesView(body, root, item) {
       dot.className = `wf-chip wf-wave-chip wf-wave-chip-${w.state}`;
       dot.href = `#wave-${w.id}`;
       dot.title = `${waveLabel(w)} — ${waveStateLabel(w.state)}`;
-      dot.textContent = w.id;
+      dot.textContent = waveName(w);
       dot.onclick = (e) => {
         e.preventDefault();
         if (mode === "one") {

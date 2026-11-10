@@ -325,10 +325,33 @@ pub fn all_agent_reviews(md: &str) -> Vec<AgentReviewSummary> {
 /// comes out of it is recorded the way every decision is — as a change
 /// request in clash — so the item's history stays the one record. `topic` is
 /// what the human wanted to talk about, if they said.
+/// What each file of an item directory holds, for the discussion's file map.
+/// Directories end in `/`.
+const DISCUSSION_FILES: &[(&str, &str)] = &[
+    ("meta.json", "status, branch, PRs, waves record (clash's)"),
+    ("plan.md", "the current plan"),
+    ("waves.json", "the waves: ids, dependencies, areas, tickets, PRs"),
+    ("review.md", "the human's change requests, one section per iteration, newest last"),
+    ("agent-review.md", "every review round's findings and verdict, newest last — large; grep for the round you need"),
+    ("annotations.json", "line comments on the diff (human's and reviewers')"),
+    ("handoff.md", "the last agent's hand-off: what landed, what is left"),
+    ("explain-plan.md", "an explanation of what the plan will do"),
+    ("explain-diff.md", "an explanation of what the change did"),
+    ("structure.md", "an older explanation of the change"),
+    ("drift.md", "plan vs what was built: every divergence, graded"),
+    ("plan-history/", "earlier versions of the plan"),
+    ("history/", "each change round's frozen plan and diff"),
+];
+
+/// Pure: the kickoff of a Discuss session. `files` names what the item
+/// directory holds (top-level entries, directories ending in `/`); only the
+/// known ones are mapped, so the session knows where an answer lives without
+/// reading anything up front.
 pub fn discussion_prompt(
     meta: &crate::domain::workflow::WorkflowMeta,
     slug: &str,
     item_dir: &str,
+    files: &[String],
     topic: Option<&str>,
 ) -> String {
     let title = if meta.title.trim().is_empty() {
@@ -368,18 +391,30 @@ pub fn discussion_prompt(
     }
     let opening = match topic.map(str::trim).filter(|t| !t.is_empty()) {
         Some(t) => format!("The human wants to talk about: {t}\n\nAnswer that first."),
-        None => "Open with three or four lines on where the item stands and what is \
-                 waiting on whom, then ask what they want to discuss."
+        None => "Say in one or two lines where the item stands — from the facts above \
+                 alone, reading nothing — then ask what they want to discuss."
             .to_string(),
+    };
+    let map: Vec<String> = DISCUSSION_FILES
+        .iter()
+        .filter(|(name, _)| files.iter().any(|f| f == name))
+        .map(|(name, what)| format!("- {name} — {what}"))
+        .collect();
+    let map = if map.is_empty() {
+        "- (no workflow files yet)".to_string()
+    } else {
+        map.join("\n")
     };
     format!(
         "This is a conversation about the clash workflow item \"{title}\" — not a \
          workflow round. Workflow item directory: {item_dir} ({facts}).\n\n\
-         Read whatever helps: meta.json, plan.md, waves.json, review.md (the human's \
-         change requests, newest last), agent-review.md (the review rounds), \
-         annotations.json (diff comments), handoff.md (the last agent's hand-off), the \
-         explain-*.md / drift.md documents when they exist, and the code in the current \
-         directory (git log / git diff against the item's base for what changed).\n\n\
+         What the item directory holds:\n{map}\n\
+         The code is in the current directory (git log / git diff against the item's \
+         base for what changed).\n\n\
+         Do not read these up front. Start from the facts above; open a file only when \
+         a question needs it, and only the one that answers it — the section you need \
+         (grep, or a line range), not the whole file. Never read everything \"for \
+         context\".\n\n\
          Rules for this session:\n\
          - Do not write any file in the item directory, and never change the item's \
          status — clash and the workflow rounds own those.\n\
@@ -2628,7 +2663,14 @@ not landing in the branch: the commit message still ships a MAJOR.\n\n\
             ..Default::default()
         };
         meta.waves.done = vec!["w1".into()];
-        let p = discussion_prompt(&meta, "s", "/w/p/s", None);
+        let files = vec![
+            "meta.json".to_string(),
+            "plan.md".to_string(),
+            "agent-review.md".to_string(),
+            "history/".to_string(),
+            "notes.txt".to_string(),
+        ];
+        let p = discussion_prompt(&meta, "s", "/w/p/s", &files, None);
         assert!(p.contains("not a workflow round"), "{p}");
         assert!(p.contains("Workflow item directory: /w/p/s (status `pr-ready` (iteration 15), branch `saturn-audit`, PRs https://github.com/o/s/pull/1, waves signed off: w1)"), "{p}");
         assert!(p.contains("Do not write any file in the item directory"));
@@ -2636,14 +2678,21 @@ not landing in the branch: the commit message still ships a MAJOR.\n\n\
         assert!(p.contains("unless the human asks for it in this conversation"));
         assert!(p.contains("recording it in clash as a change request"));
         assert!(p.contains("then ask what they want to discuss"));
-        let t = discussion_prompt(&meta, "s", "/w/p/s", Some("why is w2 blocked?"));
+        // A map of what exists, read on demand — never everything up front.
+        assert!(p.contains("- plan.md — the current plan"), "{p}");
+        assert!(p.contains("- history/ — "), "{p}");
+        assert!(!p.contains("waves.json"), "only files that exist: {p}");
+        assert!(!p.contains("notes.txt"), "only known files: {p}");
+        assert!(p.contains("Do not read these up front"));
+        assert!(p.contains("from the facts above alone, reading nothing"));
+        let t = discussion_prompt(&meta, "s", "/w/p/s", &files, Some("why is w2 blocked?"));
         assert!(
             t.ends_with("The human wants to talk about: why is w2 blocked?\n\nAnswer that first."),
             "{t}"
         );
         // An untitled item is named by its slug.
         meta.title.clear();
-        assert!(discussion_prompt(&meta, "s", "/d", None).contains("item \"s\""));
+        assert!(discussion_prompt(&meta, "s", "/d", &[], None).contains("item \"s\""));
     }
 
     #[test]

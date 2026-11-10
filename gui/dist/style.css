@@ -1169,26 +1169,38 @@ body.pane-dragging, body.pane-dragging * { cursor: grabbing !important; user-sel
 }
 .wf-title { font-size: 14px; font-weight: 600; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-head .wf-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
+/* Tags take the Rail layout's workspace tiles as their model: a rounded
+   square, a soft tint of the state's colour rather than a bare outline, and a
+   solid fill for the selected one. A state sets only `--chip`. */
 .wf-chip {
-  font-size: 10px;
-  letter-spacing: 0.5px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  padding: 1px 8px;
+  --chip: var(--fg-dim);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 16px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--chip) 30%, transparent);
+  background: color-mix(in srgb, var(--chip) 12%, transparent);
+  color: var(--chip);
   white-space: nowrap;
 }
-.wf-chip.wf-draft { color: var(--fg-dim); }
-.wf-chip.wf-active { color: var(--accent); border-color: var(--accent); }
-.wf-chip.wf-review { color: var(--blue); border-color: var(--blue); }
-.wf-chip.wf-changes { color: var(--st-prompting); border-color: var(--st-prompting); }
-.wf-chip.wf-pr { color: var(--purple); border-color: var(--purple); }
-.wf-chip.wf-pr-ready, .wf-chip.wf-done { color: var(--green); border-color: var(--green); }
-.wf-chip.wf-dead { color: var(--fg-dim); text-decoration: line-through; }
+.wf-chip.wf-active { --chip: var(--accent); }
+.wf-chip.wf-review { --chip: var(--blue); }
+.wf-chip.wf-changes { --chip: var(--st-prompting); }
+.wf-chip.wf-pr { --chip: var(--purple); }
+.wf-chip.wf-pr-ready, .wf-chip.wf-done { --chip: var(--green); }
+.wf-chip.wf-dead { text-decoration: line-through; }
 /* Entry mode — secondary to the status chip it sits next to: it explains the
    shape of the pipeline, not where the item currently is. */
 .wf-chip.wf-mode {
-  color: var(--fg-dim);
+  background: transparent;
   border-style: dashed;
+  border-color: color-mix(in srgb, var(--chip) 55%, transparent);
+  font-weight: 500;
 }
 .wf-meta { font-size: 11px; color: var(--fg-dim); }
 /* Pipeline stepper — the mode's main line with done/current/future states.
@@ -1548,17 +1560,14 @@ body.pane-dragging, body.pane-dragging * { cursor: grabbing !important; user-sel
 .wf-actions .wf-chip {
   padding: 2px 8px;
   font-size: 11px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--fg-dim);
+  border-radius: 7px;
 }
-.wf-actions button.wf-chip.on { color: var(--fg); border-color: var(--accent); background: var(--bg-active); }
+.wf-actions button.wf-chip.on { --chip: var(--accent); color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
 .wf-run .wf-chip { display: inline-block; cursor: default; }
 .wf-run .wf-chip.state-running,
-.wf-run .wf-chip.state-launching { color: var(--fg); border-color: var(--blue); }
-.wf-run .wf-chip.state-done { color: var(--green); border-color: var(--green); }
-.wf-run .wf-chip.state-failed { color: var(--red); border-color: var(--red); }
+.wf-run .wf-chip.state-launching { --chip: var(--blue); }
+.wf-run .wf-chip.state-done { --chip: var(--green); }
+.wf-run .wf-chip.state-failed { --chip: var(--red); }
 .wf-run .wf-chip.state-skipped { text-decoration: line-through; }
 .wf-actions .wf-next-more { padding: 3px 8px; }
 .wf-checks .wf-check-row { border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; margin-bottom: 6px; }
@@ -3821,8 +3830,11 @@ mark.dv-word { color: inherit; border-radius: 2px; }
 .wf-actions button.primary,
 .wf-inline-actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 /* A chip that is a button (or a link) reads as a chip, not a form control. */
-button.wf-chip, a.wf-chip { background: transparent; color: var(--fg-dim); cursor: pointer; font-family: inherit; text-decoration: none; }
-button.wf-chip:hover, a.wf-chip:hover { color: var(--fg); border-color: var(--fg-dim); }
+button.wf-chip, a.wf-chip { cursor: pointer; font-family: inherit; text-decoration: none; transition: background 0.12s, border-color 0.12s; }
+button.wf-chip:hover, a.wf-chip:hover {
+  background: color-mix(in srgb, var(--chip) 22%, transparent);
+  border-color: color-mix(in srgb, var(--chip) 55%, transparent);
+}
 /* Wide views fill the tab: the body is a size container, so the layout
    follows the tab's own width — a tab in a split pane stays one column on a
    wide screen. */
@@ -3864,17 +3876,17 @@ button.wf-chip:hover, a.wf-chip:hover { color: var(--fg); border-color: var(--fg
 .wf-wave.wf-wave-ready .wf-tl-dot { color: var(--purple); }
 .wf-wave.wf-wave-blocked .wf-tl-dot { color: var(--fg-dim); }
 /* Wave states on the same palette as the item's status chips. */
-.wf-chip.wf-wave-chip-done { color: var(--green); border-color: var(--green); }
-.wf-chip.wf-wave-chip-review { color: var(--accent); border-color: var(--accent); }
-.wf-chip.wf-wave-chip-active { color: var(--blue); border-color: var(--blue); }
-.wf-chip.wf-wave-chip-ready { color: var(--purple); border-color: var(--purple); }
-.wf-chip.wf-wave-chip-blocked { color: var(--fg-dim); }
+.wf-chip.wf-wave-chip-done { --chip: var(--green); }
+.wf-chip.wf-wave-chip-review { --chip: var(--accent); }
+.wf-chip.wf-wave-chip-active { --chip: var(--blue); }
+.wf-chip.wf-wave-chip-ready { --chip: var(--purple); }
+.wf-chip.wf-wave-chip-blocked { opacity: 0.8; }
 /* PR states: open, draft, merged, closed — and stale when the last refresh
    could not reach it. */
-.wf-chip.wf-pr-state-open { color: var(--green); border-color: var(--green); }
-.wf-chip.wf-pr-state-draft { color: var(--fg-dim); border-style: dashed; }
-.wf-chip.wf-pr-state-merged { color: var(--purple); border-color: var(--purple); }
-.wf-chip.wf-pr-state-closed { color: var(--fg-dim); text-decoration: line-through; }
+.wf-chip.wf-pr-state-open { --chip: var(--green); }
+.wf-chip.wf-pr-state-draft { background: transparent; border-style: dashed; border-color: color-mix(in srgb, var(--chip) 55%, transparent); }
+.wf-chip.wf-pr-state-merged { --chip: var(--purple); }
+.wf-chip.wf-pr-state-closed { text-decoration: line-through; }
 .wf-chip.wf-pr-state-stale { box-shadow: inset 0 0 0 1px var(--red); }
 .wf-itemprs-bar { align-items: center; gap: 6px; justify-content: flex-start; flex-wrap: wrap; }
 .wf-itemprs-summary-line { font-size: 12px; margin-right: auto; }
@@ -4055,7 +4067,7 @@ button.wf-chip:hover, a.wf-chip:hover { color: var(--fg); border-color: var(--fg
   box-shadow: 0 1px 8px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 .wf-bench .wf-actions .wf-next-more { padding: 7px 12px; background: transparent; }
-.wf-bench .wf-actions .wf-next .wf-chip { padding: 4px 10px; font-size: 12px; border-radius: 999px; }
+.wf-bench .wf-actions .wf-next .wf-chip { padding: 3px 10px; font-size: 12px; border-radius: 8px; }
 .wf-bench .wf-run.wf-next { background: linear-gradient(115deg, color-mix(in srgb, var(--blue) 12%, transparent), transparent 60%); }
 
 /* Band 2 — the decisions: what moves the item, at full strength. */
@@ -4138,7 +4150,7 @@ button.wf-chip:hover, a.wf-chip:hover { color: var(--fg); border-color: var(--fg
 .wf-scope-grid .wf-review-opt.wf-scope-tile[hidden] { display: none; }
 .wf-scope-tile .wf-review-opt-text { flex-direction: row; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
 .wf-scope-tile .wf-review-opt-label { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wf-scope-tile .wf-chip { font-size: 10px; padding: 0 6px; line-height: 16px; }
+.wf-scope-tile .wf-chip { font-size: 10px; padding: 0 6px; line-height: 16px; border-radius: 5px; }
 .wf-scope-more {
   font-size: 11.5px;
   color: var(--fg-dim);
@@ -4203,8 +4215,8 @@ button.wf-chip:hover, a.wf-chip:hover { color: var(--fg); border-color: var(--fg
 }
 .wf-wave-summary.clamped:hover { color: var(--fg); }
 .wf-wave-tickets { padding-top: 8px; }
-.wf-wave-ticket.wf-chip { font-family: var(--mono, ui-monospace, monospace); font-size: 10.5px; color: var(--fg-dim); }
-a.wf-wave-ticket.wf-chip:hover { color: var(--accent); border-color: var(--accent); }
+.wf-wave-ticket.wf-chip { font-family: var(--mono, ui-monospace, monospace); font-size: 10.5px; font-weight: 500; }
+a.wf-wave-ticket.wf-chip:hover { --chip: var(--accent); }
 .wf-wave-prs { padding-top: 6px; }
 
 /* Waves: the caption explains the file format — reference, so it is quiet. */
@@ -4283,7 +4295,7 @@ a.wf-wave-ticket.wf-chip:hover { color: var(--accent); border-color: var(--accen
 .wf-waves-nav { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; }
 .wf-waves-nav-where { flex: 1; text-align: center; font-size: 12px; color: var(--fg-dim); }
 .wf-waves-nav .icon-btn:disabled { opacity: 0.35; cursor: default; }
-.wf-waves-track .wf-chip.focused { color: var(--fg); border-color: var(--fg); background: var(--bg-active); }
+.wf-waves-track .wf-chip.focused { color: var(--on-accent); background: var(--chip); border-color: var(--chip); }
 
 .wf-waves-live { margin: 0 0 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
 .wf-waves-live[hidden] { display: none; }
@@ -4407,7 +4419,7 @@ a.wf-wave-ticket.wf-chip:hover { color: var(--accent); border-color: var(--accen
 .wf-flow-col.parallel + .wf-flow-col::before, .wf-flow-col + .wf-flow-col.parallel::before { top: 12px; }
 .wf-flow-head { display: flex; align-items: center; gap: 8px; min-height: 18px; }
 .wf-flow-head .wf-actions-caption { padding: 0; font-weight: 700; font-size: 10px; }
-.wf-flow-par { color: var(--purple); border-color: var(--purple); font-size: 10.5px; padding: 0 7px; }
+.wf-flow-par.wf-chip { --chip: var(--purple); font-size: 10.5px; padding: 0 7px; }
 .wf-flow-detail { font-size: 11.5px; margin-top: -4px; }
 /* In a column, a card is its own width: the step's indent and the PR rows wrap. */
 .wf-flow-col .wf-wave .wf-wave-progress,
@@ -4594,7 +4606,7 @@ a.wf-wave-ticket.wf-chip:hover { color: var(--accent); border-color: var(--accen
   font-weight: 600;
   letter-spacing: 0.02em;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: 6px;
   color: var(--fg-dim);
   background: var(--bg-active);
 }
@@ -4689,11 +4701,11 @@ a.wf-wave-ticket.wf-chip:hover { color: var(--accent); border-color: var(--accen
   font-size: 10.5px;
   font-weight: 650;
   text-transform: capitalize;
-  padding: 1px 8px;
-  border-radius: 999px;
+  padding: 1px 7px;
+  border-radius: 6px;
   color: var(--st);
-  border: 1px solid color-mix(in srgb, var(--st) 55%, transparent);
-  background: color-mix(in srgb, var(--st) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--st) 30%, transparent);
+  background: color-mix(in srgb, var(--st) 12%, transparent);
 }
 .wf-prd-row.st-draft .wf-prd-state { border-style: dashed; }
 .wf-prd-name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; }

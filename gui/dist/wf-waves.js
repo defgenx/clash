@@ -23,14 +23,27 @@
   const ids = (ws) => ws.map((w) => w.id);
   const of = (board, state) => board.waves.filter((w) => w.state === state);
 
-  /// "w2 · API".
-  function waveLabel(w) {
-    return w.title ? `${w.id} · ${w.title}` : w.id;
+  /// What a person reads for a wave id: `w2` → "Wave 2". The id itself (the
+  /// planner's `waves.json` key, clash's record) never reaches the screen; an
+  /// id that is not `w<n>` is shown as written.
+  function waveName(w) {
+    const id = typeof w === "string" ? w : (w && w.id) || "";
+    const m = /^w(\d+)$/i.exec(id);
+    return m ? `Wave ${m[1]}` : id;
   }
 
-  /// "w2, w3".
+  /// "Wave 2 · API".
+  function waveLabel(w) {
+    return w.title ? `${waveName(w)} · ${w.title}` : waveName(w);
+  }
+
+  /// "Wave 2", "Waves 2 and 3", "Waves 2, 3 and 5".
   function waveList(list) {
-    return list.map((w) => (typeof w === "string" ? w : w.id)).join(", ");
+    const ids = list.map((w) => (typeof w === "string" ? w : w.id));
+    const nums = ids.map((id) => /^w(\d+)$/i.exec(id));
+    const and = (xs) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}` : xs[0] || "");
+    if (ids.length > 1 && nums.every(Boolean)) return `Waves ${and(nums.map((m) => m[1]))}`;
+    return and(ids.map(waveName));
   }
 
   /// Where the item's waves stand, in one place every surface reads.
@@ -242,8 +255,8 @@
       return {
         now: `${s.done.length} of ${s.total} waves signed off. Ready to start: ${waveList(ready)}.`,
         next: pairs.length
-          ? `Start ${ready[0].id} — or ${waveList(pairs)} together: they touch different code.`
-          : `Start ${ready[0].id}.`,
+          ? `Start ${waveName(ready[0])} — or ${waveList(pairs)} together: they touch different code.`
+          : `Start ${waveName(ready[0])}.`,
       };
     }
     return {
@@ -368,7 +381,7 @@
           kind: "wave",
           hard: true,
           wave: id,
-          text: d ? `Waits for ${waveLabel(d)} — ${waveStateLabel(d.state)}` : `Waits for ${id}`,
+          text: d ? `Waits for ${waveLabel(d)} — ${waveStateLabel(d.state)}` : `Waits for ${waveName(id)}`,
         });
       }
     }
@@ -452,21 +465,21 @@
         acts.push({
           id: "start",
           ids,
-          label: `${verb} ${ids.join(" + ")} together…`,
+          label: `${verb} ${waveList(ids)} together…`,
           primary: true,
           title: "One round, one agent, built side by side — the plan says they touch different code. Spends tokens.",
         });
         acts.push({
           id: "start",
           ids: [w.id],
-          label: `${verb} ${w.id} alone…`,
+          label: `${verb} ${waveName(w)} alone…`,
           title: "One wave at a time — slower, simpler to review",
         });
       } else {
         acts.push({
           id: "start",
           ids: [w.id],
-          label: `${verb} ${w.id}…`,
+          label: `${verb} ${waveName(w)}…`,
           primary: true,
           title: "Pick the waves of the next round, this one ticked — spends tokens",
         });
@@ -516,7 +529,7 @@
     if (open) warnings.push(`${open} comment${open === 1 ? " is" : "s are"} still open on the diff.`);
     for (const w of round)
       for (const b of waveBlockers(item, w, prs))
-        if (!b.hard) warnings.push(`${w.id}: ${b.text}.`);
+        if (!b.hard) warnings.push(`${waveName(w)}: ${b.text}.`);
     const drafts = [];
     for (const w of round)
       for (const p of wavePrs(w, prs).prs)
@@ -554,6 +567,7 @@
     waveFocus,
     waveBoard,
     wavesIssue,
+    waveName,
     waveLabel,
     waveList,
     waveSummary,

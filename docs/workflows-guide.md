@@ -128,10 +128,12 @@ that count.
 ## Talking about an item
 
 Not everything is a change request. **💬 Discuss…** (in *This step*, at every
-stage) opens a session with the item's context — plan, change requests,
-review rounds, comments, hand-off, waves, PRs and the code — to ask a
-question or think something through. Give it a topic or leave it empty (it
-then starts by saying where the item stands). It reads, it changes nothing
+stage) opens a session that knows the item — its stage, branch, PRs and waves,
+and which files hold the plan, change requests, review rounds, comments,
+hand-off and explanations — to ask a question or think something through.
+It starts fast: it reads none of those files up front, only the one your
+question needs. Give it a topic or leave it empty (it then says in a line
+where the item stands and asks what you want to discuss). It reads, it changes nothing
 unless you ask, it never moves the item, and when the conversation reaches a
 decision it suggests the change request to record. It runs beside whatever
 the item is doing and shows among the item's agents.
@@ -189,7 +191,8 @@ An item can be one task or a whole project. When the planner sees a project,
 it splits the plan into **waves**: slices you implement, review and approve
 one at a time, in order, inside the same item (one branch, one worktree, one
 PR). Each wave says which waves it needs first and which parts of the code it
-touches. A single task has no waves and works as before.
+touches. A single task has no waves and works as before. Waves are shown as
+**Wave 1, Wave 2…** (`w1`, `w2` are only their ids in `waves.json`).
 
 - **Approve plan → start waves…** asks which waves to start. The first ready
   one is ticked. You can tick another only when it doesn't depend on the
@@ -197,8 +200,8 @@ touches. A single task has no waves and works as before.
   in one round, and you sign them off together.
 - When the round comes back, review it as usual (your diff review, a code
   review, plan vs changes). The reviewers look at the round's waves.
-- **✓ Sign off w2 → next waves…** signs off the round's waves and offers the
-  ones that became ready; **✓ Sign off w2 only** signs off without starting
+- **✓ Sign off Wave 2 → next waves…** signs off the round's waves and offers the
+  ones that became ready; **✓ Sign off Wave 2 only** signs off without starting
   anything; **▶ Start next waves…** picks up from there later. Signing off
   **seals** the wave: clash records the commit its work ends at, and every
   later agent round is told that work is accepted and must be left alone
@@ -215,8 +218,8 @@ touches. A single task has no waves and works as before.
 A project in waves opens on its **Waves** tab, a roadmap:
 
 - At the top, in plain sentences, what is happening and what you do next
-  ("w1 · Foundations is waiting for your approval. 2 of 8 PRs merged, 6 still
-  open. Next: get its PRs merged, then approve it — that unlocks w2."), a
+  ("Wave 1 · Foundations is waiting for your approval. 2 of 8 PRs merged, 6 still
+  open. Next: get its PRs merged, then approve it — that unlocks Wave 2."), a
   track of every wave's state, and — in the Tabs view — the approve/start
   buttons (the Workbench's next-step card above already carries them).
 - While waves are being built, a **Live** panel says which ones (several when
@@ -227,8 +230,8 @@ A project in waves opens on its **Waves** tab, a roadmap:
   top to bottom) or **One at a time** (one wave unfolded, ← → to step through;
   *Details →* on any card opens it there). A plan with parallel steps opens on
   the Flow, a straight chain on the List. Running parallel waves in parallel is
-  your call: the step offers **▶ Start w2 + w3 together…**, each card **▶ Start
-  w2 alone…**. Each wave shows what it delivers, its state, how many of
+  your call: the step offers **▶ Start Waves 2 and 3 together…**, each card **▶ Start
+  Wave 2 alone…**. Each wave shows what it delivers, its state, how many of
   its PRs are merged, its tickets (linked to your tracker) and the PRs still
   open (click to open, right-click for the PR's actions). It also says what is
   in its way — the wave it waits for (click to go there), or before approving:
@@ -246,7 +249,7 @@ a single column.
 
 A PR belongs to a wave when the wave lists it (the agent adds each PR it
 opens) or when its branch names a ticket only that wave lists. The header
-shows `Waves 2/5 · w3 in progress`, and the suggested next step points at
+shows `Waves 2/5 · Wave 3 in progress`, and the suggested next step points at
 the wave buttons. A
 `waves.json` that can't be used (a wave that depends on itself, a loop, an
 unknown wave) shows the reason and blocks starting: request changes on the

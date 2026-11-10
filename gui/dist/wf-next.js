@@ -53,6 +53,15 @@
     return f ? f(item) : null;
   }
 
+  /// "Waves 2 and 3" (`wf-waves.js`), the ids as written when it is not loaded.
+  function waveNames(ids) {
+    const f =
+      typeof module !== "undefined" && module.exports
+        ? require("./wf-waves.js").waveList
+        : typeof window !== "undefined" && window.waveList;
+    return f ? f(ids) : ids.join(", ");
+  }
+
   /// The agents' own recommendation, freshest source first: the latest
   /// judging round when it is about this stage's artifact, else the
   /// executor's hand-off. Unknown words were already dropped by the parser.
@@ -291,13 +300,13 @@
           {
             id: "approve-waves",
             fires: waves.kind === "approve",
-            reason: `${waves.review.join(", ")} reviewed — sign ${waves.review.length > 1 ? "them" : "it"} off to seal the work and start the next waves`,
+            reason: `${waveNames(waves.review)} reviewed — sign ${waves.review.length > 1 ? "them" : "it"} off to seal the work and start the next waves`,
             settled: "no wave waiting for sign-off",
           },
           {
             id: "start-waves",
             fires: waves.kind === "start",
-            reason: `${waves.ready.join(", ")} ready to start`,
+            reason: `${waveNames(waves.ready)} ready to start`,
           },
         ]
       : [];

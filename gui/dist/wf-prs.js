@@ -8,6 +8,16 @@
 (function () {
   "use strict";
 
+  /// "Wave 2 · API" — wf-waves.js's waveLabel when loaded (wf-waves.js reads
+  /// this module, so the lookup is lazy rather than a require cycle).
+  function waveTitle(w) {
+    const f =
+      typeof module !== "undefined" && module.exports
+        ? require("./wf-waves.js").waveLabel
+        : typeof window !== "undefined" && window.waveLabel;
+    return f ? f(w) : w.title ? `${w.id} · ${w.title}` : w.id;
+  }
+
   // Mirrors WorkflowStatus::needs_attention — kept local so the module stays
   // loadable without app.js (node tests).
   const PR_DECISION_STATUSES = ["plan-review", "diff-review", "pr-draft"];
@@ -213,7 +223,7 @@
     if (board && board.waves && board.waves.length) {
       groups = board.waves.map((w) => ({
         key: w.id,
-        title: w.title ? `${w.id} · ${w.title}` : w.id,
+        title: waveTitle(w),
         state: w.state,
         prs: order(prs.filter((p) => (w.prs || []).includes(p.url))),
       }));

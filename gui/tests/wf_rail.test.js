@@ -54,8 +54,8 @@ test("the rail never repeats the tab it sits beside", () => {
     waves: { waves: [{ id: "w1", title: "Schema", state: "ready", blockedBy: [], compatibleWith: [], prs: [] }] },
   });
   const m = railModel(withWaves, []);
-  assert.equal(m.waves.track[0].label, "w1 · Schema");
-  assert.match(m.waves.now, /Ready to start: w1/);
+  assert.equal(m.waves.track[0].label, "Wave 1 · Schema");
+  assert.match(m.waves.now, /Ready to start: Wave 1/);
   assert.equal(railModel(withWaves, [], { subView: "waves" }).waves, null);
   assert.equal(railModel(withWaves, [], { subView: "prs" }).prs, null);
   assert.equal(railModel(item(), []).waves, null, "no waves, no card");

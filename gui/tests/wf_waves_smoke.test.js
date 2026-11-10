@@ -63,7 +63,7 @@ function run(states) {
 test("a round in review is approved first, then the next waves start", () => {
   const { added, calls } = run(["done", "review", "blocked"]);
   assert.deepEqual(added.map((b) => b.act), ["approve-waves", undefined]);
-  assert.match(added[0].label, /Sign off w2 → next waves/);
+  assert.match(added[0].label, /Sign off Wave 2 → next waves/);
   assert.equal(added[0].cls, "primary");
   added[1].fn();
   // Objects built inside the sandbox belong to another realm: compare by value.

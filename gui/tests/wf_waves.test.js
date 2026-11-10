@@ -19,6 +19,8 @@ const {
   defaultWavePick,
   toggleWavePick,
   waveColumns,
+  waveName,
+  waveList,
 } = require("../dist/wf-waves.js");
 
 const w = (id, state, level, compatibleWith = [], extra = {}) => ({
@@ -55,9 +57,16 @@ test("an item without waves, or with an unusable file, has no board", () => {
 });
 
 test("the summary says where the waves stand", () => {
-  assert.equal(waveSummary(item(["ready", "blocked", "blocked", "blocked"])).text, "Waves 0/4 · w1 ready");
-  assert.equal(waveSummary(item(["done", "active", "active", "blocked"])).text, "Waves 1/4 · w2, w3 in progress");
-  assert.equal(waveSummary(item(["done", "review", "review", "blocked"])).text, "Waves 1/4 · w2, w3 to sign off");
+  assert.equal(waveSummary(item(["ready", "blocked", "blocked", "blocked"])).text, "Waves 0/4 · Wave 1 ready");
+  // People read "Wave 2", never the waves.json id.
+  assert.equal(waveName("w2"), "Wave 2");
+  assert.equal(waveName({ id: "W10" }), "Wave 10");
+  assert.equal(waveName("api"), "api");
+  assert.equal(waveList(["w2"]), "Wave 2");
+  assert.equal(waveList(["w2", "w3", "w5"]), "Waves 2, 3 and 5");
+  assert.equal(waveList(["w2", "api"]), "Wave 2 and api");
+  assert.equal(waveSummary(item(["done", "active", "active", "blocked"])).text, "Waves 1/4 · Waves 2 and 3 in progress");
+  assert.equal(waveSummary(item(["done", "review", "review", "blocked"])).text, "Waves 1/4 · Waves 2 and 3 to sign off");
   assert.equal(waveSummary(item(["done", "done", "done", "done"])).text, "Waves 4/4 · all signed off");
 });
 
@@ -113,6 +122,7 @@ test("the browser branch publishes every name app.js calls", () => {
   for (const name of [
     "waveBoard",
     "wavesIssue",
+    "waveName",
     "waveLabel",
     "waveList",
     "waveSummary",
@@ -151,16 +161,16 @@ test("the roadmap says what is happening and what to do next", () => {
     { prs: undefined, total: 3, merged: 1, closed: 0, open: 2 }
   );
   const n = waveNarrative(it, prs);
-  assert.match(n.now, /w1 · w1 title is waiting for your sign-off\. 1 of 3 PRs merged, 2 still open\./);
-  assert.match(n.next, /get its PRs merged .* then sign it off — that unlocks w2, w3\./);
+  assert.match(n.now, /Wave 1 · w1 title is waiting for your sign-off\. 1 of 3 PRs merged, 2 still open\./);
+  assert.match(n.next, /get its PRs merged .* then sign it off — that unlocks Waves 2 and 3\./);
   // Merged: just approve.
   const merged = waveNarrative(it, prs.map((p) => ({ ...p, state: "MERGED" })));
-  assert.equal(merged.next, "Sign it off — that unlocks w2, w3.");
+  assert.equal(merged.next, "Sign it off — that unlocks Waves 2 and 3.");
   // Ready siblings that can share a round are offered together.
   const ready = waveNarrative(item(["done", "ready", "ready", "blocked"]), []);
-  assert.match(ready.now, /1 of 4 waves signed off\. Ready to start: w2, w3\./);
-  assert.match(ready.next, /or w2, w3 together/);
-  assert.match(waveNarrative(item(["done", "active", "blocked", "blocked"]), []).now, /implementing w2/);
+  assert.match(ready.now, /1 of 4 waves signed off\. Ready to start: Waves 2 and 3\./);
+  assert.match(ready.next, /or Waves 2 and 3 together/);
+  assert.match(waveNarrative(item(["done", "active", "blocked", "blocked"]), []).now, /implementing Wave 2/);
   assert.match(waveNarrative(item(["done", "done", "done", "done"]), []).now, /All 4 waves are signed off/);
   assert.match(waveNarrative({ waves: { waves: [], issue: "a cycle" } }, []).now, /can't be used: a cycle/);
   assert.equal(waveNarrative({}, []), null);
@@ -190,7 +200,7 @@ test("a wave's blockers: a dependency stops it, PR facts only precede approval",
   assert.deepEqual(b1[0].urls, ["u2", "u3"]);
   assert.equal(b1[1].text, "2 PR threads waiting on you");
   const b2 = waveBlockers(it, it.waves.waves[1], prs);
-  assert.deepEqual(b2, [{ kind: "wave", hard: true, wave: "w1", text: "Waits for w1 · w1 title — to sign off" }]);
+  assert.deepEqual(b2, [{ kind: "wave", hard: true, wave: "w1", text: "Waits for Wave 1 · w1 title — to sign off" }]);
   assert.deepEqual(waveBlockers({}, it.waves.waves[0], prs), []);
 });
 
@@ -209,17 +219,17 @@ test("a wave's actions are the bar's decisions, offered only where the bar offer
   const ready = { ...item(["done", "ready", "ready", "blocked"]), meta: { status: "diff-review" } };
   const both = waveActions(ready, ready.waves.waves[1], []);
   assert.deepEqual(both.map((a) => [a.label, a.ids, !!a.primary]), [
-    ["▶ Start w2 + w3 together…", ["w2", "w3"], true],
-    ["▶ Start w2 alone…", ["w2"], false],
+    ["▶ Start Waves 2 and 3 together…", ["w2", "w3"], true],
+    ["▶ Start Wave 2 alone…", ["w2"], false],
   ]);
   // Waves that cannot share a round start one by one.
   const apart = { ...item(["done", "ready", "ready", "blocked"]), meta: { status: "diff-review" } };
   apart.waves.waves[1].compatibleWith = [];
   apart.waves.waves[2].compatibleWith = [];
-  assert.deepEqual(waveActions(apart, apart.waves.waves[1], []).map((a) => [a.label, a.ids]), [["▶ Start w2…", ["w2"]]]);
+  assert.deepEqual(waveActions(apart, apart.waves.waves[1], []).map((a) => [a.label, a.ids]), [["▶ Start Wave 2…", ["w2"]]]);
   // At plan review, starting is approving the plan.
   const plan = { ...item(["ready", "blocked", "blocked", "blocked"]), meta: { status: "plan-review" } };
-  assert.equal(waveActions(plan, plan.waves.waves[0], [])[0].label, "✓ Approve plan → start w1…");
+  assert.equal(waveActions(plan, plan.waves.waves[0], [])[0].label, "✓ Approve plan → start Wave 1…");
 });
 
 test("live state: waves in parallel share one agent, and its state is said", () => {
@@ -235,7 +245,7 @@ test("live state: waves in parallel share one agent, and its state is said", () 
     { id: "b", name: "other", status: "Thinking", is_running: true, workflow_item: "p/x" },
   ];
   const m = waveLive(it, sessions, now);
-  assert.equal(m.title, "w2, w3 running together");
+  assert.equal(m.title, "Waves 2 and 3 running together");
   assert.match(m.shared, /One round, one agent, one worktree/);
   assert.equal(m.kind, "working");
   assert.equal(m.activity, "last activity 3 min ago");
@@ -263,11 +273,11 @@ test("a sign-off says what it does before it does it", () => {
   it.waves.waves[1].prs = ["u1", "u2"];
   const prs = [{ url: "u1", state: "OPEN", draft: true }, { url: "u2", state: "MERGED" }];
   const m = signOffModel(it, prs);
-  assert.equal(m.title, "Sign off w2 · w2 title, w3 · w3 title?");
-  assert.equal(m.okLabel, "Sign off w2, w3");
+  assert.equal(m.title, "Sign off Wave 2 · w2 title, Wave 3 · w3 title?");
+  assert.equal(m.okLabel, "Sign off Waves 2 and 3");
   assert.match(m.effects[0], /Seals their work at the current commit — later agent rounds are told it is accepted/);
-  assert.equal(m.effects[1], "Unlocks w4 · w4 title.");
-  assert.deepEqual(m.warnings, ["2 comments are still open on the diff.", "w2: 1 PR not merged yet (1 draft)."]);
+  assert.equal(m.effects[1], "Unlocks Wave 4 · w4 title.");
+  assert.deepEqual(m.warnings, ["2 comments are still open on the diff.", "Wave 2: 1 PR not merged yet (1 draft)."]);
   // The one effect that leaves clash is offered, never assumed.
   assert.deepEqual(m.drafts, [{ url: "u1", wave: "w2" }]);
   // The last waves hand over to the item's own approval.
