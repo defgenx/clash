@@ -22,6 +22,7 @@ use clash::infrastructure::session_refresh;
 use tauri::{Emitter, Manager, State};
 
 mod pty_outbox;
+mod remote;
 mod workflows;
 
 /// Shared backend state for all Tauri commands.
@@ -119,6 +120,9 @@ struct GuiState {
     /// the first's `sessionId` in meta — orphaning a running agent nothing can
     /// reach.
     launching: Mutex<std::collections::HashSet<String>>,
+    /// The workflow list the frontend was last given — what the phone
+    /// remote's API serves, so a phone poll never rebuilds it (`remote.rs`).
+    last_workflows: Mutex<Vec<clash::domain::workflow::WorkflowItem>>,
 }
 
 impl GuiState {
@@ -1749,6 +1753,10 @@ fn emit_config_reload(app: &tauri::AppHandle) {
     if repointed {
         state.backend.set_scratch_dir(settings.scratch_dir());
         state.backend.set_workflows_dir(settings.workflows_dir());
+    }
+
+    if changed.iter().any(|p| p.starts_with("remote.")) {
+        remote::apply(app);
     }
 
     let needs_refit: Vec<&String> = changed
@@ -3691,6 +3699,7 @@ fn main() {
         prompt_queue: Mutex::new(clash::application::prompt_queue::PromptQueue::default()),
         pty_outbox: std::sync::Arc::new(pty_outbox::PtyOutbox::default()),
         launching: Mutex::new(std::collections::HashSet::new()),
+        last_workflows: Mutex::new(Vec::new()),
     };
 
     // Status hooks: write the hook script and the settings file the daemon
@@ -3748,6 +3757,9 @@ fn main() {
             //   the config dir      → live config reload.
             // Rebuilt when a directory is repointed in Settings.
             rebuild_watcher(app.handle());
+            // The phone remote (docs/remote.md): off unless `remote.enabled`.
+            remote::mark_started();
+            remote::apply(app.handle());
             // In-process PTY session manager — the GUI's backbone, identical
             // to the TUI's in-process daemon. Dies with the app. Per-instance
             // socket (daemon-<pid>.sock): TUI and GUI can run side by side,
@@ -3811,6 +3823,14 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            remote::get_remote_info,
+            remote::set_remote_settings,
+            remote::rotate_remote_token,
+            remote::local_instance_status,
+            remote::list_remote_peers,
+            remote::add_remote_peer,
+            remote::remove_remote_peer,
+            remote::poll_remote_peer,
             list_sessions,
             resolve_session_ids,
             open_session,

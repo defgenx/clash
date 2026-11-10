@@ -10,6 +10,7 @@ Start with the project [README](../README.md). The guides below go into detail.
 | [workflows-guide.md](workflows-guide.md) | Workflows from the user's side: the pipeline, action bar, reviews, explanations, check runs, PRs, multi-repo work, ticket trackers and sharing, models and skills |
 | [tui.md](tui.md) | The terminal UI: every keybinding and `:` command, attached mode, scratches, opening sessions in external panes |
 | [sessions.md](sessions.md) | The session model shared by both frontends: status detection, session sources, wild sessions, OMP sessions, session presets |
+| [remote.md](remote.md) | Seeing clash from your phone or another machine: the Machines view, pairing, the remote page, Tailscale setup, the security model |
 | [config-file.md](config-file.md) | The `config.toml` file: location, `clash config`, layers, every key with its default, live-reload behaviour |
 | [data.md](data.md) | Every file and directory clash reads or writes |
 

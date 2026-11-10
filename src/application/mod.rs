@@ -14,6 +14,9 @@ pub mod nav;
 pub mod pr_stack;
 pub mod prompt_queue;
 pub mod reducer;
+/// Same allowance as `workflow`: the phone remote is served by the GUI.
+#[allow(dead_code)]
+pub mod remote;
 /// Same allowance as `workflow`: review rounds are launched by the GUI in v1
 /// (the TUI only relaunches them, through `RoundModels`).
 #[allow(dead_code)]

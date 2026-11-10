@@ -270,6 +270,7 @@ pub(crate) async fn list_workflow_items(
         }
     }
 
+    *state.last_workflows.lock().unwrap() = items.clone();
     Ok(items)
 }
 

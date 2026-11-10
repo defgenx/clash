@@ -4731,3 +4731,22 @@ a.wf-wave-ticket.wf-chip:hover { --chip: var(--accent); }
   .wf-prd-row { grid-template-columns: 70px minmax(0, 1fr) auto 28px; }
   .wf-prd-branch { display: none; }
 }
+/* Machines view — this clash and its paired instances (docs/remote.md). */
+.mx-head { padding: 16px 20px 6px; max-width: 760px; }
+.mx-head h2 { margin: 0 0 4px; font-size: 16px; }
+.mx-pair { display: flex; gap: 8px; margin-top: 10px; }
+.mx-pair input { flex: 1; min-width: 0; }
+.mx-list { display: flex; flex-direction: column; gap: 8px; padding: 8px 20px 20px; max-width: 760px; }
+.mx-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--bg); }
+.mx-card.mx-local, .mx-card:first-child { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.mx-card[title] { cursor: pointer; }
+.mx-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mx-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mx-needs { margin-left: auto; font-size: 11px; font-weight: 700; color: var(--fg-dim); }
+.mx-needs.hot { color: var(--accent); }
+.mx-forget { margin-left: 8px; font-size: 11px; padding: 2px 8px; }
+.mx-top .mx-needs + .mx-forget { margin-left: 8px; }
+.mx-detail { font-size: 12px; color: var(--fg-dim); margin-top: 3px; }
+.mx-facts { font-size: 12px; margin-top: 2px; }
+.mx-url { font-size: 11px; color: var(--fg-dim); font-family: var(--mono, ui-monospace, monospace); margin-top: 2px; overflow-wrap: anywhere; }
+.wf-chip.mx-lost { --chip: var(--red); }

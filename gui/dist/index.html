@@ -20,6 +20,7 @@
         <img class="logo" src="logo.svg" alt="clash" />
         <span class="badge">GUI</span>
         <span class="spacer"></span>
+        <button id="machines-btn" class="icon-btn" title="Machines — this clash and the clash instances paired with it"></button>
         <button id="inbox-btn" class="icon-btn" title="Inbox (⌘I) — every session and workflow item waiting on you"></button>
         <button id="tui-btn" class="icon-btn" title="Launch the clash TUI in a terminal"></button>
       </div>
@@ -485,6 +486,20 @@
             <label class="setting-row" data-transport="chat:clash">Discord webhook
               <input id="set-wf-discord-webhook" type="text" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" spellcheck="false" title="Discord webhook URL. Used when Discord is posted by clash itself — and always, independently, by decision notifications below." />
             </label>
+            <div class="settings-group">Remote</div>
+            <p class="settings-note">
+              Let your phone — or another clash — see this one: whether it is
+              running, its sessions, what waits on you. Read-only. Keep the
+              address on loopback for this machine only, or set your Tailscale
+              address to reach it from elsewhere. See docs/remote.md.
+            </p>
+            <label class="setting-check" title="Serve the remote page and its token-guarded, read-only API from this clash."><input id="set-remote-enabled" type="checkbox" /> Serve the remote page</label>
+            <label class="setting-row">Listen on
+              <input id="set-remote-bind" type="text" placeholder="127.0.0.1:7878" autocomplete="off" spellcheck="false" title="host:port. 127.0.0.1 is this machine only; your Tailscale address (100.x.y.z:7878) makes it reachable from your phone over the tailnet." />
+            </label>
+            <p id="remote-status" class="settings-note"></p>
+            <button id="remote-copy-link" class="update-big" title="Copy the link that pairs a phone or another clash with this one. It carries the token — share it like a password.">Copy pairing link</button>
+            <button id="remote-rotate" class="update-big" title="Make a new token. Every paired phone and clash has to pair again.">New pairing token</button>
             <div class="settings-group">Notifications</div>
             <p class="settings-note">
               Announce items that park waiting for you. Only <i>agent-driven</i>
@@ -555,6 +570,7 @@
   <script src="wf-board.js"></script>
   <script src="wf-agent.js"></script>
   <script src="attention.js"></script>
+  <script src="remote-model.js"></script>
   <script src="tour.js"></script>
   <script src="ws-ownership.js"></script>
   <script src="field-keys.js"></script>

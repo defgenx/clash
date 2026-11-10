@@ -220,6 +220,23 @@ impl Default for Notifications {
     }
 }
 
+/// `[remote]` — the phone page server (docs/remote.md).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Remote {
+    pub enabled: bool,
+    pub bind: String,
+}
+
+impl Default for Remote {
+    fn default() -> Self {
+        Self {
+            enabled: default_bool("remote.enabled"),
+            bind: default_str("remote.bind"),
+        }
+    }
+}
+
 /// `[trackers]` — the ticket systems (see `application::trackers`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -377,6 +394,7 @@ pub struct Config {
     pub sessions: Sessions,
     pub terminal: Terminal,
     pub notifications: Notifications,
+    pub remote: Remote,
     pub workflows: Workflows,
     pub trackers: Trackers,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -392,6 +410,7 @@ impl Default for Config {
             sessions: Sessions::default(),
             terminal: Terminal::default(),
             notifications: Notifications::default(),
+            remote: Remote::default(),
             workflows: Workflows::default(),
             trackers: Trackers::default(),
             ides: Vec::new(),

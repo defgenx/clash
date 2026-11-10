@@ -170,6 +170,7 @@ const ICONS = {
   gear:
     '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>',
   inbox:
     '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
 };
@@ -7382,6 +7383,10 @@ function restoreWorkflowTab(key, saved) {
     openInboxTab();
     return;
   }
+  if (key === "view:machines") {
+    openMachinesTab();
+    return;
+  }
   const rest = key.slice("view:workflow:".length);
   const slash = rest.indexOf("/");
   if (slash < 0) return;
@@ -8104,6 +8109,138 @@ function syncInbox() {
   syncWaveLive();
   const entry = state.open.get("view:inbox");
   if (entry) renderInbox(entry.el);
+}
+
+// ── Machines ──────────────────────────────────────────────────────────
+//
+// The clash instances this GUI can see (docs/remote.md): this one first, read
+// from its own backend, then every paired instance, polled by the backend with
+// the token it keeps (the webview never holds one). What is said about each
+// comes from remote-model.js — the same model as the phone page.
+
+const machinesPolls = new Map(); // instanceKey → poll record
+let machinesPeers = []; // [{ name, url }] — no tokens
+let machinesTimer = null;
+
+/// Open (or focus) the Machines view. Singleton tab, like the inbox.
+function openMachinesTab() {
+  openViewTab("view:machines", "⌬ Machines", (el) => {
+    el.classList.add("wf-board-wrap");
+    buildMachinesView(el);
+    pollMachines();
+  });
+}
+
+/// The header (with the pairing field) is built once and the list repainted,
+/// so a poll never steals the field's focus.
+function buildMachinesView(el) {
+  el.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "mx-head";
+  head.innerHTML =
+    "<h2>Machines</h2>" +
+    "<p class='hint'>This clash and the clash instances paired with it — whether each one is running, its sessions and what waits on you. Read-only.</p>";
+  const form = document.createElement("form");
+  form.className = "mx-pair";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "Paste a pairing link from another clash (Settings → Remote)";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  const add = document.createElement("button");
+  add.type = "submit";
+  add.textContent = "Pair";
+  form.append(input, add);
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    if (!parsePairingLink(input.value)) {
+      flashToast("That is not a clash pairing link (it ends in #token=…)");
+      return;
+    }
+    try {
+      machinesPeers = await invoke("add_remote_peer", { link: input.value.trim() });
+      input.value = "";
+      pollMachines();
+    } catch (err) {
+      uiAlert(`Pairing failed: ${err}`);
+    }
+  };
+  head.appendChild(form);
+  const list = document.createElement("div");
+  list.className = "mx-list";
+  el.append(head, list);
+  renderMachines(el);
+}
+
+/// One poll of every instance, then a repaint. Stops itself once the tab is closed.
+async function pollMachines() {
+  if (!state.open.has("view:machines")) {
+    clearInterval(machinesTimer);
+    machinesTimer = null;
+    return;
+  }
+  if (!machinesTimer) machinesTimer = setInterval(pollMachines, REMOTE_POLL_MS);
+  try {
+    machinesPeers = await invoke("list_remote_peers");
+  } catch (_) {}
+  const local = await invoke("local_instance_status").then(
+    (status) => ({ ok: true, status }),
+    (e) => ({ error: String(e) })
+  );
+  machinesPolls.set("local", recordPoll(machinesPolls.get("local"), local, Date.now()));
+  await Promise.all(
+    machinesPeers.map(async (p) => {
+      const r = await invoke("poll_remote_peer", { url: p.url }).catch((e) => ({ error: String(e) }));
+      machinesPolls.set(p.url, recordPoll(machinesPolls.get(p.url), r, Date.now()));
+    })
+  );
+  const entry = state.open.get("view:machines");
+  if (entry) renderMachines(entry.el);
+}
+
+function renderMachines(el) {
+  const list = el.querySelector(".mx-list");
+  if (!list) return;
+  const now = Date.now();
+  const instances = orderInstances([
+    localInstance(),
+    ...machinesPeers.map((p) => ({ kind: "remote", name: p.name, url: p.url, token: "" })),
+  ]);
+  list.replaceChildren();
+  for (const inst of instances) {
+    const v = instanceView(inst, machinesPolls.get(instanceKey(inst)), now);
+    const card = document.createElement("div");
+    card.className = `mx-card mx-${v.state}`;
+    const chip = { connected: "wf-done", reconnecting: "wf-active", checking: "wf-active" }[v.state] || "mx-lost";
+    card.innerHTML =
+      `<div class="mx-top"><span class="mx-name">${escapeHtml(v.name)}</span>` +
+      `<span class="wf-chip ${chip}">${escapeHtml(v.kind === "local" ? "this clash" : v.state)}</span>` +
+      (v.needsYou != null
+        ? `<span class="mx-needs${v.needsYou ? " hot" : ""}">${v.needsYou} need you</span>`
+        : "") +
+      `</div><div class="mx-detail">${escapeHtml(v.detail)}</div>` +
+      (v.facts.length ? `<div class="mx-facts">${escapeHtml(v.facts.join(" · "))}</div>` : "") +
+      (v.kind === "remote" ? `<div class="mx-url">${escapeHtml(v.url)}</div>` : "");
+    if (v.kind === "local") {
+      card.title = "Open the inbox";
+      card.onclick = () => openInboxTab();
+    } else {
+      const forget = document.createElement("button");
+      forget.className = "mx-forget";
+      forget.textContent = "Forget";
+      forget.onclick = async () => {
+        try {
+          machinesPeers = await invoke("remove_remote_peer", { url: v.url });
+          machinesPolls.delete(v.url);
+          renderMachines(el);
+        } catch (err) {
+          uiAlert(`Could not forget ${v.name}: ${err}`);
+        }
+      };
+      card.querySelector(".mx-top").appendChild(forget);
+    }
+    list.appendChild(card);
+  }
 }
 
 // Per-tab UI state (active sub-view, viewed iteration) — survives rebuilds
@@ -17017,6 +17154,11 @@ $("inbox-btn").onclick = (e) => {
   e.stopPropagation();
   openInboxTab();
 };
+$("machines-btn").innerHTML = svgIcon("monitor", 13);
+$("machines-btn").onclick = (e) => {
+  e.stopPropagation();
+  openMachinesTab();
+};
 $("new-wf-btn").onclick = (e) => {
   e.stopPropagation();
   newWorkflowFlow();
@@ -18689,6 +18831,46 @@ $("set-wf-forge").addEventListener("change", async () => {
   }
 });
 
+/// The remote page (docs/remote.md) lives in config.toml; the backend starts,
+/// moves or stops its server as soon as a value changes.
+let remoteInfo = null;
+function renderRemoteInfo(info) {
+  remoteInfo = info || null;
+  if (!info) return;
+  $("set-remote-enabled").checked = !!info.enabled;
+  if (document.activeElement !== $("set-remote-bind")) $("set-remote-bind").value = info.bind || "";
+  $("remote-status").textContent = info.error
+    ? `Not serving: ${info.error}`
+    : info.listening
+      ? `Serving on ${info.listening}. Open the pairing link on your phone, or paste it in another clash's Machines view.`
+      : "Off.";
+  $("remote-copy-link").disabled = !info.pairingUrl;
+}
+async function setRemote(patch) {
+  try {
+    renderRemoteInfo(await invoke("set_remote_settings", patch));
+  } catch (e) {
+    uiAlert(`Remote: ${e}`);
+    invoke("get_remote_info").then(renderRemoteInfo, () => {});
+  }
+}
+$("set-remote-enabled").addEventListener("change", () => setRemote({ enabled: $("set-remote-enabled").checked }));
+$("set-remote-bind").addEventListener("change", () => setRemote({ bind: $("set-remote-bind").value }));
+$("remote-copy-link").onclick = () => {
+  if (remoteInfo && remoteInfo.pairingUrl) {
+    copyText(remoteInfo.pairingUrl);
+    flashToast("Pairing link copied — it carries the token");
+  }
+};
+$("remote-rotate").onclick = async () => {
+  if (!(await uiConfirm("Make a new pairing token? Every paired phone and clash has to pair again.", "New token"))) return;
+  try {
+    renderRemoteInfo(await invoke("rotate_remote_token"));
+  } catch (e) {
+    uiAlert(`Remote: ${e}`);
+  }
+};
+
 /// PR stacking lives in config.toml (shared with the TUI); items override it.
 $("set-wf-pr-stacking").addEventListener("change", async () => {
   const el = $("set-wf-pr-stacking");
@@ -19243,6 +19425,9 @@ function restartSessionPoll() {
     .catch(() => {});
   invoke("get_workflow_forge")
     .then((f) => ($("set-wf-forge").value = f || "auto"))
+    .catch(() => {});
+  invoke("get_remote_info")
+    .then(renderRemoteInfo)
     .catch(() => {});
   invoke("get_workflow_pr_stacking")
     .then((on) => ($("set-wf-pr-stacking").value = on ? "on" : "off"))
