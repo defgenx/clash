@@ -582,6 +582,13 @@ worktree (with how many uncommitted files it holds — they are lost), its
 local branch (with how many commits exist only there), and its agent
 sessions. The remote branch and the PRs are never touched.
 
+To delete several at once, **☑** in the WORKFLOWS header (or *Select…* in a
+row's menu, or ⌘-click / ⇧-click a row) turns on selection: click rows to tick
+them, ⇧-click ticks a range, and the bar above the list picks **Done (n)**
+(every done or abandoned item), **All** or **None**. **🗑 Delete n…** (also on
+a selected row's right-click) asks once for all of them, with the cleanup
+totals across their worktrees, branches and sessions. **✕** ends selecting.
+
 ## Pull requests
 
 - **Create draft PR…** offers two ways to write the description: from the plan

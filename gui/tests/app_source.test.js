@@ -1333,3 +1333,15 @@ test("a new item lives in the workspace unless tied to one repository", () => {
   const pr = APP.slice(APP.indexOf('add("Create draft PR…"'));
   assert.ok(pr.indexOf("item.repos && item.repos.length") < pr.indexOf('invoke("workflow_create_pr"'));
 });
+
+test("workflow items can be selected and deleted together", () => {
+  // ⌘/⇧-click (or any click while selecting) ticks instead of opening.
+  assert.match(APP, /if \(e\.metaKey \|\| e\.ctrlKey \|\| e\.shiftKey \|\| state\.wfSelecting\) \{/);
+  // One dialog and one cleanup path for one item or many.
+  assert.match(APP, /async function wfRemoveItem\(item\) \{\n  return wfRemoveItems\(\[item\]\);\n\}/);
+  const bulk = APP.slice(APP.indexOf("async function wfRemoveItems("));
+  assert.ok(bulk.indexOf("workflow_cleanup_preview") < bulk.indexOf("uiCheckChoice"), "preview before asking");
+  assert.ok(bulk.indexOf("uiCheckChoice") < bulk.indexOf('invoke("remove_workflow_item"'), "ask before removing");
+  // A selection never outlives its items.
+  assert.match(APP, /for \(const k of \[\.\.\.state\.wfSelected\]\) if \(!keys\.has\(k\)\) state\.wfSelected\.delete\(k\);/);
+});

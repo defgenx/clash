@@ -25,6 +25,9 @@ const state = {
   wfOpen: false,
   wfUnread: new Set(), // "project/slug" keys with unseen attention events
   wfDoneOpen: false, // DONE/ABANDONED sidebar group expanded
+  wfSelecting: false, // the WORKFLOWS list shows checkboxes
+  wfSelected: new Set(), // keys (`<project>/<slug>`) ticked for a bulk action
+  wfSelectAnchor: null, // last key clicked, for shift-click ranges
   renaming: null, // session id with an open inline-rename input
   prevStatuses: new Map(), // session id -> status (attention transitions)
   // Follow-up prompts queued per session id (backend-owned; mirrored here for
@@ -6909,6 +6912,12 @@ function renderWorkflows() {
   syncInbox();
   const list = $("wf-list");
   list.innerHTML = "";
+  // A selection never outlives its items.
+  const keys = new Set(state.workflows.map((w) => wfKey(w.project, w.slug)));
+  for (const k of [...state.wfSelected]) if (!keys.has(k)) state.wfSelected.delete(k);
+  const selectBtn = $("wf-select-btn");
+  if (selectBtn) selectBtn.classList.toggle("active", state.wfSelecting);
+  if (state.wfSelecting || state.wfSelected.size) list.appendChild(buildWfSelectBar());
   if (state.workflows.length === 0) {
     const empty = document.createElement("div");
     empty.className = "list-empty";
@@ -6945,6 +6954,87 @@ function renderWorkflows() {
   }
 }
 
+/// Items in the order the list shows them (for shift-click ranges).
+function wfListOrder() {
+  const order = ["NEEDS DECISION", "IN FLIGHT", "PR READY", "DONE"];
+  return [...state.workflows].sort((a, b) => order.indexOf(wfGroup(a)) - order.indexOf(wfGroup(b)));
+}
+
+/// Tick or untick one item; with `range`, everything between the last click
+/// and this one takes this item's new state.
+function wfToggleSelected(item, range = false) {
+  const key = wfKey(item.project, item.slug);
+  const on = !state.wfSelected.has(key);
+  if (range && state.wfSelectAnchor) {
+    const keys = wfListOrder().map((w) => wfKey(w.project, w.slug));
+    const a = keys.indexOf(state.wfSelectAnchor);
+    const b = keys.indexOf(key);
+    if (a >= 0 && b >= 0) {
+      for (const k of keys.slice(Math.min(a, b), Math.max(a, b) + 1)) {
+        if (on) state.wfSelected.add(k);
+        else state.wfSelected.delete(k);
+      }
+    }
+  } else if (on) state.wfSelected.add(key);
+  else state.wfSelected.delete(key);
+  state.wfSelectAnchor = key;
+  renderWorkflows();
+}
+
+function wfEndSelection() {
+  state.wfSelecting = false;
+  state.wfSelected.clear();
+  state.wfSelectAnchor = null;
+  renderWorkflows();
+}
+
+/// The bar above a selection: count, quick picks, and the bulk delete.
+function buildWfSelectBar() {
+  const bar = document.createElement("div");
+  bar.className = "wf-select-bar";
+  const n = state.wfSelected.size;
+  const count = document.createElement("span");
+  count.className = "wf-select-count";
+  count.textContent = n ? `${n} selected` : "Select items";
+  bar.appendChild(count);
+  const btn = (label, title, onclick, cls = "") => {
+    const b = document.createElement("button");
+    b.className = `mini-btn ${cls}`.trim();
+    b.textContent = label;
+    b.title = title;
+    b.onclick = (e) => {
+      e.stopPropagation();
+      onclick();
+    };
+    bar.appendChild(b);
+    return b;
+  };
+  const finished = state.workflows.filter((w) => wfGroup(w) === "DONE");
+  if (finished.length)
+    btn(`Done (${finished.length})`, "Select every done or abandoned item", () => {
+      for (const w of finished) state.wfSelected.add(wfKey(w.project, w.slug));
+      renderWorkflows();
+    });
+  btn("All", "Select every item", () => {
+    for (const w of state.workflows) state.wfSelected.add(wfKey(w.project, w.slug));
+    renderWorkflows();
+  });
+  if (n) {
+    btn("None", "Clear the selection", () => {
+      state.wfSelected.clear();
+      renderWorkflows();
+    });
+    btn(`🗑 Delete ${n}…`, "Delete the selected items for good — asks what else to clean up first", () =>
+      wfRemoveItems(wfSelectedItems()), "danger");
+  }
+  btn("✕", "Stop selecting", wfEndSelection);
+  return bar;
+}
+
+function wfSelectedItems() {
+  return state.workflows.filter((w) => state.wfSelected.has(wfKey(w.project, w.slug)));
+}
+
 function buildWorkflowRow(item) {
   const key = wfKey(item.project, item.slug);
   const info = wfStatusInfo(item.meta.status);
@@ -6973,8 +7063,30 @@ function buildWorkflowRow(item) {
     `<span class="session-sub"><span class="status-label ${info.cls}">${info.label}</span>` +
     `<span class="dim">${bits.join(" · ")}</span></span>` +
     `</span>`;
-  row.title = `${item.meta.title || item.slug} — ${info.label}`;
-  row.onclick = () => openWorkflowTab(item);
+  row.title = `${item.meta.title || item.slug} — ${info.label} (⌘-click or ⇧-click to select)`;
+  const picked = state.wfSelected.has(key);
+  if (picked) row.classList.add("wf-picked");
+  if (state.wfSelecting || state.wfSelected.size) {
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.className = "wf-pick";
+    box.checked = picked;
+    box.onclick = (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      wfToggleSelected(item, e.shiftKey);
+    };
+    row.prepend(box);
+  }
+  row.onclick = (e) => {
+    // ⌘/⇧-click, or any click while selecting, ticks instead of opening.
+    if (e.metaKey || e.ctrlKey || e.shiftKey || state.wfSelecting) {
+      e.preventDefault();
+      wfToggleSelected(item, e.shiftKey);
+      return;
+    }
+    openWorkflowTab(item);
+  };
   row.oncontextmenu = (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
@@ -7018,6 +7130,15 @@ async function renameWorkflowItem(item) {
 }
 
 function workflowContextMenu(item, x, y) {
+  // Right-click inside a selection acts on the selection.
+  const sel = wfSelectedItems();
+  if (sel.length > 1 && state.wfSelected.has(wfKey(item.project, item.slug))) {
+    showContextMenu(x, y, [
+      { label: `Delete ${sel.length} selected…`, icon: "x", danger: true, action: () => wfRemoveItems(sel) },
+      { label: "Clear selection", icon: "x", action: wfEndSelection },
+    ]);
+    return;
+  }
   const items = [
     { label: "Open", icon: "file", action: () => openWorkflowTab(item) },
     { label: "Rename…", icon: "pencil", action: () => renameWorkflowItem(item) },
@@ -7070,6 +7191,16 @@ function workflowContextMenu(item, x, y) {
     danger: true,
     action: () => wfRemoveItem(item),
   });
+  items.push({
+    label: "Select…",
+    icon: "square",
+    action: () => {
+      state.wfSelecting = true;
+      state.wfSelected.add(wfKey(item.project, item.slug));
+      state.wfSelectAnchor = wfKey(item.project, item.slug);
+      renderWorkflows();
+    },
+  });
   showContextMenu(x, y, items);
 }
 
@@ -7077,28 +7208,37 @@ function workflowContextMenu(item, x, y) {
 /// tick box, read from disk first — its worktree, its local branch and its
 /// agent sessions. The remote branch and the PRs are never touched.
 async function wfRemoveItem(item) {
-  item = wfItem(item.project, item.slug) || item;
-  const { project, slug } = item;
-  const key = wfKey(project, slug);
-  const title = item.meta.title || slug;
-  let preview;
+  return wfRemoveItems([item]);
+}
+
+/// Remove items for good, one dialog for all of them: each item's directory
+/// and history, plus — ticked boxes, read from disk first — their worktrees,
+/// local branches and agent sessions. Remote branches and PRs stay.
+async function wfRemoveItems(items) {
+  items = items.map((it) => wfItem(it.project, it.slug) || it);
+  if (!items.length) return;
+  const plural = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`;
+  let previews;
   try {
-    preview = await invoke("workflow_cleanup_preview", { project, slug });
+    previews = await Promise.all(
+      items.map((it) => invoke("workflow_cleanup_preview", { project: it.project, slug: it.slug }))
+    );
   } catch (e) {
-    uiAlert(`Could not inspect "${title}": ${e}`);
+    uiAlert(`Could not inspect the items: ${e}`);
     return;
   }
-  const plural = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`;
-  const sessions = (state.sessions || []).filter((s) => s.workflow_item === key && !s.wild_pid);
+  const keys = new Set(items.map((it) => wfKey(it.project, it.slug)));
+  const sessions = (state.sessions || []).filter((s) => keys.has(s.workflow_item) && !s.wild_pid);
+  const wts = previews.flatMap((p) => p.worktrees || []);
+  const brs = previews.flatMap((p) => p.branches || []);
+  const many = items.length > 1;
   const rows = [];
-  const wts = preview.worktrees || [];
-  const brs = preview.branches || [];
   if (wts.length) {
     const dirty = wts.reduce((n, w) => n + (w.dirty || 0), 0);
     rows.push({
       value: "worktree",
-      label: wts.length > 1 ? `Remove its ${wts.length} worktrees` : "Remove its worktree",
-      detail: `${wts.map((w) => w.path).join(", ")} — ${
+      label: wts.length > 1 ? `Remove ${many ? "their" : "its"} ${wts.length} worktrees` : "Remove its worktree",
+      detail: `${wts.length > 3 ? `${wts.slice(0, 3).map((w) => w.path).join(", ")} and ${wts.length - 3} more` : wts.map((w) => w.path).join(", ")} — ${
         dirty ? `${plural(dirty, "uncommitted file")} will be lost` : "nothing uncommitted"
       }`,
       checked: true,
@@ -7106,12 +7246,11 @@ async function wfRemoveItem(item) {
   }
   if (brs.length) {
     const lost = brs.reduce((n, b) => n + (b.localOnly || 0), 0);
-    const names = brs.map((b) => (brs.length > 1 ? `${b.repo}: ${b.name}` : b.name)).join(", ");
+    const names = brs.map((b) => `${b.repo}: ${b.name}`);
     rows.push({
       value: "branch",
-      label:
-        brs.length > 1 ? `Delete its ${brs.length} local branches` : `Delete its local branch ${brs[0].name}`,
-      detail: `${brs.length > 1 ? `${names} — ` : ""}${
+      label: brs.length > 1 ? `Delete ${many ? "their" : "its"} ${brs.length} local branches` : `Delete its local branch ${brs[0].name}`,
+      detail: `${brs.length > 1 ? `${names.length > 3 ? `${names.slice(0, 3).join(", ")} and ${names.length - 3} more` : names.join(", ")} — ` : ""}${
         lost
           ? `${plural(lost, "commit")} exist only locally and will be lost`
           : "every commit is on a remote — the remote branches and the PRs stay"
@@ -7122,42 +7261,63 @@ async function wfRemoveItem(item) {
   if (sessions.length)
     rows.push({
       value: "sessions",
-      label: `Stop and forget its ${plural(sessions.length, "agent session")}`,
+      label: `Stop and forget ${many ? "their" : "its"} ${plural(sessions.length, "agent session")}`,
       detail: sessions.map((s) => s.name || s.id).join(", "),
       checked: true,
     });
-  const message = `Remove "${title}" and its whole history from disk?`;
+  const titles = items.map((it) => it.meta.title || it.slug);
+  const message = many
+    ? `Remove ${items.length} items and their whole history from disk?`
+    : `Remove "${titles[0]}" and its whole history from disk?`;
+  const detail = many
+    ? `${titles.slice(0, 6).join(", ")}${titles.length > 6 ? ` and ${titles.length - 6} more` : ""}.`
+    : null;
   let pick = [];
   if (rows.length) {
     pick = await uiCheckChoice({
       message,
-      detail: "Also clean up (untick to keep):",
+      detail: `${detail ? `${detail} ` : ""}Also clean up (untick to keep):`,
       items: rows,
       allLabel: "Everything below",
-      okLabel: "Remove",
+      okLabel: many ? `Remove ${items.length}` : "Remove",
       allowNone: true,
     });
     if (!pick) return;
-  } else if (!(await uiConfirm(message, "Remove"))) return;
-  try {
-    if (pick.includes("sessions")) {
-      for (const s of sessions) {
-        await invoke("kill_session", { sessionId: s.id }).catch(console.error);
-        dropTerminal(s.id);
-      }
+  } else if (!(await uiConfirm(detail ? `${message}\n\n${detail}` : message, many ? `Remove ${items.length}` : "Remove")))
+    return;
+  if (pick.includes("sessions")) {
+    for (const s of sessions) {
+      await invoke("kill_session", { sessionId: s.id }).catch(console.error);
+      dropTerminal(s.id);
     }
-    const warnings = await invoke("remove_workflow_item", {
-      project,
-      slug,
-      worktree: pick.includes("worktree"),
-      branch: pick.includes("branch"),
-    });
-    const tab = `view:workflow:${key}`;
-    if (state.open.has(tab)) await closeTab(tab);
-    flashToast(warnings.length ? `Removed — ${warnings.join("; ")}` : `Removed "${title}"`);
-  } catch (e) {
-    uiAlert(`Remove failed: ${e}`);
   }
+  const warnings = [];
+  const failed = [];
+  let removed = 0;
+  for (const it of items) {
+    const key = wfKey(it.project, it.slug);
+    try {
+      const w = await invoke("remove_workflow_item", {
+        project: it.project,
+        slug: it.slug,
+        worktree: pick.includes("worktree"),
+        branch: pick.includes("branch"),
+      });
+      warnings.push(...w);
+      removed += 1;
+      state.wfSelected.delete(key);
+      const tab = `view:workflow:${key}`;
+      if (state.open.has(tab)) await closeTab(tab);
+    } catch (e) {
+      failed.push(`${it.meta.title || it.slug}: ${e}`);
+    }
+  }
+  if (!state.wfSelected.size) state.wfSelecting = false;
+  if (failed.length) uiAlert(`Removed ${removed} of ${items.length}.\n\n${failed.join("\n")}`);
+  else
+    flashToast(
+      `${many ? `Removed ${removed} items` : `Removed "${titles[0]}"`}${warnings.length ? ` — ${warnings.join("; ")}` : ""}`
+    );
   await refreshSessions();
   await refreshWorkflows();
 }
@@ -17328,6 +17488,16 @@ $("inbox-btn").onclick = (e) => {
 $("new-wf-btn").onclick = (e) => {
   e.stopPropagation();
   newWorkflowFlow();
+};
+$("wf-select-btn").onclick = (e) => {
+  e.stopPropagation();
+  if (state.wfSelecting) wfEndSelection();
+  else {
+    state.wfSelecting = true;
+    // Selecting is pointless on a collapsed list.
+    if (!state.wfOpen) sidebarShow("workflows");
+    renderWorkflows();
+  }
 };
 $("wf-board-btn").onclick = (e) => {
   e.stopPropagation();
