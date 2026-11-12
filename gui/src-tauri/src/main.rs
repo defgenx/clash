@@ -231,9 +231,21 @@ async fn list_sessions(
     app: tauri::AppHandle,
     state: State<'_, GuiState>,
 ) -> Result<Vec<Session>, String> {
-    let registry = clash::infrastructure::hooks::registry::load();
+    // The disk half reads hundreds of transcripts, status and name files; on
+    // an async worker it would stall the in-process daemon's PTY traffic.
+    let gather = app.clone();
+    let disk = tauri::async_runtime::spawn_blocking(move || {
+        let state = gather.state::<GuiState>();
+        let registry = clash::infrastructure::hooks::registry::load();
+        session_refresh::gather_sync_input(&state.backend, &[], registry)
+    })
+    .await
+    .map_err(|e| format!("session scan failed: {e}"))?;
     let previous = state.previous.lock().unwrap().clone();
-    let mut input = session_refresh::gather_sync_input(&state.backend, &previous, registry);
+    let mut input = session_refresh::RefreshInput {
+        previous_sessions: &previous,
+        ..disk
+    };
     {
         let mut control = state.control.lock().await;
         ensure_connected(&mut control).await;
@@ -1661,18 +1673,9 @@ fn rebuild_watcher(app: &tauri::AppHandle) {
             let state = handle.state::<GuiState>();
             match root {
                 WatchRoot::Projects => {
-                    let jsonl: Vec<PathBuf> = paths
-                        .iter()
-                        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
-                        .cloned()
-                        .collect();
-                    if !jsonl.is_empty() && jsonl.len() == paths.len() {
-                        state.backend.invalidate_session_cache(&jsonl);
-                    } else {
-                        // Non-jsonl change (sessions-index.json, a new project
-                        // dir…) — full rescan on the next load.
-                        state.backend.invalidate_session_cache_all();
-                    }
+                    // Each path dirties at most its session or project; tool
+                    // results, subagent metadata and memory files dirty nothing.
+                    state.backend.invalidate_session_cache(&paths);
                 }
                 WatchRoot::OmpSessions => {
                     // Transcripts only: omp writes lock/temp siblings on every
@@ -3928,7 +3931,8 @@ fn main() {
             workflows::set_workflow_annotation_status,
             workflows::delete_workflow_annotation,
             workflows::workflow_request_changes,
-            workflows::delete_workflow_item,
+            workflows::workflow_cleanup_preview,
+            workflows::remove_workflow_item,
             workflows::start_workflow_agent,
             workflows::approve_workflow_waves,
             workflows::start_workflow_review_agent,

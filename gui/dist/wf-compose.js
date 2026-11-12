@@ -273,7 +273,7 @@
       // divergences it graded as *fine* — pasting them into the note would
       // ask an executor to undo the thing the round just approved. `Plan
       // amendments needed` is work an executor may not do at all: it never
-      // writes plan.md, so the remedy there is ↩ Move back to plan-review,
+      // writes plan.md, so the remedy there is ↩ Move to… plan-review,
       // and the note would be an instruction with no legal action behind it.
       "### Intended deviations",
       "### Benign",

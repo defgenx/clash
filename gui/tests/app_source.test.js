@@ -299,7 +299,9 @@ test("going back a stage is one mechanism, offered from two places", () => {
   assert.match(APP, /async function wfMoveBack\(item, root, status = null\)/);
   const calls = [...APP.matchAll(/invoke\("rewind_workflow_item"/g)].length;
   assert.equal(calls, 1, "only wfMoveTo (wfMoveBack's mover) may invoke rewind_workflow_item");
-  assert.match(APP, /working \? "↩ Move to…" : "↩ Move back to…"/);
+  assert.match(APP, /"↩ Move to…",\n        "",\n        \(\) => wfMoveBack\(item, root\)/);
+  // The picker offers every stage; the stepper only the suggested ones.
+  assert.match(APP, /const targets = wfAllMoveTargetsOf\(item\);/);
   assert.match(APP, /node\.onclick = \(\) => wfMoveBack\(item, el, to\)/);
   // What may be clicked comes from the shared rule, never from a status list
   // written out at the call site.
@@ -848,7 +850,7 @@ test("a renamed session's ownership transfers immediately, and only the drop wai
   // the two need opposite treatment: a rename must move ownership at once
   // (the new id is already in the list, already showing under UNASSIGNED),
   // while dropping ownership is irreversible and keeps the 3-cycle grace.
-  const body = extractFunction(APP, "refreshSessions");
+  const body = extractFunction(APP, "refreshSessionsOnce");
   // The probe cannot be gated on the grace alone, or the rename is invisible
   // for three ticks — which is the whole reported symptom.
   assert.match(
@@ -1307,4 +1309,16 @@ test("every item can be discussed, and a discussion is a session, not a round", 
   assert.match(fn, /invoke\("start_workflow_discussion"/);
   assert.match(fn, /pickWfAgent\(item, "discuss"\)/);
   assert.doesNotMatch(fn, /update_workflow_status|workflow_request_changes/, "it moves nothing");
+});
+
+test("session polls never overlap, and an unchanged list rebuilds no sidebar", () => {
+  // A scan slower than the poll used to start a second one behind it, and
+  // every tick rebuilt every session row whether anything had changed.
+  const outer = extractFunction(APP, "refreshSessions");
+  assert.match(outer, /if \(sessionRefreshRunning\)/);
+  assert.match(outer, /while \(sessionRefreshAgain\)/);
+  const once = extractFunction(APP, "refreshSessionsOnce");
+  assert.match(once, /if \(key !== sidebarPaintKey\) renderSidebar\(\)/);
+  // Direct callers always repaint, and record what they painted.
+  assert.match(extractFunction(APP, "renderSidebar"), /^function renderSidebar\(\) \{\n  sidebarPaintKey = sidebarKey\(\);/);
 });

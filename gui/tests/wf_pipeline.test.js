@@ -11,6 +11,7 @@ const {
   wfPipelineModel,
   wfRewindTargets,
   wfStopTargets,
+  wfAllMoveTargets,
   wfStageBlurb,
   wfNodeRewindStatus,
 } = require("../dist/wf-pipeline.js");
@@ -152,7 +153,7 @@ test("the browser branch publishes every name app.js calls", () => {
   vm.runInNewContext(src, { window: win });
 
   const app = fs.readFileSync(path.join(__dirname, "..", "dist", "app.js"), "utf8");
-  for (const name of ["wfPipelineModel", "wfRewindTargets", "wfStopTargets", "wfStageBlurb", "wfNodeRewindStatus"]) {
+  for (const name of ["wfPipelineModel", "wfRewindTargets", "wfStopTargets", "wfAllMoveTargets", "wfStageBlurb", "wfNodeRewindStatus"]) {
     assert.equal(typeof win[name], "function", `${name} must be on window`);
     assert.ok(app.includes(name), `app.js is expected to use ${name}`);
   }
@@ -183,4 +184,27 @@ test("a stopped agent's item can go forward to its hand-back stage or back", () 
   assert.deepEqual(wfStopTargets("implementing", "review-only", "revise"), ["diff-review"]);
   for (const st of ["draft", "plan-review", "diff-review", "changes-requested", "done"])
     assert.deepEqual(wfStopTargets(st, "full"), [], st);
+});
+
+test("any stage can be picked, the suggested moves first", () => {
+  // Mirrors WorkflowStatus::move_targets.
+  assert.deepEqual(wfAllMoveTargets("done", "full"), [
+    "pr-ready",
+    "pr-draft",
+    "diff-review",
+    "plan-review",
+    "draft",
+    "planning",
+    "changes-requested",
+    "implementing",
+    "abandoned",
+  ]);
+  const working = wfAllMoveTargets("implementing", "full", "implement");
+  assert.equal(working[0], "diff-review");
+  assert.ok(working.includes("done") && !working.includes("implementing"));
+  for (const st of ["draft", "plan-review", "diff-review", "pr-ready", "done", "abandoned"])
+    assert.ok(!wfAllMoveTargets(st, "full").includes("reviewing"), st);
+  const ro = wfAllMoveTargets("pr-ready", "review-only");
+  assert.ok(!ro.some((s) => ["draft", "planning", "plan-review"].includes(s)));
+  for (const s of wfAllMoveTargets("draft", "full")) assert.ok(wfStageBlurb(s), `${s} has a blurb`);
 });

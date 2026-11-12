@@ -224,9 +224,10 @@ pr-draft / pr-ready likewise
   `WorkflowStatus::stop_targets` (mirrored by `wfStopTargets`) — the stage the
   round hands back to (planning → plan-review, implementing → diff-review or,
   for a `revise` round, plan-review, reviewing → its `returnStatus`) and every
-  parked stage behind it. **↩ Move to…** offers the same list, and
-  `rewind_workflow_item` accepts it only from a working status; the GUI stashes
-  the recorded agent first, since it owns the files while it works. Otherwise
+  parked stage behind it. **↩ Move to…** offers that list first, then every
+  other stage (`WorkflowStatus::move_targets`, mirrored by
+  `wfAllMoveTargets`, which `rewind_workflow_item` validates against); the GUI
+  stashes the recorded agent first, since it owns the files while it works. Otherwise
   a stop moves nothing. A stopped recorded agent is `agentResumable` — still a listed
   session — so the bar offers **▶ Resume** (act `open-session`, which resumes
   the same conversation) ahead of Relaunch / End round. A stopped round stays
@@ -784,7 +785,7 @@ fix round never writes `plan.md`, so a round whose issues all need the plan
 changed must answer `**Apply:** no` (with `**Next:** plan-review`) — otherwise clash would spawn an agent that
 finds nothing it is allowed to do. Those entries go under
 `### Plan amendments needed` in the report and in a `## Plan amendments needed`
-section of `drift.md`, and the route is **↩ Move back to… → plan-review**, then
+section of `drift.md`, and the route is **↩ Move to… → plan-review**, then
 *Request changes*. Three places enforce the split so it cannot be applied by
 accident: the composer's auto-apply detail says it, `roundFindingsAt` omits
 that section (along with `### Intended deviations` and `### Benign` — pasting
@@ -1250,7 +1251,7 @@ approve a plan again while nothing in the PR had changed. So an `implement`
 round never writes `plan.md` and never finishes at `plan-review`; when the
 note argues the approach itself was wrong, it implements the right thing in
 the code and says the plan now describes something else — the human amends it
-via ↩ Move back to… → plan-review.
+via ↩ Move to… → plan-review.
 
 ### Hard rules
 
@@ -1336,6 +1337,11 @@ change requests in **other** repositories that belong to this item. Rules:
   close it: all of its linked PRs observed merged (at least one) moves it to
   `done`, the same auto-close the primary's merge gives PR-flow items (the
   pure `linked_only_all_merged`).
+- **Neither close fires while waves are left.** On an item with `waves.json`,
+  `status_after_pr_refresh` closes only once every wave is signed off
+  (`waves::remaining` is empty); an unusable `waves.json` holds the close
+  too. A wave's PR merging finishes that wave, not the item: the primary is
+  usually the first wave's PR. Following a PR to `pr-ready` is unaffected.
 - The entry's `url` is the identity (`owner/repo#number` after parsing — two
   spellings of one PR are one PR); every refresh call about a linked PR is
   scoped to the `owner/repo` its URL names, since the item's checkout points
@@ -1543,7 +1549,15 @@ built for a reader rather than a copy of the GUI tab:
   part on a part card;
 - a level's extra views (flow, rollout…) are angles of the same stage;
 - the share document is the **Document** chapter, and each explanation is a
-  chapter of its own. A light/dark/auto toggle sits in the header.
+  chapter of its own. A light/dark/auto toggle sits in the header, unless the
+  page was saved in a fixed clash theme.
+
+Saving asks for the page's colours first: one of clash's themes, the one on
+screen listed first, or *Follow the reader's system*, which is the light/dark
+page with its toggle. A theme is baked in by the pure `shareThemePalette`,
+using the same tokens as the GUI's `THEMES` table. The `<html>` element then
+carries `data-palette` and a fixed `data-theme`, so the mermaid variant and
+the drawing frames' colour scheme follow it, and the viewer hides its toggle.
 
 The explorer is `shareViewer` in `gui/dist/wf-share.js`. It is shipped inline
 with `toString()`, so it must not use anything else in the module (a test pins
@@ -1733,11 +1747,20 @@ agents) in the item's worktree, with the pure
 (status, iteration, branch, PRs, signed-off and in-flight waves, ticket), a
 map of the files the item directory actually holds and what each one is for,
 the instruction to read none of them up front — only the one a question
-needs, and only the part that answers it — and three rules — write nothing in the item directory
-and never change the status; edit, commit, push or post only when asked in
-the conversation; and when the talk reaches a decision, suggest recording it
-as a change request (with the note it would write), because the change
-request is what the next round reads. An optional topic opens the
+needs, and only the part that answers it — and its rules. It changes the item
+only when the human asks in the conversation: `plan.md`, `waves.json` and
+`annotations.json` (a plan edit is versioned by the watcher like any other),
+and a status move — a write of `status` alone — to one of the stages the
+pure `discussion_moves` lists for the status at launch: the parked stages
+reachable from there, forward or back, never one that claims an agent
+(`planning`, `implementing`, `reviewing`) and never `changes-requested`, and
+never `done` while a wave is unsigned. It re-reads `meta.json` before any
+write and writes nothing while another agent works the item. It never edits
+clash's records (`history/`, `plan-history/`, `run.json`, `explainers.json`,
+`review.md`, `agent-review.md`, meta's other fields). Code edits, commits,
+pushes and posts also wait for the human to ask, and work for the next round
+goes back as a suggested change request (with the note it would write),
+because the change request is what the next round reads and snapshots it. An optional topic opens the
 conversation; without one the agent starts with where the item stands. Like a
 share, it parks nothing and writes no meta, so it runs beside whatever the
 item is doing.

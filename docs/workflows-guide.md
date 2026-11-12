@@ -133,9 +133,11 @@ and which files hold the plan, change requests, review rounds, comments,
 hand-off and explanations — to ask a question or think something through.
 It starts fast: it reads none of those files up front, only the one your
 question needs. Give it a topic or leave it empty (it then says in a line
-where the item stands and asks what you want to discuss). It reads, it changes nothing
-unless you ask, it never moves the item, and when the conversation reaches a
-decision it suggests the change request to record. It runs beside whatever
+where the item stands and asks what you want to discuss). It reads, and changes nothing
+unless you ask: then it can edit the plan, the waves and the comments, or move
+the item to another stage, but never while another agent is working on the
+item. When the conversation reaches work for the next round it suggests the
+change request to record. It runs beside whatever
 the item is doing and shows among the item's agents.
 
 ## Reading an item
@@ -214,6 +216,9 @@ touches. A single task has no waves and works as before. Waves are shown as
 - **Approve → done** and **Approve → PR draft** appear once the last waves
   are in review, and sign them off on the way. You can open the PR whenever you
   like; it collects the waves as they land.
+- A merged PR does not finish a project in waves. A single task closes when
+  its PR merges; a project in waves closes on a merge only once every wave is
+  signed off, so the first wave's PR landing on main leaves the rest to do.
 
 A project in waves opens on its **Waves** tab, a roadmap:
 
@@ -285,7 +290,7 @@ decides what the agent may touch:
 
 - At **plan review**, the round revises the plan.
 - Everywhere else, it changes the **code** and never rewrites `plan.md`. To
-  amend the plan, use **↩ Move back to… → plan-review** first.
+  amend the plan, use **↩ Move to… → plan-review** first.
 
 When the item has a PR, the fix round pushes so the PR follows.
 
@@ -531,12 +536,23 @@ nothing to be posted.
 
 ## Going back
 
-**↩ Move back to…** lists the stages behind the current one, with what each is
-for. Clicking a passed stage in the stepper does the same. Only the stage moves:
-the plan, diff, comments, PR and rounds all stay, and no agent runs. While an
-agent is working it reads **↩ Move to…**: the agent is stopped first (its
-conversation kept), then the item goes to the stage you pick. A finished
-or abandoned item offers **↩ Reopen at diff review**.
+**↩ Move to…** puts the item in any stage, with what each is for: the
+stages behind the current one first, then every other one (forward, done,
+abandoned, even a working stage, which starts no agent: the bar then offers
+to relaunch one). Clicking a passed stage in the stepper moves it back there.
+Only the stage moves: the plan, diff, comments, PR and rounds all stay, and
+no agent runs. While an agent is working, it is stopped first (its
+conversation kept), then the item goes to the stage you pick. A finished or
+abandoned item also offers **↩ Reopen at diff review** and **🗑 Remove…**.
+
+## Removing an item
+
+**🗑 Remove…** (on a finished or abandoned item, and *Delete…* in the sidebar
+menu for any item) deletes the item for good: its directory and its whole
+history. It first shows what else can go, each one a tick box: the item's
+worktree (with how many uncommitted files it holds — they are lost), its
+local branch (with how many commits exist only there), and its agent
+sessions. The remote branch and the PRs are never touched.
 
 ## Pull requests
 
@@ -704,8 +720,11 @@ The preview **is** the payload. It can go to:
   item's explanations and opens on an explorer: the drawing fills the screen,
   clicking a part zooms into it, and Esc zooms back out into its box. A reading
   panel beside it lists the parts and holds the write-up, and `←`/`→` step
-  between parts. The drawings stay sandboxed. Both saves use the system save
-  dialog, then offer **Reveal in Finder** and **Copy path**;
+  between parts. The drawings stay sandboxed. Saving the page asks for its
+  colours first: the clash theme you're using (listed first), any other clash
+  theme, or *Follow the reader's system* (light or dark, with a toggle). Both
+  saves use the system save dialog, then offer **Reveal in Finder** and
+  **Copy path**;
 - Slack or Discord;
 - a ticket as one comment: **Post to Jira…** and/or **Post to Linear…**, one
   button per tracker that is configured or primary. The key is pre-filled from

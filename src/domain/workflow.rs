@@ -244,6 +244,45 @@ impl WorkflowStatus {
             .collect()
     }
 
+    /// Every stage the human may put the item in by hand, the suggested ones
+    /// first (`stop_targets` while an agent works, else `rewind_targets`),
+    /// then the rest in pipeline order. Moving to `planning`/`implementing`
+    /// starts no agent: the bar then offers to relaunch one. Never
+    /// `reviewing`, which only a launched round can be in, and never a plan
+    /// stage on a review-only item, which has no plan.
+    pub fn move_targets(
+        &self,
+        mode: WorkflowMode,
+        phase: &str,
+        review_return: Option<WorkflowStatus>,
+    ) -> Vec<WorkflowStatus> {
+        use WorkflowStatus::*;
+        const ORDER: [WorkflowStatus; 10] = [
+            Draft,
+            Planning,
+            PlanReview,
+            ChangesRequested,
+            Implementing,
+            DiffReview,
+            PrDraft,
+            PrReady,
+            Done,
+            Abandoned,
+        ];
+        let mut out = if self.is_working() {
+            self.stop_targets(mode, phase, review_return)
+        } else {
+            self.rewind_targets(mode)
+        };
+        for s in ORDER {
+            let planless = !mode.has_plan_phase() && matches!(s, Draft | Planning | PlanReview);
+            if s != *self && !planless && !out.contains(&s) {
+                out.push(s);
+            }
+        }
+        out
+    }
+
     /// May an explainer on `target` start now, alongside whatever else the
     /// item is doing?
     ///
@@ -2127,6 +2166,38 @@ mod tests {
                 "{t} is requestable but has no engine"
             );
         }
+    }
+
+    #[test]
+    fn move_targets_offer_every_stage_suggested_first() {
+        use WorkflowStatus::*;
+        let full = Done.move_targets(WorkflowMode::Full, "", None);
+        // The rewind stages lead, the rest follow in pipeline order.
+        assert_eq!(
+            full,
+            vec![
+                PrReady,
+                PrDraft,
+                DiffReview,
+                PlanReview,
+                Draft,
+                Planning,
+                ChangesRequested,
+                Implementing,
+                Abandoned
+            ]
+        );
+        assert!(!full.contains(&Done) && !full.contains(&Reviewing));
+        // While an agent works, where its round hands back comes first.
+        let working = Implementing.move_targets(WorkflowMode::Full, "implement", None);
+        assert_eq!(working[0], DiffReview);
+        assert!(working.contains(&Done) && !working.contains(&Implementing));
+        // A review-only item has no plan stage to go to.
+        let ro = PrReady.move_targets(WorkflowMode::ReviewOnly, "", None);
+        assert!(!ro
+            .iter()
+            .any(|s| matches!(s, Draft | Planning | PlanReview)));
+        assert!(ro.contains(&Done));
     }
 
     #[test]

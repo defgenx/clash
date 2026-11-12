@@ -405,6 +405,7 @@ impl App {
                     let mut changed_jsonl_paths: Vec<std::path::PathBuf> = Vec::new();
                     let scratch_dir = self.backend.scratch_dir();
                     let omp_root = self.backend.omp_sessions_dir();
+                    let projects_dir = self.backend.projects_dir();
                     while let Ok(paths) = rx.try_recv() {
                         for p in &paths {
                             // OMP's session tree: only transcripts matter —
@@ -429,7 +430,12 @@ impl App {
                                 // scratch note may end in `.jsonl` and must not be
                                 // mistaken for a session log).
                                 needs_scratch_refresh = true;
-                            } else if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                            } else if p.starts_with(&projects_dir)
+                                || p.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                            {
+                                // The cache decides what a projects-tree path
+                                // dirties (`classify_project_change`): tool
+                                // results and memory files dirty nothing.
                                 changed_jsonl_paths.push(p.clone());
                             } else if !self.is_config_sibling(p) {
                                 needs_refresh_all = true;

@@ -351,7 +351,15 @@ const uiTextPrompt = (message, def = "", okLabel = "OK") =>
 /// until something is checked; that is what lets the dialog open with a
 /// deliberate default (often just the primary) without also making "confirm
 /// immediately" mean "act on nothing".
-function uiCheckChoice({ message, detail = null, items, allLabel = "All", okLabel = "OK" }) {
+/// `allowNone` makes an empty selection an answer (resolves `[]`).
+function uiCheckChoice({
+  message,
+  detail = null,
+  items,
+  allLabel = "All",
+  okLabel = "OK",
+  allowNone = false,
+}) {
   return new Promise((resolve) => {
     const backdrop = document.createElement("div");
     backdrop.className = "dialog-backdrop";
@@ -425,7 +433,7 @@ function uiCheckChoice({ message, detail = null, items, allLabel = "All", okLabe
       allBox.checked = n === boxes.length;
       // Neither all nor none: say so on the box rather than reading as "none".
       allBox.indeterminate = n > 0 && n < boxes.length;
-      ok.disabled = n === 0;
+      ok.disabled = n === 0 && !allowNone;
       ok.textContent = n > 1 ? `${okLabel} (${n})` : okLabel;
     };
     allBox.onchange = () => {
@@ -436,7 +444,7 @@ function uiCheckChoice({ message, detail = null, items, allLabel = "All", okLabe
     for (const b of boxes) b.cb.onchange = sync;
     ok.onclick = () => {
       const sel = picked();
-      if (sel.length) done(sel);
+      if (sel.length || allowNone) done(sel);
     };
     actions.append(cancel, ok);
     box.appendChild(actions);
@@ -1593,6 +1601,7 @@ function renderExternalSection(list, items) {
 }
 
 function renderSidebar() {
+  sidebarPaintKey = sidebarKey();
   const list = $("session-list");
   list.innerHTML = "";
 
@@ -1972,7 +1981,45 @@ function startRename(id) {
   renderSidebar();
 }
 
+// One refresh at a time: a poll that lands while the previous one is still
+// scanning is folded into a single follow-up instead of queueing behind it.
+let sessionRefreshRunning = false;
+let sessionRefreshAgain = false;
 async function refreshSessions() {
+  if (sessionRefreshRunning) {
+    sessionRefreshAgain = true;
+    return;
+  }
+  sessionRefreshRunning = true;
+  try {
+    do {
+      sessionRefreshAgain = false;
+      await refreshSessionsOnce();
+    } while (sessionRefreshAgain);
+  } finally {
+    sessionRefreshRunning = false;
+  }
+}
+
+/// Everything `renderSidebar` reads. A refresh whose key is unchanged skips
+/// the rebuild; the minute keeps age labels moving.
+let sidebarPaintKey = "";
+function sidebarKey() {
+  return JSON.stringify([
+    Math.floor(Date.now() / 60000),
+    state.sessions,
+    state.query,
+    state.renaming,
+    state.queued,
+    [...state.unread],
+    [...state.prUrls],
+    state.workspaces.map((w) => w.sessions),
+    state.activeWs,
+    state.activeTab,
+  ]);
+}
+
+async function refreshSessionsOnce() {
   try {
     const sessions = await invoke("list_sessions");
     // Attention transitions: flash title when a session starts prompting
@@ -2080,7 +2127,10 @@ async function refreshSessions() {
     // While an inline rename is in progress, rebuilding the sidebar would
     // destroy the input mid-typing (value reset, focus stolen) — skip it;
     // the next tick after Enter/Escape repaints with fresh data.
-    if (!state.renaming) renderSidebar();
+    if (!state.renaming) {
+      const key = sidebarKey();
+      if (key !== sidebarPaintKey) renderSidebar();
+    }
     renderTabs();
     syncInbox();
     if (state.detailsFor) renderDetails();
@@ -7018,23 +7068,90 @@ function workflowContextMenu(item, x, y) {
     label: "Delete…",
     icon: "x",
     danger: true,
-    action: async () => {
-      if (
-        !(await uiConfirm(
-          `Delete "${item.meta.title || item.slug}" and its whole history from disk?`,
-          "Delete"
-        ))
-      )
-        return;
-      try {
-        await invoke("delete_workflow_item", { project: item.project, slug: item.slug });
-        refreshWorkflows();
-      } catch (e) {
-        uiAlert(`Delete failed: ${e}`);
-      }
-    },
+    action: () => wfRemoveItem(item),
   });
   showContextMenu(x, y, items);
+}
+
+/// Remove an item for good: its directory and history, plus — each one a
+/// tick box, read from disk first — its worktree, its local branch and its
+/// agent sessions. The remote branch and the PRs are never touched.
+async function wfRemoveItem(item) {
+  item = wfItem(item.project, item.slug) || item;
+  const { project, slug } = item;
+  const key = wfKey(project, slug);
+  const title = item.meta.title || slug;
+  let preview;
+  try {
+    preview = await invoke("workflow_cleanup_preview", { project, slug });
+  } catch (e) {
+    uiAlert(`Could not inspect "${title}": ${e}`);
+    return;
+  }
+  const plural = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`;
+  const sessions = (state.sessions || []).filter((s) => s.workflow_item === key && !s.wild_pid);
+  const rows = [];
+  if (preview.worktree)
+    rows.push({
+      value: "worktree",
+      label: "Remove its worktree",
+      detail: `${preview.worktree} — ${
+        preview.worktreeDirty
+          ? `${plural(preview.worktreeDirty, "uncommitted file")} will be lost`
+          : "nothing uncommitted"
+      }`,
+      checked: true,
+    });
+  if (preview.branch)
+    rows.push({
+      value: "branch",
+      label: `Delete its local branch ${preview.branch}`,
+      detail: preview.branchLocalOnly
+        ? `${plural(preview.branchLocalOnly, "commit")} exist only in this branch and will be lost`
+        : "every commit is on a remote — the remote branch and the PRs stay",
+      checked: !preview.branchLocalOnly,
+    });
+  if (sessions.length)
+    rows.push({
+      value: "sessions",
+      label: `Stop and forget its ${plural(sessions.length, "agent session")}`,
+      detail: sessions.map((s) => s.name || s.id).join(", "),
+      checked: true,
+    });
+  const message = `Remove "${title}" and its whole history from disk?`;
+  let pick = [];
+  if (rows.length) {
+    pick = await uiCheckChoice({
+      message,
+      detail: "Also clean up (untick to keep):",
+      items: rows,
+      allLabel: "Everything below",
+      okLabel: "Remove",
+      allowNone: true,
+    });
+    if (!pick) return;
+  } else if (!(await uiConfirm(message, "Remove"))) return;
+  try {
+    if (pick.includes("sessions")) {
+      for (const s of sessions) {
+        await invoke("kill_session", { sessionId: s.id }).catch(console.error);
+        dropTerminal(s.id);
+      }
+    }
+    const warnings = await invoke("remove_workflow_item", {
+      project,
+      slug,
+      worktree: pick.includes("worktree"),
+      branch: pick.includes("branch"),
+    });
+    const tab = `view:workflow:${key}`;
+    if (state.open.has(tab)) await closeTab(tab);
+    flashToast(warnings.length ? `Removed — ${warnings.join("; ")}` : `Removed "${title}"`);
+  } catch (e) {
+    uiAlert(`Remove failed: ${e}`);
+  }
+  await refreshSessions();
+  await refreshWorkflows();
 }
 
 /// Entry modes — mirrors WorkflowMode in src/domain/workflow.rs (the
@@ -10390,6 +10507,12 @@ async function wfShareDialog(item) {
             await invoke("clipboard_write_text", { text: current });
             flashToast("Markdown copied");
           } else if (d.id === "md" || d.id === "html") {
+            let palette = null;
+            if (d.id === "html") {
+              const look = await pickShareExportTheme();
+              if (look === null) return;
+              palette = look;
+            }
             const seed = await invoke("default_share_export_path", {
               project: item.project,
               slug: item.slug,
@@ -10415,7 +10538,8 @@ async function wfShareDialog(item) {
                 content = shareHtmlDocument(
                   item.meta.title || item.slug,
                   await renderMarkdownForExport(current),
-                  explanations
+                  explanations,
+                  { palette: palette === "system" ? null : palette }
                 );
               } finally {
                 hideProgress();
@@ -10559,6 +10683,24 @@ async function wfShareDialog(item) {
 /// which serve whitelisted documents — nothing of clash's own bookkeeping can
 /// come through here. `render` fetches and renders each level's two forms;
 /// without it only the outline is known.
+/// Which colours a saved `.html` page uses: one clash theme (the one on
+/// screen first), or the reader's OS light/dark. Resolves to a
+/// `shareThemePalette` result, "system", or null when cancelled.
+async function pickShareExportTheme() {
+  const current = THEMES[state.settings.theme] ? state.settings.theme : "clash-dark";
+  const others = Object.keys(THEMES).filter((id) => id !== current);
+  const picked = await uiListChoice({
+    message: "Colours of the saved page?",
+    items: [
+      { label: `${THEMES[current].label} — the theme clash is using`, value: current },
+      { label: "Follow the reader's system", detail: "Light or dark, with a toggle on the page", value: "system" },
+      ...others.map((id) => ({ label: THEMES[id].label, detail: THEMES[id].dark ? "dark" : "light", value: id })),
+    ],
+  });
+  if (picked === null || picked === "system") return picked;
+  return shareThemePalette(picked, THEMES[picked]);
+}
+
 async function wfShareExplanations(item, depth, render) {
   const groups = [];
   for (const pair of SHARE_EXPLAIN_PAIRS) {
@@ -11451,7 +11593,7 @@ async function wfMoveBack(item, root, status = null) {
   item = wfItem(item.project, item.slug) || item;
   const m = item.meta;
   const working = ["planning", "implementing", "reviewing"].includes(m.status);
-  const targets = wfMoveTargets(item);
+  const targets = wfAllMoveTargetsOf(item);
   if (!targets.length) return;
   const owner = working && item.agentAlive && m.sessionId ? wfSid(item, m.sessionId) : null;
   const title = m.title || item.slug;
@@ -11462,7 +11604,7 @@ async function wfMoveBack(item, root, status = null) {
         ? `${owner ? "Stop the agent and move" : "Move"} "${title}" to which stage?${
             owner ? " Its conversation is kept." : ""
           }`
-        : `Move "${title}" back to which stage?`,
+        : `Move "${title}" to which stage? Nothing is deleted or rewritten.`,
       items: targets.map((t) => ({
         label: wfStatusInfo(t).label,
         detail: wfStageBlurb(t),
@@ -11481,7 +11623,14 @@ async function wfMoveBack(item, root, status = null) {
   await wfMoveTo(item, root, pick, owner);
 }
 
-/// Where an item can be moved from its current stage (see wfMoveBack).
+/// Every stage the picker offers, suggested ones first (see wfAllMoveTargets).
+function wfAllMoveTargetsOf(item) {
+  const m = item.meta;
+  return wfAllMoveTargets(m.status, m.mode || "full", m.phase || "", m.review && m.review.returnStatus);
+}
+
+/// The suggested moves from the current stage — what a stepper click and the
+/// stop dialog offer (see wfMoveBack).
 function wfMoveTargets(item) {
   const m = item.meta;
   const mode = m.mode || "full";
@@ -12703,8 +12852,16 @@ function renderWfActions(bar, root, item) {
         "↩ Reopen at diff review",
         "",
         () => wfTransition(item, root, "diff-review"),
-        "Bring the item back at the DIFF REVIEW stage — no agent, no tokens. Move back to… reopens it at any other stage.",
+        "Bring the item back at the DIFF REVIEW stage — no agent, no tokens. Move to… reopens it at any other stage.",
         "item"
+      );
+      add(
+        "🗑 Remove…",
+        "",
+        () => wfRemoveItem(item),
+        "Delete this item for good — its files and history, and if you tick them its worktree, local branch and agent sessions. The remote branch and PRs stay.",
+        "item",
+        "remove"
       );
       break;
   }
@@ -12741,21 +12898,16 @@ function renderWfActions(bar, root, item) {
     }
   }
 
-  // Going back was two hardcoded buttons at two stages; from everywhere else
-  // the pipeline was a one-way street. Same reason it lives outside the
-  // switch: every parked stage has somewhere behind it, and which stages
-  // those are is one rule (wfRewindTargets), not nine cases.
+  // Any stage, from any stage: one rule (wfAllMoveTargets), outside the
+  // switch, so no stage is a one-way street.
   {
-    const back = wfMoveTargets(item);
     const working = ["planning", "implementing", "reviewing"].includes(st);
-    if (back.length) {
+    if (wfAllMoveTargetsOf(item).length) {
       add(
-        working ? "↩ Move to…" : "↩ Move back to…",
+        "↩ Move to…",
         "",
         () => wfMoveBack(item, root),
-        `${working ? "Stop the agent (its conversation is kept) and move this item to" : "Send this item back to an earlier stage —"} ${back
-          .map((t) => wfStatusInfo(t).label.toLowerCase())
-          .join(", ")}. Nothing is deleted or rewritten; no tokens.`,
+        `${working ? "Stop the agent (its conversation is kept) and move" : "Move"} this item to any other stage — back, forward, done or abandoned. Nothing is deleted or rewritten; no tokens.`,
         "item"
       );
     }

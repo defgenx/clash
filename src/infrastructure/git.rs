@@ -221,6 +221,85 @@ pub async fn head_sha(dir: &Path) -> Option<String> {
     (out.status.success() && !sha.is_empty()).then_some(sha)
 }
 
+/// How many paths `git status` reports in `dir` (uncommitted or untracked),
+/// or `None` when `dir` is not a checkout.
+#[allow(dead_code)]
+pub async fn dirty_count(dir: &Path) -> Option<usize> {
+    let out = tokio::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(dir)
+        .output()
+        .await
+        .ok()?;
+    out.status.success().then(|| {
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count()
+    })
+}
+
+/// Commits on local `branch` that no remote-tracking ref contains, or `None`
+/// when the branch does not exist.
+#[allow(dead_code)]
+pub async fn local_only_commits(repo: &Path, branch: &str) -> Option<u64> {
+    if !valid_rev(branch) {
+        return None;
+    }
+    let local = format!("refs/heads/{branch}");
+    let out = tokio::process::Command::new("git")
+        .args(["rev-list", "--count", &local, "--not", "--remotes"])
+        .current_dir(repo)
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+/// `git worktree remove [--force] <path>` from `repo`, then a prune.
+#[allow(dead_code)]
+pub async fn worktree_remove(repo: &Path, path: &str, force: bool) -> Result<(), String> {
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push("--");
+    args.push(path);
+    run_git(repo, &args).await?;
+    let _ = run_git(repo, &["worktree", "prune"]).await;
+    Ok(())
+}
+
+/// Delete local `branch` (`git branch -D`): squash merges leave a merged
+/// branch that `-d` refuses.
+#[allow(dead_code)]
+pub async fn branch_delete(repo: &Path, branch: &str) -> Result<(), String> {
+    if !valid_rev(branch) {
+        return Err(format!("not a branch name: {branch}"));
+    }
+    run_git(repo, &["branch", "-D", "--", branch])
+        .await
+        .map(|_| ())
+}
+
+async fn run_git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let out = tokio::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run git: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
 /// The repository's top-level directory, if `dir` is inside one.
 pub async fn toplevel(dir: &Path) -> Option<String> {
     let out = tokio::process::Command::new("git")

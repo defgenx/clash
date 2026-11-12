@@ -19,6 +19,7 @@ const {
   shareHeadingSlug,
   shareHeadingSlugs,
   shareHtmlDocument,
+  shareThemePalette,
   shareDocOutline,
   shareDocSection,
   detectTicketKey,
@@ -191,6 +192,7 @@ function fakeDom(data) {
       setAttribute(k, v) { this.attrs[k] = v; },
       getAttribute(k) { return this.attrs[k]; },
       removeAttribute(k) { delete this.attrs[k]; },
+      hasAttribute(k) { return k in this.attrs; },
       addEventListener() {},
       querySelector() { return null; },
       querySelectorAll() { return []; },
@@ -453,6 +455,7 @@ test("browser branch publishes every global app.js reads", () => {
     "sectionsFromChecks",
     "shareHeadingSlugs",
     "shareHtmlDocument",
+    "shareThemePalette",
     "detectTicketKey",
     "SHARE_EXPLAIN_PAIRS",
     "SHARE_EXPLAIN_DEPTHS",
@@ -584,4 +587,49 @@ test("a tracker is offered when it is configured or primary", () => {
   // clash's own client without credentials is disabled, never swapped.
   const noKey = trackerDestinations({ primary: "linear", linear: { configured: true, transport: "clash" } });
   assert.equal(noKey[0].enabled, false);
+});
+
+test("an export in a clash theme carries that theme's colours and no toggle", () => {
+  const solar = {
+    label: "solarized dark",
+    dark: true,
+    ui: { bg: "#002b36", "bg-sidebar": "#073642", fg: "#93a1a1", accent: "#b58900", green: "#859900" },
+    ansi: ["#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5"],
+  };
+  const pal = shareThemePalette("solarized-dark", solar);
+  assert.equal(pal.dark, true);
+  assert.equal(pal.vars.bg, "#002b36");
+  assert.equal(pal.vars["bg-panel"], "#073642", "the panel is the sidebar colour");
+  assert.equal(pal.vars.warn, "#b58900", "warn falls back to the ANSI yellow");
+  assert.equal(pal.vars["on-accent"], "#ffffff");
+
+  const ch = {
+    target: "explain-diff",
+    label: "Changes explained",
+    levels: { "": { node: "", title: "Overview", md: "<p>x</p>", drawing: "", views: [], parts: [] } },
+  };
+  for (const page of [
+    shareHtmlDocument("T", "<p>doc</p>", [], { palette: pal }),
+    shareHtmlDocument("T", "<p>doc</p>", [ch], { palette: pal }),
+  ]) {
+    assert.match(page, /<html lang="en" data-palette="solarized-dark" data-theme="dark">/);
+    assert.match(page, /html:root\[data-palette\] \{ color-scheme: dark; --bg: #002b36;/);
+    // The fixed rule comes after the OS-following ones, so it wins.
+    assert.ok(page.lastIndexOf("--bg: #002b36") > page.indexOf("prefers-color-scheme"));
+  }
+  // The viewer hides its toggle on a fixed palette.
+  assert.match(shareViewer.toString(), /hasAttribute\("data-palette"\)/);
+});
+
+test("an export without a palette still follows the reader's OS", () => {
+  const page = shareHtmlDocument("T", "<p>doc</p>");
+  assert.match(page, /<html lang="en">/);
+  assert.ok(!/data-palette/.test(page));
+});
+
+test("palette values cannot break out of the style element", () => {
+  const pal = shareThemePalette("x", { dark: false, ui: { bg: "#ffffff", fg: "red}</style><script>" } });
+  const page = shareHtmlDocument("T", "<p>doc</p>", [], { palette: pal });
+  assert.ok(!/<script/.test(page));
+  assert.ok(!/red\}/.test(page));
 });

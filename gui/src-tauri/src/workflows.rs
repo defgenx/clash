@@ -974,7 +974,8 @@ pub(crate) fn update_workflow_status(
     Ok(meta)
 }
 
-/// Send an item **back** to an earlier parked stage.
+/// Move an item to another stage — back, forward, or anywhere the human
+/// picks ([`WorkflowStatus::move_targets`]).
 ///
 /// Deliberately not `update_workflow_status`: that command validates against
 /// the forward transition table, which is why going back only ever existed
@@ -1002,15 +1003,11 @@ pub(crate) fn rewind_workflow_item(
     if meta.status == status {
         return Ok(meta);
     }
-    let allowed = if meta.status.is_working() {
-        meta.status.stop_targets(
-            meta.mode,
-            &meta.phase,
-            meta.review.as_ref().map(|r| r.return_status),
-        )
-    } else {
-        meta.status.rewind_targets(meta.mode)
-    };
+    let allowed = meta.status.move_targets(
+        meta.mode,
+        &meta.phase,
+        meta.review.as_ref().map(|r| r.return_status),
+    );
     if !allowed.contains(&status) {
         return Err(format!(
             "cannot move this item to {} from {}",
@@ -1440,17 +1437,83 @@ pub(crate) fn get_workflow_plan_version(
         .unwrap_or_default())
 }
 
-/// Delete a whole workflow item (used by Abandon → Delete).
+/// What removing an item would clean up, read before asking: its worktree
+/// (and how many uncommitted paths it holds) and its local branch (and how
+/// many of its commits no remote has).
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CleanupPreview {
+    worktree: Option<String>,
+    worktree_dirty: Option<usize>,
+    branch: Option<String>,
+    branch_local_only: Option<u64>,
+}
+
 #[tauri::command]
-pub(crate) fn delete_workflow_item(
+pub(crate) async fn workflow_cleanup_preview(
     state: State<'_, GuiState>,
     project: String,
     slug: String,
-) -> Result<(), String> {
+) -> Result<CleanupPreview, String> {
+    let meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    let targets = clash::application::workflow::cleanup_targets(&meta);
+    let repo = Path::new(&meta.repo_path);
+    let mut out = CleanupPreview::default();
+    if let Some(wt) = targets.worktree.filter(|w| Path::new(w).exists()) {
+        out.worktree_dirty = clash::infrastructure::git::dirty_count(Path::new(&wt)).await;
+        out.worktree = Some(wt);
+    }
+    if let Some(b) = targets.branch.filter(|_| repo.is_dir()) {
+        // A branch that no longer exists has nothing to delete.
+        if let Some(n) = clash::infrastructure::git::local_only_commits(repo, &b).await {
+            out.branch_local_only = Some(n);
+            out.branch = Some(b);
+        }
+    }
+    Ok(out)
+}
+
+/// Remove an item for good: its worktree and local branch when asked (both
+/// confirmed against [`workflow_cleanup_preview`]), then its directory. A
+/// worktree that cannot be removed keeps the item, so nothing is orphaned; a
+/// branch that cannot be deleted is reported and the removal goes on.
+#[tauri::command]
+pub(crate) async fn remove_workflow_item(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    worktree: bool,
+    branch: bool,
+) -> Result<Vec<String>, String> {
+    let meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    let targets = clash::application::workflow::cleanup_targets(&meta);
+    let repo = Path::new(&meta.repo_path);
+    let mut warnings = Vec::new();
+    if worktree {
+        if let Some(wt) = targets.worktree.filter(|w| Path::new(w).exists()) {
+            clash::infrastructure::git::worktree_remove(repo, &wt, true)
+                .await
+                .map_err(|e| format!("Could not remove the worktree {wt}: {e}"))?;
+        }
+    }
+    if branch {
+        if let Some(b) = targets.branch {
+            if let Err(e) = clash::infrastructure::git::branch_delete(repo, &b).await {
+                warnings.push(format!("branch {b} kept: {e}"));
+            }
+        }
+    }
     state
         .backend
         .delete_workflow_item(&project, &slug)
-        .map_err(e2s)
+        .map_err(e2s)?;
+    Ok(warnings)
 }
 
 /// Ids of the sessions the last refresh saw running.
@@ -3233,7 +3296,8 @@ pub(crate) async fn workflow_create_pr(
 /// linked PR. Throttled in-memory (30s unless `force`); meta is written only
 /// when something changed, so polling never feeds the FS watcher. The item
 /// then **follows its primary PR** (`status_after_pr_refresh`): observed
-/// MERGED moves it to `done`, observed open-and-not-a-draft moves a `pr-draft`
+/// MERGED moves it to `done` (once every wave is signed off), observed
+/// open-and-not-a-draft moves a `pr-draft`
 /// item to `pr-ready`. Linked PRs are tracked, never drivers, with one
 /// exception: an item that has *only* linked PRs has no primary to drive it,
 /// so all of them merging closes it (see `linked_only_all_merged`). A linked
@@ -3399,7 +3463,13 @@ pub(crate) async fn refresh_workflow_pr(
     // Decided on the merged record, not on this cycle's views: a state that was
     // observed earlier but could not move the item then (a round was in
     // flight) still moves it now.
-    if let Some(next) = clash::application::workflow::status_after_pr_refresh(&meta) {
+    let item_dir = state.backend.workflows_dir().join(&project).join(&slug);
+    let waves_open = match load_wave_plan(&item_dir) {
+        None => false,
+        Some(Ok(plan)) => !clash::application::waves::remaining(&plan, &meta.waves).is_empty(),
+        Some(Err(_)) => true,
+    };
+    if let Some(next) = clash::application::workflow::status_after_pr_refresh(&meta, waves_open) {
         meta.status = next;
         changed = true;
     }

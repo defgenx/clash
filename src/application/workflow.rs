@@ -405,6 +405,16 @@ pub fn discussion_prompt(
     } else {
         map.join("\n")
     };
+    let moves = discussion_moves(meta);
+    let moves = if moves.is_empty() {
+        "none from here".to_string()
+    } else {
+        moves
+            .iter()
+            .map(|s| format!("`{}`", s.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     format!(
         "This is a conversation about the clash workflow item \"{title}\" — not a \
          workflow round. Workflow item directory: {item_dir} ({facts}).\n\n\
@@ -416,16 +426,70 @@ pub fn discussion_prompt(
          (grep, or a line range), not the whole file. Never read everything \"for \
          context\".\n\n\
          Rules for this session:\n\
-         - Do not write any file in the item directory, and never change the item's \
-         status — clash and the workflow rounds own those.\n\
+         - Change the item only when the human asks for it in this conversation; then \
+         you may edit plan.md, waves.json and annotations.json, and move its status. \
+         Re-read meta.json right before any write: while its status is `planning`, \
+         `implementing` or `reviewing`, another agent owns the item — say so and write \
+         nothing.\n\
+         - A status move is a change of `status` in meta.json, every other field left \
+         as it is, to one of: {moves}. Never move an item in waves to `done` while a \
+         wave is not signed off.\n\
+         - Never edit what clash keeps: history/, plan-history/, run.json, \
+         explainers.json, review.md, agent-review.md, and meta.json's other fields \
+         (iteration, reviewRound, review, waves, phase, sessionId, appliedReviewKey).\n\
          - Do not edit code, commit, push or post anywhere unless the human asks for \
          it in this conversation.\n\
-         - When the conversation reaches a decision about the work, say so and suggest \
-         recording it in clash as a change request (Request changes…), with the note \
-         you would write — that is what the next round reads.\n\n\
+         - A decision that is work for the next round belongs in a change request: \
+         suggest recording it in clash (Request changes…) with the note you would \
+         write — that is what the next round reads, and it snapshots the round.\n\n\
          {opening}",
         facts = facts.join(", ")
     )
+}
+
+/// What removing an item may clean up besides its directory.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CleanupTargets {
+    /// The item's own worktree — never the repo checkout itself.
+    pub worktree: Option<String>,
+    /// The local branch clash created for the item. Never on review-only
+    /// items (the branch predates the item), never the base or a trunk name.
+    pub branch: Option<String>,
+}
+
+/// Pure: see [`CleanupTargets`].
+pub fn cleanup_targets(meta: &crate::domain::workflow::WorkflowMeta) -> CleanupTargets {
+    let repo = meta.repo_path.trim().trim_end_matches('/');
+    let worktree = meta
+        .worktree
+        .as_deref()
+        .map(|w| w.trim().trim_end_matches('/'))
+        .filter(|w| !w.is_empty() && *w != repo)
+        .map(str::to_string);
+    let branch = meta.branch.trim();
+    let protected = ["main", "master", "develop", "trunk", meta.base.trim()];
+    let branch =
+        (!branch.is_empty() && !meta.mode.is_review_only() && !protected.contains(&branch))
+            .then(|| branch.to_string());
+    CleanupTargets { worktree, branch }
+}
+
+/// Pure: the status moves a Discuss session may make when asked — the parked
+/// stages reachable from here, forward or back. Never a stage that claims an
+/// agent (`planning`, `implementing`, `reviewing`) and never
+/// `changes-requested`, which is queued by requesting changes.
+pub fn discussion_moves(meta: &crate::domain::workflow::WorkflowMeta) -> Vec<WorkflowStatus> {
+    use WorkflowStatus::*;
+    if meta.status.is_working() {
+        return Vec::new();
+    }
+    let mut out = meta.status.rewind_targets(meta.mode);
+    for next in [PlanReview, DiffReview, PrDraft, PrReady, Done, Abandoned] {
+        if meta.status.can_transition_to(next) && !out.contains(&next) {
+            out.push(next);
+        }
+    }
+    out
 }
 
 /// Pure: per judging target, how many of its latest rounds in a row — counted
@@ -1332,12 +1396,18 @@ pub fn linked_only_all_merged(meta: &crate::domain::workflow::WorkflowMeta) -> b
 /// was a draft any more. Only exactly `pr-draft` advances: a `reviewing` round
 /// in flight must hand back where it started, and the refresh after that
 /// hand-back is what moves it.
+///
+/// `waves_open` (the item has waves not signed off, or an unusable
+/// `waves.json`) holds the close: a wave's PR merging finishes that wave, not
+/// the item.
 pub fn status_after_pr_refresh(
     meta: &crate::domain::workflow::WorkflowMeta,
+    waves_open: bool,
 ) -> Option<WorkflowStatus> {
     let primary = meta.pr.as_ref().filter(|p| !p.url.trim().is_empty());
     let primary_merged = primary.is_some_and(|p| p.state == "MERGED");
-    if (primary_merged || linked_only_all_merged(meta))
+    if !waves_open
+        && (primary_merged || linked_only_all_merged(meta))
         && meta.status.can_transition_to(WorkflowStatus::Done)
     {
         return Some(WorkflowStatus::Done);
@@ -2650,7 +2720,7 @@ not landing in the branch: the commit message still ships a MAJOR.\n\n\
     }
 
     #[test]
-    fn a_discussion_gives_context_and_keeps_the_session_from_acting() {
+    fn a_discussion_gives_context_and_acts_only_when_asked() {
         let mut meta = crate::domain::workflow::WorkflowMeta {
             title: "Saturn audit".into(),
             status: WorkflowStatus::PrReady,
@@ -2673,15 +2743,24 @@ not landing in the branch: the commit message still ships a MAJOR.\n\n\
         let p = discussion_prompt(&meta, "s", "/w/p/s", &files, None);
         assert!(p.contains("not a workflow round"), "{p}");
         assert!(p.contains("Workflow item directory: /w/p/s (status `pr-ready` (iteration 15), branch `saturn-audit`, PRs https://github.com/o/s/pull/1, waves signed off: w1)"), "{p}");
-        assert!(p.contains("Do not write any file in the item directory"));
-        assert!(p.contains("never change the item's status"));
+        assert!(
+            p.contains("Change the item only when the human asks"),
+            "{p}"
+        );
+        assert!(p.contains("you may edit plan.md, waves.json and annotations.json"));
+        assert!(p.contains("another agent owns the item"));
+        assert!(
+            p.contains("to one of: `pr-draft`, `diff-review`, `plan-review`, `draft`, `done`, `abandoned`."),
+            "{p}"
+        );
+        assert!(p.contains("Never edit what clash keeps: history/"));
         assert!(p.contains("unless the human asks for it in this conversation"));
-        assert!(p.contains("recording it in clash as a change request"));
+        assert!(p.contains("recording it in clash (Request changes…)"));
         assert!(p.contains("then ask what they want to discuss"));
         // A map of what exists, read on demand — never everything up front.
         assert!(p.contains("- plan.md — the current plan"), "{p}");
         assert!(p.contains("- history/ — "), "{p}");
-        assert!(!p.contains("waves.json"), "only files that exist: {p}");
+        assert!(!p.contains("- waves.json — "), "only files that exist: {p}");
         assert!(!p.contains("notes.txt"), "only known files: {p}");
         assert!(p.contains("Do not read these up front"));
         assert!(p.contains("from the facts above alone, reading nothing"));
@@ -2689,6 +2768,11 @@ not landing in the branch: the commit message still ships a MAJOR.\n\n\
         assert!(
             t.ends_with("The human wants to talk about: why is w2 blocked?\n\nAnswer that first."),
             "{t}"
+        );
+        // While an agent works, the session may move nothing.
+        meta.status = WorkflowStatus::Implementing;
+        assert!(
+            discussion_prompt(&meta, "s", "/d", &[], None).contains("to one of: none from here.")
         );
         // An untitled item is named by its slug.
         meta.title.clear();
@@ -3013,39 +3097,52 @@ Tighten the API.\n\n\
         // The stranding case: the PR was flipped on GitHub (or opened
         // non-draft), the item still says draft, and no draft is left to flip.
         assert_eq!(
-            status_after_pr_refresh(&meta(
-                r#"{"status":"pr-draft","pr":{"url":"https://github.com/o/a/pull/1","draft":false,"state":"OPEN"},
+            status_after_pr_refresh(
+                &meta(
+                    r#"{"status":"pr-draft","pr":{"url":"https://github.com/o/a/pull/1","draft":false,"state":"OPEN"},
                     "linkedPrs":[{"url":"https://github.com/o/b/pull/2","draft":false,"state":"OPEN"}]}"#
-            )),
+                ),
+                false
+            ),
             Some(WorkflowStatus::PrReady)
         );
         // Still a draft → nothing to follow.
         assert_eq!(
-            status_after_pr_refresh(&meta(
-                r#"{"status":"pr-draft","pr":{"url":"https://github.com/o/a/pull/1","draft":true,"state":"OPEN"}}"#
-            )),
+            status_after_pr_refresh(
+                &meta(
+                    r#"{"status":"pr-draft","pr":{"url":"https://github.com/o/a/pull/1","draft":true,"state":"OPEN"}}"#
+                ),
+                false
+            ),
             None
         );
         // Non-draft but closed without merging is not "ready for review".
         assert_eq!(
-            status_after_pr_refresh(&meta(
-                r#"{"status":"pr-draft","pr":{"url":"https://github.com/o/a/pull/1","draft":false,"state":"CLOSED"}}"#
-            )),
+            status_after_pr_refresh(
+                &meta(
+                    r#"{"status":"pr-draft","pr":{"url":"https://github.com/o/a/pull/1","draft":false,"state":"CLOSED"}}"#
+                ),
+                false
+            ),
             None
         );
         // Never checked (no state yet) → wait for a real observation.
         assert_eq!(
-            status_after_pr_refresh(&meta(
-                r#"{"status":"pr-draft","pr":{"url":"https://github.com/o/a/pull/1"}}"#
-            )),
+            status_after_pr_refresh(
+                &meta(r#"{"status":"pr-draft","pr":{"url":"https://github.com/o/a/pull/1"}}"#),
+                false
+            ),
             None
         );
         // Linked PRs never drive status: a linked-only item with a ready
         // linked PR stays where it is.
         assert_eq!(
-            status_after_pr_refresh(&meta(
-                r#"{"status":"pr-draft","linkedPrs":[{"url":"https://github.com/o/b/pull/2","draft":false,"state":"OPEN"}]}"#
-            )),
+            status_after_pr_refresh(
+                &meta(
+                    r#"{"status":"pr-draft","linkedPrs":[{"url":"https://github.com/o/b/pull/2","draft":false,"state":"OPEN"}]}"#
+                ),
+                false
+            ),
             None
         );
     }
@@ -3065,9 +3162,12 @@ Tighten the API.\n\n\
             "pr-ready",
         ] {
             assert_eq!(
-                status_after_pr_refresh(&meta(&format!(
-                    r#"{{"status":"{st}","pr":{{"url":"https://github.com/o/a/pull/1","draft":false,"state":"OPEN"}}}}"#
-                ))),
+                status_after_pr_refresh(
+                    &meta(&format!(
+                        r#"{{"status":"{st}","pr":{{"url":"https://github.com/o/a/pull/1","draft":false,"state":"OPEN"}}}}"#
+                    )),
+                    false
+                ),
                 None,
                 "status {st} must not advance to pr-ready on refresh"
             );
@@ -3080,26 +3180,95 @@ Tighten the API.\n\n\
         let meta = |json: &str| -> WorkflowMeta { serde_json::from_str(json).unwrap() };
         for st in ["pr-draft", "pr-ready", "diff-review"] {
             assert_eq!(
-                status_after_pr_refresh(&meta(&format!(
-                    r#"{{"status":"{st}","pr":{{"url":"https://github.com/o/a/pull/1","draft":false,"state":"MERGED"}}}}"#
-                ))),
+                status_after_pr_refresh(
+                    &meta(&format!(
+                        r#"{{"status":"{st}","pr":{{"url":"https://github.com/o/a/pull/1","draft":false,"state":"MERGED"}}}}"#
+                    )),
+                    false
+                ),
                 Some(WorkflowStatus::Done),
                 "a merged primary closes an item at {st}"
             );
         }
         // Merged wins over "ready": one move, to done.
         assert_eq!(
-            status_after_pr_refresh(&meta(
-                r#"{"status":"pr-draft","linkedPrs":[{"url":"https://github.com/o/b/pull/2","state":"MERGED"}]}"#
-            )),
+            status_after_pr_refresh(
+                &meta(
+                    r#"{"status":"pr-draft","linkedPrs":[{"url":"https://github.com/o/b/pull/2","state":"MERGED"}]}"#
+                ),
+                false
+            ),
             Some(WorkflowStatus::Done)
         );
         // A running reviewer is never closed under.
         assert_eq!(
-            status_after_pr_refresh(&meta(
-                r#"{"status":"reviewing","pr":{"url":"https://github.com/o/a/pull/1","state":"MERGED"}}"#
-            )),
+            status_after_pr_refresh(
+                &meta(
+                    r#"{"status":"reviewing","pr":{"url":"https://github.com/o/a/pull/1","state":"MERGED"}}"#
+                ),
+                false
+            ),
             None
+        );
+    }
+
+    #[test]
+    fn removal_cleans_up_only_what_the_item_created() {
+        use crate::domain::workflow::{WorkflowMeta, WorkflowMode};
+        let mut meta = WorkflowMeta {
+            repo_path: "/r/app".into(),
+            worktree: Some("/r/app-wt/item".into()),
+            branch: "feat/item".into(),
+            base: "release".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            cleanup_targets(&meta),
+            CleanupTargets {
+                worktree: Some("/r/app-wt/item".into()),
+                branch: Some("feat/item".into()),
+            }
+        );
+        // Working in place: the checkout is the repo, never removed.
+        meta.worktree = Some("/r/app/".into());
+        assert_eq!(cleanup_targets(&meta).worktree, None);
+        // Trunks and the base are never deleted.
+        for b in ["main", "master", "release"] {
+            meta.branch = b.into();
+            assert_eq!(cleanup_targets(&meta).branch, None, "{b}");
+        }
+        // A review-only item reviews a branch it did not create.
+        meta.branch = "feat/theirs".into();
+        meta.mode = WorkflowMode::ReviewOnly;
+        assert_eq!(cleanup_targets(&meta).branch, None);
+    }
+
+    #[test]
+    fn a_merged_pr_does_not_close_an_item_with_waves_left() {
+        use crate::domain::workflow::WorkflowMeta;
+        let meta = |json: &str| -> WorkflowMeta { serde_json::from_str(json).unwrap() };
+        let merged = meta(
+            r#"{"status":"pr-ready","pr":{"url":"https://github.com/o/a/pull/1","state":"MERGED"}}"#,
+        );
+        // Wave 1's PR merged while later waves are still to come.
+        assert_eq!(status_after_pr_refresh(&merged, true), None);
+        // Every wave signed off: the merge closes the item as before.
+        assert_eq!(
+            status_after_pr_refresh(&merged, false),
+            Some(WorkflowStatus::Done)
+        );
+        // Linked-only items are held the same way.
+        let linked = meta(
+            r#"{"status":"pr-ready","linkedPrs":[{"url":"https://github.com/o/b/pull/2","state":"MERGED"}]}"#,
+        );
+        assert_eq!(status_after_pr_refresh(&linked, true), None);
+        // Following a PR to ready is not a close, so waves do not hold it.
+        let ready = meta(
+            r#"{"status":"pr-draft","pr":{"url":"https://github.com/o/a/pull/1","draft":false,"state":"OPEN"}}"#,
+        );
+        assert_eq!(
+            status_after_pr_refresh(&ready, true),
+            Some(WorkflowStatus::PrReady)
         );
     }
 

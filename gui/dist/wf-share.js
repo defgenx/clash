@@ -468,6 +468,8 @@
     var themes = ["auto", "light", "dark"];
     var theme = "auto";
     var themeBtn = $("x-theme");
+    // A page exported in one clash theme keeps it: there is nothing to toggle.
+    var fixedPalette = root.hasAttribute("data-palette");
     function setTheme(t) {
       theme = t;
       if (t === "auto") root.removeAttribute("data-theme");
@@ -480,15 +482,19 @@
         /* storage blocked: the pick lasts this visit */
       }
     }
-    try {
-      theme = localStorage.getItem("clash-share-theme") || "auto";
-    } catch (e) {
-      theme = "auto";
+    if (fixedPalette) {
+      themeBtn.hidden = true;
+    } else {
+      try {
+        theme = localStorage.getItem("clash-share-theme") || "auto";
+      } catch (e) {
+        theme = "auto";
+      }
+      setTheme(themes.indexOf(theme) < 0 ? "auto" : theme);
+      themeBtn.onclick = function () {
+        setTheme(themes[(themes.indexOf(theme) + 1) % themes.length]);
+      };
     }
-    setTheme(themes.indexOf(theme) < 0 ? "auto" : theme);
-    themeBtn.onclick = function () {
-      setTheme(themes[(themes.indexOf(theme) + 1) % themes.length]);
-    };
 
     // ---- chapters ----------------------------------------------------------
     var chapNav = $("x-chapters");
@@ -1367,27 +1373,102 @@
 
   const PAGE_STYLE = THEME_STYLE + DOC_STYLE + EXPLORER_STYLE;
 
+  const hexRgb = (hex) => {
+    const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || "").trim());
+    if (!m) return null;
+    const n = parseInt(m[1], 16);
+    return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+  };
+  const hexMix = (hex, amount) => {
+    const rgb = hexRgb(hex);
+    if (!rgb) return hex;
+    const target = amount > 0 ? 255 : 0;
+    const t = Math.abs(amount);
+    return `#${rgb.map((v) => Math.round(v + (target - v) * t).toString(16).padStart(2, "0")).join("")}`;
+  };
+  const hexLuma = (hex) => {
+    const rgb = hexRgb(hex);
+    return rgb ? (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255 : 0;
+  };
+
+  /// A saved page's colours in one clash theme. `theme` is a `THEMES` entry of
+  /// app.js (`{ id, label, dark, ui, ansi? }`); the result is what
+  /// `shareHtmlDocument`'s `palette` option takes. Same derivations as
+  /// app.js `applyTheme` (`--on-accent` from the accent's luminance).
+  function shareThemePalette(id, theme) {
+    const u = (theme && theme.ui) || {};
+    const dark = !!(theme && theme.dark);
+    const bg = u.bg || (dark ? "#141414" : "#fbfaf8");
+    const accent = u.accent || (dark ? "#e8a33d" : "#b0741a");
+    return {
+      id: String(id || "theme"),
+      label: (theme && theme.label) || String(id || "theme"),
+      dark,
+      vars: {
+        bg,
+        "bg-panel": u["bg-sidebar"] || bg,
+        "bg-raised": u["bg-raised"] || bg,
+        "bg-hover": u["bg-hover"] || bg,
+        border: u.border || (dark ? "#2c2c31" : "#e0dbd2"),
+        fg: u.fg || (dark ? "#d4d4d8" : "#26241f"),
+        "fg-dim": u["fg-dim"] || (dark ? "#8a8a93" : "#6e6960"),
+        accent,
+        "on-accent": hexLuma(accent) > 0.55 ? "#14161a" : "#ffffff",
+        green: u.green || (dark ? "#4ec975" : "#17803d"),
+        warn: u["st-waiting"] || (theme && theme.ansi && theme.ansi[3]) || accent,
+        stage: hexMix(bg, dark ? -0.25 : -0.04),
+        code: dark ? "rgba(255,255,255,.06)" : "rgba(0,0,0,.05)",
+        shadow: dark ? "0 10px 30px rgba(0,0,0,.55)" : "0 10px 30px rgba(0,0,0,.12)",
+      },
+    };
+  }
+
+  // Values land inside a <style>: anything that could close the rule or the
+  // element is dropped rather than escaped.
+  const CSS_VALUE = /^[#\w\s.,()%-]+$/;
+
+  /// The `<html>` attributes and the style rule of a fixed palette, or
+  /// nothing (the page then follows the reader's OS and offers its toggle).
+  /// `data-theme` picks the matching mermaid variant and the frames'
+  /// colour scheme; the rule comes after PAGE_STYLE so it wins.
+  function paletteParts(palette) {
+    if (!palette || !palette.vars) return { attrs: "", style: "" };
+    const decls = Object.entries(palette.vars)
+      .filter(([k, v]) => /^[a-z-]+$/.test(k) && CSS_VALUE.test(String(v)))
+      .map(([k, v]) => `--${k}: ${v};`)
+      .join(" ");
+    const scheme = palette.dark ? "dark" : "light";
+    const id = String(palette.id || "theme").replace(/[^\w-]/g, "");
+    return {
+      attrs: ` data-palette="${id}" data-theme="${scheme}"`,
+      style: `\n  html:root[data-palette] { color-scheme: ${scheme}; ${decls} }`,
+    };
+  }
+
   /// Wrap rendered markdown in a self-contained HTML document — no external
   /// requests, readable in both OS themes. Mermaid diagrams arrive already
   /// rendered to inline SVG. `chapters` come from `shareExplanationChapter`;
   /// with any, the page opens on an explorer of the explanations — the
   /// drawing fills the screen and a click zooms into the part — driven by an
   /// inline script of its own (the drawings stay script-less frames). Without
-  /// explanations it is a plain document with no script.
-  function shareHtmlDocument(title, bodyHtml, chapters = []) {
+  /// explanations it is a plain document with no script. `palette` (from
+  /// `shareThemePalette`) fixes the page to one clash theme; without it the
+  /// page follows the reader's OS.
+  function shareHtmlDocument(title, bodyHtml, chapters = [], { palette = null } = {}) {
     const esc = String(title || "clash export")
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;");
     const kept = (chapters || []).filter((c) => c && Object.keys(c.levels || {}).length);
-    if (!kept.length) return plainHtmlDocument(esc, bodyHtml);
+    const pal = paletteParts(palette);
+    if (!kept.length) return plainHtmlDocument(esc, bodyHtml, pal);
     const data = { title: String(title || "clash export"), chapters: kept };
     return `<!doctype html>
-<html lang="en">
+<html lang="en"${pal.attrs}>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${esc}</title>
-<style>${PAGE_STYLE}
+<style>${PAGE_STYLE}${pal.style}
 </style>
 </head>
 <body>
@@ -1406,15 +1487,16 @@ ${shareDocSection(bodyHtml)}
   }
 
   /// The document alone, no script: the same full-width design as the
-  /// explorer page's document chapter, its theme following the OS.
-  function plainHtmlDocument(esc, bodyHtml) {
+  /// explorer page's document chapter, its theme following the OS unless a
+  /// palette fixes it.
+  function plainHtmlDocument(esc, bodyHtml, pal) {
     return `<!doctype html>
-<html lang="en">
+<html lang="en"${pal.attrs}>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${esc}</title>
-<style>${THEME_STYLE + DOC_STYLE}
+<style>${THEME_STYLE + DOC_STYLE}${pal.style}
 </style>
 </head>
 <body>
@@ -1435,6 +1517,7 @@ ${shareDocSection(bodyHtml, { plain: true })}
     shareHeadingSlug,
     shareHeadingSlugs,
     shareHtmlDocument,
+    shareThemePalette,
     shareDocOutline,
     shareDocSection,
     detectTicketKey,

@@ -148,6 +148,32 @@
     return [anchor, ...wfRewindTargets(anchor, mode)];
   }
 
+  /// Every stage the human may put the item in, suggested ones first (the
+  /// stop or rewind targets), then the rest in pipeline order. Mirrors
+  /// `WorkflowStatus::move_targets` (the authority): never `reviewing`, never
+  /// a plan stage on a review-only item.
+  function wfAllMoveTargets(status, mode, phase = "", returnStatus = null) {
+    const working = ["planning", "implementing", "reviewing"].includes(status);
+    const out = working
+      ? wfStopTargets(status, mode, phase, returnStatus)
+      : wfRewindTargets(status, mode);
+    const ORDER = [
+      "draft",
+      "planning",
+      "plan-review",
+      "changes-requested",
+      "implementing",
+      "diff-review",
+      "pr-draft",
+      "pr-ready",
+      "done",
+      "abandoned",
+    ];
+    const planless = (s) => mode === "review-only" && ["draft", "planning", "plan-review"].includes(s);
+    for (const s of ORDER) if (s !== status && !planless(s) && !out.includes(s)) out.push(s);
+    return out;
+  }
+
   /// One line about what a stage *is*, for the "move back to…" picker. A bare
   /// status name is a label; this is the reason to pick it.
   function wfStageBlurb(status) {
@@ -157,6 +183,11 @@
       "diff-review": "Review the code as it stands, comment on lines, request changes",
       "pr-draft": "The draft PR is the thing under validation",
       "pr-ready": "The PR is open for review",
+      planning: "An agent writes the plan — no agent starts; relaunch one from the bar",
+      "changes-requested": "A change round is queued — launch it from the bar",
+      implementing: "An agent writes the code — no agent starts; relaunch one from the bar",
+      done: "Finished",
+      abandoned: "Stopped — the files stay on disk",
     }[status] || "";
   }
 
@@ -175,6 +206,7 @@
     wfPipelineModel,
     wfRewindTargets,
     wfStopTargets,
+    wfAllMoveTargets,
     wfStageBlurb,
     wfNodeRewindStatus,
   };

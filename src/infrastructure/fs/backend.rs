@@ -195,6 +195,10 @@ struct SessionCache {
     projects: HashMap<PathBuf, Arc<Vec<Session>>>,
     /// Project directories that need re-scanning on next load.
     dirty_projects: HashSet<PathBuf>,
+    /// Sessions to rebuild inside an otherwise cached project. A project
+    /// holds a hundred transcripts; one of them being written is no reason
+    /// to re-parse the other ninety-nine.
+    dirty_sessions: HashMap<PathBuf, HashSet<String>>,
     /// Whether the cache has been populated at least once.
     initialized: bool,
 }
@@ -204,8 +208,53 @@ impl SessionCache {
         Self {
             projects: HashMap::new(),
             dirty_projects: HashSet::new(),
+            dirty_sessions: HashMap::new(),
             initialized: false,
         }
+    }
+}
+
+/// What a change under `~/.claude/projects` means for the session list.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProjectChange {
+    /// Nothing the list reads: memory files, tool results, subagent metadata.
+    Ignore,
+    /// One session's row: its transcript, or its subagent transcripts.
+    Session { project: PathBuf, id: String },
+    /// The whole project (its index, or a file clash doesn't know).
+    Project(PathBuf),
+}
+
+/// Classify one changed path (pure). The rows are built from
+/// `<project>/<id>.jsonl`, `<project>/sessions-index.json` and the
+/// `.jsonl` count of `<project>/<id>/subagents/`, so only those count.
+pub fn classify_project_change(projects_dir: &Path, path: &Path) -> ProjectChange {
+    let Ok(rel) = path.strip_prefix(projects_dir) else {
+        return ProjectChange::Ignore;
+    };
+    let parts: Vec<&str> = rel.iter().filter_map(|c| c.to_str()).collect();
+    let project = |p: &str| projects_dir.join(p);
+    let is_jsonl = |f: &str| f.ends_with(".jsonl");
+    match parts.as_slice() {
+        [p] => ProjectChange::Project(project(p)),
+        [p, f] if is_jsonl(f) => ProjectChange::Session {
+            project: project(p),
+            id: f.trim_end_matches(".jsonl").to_string(),
+        },
+        [_, "memory"] => ProjectChange::Ignore,
+        // A session's own directory (`<id>/`, holding subagents and tool
+        // results) appearing changes nothing until a subagent lands in it.
+        [_, f] if !f.contains('.') => ProjectChange::Ignore,
+        [p, _] => ProjectChange::Project(project(p)),
+        [p, id, "subagents"] => ProjectChange::Session {
+            project: project(p),
+            id: id.to_string(),
+        },
+        [p, id, "subagents", f] if is_jsonl(f) => ProjectChange::Session {
+            project: project(p),
+            id: id.to_string(),
+        },
+        _ => ProjectChange::Ignore,
     }
 }
 
@@ -333,10 +382,10 @@ impl FsBackend {
         self.base_dir.join("projects")
     }
 
-    /// Mark specific project directories as dirty so their sessions are re-loaded next time.
-    ///
-    /// Extracts the project directory from each changed path (parent of the file)
-    /// and marks it for re-scanning.
+    /// Mark what the changed paths affect for re-loading next time: one
+    /// session where a transcript changed, a whole project only for its
+    /// index (`classify_project_change`). Paths outside the projects tree
+    /// and the OMP sessions root are ignored.
     pub fn invalidate_session_cache(&self, changed_paths: &[PathBuf]) {
         let projects_dir = self.projects_dir();
         let omp_root = self.omp_sessions_dir();
@@ -351,21 +400,13 @@ impl FsBackend {
                         continue;
                     }
                 }
-                // The project dir is the parent of the changed file
-                if let Some(parent) = path.parent() {
-                    // Only invalidate if it's a direct child of the projects directory
-                    if parent.parent() == Some(projects_dir.as_path()) || parent == projects_dir {
-                        cache.dirty_projects.insert(parent.to_path_buf());
-                    } else if parent.starts_with(&projects_dir) {
-                        // Nested path (e.g., subagent JSONL) — find the project dir
-                        let relative = parent
-                            .strip_prefix(&projects_dir)
-                            .unwrap_or(parent.as_ref());
-                        if let Some(first_component) = relative.components().next() {
-                            cache
-                                .dirty_projects
-                                .insert(projects_dir.join(first_component));
-                        }
+                match classify_project_change(&projects_dir, path) {
+                    ProjectChange::Ignore => {}
+                    ProjectChange::Session { project, id } => {
+                        cache.dirty_sessions.entry(project).or_default().insert(id);
+                    }
+                    ProjectChange::Project(project) => {
+                        cache.dirty_projects.insert(project);
                     }
                 }
             }
@@ -378,6 +419,7 @@ impl FsBackend {
             cache.initialized = false;
             cache.projects.clear();
             cache.dirty_projects.clear();
+            cache.dirty_sessions.clear();
         }
     }
 
@@ -1060,12 +1102,17 @@ impl DataRepository for FsBackend {
         }
 
         // Determine which projects need re-scanning vs can use cached data
-        let (needs_full_scan, dirty_projects, cached_projects) = {
-            let cache = self.session_cache.lock().unwrap_or_else(|e| e.into_inner());
+        let (needs_full_scan, dirty_projects, dirty_sessions, cached_projects) = {
+            let mut cache = self.session_cache.lock().unwrap_or_else(|e| e.into_inner());
             if !cache.initialized {
-                (true, HashSet::new(), HashMap::new())
+                (true, HashSet::new(), HashMap::new(), HashMap::new())
             } else {
-                (false, cache.dirty_projects.clone(), cache.projects.clone())
+                (
+                    false,
+                    cache.dirty_projects.clone(),
+                    std::mem::take(&mut cache.dirty_sessions),
+                    cache.projects.clone(),
+                )
             }
         };
 
@@ -1087,7 +1134,9 @@ impl DataRepository for FsBackend {
             }
 
             // Check if we can use cached data for this project
-            if !needs_full_scan && !dirty_projects.contains(&project_path) {
+            let project_dirty = needs_full_scan || dirty_projects.contains(&project_path);
+            let rebuild = dirty_sessions.get(&project_path);
+            if !project_dirty && rebuild.is_none() {
                 if let Some(cached) = cached_projects.get(&project_path) {
                     for s in cached.iter() {
                         if global_seen_ids.insert(s.id.clone()) {
@@ -1099,7 +1148,20 @@ impl DataRepository for FsBackend {
                 }
             }
 
-            // Cache miss or dirty — scan this project
+            // Cache miss or dirty — scan this project. When only some of its
+            // sessions changed, every other row is taken from the cache as is.
+            let reuse: HashMap<&str, &Session> = match (project_dirty, rebuild) {
+                (false, Some(ids)) => cached_projects
+                    .get(&project_path)
+                    .map(|c| {
+                        c.iter()
+                            .filter(|s| !ids.contains(&s.id))
+                            .map(|s| (s.id.as_str(), s))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                _ => HashMap::new(),
+            };
             let mut project_sessions = Vec::new();
 
             let project_dir_name = match project_path.file_name().and_then(|n| n.to_str()) {
@@ -1137,6 +1199,11 @@ impl DataRepository for FsBackend {
                                 }
 
                                 indexed_ids.insert(session_id.clone());
+
+                                if let Some(kept) = reuse.get(session_id.as_str()) {
+                                    project_sessions.push((*kept).clone());
+                                    continue;
+                                }
 
                                 let summary = entry
                                     .get("summary")
@@ -1222,6 +1289,10 @@ impl DataRepository for FsBackend {
                     }
                     // Skip if we've already seen this session from another project
                     if !global_seen_ids.insert(session_id.clone()) {
+                        continue;
+                    }
+                    if let Some(kept) = reuse.get(session_id.as_str()) {
+                        project_sessions.push((*kept).clone());
                         continue;
                     }
 
@@ -2214,6 +2285,125 @@ mod tests {
             rescanned.len(),
             1,
             "re-scanned project must still be listed"
+        );
+    }
+
+    #[test]
+    fn a_changed_path_dirties_only_what_the_list_reads() {
+        let root = Path::new("/c/projects");
+        let p = root.join("-tmp-demo");
+        let id = "11111111-1111-1111-1111-111111111111";
+        let session = ProjectChange::Session {
+            project: p.clone(),
+            id: id.to_string(),
+        };
+        let at = |rel: &str| classify_project_change(root, &root.join(rel));
+        assert_eq!(at(&format!("-tmp-demo/{id}.jsonl")), session);
+        assert_eq!(
+            at(&format!("-tmp-demo/{id}/subagents/agent-a.jsonl")),
+            session
+        );
+        assert_eq!(at(&format!("-tmp-demo/{id}/subagents")), session);
+        assert_eq!(
+            at("-tmp-demo/sessions-index.json"),
+            ProjectChange::Project(p.clone())
+        );
+        assert_eq!(at("-tmp-demo"), ProjectChange::Project(p.clone()));
+        // Written all the time by busy sessions; none of them is in a row.
+        for noise in [
+            format!("-tmp-demo/{id}/subagents/agent-a.meta.json"),
+            format!("-tmp-demo/{id}/tool-results/toolu_1.txt"),
+            format!("-tmp-demo/{id}"),
+            "-tmp-demo/memory/MEMORY.md".to_string(),
+            "-tmp-demo/memory".to_string(),
+        ] {
+            assert_eq!(at(&noise), ProjectChange::Ignore, "{noise}");
+        }
+        assert_eq!(
+            classify_project_change(root, Path::new("/elsewhere/x.jsonl")),
+            ProjectChange::Ignore
+        );
+    }
+
+    #[test]
+    fn a_session_write_rebuilds_that_session_and_keeps_its_siblings() {
+        let (dir, backend) = setup_test_dir();
+        let project = dir.path().join("projects").join("-tmp-demo");
+        std::fs::create_dir_all(&project).unwrap();
+        let a = "11111111-1111-1111-1111-111111111111";
+        let b = "22222222-2222-2222-2222-222222222222";
+        let line = |text: &str| {
+            format!(
+                "{{\"type\":\"user\",\"cwd\":\"/tmp/demo\",\"message\":{{\"role\":\"user\",\"content\":\"{text}\"}}}}\n"
+            )
+        };
+        std::fs::write(project.join(format!("{a}.jsonl")), line("one")).unwrap();
+        std::fs::write(project.join(format!("{b}.jsonl")), line("one")).unwrap();
+        let first = backend.load_sessions().unwrap();
+        assert_eq!(first.len(), 2);
+
+        // Both transcripts finish a turn on disk; only `a` is reported.
+        let row = |list: &[Session], id: &str| list.iter().find(|s| s.id == id).cloned().unwrap();
+        let mut grown = line("one");
+        grown.push_str(
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n",
+        );
+        std::fs::write(project.join(format!("{a}.jsonl")), &grown).unwrap();
+        std::fs::write(project.join(format!("{b}.jsonl")), &grown).unwrap();
+        backend.invalidate_session_cache(&[project.join(format!("{a}.jsonl"))]);
+        let next = backend.load_sessions().unwrap();
+        assert_ne!(
+            row(&next, a).status,
+            row(&first, a).status,
+            "the written session is rebuilt"
+        );
+        assert_eq!(
+            row(&next, b),
+            row(&first, b),
+            "an unreported sibling is kept from the cache"
+        );
+
+        // A removal reported for `b` drops it; a new transcript in the same
+        // project is found by the directory listing.
+        let c = "33333333-3333-3333-3333-333333333333";
+        std::fs::remove_file(project.join(format!("{b}.jsonl"))).unwrap();
+        std::fs::write(project.join(format!("{c}.jsonl")), line("one")).unwrap();
+        backend.invalidate_session_cache(&[
+            project.join(format!("{b}.jsonl")),
+            project.join(format!("{c}.jsonl")),
+        ]);
+        let mut ids: Vec<String> = backend
+            .load_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec![a.to_string(), c.to_string()]);
+    }
+
+    #[test]
+    fn tool_results_and_memory_writes_rescan_nothing() {
+        let (dir, backend) = setup_test_dir();
+        let project = dir.path().join("projects").join("-tmp-demo");
+        std::fs::create_dir_all(&project).unwrap();
+        let a = "11111111-1111-1111-1111-111111111111";
+        std::fs::write(
+            project.join(format!("{a}.jsonl")),
+            "{\"type\":\"user\",\"cwd\":\"/tmp/demo\"}\n",
+        )
+        .unwrap();
+        assert_eq!(backend.load_sessions().unwrap().len(), 1);
+        // Deleted behind the cache's back: a rescan would drop it.
+        std::fs::remove_file(project.join(format!("{a}.jsonl"))).unwrap();
+        backend.invalidate_session_cache(&[
+            project.join(a).join("tool-results").join("toolu_1.txt"),
+            project.join("memory").join("MEMORY.md"),
+        ]);
+        assert_eq!(
+            backend.load_sessions().unwrap().len(),
+            1,
+            "noise paths must not re-scan the project"
         );
     }
 
