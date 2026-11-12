@@ -191,31 +191,48 @@ Workflow sessions are named by item and job (`Auth refactor · implement`,
 
 An item can be one task or a whole project. When the planner sees a project,
 it splits the plan into **waves**: slices you implement, review and approve
-one at a time, in order, inside the same item (one branch, one worktree, one
-PR). Each wave says which waves it needs first and which parts of the code it
-touches. A single task has no waves and works as before. Waves are shown as
-**Wave 1, Wave 2…** (`w1`, `w2` are only their ids in `waves.json`).
+one at a time, in order, inside the same item and worktree. Each wave gets
+**its own branch and its own PRs** and ships on its own: work that needs
+several releases is planned as one wave per release at least. Each wave says
+which waves it needs first and which parts of the code it touches. A single
+task has no waves and works as before. Waves are shown as **Wave 1, Wave 2…**
+(`w1`, `w2` are only their ids in `waves.json`, and the plan's sections are
+headed `## Wave 1 — …`, `## Wave 2 — …` to match).
+
+**Branches.** A wave's branch is the item's branch plus its id
+(`saturn-audit-logs-w2`), in every repository the wave changes. While the wave
+it depends on still has an unmerged PR, the new wave's branch starts from that
+wave's branch and its PR is stacked on it; once that PR merges, the next wave
+starts from the base branch. Merged or signed-off work is never rewritten. A
+wave already started on the item's branch before waves had their own branches
+keeps going there.
 
 - **Approve plan → start waves…** asks which waves to start. The first ready
   one is ticked. You can tick another only when it doesn't depend on the
   first and touches different code; the agent then builds them in parallel,
-  in one round, and you sign them off together.
-- When the round comes back, review it as usual (your diff review, a code
-  review, plan vs changes). The reviewers look at the round's waves.
+  in one round, each on its own branch, and you sign them off together.
+- When the round comes back (at **PR draft** when it opened or updated the
+  waves' draft PRs, else at diff review), review it as usual (your diff
+  review, a code review, plan vs changes). The reviewers judge the round's
+  waves — each on its own branch and PRs — treat signed-off waves as context,
+  and never call a wave that hasn't started yet missing.
 - **✓ Sign off Wave 2 → next waves…** signs off the round's waves and offers the
   ones that became ready; **✓ Sign off Wave 2 only** signs off without starting
-  anything; **▶ Start next waves…** picks up from there later. Signing off
-  **seals** the wave: clash records the commit its work ends at, and every
+  anything; **▶ Start next waves…** picks up from there later. Sign-off is
+  offered at diff review, PR draft and PR ready, and it **seals** the wave: clash records the commit its work ends at, and every
   later agent round is told that work is accepted and must be left alone
-  (anything it has to touch there, it reports). It unlocks the waves that
+  (anything it has to touch there, it reports; a plan revision may not change,
+  remove or renumber a signed-off wave). It unlocks the waves that
   waited for it. The dialog lists what is still open (comments, PRs not
   merged, threads) and can also mark the wave's draft PRs ready for review on
   GitHub — unticked unless you tick it.
 - **Request changes** during a wave sends the fix round back to the same
-  waves.
+  waves. Moving the item back to the plan (draft, planning or plan review)
+  ends the round's waves: nothing is in flight until you start waves again.
 - **Approve → done** and **Approve → PR draft** appear once the last waves
-  are in review, and sign them off on the way. You can open the PR whenever you
-  like; it collects the waves as they land.
+  are in review, and sign them off on the way. Each wave's PRs are opened from
+  its own branch, so they can be reviewed, merged and deployed one wave at a
+  time.
 - A merged PR does not finish a project in waves. A single task closes when
   its PR merges; a project in waves closes on a merge only once every wave is
   signed off, so the first wave's PR landing on main leaves the rest to do.
@@ -253,12 +270,14 @@ shows the same counts); in a narrow one (a split pane, a small window) it is
 a single column.
 
 A PR belongs to a wave when the wave lists it (the agent adds each PR it
-opens) or when its branch names a ticket only that wave lists. The header
+opens), when it comes from the wave's branch, or when its branch names a
+ticket only that wave lists; one PR may belong to several waves. The header
 shows `Waves 2/5 · Wave 3 in progress`, and the suggested next step points at
 the wave buttons. A
 `waves.json` that can't be used (a wave that depends on itself, a loop, an
-unknown wave) shows the reason and blocks starting: request changes on the
-plan so the planner fixes it.
+unknown wave) shows the reason and blocks starting new waves: request changes
+on the plan so the planner fixes it. A fix round or a relaunch still runs, and
+is asked to repair the file.
 
 ## Reviewing the diff yourself
 
@@ -761,7 +780,7 @@ configured webhook. Your own clicks never post.
   model**. Under `workflows.delegation = team` (the default) the lead sizes the
   round first: small work stays with the lead, and large work is split across
   parallel subagents on a pinned **subagent model** — explorers, implementers
-  in waves of disjoint files, or one reviewer per area, followed by
+  in batches of disjoint files, or one reviewer per area, followed by
   verification. `solo` keeps everything in one session.
   [Details](workflows.md#lead-and-subagents).
 

@@ -127,6 +127,7 @@ pub(crate) async fn list_workflow_items(
                 &item.meta.waves,
                 item.meta.status,
                 &pr_refs,
+                &item.meta.branch,
             );
             let trackers = state.config.get().trackers();
             for w in &mut board.waves {
@@ -1014,6 +1015,14 @@ pub(crate) fn rewind_workflow_item(
             status, meta.status
         ));
     }
+    // Back at the plan, the round's waves no longer stand: they are started
+    // again from the plan's approval. Their start commits are kept.
+    if matches!(
+        status,
+        WorkflowStatus::Draft | WorkflowStatus::Planning | WorkflowStatus::PlanReview
+    ) {
+        meta.waves.scope.clear();
+    }
     meta.status = status;
     state
         .backend
@@ -1801,8 +1810,12 @@ pub(crate) async fn start_workflow_agent(
     // A multi-wave item implements the waves the human picked, and nothing
     // else — checked before the worktree exists, so a refusal costs nothing.
     let item_dir = state.backend.workflows_dir().join(&project).join(&slug);
-    let wave_scope = if phase == "implement" {
-        plan_wave_scope(&meta, &item_dir, waves.as_deref())?
+    let wave_scope = if phase == "implement" || phase == "pr" {
+        plan_wave_scope(
+            &meta,
+            &item_dir,
+            waves.as_deref().filter(|_| phase == "implement"),
+        )?
     } else {
         None
     };
@@ -1842,9 +1855,18 @@ pub(crate) async fn start_workflow_agent(
     };
     let rollback_waves = meta.waves.clone();
     let waves_clause = match wave_scope {
-        Some((plan, ordered)) => {
-            record_wave_scope(&mut meta, &cwd, ordered).await;
-            clash::application::waves::executor_clause(&plan, &meta.waves)
+        Some(WaveLaunch::Plan(plan, ordered)) => {
+            if phase == "implement" {
+                record_wave_scope(&mut meta, &cwd, ordered).await;
+            }
+            clash::application::waves::executor_clause(&plan, &meta.waves, &meta.branch)
+        }
+        Some(WaveLaunch::Unusable(issue)) => {
+            clash::application::waves::unusable_clause(&issue, &meta.waves)
+        }
+        // A plan revision keeps the signed-off waves as they are.
+        None if load_wave_plan(&item_dir).is_some() => {
+            clash::application::waves::plan_clause(&meta.waves)
         }
         None => String::new(),
     };
@@ -1974,7 +1996,19 @@ fn load_wave_plan(item_dir: &Path) -> Option<Result<clash::domain::workflow::Wav
     let raw =
         std::fs::read_to_string(item_dir.join(clash::infrastructure::fs::workflows::WAVES_FILE))
             .ok()?;
-    Some(clash::application::waves::parse_wave_plan(&raw))
+    match clash::application::waves::parse_wave_plan(&raw) {
+        // A file listing no wave is a single task.
+        Ok(plan) if plan.waves.is_empty() => None,
+        other => Some(other),
+    }
+}
+
+/// How an executor round launches on a multi-wave item.
+enum WaveLaunch {
+    /// The plan and the waves this round covers (in plan order).
+    Plan(clash::domain::workflow::WavePlan, Vec<String>),
+    /// `waves.json` cannot be read: the round runs on the recorded scope.
+    Unusable(String),
 }
 
 /// The waves the implementation round about to launch covers, validated
@@ -1986,20 +2020,23 @@ fn plan_wave_scope(
     meta: &clash::domain::workflow::WorkflowMeta,
     item_dir: &Path,
     waves: Option<&[String]>,
-) -> Result<Option<(clash::domain::workflow::WavePlan, Vec<String>)>, String> {
+) -> Result<Option<WaveLaunch>, String> {
     let Some(plan) = load_wave_plan(item_dir) else {
         return Ok(None);
     };
-    let plan = plan?;
-    let ids = match waves {
-        Some(ids) => ids.to_vec(),
-        None if !meta.waves.scope.is_empty() => meta.waves.scope.clone(),
-        // A fix round between waves (changes requested after the last
-        // round's waves were approved): it starts no wave, and says so.
-        None => return Ok(Some((plan, Vec::new()))),
-    };
-    let ordered = clash::application::waves::check_start(&plan, &meta.waves, &ids)?;
-    Ok(Some((plan, ordered)))
+    match (plan, waves) {
+        // Only a new pick is checked against the schedule. A change round or
+        // a relaunch continues the recorded scope as it is: the file may have
+        // been edited since, and refusing would strand the item with a fix
+        // round queued that nothing can start.
+        (Ok(plan), Some(ids)) => {
+            let ordered = clash::application::waves::check_start(&plan, &meta.waves, ids)?;
+            Ok(Some(WaveLaunch::Plan(plan, ordered)))
+        }
+        (Ok(plan), None) => Ok(Some(WaveLaunch::Plan(plan, meta.waves.scope.clone()))),
+        (Err(issue), Some(_)) => Err(issue),
+        (Err(issue), None) => Ok(Some(WaveLaunch::Unusable(issue))),
+    }
 }
 
 /// Record a validated scope on `meta`, with the commit each wave starts from
@@ -2041,8 +2078,38 @@ pub(crate) async fn approve_workflow_waves(
     if meta.status.is_working() {
         return Err("An agent is working on this item — let it finish first".into());
     }
+    // A wave is signed off where its code is reviewed — not while a fix
+    // round for it is queued, nor while the plan is being reworked.
+    if !matches!(
+        meta.status,
+        WorkflowStatus::DiffReview | WorkflowStatus::PrDraft | WorkflowStatus::PrReady
+    ) {
+        return Err(format!(
+            "Waves are signed off at diff review or a PR stage, not at {}",
+            meta.status
+        ));
+    }
     if meta.waves.scope.is_empty() {
         return Err("No wave is waiting for sign-off".into());
+    }
+    let item_dir = state.backend.workflows_dir().join(&project).join(&slug);
+    if let Some(Ok(plan)) = load_wave_plan(&item_dir) {
+        let unknown: Vec<&String> = meta
+            .waves
+            .scope
+            .iter()
+            .filter(|id| !plan.waves.iter().any(|w| w.id.trim() == id.trim()))
+            .collect();
+        if !unknown.is_empty() {
+            return Err(format!(
+                "waves.json no longer has {} — fix the file or move the item to plan review",
+                unknown
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
     }
     let approved = meta.waves.scope.clone();
     // The seal: the commit the waves' work ends at, read where they were built.
@@ -2357,14 +2424,30 @@ pub(crate) async fn launch_review(
 
     // A round over a multi-wave item's code judges the waves in review —
     // their commits — with the rest of the branch as context.
-    let waves_clause = if matches!(
-        review.target,
-        ReviewTarget::Diff | ReviewTarget::SelfReview | ReviewTarget::Drift
-    ) {
-        clash::application::waves::review_clause(&meta.waves)
-    } else {
-        String::new()
-    };
+    let waves_clause =
+        match load_wave_plan(&state.backend.workflows_dir().join(&project).join(&slug)) {
+            Some(Ok(plan))
+                if matches!(
+                    review.target,
+                    ReviewTarget::Diff | ReviewTarget::SelfReview | ReviewTarget::Drift
+                ) =>
+            {
+                let prs: Vec<clash::application::waves::PrRef> = meta
+                    .pr
+                    .iter()
+                    .chain(meta.linked_prs.iter())
+                    .filter(|p| !p.url.is_empty())
+                    .map(|p| clash::application::waves::PrRef {
+                        url: p.url.clone(),
+                        head_ref: p.head_ref.clone(),
+                    })
+                    .collect();
+                let owner = clash::application::waves::assign_prs(&plan, &prs, &meta.branch);
+                let by_wave = clash::application::waves::prs_by_wave(&owner, &prs);
+                clash::application::waves::review_clause(&plan, &meta.waves, &meta.branch, &by_wave)
+            }
+            _ => String::new(),
+        };
     crate::launch_stage(app, &key, "spawn", None);
     let spawned = spawn_item_session(
         state,
@@ -3057,12 +3140,11 @@ fn forge_err(e: clash::domain::forge::ForgeError) -> String {
 /// number inside that window failed with "refresh it first" against a URL
 /// that literally contains the number.
 fn recorded_pr_number(pr: &clash::domain::workflow::WorkflowPr) -> u64 {
-    if pr.number > 0 {
-        pr.number
-    } else {
-        clash::infrastructure::gh::parse_pr_url(&pr.url)
-            .map(|(_, n)| n)
-            .unwrap_or(0)
+    // The URL wins: an agent that records a new PR rewrites the URL and may
+    // leave the old number, and the refresh would then restore the old PR.
+    match clash::infrastructure::gh::parse_pr_url(&pr.url) {
+        Some((_, n)) if n > 0 => n,
+        _ => pr.number,
     }
 }
 
@@ -5125,7 +5207,7 @@ mod tests {
             .expect("start_workflow_agent")
             .1;
         let checked = launch
-            .find("plan_wave_scope(&meta, &item_dir, waves.as_deref())?")
+            .find("plan_wave_scope(\n            &meta,")
             .expect("the launch validates the wave pick");
         let worktree = launch
             .find("crate::create_worktree(")

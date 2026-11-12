@@ -206,6 +206,14 @@ test("many PRs read as one summary and a board grouped by wave", () => {
   assert.equal(b.groups[2].title, "Not in a wave");
   assert.equal(b.errors, 1);
   assert.equal(b.checkedAt, 1000);
+  // A PR two waves list sits under both, and the item still counts it once.
+  item.waves.waves[1].prs = [meta.pr.url, meta.linkedPrs[0].url];
+  const shared = prBoard(item);
+  assert.deepEqual(shared.groups[1].prs.map((p) => p.number), [457, 454]);
+  assert.ok(shared.groups[0].prs.some((p) => p.number === 454));
+  assert.equal(shared.counts.total, 5);
+  // A URL listed twice by the item is one PR.
+  assert.equal(itemPrs({ ...meta, linkedPrs: [...meta.linkedPrs, { url: meta.pr.url }] }).length, 5);
   // Without waves: one group.
   assert.equal(prBoard({ meta }).groups.length, 1);
   assert.equal(itemPrs(meta)[0].headRef, "main-branch");

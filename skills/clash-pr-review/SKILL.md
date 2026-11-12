@@ -66,11 +66,24 @@ gives:
   the local diff for a code review, the primary `meta.pr.url` for a verdict.
 - **Stack** — optional; `Stack: <url1> > <url2> > <url3>`, the item's PRs as a
   GitHub stack, **base → tip** (also in `meta.review.stack`). See "PR stacks".
-- **Waves** — optional; `Waves: w2, w3 (changes since <sha>).` on a
-  multi-wave item (`waves.json`): the round judges those waves — the commits
-  since `<sha>` (`git diff <sha>...HEAD`) — with the rest of the branch as
-  context only. Approved waves were reviewed already; report on them only
-  when a wave in review breaks them. Name the wave on every finding.
+- **Waves** — optional, on a multi-wave item (`waves.json`). Either
+  ``Waves: w2 (API; branch `item-w2`; PRs <url>, <url>; since abc1234), w3 (…).
+  Signed off: w1. Not started: w4 — not missing.`` or, between waves,
+  ``Waves: none in review. Signed off: w1. Not started: w2, w3 — not missing.``
+  Each wave has its own branch and PRs, so judge **only the waves listed in
+  review**, each on its own change: its PRs' diffs (`gh pr diff <url>`) when
+  it lists PRs, else `git diff <parent>...<wave branch>` — the parent being
+  the branch it was based on (the depended-on wave's branch while that PR is
+  unmerged, else the base branch), or `<since sha>` when you cannot tell; a
+  wave without a branch of its own (started on the item branch) is
+  `git diff <since sha>...HEAD`. `none in review` means a fix round between
+  waves: judge that round's changes, not the waves still to come. Signed-off
+  waves were reviewed already — context only; report on them only when a
+  wave in review breaks them. A *not started* wave is never missing. Name the
+  wave on every finding. `Waves` **narrows findings only**: it never changes
+  the subject of a verdict (a verdict is on the PRs it is posted on — the
+  `PR` field, else the primary) nor which threads an answer-threads round
+  answers (every open thread on its PRs).
 - **Interactive**, **Auto-apply**, **Focus** — optional; see below.
 - **Size** — optional; `small|medium|large (<N> lines, <F> files)`. See "Size".
 - **Delegation** — `team` (also what an absent field means) or `solo`,
@@ -252,14 +265,14 @@ split that keeps quality:
 Never launch more subagents than there are independent units of real work, and
 never one whose whole job is a file read or a grep — do that yourself.
 
-Each pass runs in two waves:
+Each pass runs in two batches:
 
 1. **Find** — read-only reviewers launched together, covering the lenses
    correctness (the concrete failing input for each claim), tests (what the
    change leaves unasserted), architecture & conventions (held to the repo's
    `CLAUDE.md`/`AGENTS.md` and the neighbouring code), and security &
    performance. Each returns candidates with `file:line`, the failure scenario
-   and a proposed grade. In a looping run every pass gets a **fresh** wave —
+   and a proposed grade. In a looping run every pass gets a **fresh** batch —
    fresh eyes are the point of a new pass, so never reuse the previous pass's
    agents — briefed with the pass's angle, its area, and the ledger's findings
    verbatim under "already found — do not report these again".
@@ -275,7 +288,7 @@ edited.
 
 How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
 
-- **Parallel means one message.** Launch every independent subagent of a wave
+- **Parallel means one message.** Launch every independent subagent of a batch
   in a single response with several tool calls.
 - **Never pass a `model` in a workflow round, and use the general-purpose
   agent.** clash pins the subagents' model: under Claude Code it is forced for

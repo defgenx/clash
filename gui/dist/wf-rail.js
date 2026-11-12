@@ -33,9 +33,10 @@
       error: (item.prErrors || {})[p.url] || "",
     }));
     let waves = null;
-    if (item.waves && subView !== "waves") {
+    const board = dep("waveBoard")(item);
+    // An empty board (no wave listed) gets no card rather than a blank one.
+    if ((board || dep("wavesIssue")(item)) && subView !== "waves") {
       const story = dep("waveNarrative")(item, prs);
-      const board = dep("waveBoard")(item);
       waves = {
         now: story ? story.now : "",
         next: story ? story.next : "",

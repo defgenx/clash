@@ -27,6 +27,9 @@ The kickoff prompt gives you:
 - **Stacking** — optional, only in `implement` and `pr` phases; whether this
   item's PRs form a GitHub stack, and what its PR builds on. See "PR stacking"
   below — it decides every PR's `--base`.
+- **Waves** / **Signed off** — optional, only on a multi-wave item: which
+  waves this round covers, their branches, and which waves are accepted. See
+  "Waves" below.
 - **Interactive** — optional; see the opening question below
 - **Delegation** — `team` (also what an absent field means) or `solo`,
   optionally naming the subagent model: `team (subagents on <model>)`. See
@@ -131,7 +134,9 @@ findings into `agent-review.md` and `annotations.json` and never touch
 - **Never** touch `history/`, `plan-history/`, or `iteration`, `reviewRound`,
   `appliedReviewKey` and `waves` in meta.json — clash owns all six.
   `waves.json` is yours in phases `plan` and `revise`; in `implement` and
-  `pr` the only edit allowed is appending a PR URL to a wave's `prs`.
+  `pr` the only edit allowed is appending a PR URL to a wave's `prs` —
+  unless the kickoff says `waves.json is unusable`, which asks you to repair
+  it (see "Waves").
   The four `explain-*.{md,html}` documents belong to the explainer: read them
   freely when they exist (`explain-plan.*` is a picture of the work you are
   about to do, and worth a minute), write none of them. They are the
@@ -144,12 +149,16 @@ findings into `agent-review.md` and `annotations.json` and never touch
 - Every `meta.json` write is a **read-modify-write**: re-read the file, edit
   only your fields (`status`, `pr.url`, `linkedPrs` appends), keep every
   field you don't understand. Never rewrite it from a template.
-- If your work opened PRs in **other repositories** (multi-repo work), record
-  each one by appending `{"url": "<pr url>"}` to `meta.json.linkedPrs` (create
-  the array if absent) — clash fills state/draft on its next refresh and shows
-  them on the item. Never remove or reorder existing entries; unlinking is the
-  human's action. Linked PRs never change this item's status — only `pr.url`
-  (the primary) does.
+- **Recording PRs.** The first PR you open becomes the primary — set
+  `pr.url` — **only while `pr.url` is empty**. Every further PR, in this
+  repository or another (a stack layer, another wave, multi-repo work), is
+  appended to `meta.json.linkedPrs` as `{"url": "<pr url>"}` (create the
+  array if absent); a URL-only entry is enough — clash fills state/draft on
+  its next refresh. Never overwrite a set `pr.url`, never remove or reorder
+  `linkedPrs` entries; unlinking is the human's action. Linked PRs never
+  change this item's status — only the primary does. On a multi-wave item,
+  also append every wave PR's URL to that wave's `prs` in `waves.json`
+  (see "Waves").
 - `review.md` is append-only history — read it, never edit it.
 - `handoff.md` is yours alone: overwrite it at the end of every phase (see
   "Hand-off note" below). Reviewers and explainers never write it.
@@ -160,24 +169,32 @@ findings into `agent-review.md` and `annotations.json` and never touch
   `diff-review → pr-draft`. Write `pr-draft` even when the PR is already
   ready for review — clash moves the item to `pr-ready` itself on its next
   refresh; `pr-ready` is never yours to write.
-- Git (skip entirely under `Workspace: directory`): commit your work on the current branch with clear conventional
-  messages. **Never `--no-verify`** — if a hook fails, fix the cause or stop and
-  explain in your final message. Pushing:
-  - `full` / `from-plan` **without a PR**: never push — the branch is
-    unpublished and publishing it is the human's call (creating the PR is
+- Git (skip entirely under `Workspace: directory`): commit your work on the
+  current branch — on a multi-wave item, on each wave's own branch (see
+  "Waves") — with clear conventional messages. **Never `--no-verify`** — if a
+  hook fails, fix the cause or stop and explain in your final message.
+  Pushing:
+  - `full` / `from-plan` on a branch **without a PR**: never push — the branch
+    is unpublished and publishing it is the human's call (creating the PR is
     what pushes it).
-  - **Any mode with a PR** (`meta.pr.url` is set) or `review-only`: **push
-    after committing** — plain `git push` (add `-u origin <branch>` if it has
-    no upstream). The branch is published and the PR must reflect the fixes;
-    a fix round that only commits locally leaves the PR silently stale.
-    Never force-push, never rewrite published history; if the push is
-    rejected, stop and report it instead of forcing.
+  - **A branch with a PR** (a PR recorded in `meta.pr.url`, `linkedPrs` or a
+    wave's `prs` comes from it) or `review-only`: **push after
+    committing** — plain `git push` (add `-u origin <branch>` if it has no
+    upstream). The branch is published and the PR must reflect the fixes; a
+    fix round that only commits locally leaves the PR silently stale.
+  - Never force-push, never rewrite published history; if the push is
+    rejected, stop and report it instead of forcing. The one exception: a
+    wave's **own unmerged** branch rebased onto the base branch after the
+    wave it was stacked on merged (see "Waves"), pushed with
+    `--force-with-lease`. A merged or signed-off wave's history is never
+    rewritten.
 
 ## Waves — a project in slices
 
 Some items are one task; some are a whole project. A project is planned as
 **waves**: slices of the plan that are implemented, reviewed and signed off one
-after another, inside this one item (same worktree, same branch). The human
+after another, inside this one item and its one worktree — each wave on **its
+own branch, with its own PRs**, so each wave ships on its own. The human
 signs off each wave before the waves that depend on it can start, and clash
 may start several waves in one round when they are independent.
 
@@ -185,7 +202,8 @@ may start several waves in one round when they are independent.
 approving on their own — a schema before the API that uses it, a backend
 before the screens that call it — or is too big for one review to judge
 well. Not for a task that one round implements and one review judges: then
-write no `waves.json` at all.
+write no `waves.json` at all (a `waves.json` with no waves also means a single
+task).
 
 **Several releases always means waves — one release per wave, at least.**
 Work that cannot ship in one deploy is a multi-wave project, however small
@@ -217,8 +235,11 @@ different waves.
   click, discovering a broken deploy order costs an incident.
 
 **Planning them (phases `plan` and `revise`).** In `plan.md`, one section per
-wave, `## Wave <n> — <title>`, holding that wave's work units. Then write
-`waves.json` in the item directory:
+wave, `## Wave <n> — <title>`, holding that wave's work units — `<n>` is the
+number in the wave's id (`w3` → `## Wave 3 — …`); an id without a number goes
+in the heading as is (`## Wave w-api — …`). Reviewers find a wave's section by
+its id, so a heading that matches no id is a section nobody reviews. Then
+write `waves.json` in the item directory:
 
 ```json
 {
@@ -234,8 +255,9 @@ wave, `## Wave <n> — <title>`, holding that wave's work units. Then write
 }
 ```
 
-- `id` short and stable (`w1`, `w2`…) — clash records approvals by it, so
-  never renumber a wave a revision did not remove.
+- `id` short and stable (`w1`, `w2`…) — clash records approvals and names
+  branches by it, so never renumber a wave a revision did not remove, and
+  never reuse the id of a removed wave: it stays retired.
 - `dependsOn`: the waves that must be **signed off** first. Only real
   dependencies — every one you add serializes work that could run in
   parallel.
@@ -250,26 +272,75 @@ wave, `## Wave <n> — <title>`, holding that wave's work units. Then write
   PR whose branch names a ticket of exactly one wave is shown under that
   wave; a key two waves share places nothing.
 - `prs`: the PR URLs that deliver the wave. Leave it empty when planning; the
-  implementation fills it (below).
+  implementation fills it (below). Keep the URLs already there in a revision.
 - Order waves the way you would implement them. Make each one leave the code
   building and its tests passing: a wave is signed off on its own.
 
+**Revising them.** A `plan` or `revise` kickoff on an item with sign-offs
+carries `Signed off: w1 (…) — accepted waves: never change, remove or
+renumber them in plan.md or waves.json, and never reuse their ids.` Those
+waves shipped or are about to: leave their `plan.md` sections and their
+`waves.json` entries exactly as they are (their `prs` included), never give
+a new wave the id of a signed-off or removed one, and keep every `dependsOn`
+pointing at ids that still exist. Work the note asks for in accepted code
+goes into a new wave.
+
+**Wave branches.** Each wave is built on its own branch, and the kickoff
+names it: ``Wave branches: w2 → `<item branch>-w2`, …``. In **every**
+repository the wave changes:
+
+- **Pick the base.** When the wave depends on a wave whose PR in this
+  repository is **not merged**, create the wave branch from that wave's
+  branch — a stacked PR, whose `--base` is that branch. Otherwise (no such
+  dependency here, or its PR merged) create it from the base branch
+  (`meta.json.base`, else the repository's default branch). A wave that
+  depends on several unmerged waves in one repository cannot stack on all of
+  them: stop that part and say so in `handoff.md`.
+- **Parent merged while the wave was open.** The wave's own unmerged branch
+  may be rebased onto the base branch, and its PR re-targeted there (pushed
+  with `--force-with-lease` — the one rewrite allowed, see Git). Never rebase,
+  amend or force-push a merged or signed-off wave's branch.
+- **Already started on the item branch.** A wave whose commits already sit
+  on the item's own branch (begun before waves had branches) keeps going
+  there; do not move its commits.
+- Its PRs come **from that branch** and are appended to the wave's `prs`.
+  With several waves in one round, switch branches between them in the
+  shared worktree (their areas are disjoint): commit a wave's work on its
+  branch before switching, never carry one wave's uncommitted changes onto
+  another's branch.
+
+These per-wave rules decide a wave PR's `--base`; the "PR stacking" setting
+below still governs every PR outside waves.
+
 **Implementing them (phase `implement`).** The kickoff names the round's
-waves: `Waves: w2 (API), w3 (Admin screen) of 3.` Implement **only those
-waves'** work units — the other waves are not yours to start, even when
-they look small. With several, they are independent by construction:
-implement them side by side (under `team`, one batch of implementers per wave,
-launched together), each staying inside its own areas. If a wave turns out to
-need a file outside its areas, or another wave's work, stop that part and say
-so in `handoff.md` rather than crossing over. Commit each wave separately,
-its id first in the message (`feat(w2): audit API`), and say per wave in
-`handoff.md` what landed and what is left. **Every PR you open for a wave —
-in this repository or another — is appended to that wave's `prs` in
-`waves.json`** (read-modify-write, keep every field), besides `meta.pr` /
-`linkedPrs` as usual: that is how the roadmap and the Pull requests tab know
-which wave a PR delivers, and a PR no wave claims shows up as unplaced. A change round keeps the same
-`Waves:`. `Waves: none of N (a fix round …)` means changes were requested
-between waves: address the note and the open annotations, and start no wave.
+waves: `Waves: w2 (API), w3 (Admin screen) of 3. Wave branches: …`.
+Implement **only those waves'** work units — the other waves are not yours to
+start, even when they look small. With several, they are independent by
+construction: implement them side by side (under `team`, one batch of
+implementers per wave, launched together), each staying inside its own
+areas. If a wave turns out to need a file outside its areas, or another
+wave's work, stop that part and say so in `handoff.md` rather than crossing
+over. Commit each wave on its own branch, its id first in the message
+(`feat(w2): audit API`), and say per wave in `handoff.md` what landed and
+what is left. **Every PR you open for a wave — in this repository or
+another — is appended to that wave's `prs` in `waves.json`**
+(read-modify-write, keep every field), besides `meta.pr` / `linkedPrs` (see
+"Recording PRs"): that is how the roadmap and the Pull requests tab know
+which wave a PR delivers, and a PR no wave claims shows up as unplaced. A
+change round keeps the same `Waves:`. Between waves the field says so:
+
+- `Waves: none of N started — a fix round; start no wave.` or `Waves: none
+  of N — a fix round over the signed-off waves; start no wave.` — address the
+  note and the open annotations, start no wave, and commit each fix on the
+  branch of the wave whose code it changes. A fix to a wave whose PR already
+  merged goes on a new branch from the base branch, and its PR is appended to
+  that wave's `prs`.
+- `Waves: waves.json is unusable (<reason>) — continue w2, and repair
+  waves.json in this round.` (or `— start no wave, and repair …`) — clash
+  could not read the schedule. Do the round's work for the waves it names,
+  and fix `waves.json` so it parses again (ids, dependencies, no cycle),
+  changing nothing a signed-off wave owns. This is the one `implement` round
+  where `waves.json` is yours beyond `prs`.
 
 `Signed off: w1 (abc1234..def5678), w2 …` lists the waves the human signed
 off — their work is **accepted**, sealed at that commit range. Do not rework,
@@ -307,7 +378,8 @@ repository **only when the plan says so**. Chain them: each PR's `--base` is
 the previous one's head branch, the first one's is the base above, one PR on
 each parent (two children of one PR is a fork, which clash reports instead of
 ordering). This item's own branch is the tip and its PR is `pr.url`; append
-every lower layer to `linkedPrs`.
+every lower layer to `linkedPrs` — a lower layer never becomes `pr.url`.
+On a multi-wave item the wave rules above decide a wave PR's base instead.
 
 ## Hand-off note — `handoff.md`, every phase
 
@@ -498,6 +570,12 @@ Read the **latest** `## Iteration` section of `review.md` first.
     `agent-review.md` **is** the work: address each of its findings, and where
     you disagree with one, say so in your summary rather than dropping it in
     silence.
+  - On a multi-wave item, update `waves.json` with the plan, and honour the
+    kickoff's `Signed off:` field (see "Waves" → *Revising them*): a
+    signed-off wave is never changed, removed or renumbered, a wave id is
+    never reused (ids of removed waves stay retired), and every `dependsOn`
+    still names a wave that exists. Keep the `## Wave <n> — <title>` headings
+    matching the ids.
 - Only if the item predates this rule — an older `changes-requested` item
   whose note plainly concerns the **code** (open annotations, or the note
   references the diff): behave exactly like phase `implement`.
@@ -517,7 +595,7 @@ describes something else — the human amends it by taking the item back to
    conventions. Run the project's tests/linters. Under `team`:
    - Turn the plan's work units (or the round's requested changes) into
      **batches**: units with no unmet dependency and disjoint files go in the
-     same batch. Dispatch each wave's implementers together. Do small units
+     same batch. Dispatch each batch's implementers together. Do small units
      yourself, and merge units that touch the same few files into one — a
      one-file change is not worth a brief, and a chain of dependent units
      gains nothing from a subagent per link.
@@ -543,9 +621,10 @@ describes something else — the human amends it by taking the item back to
    - Never delete an annotation and never touch ones already
      addressed/wontfixed by earlier rounds — nor `parked` ones (comments the
      human deliberately held back from this round).
-4. Commit the work (small, reviewable commits are fine). If this item
-   already has a PR (`meta.pr.url` is set), push (see Git above) so the PR
-   picks up the fixes.
+4. Commit the work (small, reviewable commits are fine) — on a multi-wave
+   item, each wave's work on its own wave branch (see "Waves"). Push every
+   branch that already has a PR (see Git above) so the PR picks up the
+   fixes.
 5. **`review-only`**: push the branch (see Git above), write `handoff.md`
    (see "Hand-off note"), then finish at `"diff-review"` — you are done, skip
    steps 6–7.
@@ -555,13 +634,19 @@ describes something else — the human amends it by taking the item back to
    open it (it encodes the org's house style; if it is not available in this
    session, fall back to the `gh` path below and say so); otherwise
    `gh pr create --draft --title "<item title>" --body "<summary>"`, with the
-   `--base` "PR stacking" above gives. Either
-   way, read-modify-write `meta.json` setting `pr.url` to the created URL
-   (clash fills number/state on its next refresh). Otherwise **skip this**: a
-   PR is not required to finish, the human approves the diff either way, and an
-   unwanted PR is a chore for them to close. When in doubt, skip it and say so.
+   `--base` "PR stacking" above gives. On a multi-wave item, open one draft
+   PR per wave of the round, per repository it changes, from the wave's
+   branch with the base the wave rules give. Record every PR you open (see
+   "Recording PRs"): the first one becomes `pr.url` only while `pr.url` is
+   empty, each further one is appended to `linkedPrs`, and each wave PR's URL
+   is appended to that wave's `prs`. clash fills number/state on its next
+   refresh. Otherwise **skip this**: a PR is not required to finish, the human
+   approves the diff either way, and an unwanted PR is a chore for them to
+   close. When in doubt, skip it and say so.
 7. Finish: write `handoff.md` (see "Hand-off note"), then set
-   `status = "diff-review"` — or `"pr-draft"` if you created the PR in step 6. Stop — the human reviews the diff in clash and either
+   `status = "pr-draft"` when this round opened or updated (pushed to) a
+   draft PR — for the round's waves, on a multi-wave item — otherwise
+   `"diff-review"`. Stop — the human reviews the diff in clash and either
    approves (which may close the item outright) or sends you a new round.
 
 ## Phase: pr
@@ -574,6 +659,12 @@ better than a transcription of `plan.md` (which is what they declined).
 **Do not change code in this phase.** No fixes, no refactors, no "while I'm
 here". If you find something wrong, say so in your final message and leave it —
 the human decides whether that becomes a new round.
+
+**On a multi-wave item** the kickoff carries the round's `Waves:` field (with
+`Wave branches:`). Open **one PR per wave**, per repository it changes, from
+that wave's branch, with the base the wave rules give (see "Waves" → *Wave
+branches*), and describe that wave's diff only — steps 1–4 below apply per
+wave. A wave that already has an open PR from its branch gets none.
 
 1. Read the actual diff against the base branch (`git diff <base>...HEAD`, base
    from `meta.json.base`, else the stack base the `Stacking` field names, else
@@ -599,9 +690,13 @@ the human decides whether that becomes a new round.
 4. Push the branch if it is not on the remote, then
    `gh pr create --draft --title "<title>" --body "<body>"` with the `--base`
    "PR stacking" gives (`meta.json.base`, else the stack base, else none).
-5. Write `handoff.md` (see "Hand-off note"), then read-modify-write
-   `meta.json`: set `pr.url` to the created URL and `status = "pr-draft"`. Leave `iteration` and `reviewRound` alone — those are
-   clash's.
+5. Record every PR (see "Recording PRs"): the first one becomes `pr.url`
+   only while `pr.url` is empty, each further one is appended to `linkedPrs`,
+   and on a multi-wave item **append each PR's URL to its wave's `prs`** in
+   `waves.json`. Write `handoff.md` (see "Hand-off note"), then
+   read-modify-write `meta.json`: the PR fields above and
+   `status = "pr-draft"`. Leave `iteration` and `reviewRound` alone — those
+   are clash's.
 
 If the repo clearly does not work through PRs, stop before step 4 and say so
 rather than opening one nobody wants.

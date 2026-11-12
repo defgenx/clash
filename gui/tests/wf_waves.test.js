@@ -101,7 +101,7 @@ test("a wave that cannot run with the pick is disabled, with the reason", () => 
   it.waves.waves[2].compatibleWith = [];
   const rows = wavePickRows(it, ["w2"]);
   assert.equal(rows[1].disabled, true);
-  assert.match(rows[1].reason, /Can't run with w2/);
+  assert.equal(rows[1].reason, "Can't run with Wave 2", "people read wave names, never ids");
   assert.deepEqual(toggleWavePick(it, ["w2"], "w3"), ["w2"]);
   // A wave without areas says why it runs alone.
   it.waves.waves[2].areas = [];
@@ -128,6 +128,7 @@ test("the browser branch publishes every name app.js calls", () => {
     "waveSummary",
     "waveBarState",
     "wavesHoldApproval",
+    "wavesIssueGuidance",
     "wavePickRows",
     "defaultWavePick",
     "toggleWavePick",
@@ -145,8 +146,11 @@ test("the browser branch publishes every name app.js calls", () => {
 
 const { wavePrs, waveNarrative } = require("../dist/wf-waves.js");
 
+// The roadmap follows the stage: these are at a parked code stage.
+const at = (it, status) => ({ ...it, meta: { ...(it.meta || {}), status } });
+
 test("the roadmap says what is happening and what to do next", () => {
-  const it = item(["review", "blocked", "blocked", "blocked"]);
+  const it = at(item(["review", "blocked", "blocked", "blocked"]), "diff-review");
   it.waves.waves[0].prs = ["u1", "u2", "u3"];
   it.waves.waves[1].blockedBy = ["w1"];
   it.waves.waves[2].blockedBy = ["w1"];
@@ -167,7 +171,7 @@ test("the roadmap says what is happening and what to do next", () => {
   const merged = waveNarrative(it, prs.map((p) => ({ ...p, state: "MERGED" })));
   assert.equal(merged.next, "Sign it off — that unlocks Waves 2 and 3.");
   // Ready siblings that can share a round are offered together.
-  const ready = waveNarrative(item(["done", "ready", "ready", "blocked"]), []);
+  const ready = waveNarrative(at(item(["done", "ready", "ready", "blocked"]), "diff-review"), []);
   assert.match(ready.now, /1 of 4 waves signed off\. Ready to start: Waves 2 and 3\./);
   assert.match(ready.next, /or Waves 2 and 3 together/);
   assert.match(waveNarrative(item(["done", "active", "blocked", "blocked"]), []).now, /implementing Wave 2/);
@@ -279,9 +283,79 @@ test("a sign-off says what it does before it does it", () => {
   assert.equal(m.effects[1], "Unlocks Wave 4 · w4 title.");
   assert.deepEqual(m.warnings, ["2 comments are still open on the diff.", "Wave 2: 1 PR not merged yet (1 draft)."]);
   // The one effect that leaves clash is offered, never assumed.
-  assert.deepEqual(m.drafts, [{ url: "u1", wave: "w2" }]);
+  assert.deepEqual(m.drafts, [{ url: "u1", wave: "w2", waves: ["w2"] }]);
+  // A PR shared by both waves of the round is offered once, naming both.
+  it.waves.waves[2].prs = ["u1"];
+  assert.deepEqual(signOffModel(it, prs).drafts, [{ url: "u1", wave: "w2", waves: ["w2", "w3"] }]);
   // The last waves hand over to the item's own approval.
   const last = { ...item(["done", "done", "done", "review"]), meta: { status: "diff-review" } };
   assert.match(signOffModel(last, []).effects[1], /last waves: the item's own approval comes next/);
   assert.equal(signOffModel(item(["done", "active", "blocked", "blocked"]), []), null);
+});
+
+const { wavesIssueGuidance } = require("../dist/wf-waves.js");
+
+test("an unreadable waves.json holds the approvals and says how to repair it, by stage", () => {
+  const broken = (status) => ({ meta: { status }, waves: { waves: [], issue: "a cycle" } });
+  assert.ok(wavesHoldApproval(broken("pr-ready")));
+  assert.equal(wavesIssueGuidance(broken("pr-ready")), "waves.json can't be read: a cycle — ask 💬 Discuss to repair it, or ↩ Move to… plan review.");
+  assert.match(wavesIssueGuidance(broken("plan-review")), /request changes on the plan/);
+  assert.equal(wavesIssueGuidance(item(["ready", "blocked", "blocked", "blocked"])), null);
+  // At a code stage the planner is not who fixes it.
+  assert.doesNotMatch(waveNarrative(broken("diff-review"), []).next, /Request changes on the plan/);
+  assert.match(waveNarrative(broken("diff-review"), []).next, /💬 Discuss/);
+  assert.match(waveNarrative(broken("plan-review"), []).next, /Request changes on the plan/);
+});
+
+test("the roadmap follows the item's stage", () => {
+  const review = item(["done", "review", "blocked", "blocked"]);
+  // An agent is working: nothing to sign off yet.
+  const reviewing = { ...review, meta: { status: "reviewing", review: { returnStatus: "pr-ready" } } };
+  assert.match(waveNarrative(reviewing, []).now, /A review round is running on Wave 2/);
+  assert.doesNotMatch(waveNarrative(reviewing, []).next, /^Sign it off/);
+  // Finished items ask for nothing.
+  for (const status of ["done", "abandoned"]) {
+    const n = waveNarrative(at(item(["done", "done", "ready", "blocked"]), status), []);
+    assert.doesNotMatch(`${n.now} ${n.next}`, /Finish the item|Start|ready/, status);
+    assert.match(n.next, /^Nothing/);
+  }
+  // At plan review starting is approving the plan, like the button says.
+  const plan = waveNarrative(at(item(["ready", "blocked", "blocked", "blocked"]), "plan-review"), []);
+  assert.match(plan.next, /^Approve the plan and start Wave 1/);
+  const allDone = waveNarrative(at(item(["done", "done", "done", "done"]), "plan-review"), []);
+  assert.equal(allDone.next, "Approve the plan to implement it, or request changes.");
+  // A queued fix round is launched from the bar.
+  const queued = waveNarrative(at(item(["done", "active", "blocked", "blocked"]), "changes-requested"), []);
+  assert.match(queued.now, /A fix round is queued for Wave 2/);
+  assert.equal(queued.next, "Launch it from the bar.");
+  // Sign-off is suggested only at a parked code stage.
+  for (const status of ["implementing", "planning", "draft", "plan-review", "changes-requested", "reviewing"])
+    assert.doesNotMatch(waveNarrative(at(review, status), []).next, /sign (it|the wave) off/i, status);
+  assert.match(waveNarrative(at(review, "pr-ready"), []).next, /Sign it off/);
+  // The last wave in review: the item does not close by itself.
+  assert.match(waveNarrative(at(item(["done", "done", "done", "review"]), "pr-ready"), []).next, /closes only once every wave is signed off/);
+});
+
+test("a PR in several waves of the round counts once in the story", () => {
+  const it = at(item(["done", "review", "review", "blocked"]), "diff-review");
+  it.waves.waves[1].prs = ["u1", "u2"];
+  it.waves.waves[2].prs = ["u1"];
+  const n = waveNarrative(it, [{ url: "u1", state: "OPEN" }, { url: "u2", state: "MERGED" }]);
+  assert.match(n.now, /1 of 2 PRs merged, 1 still open\./);
+});
+
+test("a queued fix round shows no session to resume", () => {
+  const it = { project: "p", slug: "s", meta: { status: "changes-requested", sessionId: "a" }, ...item(["done", "active", "blocked", "blocked"]) };
+  const m = waveLive(it, [{ id: "a", status: "Stashed", is_running: false, workflow_item: "p/s" }]);
+  assert.equal(m.kind, "queued");
+  assert.equal(m.line, "A fix round is queued — launch it from the bar.");
+  assert.equal(m.agentId, "");
+  assert.doesNotMatch(m.title, /in progress/);
+});
+
+test("waves are signed off only at a code stage", () => {
+  const it = at(item(["done", "review", "blocked", "blocked"]), "plan-review");
+  assert.deepEqual(waveActions(it, it.waves.waves[1], []).filter((a) => /approve/.test(a.id)), []);
+  const last = at(item(["done", "done", "done", "review"]), "pr-ready");
+  assert.deepEqual(waveActions(last, last.waves.waves[3], []).map((a) => [a.id, a.label]), [["approve", "✓ Sign off Wave 4"]]);
 });

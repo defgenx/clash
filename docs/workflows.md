@@ -131,7 +131,7 @@ published, and a fix that only commits locally leaves the PR silently stale.
   changes, mark PR ready, done, abandon, reopen, launching a review round, and
   approving or starting the waves of a multi-wave item (see *Waves*).
   `pr-draft → implementing` and `pr-ready → implementing` exist for the last
-  one: the next wave may start on a branch whose PR is already open.
+  one: the next wave may start while earlier waves' PRs are still open.
 
 ### The change-request note is a prompt
 
@@ -940,9 +940,14 @@ where it writes nothing but its ledger and reports in chat.
 
 Some items are one task; some are a whole project. A project is planned as
 **waves** — slices of the plan that are implemented, reviewed and approved one
-after another, **inside the one item** (same worktree, same branch, same PR).
+after another, **inside the one item** (one worktree), each on **its own
+branch with its own PRs** (*Branches and PRs* below), so each wave ships on
+its own.
 The planner decides: a project gets a `## Wave <n> — <title>` section per
-wave in `plan.md` and a `waves.json` beside it; a single task gets neither.
+wave in `plan.md` — `<n>` the number in the id (`w3` → `## Wave 3 — …`), or
+the id itself in the heading, so a reviewer finds a wave's section by its id —
+and a `waves.json` beside it; a single task gets neither (a `waves.json` with
+zero waves also means a single task).
 **Work that ships in more than one release is always waves** — one release
 per wave at least, `dependsOn` following the deploy order, a *Release order*
 section in `plan.md`, and each wave safe in production with only the earlier
@@ -960,11 +965,31 @@ multi-release plan without them as an Architecture issue.
 Two optional fields tie waves to the work outside the item: `tickets` (keys
 the wave delivers) and `prs` (PR URLs that deliver it — empty when planning,
 appended by the executor as it opens each wave's PRs, the only `waves.json`
-edit allowed in `implement`/`pr`). `assign_prs` places each of the item's
-PRs: a wave listing its URL claims it; else a ticket key in its head branch
+edit allowed in `implement`/`pr` besides repairing a file the kickoff calls
+unusable). `assign_prs` places each of the item's
+PRs, and a PR may belong to several waves: every wave listing its URL claims
+it (URLs compare as `host/owner/repo/pull/<n>`, so a trailing slash, a
+`/files` tab or a case difference is the same PR); else the wave whose
+branch is the PR's head claims it; else a ticket key in its head branch
 claims it for the **one** wave listing that ticket (a key two waves share
 places nothing, and `TT-1536` is not `TT-15360`); a PR nothing claims is
 *unplaced*, which the roadmap says rather than guessing.
+
+**Branches and PRs.** Each wave is built on its own branch,
+`<item branch>-<wave id>` (`saturn-audit-logs-w2`, `waves::wave_branch`), in every repository the
+wave changes, and its PRs come from that branch — which is what makes "one
+release per wave" true: a wave's PRs merge and deploy without the waves after
+it. Within one repository a wave's branch is based on the branch of the wave
+it depends on while that wave's PR is unmerged (a stacked PR, whose base is
+that branch), otherwise on the base branch; once the parent's PR merges, the
+wave's own unmerged branch may be rebased onto the base branch, but a merged
+or signed-off wave's history is never rewritten. Compatible waves in one
+round share the worktree and commit to their own branches, switching between
+them (their areas are disjoint). A wave started before waves had their own
+branches, with its commits already on the item branch, keeps going there. The executor records
+the first PR as `meta.pr` only while `pr.url` is empty, appends every other
+one — same repository or not — to `linkedPrs`, and appends each wave PR's URL
+to that wave's `prs`.
 
 `waves.json` is the planner's (phases `plan`/`revise`); where the waves stand
 is clash's, in `meta.waves`: `done` (approved ids), `scope` (the current or
@@ -981,14 +1006,18 @@ schedule is the pure `application::waves`:
   character is dropped, which only widens an area). A wave with no areas is
   compatible with nothing. Compatible ready waves may be picked for **one**
   round: the executor implements them side by side — one batch of
-  implementers per wave — and the human approves them together. One round,
-  not one session per wave, because the waves share a worktree and a git
-  index: two agents committing in one checkout is two writers on one branch.
+  implementers per wave, each wave committed to its own branch — and the
+  human approves them together. One round, not one session per wave, because
+  the waves share a worktree and a git index: two agents switching branches
+  in one checkout would commit into each other's.
 - **Validation.** `parse_wave_plan` rejects a missing or duplicate id, an
-  unknown dependency and a cycle; the GUI shows the reason and nothing
+  unknown dependency and a cycle; the GUI shows the reason and no wave
   starts. `check_start` refuses a pick whose waves are not ready or not
   pairwise compatible — before the launch creates a worktree, so a refusal
-  leaves nothing behind.
+  leaves nothing behind. An unusable file does not block a fix round or a
+  relaunch: the kickoff says `Waves: waves.json is unusable (<reason>) —
+  continue w2, and repair waves.json in this round.` (`start no wave` when no
+  round was in flight).
 
 The flow, on the GUI's buttons:
 
@@ -997,23 +1026,42 @@ The flow, on the GUI's buttons:
    compatible with the pick) and launches the `implement` round over the pick
    — `start_workflow_agent(phase: "implement", waves)`, which records
    `meta.waves.scope` and each wave's start commit in the pre-spawn meta write
-   and adds `Waves: w2 (API), w3 (Admin screen) of 3.` to the kickoff.
-2. The executor implements only those waves, commits each separately, and
-   hands back at `diff-review` (or `pr-draft`). Reviews and drift rounds get
-   `Waves: w2, w3 (changes since <sha>).`: they judge the waves' commits, with
-   the rest of the branch as context — a drift round does not call a wave
-   that has not started *missing*.
-3. At `diff-review` / `pr-draft` / `pr-ready`, **✓ Sign off w2, w3 → next
-   waves…** (`approve_workflow_waves`: scope → done, status unchanged) then
-   offers the waves that became ready; **… only** signs off without starting.
-   A sign-off is not a label. `approve_scope` **seals** each wave: it records
-   the worktree's HEAD as the wave's end (`meta.waves.ends`, beside the start
-   recorded at launch) and the moment (`meta.waves.signedOff`), and every
-   later executor kickoff carries `Signed off: w2 (abc1234..def5678), w3 —
-   accepted work: leave it alone unless the note asks.` — the `clash-workflow`
-   skill then must not rework a signed-off wave on its own initiative, and
-   lists any change it had to make there in `handoff.md` under *Touches
-   signed-off waves*. It also unlocks the waves that depended on it. The
+   and adds the round's waves to the kickoff (the `pr` phase gets the same
+   field):
+
+   ```text
+   Waves: w2 (API), w3 (Admin screen) of 3. Wave branches: w2 → `item-w2`,
+   w3 → `item-w3` — in every repository the wave changes, base its branch on
+   the branch of the wave it depends on while that wave's PR is unmerged, else
+   on the base branch; its PRs come from that branch and are listed in its
+   `prs`. Signed off: w1 (abc1234..def5678) — accepted work: leave it alone
+   unless the note asks.
+   ```
+2. The executor implements only those waves, each on its own branch, and
+   hands back at `pr-draft` when the round opened or updated a draft PR for
+   its waves, else at `diff-review`. Code reviews, verdicts and drift rounds
+   get the waves in review with their branch, PRs and start commit —
+   ``Waves: w2 (API; branch `item-w2`; PRs <url>; since abc1234). Signed off:
+   w1. Not started: w3 — not missing.`` — and judge those waves' changes, with
+   the signed-off waves as context; a wave listed as *not started* is never
+   *missing*. Between waves the field is `Waves: none in review. Signed off:
+   w1. Not started: w2, w3 — not missing.`: the round judges the fix round's
+   changes, not the waves still to come.
+3. At `diff-review` / `pr-draft` / `pr-ready` — and only there — **✓ Sign off
+   w2, w3 → next waves…** (`approve_workflow_waves`: scope → done, status
+   unchanged) then offers the waves that became ready; **… only** signs off
+   without starting. The sign-off is refused when a scope id is no longer in
+   `waves.json`. A sign-off is not a label. `approve_scope` **seals** each
+   wave: it records the worktree's HEAD as the wave's end (`meta.waves.ends`,
+   beside the start recorded at launch) and the moment
+   (`meta.waves.signedOff`), and every later executor kickoff carries
+   `Signed off: w2 (abc1234..def5678), w3 — accepted work: leave it alone
+   unless the note asks.` — the `clash-workflow` skill then must not rework a
+   signed-off wave on its own initiative, and lists any change it had to make
+   there in `handoff.md` under *Touches signed-off waves*. A `plan`/`revise`
+   kickoff on an item with sign-offs carries `Signed off: w1 (…) — accepted
+   waves: never change, remove or renumber them in plan.md or waves.json, and
+   never reuse their ids.` It also unlocks the waves that depended on it. The
    dialog (`signOffModel`) says all of that before the click, lists what is
    still open (comments, PRs not merged, threads, unreachable PRs — said,
    never enforced), and offers the one effect that leaves clash: marking the
@@ -1022,12 +1070,15 @@ The flow, on the GUI's buttons:
    when and at which range it was sealed.
    With nothing waiting, **▶ Start next waves…** starts the next round. A
    change request keeps the round's scope (the fix round continues the same
-   waves); one made between waves launches with
-   `Waves: none of N (a fix round …; start no wave)`.
+   waves); one made between waves launches with `Waves: none of N started — a
+   fix round; start no wave.` (`Waves: none of N — a fix round over the
+   signed-off waves; start no wave. Signed off: …` once some are signed off).
+   Moving the item back to `draft`, `planning` or `plan-review` clears the
+   round's scope: the plan is open again, so no wave is in flight.
 4. The item's own approvals — **Approve → done**, **Approve → PR draft**,
    **Mark done** — are hidden while waves remain; on the last round they
-   sign off its waves on the way (`wfTransition`). The PR may be opened at any
-   point: it simply carries more waves as they land.
+   sign off its waves on the way (`wfTransition`). Each wave's PRs are opened
+   from its own branch, whenever its round is ready for one.
 
 The **Waves** tab is a roadmap, and the tab a multi-wave item opens on. It
 starts with what is happening and what to do next, in sentences
@@ -1225,9 +1276,13 @@ for context.
 - **Phase `implement`**: set `"implementing"` while working; address every
   `open` annotation — set it `"addressed"` with a short resolution appended
   to its `replies`, or `"wontfix"` with a justification; commit on the item
-  branch (never push, never `--no-verify`); optionally create a draft PR
-  (`gh pr create --draft`) and write its URL into `meta.json.pr.url`;
-  finish with `"diff-review"` (or `"pr-draft"` when a PR was created).
+  branch — on each wave's own branch in a multi-wave round (*Waves* →
+  *Branches and PRs*) — never with `--no-verify`, pushing only once a PR
+  exists (*Hard rules* below); optionally create a draft PR
+  (`gh pr create --draft`), recording it as `meta.json.pr.url` while that is
+  empty and appending it to `linkedPrs` otherwise (and to its wave's `prs`);
+  finish with `"pr-draft"` when the round opened or updated a draft PR —
+  for its waves, in a multi-wave round — else `"diff-review"`.
 
 ### Which phase a change round runs in
 
@@ -1260,10 +1315,15 @@ via ↩ Move to… → plan-review.
   and shared, so after committing, **push** it (plain `git push`, never
   force) so the PR reflects the fixes; a rejected push means stop and report,
   never force.
-- In any mode, once the item **has a PR** (`meta.pr.url` set), pushing after a
-  commit follows the same rule — the branch is published, and a fix round that
-  only commits locally leaves the PR silently stale. An unpublished branch
-  (`full`/`from-plan`, no PR) is still never pushed.
+- In any mode, once the branch being committed to **has a PR** (`meta.pr.url`
+  set, or — on a multi-wave item — a PR from that wave's branch), pushing after
+  a commit follows the same rule — the branch is published, and a fix round
+  that only commits locally leaves the PR silently stale. An unpublished branch
+  (`full`/`from-plan`, no PR) is still never pushed, except to open its PR.
+  The one history rewrite allowed is rebasing a wave's own unmerged branch
+  onto the base branch once its parent's PR merged, pushed with
+  `--force-with-lease`; a merged or signed-off wave's history is never
+  rewritten (*Waves* → *Branches and PRs*).
 - Never touch `history/`, `plan-history/`, `explainers.json` or `run.json`,
   and never change `iteration`, `reviewRound`, `appliedReviewKey(s)`, `phase`
   or `waves` — clash owns all of them (of the fields, the first two are written atomically by the
@@ -1315,7 +1375,9 @@ pure `status_after_pr_refresh` decides both). The agent may create the draft PR
 itself — writing `pr.url` is enough: clash fills the rest on the next refresh,
 and every command that needs the number derives it from the URL in the
 meantime (a URL-only record must never make a button fail with "refresh
-first"; opening a PR-bearing item also triggers a throttled refresh).
+first"; opening a PR-bearing item also triggers a throttled refresh). When the
+two disagree, the refresh trusts the number in `pr.url` over a stale recorded
+`pr.number`: an agent that replaced the URL does not also clear the number.
 
 `unansweredComments` is the count of review-comment threads nobody has replied
 to (clash-only, refreshed with the rest of the PR state, absent until first
@@ -1328,7 +1390,9 @@ capped at one API page, and the reviewer re-fetches the comments itself.
 
 One piece of work often lands as several PRs (backend + frontend + contracts).
 `meta.json.linkedPrs` is an array of the same PR-block shape as `meta.pr`, for
-change requests in **other** repositories that belong to this item. Rules:
+every other change request that belongs to this item — in other repositories,
+the lower layers of a stack, or the PRs of other waves (*Waves* → *Branches
+and PRs*). Rules:
 
 - **They never drive the item's status** while a primary exists. Only the
   primary `pr` moves the item (`MERGED → done`, the `pr-*` stages); linked PRs
@@ -1344,16 +1408,17 @@ change requests in **other** repositories that belong to this item. Rules:
   usually the first wave's PR. Following a PR to `pr-ready` is unaffected.
 - The entry's `url` is the identity (`owner/repo#number` after parsing — two
   spellings of one PR are one PR); every refresh call about a linked PR is
-  scoped to the `owner/repo` its URL names, since the item's checkout points
-  at a different repository.
+  scoped to the `owner/repo` its URL names, since it may live in a
+  repository other than the item's checkout.
 - The refresh is best-effort per entry: a linked PR that fails to resolve
   keeps its previous recorded state rather than failing the primary's refresh.
   Every action that changes or posts to several PRs follows the same
   discipline (see *Per-PR action scope* below): each call is repo-scoped and
   best-effort, per-PR failures are reported, and the action fails only when
   nothing at all succeeded.
-- The **agent may append to `linkedPrs`** when its work opened PRs in other
-  repositories — a URL-only entry is enough (clash fills state/draft on the
+- The **agent appends to `linkedPrs`** every PR its work opened beyond the
+  primary — in this repository or another; the first PR becomes `pr` only
+  while `pr.url` is empty — and a URL-only entry is enough (clash fills state/draft on the
   next refresh, exactly like the primary's contract). The agent must never
   remove or reorder entries; unlinking is the human's (GUI) action.
 - The GUI's Diff tab can render a linked PR's diff (fetched via the forge —
@@ -1645,7 +1710,10 @@ points and which one is worth it is the human's call:
 - **Written by an agent** (spends tokens) — phase `pr` of `clash-workflow` spawns
   a session that reads the real diff against the base, follows the repo's PR
   conventions (`.github/pull_request_template.md`, recent merged titles, a repo
-  skill for opening PRs), opens the draft PR and sets `pr.url`.
+  skill for opening PRs), opens the draft PR and sets `pr.url` (or appends to
+  `linkedPrs` when `pr.url` is already set). On a multi-wave item the kickoff
+  carries the round's `Waves:` field and the agent opens one PR per wave from
+  its wave branch, appending each to that wave's `prs`.
 
 When the effective PR skill names a skill, the agent-written path carries it
 in the kickoff as `PR skill: <name>` and the executor **must** open the PR
@@ -1875,7 +1943,7 @@ ceremony. The table is the split **at full scale**:
 | `clash-workflow` · `implement` | the plan's non-trivial work units, in batches of disjoint files (one batch per wave when a round covers several compatible waves) | one verifier over the whole diff (the lead's own re-read for a small one) |
 | `clash-plan-review` | one reviewer per area, split by section (architecture, quality, tests, performance) only for a large plan | refutation, batched per area |
 | `clash-drift-review` | tracers over the plan's actions grouped by area, + one over unexplained hunks for a large diff | refutation, batched per file or area |
-| `clash-pr-review` | one reviewer per area/PR applying every lens (correctness, tests, conventions, security/perf), split by lens only when large or `deep`; a looping round (`deep`, a verdict) takes a fresh wave **per pass**, each briefed with the pass's angle and the ledger's findings as "already found" | refutation of every new candidate, every pass |
+| `clash-pr-review` | one reviewer per area/PR applying every lens (correctness, tests, conventions, security/perf), split by lens only when large or `deep`; a looping round (`deep`, a verdict) takes a fresh batch **per pass**, each briefed with the pass's angle and the ledger's findings as "already found" | refutation of every new candidate, every pass |
 | `clash-explain` | one mapper per area too big to read in a few files | the lead spot-checks every name it writes |
 
 Verification is proportional too: the lead settles a claim itself when one

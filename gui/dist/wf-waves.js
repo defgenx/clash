@@ -22,6 +22,7 @@
 
   const ids = (ws) => ws.map((w) => w.id);
   const of = (board, state) => board.waves.filter((w) => w.state === state);
+  const settledPr = (p) => p.state === "MERGED" || p.state === "CLOSED";
 
   /// What a person reads for a wave id: `w2` → "Wave 2". The id itself (the
   /// planner's `waves.json` key, clash's record) never reaches the screen; an
@@ -91,10 +92,27 @@
     return { kind: "blocked", ...s };
   }
 
-  /// Do the item's final approvals (done, PR stage) wait on waves?
+  /// Do the item's final approvals (done, PR stage) wait on waves? An
+  /// unreadable waves.json holds them too: the backend still counts its
+  /// waves as open, so the item would never close.
   function wavesHoldApproval(item) {
+    if (wavesIssue(item)) return true;
     const st = waveBarState(item);
     return !!st && st.kind !== "approve-last";
+  }
+
+  const CODE_STAGES = ["diff-review", "pr-draft", "pr-ready"];
+
+  /// What the bar says about an unreadable waves.json, by stage: at plan
+  /// review a change request repairs it; past it, a discussion or a move
+  /// back does. Null when the file is fine (or absent).
+  function wavesIssueGuidance(item) {
+    const issue = wavesIssue(item);
+    if (!issue) return null;
+    const st = (item.meta && item.meta.status) || "";
+    if (st === "plan-review")
+      return `waves.json can't be read: ${issue} — request changes on the plan so the planner repairs it.`;
+    return `waves.json can't be read: ${issue} — ask 💬 Discuss to repair it, or ↩ Move to… plan review.`;
   }
 
   /// The picker's rows: every ready wave, each disabled while it cannot run
@@ -117,7 +135,7 @@
           (w.areas && w.areas.length ? `Touches ${w.areas.join(", ")}.` : "Declares no areas, so it runs alone."),
         checked,
         disabled: !checked && clash.length > 0,
-        reason: !checked && clash.length ? `Can't run with ${clash.join(", ")}` : "",
+        reason: !checked && clash.length ? `Can't run with ${waveList(clash)}` : "",
         together,
       };
     });
@@ -204,64 +222,109 @@
 
   /// Where the project stands, in sentences: what is happening now, and what
   /// you do next. `prs` is `itemPrs(item.meta)`. The roadmap opens on it, so
-  /// nobody has to work out the state from badges.
+  /// nobody has to work out the state from badges. It follows the item's
+  /// stage: a sign-off is only ever suggested where the bar offers one (a
+  /// parked code stage).
   function waveNarrative(item, prs) {
+    const status = (item && item.meta && item.meta.status) || "";
+    const closed = status === "done" || status === "abandoned";
+    const closedNext =
+      status === "done" ? "Nothing — the item is done." : "Nothing — the item is abandoned; ↩ Reopen brings it back.";
     const issue = wavesIssue(item);
     if (issue)
       return {
         now: `waves.json can't be used: ${issue}.`,
-        next: "Request changes on the plan so the planner fixes it. Nothing starts until then.",
+        next: closed
+          ? closedNext
+          : status === "plan-review"
+            ? "Request changes on the plan so the planner fixes it. Nothing starts until then."
+            : CODE_STAGES.includes(status)
+              ? "Ask 💬 Discuss to repair it, or ↩ Move to… plan review and request changes there. The item can't be approved until then."
+              : "When the agent hands back, check that waves.json was repaired.",
       };
     const board = waveBoard(item);
     if (!board) return null;
     const s = waveSummary(item);
     const named = (ids) => ids.map((id) => waveLabel(board.waves.find((w) => w.id === id))).join(" and ");
-    const status = (item.meta && item.meta.status) || "";
-    if (s.allDone)
+    const progress = s.allDone ? `All ${s.total} waves are signed off.` : `${s.done.length} of ${s.total} waves signed off.`;
+    const ready = board.waves.filter((w) => w.state === "ready");
+    const pairs = ready.filter((w) => ready.some((o) => o.id !== w.id && (w.compatibleWith || []).includes(o.id)));
+    const together = pairs.length ? ` — or ${waveList(pairs)} together: they touch different code` : "";
+    if (closed) return { now: progress, next: closedNext };
+    if (status === "reviewing") {
+      const back = (item.meta.review && (item.meta.review.returnStatus || item.meta.review.return_status)) || "";
+      const signs = CODE_STAGES.includes(back) && s.review.length;
       return {
-        now: `All ${s.total} waves are signed off.`,
-        next: "Finish the item: approve it, or mark it done once its PRs are merged.",
+        now: s.review.length ? `A review round is running on ${named(s.review)}.` : `A review round is running. ${progress}`,
+        next: signs
+          ? "When it hands back, read its findings — apply them, or sign the wave off."
+          : "When it hands back, read its findings.",
       };
+    }
+    if (status === "changes-requested") {
+      const on = s.active.length ? s.active : s.review;
+      return {
+        now: `A fix round is queued${on.length ? ` for ${named(on)}` : ""}.`,
+        next: "Launch it from the bar.",
+      };
+    }
+    if (status === "plan-review") {
+      if (s.allDone || !ready.length)
+        return { now: progress, next: "Approve the plan to implement it, or request changes." };
+      return {
+        now: `${progress} Ready to start: ${waveList(ready)}.`,
+        next: `Approve the plan and start ${waveName(ready[0])}${together} — or request changes if the plan is wrong.`,
+      };
+    }
     if (s.active.length)
       return {
-        now: `The agent is implementing ${named(s.active)}${status === "changes-requested" ? " (a fix round is queued)" : ""}.`,
+        now: `The agent is implementing ${named(s.active)}.`,
         next: "When it hands back, review the round, then sign the wave off.",
+      };
+    if (!CODE_STAGES.includes(status))
+      return {
+        now: progress,
+        next: status === "draft" || status === "planning" ? "Wait for the plan." : "Wait for the agent to hand back.",
+      };
+    if (s.allDone)
+      return {
+        now: progress,
+        next: "Finish the item: approve it, or mark it done once its PRs are merged.",
       };
     if (s.review.length) {
       const waves = s.review.map((id) => board.waves.find((w) => w.id === id));
-      const p = waves.reduce(
-        (acc, w) => {
-          const c = wavePrs(w, prs);
-          return { total: acc.total + c.total, merged: acc.merged + c.merged, open: acc.open + c.open };
-        },
-        { total: 0, merged: 0, open: 0 }
-      );
+      // A PR can belong to several waves: counted once.
+      const seen = new Map();
+      for (const w of waves) for (const p of wavePrs(w, prs).prs) seen.set(p.url, p);
+      const all = [...seen.values()];
+      const p = {
+        total: all.length,
+        merged: all.filter((x) => x.state === "MERGED").length,
+        open: all.filter((x) => !settledPr(x)).length,
+      };
       const prBit = p.total
         ? ` ${p.merged} of ${p.total} PR${p.total === 1 ? "" : "s"} merged${p.open ? `, ${p.open} still open` : ""}.`
         : "";
       const unlocks = unlockedBy(board, s.review);
       const after = unlocks.length ? ` — that unlocks ${waveList(unlocks)}` : "";
+      const last = !board.waves.some((w) => w.state !== "done" && !s.review.includes(w.id));
+      const close = last ? " The item closes only once every wave is signed off." : "";
       return {
         now: `${named(s.review)} ${s.review.length > 1 ? "are" : "is"} waiting for your sign-off.${prBit}`,
         next:
-          p.open > 0
+          (p.open > 0
             ? `Review it, get its PRs merged (or decide they can land later), then sign it off${after}.`
-            : `Sign it off${after}.`,
+            : `Sign it off${after}.`) + close,
       };
     }
-    if (s.ready.length) {
-      const ready = board.waves.filter((w) => w.state === "ready");
-      const pairs = ready.filter((w) => ready.some((o) => o.id !== w.id && w.compatibleWith.includes(o.id)));
+    if (ready.length)
       return {
-        now: `${s.done.length} of ${s.total} waves signed off. Ready to start: ${waveList(ready)}.`,
-        next: pairs.length
-          ? `Start ${waveName(ready[0])} — or ${waveList(pairs)} together: they touch different code.`
-          : `Start ${waveName(ready[0])}.`,
+        now: `${progress} Ready to start: ${waveList(ready)}.`,
+        next: `Start ${waveName(ready[0])}${together}.`,
       };
-    }
     return {
       now: "No wave is ready: each one waits for a wave that isn't signed off yet.",
-      next: "Sign off the wave in review, or request changes on the plan if the order is wrong.",
+      next: "Sign off the wave in review, or move the item back to plan review if the order is wrong.",
     };
   }
 
@@ -308,13 +371,27 @@
   /// `sessions` is `state.sessions`; the item's agent is its recorded session,
   /// else a running session stamped with the item. `kind` drives the panel's
   /// colour: `attention` (it waits on you), `working`, `idle` (turn finished),
-  /// `stopped` (resumable), `gone`.
+  /// `stopped` (resumable), `gone`, `queued` (a fix round not launched yet).
   function waveLive(item, sessions, now = Date.now()) {
     const board = waveBoard(item);
     if (!board) return null;
     const active = board.waves.filter((w) => w.state === "active");
     if (!active.length) return null;
     const meta = item.meta || {};
+    const waves = active.map((w) => ({ id: w.id, label: waveLabel(w), start: (w.start || "").slice(0, 8) }));
+    // A queued fix round has no agent yet: the old session is history, and
+    // the round starts from the bar.
+    if (meta.status === "changes-requested")
+      return {
+        kind: "queued",
+        title: `A fix round is queued for ${waveList(active)}`,
+        shared: "",
+        line: "A fix round is queued — launch it from the bar.",
+        activity: "",
+        waves,
+        agentId: "",
+        agentName: "",
+      };
     const key = `${item.project}/${item.slug}`;
     const mine = (sessions || []).filter((s) => s.workflow_item === key);
     const agent =
@@ -355,13 +432,11 @@
           : "",
       line,
       activity: last ? `last activity ${agoText(now - last)}` : "",
-      waves: active.map((w) => ({ id: w.id, label: waveLabel(w), start: (w.start || "").slice(0, 8) })),
+      waves,
       agentId: agent ? agent.id : meta.sessionId || "",
       agentName: agent ? agent.name || agent.id : "",
     };
   }
-
-  const settledPr = (p) => p.state === "MERGED" || p.state === "CLOSED";
 
   /// What stands between a wave and its next step, as facts a card can act
   /// on. `hard` ones stop the wave (an unapproved dependency); the rest are
@@ -427,7 +502,8 @@
   /// wave picker), `review` (a code review scoped to its open PRs), `open-prs`,
   /// `session` (the agent building it). What a wave waits for is a link on
   /// its blocker line, not a button.
-  /// Decisions only where the bar would offer them: a parked stage.
+  /// Decisions only where the bar would offer them: a parked stage, and a
+  /// sign-off only at a code stage.
   function waveActions(item, w, prs) {
     const meta = (item && item.meta) || {};
     const st = meta.status;
@@ -437,7 +513,7 @@
     const mine = wavePrs(w, prs).prs;
     const open = mine.filter((p) => !settledPr(p));
     const acts = [];
-    if (parked && bar && (bar.kind === "approve" || bar.kind === "approve-last") && bar.review.includes(w.id)) {
+    if (codeStage && bar && (bar.kind === "approve" || bar.kind === "approve-last") && bar.review.includes(w.id)) {
       const round = waveList(bar.review);
       if (bar.kind === "approve")
         acts.push({ id: "approve-next", label: `✓ Sign off ${round} → next waves…`, primary: true, title: "Seal this round's work and pick the waves that start next" });
@@ -530,10 +606,15 @@
     for (const w of round)
       for (const b of waveBlockers(item, w, prs))
         if (!b.hard) warnings.push(`${waveName(w)}: ${b.text}.`);
+    // A PR shared by several waves of the round is offered once, naming them.
     const drafts = [];
     for (const w of round)
-      for (const p of wavePrs(w, prs).prs)
-        if (p.draft && !settledPr(p)) drafts.push({ url: p.url, wave: w.id });
+      for (const p of wavePrs(w, prs).prs) {
+        if (!p.draft || settledPr(p)) continue;
+        const had = drafts.find((d) => d.url === p.url);
+        if (had) had.waves.push(w.id);
+        else drafts.push({ url: p.url, wave: w.id, waves: [w.id] });
+      }
     return {
       title: `Sign off ${names}?`,
       effects,
@@ -573,6 +654,7 @@
     waveSummary,
     waveBarState,
     wavesHoldApproval,
+    wavesIssueGuidance,
     wavePickRows,
     defaultWavePick,
     toggleWavePick,

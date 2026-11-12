@@ -59,7 +59,8 @@
   function itemPrs(meta, prStack) {
     const out = [];
     const push = (pr, primary) => {
-      if (!pr || !pr.url) return;
+      // One record per URL, whatever lists it twice: item-wide counts read these.
+      if (!pr || !pr.url || out.some((p) => p.url === pr.url)) return;
       out.push({
         url: pr.url,
         number: pr.number || 0,
@@ -207,6 +208,8 @@
 
   /// The item's PRs grouped for its Pull requests tab: by wave when the item
   /// has waves (in wave order, then the PRs no wave claims), else one group.
+  /// A PR several waves list appears under each; `counts` is item-wide and
+  /// counts it once.
   /// Each row carries the last refresh's error for that PR, if any. Settled
   /// PRs sort after open ones inside a group, so what needs work reads first.
   function prBoard(item) {

@@ -44,13 +44,28 @@
     return (mark.iteration || 0) === (meta.iteration || 0) && tally >= (mark.round || 0);
   }
 
+  /// A `wf-waves.js` function, when the module is loaded.
+  function wavesFn(name) {
+    return typeof module !== "undefined" && module.exports
+      ? require("./wf-waves.js")[name]
+      : typeof window !== "undefined" && window[name];
+  }
+
   /// The waves' bar state (`wf-waves.js`), when the module is loaded.
   function waveState(item) {
-    const f =
-      typeof module !== "undefined" && module.exports
-        ? require("./wf-waves.js").waveBarState
-        : typeof window !== "undefined" && window.waveBarState;
+    const f = wavesFn("waveBarState");
     return f ? f(item) : null;
+  }
+
+  /// Does the item have waves that are not all signed off — or a waves.json
+  /// nobody can read, which counts the same? Such an item never closes
+  /// itself: the backend waits for every wave's sign-off.
+  function wavesUnsigned(item) {
+    const issue = wavesFn("wavesIssue");
+    const summary = wavesFn("waveSummary");
+    if (issue && issue(item)) return true;
+    const s = summary ? summary(item) : null;
+    return !!s && !s.allDone;
   }
 
   /// "Waves 2 and 3" (`wf-waves.js`), the ids as written when it is not loaded.
@@ -190,9 +205,17 @@
             reason: "Your change request is recorded, but no agent is applying it yet",
           },
         ];
-      case "plan-review":
+      case "plan-review": {
+        const issueFn = wavesFn("wavesIssue");
+        const planIssue = issueFn ? issueFn(item) : null;
         return [
           applyCheck,
+          {
+            // The plan cannot be approved with an unreadable waves.json.
+            id: "request-changes",
+            fires: !!planIssue,
+            reason: `waves.json can't be read (${planIssue}) — request changes so the planner repairs it`,
+          },
           {
             id: "plan-review",
             fires: !reviewedThisIteration(item, "plan") && !looping("plan"),
@@ -218,6 +241,7 @@
                 ),
           },
         ];
+      }
     }
 
     if (!["diff-review", "pr-draft", "pr-ready"].includes(st)) return [];
@@ -295,12 +319,19 @@
     // that finishes the item. The bar hides the item's own approvals while
     // waves remain, so these are what the walk lands on.
     const waves = waveState(item);
+    const issueFn = wavesFn("wavesIssue");
+    const issue = issueFn ? issueFn(item) : null;
+    const signOff = waves && (waves.kind === "approve" || waves.kind === "approve-last");
     const waveChecks = waves
       ? [
           {
             id: "approve-waves",
-            fires: waves.kind === "approve",
-            reason: `${waveNames(waves.review)} reviewed — sign ${waves.review.length > 1 ? "them" : "it"} off to seal the work and start the next waves`,
+            fires: !!signOff,
+            reason: signOff
+              ? waves.kind === "approve"
+                ? `${waveNames(waves.review)} reviewed — sign ${waves.review.length > 1 ? "them" : "it"} off to seal the work and start the next waves`
+                : `${waveNames(waves.review)} reviewed — the last ${waves.review.length > 1 ? "waves" : "wave"}: sign ${waves.review.length > 1 ? "them" : "it"} off, the item closes only once every wave is`
+              : "",
             settled: "no wave waiting for sign-off",
           },
           {
@@ -309,7 +340,16 @@
             reason: `${waveNames(waves.ready)} ready to start`,
           },
         ]
-      : [];
+      : issue
+        ? [
+            {
+              // The item's approvals are held; repairing the file is the way on.
+              id: "discuss",
+              fires: true,
+              reason: `waves.json can't be read (${issue}) — ask an agent to repair it, or move the item back to plan review`,
+            },
+          ]
+        : [];
     if (st === "diff-review") {
       return [
         ...code,
@@ -360,7 +400,9 @@
       {
         id: "open-prs",
         fires: true,
-        reason: "Waiting on merge — the item closes itself when the PR merges",
+        reason: wavesUnsigned(item)
+          ? "Waiting on merge — the item closes only once every wave is signed off"
+          : "Waiting on merge — the item closes itself when the PR merges",
       },
     ];
   }

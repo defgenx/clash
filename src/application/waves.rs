@@ -2,8 +2,8 @@
 //!
 //! An item that is a whole project rather than one task is planned as
 //! **waves**: slices of the plan that are implemented and approved one after
-//! another, in dependency order, inside the same item (one worktree, one
-//! branch). The planner declares them in `waves.json`; clash records which are
+//! another, in dependency order, inside the same item (one worktree; each
+//! wave on its own branch, `<item branch>-<id>`, with its own PRs). The planner declares them in `waves.json`; clash records which are
 //! approved and which the current round covers in `meta.waves`. Two waves may
 //! run in the same round when neither depends on the other and the areas they
 //! touch are disjoint — the executor then works them in parallel. Full rules:
@@ -208,28 +208,74 @@ fn names_ticket(text: &str, key: &str) -> bool {
     })
 }
 
-/// Which wave each PR belongs to: a wave listing the PR's URL claims it;
-/// otherwise a ticket key in the PR's branch claims it for the one wave that
-/// lists that ticket. A ticket several waves share decides nothing, and a PR
-/// nothing claims is left out — guessing would file work under the wrong
-/// wave.
-pub fn assign_prs(plan: &WavePlan, prs: &[PrRef]) -> BTreeMap<String, String> {
+/// The branch a wave is built on: `<item branch>-<id>` (the id alone when the
+/// item has no branch yet).
+pub fn wave_branch(item_branch: &str, id: &str) -> String {
+    match item_branch.trim() {
+        "" => id.trim().to_string(),
+        b => format!("{b}-{}", id.trim()),
+    }
+}
+
+/// A PR URL reduced to `host/owner/repo/pull/<n>`, so a trailing slash, a
+/// `/files` tab or a case difference still names the same PR.
+fn pr_key(url: &str) -> String {
+    let u = url.trim().to_ascii_lowercase();
+    let u = u
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_start_matches("www.");
+    match u.find("/pull/") {
+        Some(i) => {
+            let n: String = u[i + 6..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            format!("{}/pull/{n}", &u[..i])
+        }
+        None => u.trim_end_matches('/').to_string(),
+    }
+}
+
+/// Which waves each PR belongs to: every wave listing the PR's URL claims it;
+/// otherwise the wave whose branch (`wave_branch`) is the PR's head; otherwise
+/// a ticket key in the head branch claims it for the one wave that lists that
+/// ticket. A ticket several waves share decides nothing, and a PR nothing
+/// claims is left out — guessing would file work under the wrong wave.
+pub fn assign_prs(
+    plan: &WavePlan,
+    prs: &[PrRef],
+    item_branch: &str,
+) -> BTreeMap<String, Vec<String>> {
     let mut out = BTreeMap::new();
     for pr in prs {
-        let explicit = plan
+        let key = pr_key(&pr.url);
+        let mut owners: Vec<String> = plan
             .waves
             .iter()
-            .find(|w| w.prs.iter().any(|u| u.trim() == pr.url));
-        let by_ticket = || {
+            .filter(|w| w.prs.iter().any(|u| pr_key(u) == key))
+            .map(|w| w.id.trim().to_string())
+            .collect();
+        if owners.is_empty() {
+            let head = pr.head_ref.trim();
+            if let Some(w) = plan.waves.iter().find(|w| {
+                !head.is_empty() && head.eq_ignore_ascii_case(&wave_branch(item_branch, &w.id))
+            }) {
+                owners.push(w.id.trim().to_string());
+            }
+        }
+        if owners.is_empty() {
             let hits: Vec<&Wave> = plan
                 .waves
                 .iter()
                 .filter(|w| w.tickets.iter().any(|t| names_ticket(&pr.head_ref, t)))
                 .collect();
-            (hits.len() == 1).then(|| hits[0])
-        };
-        if let Some(w) = explicit.or_else(by_ticket) {
-            out.insert(pr.url.clone(), w.id.trim().to_string());
+            if hits.len() == 1 {
+                owners.push(hits[0].id.trim().to_string());
+            }
+        }
+        if !owners.is_empty() {
+            out.insert(pr.url.clone(), owners);
         }
     }
     out
@@ -242,6 +288,7 @@ pub fn wave_board(
     progress: &WaveProgress,
     status: WorkflowStatus,
     prs: &[PrRef],
+    item_branch: &str,
 ) -> WaveBoard {
     let plan = match plan {
         Ok(p) => p,
@@ -253,7 +300,7 @@ pub fn wave_board(
             }
         }
     };
-    let owner = assign_prs(&plan, prs);
+    let owner = assign_prs(&plan, prs, item_branch);
     let lv = levels(&plan);
     let waves = plan
         .waves
@@ -286,7 +333,11 @@ pub fn wave_board(
                 ticket_urls: Default::default(),
                 prs: prs
                     .iter()
-                    .filter(|p| owner.get(&p.url).map(String::as_str) == Some(w.id.trim()))
+                    .filter(|p| {
+                        owner
+                            .get(&p.url)
+                            .is_some_and(|ws| ws.iter().any(|x| x == w.id.trim()))
+                    })
                     .map(|p| p.url.clone())
                     .collect(),
             }
@@ -382,31 +433,67 @@ pub fn approve_scope(progress: &WaveProgress, head: Option<&str>, now_ms: i64) -
 fn wave_range(progress: &WaveProgress, id: &str) -> Option<String> {
     let short = |s: &String| s.chars().take(7).collect::<String>();
     match (progress.starts.get(id), progress.ends.get(id)) {
+        // Nothing moved in the item's checkout (the work is on other
+        // branches or in other repositories): no range to give.
+        (Some(a), Some(b)) if a == b => None,
         (Some(a), Some(b)) => Some(format!("{}..{}", short(a), short(b))),
         (None, Some(b)) => Some(format!("up to {}", short(b))),
         _ => None,
     }
 }
 
-/// The signed-off waves, for a kickoff: `w1 (abc1234..def5678), w2` — the
-/// work the human accepted, which an executor must not rework on its own
-/// initiative. Empty when none is signed off.
-fn signed_off_clause(progress: &WaveProgress) -> String {
-    if progress.done.is_empty() {
-        return String::new();
-    }
-    let named: Vec<String> = progress
+/// `w1 (abc1234..def5678), w2`: the signed-off waves with their ranges.
+fn signed_off_list(progress: &WaveProgress) -> String {
+    progress
         .done
         .iter()
         .map(|id| match wave_range(progress, id) {
             Some(r) => format!("{id} ({r})"),
             None => id.clone(),
         })
-        .collect();
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The signed-off waves, for an executor kickoff — the work the human
+/// accepted, which an executor must not rework on its own initiative. Empty
+/// when none is signed off.
+fn signed_off_clause(progress: &WaveProgress) -> String {
+    if progress.done.is_empty() {
+        return String::new();
+    }
     format!(
         " Signed off: {} — accepted work: leave it alone unless the note asks.",
-        named.join(", ")
+        signed_off_list(progress)
     )
+}
+
+/// The plan/revise kickoff's wave field: a plan revision may reshape the
+/// waves still to come, never the signed-off ones. Empty when none is.
+pub fn plan_clause(progress: &WaveProgress) -> String {
+    if progress.done.is_empty() {
+        return String::new();
+    }
+    format!(
+        " Signed off: {} — accepted waves: never change, remove or renumber them in plan.md or waves.json, and never reuse their ids.",
+        signed_off_list(progress)
+    )
+}
+
+/// Waves neither signed off nor in the current round, in plan order.
+fn not_started(plan: &WavePlan, progress: &WaveProgress) -> Vec<String> {
+    plan.waves
+        .iter()
+        .map(|w| w.id.trim().to_string())
+        .filter(|id| !progress.done.contains(id) && !progress.scope.contains(id))
+        .collect()
+}
+
+fn titled(plan: &WavePlan, id: &str) -> String {
+    match find(plan, id) {
+        Some(w) if !w.title.trim().is_empty() => format!("{id} ({})", w.title.trim()),
+        _ => id.to_string(),
+    }
 }
 
 /// Waves not approved yet, in plan order.
@@ -419,54 +506,111 @@ pub fn remaining(plan: &WavePlan, progress: &WaveProgress) -> Vec<String> {
 }
 
 /// The executor kickoff's `Waves:` field on a multi-wave item: the waves this
-/// round implements, with their titles, and how many there are in all.
-pub fn executor_clause(plan: &WavePlan, progress: &WaveProgress) -> String {
+/// round implements, with their titles and branches, and how many there are
+/// in all. Also sent with the `pr` phase, which opens the waves' PRs.
+pub fn executor_clause(plan: &WavePlan, progress: &WaveProgress, item_branch: &str) -> String {
+    let n = plan.waves.len();
     if progress.scope.is_empty() {
         // A fix round between waves: the executor must not take the next
         // wave on its own initiative — starting one is the human's call.
-        return format!(
-            " Waves: none of {} (a fix round over the signed-off waves; start no wave).{}",
-            plan.waves.len(),
-            signed_off_clause(progress)
-        );
+        return if progress.done.is_empty() {
+            format!(" Waves: none of {n} started — a fix round; start no wave.")
+        } else {
+            format!(
+                " Waves: none of {n} — a fix round over the signed-off waves; start no wave.{}",
+                signed_off_clause(progress)
+            )
+        };
     }
-    let named: Vec<String> = progress
+    let named: Vec<String> = progress.scope.iter().map(|id| titled(plan, id)).collect();
+    let branches: Vec<String> = progress
         .scope
         .iter()
-        .map(|id| match find(plan, id) {
-            Some(w) if !w.title.trim().is_empty() => format!("{id} ({})", w.title.trim()),
-            _ => id.clone(),
-        })
+        .map(|id| format!("{id} → `{}`", wave_branch(item_branch, id)))
         .collect();
     format!(
-        " Waves: {} of {}.{}",
+        " Waves: {} of {n}. Wave branches: {} — in every repository the wave changes, base its branch on the branch of the wave it depends on while that wave's PR is unmerged, else on the base branch; its PRs come from that branch and are listed in its `prs`.{}",
         named.join(", "),
-        plan.waves.len(),
+        branches.join(", "),
         signed_off_clause(progress)
     )
 }
 
-/// The review kickoff's `Waves:` field: the round's waves and the commit
-/// their changes start from, so a code review can judge the wave rather than
-/// the whole branch. Empty when the item has no waves in review.
-pub fn review_clause(progress: &WaveProgress) -> String {
-    if progress.scope.is_empty() {
-        return String::new();
+/// The executor kickoff's `Waves:` field when `waves.json` cannot be read:
+/// the round still runs (a fix round must never be blocked by the file it may
+/// have to repair), on the recorded waves.
+pub fn unusable_clause(issue: &str, progress: &WaveProgress) -> String {
+    let what = if progress.scope.is_empty() {
+        "start no wave".to_string()
+    } else {
+        format!("continue {}", progress.scope.join(", "))
+    };
+    format!(
+        " Waves: waves.json is unusable ({issue}) — {what}, and repair waves.json in this round.{}",
+        signed_off_clause(progress)
+    )
+}
+
+/// The review kickoff's `Waves:` field on a multi-wave item: the round's
+/// waves with their branch, PRs and start commit, the signed-off ones, and
+/// the ones not started — which a reviewer must not report as missing.
+pub fn review_clause(
+    plan: &WavePlan,
+    progress: &WaveProgress,
+    item_branch: &str,
+    wave_prs: &BTreeMap<String, Vec<String>>,
+) -> String {
+    let mut out = if progress.scope.is_empty() {
+        " Waves: none in review.".to_string()
+    } else {
+        let named: Vec<String> = progress
+            .scope
+            .iter()
+            .map(|id| {
+                let mut facts = vec![format!("branch `{}`", wave_branch(item_branch, id))];
+                if let Some(prs) = wave_prs.get(id).filter(|p| !p.is_empty()) {
+                    facts.push(format!("PRs {}", prs.join(", ")));
+                }
+                if let Some(sha) = progress.starts.get(id) {
+                    facts.push(format!("since {}", sha.chars().take(7).collect::<String>()));
+                }
+                let t = find(plan, id)
+                    .map(|w| w.title.trim().to_string())
+                    .unwrap_or_default();
+                if t.is_empty() {
+                    format!("{id} ({})", facts.join("; "))
+                } else {
+                    format!("{id} ({t}; {})", facts.join("; "))
+                }
+            })
+            .collect();
+        format!(" Waves: {}.", named.join(", "))
+    };
+    if !progress.done.is_empty() {
+        out.push_str(&format!(" Signed off: {}.", signed_off_list(progress)));
     }
-    // The earliest start of the round's waves: they started together.
-    let since = progress
-        .scope
-        .iter()
-        .filter_map(|id| progress.starts.get(id))
-        .next();
-    match since {
-        Some(sha) => format!(
-            " Waves: {} (changes since {}).",
-            progress.scope.join(", "),
-            sha
-        ),
-        None => format!(" Waves: {}.", progress.scope.join(", ")),
+    let later = not_started(plan, progress);
+    if !later.is_empty() {
+        out.push_str(&format!(
+            " Not started: {} — not missing.",
+            later.join(", ")
+        ));
     }
+    out
+}
+
+/// Which PRs each wave has: the inverse of [`assign_prs`], in PR order.
+pub fn prs_by_wave(
+    owner: &BTreeMap<String, Vec<String>>,
+    prs: &[PrRef],
+) -> BTreeMap<String, Vec<String>> {
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for p in prs {
+        for w in owner.get(&p.url).into_iter().flatten() {
+            out.entry(w.clone()).or_default().push(p.url.clone());
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -525,6 +669,7 @@ mod tests {
             &progress(&[], &[]),
             WorkflowStatus::PlanReview,
             &[],
+            "",
         );
         let st: Vec<_> = b
             .waves
@@ -547,6 +692,7 @@ mod tests {
             &progress(&["w1"], &[]),
             WorkflowStatus::DiffReview,
             &[],
+            "",
         );
         assert_eq!(b.waves[1].state, WaveState::Ready);
         assert_eq!(b.waves[2].state, WaveState::Ready);
@@ -556,7 +702,7 @@ mod tests {
     #[test]
     fn a_rounds_waves_follow_the_item_status() {
         let p = progress(&["w1"], &["w2", "w3"]);
-        let at = |s| wave_board(Ok(project()), &p, s, &[]).waves[1].state;
+        let at = |s| wave_board(Ok(project()), &p, s, &[], "").waves[1].state;
         assert_eq!(at(WorkflowStatus::Implementing), WaveState::Active);
         assert_eq!(at(WorkflowStatus::ChangesRequested), WaveState::Active);
         assert_eq!(at(WorkflowStatus::DiffReview), WaveState::Review);
@@ -585,6 +731,7 @@ mod tests {
             &WaveProgress::default(),
             WorkflowStatus::Draft,
             &[],
+            "",
         );
         assert_eq!(b.waves[1].compatible_with, vec!["w3"]);
         assert!(b.waves[0].compatible_with.is_empty());
@@ -672,16 +819,18 @@ mod tests {
             // A longer number is another ticket.
             pr("https://github.com/o/api/pull/3", "feat/TT-153601-other"),
         ];
-        let owner = assign_prs(&plan, &prs);
-        assert_eq!(owner.get(&prs[0].url).map(String::as_str), Some("w1"));
-        assert_eq!(owner.get(&prs[1].url), None);
-        assert_eq!(owner.get(&prs[2].url).map(String::as_str), Some("w3"));
-        assert_eq!(owner.get(&prs[3].url), None);
+        let owner = assign_prs(&plan, &prs, "item");
+        let of = |u: &str| owner.get(u).cloned().unwrap_or_default();
+        assert_eq!(of(&prs[0].url), vec!["w1"]);
+        assert!(of(&prs[1].url).is_empty());
+        assert_eq!(of(&prs[2].url), vec!["w3"]);
+        assert!(of(&prs[3].url).is_empty());
         let b = wave_board(
             Ok(plan),
             &WaveProgress::default(),
             WorkflowStatus::DiffReview,
             &prs,
+            "",
         );
         assert_eq!(b.waves[0].prs, vec![prs[0].url.clone()]);
         assert_eq!(b.waves[2].prs, vec![prs[2].url.clone()]);
@@ -693,24 +842,93 @@ mod tests {
     }
 
     #[test]
+    fn a_pr_may_belong_to_several_waves_and_matches_by_branch() {
+        let mut plan = project();
+        // One URL listed by two waves, spelled two ways.
+        plan.waves[0].prs = vec!["https://github.com/o/api/pull/5".into()];
+        plan.waves[1].prs = vec!["https://GitHub.com/o/api/pull/5/files".into()];
+        let prs = vec![
+            PrRef {
+                url: "https://github.com/o/api/pull/5/".into(),
+                head_ref: String::new(),
+            },
+            // No list names it: its head is w3's branch.
+            PrRef {
+                url: "https://github.com/o/web/pull/7".into(),
+                head_ref: "item-w3".into(),
+            },
+        ];
+        let owner = assign_prs(&plan, &prs, "item");
+        assert_eq!(owner[&prs[0].url], vec!["w1", "w2"]);
+        assert_eq!(owner[&prs[1].url], vec!["w3"]);
+        let b = wave_board(
+            Ok(plan),
+            &WaveProgress::default(),
+            WorkflowStatus::DiffReview,
+            &prs,
+            "item",
+        );
+        assert_eq!(b.waves[0].prs, b.waves[1].prs);
+        assert!(b.unassigned_prs.is_empty());
+        assert_eq!(wave_branch("item", " w2 "), "item-w2");
+        assert_eq!(wave_branch("", "w2"), "w2");
+    }
+
+    #[test]
     fn the_kickoffs_name_the_rounds_waves() {
         let mut p = progress(&["w1"], &["w2", "w3"]);
-        assert_eq!(
-            executor_clause(&project(), &p),
-            " Waves: w2 (w2 title), w3 (w3 title) of 4. Signed off: w1 — accepted work: leave it alone unless the note asks."
+        let ex = executor_clause(&project(), &p, "item");
+        assert!(
+            ex.starts_with(" Waves: w2 (w2 title), w3 (w3 title) of 4. Wave branches: w2 → `item-w2`, w3 → `item-w3`"),
+            "{ex}"
         );
-        // A sealed wave names its range.
+        assert!(
+            ex.ends_with(" Signed off: w1 — accepted work: leave it alone unless the note asks.")
+        );
+        // A sealed wave names its range; an empty one does not.
         let mut sealed = p.clone();
         sealed.starts.insert("w1".into(), "1111111aaaa".into());
         sealed.ends.insert("w1".into(), "2222222bbbb".into());
-        assert!(executor_clause(&project(), &sealed).contains("Signed off: w1 (1111111..2222222)"));
-        assert_eq!(review_clause(&p), " Waves: w2, w3.");
-        p.starts.insert("w2".into(), "abc123".into());
-        assert_eq!(review_clause(&p), " Waves: w2, w3 (changes since abc123).");
+        assert!(executor_clause(&project(), &sealed, "item")
+            .contains("Signed off: w1 (1111111..2222222)"));
+        sealed.ends.insert("w1".into(), "1111111aaaa".into());
+        assert!(executor_clause(&project(), &sealed, "item").contains("Signed off: w1 — "));
+        // Fix rounds between waves start nothing, and say what is signed off.
         assert_eq!(
-            executor_clause(&project(), &WaveProgress::default()),
-            " Waves: none of 4 (a fix round over the signed-off waves; start no wave)."
+            executor_clause(&project(), &progress(&["w1"], &[]), "item"),
+            " Waves: none of 4 — a fix round over the signed-off waves; start no wave. Signed off: w1 — accepted work: leave it alone unless the note asks."
         );
-        assert_eq!(review_clause(&WaveProgress::default()), "");
+        assert_eq!(
+            executor_clause(&project(), &WaveProgress::default(), "item"),
+            " Waves: none of 4 started — a fix round; start no wave."
+        );
+        // Reviews: the round's waves, their branch, PRs and start; what is
+        // signed off; what has not started and so is not missing.
+        p.starts.insert("w2".into(), "abc1234567".into());
+        let mut wp = BTreeMap::new();
+        wp.insert("w2".to_string(), vec!["https://g/o/a/pull/1".to_string()]);
+        assert_eq!(
+            review_clause(&project(), &p, "item", &wp),
+            " Waves: w2 (w2 title; branch `item-w2`; PRs https://g/o/a/pull/1; since abc1234), w3 (w3 title; branch `item-w3`). Signed off: w1. Not started: w4 — not missing."
+        );
+        assert_eq!(
+            review_clause(
+                &project(),
+                &progress(&["w1"], &[]),
+                "item",
+                &BTreeMap::new()
+            ),
+            " Waves: none in review. Signed off: w1. Not started: w2, w3, w4 — not missing."
+        );
+        // Plan revisions keep signed-off waves.
+        assert!(
+            plan_clause(&progress(&["w1"], &[])).contains("never change, remove or renumber them")
+        );
+        assert_eq!(plan_clause(&WaveProgress::default()), "");
+        // An unreadable waves.json never blocks the round.
+        assert_eq!(
+            unusable_clause("cycle", &progress(&[], &["w2"])),
+            " Waves: waves.json is unusable (cycle) — continue w2, and repair waves.json in this round."
+        );
     }
 }

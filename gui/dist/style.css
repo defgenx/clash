@@ -1593,6 +1593,7 @@ body.pane-dragging, body.pane-dragging * { cursor: grabbing !important; user-sel
   padding-left: 2px;
 }
 .wf-actions-btns { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.wf-actions-note { flex-basis: 100%; font-size: 12px; line-height: 1.4; }
 .wf-actions-group + .wf-actions-group { border-left: 1px solid var(--border); padding-left: 10px; }
 /* .wf-actions button: shared with the in-tab decision rows, see the Waves
    section at the end of this file. */
@@ -4302,6 +4303,7 @@ a.wf-wave-ticket.wf-chip:hover { --chip: var(--accent); }
 .wf-waves-live { --live: var(--blue); border-color: color-mix(in srgb, var(--live) 55%, var(--border)); background: linear-gradient(115deg, color-mix(in srgb, var(--live) 10%, transparent), transparent 60%); }
 .wf-waves-live.live-attention { --live: var(--accent); }
 .wf-waves-live.live-idle { --live: var(--green); }
+.wf-waves-live.live-queued { --live: var(--accent); }
 .wf-waves-live.live-stopped, .wf-waves-live.live-gone { --live: var(--fg-dim); }
 .wf-waves-live.live-gone { --live: var(--red); }
 .wf-waves-live-head { display: flex; align-items: center; gap: 8px; }
@@ -4315,7 +4317,7 @@ a.wf-wave-ticket.wf-chip:hover { --chip: var(--accent); }
   box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 60%, transparent);
   animation: wf-live-pulse 1.8s ease-out infinite;
 }
-.live-stopped .wf-live-pulse, .live-gone .wf-live-pulse, .live-idle .wf-live-pulse { animation: none; }
+.live-stopped .wf-live-pulse, .live-gone .wf-live-pulse, .live-idle .wf-live-pulse, .live-queued .wf-live-pulse { animation: none; }
 @keyframes wf-live-pulse {
   0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 55%, transparent); }
   70% { box-shadow: 0 0 0 7px transparent; }

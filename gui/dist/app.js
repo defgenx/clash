@@ -8272,10 +8272,11 @@ async function buildWorkflowView(el, project, slug) {
   // view would render a doc with no tab to leave it by.
   // A project in waves opens on its roadmap: where it stands and what is
   // next is the first question about one.
-  if (!ts.subView && item.waves) ts.subView = "waves";
+  const hasWaves = !!(waveSummary(item) || wavesIssue(item));
+  if (!ts.subView && hasWaves) ts.subView = "waves";
   if (!ts.subView || (ts.subView === "plan" && !wfHasPlanPhase(item)))
     ts.subView = wfHasPlanPhase(item) ? "plan" : "diff";
-  if (ts.subView === "waves" && !item.waves) ts.subView = wfHasPlanPhase(item) ? "plan" : "diff";
+  if (ts.subView === "waves" && !hasWaves) ts.subView = wfHasPlanPhase(item) ? "plan" : "diff";
   if (ts.subView === "prs" && itemPrs(item.meta).length < 2) ts.subView = "diff";
   // Same coercion for the agent-reviews tab, which only exists once a round has
   // run: a tab restored from a state where it did would otherwise render a doc
@@ -8398,11 +8399,12 @@ async function buildWorkflowView(el, project, slug) {
   if (item.prStackIssue) head.appendChild(wfStackIssueChip(item.prStackIssue));
   // A project in waves says where it stands from the header, one click from
   // its board.
-  if (item.waves) {
-    const summary = waveSummary(item);
+  // An empty board has no summary: it shows no chip rather than a crash.
+  const headWaves = waveSummary(item);
+  if (headWaves || wavesIssue(item)) {
     const chip = document.createElement("button");
     chip.className = "icon-btn wide wf-waves-chip wf-head-ctx";
-    chip.textContent = wavesIssue(item) ? "Waves ⚠" : summary.text;
+    chip.textContent = wavesIssue(item) ? "Waves ⚠" : headWaves.text;
     chip.title = wavesIssue(item)
       ? `waves.json can't be used: ${wavesIssue(item)}`
       : "Open the waves board";
@@ -8495,8 +8497,8 @@ async function buildWorkflowView(el, project, slug) {
       : []),
     // A project planned as waves: the schedule, what is approved, what runs
     // next and what may run alongside it.
-    ...(item.waves
-      ? [["waves", wavesIssue(item) ? "Waves ⚠" : (waveSummary(item) || { text: "Waves" }).text.split(" · ")[0]]]
+    ...(waveSummary(item) || wavesIssue(item)
+      ? [["waves", wavesIssue(item) ? "Waves ⚠" : waveSummary(item).text.split(" · ")[0]]]
       : []),
     // Several PRs get a list of their own: state, threads, stack, wave and
     // whether the last refresh reached them.
@@ -11317,9 +11319,10 @@ async function cancelWfReview(item, root) {
 async function wfTransition(item, root, status) {
   try {
     // The item's own approval of a multi-wave item whose last waves wait:
-    // those waves are approved by the same click.
+    // those waves are approved by the same click. Not "pr-ready": that button
+    // records GitHub's state, it approves nothing.
     const waves = waveBarState(item);
-    if (waves && waves.kind === "approve-last" && ["done", "pr-draft", "pr-ready"].includes(status))
+    if (waves && waves.kind === "approve-last" && ["done", "pr-draft"].includes(status))
       await invoke("approve_workflow_waves", { project: item.project, slug: item.slug });
     await invoke("update_workflow_status", {
       project: item.project,
@@ -11400,7 +11403,7 @@ function wfPickWaves(item, { message = "Which waves does this round implement?",
       }
       go.disabled = !picked.length;
       go.textContent =
-        picked.length > 1 ? `Start ${picked.length} waves in parallel` : `Start ${picked[0] || "wave"}`;
+        picked.length > 1 ? `Start ${picked.length} waves in parallel` : `Start ${picked[0] ? waveName(picked[0]) : "wave"}`;
     };
     const actions = document.createElement("div");
     actions.className = "modal-actions";
@@ -11511,7 +11514,7 @@ function wfSignOffDialog(model) {
         label.textContent = `Mark ${prChipLabel({ url: d.url })} ready for review`;
         const detail = document.createElement("span");
         detail.className = "wf-review-opt-detail";
-        detail.textContent = `${d.wave} · a draft — reviewers are notified on GitHub`;
+        detail.textContent = `${waveList(d.waves || [d.wave])} · a draft — reviewers are notified on GitHub`;
         text.append(label, detail);
         row.append(input, text);
         fs.appendChild(row);
@@ -12184,13 +12187,38 @@ function renderWfActions(bar, root, item) {
     zones[zone].btns.appendChild(b);
     return b;
   };
-  // The waves of a multi-wave item, at every parked code stage: approve the
+  // A line of guidance among the buttons, for a decision the bar cannot offer.
+  const note = (text, zone = "advance") => {
+    const s = document.createElement("span");
+    s.className = "wf-actions-note wf-waves-issue";
+    s.textContent = text;
+    zones[zone].btns.appendChild(s);
+  };
+  // The waves of a multi-wave item, at every parked code stage: sign off the
   // round in review (and start the next), or start the next when nothing
-  // waits. Wave approvals come before the stage's own.
+  // waits. Wave approvals come before the stage's own. An unreadable
+  // waves.json holds the item's approvals (the backend still counts its waves
+  // as open), so the bar says why and how to repair it.
   const waveButtons = () => {
+    const issue = wavesIssueGuidance(item);
+    if (issue) {
+      note(issue);
+      return;
+    }
     const wv = waveBarState(item);
     if (!wv) return;
-    if (wv.kind === "approve") {
+    if (wv.kind === "approve-last") {
+      // The item's own approvals sign these off on the way, but that is not
+      // obvious from "Mark PR ready" or a merge: the sign-off is a button too.
+      add(
+        `✓ Sign off ${waveList(wv.review)}`,
+        reviewPending ? "" : "primary",
+        () => wfApproveWaves(item, root, { next: false }),
+        `Seal the work of ${waveList(wv.review)} — the last waves; the item closes only once every wave is signed off`,
+        "advance",
+        "approve-waves"
+      );
+    } else if (wv.kind === "approve") {
       add(
         `✓ Sign off ${waveList(wv.review)} → next waves…`,
         reviewPending ? "" : "primary",
@@ -12531,21 +12559,28 @@ function renderWfActions(bar, root, item) {
 
     case "plan-review":
       applyReviewButton();
-      if (waveBoard(item) || wavesIssue(item)) {
+      // An unreadable waves.json cannot be approved: only a change request
+      // can repair it, so that is the one decision on offer.
+      if (wavesIssue(item)) {
+        note(wavesIssueGuidance(item));
+        add(
+          "✎ Request changes…",
+          "primary",
+          () => requestChanges("plan"),
+          "Say what should change — the planner repairs waves.json in the next round, and the current plan is frozen as a version first",
+          "advance",
+          "request-changes"
+        );
+        abandon();
+        break;
+      }
+      // Every wave signed off: nothing to pick, the plan is approved as usual.
+      if (waveBoard(item) && !waveSummary(item).allDone) {
         add(
           "✓ Approve plan → start waves…",
           reviewPending ? "" : "primary",
-          async () => {
-            const issue = wavesIssue(item);
-            if (issue) {
-              uiAlert(
-                `This plan's waves.json can't be used: ${issue}. Request changes so the planner fixes it.`
-              );
-              return;
-            }
-            await wfStartWaves(item, root, { message: "Approve the plan and start which waves?" });
-          },
-          `Accept plan.md and its ${(waveSummary(item) || { total: 0 }).total} waves, and pick the first ones to implement — spends tokens`,
+          () => wfStartWaves(item, root, { message: "Approve the plan and start which waves?" }),
+          `Accept plan.md and its ${waveSummary(item).total} waves, and pick the first ones to implement — spends tokens`,
           "advance",
           "approve-plan"
         );
@@ -14168,9 +14203,13 @@ function wfWaveDecisionButtons(item, root) {
     b.onclick = () => busyButton(b, fn);
     out.push(b);
   };
-  if (bar.kind === "approve") {
+  // Sign-offs belong to the code stages, like the backend says.
+  const codeStage = item.meta.status !== "plan-review";
+  if (bar.kind === "approve" && codeStage) {
     mk(`✓ Sign off ${waveList(bar.review)} → next waves…`, "primary", () => wfApproveWaves(item, root), "Seal and pick what starts next");
     mk(`✓ Sign off ${waveList(bar.review)} only`, "", () => wfApproveWaves(item, root, { next: false }), "Seal and start nothing yet");
+  } else if (bar.kind === "approve-last" && codeStage) {
+    mk(`✓ Sign off ${waveList(bar.review)}`, "primary", () => wfApproveWaves(item, root, { next: false }), "Seal the last waves — the item closes only once every wave is signed off");
   } else if (bar.kind === "start") {
     const label = item.meta.status === "plan-review" ? "✓ Approve plan → start waves…" : "▶ Start next waves…";
     mk(label, "primary", () => wfStartWaves(item, root), "Pick the waves of the next round — spends tokens");
@@ -14220,7 +14259,7 @@ function wfRenderWaveLive(el, item) {
   line.className = "wf-waves-live-line";
   line.textContent = m.activity ? `${m.line} · ${m.activity}` : m.line;
   row.appendChild(line);
-  if (m.agentId && m.kind !== "gone") {
+  if (m.agentId && m.kind !== "gone" && m.kind !== "queued") {
     const open = document.createElement("button");
     open.type = "button";
     open.className = "icon-btn wide";
@@ -14357,7 +14396,7 @@ function wfWaveCard(item, root, w, prs, { full = false, onShow = null, onDetails
     line.textContent = x.text;
     if (x.wave && onShow) {
       line.classList.add("link");
-      line.title = `Go to ${x.wave}`;
+      line.title = `Go to ${waveName(x.wave)}`;
       line.onclick = () => onShow(x.wave);
     }
     wave.appendChild(line);
@@ -14422,9 +14461,9 @@ function wfWaveCard(item, root, w, prs, { full = false, onShow = null, onDetails
   }
   // The scheduling facts are reference, not the story: folded.
   const facts = [];
-  if (w.blockedBy.length) facts.push(`Waits for ${w.blockedBy.join(", ")}`);
-  else if (w.dependsOn.length) facts.push(`After ${w.dependsOn.join(", ")}`);
-  if (w.compatibleWith.length) facts.push(`Can share a round with ${w.compatibleWith.join(", ")}`);
+  if (w.blockedBy.length) facts.push(`Waits for ${waveList(w.blockedBy)}`);
+  else if (w.dependsOn.length) facts.push(`After ${waveList(w.dependsOn)}`);
+  if (w.compatibleWith.length) facts.push(`Can share a round with ${waveList(w.compatibleWith)}`);
   facts.push(w.areas.length ? `Touches ${w.areas.join(", ")}` : "No areas declared — runs alone");
   if (w.start) facts.push(`Started at ${w.start.slice(0, 8)}`);
   if (!full) return wave;
@@ -14544,6 +14583,14 @@ function renderWfWavesView(body, root, item) {
     }
     aside.appendChild(stats);
   }
+  // Said in every mode: a PR no wave claims is invisible on the cards.
+  const loose = (waveBoard(item).unassignedPrs || []).length;
+  if (loose) {
+    const p = document.createElement("p");
+    p.className = "dim wf-waves-loose";
+    p.textContent = `${loose} PR${loose === 1 ? " belongs" : "s belong"} to no wave: list ${loose === 1 ? "it" : "them"} in a wave's "prs" (or name a wave's ticket in the branch) to place ${loose === 1 ? "it" : "them"}.`;
+    aside.appendChild(p);
+  }
 
   // How waves work is reference: one click away, not a paragraph above the
   // waves every time the tab opens.
@@ -14553,7 +14600,7 @@ function renderWfWavesView(body, root, item) {
   howSum.textContent = "How waves work";
   const howText = document.createElement("p");
   howText.textContent =
-    "Waves come from waves.json, written by the planner. Each is implemented and approved on its own, after the waves it depends on; waves of one step can share a round when they touch different code. A PR belongs to the wave that lists it, or whose ticket its branch names.";
+    "Waves come from waves.json, written by the planner. Each is implemented and approved on its own, after the waves it depends on; waves of one step can share a round when they touch different code. Each wave gets its own branch and PRs; a PR belongs to every wave that lists it, else to the wave its branch or ticket names.";
   how.append(howSum, howText);
   aside.appendChild(how);
 
@@ -14621,7 +14668,11 @@ function renderWfWavesView(body, root, item) {
     const where = document.createElement("span");
     where.className = "wf-waves-nav-where";
     const step = waveColumns(item).find((c) => c.waves.some((x) => x.id === w.id));
-    where.textContent = `Wave ${i + 1} of ${ws.length}${step ? ` · ${step.title}` : ""}`;
+    // The wave's own name, never its position: "Wave 3" is w3 even when the
+    // plan lists it second.
+    const name = waveName(w);
+    const pos = /^Wave \d+$/.test(name) ? `${name} of ${ws.length}` : `${name} · ${i + 1} of ${ws.length}`;
+    where.textContent = `${pos}${step ? ` · ${step.title}` : ""}`;
     const next = document.createElement("button");
     next.type = "button";
     next.className = "icon-btn wide";
@@ -14696,13 +14747,6 @@ function renderWfWavesView(body, root, item) {
     for (const w of step.waves)
       grid.appendChild(wfWaveCard(item, root, w, prs, { onShow: show, onDetails: details, grouped: !!together }));
     main.appendChild(sec);
-  }
-  const loose = (waveBoard(item).unassignedPrs || []).length;
-  if (loose) {
-    const p = document.createElement("p");
-    p.className = "dim";
-    p.textContent = `${loose} PR${loose === 1 ? " belongs" : "s belong"} to no wave: list ${loose === 1 ? "it" : "them"} in a wave's "prs" (or name a wave's ticket in the branch) to place ${loose === 1 ? "it" : "them"}.`;
-    main.appendChild(p);
   }
 }
 

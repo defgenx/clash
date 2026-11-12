@@ -122,10 +122,10 @@ then pick the smallest split that keeps quality:
 
 Never launch more subagents than there are independent units of real work, and
 never one whose whole job is a file read or a grep — do that yourself. The
-waves below describe the split **at full scale**; shrink them to the size you
+batches below describe the split **at full scale**; shrink them to the size you
 picked.
 
-The round runs in two waves:
+The round runs in two batches:
 
 1. **Find** — read-only reviewers launched together, each briefed with
    `plan.md`, the requirements it answers to and the engineering preferences,
@@ -143,7 +143,7 @@ The round runs in two waves:
 
 How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
 
-- **Parallel means one message.** Launch every independent subagent of a wave
+- **Parallel means one message.** Launch every independent subagent of a batch
   in a single response with several tool calls; one call per message runs
   them one after another.
 - **Never pass a `model`, and use the general-purpose agent.** clash pins the
@@ -205,7 +205,22 @@ with nothing wrong gets one line saying so — padding it dilutes the rest.
    release per wave, `dependsOn` following the deploy order, each wave safe in
    production with only the earlier releases out. A plan that ships several
    releases with no `waves.json`, or a wave that mixes two releases, is an
-   issue here — say which parts cannot go out together and why.
+   issue here — say which parts cannot go out together and why. When the
+   item has a `waves.json`, check it too (each failure is an issue here):
+   - ids unique and non-empty;
+   - `dependsOn` names only known ids and has no cycle;
+   - `areas` declared for each wave and covering the files its work units
+     touch — waves that may run in parallel need disjoint areas, and a wave
+     without areas always runs alone;
+   - `tickets` listed for every ticketed wave;
+   - each wave has a `## Wave <n> — <title>` section in `plan.md`, `<n>` the
+     number in its id (or the id itself in the heading), so its section is
+     found by id;
+   - one release per wave: each wave ships on its own branch and PRs, so
+     nothing in it may need another wave's release to go out with it.
+
+   A signed-off wave (`meta.waves.done`) is accepted work: a revision that
+   changes, removes or renumbers one, or reuses a retired id, is an issue.
 2. **Code quality** — organization and module structure, DRY violations, error
    handling and missing edge cases, technical-debt hotspots, anything over- or
    under-engineered relative to the preferences above.

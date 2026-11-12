@@ -146,7 +146,7 @@ then pick the smallest split that keeps quality:
 
 Never launch more subagents than there are independent units of real work, and
 never one whose whole job is a file read or a grep — do that yourself. The
-waves below describe the split **at full scale**; shrink them to the size you
+batches below describe the split **at full scale**; shrink them to the size you
 picked.
 
 1. **Map** — one read-only mapper per area (a subsystem, a repo, the plan's
@@ -159,7 +159,7 @@ picked.
 
 How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
 
-- **Parallel means one message.** Launch every independent subagent of a wave
+- **Parallel means one message.** Launch every independent subagent of a batch
   in a single response with several tool calls; one call per message runs
   them one after another.
 - **Never pass a `model`, and use the general-purpose agent.** clash pins the

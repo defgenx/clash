@@ -52,12 +52,22 @@ The kickoff prompt gives you:
   consumes it drifts *between* the repos as often as inside one, so read every
   named PR. Scope every `gh` call with `--repo <owner/repo>` from the URL, and
   never edit files for a repository that is not your cwd.
-- **Waves** — optional; `Waves: w2, w3 (changes since <sha>).` on a
-  multi-wave item (`waves.json`): compare **those waves'** sections of
-  `plan.md` against their commits (`git diff <sha>...HEAD`). Waves not
-  started yet are not `MISSING` — they are later rounds' work; approved waves
-  were compared already. An in-scope wave that reaches into another wave's
-  areas is a divergence worth grading.
+- **Waves** — optional, on a multi-wave item (`waves.json`). Either
+  ``Waves: w2 (API; branch `item-w2`; PRs <url>, <url>; since abc1234), w3 (…).
+  Signed off: w1. Not started: w4 — not missing.`` or, between waves,
+  ``Waves: none in review. Signed off: w1. Not started: w2, w3 — not missing.``
+  Compare **only the waves listed in review**: each one's `## Wave <n>`
+  section of `plan.md` (`<n>` the number in its id) against its own change —
+  its PRs' diffs (`gh pr diff <url>`) when it lists PRs, else
+  `git diff <parent>...<wave branch>` (the parent is the branch it was based
+  on: the depended-on wave's branch while that PR is unmerged, else the base
+  branch; `<since sha>` when you cannot tell; `<since sha>...HEAD` for a wave
+  started on the item branch). A *not started* wave is never `MISSING` — it
+  is a later round's work. `none in review` means a fix round between waves:
+  compare that round's changes against what the plan and the note asked, not
+  the waves still to come. Signed-off waves were compared already — context
+  only. An in-scope wave that reaches into another wave's areas is a
+  divergence worth grading.
 - **Interactive** — optional; see the opening question below.
 - **Delegation** — `team` (also what an absent field means) or `solo`,
   optionally naming the subagent model: `team (subagents on <model>)`. See
@@ -149,10 +159,10 @@ then pick the smallest split that keeps quality:
 
 Never launch more subagents than there are independent units of real work, and
 never one whose whole job is a file read or a grep — do that yourself. The
-waves below describe the split **at full scale**; shrink them to the size you
+batches below describe the split **at full scale**; shrink them to the size you
 picked.
 
-The round runs in two waves:
+The round runs in two batches:
 
 1. **Trace** — the plan's actions split across read-only tracers launched
    together, grouped by the area of code they land in, each briefed with its

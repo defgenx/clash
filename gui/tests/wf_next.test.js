@@ -258,9 +258,30 @@ test("a multi-wave item approves its waves before the item, then starts the next
   assert.equal(wfNextStep(inReview, facts()).id, "approve-waves");
   const next = item("diff-review", { ...reviewed, ...board(["done", "done", "ready"]) }, marks);
   assert.equal(wfNextStep(next, facts()).id, "start-waves");
-  // The last waves: the item's own approval, as for any item.
-  const last = item("diff-review", { ...reviewed, ...board(["done", "done", "review"]) }, marks);
-  assert.ok(!["approve-waves", "start-waves"].includes(wfNextStep(last, facts()).id));
+  // The last waves are signed off too, at every code stage: the item never
+  // closes itself while one is unsigned.
+  for (const st of ["diff-review", "pr-draft", "pr-ready"]) {
+    const last = item(st, { ...reviewed, ...board(["done", "done", "review"]) }, marks);
+    const step = wfNextStep(last, facts());
+    assert.equal(step.id, "approve-waves", st);
+    assert.match(step.reason, /Wave 3 reviewed — the last wave: sign it off/);
+  }
+  // A PR waiting on merge says the waves still need signing off.
+  const verdict = { reviewRounds: { diff: 1, drift: 1, "self-review": 1 } };
+  const vmarks = { reviewMarks: { ...marks.reviewMarks, "self-review": { iteration: 1, round: 1 } } };
+  const waiting = item("pr-ready", { ...verdict, ...board(["done", "done", "review"]) }, vmarks);
+  const noSignOff = new Set([...ALL].filter((a) => a !== "approve-waves"));
+  const open = wfNextStep(waiting, facts({ available: noSignOff }));
+  assert.equal(open.id, "open-prs");
+  assert.doesNotMatch(open.reason, /closes itself/);
+  assert.ok(!open.settled.includes("no wave waiting for sign-off"));
+  const plain = wfNextStep(item("pr-ready", verdict, vmarks), facts());
+  assert.match(plain.reason, /closes itself when the PR merges/);
+  // An unreadable waves.json: nothing approves, a discussion repairs it; at
+  // plan review a change request does.
+  const broken = { reviewRounds: reviewed.reviewRounds, waves: { waves: [], issue: "a cycle" } };
+  assert.equal(wfNextStep(item("pr-ready", broken, marks), facts({ available: new Set([...ALL, "discuss"]) })).id, "discuss");
+  assert.equal(wfNextStep(item("plan-review", broken), facts()).id, "request-changes");
   // Never on autopilot: approving and starting waves is the human's call.
   assert.ok(!AUTO_ACTIONS.has("approve-waves") && !AUTO_ACTIONS.has("start-waves"));
 });

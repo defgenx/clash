@@ -211,7 +211,12 @@ test("past a handful of PRs the header summarizes and points at the tab", () => 
   assert.match(view, /for \(const pr of manyPrs \? headPrs\.filter\(\(p\) => p\.primary\) : headPrs\)/);
   assert.match(view, /ts\.subView = "prs";/);
   // A project in waves opens on its roadmap.
-  assert.match(view, /if \(!ts\.subView && item\.waves\) ts\.subView = "waves";/);
+  assert.match(view, /if \(!ts\.subView && hasWaves\) ts\.subView = "waves";/);
+  // An empty board has no summary: neither the landing, the header chip nor
+  // the sub-view list may read one.
+  assert.match(view, /const hasWaves = !!\(waveSummary\(item\) \|\| wavesIssue\(item\)\);/);
+  assert.match(view, /const headWaves = waveSummary\(item\);\n  if \(headWaves \|\| wavesIssue\(item\)\) \{/);
+  assert.doesNotMatch(view, /if \(item\.waves\)/);
 });
 
 test("a plan with parallel waves opens on the Flow, and together-or-alone is yours", () => {

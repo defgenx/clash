@@ -59,6 +59,8 @@ test("the rail never repeats the tab it sits beside", () => {
   assert.equal(railModel(withWaves, [], { subView: "waves" }).waves, null);
   assert.equal(railModel(withWaves, [], { subView: "prs" }).prs, null);
   assert.equal(railModel(item(), []).waves, null, "no waves, no card");
+  assert.equal(railModel(item({ waves: { waves: [] } }), []).waves, null, "an empty board, no blank card");
+  assert.match(railModel(item({ waves: { waves: [], issue: "a cycle" } }), []).waves.now, /can't be used: a cycle/);
 });
 
 test("the item's agents, running first", () => {
