@@ -59,6 +59,7 @@
       status: d.status,
       answer: d.answer || "",
       answeredAt: d.answeredAt || 0,
+      deliveredIteration: d.deliveredIteration || 0,
       state: d.status === "answered" ? answerState(d, iteration) : d.status === "dropped" ? "dropped" : "",
     });
     const settled = all
@@ -69,6 +70,68 @@
   }
 
   /// The sub-view's label: the open count as the badge.
+  /// How long an open decision has waited, in rounds, and how to say it.
+  function decisionAge(d, iteration) {
+    const first = d.firstSeen || 0;
+    const rounds = first && iteration ? Math.max(0, iteration - first) : 0;
+    return {
+      rounds,
+      text: !first
+        ? ""
+        : rounds === 0
+          ? `asked this round (iteration ${first})`
+          : `asked in iteration ${first} · waiting ${rounds} round${rounds === 1 ? "" : "s"}`,
+      stale: rounds >= 2,
+    };
+  }
+
+  /// The header of the Decisions view: counts, progress and what an answer
+  /// does next.
+  function decisionsSummary(model) {
+    const open = model.open.length;
+    const answered = model.settled.filter((d) => d.status === "answered");
+    const pending = answered.filter((d) => d.state === "goes to the next round").length;
+    const dropped = model.settled.filter((d) => d.status === "dropped").length;
+    const total = open + answered.length + dropped;
+    const done = answered.length + dropped;
+    const withRec = model.open.filter((d) => d.options.some((o) => o.recommended)).length;
+    return {
+      open,
+      answered: answered.length,
+      pending,
+      dropped,
+      total,
+      percent: total ? Math.round((done / total) * 100) : 0,
+      headline: !total
+        ? "No decisions yet — agents list them in their hand-offs"
+        : open
+          ? `${open} waiting on you`
+          : "Everything is answered",
+      next: pending
+        ? `${pending} answer${pending === 1 ? "" : "s"} will reach the next round — in its kickoff and your next change request`
+        : "",
+      acceptable: withRec,
+    };
+  }
+
+  /// The rows a filter keeps, matched on id, question, options and answer.
+  function filterDecisions(model, filter, query) {
+    const q = (query || "").trim().toLowerCase();
+    const pool =
+      filter === "open" ? model.open : filter === "answered" ? model.settled : [...model.open, ...model.settled];
+    if (!q) return pool;
+    return pool.filter((d) =>
+      [d.id, d.text, d.answer, ...d.options.map((o) => o.text)].some((s) => (s || "").toLowerCase().includes(q))
+    );
+  }
+
+  /// The topic a "Discuss this" session opens with.
+  function decisionTopic(d) {
+    const opts = d.options.length ? ` Options: ${d.options.map((o) => o.label).join("; ")}.` : "";
+    const rec = d.options.find((o) => o.recommended);
+    return `Decision ${d.id}: ${d.text}${opts}${rec ? ` The agent recommends ${rec.key}.` : ""} Help me decide; when we agree, I will answer it in the Decisions tab.`;
+  }
+
   function decisionsTabLabel(item) {
     const n = openDecisions(item).length;
     return n ? `❓ Decisions (${n})` : "❓ Decisions";
@@ -104,6 +167,10 @@
     decisionsModel,
     decisionsTabLabel,
     decisionsReason,
+    decisionAge,
+    decisionsSummary,
+    filterDecisions,
+    decisionTopic,
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;

@@ -130,3 +130,80 @@ test("the browser build publishes what app.js reads, and app.js wires it", () =>
     assert.ok(rs.includes(`workflows::${cmd},`), `${cmd} is not registered`);
   }
 });
+
+const { extractFunction, stubEl, descendants } = require("./extract-fn.js");
+
+test("the header counts the decisions and offers the recommendations in one click", () => {
+  const item = { meta: { iteration: 4 }, decisions };
+  const m = D.decisionsModel(item);
+  const s = D.decisionsSummary(m);
+  assert.equal(s.open, 2);
+  assert.equal(s.answered, 2);
+  assert.equal(s.dropped, 1);
+  assert.equal(s.percent, 60);
+  assert.equal(s.headline, "2 waiting on you");
+  assert.match(s.next, /^1 answer will reach the next round/);
+  assert.equal(s.acceptable, 1, "only D3 has a recommended option");
+  // Waiting rounds: D3 was asked at iteration 2, it is now 4.
+  const d3 = m.open.find((d) => d.id === "D3");
+  const age = D.decisionAge(d3, 4);
+  assert.equal(age.rounds, 2);
+  assert.ok(age.stale);
+  assert.match(age.text, /asked in iteration 2 · waiting 2 rounds/);
+  assert.equal(D.decisionAge({ firstSeen: 4 }, 4).text, "asked this round (iteration 4)");
+  // Filters and search.
+  assert.deepEqual(D.filterDecisions(m, "open", "").map((d) => d.id), ["D3", "D4"]);
+  assert.deepEqual(D.filterDecisions(m, "answered", "").map((d) => d.status).sort(), ["answered", "answered", "dropped"]);
+  assert.deepEqual(D.filterDecisions(m, "all", "drop it").map((d) => d.id), ["D3"], "options are searched");
+  // A discussion starts from the question itself.
+  assert.match(D.decisionTopic(d3), /^Decision D3: Keep the legacy flag\? Options: a\) keep it; b\) drop it\. The agent recommends a\./);
+  // Nothing at all: says where decisions come from.
+  assert.match(D.decisionsSummary(D.decisionsModel({ meta: {}, decisions: [] })).headline, /No decisions yet/);
+});
+
+test("the Decisions view renders its cards and wires every button", async () => {
+  const APP = fs.readFileSync(path.join(__dirname, "..", "dist", "app.js"), "utf8");
+  const calls = [];
+  const sandbox = {
+    ...D,
+    document: { createElement: (t) => stubEl(t) },
+    escapeHtml: (s) => String(s),
+    invoke: async (cmd, args) => calls.push([cmd, args]),
+    busyButton: (_b, fn) => fn(),
+    flashToast: () => {},
+    uiAlert: () => {},
+    uiConfirm: async () => true,
+    uiTextPrompt: async () => null,
+    refreshWorkflows: async () => {},
+    buildWorkflowView: () => {},
+    wfDiscuss: async (_item, opts) => calls.push(["discuss", opts]),
+    wfSelfWriteAt: 0,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(extractFunction(APP, "wfInlineMd"), sandbox);
+  vm.runInContext(extractFunction(APP, "renderWfDecisionsView"), sandbox);
+  const item = { project: "p", slug: "s", meta: { iteration: 4 }, decisions };
+  const body = stubEl();
+  const ts = {};
+  await sandbox.renderWfDecisionsView(body, stubEl(), item, ts);
+  const all = descendants(body);
+  const buttons = all.filter((e) => e.tagName === "BUTTON");
+  const label = (t) => buttons.find((b) => (b.textContent || b.innerHTML || "").includes(t));
+  assert.equal(ts.decFilter, "open", "opens on what is waiting");
+  assert.ok(all.some((e) => (e.className || "").includes("wf-decision-option recommended")), "options are cards");
+  // Every button does something.
+  for (const b of buttons) assert.equal(typeof b.onclick, "function", `${b.textContent || b.innerHTML} has no handler`);
+  await label("Take the recommendation").onclick();
+  assert.equal(JSON.stringify(calls.at(-1)), JSON.stringify(["answer_workflow_decision", { project: "p", slug: "s", id: "D3", answer: "a) keep it" }]));
+  await label("Discuss").onclick();
+  assert.equal(calls.at(-1)[0], "discuss");
+  assert.match(calls.at(-1)[1].topic, /^Decision D3/);
+  await label("Accept the recommendation").onclick();
+  assert.equal(calls.at(-1)[1].id, "D3");
+});
+
+test("every button is styled, even one nobody gave a class", () => {
+  const css = fs.readFileSync(path.join(__dirname, "..", "dist", "style.css"), "utf8");
+  assert.match(css, /:where\(button:not\(\[class\]\), button\[class="primary"\]\) \{[^}]*background: var\(--bg-hover\)/);
+  assert.match(css, /:where\(button\[class="primary"\]\) \{[^}]*var\(--accent\)/);
+});

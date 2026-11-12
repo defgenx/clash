@@ -31,6 +31,24 @@
   --st-error: #c88287;
 }
 
+/* Every <button> is styled. A button with no class of its own (or only
+   `primary`) gets the app's button look from here — zero specificity, so a
+   container's rule (`.wf-inline-actions button`, `.modal-actions button`)
+   still wins. Buttons with a class are left to their class. */
+:where(button:not([class]), button[class="primary"]) {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+:where(button:not([class])):hover { background: var(--bg-active); }
+:where(button:not([class]), button[class="primary"]):disabled { opacity: 0.45; cursor: default; }
+:where(button[class="primary"]) { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+
 /* Light themes: the handful of rules that assume a dark background. Shadows go
    softer (a 55%-black drop shadow reads as dirt on white), the search-clear
    glyph stops being inverted, and the dialog scrim lightens so it dims the page
@@ -3331,17 +3349,120 @@ body.layout-flyout #sidebar-resizer { display: none; }
 .wf-rail-agent-dot.st-errored { background: var(--st-error); }
 
 /* ── Decisions sub-view ── */
-.wf-decisions { margin: 10px 16px; display: flex; flex-direction: column; gap: 10px; max-width: 90ch; }
-.wf-decision { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
-.wf-decision.settled { margin-top: 8px; }
-.wf-decision.settled p { margin: 4px 0; font-size: 12px; }
-.wf-decision-head { display: flex; align-items: baseline; gap: 8px; font-size: 13px; line-height: 1.4; }
-.wf-decision-id { font-weight: 600; color: var(--accent); flex: none; }
+/* ── Decisions view ─────────────────────────────────────────────── */
+.wf-dec-head {
+  margin: 12px 16px 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-raised);
+  max-width: 96ch;
+}
+.wf-dec-headline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wf-dec-title { font-size: 14px; font-weight: 600; }
+.wf-dec-counts { display: inline-flex; gap: 6px; margin-left: auto; }
+.wf-dec-progress { height: 4px; border-radius: 2px; background: var(--bg-hover); margin: 10px 0 8px; overflow: hidden; }
+.wf-dec-progress span { display: block; height: 100%; background: var(--green); transition: width 0.3s; }
+.wf-dec-explain { margin: 6px 0 0; font-size: 12px; line-height: 1.45; }
+.wf-dec-explain strong { color: var(--fg); font-weight: 600; }
+.wf-dec-head .wf-inline-actions { margin-top: 10px; }
+.wf-dec-tools { display: flex; align-items: center; gap: 10px; margin: 8px 16px; max-width: 96ch; }
+.wf-dec-search {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 9px;
+}
+.wf-dec-empty { margin: 32px 16px; text-align: center; max-width: 70ch; }
+.wf-dec-empty-mark { font-size: 28px; opacity: 0.6; }
+.wf-decisions { margin: 6px 16px 16px; display: flex; flex-direction: column; gap: 10px; max-width: 96ch; }
+.wf-decision {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--st-prompting);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.wf-decision.settled { border-left-color: var(--green); opacity: 0.92; }
+.wf-decision.settled.dropped { border-left-color: var(--fg-dim); opacity: 0.7; }
+.wf-decision-head { display: flex; align-items: baseline; gap: 10px; font-size: 13px; line-height: 1.45; }
+.wf-decision-id {
+  flex: none;
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 5px;
+  padding: 0 6px;
+  line-height: 18px;
+}
 .wf-decision-text { flex: 1; }
-.wf-decision-options { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
-.wf-decision-free { display: flex; gap: 6px; align-items: flex-start; margin-top: 6px; }
-.wf-decision-free textarea { flex: 1; min-height: 2.6em; resize: vertical; font: inherit; font-size: 12px; }
-.wf-decisions-settled summary { cursor: pointer; font-size: 12px; color: var(--fg-dim, inherit); }
+.wf-decision-text code, .wf-decision-option-text code, .wf-decision-answer code, .wf-dec-explain code {
+  font-size: 11.5px;
+  background: var(--bg-raised);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+.wf-decision-meta { font-size: 11px; color: var(--fg-dim); margin: 3px 0 0 calc(2ch + 22px); }
+.wf-decision-stale { color: var(--st-prompting); font-weight: 600; }
+.wf-decision-options { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 6px; }
+.wf-decision-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.wf-decision-option:hover { border-color: var(--accent); background: var(--bg-hover); }
+.wf-decision-option.recommended { border-color: color-mix(in srgb, var(--green) 55%, var(--border)); }
+.wf-decision-key {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 11px;
+  background: var(--bg-active);
+  color: var(--fg);
+}
+.wf-decision-option.recommended .wf-decision-key { background: var(--green); color: var(--on-accent); }
+.wf-decision-option-text { flex: 1; line-height: 1.4; }
+.wf-decision-rec { margin: 8px 0 4px; font-size: 12.5px; display: flex; align-items: baseline; gap: 8px; }
+.wf-decision-free { margin-top: 8px; }
+.wf-decision-free textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 2.6em;
+  resize: vertical;
+  font: inherit;
+  font-size: 12px;
+  background: var(--bg-raised);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.wf-decision-free textarea:focus { outline: none; border-color: var(--accent); }
+.wf-decision-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.wf-decision-actions .wf-decision-drop { margin-left: auto; color: var(--fg-dim); }
+.wf-decision-answer { margin: 8px 0 2px; font-size: 12.5px; }
+.wf-decision-answer-mark { color: var(--green); font-weight: 700; margin-right: 4px; }
 .wf-rail-agent-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-rail-agent-status { font-size: 11px; white-space: nowrap; }
 .wf-bench-main > .wf-body { flex: 1; min-height: 0; }

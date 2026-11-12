@@ -346,9 +346,18 @@ them across rounds — the hand-off itself is rewritten every phase — in the
 parked on you; it is the suggested next step while any is open, ahead of
 approving or applying a review. The inbox row of the item says how many wait.
 
-Click an option, or write your own answer, or **Drop** a question nobody needs
-answered any more. Answered and dropped ones fold away below, and can be
-answered again. An answer goes to the next round — whatever starts it:
+The tab opens on a summary — how many wait on you, how many are answered and
+how many of those answers still have to reach a round, with a progress bar —
+and **✓ Accept all n recommendations** when several open questions have a
+recommended option. Below it, **Open / Settled / All** and a search over
+questions, options and answers. Each open question is a card: its id, how
+long it has waited (a question carried over two rounds or more is marked),
+the options as cards (the recommended one ringed in green), a free-text
+answer (⌘↵), **✓ Take the recommendation**, **💬 Discuss…** (a session that
+knows the item, opened on that question) and **Drop** for a question nobody
+needs answered any more. Settled cards show the answer and where it stands —
+*goes to the next round* or *handed to iteration N* — and can be answered
+again. An answer goes to the next round — whatever starts it:
 
 - the next agent launch names it in its kickoff (`Decisions: D3 (answered: …)`);
 - your next change request appends it to the note under `### Decisions` (the

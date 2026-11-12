@@ -11685,12 +11685,14 @@ async function wfStartWaves(item, root, opts = {}) {
 /// about (optional — an empty answer lets the agent open with where the item
 /// stands), pick the agent, open the session. It parks nothing, so it runs
 /// beside whatever the item is doing.
-async function wfDiscuss(item) {
+async function wfDiscuss(item, { topic: preset = null } = {}) {
   const home = ws();
-  const topic = await uiPrompt(
-    "What do you want to talk about? (optional — leave empty and the agent opens with where the item stands)",
-    ""
-  );
+  const topic =
+    preset ??
+    (await uiPrompt(
+      "What do you want to talk about? (optional — leave empty and the agent opens with where the item stands)",
+      ""
+    ));
   if (topic === null) return;
   const agent = await pickWfAgent(item, "discuss");
   if (agent === null) return;
@@ -15138,118 +15140,273 @@ function renderWfWavesView(body, root, item) {
 /// each open one with its options as buttons, a free answer and Drop; the
 /// answered and dropped ones folded below. Model: wf-decisions.js; contract:
 /// docs/workflows.md → Decisions.
-async function renderWfDecisionsView(body, root, item) {
+/// Inline markdown of an agent's one-line question: `code` and **bold**,
+/// over escaped text.
+function wfInlineMd(text) {
+  return escapeHtml(text || "")
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+}
+
+/// The Decisions sub-view: every question the agents asked in their
+/// hand-offs, answered here once and handed to the next round. Model in
+/// gui/dist/wf-decisions.js; contract in docs/workflows.md → Decisions.
+async function renderWfDecisionsView(body, root, item, ts = {}) {
   const { project, slug } = item;
   body.innerHTML = "";
+  body.classList.add("wf-wide-view");
   const m = decisionsModel(item);
-  const caption = document.createElement("p");
-  caption.className = "wf-doc-caption dim";
-  caption.textContent =
-    "The questions the workflow agent asked you in its hand-offs — kept here across rounds, because handoff.md is rewritten every phase. An answer goes to the next round: in its kickoff, and under ### Decisions in your next change request.";
-  body.appendChild(caption);
+  const sum = decisionsSummary(m);
+  const iteration = (item.meta && item.meta.iteration) || 0;
+  ts.decFilter = ts.decFilter || (m.open.length ? "open" : "all");
+  ts.decQuery = ts.decQuery || "";
+
   const save = async (cmd, args, done) => {
     try {
       wfSelfWriteAt = Date.now();
       await invoke(cmd, { project, slug, ...args });
     } catch (e) {
       uiAlert(`Saving the decision failed: ${e}`);
-      return;
+      return false;
     }
-    flashToast(done);
+    if (done) flashToast(done);
+    return true;
+  };
+  const rebuild = async () => {
     await refreshWorkflows();
     buildWorkflowView(root, project, slug);
   };
-  const answer = (id, text) => save("answer_workflow_decision", { id, answer: text }, `${id} answered`);
+  const answer = async (id, text) => {
+    if (await save("answer_workflow_decision", { id, answer: text }, `${id} answered — it goes to the next round`)) await rebuild();
+  };
+  const drop = async (id) => {
+    if (await save("drop_workflow_decision", { id }, `${id} dropped`)) await rebuild();
+  };
+
+  // ── Header: where the decisions stand, and the one bulk action.
+  const head = document.createElement("div");
+  head.className = "wf-dec-head";
+  head.innerHTML =
+    `<div class="wf-dec-headline"><span class="wf-dec-title">${escapeHtml(sum.headline)}</span>` +
+    `<span class="wf-dec-counts">` +
+    `<span class="wf-chip wf-changes">${sum.open} open</span>` +
+    `<span class="wf-chip wf-done">${sum.answered} answered</span>` +
+    (sum.dropped ? `<span class="wf-chip">${sum.dropped} dropped</span>` : "") +
+    `</span></div>` +
+    (sum.total
+      ? `<div class="wf-dec-progress" title="${sum.percent}% settled"><span style="width:${sum.percent}%"></span></div>`
+      : "") +
+    `<p class="wf-dec-explain dim">The questions agents asked in their hand-offs, kept across rounds. ` +
+    `An answer reaches the next round twice: in its kickoff, and under <code>### Decisions</code> in your next change request.` +
+    (sum.next ? ` <strong>${escapeHtml(sum.next)}.</strong>` : "") +
+    `</p>`;
+  if (sum.acceptable) {
+    const actions = document.createElement("div");
+    actions.className = "wf-inline-actions";
+    const all = document.createElement("button");
+    all.className = "primary";
+    all.textContent = `✓ Accept ${sum.acceptable === 1 ? "the recommendation" : `all ${sum.acceptable} recommendations`}`;
+    all.title = "Answer every open decision that has a recommended option with that option";
+    all.onclick = () =>
+      busyButton(all, async () => {
+        const picks = m.open
+          .map((d) => [d, d.options.find((o) => o.recommended)])
+          .filter(([, o]) => o);
+        if (!(await uiConfirm(`Answer ${picks.map(([d, o]) => `${d.id} with ${o.key}`).join(", ")}?`, "Accept"))) return;
+        for (const [d, o] of picks) if (!(await save("answer_workflow_decision", { id: d.id, answer: o.label }, ""))) break;
+        flashToast(`${picks.length} decision${picks.length === 1 ? "" : "s"} answered`);
+        await rebuild();
+      });
+    actions.appendChild(all);
+    head.appendChild(actions);
+  }
+  body.appendChild(head);
+
+  if (!sum.total) {
+    const empty = document.createElement("div");
+    empty.className = "wf-dec-empty";
+    empty.innerHTML =
+      `<div class="wf-dec-empty-mark">❓</div><p>No decisions yet.</p>` +
+      `<p class="dim">When an agent needs you to choose, it lists the question in its hand-off as ` +
+      `<code>- [D1] question — options: a) … b) … — recommended: a</code>, and it lands here.</p>`;
+    body.appendChild(empty);
+    return;
+  }
+
+  // ── Filter + search.
+  const tools = document.createElement("div");
+  tools.className = "wf-dec-tools";
+  const seg = document.createElement("div");
+  seg.className = "wf-seg";
+  for (const [key, label] of [
+    ["open", `Open (${sum.open})`],
+    ["answered", `Settled (${sum.answered + sum.dropped})`],
+    ["all", `All (${sum.total})`],
+  ]) {
+    const b = document.createElement("button");
+    b.textContent = label;
+    if (ts.decFilter === key) b.classList.add("on");
+    b.onclick = () => {
+      if (ts.decFilter === key) return;
+      ts.decFilter = key;
+      buildWorkflowView(root, project, slug);
+    };
+    seg.appendChild(b);
+  }
+  const search = document.createElement("input");
+  search.type = "search";
+  search.className = "wf-dec-search";
+  search.placeholder = "Search decisions…";
+  search.value = ts.decQuery;
+  tools.append(seg, search);
+  body.appendChild(tools);
+
   const list = document.createElement("div");
   list.className = "wf-decisions";
   body.appendChild(list);
-  if (!m.open.length) {
-    const none = document.createElement("p");
-    none.className = "hint";
-    none.textContent = "No decision is waiting on you.";
-    list.appendChild(none);
-  }
-  for (const d of m.open) {
-    const card = document.createElement("section");
-    card.className = "wf-decision";
-    const head = document.createElement("div");
-    head.className = "wf-decision-head";
-    head.innerHTML =
+  const paint = () => {
+    list.innerHTML = "";
+    const rows = filterDecisions(m, ts.decFilter, ts.decQuery);
+    if (!rows.length) {
+      const none = document.createElement("p");
+      none.className = "hint";
+      none.textContent = ts.decQuery
+        ? "No decision matches."
+        : ts.decFilter === "open"
+          ? "Nothing is waiting on you — every decision is settled."
+          : "Nothing here yet.";
+      list.appendChild(none);
+      return;
+    }
+    for (const d of rows) list.appendChild(d.status === "open" ? openCard(d) : settledCard(d));
+  };
+  search.oninput = () => {
+    ts.decQuery = search.value;
+    paint();
+  };
+
+  function cardHead(d, extra = "") {
+    const age = decisionAge(d, iteration);
+    const h = document.createElement("div");
+    h.className = "wf-decision-head";
+    h.innerHTML =
       `<span class="wf-decision-id">${escapeHtml(d.id)}</span>` +
-      `<span class="wf-decision-text">${escapeHtml(d.text)}</span>` +
-      (d.firstSeen ? `<span class="dim">iteration ${d.firstSeen}</span>` : "");
-    card.appendChild(head);
+      `<span class="wf-decision-text">${wfInlineMd(d.text)}</span>` +
+      extra;
+    const meta = document.createElement("div");
+    meta.className = "wf-decision-meta";
+    if (age.text) {
+      const a = document.createElement("span");
+      a.textContent = age.text;
+      if (age.stale && d.status === "open") a.className = "wf-decision-stale";
+      meta.appendChild(a);
+    }
+    return [h, meta];
+  }
+
+  function openCard(d) {
+    const card = document.createElement("section");
+    card.className = "wf-decision open";
+    const [h, meta] = cardHead(d);
+    card.append(h, meta);
     if (d.options.length) {
       const opts = document.createElement("div");
       opts.className = "wf-decision-options";
       for (const o of d.options) {
         const b = document.createElement("button");
-        b.className = "wf-chip" + (o.recommended ? " on" : "");
-        b.textContent = o.label + (o.recommended ? " · recommended" : "");
-        b.title = `Answer ${d.id} with "${o.label}"`;
+        b.type = "button";
+        b.className = `wf-decision-option${o.recommended ? " recommended" : ""}`;
+        b.innerHTML =
+          `<span class="wf-decision-key">${escapeHtml(o.key)}</span>` +
+          `<span class="wf-decision-option-text">${wfInlineMd(o.text)}</span>` +
+          (o.recommended ? `<span class="wf-chip wf-done">recommended</span>` : "");
+        b.title = `Answer ${d.id} with ${o.key}`;
         b.onclick = () => busyButton(b, () => answer(d.id, o.label));
         opts.appendChild(b);
       }
       card.appendChild(opts);
     }
     if (d.recommendedText) {
-      const rec = document.createElement("p");
-      rec.className = "dim";
-      rec.textContent = `Recommended: ${d.recommendedText}`;
+      const rec = document.createElement("div");
+      rec.className = "wf-decision-rec";
+      rec.innerHTML = `<span class="wf-chip wf-done">recommended</span> ${wfInlineMd(d.recommendedText)}`;
       card.appendChild(rec);
     }
     const free = document.createElement("div");
     free.className = "wf-decision-free";
     const ta = document.createElement("textarea");
     ta.rows = 2;
-    ta.placeholder = d.options.length ? "Or answer in your own words…" : "Your answer…";
+    ta.placeholder = d.options.length ? "Or answer in your own words… (⌘↵)" : "Your answer… (⌘↵)";
+    free.appendChild(ta);
+    card.appendChild(free);
+
+    const actions = document.createElement("div");
+    actions.className = "wf-inline-actions wf-decision-actions";
     const send = document.createElement("button");
+    send.className = "primary";
     send.textContent = "Answer";
     send.disabled = true;
     ta.oninput = () => (send.disabled = !ta.value.trim());
-    send.onclick = () => busyButton(send, () => answer(d.id, ta.value));
+    send.onclick = () => busyButton(send, () => answer(d.id, ta.value.trim()));
     ta.onkeydown = (ev) => {
       if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey) && ta.value.trim()) {
         ev.preventDefault();
         send.click();
       }
     };
-    const drop = document.createElement("button");
-    drop.textContent = "Drop";
-    drop.title = "Nobody needs to answer this any more — it stops being handed to rounds";
-    drop.onclick = () =>
-      busyButton(drop, () => save("drop_workflow_decision", { id: d.id }, `${d.id} dropped`));
-    free.append(ta, send, drop);
-    card.appendChild(free);
-    list.appendChild(card);
-  }
-  if (m.settled.length) {
-    const fold = document.createElement("details");
-    fold.className = "wf-decisions-settled";
-    const sum = document.createElement("summary");
-    sum.textContent = `Answered and dropped (${m.settled.length})`;
-    fold.appendChild(sum);
-    for (const d of m.settled) {
-      const row = document.createElement("div");
-      row.className = "wf-decision settled";
-      row.innerHTML =
-        `<div class="wf-decision-head"><span class="wf-decision-id">${escapeHtml(d.id)}</span>` +
-        `<span class="wf-decision-text">${escapeHtml(d.text)}</span></div>` +
-        `<p>${d.status === "answered" ? `→ ${escapeHtml(d.answer)}` : "dropped"}` +
-        (d.status === "answered" ? ` <span class="dim">· ${escapeHtml(d.state)}</span>` : "") +
-        `</p>`;
-      const change = document.createElement("button");
-      change.textContent = d.status === "answered" ? "Change answer…" : "Answer…";
-      change.onclick = () =>
-        busyButton(change, async () => {
-          const text = await uiPrompt(`${d.id}: ${d.text}`, d.answer);
-          if (text && text.trim()) await answer(d.id, text);
-        });
-      row.appendChild(change);
-      fold.appendChild(row);
+    const recOpt = d.options.find((o) => o.recommended);
+    if (recOpt || d.recommendedText) {
+      const take = document.createElement("button");
+      take.textContent = "✓ Take the recommendation";
+      take.title = recOpt ? `Answer with ${recOpt.label}` : `Answer: ${d.recommendedText}`;
+      take.onclick = () => busyButton(take, () => answer(d.id, recOpt ? recOpt.label : d.recommendedText));
+      actions.appendChild(take);
     }
-    list.appendChild(fold);
+    actions.appendChild(send);
+    const talk = document.createElement("button");
+    talk.textContent = "💬 Discuss…";
+    talk.title = "Open a discussion about this decision with an agent that knows the item";
+    talk.onclick = () => busyButton(talk, () => wfDiscuss(item, { topic: decisionTopic(d) }));
+    const dropBtn = document.createElement("button");
+    dropBtn.className = "wf-decision-drop";
+    dropBtn.textContent = "Drop";
+    dropBtn.title = "Nobody needs to answer this any more — it stops being handed to rounds";
+    dropBtn.onclick = () => busyButton(dropBtn, () => drop(d.id));
+    actions.append(talk, dropBtn);
+    card.appendChild(actions);
+    return card;
   }
+
+  function settledCard(d) {
+    const card = document.createElement("section");
+    card.className = `wf-decision settled ${d.status}`;
+    const pill =
+      d.status === "dropped"
+        ? `<span class="wf-chip">dropped</span>`
+        : `<span class="wf-chip ${d.deliveredIteration || d.state !== "goes to the next round" ? "wf-done" : "wf-review"}">${escapeHtml(d.state)}</span>`;
+    const [h, meta] = cardHead(d, pill);
+    card.append(h, meta);
+    if (d.status === "answered") {
+      const a = document.createElement("div");
+      a.className = "wf-decision-answer";
+      a.innerHTML = `<span class="wf-decision-answer-mark">→</span> ${wfInlineMd(d.answer)}`;
+      card.appendChild(a);
+    }
+    const actions = document.createElement("div");
+    actions.className = "wf-inline-actions wf-decision-actions";
+    const change = document.createElement("button");
+    change.textContent = d.status === "answered" ? "Change answer…" : "Answer it after all…";
+    change.onclick = () =>
+      busyButton(change, async () => {
+        const text = await uiTextPrompt(`${d.id}: ${d.text}`, d.answer, "Answer");
+        if (text && text.trim()) await answer(d.id, text.trim());
+      });
+    actions.appendChild(change);
+    card.appendChild(actions);
+    return card;
+  }
+
+  paint();
 }
 
 async function renderWfPrsView(body, root, item) {
