@@ -14,6 +14,17 @@
   /// the next round. Mirrors `WF_REVIEWABLE` in app.js.
   const DECISION_STAGES = ["plan-review", "diff-review", "pr-draft", "pr-ready"];
 
+  /// The answer that hands a decision back to the agent. The executor skill
+  /// keys on its leading "You decide" (clash-workflow → Decisions), so the
+  /// wording is contractual.
+  const AGENT_DECIDES =
+    "You decide — choose what you judge best (the recommendation unless what you learn argues otherwise), apply it, and say which and why in your hand-off.";
+
+  /// Was this answer a delegation to the agent?
+  function isAgentDecision(answer) {
+    return /^\s*you decide\b/i.test(answer || "");
+  }
+
   function decisionsOf(item) {
     return (item && Array.isArray(item.decisions) && item.decisions) || [];
   }
@@ -61,6 +72,7 @@
       answeredAt: d.answeredAt || 0,
       deliveredIteration: d.deliveredIteration || 0,
       state: d.status === "answered" ? answerState(d, iteration) : d.status === "dropped" ? "dropped" : "",
+      delegated: d.status === "answered" && isAgentDecision(d.answer),
     });
     const settled = all
       .filter((d) => d.status === "answered" || d.status === "dropped")
@@ -90,6 +102,7 @@
   function decisionsSummary(model) {
     const open = model.open.length;
     const answered = model.settled.filter((d) => d.status === "answered");
+    const delegated = answered.filter((d) => d.delegated).length;
     const pending = answered.filter((d) => d.state === "goes to the next round").length;
     const dropped = model.settled.filter((d) => d.status === "dropped").length;
     const total = open + answered.length + dropped;
@@ -101,6 +114,7 @@
       pending,
       dropped,
       total,
+      delegated,
       percent: total ? Math.round((done / total) * 100) : 0,
       headline: !total
         ? "No decisions yet — agents list them in their hand-offs"
@@ -160,6 +174,8 @@
 
   const api = {
     DECISION_STAGES,
+    AGENT_DECIDES,
+    isAgentDecision,
     unsentAnswersNote,
     openDecisions,
     optionAnswer,

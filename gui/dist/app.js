@@ -15191,6 +15191,7 @@ async function renderWfDecisionsView(body, root, item, ts = {}) {
     `<span class="wf-dec-counts">` +
     `<span class="wf-chip wf-changes">${sum.open} open</span>` +
     `<span class="wf-chip wf-done">${sum.answered} answered</span>` +
+    (sum.delegated ? `<span class="wf-chip wf-pr">${sum.delegated} left to the agent</span>` : "") +
     (sum.dropped ? `<span class="wf-chip">${sum.dropped} dropped</span>` : "") +
     `</span></div>` +
     (sum.total
@@ -15200,9 +15201,10 @@ async function renderWfDecisionsView(body, root, item, ts = {}) {
     `An answer reaches the next round twice: in its kickoff, and under <code>### Decisions</code> in your next change request.` +
     (sum.next ? ` <strong>${escapeHtml(sum.next)}.</strong>` : "") +
     `</p>`;
+  const bulk = document.createElement("div");
+  bulk.className = "wf-inline-actions wf-dec-bulk";
   if (sum.acceptable) {
-    const actions = document.createElement("div");
-    actions.className = "wf-inline-actions";
+    const actions = bulk;
     const all = document.createElement("button");
     all.className = "primary";
     all.textContent = `✓ Accept ${sum.acceptable === 1 ? "the recommendation" : `all ${sum.acceptable} recommendations`}`;
@@ -15218,8 +15220,29 @@ async function renderWfDecisionsView(body, root, item, ts = {}) {
         await rebuild();
       });
     actions.appendChild(all);
-    head.appendChild(actions);
   }
+  if (sum.open) {
+    const leave = document.createElement("button");
+    leave.className = "wf-dec-delegate";
+    leave.textContent = `🤖 Let the agent decide ${sum.open === 1 ? "it" : `all ${sum.open}`}`;
+    leave.title =
+      "Hand every open decision back to the agent: the next round chooses (the recommendation unless what it learns argues otherwise) and says which and why in its hand-off";
+    leave.onclick = () =>
+      busyButton(leave, async () => {
+        if (
+          !(await uiConfirm(
+            `Let the agent decide ${m.open.map((d) => d.id).join(", ")}? The next round chooses each one itself and reports its choice in the hand-off.`,
+            "Let it decide"
+          ))
+        )
+          return;
+        for (const d of m.open) if (!(await save("answer_workflow_decision", { id: d.id, answer: AGENT_DECIDES }, ""))) break;
+        flashToast(`${m.open.length} decision${m.open.length === 1 ? "" : "s"} left to the agent`);
+        await rebuild();
+      });
+    bulk.appendChild(leave);
+  }
+  if (bulk.children.length) head.appendChild(bulk);
   body.appendChild(head);
 
   if (!sum.total) {
@@ -15363,6 +15386,12 @@ async function renderWfDecisionsView(body, root, item, ts = {}) {
       actions.appendChild(take);
     }
     actions.appendChild(send);
+    const delegate = document.createElement("button");
+    delegate.className = "wf-dec-delegate";
+    delegate.textContent = "🤖 Let the agent decide";
+    delegate.title = "The next round chooses itself — the recommendation unless what it learns argues otherwise — and says which and why";
+    delegate.onclick = () => busyButton(delegate, () => answer(d.id, AGENT_DECIDES));
+    actions.appendChild(delegate);
     const talk = document.createElement("button");
     talk.textContent = "💬 Discuss…";
     talk.title = "Open a discussion about this decision with an agent that knows the item";
@@ -15383,22 +15412,26 @@ async function renderWfDecisionsView(body, root, item, ts = {}) {
     const pill =
       d.status === "dropped"
         ? `<span class="wf-chip">dropped</span>`
+        : d.delegated
+          ? `<span class="wf-chip wf-pr">agent decides · ${escapeHtml(d.state)}</span>`
         : `<span class="wf-chip ${d.deliveredIteration || d.state !== "goes to the next round" ? "wf-done" : "wf-review"}">${escapeHtml(d.state)}</span>`;
     const [h, meta] = cardHead(d, pill);
     card.append(h, meta);
     if (d.status === "answered") {
       const a = document.createElement("div");
-      a.className = "wf-decision-answer";
-      a.innerHTML = `<span class="wf-decision-answer-mark">→</span> ${wfInlineMd(d.answer)}`;
+      a.className = `wf-decision-answer${d.delegated ? " delegated" : ""}`;
+      a.innerHTML = d.delegated
+        ? `<span class="wf-decision-answer-mark">🤖</span> Left to the agent — it chooses and reports its choice in the hand-off`
+        : `<span class="wf-decision-answer-mark">→</span> ${wfInlineMd(d.answer)}`;
       card.appendChild(a);
     }
     const actions = document.createElement("div");
     actions.className = "wf-inline-actions wf-decision-actions";
     const change = document.createElement("button");
-    change.textContent = d.status === "answered" ? "Change answer…" : "Answer it after all…";
+    change.textContent = d.status === "answered" ? (d.delegated ? "Decide it myself…" : "Change answer…") : "Answer it after all…";
     change.onclick = () =>
       busyButton(change, async () => {
-        const text = await uiTextPrompt(`${d.id}: ${d.text}`, d.answer, "Answer");
+        const text = await uiTextPrompt(`${d.id}: ${d.text}`, d.delegated ? "" : d.answer, "Answer");
         if (text && text.trim()) await answer(d.id, text.trim());
       });
     actions.appendChild(change);

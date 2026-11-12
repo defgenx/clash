@@ -3462,6 +3462,11 @@ body.layout-flyout #sidebar-resizer { display: none; }
 .wf-decision-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .wf-decision-actions .wf-decision-drop { margin-left: auto; color: var(--fg-dim); }
 .wf-decision-answer { margin: 8px 0 2px; font-size: 12.5px; }
+.wf-decision-answer.delegated { color: var(--purple); }
+.wf-decision.settled:has(.wf-decision-answer.delegated) { border-left-color: var(--purple); }
+.wf-inline-actions button.wf-dec-delegate { border-color: color-mix(in srgb, var(--purple) 45%, var(--border)); }
+.wf-inline-actions button.wf-dec-delegate:hover { background: color-mix(in srgb, var(--purple) 16%, var(--bg-hover)); }
+.wf-dec-bulk { display: flex; flex-wrap: wrap; gap: 6px; }
 .wf-decision-answer-mark { color: var(--green); font-weight: 700; margin-right: 4px; }
 .wf-rail-agent-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-rail-agent-status { font-size: 11px; white-space: nowrap; }

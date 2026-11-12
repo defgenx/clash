@@ -94,6 +94,12 @@ answers them. The pure half is `application::decisions`.
   A bullet without an id is matched to an existing decision by its text,
   else given the next free id — which the next kickoff tells the agent, so
   it sticks.
+- **Delegation.** *Let the agent decide* (per decision, or for every open
+  one) answers with the fixed text `AGENT_DECIDES` (`gui/dist/wf-decisions.js`)
+  starting "You decide —". It travels like any answer; `clash-workflow` reads
+  an answer starting "You decide" as the call handed back: it chooses (the
+  recommendation unless what it learns argues otherwise), applies it and
+  reports the choice and why in *Done*. The tab marks it *agent decides*.
 - **Sync.** Every item listing merges the hand-off into the file, but only
   when the hand-off changed (its hash is stored), and writes only on change.
   A new id is added open; an open one takes the newer wording and options;

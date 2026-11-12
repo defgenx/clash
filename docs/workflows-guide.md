@@ -354,8 +354,12 @@ questions, options and answers. Each open question is a card: its id, how
 long it has waited (a question carried over two rounds or more is marked),
 the options as cards (the recommended one ringed in green), a free-text
 answer (⌘↵), **✓ Take the recommendation**, **💬 Discuss…** (a session that
-knows the item, opened on that question) and **Drop** for a question nobody
-needs answered any more. Settled cards show the answer and where it stands —
+knows the item, opened on that question), **🤖 Let the agent decide** (the
+next round chooses itself — the recommendation unless what it learns argues
+otherwise — and says which and why in its hand-off; **🤖 Let the agent decide
+all** in the header does it for every open question) and **Drop** for a
+question nobody needs answered any more. A delegated answer is marked
+*agent decides*; **Decide it myself…** takes it back. Settled cards show the answer and where it stands —
 *goes to the next round* or *handed to iteration N* — and can be answered
 again. An answer goes to the next round — whatever starts it:
 

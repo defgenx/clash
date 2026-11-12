@@ -207,3 +207,49 @@ test("every button is styled, even one nobody gave a class", () => {
   assert.match(css, /:where\(button:not\(\[class\]\), button\[class="primary"\]\) \{[^}]*background: var\(--bg-hover\)/);
   assert.match(css, /:where\(button\[class="primary"\]\) \{[^}]*var\(--accent\)/);
 });
+
+test("a decision can be handed back to the agent, one at a time or all at once", async () => {
+  assert.ok(D.isAgentDecision(D.AGENT_DECIDES));
+  assert.match(D.AGENT_DECIDES, /^You decide —/, "the executor skill keys on this prefix");
+  assert.ok(!D.isAgentDecision("a) keep it"));
+  const skill = fs.readFileSync(path.join(__dirname, "../../skills/clash-workflow/SKILL.md"), "utf8");
+  assert.match(skill, /Answered "You decide …"/);
+  const item = {
+    meta: { iteration: 4 },
+    decisions: [...decisions, { id: "D9", text: "Mine?", status: "answered", answer: D.AGENT_DECIDES, answeredAt: 2 }],
+  };
+  const m = D.decisionsModel(item);
+  assert.ok(m.settled.find((d) => d.id === "D9").delegated);
+  assert.equal(D.decisionsSummary(m).delegated, 1);
+  // The view offers it on every open card and once for all of them.
+  const APP = fs.readFileSync(path.join(__dirname, "..", "dist", "app.js"), "utf8");
+  const calls = [];
+  const sandbox = {
+    ...D,
+    document: { createElement: (t2) => stubEl(t2) },
+    escapeHtml: (s) => String(s),
+    invoke: async (cmd, args) => calls.push([cmd, args]),
+    busyButton: (_b, fn) => fn(),
+    flashToast: () => {},
+    uiAlert: () => {},
+    uiConfirm: async () => true,
+    uiTextPrompt: async () => null,
+    refreshWorkflows: async () => {},
+    buildWorkflowView: () => {},
+    wfDiscuss: async () => {},
+    wfSelfWriteAt: 0,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(extractFunction(APP, "wfInlineMd"), sandbox);
+  vm.runInContext(extractFunction(APP, "renderWfDecisionsView"), sandbox);
+  const body = stubEl();
+  await sandbox.renderWfDecisionsView(body, stubEl(), { project: "p", slug: "s", ...item }, {});
+  const buttons = descendants(body).filter((e) => e.tagName === "BUTTON");
+  const one = buttons.filter((b) => b.textContent === "🤖 Let the agent decide");
+  assert.equal(one.length, 2, "one per open decision");
+  await one[0].onclick();
+  assert.equal(calls.at(-1)[1].answer, D.AGENT_DECIDES);
+  calls.length = 0;
+  await buttons.find((b) => b.textContent === "🤖 Let the agent decide all 2").onclick();
+  assert.deepEqual(calls.map(([, a]) => a.id), ["D3", "D4"]);
+});

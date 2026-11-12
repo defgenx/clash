@@ -460,6 +460,10 @@ write it), because `handoff.md` is rewritten every phase. The kickoff's
 - **Answered** — the human's decision. Apply it this round, and say in
   *Done* what you did about it. Do not list it again — a listed answered
   decision is handed to the next round once more.
+- **Answered "You decide …"** — the human handed the call back to you.
+  Choose yourself: the recommendation unless what you learn this round
+  argues otherwise. Apply it, and say in *Done* which option you took and
+  why. It is settled — do not list it again.
 - **Open** — still unanswered. List it again under the **same id** (reword it
   if what you learned changes the question) unless this round settled it from
   the code; then say how in *Done*.
