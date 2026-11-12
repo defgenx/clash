@@ -293,6 +293,32 @@ test("a sign-off says what it does before it does it", () => {
   assert.equal(signOffModel(item(["done", "active", "blocked", "blocked"]), []), null);
 });
 
+test("a sign-off checks what it would seal, per repository", () => {
+  const it = { ...item(["done", "review", "review", "blocked"]), meta: { status: "diff-review" } };
+  const seals = [
+    {
+      wave: "w2",
+      repos: [
+        { repo: "api", branch: "item-w2", head: "aaa1111222", unpushed: 2, dirty: 0 },
+        { repo: "web", branch: "item-w2", head: "bbb3333444", unpushed: 0, dirty: 3 },
+      ],
+    },
+    // Started on the item branch and never moved, no PR: nothing to seal.
+    { wave: "w3", repos: [{ repo: "api", branch: "item", head: "ccc", unpushed: 0, dirty: 0, sinceStart: 0 }] },
+  ];
+  const m = signOffModel(it, [], seals);
+  assert.match(m.effects[0], /Seals their work \(api @ aaa1111, web @ bbb3333, api @ ccc\)/);
+  assert.ok(m.warnings.includes("Wave 2: 2 commits on api (item-w2) not pushed."), m.warnings.join(" | "));
+  assert.ok(m.warnings.includes("Wave 2: uncommitted changes in web (3 files)."));
+  assert.ok(m.warnings.some((w) => /^Wave 3: nothing to seal/.test(w)));
+  assert.equal(m.confirmEmpty, "Sign off Wave 3 anyway");
+  // A wave with a PR, or with commits on its branch, needs no confirmation.
+  it.waves.waves[2].prs = ["u9"];
+  assert.equal(signOffModel(it, [{ url: "u9", state: "OPEN" }], seals).confirmEmpty, null);
+  // No preview (the command failed): nothing extra is claimed or required.
+  assert.equal(signOffModel(it, [], null).confirmEmpty, null);
+});
+
 const { wavesIssueGuidance } = require("../dist/wf-waves.js");
 
 test("an unreadable waves.json holds the approvals and says how to repair it, by stage", () => {

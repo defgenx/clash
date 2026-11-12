@@ -106,6 +106,54 @@ test("diff review walks open comments, PR threads, review, drift, then approval"
   assert.equal(wfNextStep(item("diff-review", reviewed, marks), facts()).id, "approve-pr-draft");
 });
 
+test("a red build and a stale base come after PR threads, as change requests with a note", () => {
+  const reviewed = { reviewRounds: { diff: 1, drift: 1 } };
+  const marks = { reviewMarks: { diff: { iteration: 1, round: 1 }, drift: { iteration: 1, round: 1 } } };
+  const red = {
+    url: "https://github.com/acme/api/pull/7",
+    number: 7,
+    primary: true,
+    state: "OPEN",
+    headRef: "feat/x",
+    baseRef: "main",
+    health: { checks: "fail", failing: ["lint", "unit"], mergeable: "conflicts" },
+  };
+  for (const st of ["diff-review", "pr-draft", "pr-ready"]) {
+    // Threads first: answering them is cheaper than a fix round.
+    const threads = wfNextStep(item(st, reviewed, marks), facts({ prs: [{ ...red, unanswered: 2 }] }));
+    assert.equal(threads.id, "answer-comments", st);
+
+    const ci = wfNextStep(item(st, reviewed, marks), facts({ prs: [red] }));
+    assert.equal(ci.kind, "action", st);
+    assert.equal(ci.id, "request-changes");
+    assert.equal(ci.reason, "CI is failing on api#7 — lint, unit");
+    assert.equal(ci.params.prefill, "CI is failing on api#7: lint, unit. Fix the build.");
+    // Never started without a click: the note is a change request.
+    assert.equal(ci.auto, false);
+    assert.ok(!AUTO_ACTIONS.has("request-changes"));
+
+    const green = { ...red, health: { checks: "pass", mergeable: "conflicts" } };
+    const rebase = wfNextStep(item(st, reviewed, marks), facts({ prs: [green] }));
+    assert.equal(rebase.id, "request-changes");
+    assert.equal(rebase.reason, "api#7 conflicts with its base");
+    assert.equal(rebase.params.prefill, "Rebase feat/x onto main and resolve the conflicts.");
+    assert.ok(rebase.settled.includes("CI is not failing"));
+  }
+  const behind = { ...red, health: { checks: "pass", mergeable: "yes", behind: true } };
+  const step = wfNextStep(item("pr-ready", reviewed, marks), facts({ prs: [behind] }));
+  assert.equal(step.reason, "api#7 is behind its base");
+  assert.equal(step.params.prefill, "Rebase feat/x onto main — api#7 is behind it.");
+});
+
+test("merged PRs and PRs with no recorded health raise no CI check, and say nothing", () => {
+  const reviewed = { reviewRounds: { diff: 1, drift: 1 } };
+  const marks = { reviewMarks: { diff: { iteration: 1, round: 1 }, drift: { iteration: 1, round: 1 } } };
+  const merged = { url: "u", state: "MERGED", health: { checks: "fail", failing: ["x"] } };
+  const step = wfNextStep(item("diff-review", reviewed, marks), facts({ prs: [merged, { url: "v" }] }));
+  assert.equal(step.id, "approve-pr-draft");
+  assert.ok(!step.settled.some((t) => /CI|base/.test(t)));
+});
+
 test("drift is suggested once per item unless an agent asks for it again", () => {
   const it = item("diff-review", {
     reviewRounds: { diff: 2, drift: 1 },
@@ -351,4 +399,51 @@ test("a working agent's suggestion follows what it is doing right now", () => {
   assert.match(wfNextStep(it, facts({ agentStatus: "Prompting" })).reason, /waiting for you — a question or a permission/);
   assert.match(wfNextStep(it, facts({ agentStatus: "Waiting" })).reason, /finished its turn and is at its prompt/);
   assert.match(wfNextStep(item("reviewing"), facts({ agentStatus: "Prompting" })).reason, /The reviewer is waiting for you/);
+});
+
+test("a waved item compares each wave with the plan, then the whole project", () => {
+  const board = (states) => ({
+    waves: {
+      waves: states.map((state, i) => ({
+        id: `w${i + 1}`, title: "", summary: "", dependsOn: [], areas: [`w${i + 1}`],
+        state, blockedBy: [], level: i, compatibleWith: [],
+      })),
+    },
+  });
+  const marks = { diff: { iteration: 1, round: 1 }, drift: { iteration: 1, round: 1 } };
+  const rounds = { reviewRounds: { diff: 1, drift: 1 } };
+  // Wave 2 is in review; the last comparison covered wave 1 only — due, even
+  // though a drift round already ran at this iteration.
+  const w2 = item(
+    "diff-review",
+    { ...rounds, ...board(["done", "review", "blocked"]), docScopes: { drift: { waves: ["w1"], startedAt: 1 } } },
+    { reviewMarks: { diff: marks.diff }, waves: { done: ["w1"], scope: ["w2"] } }
+  );
+  const step = wfNextStep(w2, facts());
+  assert.equal(step.id, "drift", JSON.stringify(step));
+  assert.match(step.reason, /Wave 2 has not been compared with its part of the plan/);
+  // Compared for wave 2: sign-off is next.
+  const compared = item(
+    "diff-review",
+    { ...rounds, ...board(["done", "review", "blocked"]), docScopes: { drift: { waves: ["w2"], startedAt: 1 } } },
+    { reviewMarks: marks, waves: { done: ["w1"], scope: ["w2"] } }
+  );
+  assert.equal(wfNextStep(compared, facts()).id, "approve-waves");
+  // Every wave signed off, no whole-project comparison yet: that comes first.
+  const all = item(
+    "diff-review",
+    { ...rounds, ...board(["done", "done", "done"]), docScopes: { drift: { waves: ["w3"], startedAt: 1 } } },
+    { reviewMarks: marks, waves: { done: ["w1", "w2", "w3"], scope: [] } }
+  );
+  const fin = wfNextStep(all, facts());
+  assert.equal(fin.id, "drift", JSON.stringify(fin));
+  assert.match(fin.reason, /Every wave is signed off — compare the whole project/);
+  // Done once: the whole-project comparison is not proposed again.
+  const after = item(
+    "diff-review",
+    { ...rounds, ...board(["done", "done", "done"]), docScopes: { drift: { whole: true, startedAt: 1 } } },
+    { reviewMarks: marks, waves: { done: ["w1", "w2", "w3"], scope: [] } }
+  );
+  const later = wfNextStep(after, facts());
+  assert.notEqual(later.id, "drift", JSON.stringify(later));
 });

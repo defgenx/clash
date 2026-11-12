@@ -47,6 +47,11 @@ The kickoff prompt gives you:
   no drift and this round should never have been launched; say so and return.
 - **Focus** — optional: what the human wants settled, in their words. Often a
   node number from the plan explanation ("did 4 actually happen?").
+- **Decisions** — optional: ``Decisions: D3 (answered: "a) keep it"), D5
+  (open); a new one takes D6.`` — the questions the executor asked the human
+  (`decisions.json`). A divergence that follows an answered decision is
+  `INTENDED`, whatever `plan.md` still says; one that hinges on an open
+  decision is not an `ISSUE` yet — name the decision id in its entry.
 - **PR** — optional; one URL or several. Several is the cross-repo case and it
   is **one** change: a plan split across an API repo and the web repo that
   consumes it drifts *between* the repos as often as inside one, so read every
@@ -68,6 +73,14 @@ The kickoff prompt gives you:
   the waves still to come. Signed-off waves were compared already — context
   only. An in-scope wave that reaches into another wave's areas is a
   divergence worth grading.
+  ``Waves: all N signed off (…) — this round covers the whole project`` is
+  the **final** comparison, run once every wave is accepted: compare the
+  whole plan against everything delivered across every wave (all their PRs).
+  Per-wave rounds already judged each wave alone, so spend this one on what
+  they could not see — a promise that fell *between* waves, a later wave that
+  undid or contradicted an earlier one, cross-wave contracts (a migration in
+  w1 that w3 relies on), and plan-level outcomes no single wave owns. Grade
+  as usual; a remedy that needs a new wave is a plan amendment.
 - **Interactive** — optional; see the opening question below.
 - **Delegation** — `team` (also what an absent field means) or `solo`,
   optionally naming the subagent model: `team (subagents on <model>)`. See

@@ -23,11 +23,13 @@
   /// - `prs`: `{ text, fresh, chips, more, many, errors }` or null — open PRs
   ///   first, then settled, each a PR record carrying its last error;
   /// - `agents`: the item's sessions, running first, newest-named last —
-  ///   `{ id, name, status, running }`.
+  ///   `{ id, name, status, running }`;
+  /// - `decisions`: `{ open, text, ids }` while the agent's questions wait,
+  ///   else null.
   /// `sessions` is `state.sessions`; `subView` hides the card the open tab
   /// already shows in full.
   function railModel(item, sessions, { subView = "", now = Date.now() } = {}) {
-    if (!item || !item.meta) return { waves: null, prs: null, agents: [] };
+    if (!item || !item.meta) return { waves: null, prs: null, agents: [], decisions: null };
     const prs = dep("itemPrs")(item.meta, item.prStack).map((p) => ({
       ...p,
       error: (item.prErrors || {})[p.url] || "",
@@ -67,7 +69,17 @@
         running: !!s.is_running,
       }))
       .sort((a, b) => Number(b.running) - Number(a.running));
-    return { waves, prs: prCard, agents };
+    // The executor's open questions, unless their tab is the one open.
+    const open = (item.decisions || []).filter((d) => d.status === "open");
+    const decisions =
+      open.length && subView !== "decisions"
+        ? {
+            open: open.length,
+            text: `${open.length} question${open.length === 1 ? "" : "s"} only you can answer`,
+            ids: open.map((d) => d.id),
+          }
+        : null;
+    return { waves, prs: prCard, agents, decisions };
   }
 
   const api = { RAIL_PR_CHIPS, railModel };

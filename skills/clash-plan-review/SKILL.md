@@ -33,6 +33,11 @@ The kickoff prompt gives you:
 - **Round** — the 1-based round number; use it as your section heading
 - **Return to** — the status to restore when you finish. **This is a contract.**
 - **Mode** — `full` | `from-plan` (a `review-only` item has no plan; refuse)
+- **Decisions** — optional: ``Decisions: D3 (answered: "a) keep it"), D5
+  (open); a new one takes D6.`` — the questions the executor asked the human
+  (`decisions.json`). An answered one is decided: judge the plan against the
+  answer, never re-raise it. An open one is still the human's: do not report
+  it as a finding — note in the round when the plan depends on it.
 - **Interactive** — optional; see the opening question below.
 - **Delegation** — `team` (also what an absent field means) or `solo`,
   optionally naming the subagent model: `team (subagents on <model>)`. See

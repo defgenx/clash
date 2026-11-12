@@ -335,6 +335,7 @@ const DISCUSSION_FILES: &[(&str, &str)] = &[
     ("agent-review.md", "every review round's findings and verdict, newest last — large; grep for the round you need"),
     ("annotations.json", "line comments on the diff (human's and reviewers')"),
     ("handoff.md", "the last agent's hand-off: what landed, what is left"),
+    ("decisions.json", "the decisions agents asked the human, with any answers (clash's)"),
     ("explain-plan.md", "an explanation of what the plan will do"),
     ("explain-diff.md", "an explanation of what the change did"),
     ("structure.md", "an older explanation of the change"),

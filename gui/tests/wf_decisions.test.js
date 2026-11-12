@@ -1,0 +1,132 @@
+// node --test gui/tests/ — the decision queue, the pure half, and where it
+// surfaces: the Decisions tab, the bar's recommendable button, the rail and
+// the attention inbox. Contract: docs/workflows.md → Decisions.
+const { test } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
+const D = require("../dist/wf-decisions.js");
+const { wfNextStep } = require("../dist/wf-next.js");
+const { workflowReasons } = require("../dist/attention.js");
+const { railModel } = require("../dist/wf-rail.js");
+const O = require("../dist/wf-outline.js");
+
+const decisions = [
+  {
+    id: "D3",
+    text: "Keep the legacy flag?",
+    options: [
+      { key: "a", text: "keep it" },
+      { key: "b", text: "drop it" },
+    ],
+    recommended: "a",
+    firstSeenIteration: 2,
+    status: "open",
+  },
+  { id: "D4", text: "Retry queue?", recommended: "a dedicated one", status: "open" },
+  { id: "D1", text: "Old one", status: "answered", answer: "yes", answeredAt: 5, deliveredIteration: 0 },
+  { id: "D2", text: "Older", status: "answered", answer: "no", answeredAt: 9, deliveredIteration: 2 },
+  { id: "D0", text: "Gone", status: "dropped", answeredAt: 1 },
+];
+const item = (status, extra = {}) => ({
+  project: "p",
+  slug: "s",
+  agentAlive: true,
+  openAnnotations: 0,
+  reviewRounds: {},
+  decisions,
+  ...extra,
+  meta: { status, iteration: 2 },
+});
+
+test("open decisions with their options, the recommended one flagged", () => {
+  const m = D.decisionsModel(item("plan-review"));
+  assert.deepEqual(m.open.map((d) => d.id), ["D3", "D4"]);
+  assert.deepEqual(
+    m.open[0].options.map((o) => [o.label, o.recommended]),
+    [
+      ["a) keep it", true],
+      ["b) drop it", false],
+    ]
+  );
+  assert.equal(m.open[0].recommendedText, "");
+  // A recommendation naming no option is shown as the agent's words.
+  assert.equal(m.open[1].recommendedText, "a dedicated one");
+  // Settled: newest answer first, each saying where its answer went.
+  assert.deepEqual(m.settled.map((d) => d.id), ["D2", "D1", "D0"]);
+  assert.equal(m.settled[0].state, "handed to this round (iteration 2)");
+  assert.equal(m.settled[1].state, "goes to the next round");
+  assert.equal(m.settled[2].state, "dropped");
+  assert.equal(D.optionAnswer({ key: "b", text: "x" }), "b) x");
+  // The composer names the answers the change request carries.
+  assert.equal(D.unsentAnswersNote(item("plan-review")), " Your answer to D1 is appended under ### Decisions.");
+  assert.equal(D.unsentAnswersNote(item("plan-review", { decisions: [] })), "");
+});
+
+test("the tab label counts what is open, and the outline files it under Feedback", () => {
+  assert.equal(D.decisionsTabLabel(item("plan-review")), "❓ Decisions (2)");
+  assert.equal(D.decisionsTabLabel(item("plan-review", { decisions: [] })), "❓ Decisions");
+  const o = O.wfOutline([["review", "Change requests"], ["decisions", "❓ Decisions (2)"]], "");
+  const entry = o.groups.find((g) => g.id === "feedback").items.find((i) => i.id === "decisions");
+  assert.equal(entry.text, "Decisions");
+  assert.equal(entry.badge, 2);
+});
+
+test("the inbox says how many wait, on the item's one row, only when parked", () => {
+  const parked = workflowReasons(item("diff-review")).map((r) => r.text);
+  assert.deepEqual(parked, ["parked on your decision", "2 decisions waiting"]);
+  assert.deepEqual(workflowReasons(item("implementing")), []);
+  assert.equal(D.decisionsReason(item("pr-ready")), "2 decisions waiting");
+  assert.equal(D.decisionsReason(item("plan-review", { decisions: [decisions[2]] })), null);
+});
+
+test("answering comes before approving, and before applying a review", () => {
+  const available = new Set(["decisions", "approve-plan", "apply-review", "approve-done", "approve-pr-draft"]);
+  const pending = { round: 1, apply: true };
+  for (const st of ["plan-review", "diff-review"]) {
+    const step = wfNextStep(item(st), { available, pending, prs: [], hasPlan: true });
+    assert.equal(step.id, "decisions", st);
+    assert.equal(step.auto, false);
+  }
+  // Nothing open: the stage's own path.
+  const none = wfNextStep(item("plan-review", { decisions: [] }), { available, pending, prs: [] });
+  assert.equal(none.id, "apply-review");
+});
+
+test("the rail lists the open ids unless the Decisions tab is open", () => {
+  assert.deepEqual(railModel(item("plan-review"), []).decisions, {
+    open: 2,
+    text: "2 questions only you can answer",
+    ids: ["D3", "D4"],
+  });
+  assert.equal(railModel(item("plan-review"), [], { subView: "decisions" }).decisions, null);
+  assert.equal(railModel(item("plan-review", { decisions: [] }), []).decisions, null);
+});
+
+test("the browser build publishes what app.js reads, and app.js wires it", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "dist", "wf-decisions.js"), "utf8");
+  const win = {};
+  vm.runInNewContext(src, { window: win });
+  const app = fs.readFileSync(path.join(__dirname, "..", "dist", "app.js"), "utf8");
+  for (const name of [
+    "DECISION_STAGES",
+    "openDecisions",
+    "decisionsModel",
+    "decisionsTabLabel",
+    "unsentAnswersNote",
+  ]) {
+    assert.ok(name in win, `${name} is not published`);
+    assert.ok(app.includes(name), `${name} is no longer read by app.js`);
+  }
+  const html = fs.readFileSync(path.join(__dirname, "..", "dist", "index.html"), "utf8");
+  assert.ok(html.indexOf("wf-decisions.js") < html.indexOf("app.js"));
+  // The bar button carries the act id the recommender needs.
+  assert.match(app, /"step",\s*"decisions"\s*\)/);
+  // Both commands exist and are registered.
+  const rs = fs.readFileSync(path.join(__dirname, "..", "src-tauri", "src", "main.rs"), "utf8");
+  for (const cmd of ["answer_workflow_decision", "drop_workflow_decision"]) {
+    assert.ok(app.includes(`"${cmd}"`), `${cmd} is never invoked`);
+    assert.ok(rs.includes(`workflows::${cmd},`), `${cmd} is not registered`);
+  }
+});

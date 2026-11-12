@@ -493,3 +493,20 @@ test("a self-review round is pending at the code stages, never at plan-review", 
   applied.meta.appliedReviewKey = "self-review:1";
   assert.equal(pendingReviewRound(applied), null);
 });
+
+test("a long round is applied by reference, with an index of its findings", () => {
+  const finding = (i) =>
+    `${i}. \`internal/api/file${i}.go:${i}0\` (saturn#474, r7-${i}) — ${"a long explanation of the defect ".repeat(4)}\n` +
+    `   **Confidence:** high — ${"read the code and the spec ".repeat(6)}`;
+  const text = `### Risks\n${[1, 2, 3, 4, 5, 6, 7, 8].map(finding).join("\n")}\n\n### Nits\n${finding(9)}`;
+  assert.ok(text.length > 3000);
+  const note = applyReviewNote({ round: 7 }, { round: 7, text }, "diff");
+  assert.match(note, /under `## Review 7 — diff` — read them there/);
+  assert.match(note, /### Risks\n1\. `internal\/api\/file1\.go:10`/);
+  assert.match(note, /### Nits\n9\./);
+  assert.doesNotMatch(note, /Confidence:\*\* high — read the code/, "evidence stays in agent-review.md");
+  assert.ok(note.length < text.length * 0.7, `${note.length} vs ${text.length}`);
+  // A short round is still pasted whole: cheap, and the preview shows it all.
+  const short = applyReviewNote({ round: 2 }, { round: 2, text: "1. `a.rs:1` — x\n   **Confidence:** high" }, "diff");
+  assert.match(short, /\*\*Confidence:\*\* high/);
+});

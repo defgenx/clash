@@ -1104,6 +1104,12 @@ pub struct WorkflowPr {
     /// Branch the PR targets, as of the last refresh.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub base_ref: String,
+    /// CI / mergeability / review state as of the last refresh.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::domain::forge::ChangeHealth::is_empty"
+    )]
+    pub health: crate::domain::forge::ChangeHealth,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
@@ -1187,6 +1193,11 @@ pub struct WaveProgress {
     /// When each wave was signed off, in epoch millis.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub signed_off: std::collections::BTreeMap<String, i64>,
+    /// Per wave, the commit each repository's wave branch stood at when the
+    /// wave was signed off (`repo name → sha`): what a wave spread over
+    /// several repositories actually sealed.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub repo_ends: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
 }
 
 impl WaveProgress {
@@ -1196,6 +1207,7 @@ impl WaveProgress {
             && self.starts.is_empty()
             && self.ends.is_empty()
             && self.signed_off.is_empty()
+            && self.repo_ends.is_empty()
     }
 }
 
@@ -1629,6 +1641,73 @@ pub struct HandoffSummary {
     pub next_reason: String,
 }
 
+/// Where a decision the executor asked for stands. `Unknown` keeps a newer
+/// clash's value loadable; it counts as neither open nor answered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionStatus {
+    #[default]
+    Open,
+    Answered,
+    Dropped,
+    #[serde(other)]
+    Unknown,
+}
+
+/// One offered option of a decision: `a) keep the flag` → key `a`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionOption {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub text: String,
+}
+
+/// A decision from the executor's hand-off, as clash keeps it across rounds.
+/// Contract: `docs/workflows.md` → *Decisions*.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionRecord {
+    /// `D<n>`, stable across rounds.
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub options: Vec<DecisionOption>,
+    /// An option key, or the agent's words when it named none.
+    #[serde(default)]
+    pub recommended: String,
+    #[serde(default)]
+    pub first_seen_iteration: u32,
+    #[serde(default)]
+    pub status: DecisionStatus,
+    #[serde(default)]
+    pub answer: String,
+    #[serde(default)]
+    pub answered_at: i64,
+    /// The iteration whose round was handed the answer (kickoff or change
+    /// request); 0 = not handed to any round yet.
+    #[serde(default)]
+    pub delivered_iteration: u32,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// Shape of `decisions.json` (clash-only, in the item dir).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionsFile {
+    #[serde(default)]
+    pub decisions: Vec<DecisionRecord>,
+    /// Hash of the `handoff.md` last merged: only a new hand-off is merged.
+    #[serde(default)]
+    pub handoff_hash: String,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
 /// Which iteration a review round on one target was launched against, and the
 /// number it carries. Clash-only, stamped by every review launch into
 /// `meta.reviewMarks[<target>]`; the round counts as done once that target's
@@ -1640,6 +1719,62 @@ pub struct ReviewMark {
     pub iteration: u32,
     #[serde(default)]
     pub round: u32,
+}
+
+/// Which waves the item's current `explain-diff` or `drift` document was
+/// written for, recorded by clash beside it (`<stem>.scope.json`) when the
+/// round is launched. `whole` marks the final round over every wave.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocScope {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waves: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub whole: bool,
+    /// When the round was launched (epoch ms): a document older than this
+    /// was written by an earlier round.
+    #[serde(default)]
+    pub started_at: i64,
+}
+
+/// What signing a wave off would seal in one repository: its wave branch
+/// (or the item branch, for a wave started there) and how it stands.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoSeal {
+    pub repo: String,
+    pub branch: String,
+    /// The branch's head commit.
+    pub head: String,
+    /// Commits on the branch that no remote has.
+    #[serde(default)]
+    pub unpushed: u64,
+    /// Uncommitted paths in the worktree that has the branch checked out.
+    #[serde(default)]
+    pub dirty: u64,
+    /// Commits since the wave started, when that is knowable (a wave started
+    /// on the item branch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_start: Option<u64>,
+}
+
+/// What signing one wave off would seal, across the item's repositories.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveSeal {
+    pub wave: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<RepoSeal>,
+}
+
+/// The documents frozen for one signed-off wave (`waves/<id>/`).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveDocs {
+    #[serde(default)]
+    pub diff: ExplainForms,
+    #[serde(default)]
+    pub drift: ExplainForms,
 }
 
 /// Which forms one explanation exists in. Both may be present: the markdown
@@ -1862,6 +1997,10 @@ pub struct WorkflowItem {
     /// The executor's latest `handoff.md`, when it wrote one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff: Option<HandoffSummary>,
+    /// Every decision in `decisions.json`, synced from the latest hand-off
+    /// at list time (`application::decisions`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<DecisionRecord>,
     /// The check run in flight, from `run.json`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<RunBatch>,
@@ -1890,6 +2029,12 @@ pub struct WorkflowItem {
     /// layer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repos: Vec<ItemRepo>,
+    /// What the current `explain-diff` / `drift` documents cover, by stem.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub doc_scopes: std::collections::BTreeMap<String, DocScope>,
+    /// The documents frozen at each wave's sign-off, by wave id.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub wave_docs: std::collections::BTreeMap<String, WaveDocs>,
     /// When this process last asked the forge about the item's PRs (epoch
     /// ms; 0 = not yet). A PR record's own `lastCheckedAt` moves only when
     /// its state changed, so it cannot answer "how fresh is this".

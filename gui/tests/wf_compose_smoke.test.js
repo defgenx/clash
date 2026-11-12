@@ -41,6 +41,7 @@ test("the change-request composer opens without throwing", async () => {
     noteCaption: () => "Note",
     submitLabel: () => "Record round",
     annotationsMarkdown: () => "",
+    unsentAnswersNote: require("../dist/wf-decisions.js").unsentAnswersNote,
     ...pickPure("annotationConfidence", "confidenceLabel", "confidenceTooltip"),
     canSubmitChangeRequest: () => ({ ok: true }),
     agentReviewRounds: () => [],

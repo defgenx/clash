@@ -8258,13 +8258,32 @@ function wfPrdSection(r) {
   return sec;
 }
 
-/// One PR row: state, repo#number (and its place in a stack), branch,
-/// threads waiting on you, then open and the PR's own menu.
+/// A PR's health as small badges (`prHealthBadges`): CI ✓/✗/●, conflicts,
+/// behind base, review decision — each with its own tooltip. Null when the
+/// PR has none to show.
+function wfPrHealthEl(pr) {
+  const badges = prHealthBadges(pr);
+  if (!badges.length) return null;
+  const wrap = document.createElement("span");
+  wrap.className = "wf-pr-health";
+  for (const b of badges) {
+    const el = document.createElement("span");
+    el.className = `wf-ph wf-ph-${b.kind}`;
+    el.textContent = b.text;
+    el.title = b.title;
+    wrap.appendChild(el);
+  }
+  return wrap;
+}
+
+/// One PR row: state, repo#number (and its place in a stack), health,
+/// branch, threads waiting on you, then open and the PR's own menu.
 function wfPrdRow(item, pr) {
   const st = prStateLabel(pr) || "open";
   const row = document.createElement("div");
   row.className = `wf-prd-row st-${st}`;
-  row.title = `${pr.url}${pr.primary ? " · primary" : ""}${wfPrStackHint(pr)}`;
+  const health = prHealthTitle(pr);
+  row.title = `${pr.url}${pr.primary ? " · primary" : ""}${wfPrStackHint(pr)}${health ? ` · ${health}` : ""}`;
   row.innerHTML =
     `<span class="wf-prd-state">${escapeHtml(st)}</span>` +
     `<span class="wf-prd-name">${svgIcon("pr", 12)}<b>${escapeHtml(prChipLabel(pr))}</b>${
@@ -8272,6 +8291,8 @@ function wfPrdRow(item, pr) {
     }${pr.stack ? `<span class="wf-prd-tag">${escapeHtml(prStackLabel(pr))}</span>` : ""}</span>` +
     `<span class="wf-prd-branch">${escapeHtml(pr.headRef || "")}</span>` +
     `<span class="wf-prd-threads">${pr.unanswered > 0 ? `💬 ${pr.unanswered} waiting on you` : ""}</span>`;
+  const healthEl = wfPrHealthEl(pr);
+  if (healthEl) row.querySelector(".wf-prd-name").appendChild(healthEl);
   const menu = document.createElement("button");
   menu.type = "button";
   menu.className = "icon-btn mini wf-prd-menu";
@@ -8597,8 +8618,12 @@ async function buildWorkflowView(el, project, slug) {
     prBtn.innerHTML = `${svgIcon("pr", 12)}<span>${escapeHtml(label)}${
       stateBit && stateBit !== "open" ? ` ${escapeHtml(stateBit)}` : ""
     }${pr.stack ? ` <span class="dim">${prStackLabel(pr)}</span>` : ""}</span>`;
+    const healthEl = wfPrHealthEl(pr);
+    if (healthEl) prBtn.appendChild(healthEl);
+    const health = prHealthTitle(pr);
     prBtn.title =
       `${pr.url} — ${pr.primary ? "primary PR" : "linked PR"}${wfPrStackHint(pr)}` +
+      (health ? ` · ${health}` : "") +
       "; right-click for this PR's own actions";
     prBtn.onclick = () => openLink(pr.url);
     prBtn.oncontextmenu = (ev) => {
@@ -8723,6 +8748,8 @@ async function buildWorkflowView(el, project, slug) {
     // The executor's note at the end of its last phase: what it did, what it
     // is unsure about, what it ran, and what it suggests next.
     ...(item.handoff ? [["handoff", "↩ Hand-off"]] : []),
+    // The hand-offs' questions, kept across rounds with your answers.
+    ...((item.decisions || []).length ? [["decisions", decisionsTabLabel(item)]] : []),
     // Agent review rounds accumulate, so the tab counts them — that count is
     // the item's review history and the reason a round is worth repeating.
     ...(item.hasAgentReview || item.meta.reviewRound
@@ -8962,6 +8989,13 @@ function wfRenderRail(rail, el, item, ts) {
       c.appendChild(
         link(m.prs.more ? `All pull requests (+${m.prs.more}) →` : "All pull requests →", () => go("prs"))
       );
+  }
+  if (m.decisions) {
+    const d = card("Decisions", link("Answer →", () => go("decisions")));
+    const line = document.createElement("p");
+    line.className = "wf-rail-text";
+    line.textContent = `${m.decisions.text} · ${m.decisions.ids.join(", ")}`;
+    d.appendChild(line);
   }
   const c = card("Agents");
   if (!m.agents.length) {
@@ -11748,6 +11782,18 @@ function wfSignOffDialog(model) {
     ok.className = "primary";
     ok.textContent = model.okLabel;
     ok.onclick = () => done({ readyUrls: boxes.filter((b) => b.checked).map((b) => b.value) });
+    if (model.confirmEmpty) {
+      const row = document.createElement("label");
+      row.className = "wf-review-opt wf-signoff-confirm";
+      const tick = document.createElement("input");
+      tick.type = "checkbox";
+      const text = document.createElement("span");
+      text.textContent = model.confirmEmpty;
+      row.append(tick, text);
+      box.appendChild(row);
+      ok.disabled = true;
+      tick.onchange = () => (ok.disabled = !tick.checked);
+    }
     actions.append(cancel, ok);
     box.appendChild(actions);
     backdrop.appendChild(box);
@@ -11770,7 +11816,13 @@ function wfSignOffDialog(model) {
 async function wfApproveWaves(item, root, { next = true } = {}) {
   const home = ws();
   const prs = itemPrs(item.meta, item.prStack).map((p) => ({ ...p, error: (item.prErrors || {})[p.url] || "" }));
-  const model = signOffModel(item, prs);
+  let seals = null;
+  try {
+    seals = await invoke("workflow_wave_seal_preview", { project: item.project, slug: item.slug });
+  } catch (e) {
+    dlog(`wave seal preview failed: ${e}`);
+  }
+  const model = signOffModel(item, prs, seals);
   if (!model) return;
   const pick = await wfSignOffDialog(model);
   if (!pick) return;
@@ -11918,7 +11970,7 @@ function wfComposeChangeRequest({ item, target, annotations, onJump, prefill = "
     box.appendChild(hint);
     const plumbing = document.createElement("p");
     plumbing.className = "wf-compose-plumbing";
-    plumbing.textContent = `Recorded as iteration ${(item.meta.iteration || 0) + 1} — the first thing the agent reads next round. Markdown, ⌘↵ to send.`;
+    plumbing.textContent = `Recorded as iteration ${(item.meta.iteration || 0) + 1} — the first thing the agent reads next round. Markdown, ⌘↵ to send.${unsentAnswersNote(item)}`;
     box.appendChild(plumbing);
 
     // Toolbar: template + preview. Both are opt-in so the one-sentence path
@@ -12685,6 +12737,24 @@ function renderWfActions(bar, root, item) {
     );
   };
 
+  // The agent's open questions, at every stage parked on you: answered here,
+  // the answers ride into the next round. `decisions` makes it recommendable.
+  const openDecisionCount = openDecisions(item).length;
+  if (openDecisionCount && DECISION_STAGES.includes(st)) {
+    add(
+      `❓ Decisions (${openDecisionCount})`,
+      "",
+      () => {
+        const ts = wfTabState.get(wfKey(item.project, item.slug));
+        if (ts) ts.subView = "decisions";
+        buildWorkflowView(root, item.project, item.slug);
+      },
+      "The workflow agent asked questions only you can answer — answer them before the next round, which applies your answers",
+      "step",
+      "decisions"
+    );
+  }
+
   switch (st) {
     case "draft":
       add(
@@ -12970,7 +13040,7 @@ function renderWfActions(bar, root, item) {
       add(
         "✎ Request changes…",
         "",
-        () => requestChanges(),
+        (ev) => requestChanges("diff", wfActPrefill(ev)),
         "Open the change-request composer — your note + the open annotations become the next fix round, and this iteration's diff is frozen into history first",
         "advance",
         "request-changes"
@@ -13063,7 +13133,7 @@ function renderWfActions(bar, root, item) {
       add(
         "✎ Request changes…",
         "",
-        () => requestChanges(),
+        (ev) => requestChanges("diff", wfActPrefill(ev)),
         "Open the change-request composer — your note + the open annotations become the next fix round (the agent pushes, so the PR picks up the fixes)",
         "advance",
         "request-changes"
@@ -13094,7 +13164,7 @@ function renderWfActions(bar, root, item) {
       add(
         "✎ Request changes…",
         "",
-        () => requestChanges(),
+        (ev) => requestChanges("diff", wfActPrefill(ev)),
         "Open the change-request composer — your note + the open annotations become the next fix round (the agent pushes, so the PR picks up the fixes)",
         "advance",
         "request-changes"
@@ -13207,6 +13277,13 @@ function wfAgentStatus(item) {
   return s && s.is_running ? String(s.status || "") : "";
 }
 
+/// The note the recommender wrote for a suggested ✎ Request changes (a red
+/// build, a rebase) — carried on the button as `data-prefill`.
+function wfActPrefill(ev) {
+  const b = ev && ev.target && ev.target.closest ? ev.target.closest("button") : null;
+  return (b && b.dataset.prefill) || "";
+}
+
 function wfRenderNextStep(bar, item) {
   // A run in flight is the next step: its strip says where it is and holds
   // its controls, and nothing else is recommended over it.
@@ -13306,6 +13383,7 @@ function wfRenderNextStep(bar, item) {
     const target = buttons.find((b) => b.dataset.act === step.id);
     for (const b of bar.querySelectorAll("button.primary")) b.classList.remove("primary");
     target.classList.add("primary", "wf-next-go");
+    if (step.params && step.params.prefill) target.dataset.prefill = step.params.prefill;
     // The suggested button moves into the suggestion, beside its reason —
     // the real button, so its handler, busy state and confirmation are the
     // bar's. A copy doubled every label; leaving it in its zone put the one
@@ -13726,17 +13804,29 @@ const WF_DOC_PAIRS = {
 ///
 /// The **markdown** form goes through the normal renderer, so its mermaid
 /// fences render exactly like every other document's.
+/// Tabs whose kept copies are read-only records: a dive from one would
+/// write into the live document, not the copy on screen.
+const wfFrozenDocView = new WeakMap();
+
 async function renderWfExplainView(body, root, item, ts, which) {
   const { project, slug } = item;
   const pair = WF_DOC_PAIRS[which] || WF_DOC_PAIRS.diff;
   const target = explainTreeTarget(which);
+  // A waved item keeps each signed-off wave's changes explanation and plan
+  // comparison (`waves/<id>/`); the picker switches between those copies and
+  // the current document.
+  const kept = wfKeptWaveDocs(item, which);
+  ts.docWave = ts.docWave || {};
+  if (ts.docWave[which] && !kept.includes(ts.docWave[which])) ts.docWave[which] = "";
+  const wave = ts.docWave[which] || "";
+  wfFrozenDocView.set(root, wave);
 
   body.innerHTML = "<p class='hint'>loading…</p>";
   // The tree is optional: an explanation written before drill-down existed
   // has no index, and is simply the overview.
   let tree = [];
   try {
-    tree = (await invoke("get_workflow_explain_tree", { project, slug, target })) || [];
+    tree = (await invoke("get_workflow_explain_tree", { project, slug, target, wave: wave || null })) || [];
   } catch (_) {
     tree = [];
   }
@@ -13745,7 +13835,7 @@ async function renderWfExplainView(body, root, item, ts, which) {
   let level = explainLevel(tree, node);
   // A part nobody has explained yet still has a page: what is already known
   // about it, and the ways to learn more.
-  if (node && !level) {
+  if (node && !level && !wave) {
     const preview = explainPartPreview(tree, node);
     if (preview) return renderWfExplainPartPage(body, root, item, ts, which, target, tree, preview);
   }
@@ -13756,7 +13846,11 @@ async function renderWfExplainView(body, root, item, ts, which) {
   }
   // Legacy single-file items report `md` with no `explain-*.md` on disk; the
   // backend reads the old name for the same doc, so the fallback is a name.
-  const forms = node ? { md: level.md, html: level.html } : wfExplainFormsFor(item, which) || {};
+  const forms = node
+    ? { md: level.md, html: level.html }
+    : wave
+      ? (item.waveDocs[wave] || {})[which === "diff" ? "diff" : "drift"] || {}
+      : wfExplainFormsFor(item, which) || {};
   const mdDoc = node ? `${target}/${node}.md` : pair.md;
   const htmlDoc = node ? `${target}/${node}.html` : pair.html;
   const legacy = node ? null : pair.legacy;
@@ -13778,14 +13872,16 @@ async function renderWfExplainView(body, root, item, ts, which) {
         node,
         form: "html",
         view: viewId,
+        wave: wave || null,
       });
-    } else if (node) {
+    } else if (node || wave) {
       text = await invoke("get_workflow_explain_node", {
         project,
         slug,
         target,
         node,
         form: view === "graphic" ? "html" : "md",
+        wave: wave || null,
       });
     } else {
       text = await invoke("get_workflow_doc", {
@@ -13835,6 +13931,12 @@ async function renderWfExplainView(body, root, item, ts, which) {
     }
     bar.appendChild(seg);
   }
+  const picker = wfWaveDocPicker(item, which, kept, wave, (w) => {
+    ts.docWave[which] = w;
+    ts.explainNodes[which] = "";
+    buildWorkflowView(root, project, slug);
+  });
+  if (picker) bar.appendChild(picker);
   bar.appendChild(Object.assign(document.createElement("span"), { className: "spacer" }));
 
   // The drawing is the one document read at a glance, so it can take the
@@ -13854,7 +13956,7 @@ async function renderWfExplainView(body, root, item, ts, which) {
   }
 
   const viewBase = node ? `${target}/${node}` : target;
-  const doc = viewId ? `${viewBase}.${viewId}.html` : drawn ? htmlDoc : mdDoc;
+  const doc = `${wave ? `waves/${wave}/` : ""}${viewId ? `${viewBase}.${viewId}.html` : drawn ? htmlDoc : mdDoc}`;
   const edit = document.createElement("button");
   edit.className = "icon-btn wide";
   edit.innerHTML = `${svgIcon("pencil", 12)}<span>Edit ${doc}</span>`;
@@ -13874,7 +13976,11 @@ async function renderWfExplainView(body, root, item, ts, which) {
       "beforeend",
       node
         ? `<p class="hint">nothing written for part ${escapeHtml(node)} yet</p>`
-        : `<p class="hint">nothing written yet — ${escapeHtml(pair.action)} writes it</p>`
+        : `<p class="hint">nothing written yet — ${escapeHtml(pair.action)} writes it${
+            item.waves && !item.waves.issue && (which === "diff" || which === "drift")
+              ? ", one per wave: the waves in review, or the whole project once every wave is signed off"
+              : ""
+          }</p>`
     );
     return;
   }
@@ -14239,7 +14345,51 @@ function wfMarkExplainHeadings(md, root, item, ts, which, target, tree, level) {
 /// starts a fresh session.
 /// `opts.focus` (a string, possibly empty) comes from the part page, which has
 /// already shown the cost and asked for a focus, so nothing is asked again.
+/// Signed-off waves with a kept copy of this tab's document, in plan order.
+function wfKeptWaveDocs(item, which) {
+  if (which !== "diff" && which !== "drift") return [];
+  const docs = item.waveDocs || {};
+  const key = which === "diff" ? "diff" : "drift";
+  const order = ((item.waves && item.waves.waves) || []).map((w) => w.id);
+  return Object.keys(docs)
+    .filter((id) => docs[id][key] && (docs[id][key].md || docs[id][key].html))
+    .sort((a, b) => (order.indexOf(a) + 1 || 999) - (order.indexOf(b) + 1 || 999));
+}
+
+/// What the current document covers, from the scope clash recorded at launch.
+function wfDocScopeLabel(item, which) {
+  const scope = (item.docScopes || {})[which === "diff" ? "explain-diff" : "drift"];
+  if (!scope) return "Current";
+  if (scope.whole) return "Whole project";
+  if (scope.waves && scope.waves.length) return `Current · ${waveList(scope.waves)}`;
+  return "Current · between waves";
+}
+
+/// The wave picker of a changes explanation / plan comparison on a waved
+/// item: the current document, then each signed-off wave's kept copy.
+function wfWaveDocPicker(item, which, kept, wave, onPick) {
+  if (!kept.length && !(item.docScopes || {})[which === "diff" ? "explain-diff" : "drift"]) return null;
+  const sel = document.createElement("select");
+  sel.className = "wf-wave-doc-pick";
+  sel.title = "Each wave's document is kept as it stood when the wave was signed off";
+  const opt = (value, label) => {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    sel.appendChild(o);
+  };
+  opt("", wfDocScopeLabel(item, which));
+  for (const id of kept) opt(id, `${waveName(id)} · signed off`);
+  sel.value = wave;
+  sel.onchange = () => onPick(sel.value);
+  return sel;
+}
+
 async function wfDive(item, root, target, parts, opts = {}) {
+  if (wfFrozenDocView.get(root)) {
+    flashToast("This is a signed-off wave's kept copy — switch to the current document to explain a part further");
+    return;
+  }
   const home = ws();
   const names = parts.map((p) => `${p.id} ${p.title || ""}`.trim());
   const cost = WF_DIVE_COST;
@@ -14401,7 +14551,12 @@ function wfPrStateChip(item, root, pr) {
   const st = prStateLabel(pr) || "open";
   b.className = `wf-chip wf-pr-state wf-pr-state-${st}`;
   b.textContent = `${prChipLabel(pr)} · ${st}`;
-  b.title = `${pr.url}${pr.error ? ` — not refreshed: ${pr.error}` : ""}; right-click for this PR's actions`;
+  const healthEl = wfPrHealthEl(pr);
+  if (healthEl) b.appendChild(healthEl);
+  const health = prHealthTitle(pr);
+  b.title =
+    `${pr.url}${health ? ` · ${health}` : ""}${pr.error ? ` — not refreshed: ${pr.error}` : ""}` +
+    "; right-click for this PR's actions";
   if (pr.error) b.classList.add("wf-pr-state-stale");
   b.onclick = () => openLink(pr.url);
   b.oncontextmenu = (ev) => {
@@ -14979,6 +15134,124 @@ function renderWfWavesView(body, root, item) {
 /// stack and whether the last refresh reached it. Refresh asks the forge
 /// about all of them at once — the header can no longer show ten chips, and
 /// a list that only one refresh feeds has to say how fresh it is.
+/// The decisions the workflow agent's hand-offs asked for (decisions.json):
+/// each open one with its options as buttons, a free answer and Drop; the
+/// answered and dropped ones folded below. Model: wf-decisions.js; contract:
+/// docs/workflows.md → Decisions.
+async function renderWfDecisionsView(body, root, item) {
+  const { project, slug } = item;
+  body.innerHTML = "";
+  const m = decisionsModel(item);
+  const caption = document.createElement("p");
+  caption.className = "wf-doc-caption dim";
+  caption.textContent =
+    "The questions the workflow agent asked you in its hand-offs — kept here across rounds, because handoff.md is rewritten every phase. An answer goes to the next round: in its kickoff, and under ### Decisions in your next change request.";
+  body.appendChild(caption);
+  const save = async (cmd, args, done) => {
+    try {
+      wfSelfWriteAt = Date.now();
+      await invoke(cmd, { project, slug, ...args });
+    } catch (e) {
+      uiAlert(`Saving the decision failed: ${e}`);
+      return;
+    }
+    flashToast(done);
+    await refreshWorkflows();
+    buildWorkflowView(root, project, slug);
+  };
+  const answer = (id, text) => save("answer_workflow_decision", { id, answer: text }, `${id} answered`);
+  const list = document.createElement("div");
+  list.className = "wf-decisions";
+  body.appendChild(list);
+  if (!m.open.length) {
+    const none = document.createElement("p");
+    none.className = "hint";
+    none.textContent = "No decision is waiting on you.";
+    list.appendChild(none);
+  }
+  for (const d of m.open) {
+    const card = document.createElement("section");
+    card.className = "wf-decision";
+    const head = document.createElement("div");
+    head.className = "wf-decision-head";
+    head.innerHTML =
+      `<span class="wf-decision-id">${escapeHtml(d.id)}</span>` +
+      `<span class="wf-decision-text">${escapeHtml(d.text)}</span>` +
+      (d.firstSeen ? `<span class="dim">iteration ${d.firstSeen}</span>` : "");
+    card.appendChild(head);
+    if (d.options.length) {
+      const opts = document.createElement("div");
+      opts.className = "wf-decision-options";
+      for (const o of d.options) {
+        const b = document.createElement("button");
+        b.className = "wf-chip" + (o.recommended ? " on" : "");
+        b.textContent = o.label + (o.recommended ? " · recommended" : "");
+        b.title = `Answer ${d.id} with "${o.label}"`;
+        b.onclick = () => busyButton(b, () => answer(d.id, o.label));
+        opts.appendChild(b);
+      }
+      card.appendChild(opts);
+    }
+    if (d.recommendedText) {
+      const rec = document.createElement("p");
+      rec.className = "dim";
+      rec.textContent = `Recommended: ${d.recommendedText}`;
+      card.appendChild(rec);
+    }
+    const free = document.createElement("div");
+    free.className = "wf-decision-free";
+    const ta = document.createElement("textarea");
+    ta.rows = 2;
+    ta.placeholder = d.options.length ? "Or answer in your own words…" : "Your answer…";
+    const send = document.createElement("button");
+    send.textContent = "Answer";
+    send.disabled = true;
+    ta.oninput = () => (send.disabled = !ta.value.trim());
+    send.onclick = () => busyButton(send, () => answer(d.id, ta.value));
+    ta.onkeydown = (ev) => {
+      if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey) && ta.value.trim()) {
+        ev.preventDefault();
+        send.click();
+      }
+    };
+    const drop = document.createElement("button");
+    drop.textContent = "Drop";
+    drop.title = "Nobody needs to answer this any more — it stops being handed to rounds";
+    drop.onclick = () =>
+      busyButton(drop, () => save("drop_workflow_decision", { id: d.id }, `${d.id} dropped`));
+    free.append(ta, send, drop);
+    card.appendChild(free);
+    list.appendChild(card);
+  }
+  if (m.settled.length) {
+    const fold = document.createElement("details");
+    fold.className = "wf-decisions-settled";
+    const sum = document.createElement("summary");
+    sum.textContent = `Answered and dropped (${m.settled.length})`;
+    fold.appendChild(sum);
+    for (const d of m.settled) {
+      const row = document.createElement("div");
+      row.className = "wf-decision settled";
+      row.innerHTML =
+        `<div class="wf-decision-head"><span class="wf-decision-id">${escapeHtml(d.id)}</span>` +
+        `<span class="wf-decision-text">${escapeHtml(d.text)}</span></div>` +
+        `<p>${d.status === "answered" ? `→ ${escapeHtml(d.answer)}` : "dropped"}` +
+        (d.status === "answered" ? ` <span class="dim">· ${escapeHtml(d.state)}</span>` : "") +
+        `</p>`;
+      const change = document.createElement("button");
+      change.textContent = d.status === "answered" ? "Change answer…" : "Answer…";
+      change.onclick = () =>
+        busyButton(change, async () => {
+          const text = await uiPrompt(`${d.id}: ${d.text}`, d.answer);
+          if (text && text.trim()) await answer(d.id, text);
+        });
+      row.appendChild(change);
+      fold.appendChild(row);
+    }
+    list.appendChild(fold);
+  }
+}
+
 async function renderWfPrsView(body, root, item) {
   body.innerHTML = "";
   const board = prBoard(item);
@@ -15097,6 +15370,7 @@ async function renderWfSubView(body, root, item, ts) {
   if (ts.subView === "revisions") return renderWfRevisionsView(body, root, item, ts);
   if (ts.subView === "waves") return renderWfWavesView(body, root, item, ts);
   if (ts.subView === "prs") return renderWfPrsView(body, root, item, ts);
+  if (ts.subView === "decisions") return renderWfDecisionsView(body, root, item, ts);
   if (ts.subView === "explainPlan") return renderWfExplainView(body, root, item, ts, "plan");
   if (ts.subView === "explainDiff") return renderWfExplainView(body, root, item, ts, "diff");
   if (ts.subView === "drift") return renderWfExplainView(body, root, item, ts, "drift");
@@ -17626,8 +17900,9 @@ function wfShort(s, n) {
 }
 
 // Lazy PR polling: while any PR-bearing item parked on a decision is on
-// screen (sidebar section or open tab), refresh its recorded PR state — and
-// the unanswered review-comment count — once a minute. diff-review is
+// screen (sidebar section or open tab), refresh its recorded PR state — with
+// the unanswered review-comment count and the PR's health (CI, mergeability,
+// review) — once a minute. diff-review is
 // included because review-only items park there with a PR clash doesn't own.
 // The backend throttles to one gh call per 30s per item and only writes meta
 // on actual change, so this never churns the FS watcher.

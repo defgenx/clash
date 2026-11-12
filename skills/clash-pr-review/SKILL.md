@@ -61,6 +61,11 @@ gives:
 - **Round** — the 1-based round number; use it as your section heading
 - **Return to** — the status to restore when you finish. **This is a contract.**
 - **Mode** — `full` | `from-plan` | `review-only`
+- **Decisions** — optional: ``Decisions: D3 (answered: "a) keep it"), D5
+  (open); a new one takes D6.`` — the questions the executor asked the human
+  (`decisions.json`). An answered one is decided: judge the code against the
+  answer, never re-raise it. An open one is still the human's: do not report
+  it as a finding — note in the round when the code depends on it.
 - **PR** — optional; the PR this round is about, or **several** separated by
   `, ` (also in `meta.review.prUrls`). Absent means "the item's own change":
   the local diff for a code review, the primary `meta.pr.url` for a verdict.
@@ -84,6 +89,11 @@ gives:
   the subject of a verdict (a verdict is on the PRs it is posted on — the
   `PR` field, else the primary) nor which threads an answer-threads round
   answers (every open thread on its PRs).
+  ``Waves: all N signed off (…) — this round covers the whole project``
+  means every wave is accepted: review the project as one change across all
+  its PRs, concentrating on what per-wave rounds could not see — interactions
+  between waves, a later wave breaking an earlier one, and the end state as a
+  whole.
 - **Interactive**, **Auto-apply**, **Focus** — optional; see below.
 - **Size** — optional; `small|medium|large (<N> lines, <F> files)`. See "Size".
 - **Delegation** — `team` (also what an absent field means) or `solo`,

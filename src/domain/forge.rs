@@ -89,6 +89,41 @@ pub struct ChangeView {
     pub head_ref: String,
     /// Branch it targets (its base).
     pub base_ref: String,
+    /// CI, mergeability and review state, as of this view.
+    pub health: ChangeHealth,
+}
+
+/// A change request's health, reduced from the forge's raw report to what a
+/// human acts on. Stored on the PR block (`meta.json.pr.health`); every field
+/// is empty when unknown, so a record from before this existed reads back as
+/// "never checked". Values: `docs/workflows.md` → *PR health*.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeHealth {
+    /// `pass` | `fail` | `pending` | `none` (no checks); empty = unknown.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub checks: String,
+    /// Names of the failing checks, capped at [`MAX_FAILING_CHECKS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failing: Vec<String>,
+    /// `yes` | `conflicts` | `unknown`; empty = never checked.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mergeable: String,
+    /// The head is behind its base and the base requires it up to date.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub behind: bool,
+    /// `approved` | `changes` | `required`; empty = no review rule applies.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub review: String,
+}
+
+/// How many failing check names a [`ChangeHealth`] keeps.
+pub const MAX_FAILING_CHECKS: usize = 5;
+
+impl ChangeHealth {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// What a forge can do. UI affordances gate on these instead of letting a

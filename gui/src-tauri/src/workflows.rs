@@ -927,6 +927,7 @@ pub(crate) async fn create_workflow_review(
                 draft: view.draft,
                 state: view.state.as_str().to_string(),
                 last_checked_at: now_ms(),
+                health: view.health.clone(),
                 ..Default::default()
             };
             (
@@ -1293,15 +1294,22 @@ pub(crate) async fn workflow_request_changes(
         .into_iter()
         .filter(|a| a.status == clash::domain::workflow::AnnotationStatus::Open)
         .collect();
+    // Answered decisions ride along, so the round reads them with the note.
+    let (decisions, decision_ids) = clash::application::decisions::change_request_section(
+        &state
+            .backend
+            .load_workflow_decisions(&project, &slug)
+            .unwrap_or_default(),
+    );
+    let note = note.as_deref().unwrap_or("").trim_end();
+    let note = match (note.is_empty(), decisions.is_empty()) {
+        (_, true) => note.to_string(),
+        (true, false) => decisions,
+        (false, false) => format!("{}\n\n{}", note, decisions),
+    };
     state
         .backend
-        .append_workflow_review_iteration(
-            &project,
-            &slug,
-            snapped,
-            note.as_deref().unwrap_or(""),
-            &open,
-        )
+        .append_workflow_review_iteration(&project, &slug, snapped, &note, &open)
         .map_err(e2s)?;
 
     meta.iteration = snapped + 1;
@@ -1344,6 +1352,7 @@ pub(crate) async fn workflow_request_changes(
         .write_workflow_meta(&project, &slug, &meta)
         .map_err(e2s)?;
     seed_local(&state, &project, &slug, WorkflowStatus::ChangesRequested);
+    stamp_decisions(&state, &project, &slug, &decision_ids, meta.iteration);
     Ok(meta)
 }
 
@@ -2004,6 +2013,25 @@ pub(crate) async fn start_workflow_agent(
         None => String::new(),
     };
     let repos_clause = repos_clause(&meta, &slug, &item_dir);
+    // Code-writing rounds hear about each repository's worktree setup.
+    let setup_clause = if phase == "implement" || phase == "pr" || meta.mode.is_review_only() {
+        let setups: Vec<(String, Vec<String>)> = seal_repos(&meta, &slug, &item_dir)
+            .into_iter()
+            .map(|r| {
+                let scripts =
+                    clash::infrastructure::fs::repo_config::load_repo_config(Path::new(&r.path))
+                        .setup_scripts;
+                (r.name, scripts)
+            })
+            .collect();
+        clash::application::workspace::setup_clause(
+            &setups,
+            clash::infrastructure::workspace::is_workspace_home(&meta.repo_path),
+        )
+    } else {
+        String::new()
+    };
+    let (decisions_clause, handed) = decisions_kickoff(&state, &project, &slug, meta.iteration);
     let session_id = uuid::Uuid::now_v7().to_string();
 
     // Persist the launch BEFORE spawning (session id + phase-appropriate
@@ -2098,6 +2126,8 @@ pub(crate) async fn start_workflow_agent(
                 },
             ) + &waves_clause
                 + &repos_clause
+                + &setup_clause
+                + &decisions_clause
                 + &state.config.get().ticket_links_clause()
         },
     )
@@ -2125,8 +2155,94 @@ pub(crate) async fn start_workflow_agent(
         }
         return Err(e);
     }
+    stamp_decisions(&state, &project, &slug, &handed, meta.iteration);
 
     Ok(session_id)
+}
+
+// ── Decisions ───────────────────────────────────────────────────────────
+
+/// The `Decisions:` kickoff field at `iteration`, and the answers it hands
+/// out for the first time (stamped by [`stamp_decisions`] once spawned).
+fn decisions_kickoff(
+    state: &GuiState,
+    project: &str,
+    slug: &str,
+    iteration: u32,
+) -> (String, Vec<String>) {
+    let file = state
+        .backend
+        .load_workflow_decisions(project, slug)
+        .unwrap_or_default();
+    (
+        clash::application::decisions::decisions_clause(&file, iteration),
+        clash::application::decisions::undelivered_answer_ids(&file),
+    )
+}
+
+/// Best-effort: an unstamped answer is only handed out again.
+fn stamp_decisions(state: &GuiState, project: &str, slug: &str, ids: &[String], iteration: u32) {
+    if ids.is_empty() {
+        return;
+    }
+    if let Err(e) = state
+        .backend
+        .update_workflow_decisions(project, slug, &mut |f| {
+            clash::application::decisions::stamp_delivered(f, ids, iteration)
+        })
+    {
+        tracing::warn!("decisions stamp failed for {}/{}: {}", project, slug, e);
+    }
+}
+
+/// Record the human's answer to one decision; it goes to the next round.
+#[tauri::command]
+pub(crate) fn answer_workflow_decision(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    id: String,
+    answer: String,
+) -> Result<Vec<clash::domain::workflow::DecisionRecord>, String> {
+    edit_decision(&state, &project, &slug, |f| {
+        clash::application::decisions::answer_decision(f, &id, &answer, now_ms())
+    })
+}
+
+/// Drop a decision nobody needs to answer any more.
+#[tauri::command]
+pub(crate) fn drop_workflow_decision(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    id: String,
+) -> Result<Vec<clash::domain::workflow::DecisionRecord>, String> {
+    edit_decision(&state, &project, &slug, |f| {
+        clash::application::decisions::drop_decision(f, &id, now_ms())
+    })
+}
+
+fn edit_decision(
+    state: &GuiState,
+    project: &str,
+    slug: &str,
+    mut op: impl FnMut(&mut clash::domain::workflow::DecisionsFile) -> Result<(), String>,
+) -> Result<Vec<clash::domain::workflow::DecisionRecord>, String> {
+    let mut failed = None;
+    let file = state
+        .backend
+        .update_workflow_decisions(project, slug, &mut |f| match op(f) {
+            Ok(()) => true,
+            Err(e) => {
+                failed = Some(e);
+                false
+            }
+        })
+        .map_err(e2s)?;
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(file.decisions),
+    }
 }
 
 // ── Waves ───────────────────────────────────────────────────────────────
@@ -2220,6 +2336,52 @@ fn item_repos_cached(
 /// shows up within it.
 const REPOS_TTL: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// The `Waves:` field of a round that judges or explains a waved item's
+/// changes: the waves in review with their branches and PRs, the signed-off
+/// and not-started ones, or the whole-project mode once every wave is signed
+/// off. A round writing a per-wave document (`drift`, `explain-diff`) also
+/// records which waves it covers beside it. Empty for an item without waves.
+fn wave_review_clause(
+    state: &GuiState,
+    project: &str,
+    slug: &str,
+    meta: &clash::domain::workflow::WorkflowMeta,
+    target: ReviewTarget,
+) -> String {
+    let item_dir = state.backend.workflows_dir().join(project).join(slug);
+    let Some(Ok(plan)) = load_wave_plan(&item_dir) else {
+        return String::new();
+    };
+    let prs: Vec<clash::application::waves::PrRef> = meta
+        .pr
+        .iter()
+        .chain(meta.linked_prs.iter())
+        .filter(|p| !p.url.is_empty())
+        .map(|p| clash::application::waves::PrRef {
+            url: p.url.clone(),
+            head_ref: p.head_ref.clone(),
+        })
+        .collect();
+    let branch = item_branch(meta, slug);
+    let owner = clash::application::waves::assign_prs(&plan, &prs, &branch);
+    let by_wave = clash::application::waves::prs_by_wave(&owner, &prs);
+    if let Some(stem) = clash::application::explain_tree::tree_dir(target)
+        .filter(|s| clash::infrastructure::fs::workflows::WAVE_DOC_STEMS.contains(s))
+    {
+        let scope = clash::application::waves::doc_scope(&plan, &meta.waves, now_ms());
+        if let Err(e) = clash::infrastructure::fs::workflows::write_doc_scope(
+            &state.backend.workflows_dir(),
+            project,
+            slug,
+            stem,
+            &scope,
+        ) {
+            tracing::warn!("doc scope for {}/{} {}: {}", project, slug, stem, e);
+        }
+    }
+    clash::application::waves::review_clause(&plan, &meta.waves, &branch, &by_wave)
+}
+
 /// The `Repos:` kickoff field of a workspace item; empty otherwise.
 fn repos_clause(
     meta: &clash::domain::workflow::WorkflowMeta,
@@ -2234,6 +2396,112 @@ fn repos_clause(
         &item_branch(meta, slug),
         &item_repos(meta, slug, item_dir),
     )
+}
+
+/// The repositories a wave may have changed, with the worktrees that have
+/// their branches checked out: a workspace item's discovered repositories,
+/// else the item's own repository and worktree.
+fn seal_repos(
+    meta: &clash::domain::workflow::WorkflowMeta,
+    slug: &str,
+    item_dir: &Path,
+) -> Vec<clash::domain::workflow::ItemRepo> {
+    let found = item_repos(meta, slug, item_dir);
+    if !found.is_empty() || meta.repo_path.trim().is_empty() {
+        return found;
+    }
+    let path = meta.repo_path.trim().to_string();
+    let name = Path::new(&path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+    vec![clash::domain::workflow::ItemRepo {
+        name,
+        worktrees: meta
+            .worktree
+            .iter()
+            .filter(|w| !w.is_empty())
+            .map(|w| clash::domain::workflow::RepoWorktree {
+                path: w.clone(),
+                branch: item_branch(meta, slug),
+            })
+            .collect(),
+        path,
+        ..Default::default()
+    }]
+}
+
+/// What signing the waves in review off would seal, per repository: each
+/// wave branch found (or, for a wave started on the item branch, the item
+/// branch and its commits since the wave's start), with unpushed commits and
+/// uncommitted changes. Read before the sign-off dialog, and again by the
+/// sign-off itself to record the heads.
+async fn wave_seals(
+    meta: &clash::domain::workflow::WorkflowMeta,
+    slug: &str,
+    item_dir: &Path,
+) -> Vec<clash::domain::workflow::WaveSeal> {
+    use clash::infrastructure::git;
+    let repos = seal_repos(meta, slug, item_dir);
+    let workspace = clash::infrastructure::workspace::is_workspace_home(&meta.repo_path);
+    let item_br = item_branch(meta, slug);
+    let mut out = Vec::new();
+    for wave in &meta.waves.scope {
+        let wave_br = clash::application::waves::wave_branch(&item_br, wave);
+        let mut seals = Vec::new();
+        for repo in &repos {
+            let rp = Path::new(&repo.path);
+            // A wave's branch, else — on a one-repository item only, where a
+            // wave started before per-wave branches lives on the item branch —
+            // the item branch. In a workspace, a repository without the
+            // wave's branch is not part of the wave.
+            let (branch, head) = match git::branch_head(rp, &wave_br).await {
+                Some(h) => (wave_br.clone(), h),
+                None if !workspace => match git::branch_head(rp, &item_br).await {
+                    Some(h) => (item_br.clone(), h),
+                    None => continue,
+                },
+                None => continue,
+            };
+            let since_start = match meta.waves.starts.get(wave) {
+                Some(start) if branch == item_br => git::commits_between(rp, start, &head).await,
+                _ => None,
+            };
+            let dirty = match repo.worktrees.iter().find(|w| w.branch == branch) {
+                Some(w) => git::dirty_count(Path::new(&w.path)).await.unwrap_or(0) as u64,
+                None => 0,
+            };
+            seals.push(clash::domain::workflow::RepoSeal {
+                repo: repo.name.clone(),
+                branch: branch.clone(),
+                unpushed: git::local_only_commits(rp, &branch).await.unwrap_or(0),
+                dirty,
+                since_start,
+                head,
+            });
+        }
+        out.push(clash::domain::workflow::WaveSeal {
+            wave: wave.clone(),
+            repos: seals,
+        });
+    }
+    out
+}
+
+/// What signing the round's waves off would seal — for the sign-off dialog.
+#[tauri::command]
+pub(crate) async fn workflow_wave_seal_preview(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+) -> Result<Vec<clash::domain::workflow::WaveSeal>, String> {
+    let meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    let item_dir = state.backend.workflows_dir().join(&project).join(&slug);
+    Ok(wave_seals(&meta, &slug, &item_dir).await)
 }
 
 /// How an executor round launches on a multi-wave item.
@@ -2351,7 +2619,23 @@ pub(crate) async fn approve_workflow_waves(
         .clone()
         .unwrap_or_else(|| meta.repo_path.clone());
     let head = clash::infrastructure::git::head_sha(Path::new(&cwd)).await;
-    meta.waves = clash::application::waves::approve_scope(&meta.waves, head.as_deref(), now_ms());
+    // The waves' documents are kept as they stood when they were accepted.
+    let root = state.backend.workflows_dir();
+    for stem in clash::infrastructure::fs::workflows::WAVE_DOC_STEMS {
+        let scope = clash::infrastructure::fs::workflows::read_doc_scope_in(&item_dir, stem);
+        let written =
+            clash::infrastructure::fs::workflows::doc_written_at(&root, &project, &slug, stem);
+        for wave in clash::application::waves::freeze_for(scope.as_ref(), &approved, written) {
+            if let Err(e) = clash::infrastructure::fs::workflows::freeze_wave_doc(
+                &root, &project, &slug, stem, &wave,
+            ) {
+                tracing::warn!("freezing {} for {}/{} {}: {}", stem, project, slug, wave, e);
+            }
+        }
+    }
+    let seals = wave_seals(&meta, &slug, &item_dir).await;
+    meta.waves =
+        clash::application::waves::approve_scope(&meta.waves, head.as_deref(), now_ms(), &seals);
     state
         .backend
         .write_workflow_meta(&project, &slug, &meta)
@@ -2657,36 +2941,25 @@ pub(crate) async fn launch_review(
 
     // A round over a multi-wave item's code judges the waves in review —
     // their commits — with the rest of the branch as context.
-    let waves_clause =
-        match load_wave_plan(&state.backend.workflows_dir().join(&project).join(&slug)) {
-            Some(Ok(plan))
-                if matches!(
-                    review.target,
-                    ReviewTarget::Diff | ReviewTarget::SelfReview | ReviewTarget::Drift
-                ) =>
-            {
-                let prs: Vec<clash::application::waves::PrRef> = meta
-                    .pr
-                    .iter()
-                    .chain(meta.linked_prs.iter())
-                    .filter(|p| !p.url.is_empty())
-                    .map(|p| clash::application::waves::PrRef {
-                        url: p.url.clone(),
-                        head_ref: p.head_ref.clone(),
-                    })
-                    .collect();
-                let branch = item_branch(&meta, &slug);
-                let owner = clash::application::waves::assign_prs(&plan, &prs, &branch);
-                let by_wave = clash::application::waves::prs_by_wave(&owner, &prs);
-                clash::application::waves::review_clause(&plan, &meta.waves, &branch, &by_wave)
-            }
-            _ => String::new(),
-        };
+    let waves_clause = if matches!(
+        review.target,
+        ReviewTarget::Diff | ReviewTarget::SelfReview | ReviewTarget::Drift
+    ) {
+        wave_review_clause(state, &project, &slug, &meta, review.target)
+    } else {
+        String::new()
+    };
     let repos_clause = repos_clause(
         &meta,
         &slug,
         &state.backend.workflows_dir().join(&project).join(&slug),
     );
+    // A judging round respects what the human decided; it hands out nothing.
+    let decisions_clause = if review.target.explains() {
+        String::new()
+    } else {
+        decisions_kickoff(state, &project, &slug, meta.iteration).0
+    };
     crate::launch_stage(app, &key, "spawn", None);
     let spawned = spawn_item_session(
         state,
@@ -2714,6 +2987,7 @@ pub(crate) async fn launch_review(
                     .with_subagent(round_models.subagent.as_deref()),
             ) + &waves_clause
                 + &repos_clause
+                + &decisions_clause
                 + &ticket_links
         },
     )
@@ -2947,6 +3221,18 @@ async fn start_explainer(
         .write_workflow_explainers(&project, &slug, &file)
         .map_err(e2s)?;
 
+    // The changes explanation of a waved item explains the waves in review
+    // (and is kept per wave); the plan explanation stays whole.
+    let explain_waves = if target == ReviewTarget::ExplainDiff {
+        wave_review_clause(state, &project, &slug, &meta, target)
+    } else {
+        String::new()
+    };
+    let explain_repos = repos_clause(
+        &meta,
+        &slug,
+        &state.backend.workflows_dir().join(&project).join(&slug),
+    );
     crate::launch_stage(app, &key, "spawn", None);
     let spawned = spawn_item_session(
         state,
@@ -2974,7 +3260,9 @@ async fn start_explainer(
                     .config
                     .get()
                     .workflow_delegation(clash::domain::entities::AgentKind::parse(&meta.agent)),
-            ) + &state.config.get().ticket_links_clause()
+            ) + &explain_waves
+                + &explain_repos
+                + &state.config.get().ticket_links_clause()
         },
     )
     .await;
@@ -3031,19 +3319,23 @@ pub(crate) fn get_workflow_explain_tree(
     project: String,
     slug: String,
     target: ReviewTarget,
+    // A signed-off wave's frozen copy instead of the live document.
+    wave: Option<String>,
 ) -> Result<Vec<clash::domain::workflow::ExplainLevel>, String> {
     let raw = clash::infrastructure::fs::workflows::read_explain_levels(
         &state.backend.workflows_dir(),
         &project,
         &slug,
         target,
+        wave.as_deref(),
     )
     .map_err(e2s)?;
     Ok(clash::application::explain_tree::build_tree(&raw))
 }
 
 /// One level's markdown or HTML (`form` = `md` | `html`); `node` empty is the
-/// overview.
+/// overview. Tauri commands map 1:1 onto the frontend's named invoke args.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub(crate) fn get_workflow_explain_node(
     state: State<'_, GuiState>,
@@ -3053,6 +3345,7 @@ pub(crate) fn get_workflow_explain_node(
     node: String,
     form: String,
     view: Option<String>,
+    wave: Option<String>,
 ) -> Result<String, String> {
     clash::infrastructure::fs::workflows::read_explain_node_doc(
         &state.backend.workflows_dir(),
@@ -3062,6 +3355,7 @@ pub(crate) fn get_workflow_explain_node(
         &node,
         &form,
         view.as_deref(),
+        wave.as_deref(),
     )
     .map_err(e2s)
 }
@@ -3147,9 +3441,10 @@ pub(crate) async fn start_workflow_dive(
         ));
     }
     let root = state.backend.workflows_dir();
-    let raw =
-        clash::infrastructure::fs::workflows::read_explain_levels(&root, &project, &slug, target)
-            .map_err(e2s)?;
+    let raw = clash::infrastructure::fs::workflows::read_explain_levels(
+        &root, &project, &slug, target, None,
+    )
+    .map_err(e2s)?;
     clash::application::explain_tree::can_dive(
         target,
         &node,
@@ -3427,7 +3722,9 @@ fn merge_pr_view(
 }
 
 /// Fold a forge view into one PR record, primary or linked. True when
-/// anything besides the check timestamp changed.
+/// anything besides the check timestamp changed. Health is reduced to states
+/// (never timestamps or durations), so a PR whose CI stands still compares
+/// equal poll after poll.
 fn fold_pr_view(
     pr: &mut clash::domain::workflow::WorkflowPr,
     view: &clash::domain::forge::ChangeView,
@@ -3437,13 +3734,15 @@ fn fold_pr_view(
         || pr.draft != view.draft
         || pr.state != state_str
         || pr.head_ref != view.head_ref
-        || pr.base_ref != view.base_ref;
+        || pr.base_ref != view.base_ref
+        || pr.health != view.health;
     if changed {
         pr.number = view.number;
         pr.draft = view.draft;
         pr.state = state_str.to_string();
         pr.head_ref = view.head_ref.clone();
         pr.base_ref = view.base_ref.clone();
+        pr.health = view.health.clone();
         pr.last_checked_at = now_ms();
     }
     changed
@@ -4481,6 +4780,7 @@ pub(crate) async fn build_workflow_share(
             "",
             "md",
             None,
+            None,
         )
         .unwrap_or_default()
     };
@@ -5350,6 +5650,32 @@ mod tests {
         assert!(failed.is_empty());
         assert_eq!(jobs[0].2, 209);
         assert_eq!(jobs[0].3.as_deref(), Some("acme/tools"));
+    }
+
+    /// A CI flip is a change worth a meta write; the same health again is not,
+    /// so polling a PR whose checks stand still never wakes the watcher.
+    #[test]
+    fn pr_health_changes_are_folded_and_a_repeat_is_not_a_change() {
+        use clash::domain::forge::{ChangeHealth, ChangeState, ChangeView};
+        let mut pr = clash::domain::workflow::WorkflowPr::default();
+        let mut view = ChangeView {
+            url: "https://github.com/o/r/pull/1".into(),
+            number: 1,
+            state: ChangeState::Open,
+            health: ChangeHealth {
+                checks: "pending".into(),
+                mergeable: "yes".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(super::fold_pr_view(&mut pr, &view));
+        assert!(!super::fold_pr_view(&mut pr, &view));
+        view.health.checks = "fail".into();
+        view.health.failing = vec!["test".into()];
+        assert!(super::fold_pr_view(&mut pr, &view));
+        assert_eq!(pr.health.failing, vec!["test".to_string()]);
+        assert!(!super::fold_pr_view(&mut pr, &view));
     }
 
     /// Every round clash starts, or queues, records the phase it runs in.

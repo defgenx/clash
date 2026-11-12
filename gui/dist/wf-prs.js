@@ -49,7 +49,7 @@
   }
 
   /// Every PR of one item's meta, primary first: `{ url, number, repo, draft,
-  /// state, unanswered, primary, stack }`. Empty-URL records are skipped —
+  /// state, unanswered, headRef, baseRef, health, primary, stack }`. Empty-URL records are skipped —
   /// they are placeholders, not PRs.
   ///
   /// `prStack` is the item's derived stack (`item.prStack`, base → tip). Its
@@ -70,6 +70,7 @@
         unanswered: typeof pr.unansweredComments === "number" ? pr.unansweredComments : null,
         headRef: pr.headRef || "",
         baseRef: pr.baseRef || "",
+        health: pr.health || null,
         primary,
         stack: null,
       });
@@ -94,6 +95,42 @@
       else if (!out.some((q) => q.stack)) out.push(...layered);
     }
     return out;
+  }
+
+  const settledPr = (pr) => pr.state === "MERGED" || pr.state === "CLOSED";
+
+  /// A PR's health (`pr.health`, written by the refresh) as compact badges:
+  /// `[{ kind, text, title }]` — CI first (✓ / ✗ / ●, failing names in the
+  /// title), then "conflicts", "behind base", the review decision. A merged or
+  /// closed PR shows none: its CI no longer decides anything.
+  function prHealthBadges(pr) {
+    const h = pr && pr.health;
+    if (!h || settledPr(pr)) return [];
+    const out = [];
+    const failing = (h.failing || []).join(", ");
+    if (h.checks === "fail")
+      out.push({ kind: "fail", text: "✗", title: `CI failing${failing ? `: ${failing}` : ""}` });
+    else if (h.checks === "pending") out.push({ kind: "pending", text: "●", title: "CI running" });
+    else if (h.checks === "pass") out.push({ kind: "pass", text: "✓", title: "CI passing" });
+    if (h.mergeable === "conflicts")
+      out.push({ kind: "conflicts", text: "conflicts", title: "Conflicts with its base branch" });
+    if (h.behind)
+      out.push({
+        kind: "behind",
+        text: "behind base",
+        title: "Behind its base branch, which must be up to date to merge",
+      });
+    if (h.review === "approved") out.push({ kind: "approved", text: "approved", title: "Review approved" });
+    else if (h.review === "changes")
+      out.push({ kind: "changes", text: "changes requested", title: "A reviewer requested changes" });
+    return out;
+  }
+
+  /// The badges' titles on one line, for a chip's tooltip ("" when none).
+  function prHealthTitle(pr) {
+    return prHealthBadges(pr)
+      .map((b) => b.title)
+      .join(" · ");
   }
 
   /// "2/3" for a stacked PR, "" otherwise.
@@ -261,6 +298,8 @@
     prStateLabel,
     itemPrs,
     prStackLabel,
+    prHealthBadges,
+    prHealthTitle,
     prDashboardModel,
     prDashboardView,
     prCounts,

@@ -100,7 +100,7 @@ test("bands order the inbox, oldest first inside a band", () => {
     [
       "session:approve", // band 0 — blocked tool call, newest of all, still first
       "workflow:proj/slug", // band 3
-      "session:old-wait", // band 5, oldest
+      "session:old-wait", // band 6, oldest
       "session:new-wait",
     ]
   );
@@ -202,4 +202,29 @@ test("the inbox is wired into every path that can change it", () => {
   // Unanswered PR comments are one of its bands, so the lazy poll has to
   // treat the open inbox as "on screen".
   assert.match(app, /state\.open\.has\("view:inbox"\)/);
+});
+
+test("a red build on an open PR is its own band, after decisions and before PR threads", () => {
+  const red = { url: "https://github.com/o/r/pull/1", state: "OPEN", health: { checks: "fail", failing: ["lint", "unit"] } };
+  const reasons = workflowReasons(item({ meta: { status: "pr-ready", pr: { ...red, unansweredComments: 1 } } }));
+  assert.deepEqual(
+    reasons.map((r) => [r.band, r.text]),
+    [
+      [BAND.ciFailing, "CI failing — lint, unit"],
+      [BAND.prComments, "1 unanswered PR comment"],
+    ]
+  );
+  assert.ok(BAND.decision < BAND.ciFailing && BAND.ciFailing < BAND.prComments);
+  // Two red PRs say so; a merged one, a green one or a finished item do not count.
+  const two = workflowReasons(
+    item({ meta: { status: "pr-ready", pr: red, linkedPrs: [{ ...red, url: "x", health: { checks: "fail" } }] } })
+  );
+  assert.equal(two[0].text, "CI failing on 2 PRs — lint, unit");
+  assert.deepEqual(workflowReasons(item({ meta: { status: "pr-ready", pr: { ...red, state: "MERGED" } } })), []);
+  assert.deepEqual(workflowReasons(item({ meta: { status: "pr-ready", pr: { ...red, health: { checks: "pass" } } } })), []);
+  assert.deepEqual(workflowReasons(item({ meta: { status: "done", pr: red } })), []);
+  // A row in the band, not blocking: the badge stays the blocked count.
+  const rows = attentionRows({ workflows: [item({ meta: { status: "pr-ready", pr: red } })] });
+  assert.equal(rows[0].band, BAND.ciFailing);
+  assert.equal(attentionSummary(rows).blocking, 0);
 });

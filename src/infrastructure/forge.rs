@@ -44,6 +44,7 @@ fn err_from_gh(e: GhError) -> ForgeError {
 
 fn view_from_gh(v: GhPrView) -> ChangeView {
     ChangeView {
+        health: gh::pr_health(&v),
         state: ChangeState::parse(&v.state),
         url: v.url,
         number: v.number,

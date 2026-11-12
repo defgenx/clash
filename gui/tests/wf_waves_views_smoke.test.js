@@ -89,7 +89,7 @@ function sandbox() {
   box.window = box;
   vm.createContext(box);
   for (const f of ["wf-prs.js", "wf-waves.js"]) vm.runInContext(dist(f), box);
-  for (const fn of ["wfPrStateChip", "wfWaveDecisionButtons", "wfWaveCard", "wfStepTogether", "wfRenderWaveLive", "renderWfWavesView", "renderWfPrsView"])
+  for (const fn of ["wfPrHealthEl", "wfPrStateChip", "wfWaveDecisionButtons", "wfWaveCard", "wfStepTogether", "wfRenderWaveLive", "renderWfWavesView", "renderWfPrsView"])
     vm.runInContext(extractFunction(APP, fn), box);
   return box;
 }
@@ -150,6 +150,23 @@ test("the Pull requests tab lists every PR by wave, with freshness and failures"
   assert.deepEqual(heads, ["Wave 1 · w1 title", "Wave 2 · w2 title"]);
   assert.ok(t.includes("not refreshed: HTTP 502"));
   assert.ok(t.some((x) => /^primary · x → y$/.test(x)));
+});
+
+test("a PR chip carries its health: a red build names the failing checks", () => {
+  const box = sandbox();
+  const chip = box.wfPrStateChip(ITEM, {}, {
+    url: gh("saturn", 457),
+    number: 457,
+    state: "OPEN",
+    health: { checks: "fail", failing: ["lint"], mergeable: "conflicts" },
+  });
+  const badges = descendants(chip).filter((e) => /^wf-ph /.test(e.className || ""));
+  assert.deepEqual(badges.map((e) => e.textContent), ["✗", "conflicts"]);
+  assert.equal(badges[0].title, "CI failing: lint");
+  assert.match(chip.title, /CI failing: lint · Conflicts with its base branch/);
+  // No health recorded: the chip is as it was.
+  const plain = box.wfPrStateChip(ITEM, {}, { url: gh("saturn", 457), number: 457, state: "OPEN" });
+  assert.equal(descendants(plain).filter((e) => /^wf-ph /.test(e.className || "")).length, 0);
 });
 
 test("the new tabs are built from the app's own pieces", () => {

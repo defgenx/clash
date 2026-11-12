@@ -411,9 +411,26 @@ pub fn check_start(
 
 /// Approve the current round's waves: they join `done`, and the scope is
 /// cleared for the next round. Their start commits are kept (the record of
-/// what each wave changed).
-pub fn approve_scope(progress: &WaveProgress, head: Option<&str>, now_ms: i64) -> WaveProgress {
+/// what each wave changed), and `seals` records each repository's wave
+/// branch head.
+pub fn approve_scope(
+    progress: &WaveProgress,
+    head: Option<&str>,
+    now_ms: i64,
+    seals: &[crate::domain::workflow::WaveSeal],
+) -> WaveProgress {
     let mut next = progress.clone();
+    for seal in seals.iter().filter(|s| progress.scope.contains(&s.wave)) {
+        let repos: BTreeMap<String, String> = seal
+            .repos
+            .iter()
+            .filter(|r| !r.head.is_empty())
+            .map(|r| (r.repo.clone(), r.head.clone()))
+            .collect();
+        if !repos.is_empty() {
+            next.repo_ends.insert(seal.wave.clone(), repos);
+        }
+    }
     for id in &progress.scope {
         if !next.done.contains(id) {
             next.done.push(id.clone());
@@ -447,10 +464,20 @@ fn signed_off_list(progress: &WaveProgress) -> String {
     progress
         .done
         .iter()
-        .map(|id| match wave_range(progress, id) {
-            Some(r) => format!("{id} ({r})"),
-            None => id.clone(),
-        })
+        .map(
+            |id| match (progress.repo_ends.get(id), wave_range(progress, id)) {
+                (Some(repos), _) if !repos.is_empty() => format!(
+                    "{id} ({})",
+                    repos
+                        .iter()
+                        .map(|(r, sha)| format!("{r}@{}", sha.chars().take(7).collect::<String>()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                (_, Some(r)) => format!("{id} ({r})"),
+                _ => id.clone(),
+            },
+        )
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -560,6 +587,14 @@ pub fn review_clause(
     item_branch: &str,
     wave_prs: &BTreeMap<String, Vec<String>>,
 ) -> String {
+    // Every wave signed off: the round covers the project as one change.
+    if progress.scope.is_empty() && !plan.waves.is_empty() && remaining(plan, progress).is_empty() {
+        return format!(
+            " Waves: all {} signed off ({}) — this round covers the whole project: judge everything delivered across the waves against the whole plan, including what falls between waves and what a later wave undid.",
+            plan.waves.len(),
+            signed_off_list(progress)
+        );
+    }
     let mut out = if progress.scope.is_empty() {
         " Waves: none in review.".to_string()
     } else {
@@ -597,6 +632,42 @@ pub fn review_clause(
         ));
     }
     out
+}
+
+/// What a round about to write an `explain-diff` / `drift` document covers.
+pub fn doc_scope(
+    plan: &WavePlan,
+    progress: &WaveProgress,
+    now_ms: i64,
+) -> crate::domain::workflow::DocScope {
+    let whole =
+        progress.scope.is_empty() && !plan.waves.is_empty() && remaining(plan, progress).is_empty();
+    crate::domain::workflow::DocScope {
+        waves: progress.scope.clone(),
+        whole,
+        started_at: now_ms,
+    }
+}
+
+/// The signed-off waves a live document is frozen for: the ones it was
+/// written for, and only when it was written by that round (not older than
+/// its launch). A document about another wave is never filed under these.
+pub fn freeze_for(
+    scope: Option<&crate::domain::workflow::DocScope>,
+    approved: &[String],
+    written_at: Option<i64>,
+) -> Vec<String> {
+    let (Some(scope), Some(at)) = (scope, written_at) else {
+        return Vec::new();
+    };
+    if at < scope.started_at {
+        return Vec::new();
+    }
+    approved
+        .iter()
+        .filter(|w| scope.waves.contains(w))
+        .cloned()
+        .collect()
 }
 
 /// Which PRs each wave has: the inverse of [`assign_prs`], in PR order.
@@ -778,7 +849,43 @@ mod tests {
     fn approving_a_round_moves_its_waves_to_done() {
         let mut p = progress(&["w1"], &["w2", "w3"]);
         p.starts.insert("w2".into(), "abc".into());
-        let next = approve_scope(&p, Some("def4567890"), 42);
+        let seals = vec![
+            crate::domain::workflow::WaveSeal {
+                wave: "w2".into(),
+                repos: vec![
+                    crate::domain::workflow::RepoSeal {
+                        repo: "api".into(),
+                        branch: "item-w2".into(),
+                        head: "aaa1111222".into(),
+                        ..Default::default()
+                    },
+                    crate::domain::workflow::RepoSeal {
+                        repo: "web".into(),
+                        branch: "item-w2".into(),
+                        head: "bbb3333444".into(),
+                        ..Default::default()
+                    },
+                ],
+            },
+            // Not in the round: ignored.
+            crate::domain::workflow::WaveSeal {
+                wave: "w4".into(),
+                repos: vec![crate::domain::workflow::RepoSeal {
+                    repo: "api".into(),
+                    head: "ccc".into(),
+                    ..Default::default()
+                }],
+            },
+        ];
+        let next = approve_scope(&p, Some("def4567890"), 42, &seals);
+        // Each repository's wave branch is sealed, and the kickoff names them.
+        assert_eq!(next.repo_ends["w2"]["web"], "bbb3333444");
+        assert!(!next.repo_ends.contains_key("w4") && !next.repo_ends.contains_key("w3"));
+        assert!(
+            signed_off_clause(&next).contains("w2 (api@aaa1111, web@bbb3333)"),
+            "{}",
+            signed_off_clause(&next)
+        );
         assert_eq!(next.done, vec!["w1", "w2", "w3"]);
         assert!(next.scope.is_empty());
         assert_eq!(next.starts.get("w2").map(String::as_str), Some("abc"));
@@ -792,7 +899,7 @@ mod tests {
         );
         assert_eq!(remaining(&project(), &next), vec!["w4"]);
         // Outside git the moment is still recorded.
-        let bare = approve_scope(&p, None, 7);
+        let bare = approve_scope(&p, None, 7, &[]);
         assert!(bare.ends.is_empty());
         assert_eq!(bare.signed_off.get("w2"), Some(&7));
     }
@@ -925,10 +1032,38 @@ mod tests {
             plan_clause(&progress(&["w1"], &[])).contains("never change, remove or renumber them")
         );
         assert_eq!(plan_clause(&WaveProgress::default()), "");
+        // Every wave signed off: the final round covers the whole project.
+        let all = progress(&["w1", "w2", "w3", "w4"], &[]);
+        let fin = review_clause(&project(), &all, "item", &BTreeMap::new());
+        assert!(
+            fin.starts_with(
+                " Waves: all 4 signed off (w1, w2, w3, w4) — this round covers the whole project"
+            ),
+            "{fin}"
+        );
+        assert!(doc_scope(&project(), &all, 9).whole);
+        assert!(!doc_scope(&project(), &progress(&["w1"], &["w2"]), 9).whole);
         // An unreadable waves.json never blocks the round.
         assert_eq!(
             unusable_clause("cycle", &progress(&[], &["w2"])),
             " Waves: waves.json is unusable (cycle) — continue w2, and repair waves.json in this round."
         );
+    }
+
+    #[test]
+    fn a_document_is_frozen_only_for_the_waves_it_was_written_for() {
+        let scope = crate::domain::workflow::DocScope {
+            waves: vec!["w2".into(), "w3".into()],
+            whole: false,
+            started_at: 100,
+        };
+        let approved = vec!["w2".to_string(), "w3".to_string()];
+        assert_eq!(freeze_for(Some(&scope), &approved, Some(150)), approved);
+        // Written before this round launched: an older round's document.
+        assert!(freeze_for(Some(&scope), &approved, Some(50)).is_empty());
+        // Another wave's document, or none at all.
+        assert!(freeze_for(Some(&scope), &["w4".to_string()], Some(150)).is_empty());
+        assert!(freeze_for(None, &approved, Some(150)).is_empty());
+        assert!(freeze_for(Some(&scope), &approved, None).is_empty());
     }
 }

@@ -30,6 +30,8 @@ The kickoff prompt gives you:
 - **Waves** / **Signed off** — optional, only on a multi-wave item: which
   waves this round covers, their branches, and which waves are accepted. See
   "Waves" below.
+- **Decisions** — optional: the questions earlier hand-offs asked the human,
+  and their answers. See "Decisions" under the hand-off note below.
 - **Interactive** — optional; see the opening question below
 - **Delegation** — `team` (also what an absent field means) or `solo`,
   optionally naming the subagent model: `team (subagents on <model>)`. See
@@ -50,6 +52,13 @@ The kickoff prompt gives you:
 - **Repos** — present instead of `Workspace` on a **workspace item**: the
   item lives in a folder of repositories, not one, and your cwd is that
   folder. See "Workspace items" below.
+- **Setup** — optional, in code-writing phases: each repository's own
+  worktree setup (`repo: \`script\``), which a fresh worktree has not run.
+  Run it from the worktree root before you need what it provides (tests,
+  builds, commit hooks that call bundled tools); it may be slow, so not when
+  the round only reads code. A setup that fails or that you skip goes in the
+  hand-off's *Checked*, with what it stopped from running. Never commit
+  `--no-verify` to get around a hook the setup would have made work.
 
 ## Workspace items
 
@@ -127,9 +136,16 @@ point they may answer "continue autonomously" — from then on, stop asking.
 2. `plan.md` — the current plan, and `waves.json` when the item is a
    multi-wave project (see "Waves"), with `meta.waves.done` saying which
    waves are signed off.
-3. `review.md` — **top to bottom**: it is the accumulated decision history
-   (`## Iteration N` sections with the human's notes + the open annotations
-   at each round). Later sections override earlier ones.
+3. `review.md` — the accumulated decision history (`## Iteration N` sections
+   with the human's notes + the open annotations at each round). Later
+   sections override earlier ones. Read the **latest** section in full — it
+   is this round's instruction. Earlier sections are history: on a short file
+   read them all; once the file is long, list its headings
+   (`grep -n '^## Iteration' review.md`) and read an earlier section only
+   when the latest note refers back to it or you need why a decision was
+   made. A note that applies a review round by reference ("read them there")
+   means that round's section of `agent-review.md` is the work list — read
+   it in full.
 4. `annotations.json` — every annotation with `"status": "open"` is work you
    MUST address this run (see phase `implement`). Ones with
    `"author": "agent"` came from a review round; treat them exactly like the
@@ -420,11 +436,38 @@ item's Overview — under ~25 lines, no file dumps:
 ## Done
 - …
 ## Unsure / needs your decision
+- [D<n>] <question> — options: a) … b) … — recommended: a
 - … (or "nothing")
 ## Checked
 - tests/linters run and their result, or what could not be run and why
 **Next:** <action> — <one-line reason>
 ```
+
+### Decisions
+
+Every entry under *Unsure / needs your decision* is a **decision** the human
+answers in clash's Decisions tab, one bullet each:
+`- [D<n>] <question> — options: a) … b) … — recommended: a`. Options and the
+recommendation are optional, but offer them whenever there are real
+alternatives — a click is an answer, an essay is not. Ask only what the code,
+the plan and `review.md` cannot settle.
+
+clash keeps the decisions across rounds (`decisions.json`, clash-only: never
+write it), because `handoff.md` is rewritten every phase. The kickoff's
+`Decisions:` field is its state:
+`Decisions: D3 (answered: "a) keep it"), D5 (open); a new one takes D6.`
+
+- **Answered** — the human's decision. Apply it this round, and say in
+  *Done* what you did about it. Do not list it again — a listed answered
+  decision is handed to the next round once more.
+- **Open** — still unanswered. List it again under the **same id** (reword it
+  if what you learned changes the question) unless this round settled it from
+  the code; then say how in *Done*.
+- **New** — number it from the id the field names; never reuse an id.
+  Without the field, start at `D1`.
+
+A change request also carries the answers given since the last one, under
+`### Decisions` in its `review.md` section.
 
 `**Next:**` takes exactly one action from a fixed vocabulary — clash's
 "suggested next step" reads it, and an unknown or missing action is ignored,

@@ -1,4 +1,7 @@
 pub mod actions;
+/// Same allowance as `workflow`: the decision queue is driven by the GUI in v1.
+#[allow(dead_code)]
+pub mod decisions;
 pub mod diff;
 pub mod effects;
 /// Same allowance as `workflow`: drill-down explanations are GUI-only in v1.

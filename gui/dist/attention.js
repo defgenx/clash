@@ -1,8 +1,8 @@
 // The attention inbox — the pure half.
 //
-// Attention is signalled in five places at once: a session goes Prompting, a
-// workflow item parks on a decision, a PR collects replyless review comments,
-// an agent dies mid-round, a session errors. Each surface knows only its own
+// Attention is signalled in six places at once: a session goes Prompting, a
+// workflow item parks on a decision, a PR's CI goes red, a PR collects
+// replyless review comments, an agent dies mid-round, a session errors. Each surface knows only its own
 // slice, so with a dozen agents in flight the only way to find what is waiting
 // on *you* is to scan all of them and hold the result in your head. This folds
 // them into one ordered list. The tab that renders it lives in app.js (the
@@ -24,14 +24,24 @@
   // can never disagree about what "needs attention" means.
   const SESSION_ATTENTION = ["Prompting", "Errored", "Waiting"];
 
+  /// `wf-decisions.js`'s reason for an item's open decisions.
+  function decisionsReason(item) {
+    const f =
+      typeof module !== "undefined" && module.exports
+        ? require("./wf-decisions.js").decisionsReason
+        : typeof window !== "undefined" && window.decisionsReason;
+    return f ? f(item) : null;
+  }
+
   // Urgency bands. Lower goes first.
   const BAND = {
     prompting: 0, // a tool call is blocked on yes/no
     stalled: 1, // the agent is gone; nothing moves until a human acts
     errored: 2,
     decision: 3, // the pipeline is parked on your review
-    prComments: 4,
-    waiting: 5, // turn finished, no question pending
+    ciFailing: 4, // an open PR's build is red; nothing merges until it is fixed
+    prComments: 5,
+    waiting: 6, // turn finished, no question pending
   };
 
   /// `Session.last_modified` is formatted local time at minute resolution
@@ -56,6 +66,21 @@
       if (pr && pr.url && typeof pr.unansweredComments === "number") n += pr.unansweredComments;
     }
     return n;
+  }
+
+  /// The open PRs of an item whose CI fails (`pr.health.checks`, written by
+  /// the PR refresh), primary + linked.
+  function ciFailingPrs(meta) {
+    const prs = [(meta && meta.pr) || null].concat((meta && meta.linkedPrs) || []);
+    return prs.filter(
+      (pr) =>
+        pr &&
+        pr.url &&
+        pr.state !== "MERGED" &&
+        pr.state !== "CLOSED" &&
+        pr.health &&
+        pr.health.checks === "fail"
+    );
   }
 
   /// Why this session wants you, or null. One reason per session — the status
@@ -84,6 +109,19 @@
     if (WF_DECISION_STATUSES.includes(meta.status)) {
       out.push({ band: BAND.decision, text: "parked on your decision" });
     }
+    // Not on a finished item: its PRs no longer decide anything.
+    const red = ["done", "abandoned"].includes(meta.status) ? [] : ciFailingPrs(meta);
+    if (red.length) {
+      const names = red.flatMap((pr) => pr.health.failing || []);
+      out.push({
+        band: BAND.ciFailing,
+        text: `CI failing${red.length > 1 ? ` on ${red.length} PRs` : ""}${
+          names.length ? ` — ${[...new Set(names)].slice(0, 3).join(", ")}` : ""
+        }`,
+      });
+    }
+    const decisions = decisionsReason(item);
+    if (decisions) out.push({ band: BAND.decision, text: decisions });
     const unanswered = unansweredCount(meta);
     if (unanswered > 0) {
       out.push({
@@ -162,6 +200,7 @@
     BAND,
     parseStamp,
     unansweredCount,
+    ciFailingPrs,
     sessionReason,
     workflowReasons,
     attentionRows,

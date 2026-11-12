@@ -584,7 +584,9 @@
   /// is told to leave it alone), unlocks what depended on it, and may hand the
   /// waves' draft PRs to GitHub review — the one effect that leaves clash,
   /// so it is offered (`drafts`), never assumed. Null when nothing waits.
-  function signOffModel(item, prs) {
+  /// `seals` (`workflow_wave_seal_preview`) is what the sign-off would seal,
+  /// per wave and repository; absent, nothing is checked.
+  function signOffModel(item, prs, seals = null) {
     const bar = waveBarState(item);
     if (!bar || !bar.review.length) return null;
     const board = waveBoard(item);
@@ -592,8 +594,11 @@
     const round = bar.review.map((id) => byId.get(id)).filter(Boolean);
     const names = round.map(waveLabel).join(", ");
     const unlocked = unlockedBy(board, bar.review);
+    const sealed = (seals || []).flatMap((s) => (s.repos || []).map((r) => `${r.repo} @ ${(r.head || "").slice(0, 7)}`));
     const effects = [
-      `Seals ${round.length > 1 ? "their" : "its"} work at the current commit — later agent rounds are told it is accepted and to leave it alone.`,
+      `Seals ${round.length > 1 ? "their" : "its"} work${
+        sealed.length ? ` (${sealed.join(", ")})` : " at the current commit"
+      } — later agent rounds are told it is accepted and to leave it alone.`,
       unlocked.length
         ? `Unlocks ${unlocked.map(waveLabel).join(", ")}.`
         : bar.kind === "approve-last"
@@ -606,6 +611,27 @@
     for (const w of round)
       for (const b of waveBlockers(item, w, prs))
         if (!b.hard) warnings.push(`${waveName(w)}: ${b.text}.`);
+    // What the seal would actually hold: unpushed commits and uncommitted
+    // changes are said; a wave with nothing to seal must be confirmed.
+    const empty = [];
+    for (const s of seals || []) {
+      const w = byId.get(s.wave);
+      if (!w) continue;
+      const repos = s.repos || [];
+      for (const r of repos) {
+        if (r.unpushed) warnings.push(`${waveName(w)}: ${r.unpushed} commit${r.unpushed === 1 ? "" : "s"} on ${r.repo} (${r.branch}) not pushed.`);
+        if (r.dirty) warnings.push(`${waveName(w)}: uncommitted changes in ${r.repo} (${r.dirty} file${r.dirty === 1 ? "" : "s"}).`);
+      }
+      // A wave branch counts as work; the item branch only when it moved
+      // since the wave started on it.
+      const moved = repos.some((r) => r.sinceStart == null || r.sinceStart > 0);
+      const hasPrs = wavePrs(w, prs).prs.length > 0;
+      if (!hasPrs && (!repos.length || !moved)) empty.push(w.id);
+    }
+    if (empty.length)
+      warnings.push(
+        `${waveList(empty)}: nothing to seal — no wave branch with commits and no PR. Signing off accepts work that may not exist.`
+      );
     // A PR shared by several waves of the round is offered once, naming them.
     const drafts = [];
     for (const w of round)
@@ -621,6 +647,8 @@
       warnings,
       drafts,
       okLabel: `Sign off ${waveList(bar.review)}`,
+      // Signing off a wave with nothing behind it needs a deliberate tick.
+      confirmEmpty: empty.length ? `Sign off ${waveList(empty)} anyway` : null,
     };
   }
 

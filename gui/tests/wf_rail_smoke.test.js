@@ -49,7 +49,7 @@ function run(subView = "plan", sessions = []) {
   box.window = box;
   vm.createContext(box);
   for (const f of ["wf-prs.js", "wf-waves.js", "wf-rail.js"]) vm.runInContext(dist(f), box);
-  for (const fn of ["wfPrStateChip", "wfRenderRail"]) vm.runInContext(extractFunction(APP, fn), box);
+  for (const fn of ["wfPrHealthEl", "wfPrStateChip", "wfRenderRail"]) vm.runInContext(extractFunction(APP, fn), box);
   const rail = stubEl("aside");
   box.wfRenderRail(rail, {}, ITEM, { subView });
   return rail;

@@ -66,6 +66,21 @@ The kickoff prompt gives you:
 - **Node** — present only on a **dive**: the one part (`3`, `3.2`, `3.2.1`) this
   run explains one level deeper. A dive has no `Round:` and appends no round
   entry. See "Dive mode".
+- **Waves** — optional, only with `Target: explain-diff` on a multi-wave item.
+  ``Waves: w2 (API; branch `item-w2`; PRs <url>, <url>; since abc1234). Signed
+  off: w1. Not started: w3 — not missing.`` — explain **only the waves in
+  review**, each on its own change: its PRs' diffs (`gh pr diff <url>`) when
+  it lists PRs, else `git diff <parent>...<wave branch>` (the branch it was
+  based on; `<since sha>` when you cannot tell). Title the document after the
+  waves (`Wave 2 — API`), say in its first lines which waves it covers, and
+  mention signed-off waves only where the change builds on them. clash keeps
+  this document as that wave's record when it is signed off, so it must stand
+  on its own. `Waves: none in review` — explain the fix round's changes.
+  ``Waves: all N signed off — this round covers the whole project`` — explain
+  the project as delivered: every wave's change as one picture, the waves as
+  its top-level parts, and how they connect.
+- **Repos** — optional, on an item that lives in a workspace of repositories:
+  the change is spread over several of them; read each worktree or PR named.
 - **Depth** — advisory; err toward reading enough real code that the
   explanation is grounded, not paraphrased from the diff
 - **Publish** — normally `local`; this skill never posts to the PR itself

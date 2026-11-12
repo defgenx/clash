@@ -38,9 +38,10 @@ workflows are a structured store.
 ├── drift.json         # its areas as a drill-down index; drift/<id>.* are dives
 ├── annotations.json   # line-level diff comments: {"annotations": [ … ]}
 ├── handoff.md         # the executor's note to the human (overwritten every phase)
+├── decisions.json     # the hand-offs' decisions and the human's answers (clash-owned)
 ├── explainers.json    # explainer rounds running alongside the item (clash-owned)
 ├── run.json           # the check run in flight + finished runs (clash-owned)
-├── history/<NNN>/     # per-iteration snapshots (diff.patch + plan.md + annotations.json)
+├── history/<NNN>/     # per-iteration snapshots (diff.patch + plan.md + annotations.json + handoff.md)
 └── plan-history/      # every recorded revision of plan.md (index.json + NNNN.md), clash-owned
 ```
 
@@ -66,6 +67,7 @@ explainers never write it; clash and the GUI only read it (the item's
 ## Done
 - …
 ## Unsure / needs your decision
+- [D<n>] <question> — options: a) … b) … — recommended: a
 - … (or "nothing")
 ## Checked
 - tests/linters run and their result, or what could not be run and why
@@ -74,6 +76,46 @@ explainers never write it; clash and the GUI only read it (the item's
 
 Its `**Next:**` line uses the same vocabulary as a review round's (see *Agent
 review rounds*).
+
+### Decisions
+
+The *Unsure / needs your decision* bullets are **decisions**: questions only
+the human can answer. `handoff.md` is overwritten every phase, so clash keeps
+them in the clash-owned `decisions.json`
+(`{"decisions": [{id, text, options: [{key, text}], recommended,
+firstSeenIteration, status: open|answered|dropped, answer, answeredAt,
+deliveredIteration}], "handoffHash"}`) and the GUI's **❓ Decisions** tab
+answers them. The pure half is `application::decisions`.
+
+- **Format.** `- [D<n>] <question> — options: a) … b) … — recommended: a`.
+  Options and recommendation are optional; options may also be nested
+  `a) …` bullets and `recommended:` a nested line. The id may be written
+  `[D3]`, `**D3**`, `D3:` or `(D3)`. "nothing"/"none" bullets are skipped.
+  A bullet without an id is matched to an existing decision by its text,
+  else given the next free id — which the next kickoff tells the agent, so
+  it sticks.
+- **Sync.** Every item listing merges the hand-off into the file, but only
+  when the hand-off changed (its hash is stored), and writes only on change.
+  A new id is added open; an open one takes the newer wording and options;
+  an answered or dropped one is never reopened by being listed again. An
+  open decision the hand-off no longer lists stays open — the point is that
+  it survives the next agent forgetting it; the human drops it. Ids are
+  never reused: a new one is one past the highest ever used. A malformed
+  file is left alone (no sync, and answering fails) rather than overwritten.
+- **`Decisions:` kickoff field** — every executor kickoff, and every judging
+  review's (drift, plan, code, verdict; never an explainer's):
+  `Decisions: D3 (answered: "a) keep it"), D5 (open); a new one takes D6.`
+  It names the answers not yet handed to an earlier iteration and the ids
+  still open; `none open` when every decision is settled; absent when the
+  item has none. The executor applies the answers and re-lists open ones
+  under their ids; reviewers judge against the answers and never report an
+  open decision as a finding.
+- **Delivery.** An answer is handed to a round once: an executor launch
+  stamps `deliveredIteration` with the item's iteration (a relaunch at that
+  iteration carries it again), and a change request appends every answer not
+  yet handed out to its `review.md` section as `### Decisions` and stamps
+  the iteration it starts. An answered decision a later hand-off lists again
+  is handed out again.
 
 `(project, slug)` — the directory path — is the identity; `meta.json` never
 overrides it. Renaming an item (⚙ Settings, or **Rename…**) rewrites
@@ -1068,6 +1110,18 @@ The flow, on the GUI's buttons:
    waves' draft PRs ready for review, unticked by default and run through the
    one mark-ready path (`wfMarkPrReady`). The card of a signed-off wave shows
    when and at which range it was sealed.
+   **The seal is per repository, and checked before the click.**
+   `workflow_wave_seal_preview` (also run by the sign-off itself) finds each
+   wave's branch in every repository the item touches (a workspace item's
+   discovered repositories, else its own) — or, on a one-repository item, the
+   item branch for a wave started there, with its commits since the wave's
+   start — and reports each head, its commits no remote has, and uncommitted
+   changes in the worktree that has it checked out (`WaveSeal`/`RepoSeal`).
+   The dialog lists them as "still open"; a wave with no PR and no branch
+   with commits ("nothing to seal") needs a ticked *Sign off anyway*. The
+   sign-off records `meta.waves.repoEnds[wave][repo] = head`, and later
+   kickoffs name those (`Signed off: w2 (api@abc1234, web@def5678)`) instead
+   of one checkout's range.
    With nothing waiting, **▶ Start next waves…** starts the next round. A
    change request keeps the round's scope (the fix round continues the same
    waves); one made between waves launches with `Waves: none of N started — a
@@ -1075,6 +1129,29 @@ The flow, on the GUI's buttons:
    signed-off waves; start no wave. Signed off: …` once some are signed off).
    Moving the item back to `draft`, `planning` or `plan-review` clears the
    round's scope: the plan is open again, so no wave is in flight.
+   **Explanations and plan comparisons are per wave.** A ◫ Explain changes or
+   ⇄ Compare plan vs changes round on a waved item carries the same review
+   `Waves:` field as a code review (the explainer explains only the waves in
+   review, each on its own PRs or branch), and clash records what it covers
+   beside the live document: `<stem>.scope.json` (`DocScope`: `waves`,
+   `whole`, `startedAt`, for `explain-diff` and `drift`). At sign-off,
+   `approve_workflow_waves` freezes each live document into `waves/<id>/` for
+   every signed-off wave it was written for (the pure `waves::freeze_for`:
+   the scope names the wave and the document is not older than the round's
+   launch — so a document about another wave is never filed under this one):
+   every form, view page and drill-down level. `WorkflowItem.waveDocs` lists
+   the kept copies and `docScopes` what the live documents cover; the two
+   tabs get a picker (*Current · Wave 3* / *Wave 2 · signed off*) and read a
+   copy through `get_workflow_explain_tree`/`get_workflow_explain_node` with
+   `wave`. A kept copy is read-only: no dives start from it. Once every wave
+   is signed off, the review field becomes ``Waves: all N signed off (…) —
+   this round covers the whole project`` and the round's scope is `whole`:
+   the drift reviewer then judges what per-wave rounds could not see — what
+   fell between waves, a later wave undoing an earlier one, cross-wave
+   contracts — and the explainer draws the project as delivered. The
+   recommender (`wfNextStep`) proposes ⇄ Compare plan vs changes for the
+   waves in review until a comparison covers them, and the whole-project one
+   once every wave is signed off and none was run.
 4. The item's own approvals — **Approve → done**, **Approve → PR draft**,
    **Mark done** — are hidden while waves remain; on the last round they
    sign off its waves on the way (`wfTransition`). Each wave's PRs are opened
@@ -1244,6 +1321,33 @@ commit in a main checkout — and the repositories already in play.
   boxes, with their uncommitted and local-only counts.
 - An item created with **One repository…** works exactly as before.
 
+### Keeping the notes small
+
+`review.md` is re-read by every executor round, so what lands there is kept
+short. Applying a long review round (more than ~3 KB of findings) writes a
+note *by reference*: the instruction, the round's heading in
+`agent-review.md` (append-only, so the reference cannot drift) and an index —
+section headings plus each finding's first line (`findingsIndex` in
+`gui/dist/wf-plan.js`). The evidence and confidence lines stay in
+`agent-review.md`, which the executor reads in full for that round. A short
+round is still pasted whole. The `clash-workflow` skill reads the latest
+`## Iteration` in full and earlier ones only when the note points back or a
+decision's reason is needed.
+
+### Worktree setup
+
+A worktree clash or the agent creates is a bare checkout: no installed
+dependencies, no generated env files, so tests and commit hooks that need
+them fail (a real hand-off: specs never ran and commits were left undone
+because the pre-commit hook needed a bundle). Code-writing kickoffs
+(`implement`, `pr`, and every review-only round) carry `Setup:` — the pure
+`application::workspace::setup_clause` over each repository's
+`.superset/config.json` `setup` scripts (`repo_config::load_repo_config`;
+the item's own repository, or a workspace item's discovered ones, plus the
+rule to look for that file in any repository the agent adds). clash does not
+run them itself: they can be long (one copies gigabytes of Docker volumes)
+and only the agent knows whether the round needs them.
+
 ### Workspace — where an executor round runs
 
 Decided per launch by the pure `resolve_work_dir` (`application::workflow`),
@@ -1389,7 +1493,8 @@ existed and must keep working); only hosts recognizably another forge
 (gitlab, bitbucket) map to `none` until they have an implementation.
 
 clash records the PR in `meta.json.pr` (`url`, `number`, `draft`, `state`,
-`lastCheckedAt`, `unansweredComments`, `headRef`, `baseRef`) via the forge.
+`lastCheckedAt`, `unansweredComments`, `headRef`, `baseRef`, `health`) via the
+forge.
 
 **Identity-shaped PR errors are recoverable in place, never dead ends.**
 Commands that need a PR identity return machine prefixes — `no-pr:` (nothing
@@ -1416,7 +1521,30 @@ to (clash-only, refreshed with the rest of the PR state, absent until first
 fetched). It exists so the GUI's "Answer PR comments" action — a
 `respond-pr-comments` round launched as its own button — can show whether such a
 round has work waiting. It is advisory: the count is up to a poll stale and
-capped at one API page, and the reviewer re-fetches the comments itself.
+covers at most ten pages of 100 comments (threads span pages, so every page is
+merged before counting), and the reviewer re-fetches the comments itself.
+
+### PR health
+
+`health` (clash-only, absent until first fetched) is what the PR's checks,
+mergeability and review say, reduced by the pure `gh::pr_health` from the same
+`gh pr view` call that reads the state — no extra forge call:
+
+| Field | Values | From |
+|---|---|---|
+| `checks` | `pass` · `fail` · `pending` · `none` | `statusCheckRollup`: any failing check → `fail`, else anything unfinished → `pending`. A re-run check counts once, by its latest run. |
+| `failing` | up to 5 check names | the failing checks (check-run name or status context) |
+| `mergeable` | `yes` · `conflicts` · `unknown` | `mergeable` (`unknown` while GitHub is still computing it) |
+| `behind` | `true` when set | `mergeStateStatus == BEHIND` (the base requires an up-to-date branch) |
+| `review` | `approved` · `changes` · `required` · absent | `reviewDecision` |
+
+Only states are kept — no timestamps, durations or URLs — so the refresh's
+"write meta only on change" rule holds: a PR whose CI stands still compares
+equal poll after poll, and a flip from `pending` to `fail` is one write. The
+GUI shows it on every PR chip and row, the next-step recommender turns a red
+build or a conflicting/behind PR into a suggested *Request changes* with the
+note pre-written (never on autopilot), and the attention inbox lists items
+whose open PR fails CI.
 
 ### Linked PRs (multi-repo work)
 
@@ -1880,6 +2008,11 @@ walks an ordered list of checks per stage, for example at `diff-review`:
 5. there is a plan and nothing has compared it with the change yet, or an
    agent's `Next:` asked for it → **Compare plan vs changes**
 6. otherwise → **Approve** (to the PR stage when a PR exists, else done)
+
+Ahead of all of them, at every decision stage (`plan-review` too): the agent's
+open decisions → **❓ Decisions** (`decisions`, never autopilot) — answering
+costs nothing, and the answers ride into whatever round follows, an applied
+review included.
 
 The first that fires wins, except that **every check pass that is due is
 recommended together**: when the winner is a check (3–5), the strip shows all

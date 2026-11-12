@@ -107,6 +107,43 @@ pub fn workspace_clause(workspace: &str, branch: &str, repos: &[ItemRepo]) -> St
     out
 }
 
+/// The `Setup:` kickoff field: each repository's own worktree setup (its
+/// `.superset/config.json` `setup` scripts), which a fresh worktree has not
+/// run. `workspace` adds the rule for repositories not listed. Empty when
+/// there is nothing to say.
+pub fn setup_clause(repos: &[(String, Vec<String>)], workspace: bool) -> String {
+    let named: Vec<String> = repos
+        .iter()
+        .filter(|(_, scripts)| !scripts.is_empty())
+        .map(|(repo, scripts)| {
+            format!(
+                "{repo}: {}",
+                scripts
+                    .iter()
+                    .map(|s| format!("`{}`", s.trim()))
+                    .collect::<Vec<_>>()
+                    .join(" then ")
+            )
+        })
+        .collect();
+    if named.is_empty() && !workspace {
+        return String::new();
+    }
+    let mut out = String::from(" Setup:");
+    if !named.is_empty() {
+        out.push_str(&format!(" {} —", named.join("; ")));
+    }
+    out.push_str(
+        " a new worktree has not run its repository's setup: run it from the worktree root          before tests, builds or commit hooks need the environment, and say in the hand-off's          Checked what could not run and why.",
+    );
+    if workspace {
+        out.push_str(
+            " In a repository you add a worktree to, its setup is the `setup` list of its              `.superset/config.json`, when it has one.",
+        );
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +172,23 @@ mod tests {
         let https = "[remote \"upstream\"]\n\turl = https://github.com/x/y\n[remote \"origin\"]\n\turl = https://github.com/o/r.git\n";
         assert_eq!(origin_slug(https).as_deref(), Some("o/r"));
         assert_eq!(origin_slug("[core]\n"), None);
+    }
+
+    #[test]
+    fn the_setup_field_names_each_repositorys_own_setup() {
+        let repos = vec![
+            (
+                "alumni_connect".to_string(),
+                vec!["script/worktree/superset-hooks.sh setup".to_string()],
+            ),
+            ("api".to_string(), vec![]),
+        ];
+        let c = setup_clause(&repos, false);
+        assert!(c.starts_with(" Setup: alumni_connect: `script/worktree/superset-hooks.sh setup` — a new worktree"), "{c}");
+        assert!(!c.contains("api:"));
+        assert!(!c.contains(".superset/config.json"));
+        assert_eq!(setup_clause(&[("api".into(), vec![])], false), "");
+        assert!(setup_clause(&[], true).contains("`.superset/config.json`"));
     }
 
     #[test]

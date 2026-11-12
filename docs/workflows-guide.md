@@ -61,6 +61,9 @@ looked up in its own repository, so a link to another repo is refused by name
 rather than resolved to whatever local PR shares the number. No plan is written
 and no draft-PR stage runs, since the PR isn't clash's.
 
+When a repository ships worktree setup scripts (`.superset/config.json`), the
+agent is told about them and runs them before it needs tests or commit hooks.
+
 Planning reads the repo in place. On a one-repository item, the first round that
 writes code gets its own git worktree and branch, unless the item is set to work
 in place.
@@ -155,7 +158,7 @@ An item tab opens in one of two views (*Settings → Appearance → Workflow ite
 view*), over the same documents and actions:
 
 - **Workbench** (default) — a grouped outline on the left: **Build** (Plan,
-  Diff), **Feedback** (Change requests, Agent reviews, Hand-off), **Explained**
+  Diff), **Feedback** (Change requests, Agent reviews, Decisions, Hand-off), **Explained**
   (Plan explained, Changes explained, Plan vs changes), **History** (Revisions,
   Timeline), with ⚙ Settings at the bottom. Counts and open comments show as
   badges, a document not written yet is dimmed. The main column opens on the
@@ -168,8 +171,8 @@ view*), over the same documents and actions:
   the item's context in view whatever you read, beside the next-step card and
   the content: **Waves** (where the project stands, a chip per wave), **Pull
   requests** (counts, when they were last checked, a chip per PR with its
-  state, refresh) and **Agents** (the item's sessions, running first — click to
-  open). The header then drops its PR and wave chips, which the rail repeats,
+  state, refresh), **Decisions** (while the agent's questions wait) and
+  **Agents** (the item's sessions, running first — click to open). The header then drops its PR and wave chips, which the rail repeats,
   and a card whose tab is open is left out. In a narrow tab (a split pane, a
   small window) there is no rail.
 - **Tabs** — one row of tabs above the content and the action bar below it.
@@ -186,6 +189,7 @@ also runs by itself the first time you open an item).
 | **Diff** | the change, with line comments; its source picker can also show a linked PR's diff (view-only) |
 | **Change requests** | *your* notes, one section per round — what the next agent round reads first |
 | **↩ Hand-off** | the workflow agent's note from its last phase: what it did, what it is unsure about, what it tested, what it suggests next |
+| **❓ Decisions (n)** | the questions the agent asked you, kept across rounds — see [Answering decisions](#answering-decisions) |
 | **Agent reviews (n)** | every review round's verdict and findings, with jump chips, opening on the latest |
 | **◫ Plan explained** / **◫ Changes explained** | the explainer's two documents (see [Explaining](#explaining)) |
 | **⇄ Plan vs changes** | the latest plan-vs-changes comparison |
@@ -235,6 +239,10 @@ keeps going there.
   waited for it. The dialog lists what is still open (comments, PRs not
   merged, threads) and can also mark the wave's draft PRs ready for review on
   GitHub — unticked unless you tick it.
+- Before you sign a wave off, clash checks what it would seal in every
+  repository: commits not pushed yet and uncommitted changes are listed, and
+  a wave with no PR and no commits on its branches asks you to tick *Sign off
+  anyway*. Signing off records where each repository's wave branch stood.
 - **Request changes** during a wave sends the fix round back to the same
   waves. Moving the item back to the plan (draft, planning or plan review)
   ends the round's waves: nothing is in flight until you start waves again.
@@ -242,6 +250,13 @@ keeps going there.
   are in review, and sign them off on the way. Each wave's PRs are opened from
   its own branch, so they can be reviewed, merged and deployed one wave at a
   time.
+- **Explain changes** and **Compare plan vs changes** work wave by wave: a
+  round explains or compares only the waves in review, and when you sign a
+  wave off, its explanation and its comparison are kept as that wave's
+  record. Both tabs have a picker to read the current document or any signed
+  -off wave's. Once every wave is signed off, the next comparison covers the
+  whole project — what fell between waves, what a later wave undid — and the
+  suggestion strip proposes it before you finish the item.
 - A merged PR does not finish a project in waves. A single task closes when
   its PR merges; a project in waves closes on a merge only once every wave is
   signed off, so the first wave's PR landing on main leaves the rest to do.
@@ -312,8 +327,8 @@ that round's prompt. The composer offers:
 
 ⌘↵ sends, and a dismissed composer keeps its draft.
 
-Recording a round freezes the iteration first (diff, plan and comments under
-`history/`), so every round has a before and after. Where the request lands
+Recording a round freezes the iteration first (diff, plan, comments and the
+agent's hand-off under `history/`), so every round has a before and after. Where the request lands
 decides what the agent may touch:
 
 - At **plan review**, the round revises the plan.
@@ -321,6 +336,27 @@ decides what the agent may touch:
   amend the plan, use **↩ Move to… → plan-review** first.
 
 When the item has a PR, the fix round pushes so the PR follows.
+
+## Answering decisions
+
+The agent ends each phase with the questions only you can answer, numbered
+`D1`, `D2`… with the options it sees and the one it recommends. clash keeps
+them across rounds — the hand-off itself is rewritten every phase — in the
+**❓ Decisions** tab, and the bar shows **❓ Decisions (n)** at every stage
+parked on you; it is the suggested next step while any is open, ahead of
+approving or applying a review. The inbox row of the item says how many wait.
+
+Click an option, or write your own answer, or **Drop** a question nobody needs
+answered any more. Answered and dropped ones fold away below, and can be
+answered again. An answer goes to the next round — whatever starts it:
+
+- the next agent launch names it in its kickoff (`Decisions: D3 (answered: …)`);
+- your next change request appends it to the note under `### Decisions` (the
+  composer says which answers ride along).
+
+Each answer is handed out once; the agent re-asks under the same id only if it
+still could not settle it. A question the agent stops listing stays until you
+answer or drop it.
 
 ## Check runs
 
@@ -613,6 +649,14 @@ totals across their worktrees, branches and sessions. **✕** ends selecting.
   the origin remote (GitHub Enterprise included). `none` hides every PR feature.
 - A command that needs a PR the item doesn't know asks for its URL, attaches it
   and retries. A review round can run locally instead.
+- **PR health** rides on every PR chip and row, refreshed with the PR's state:
+  ✓ / ✗ / ● for CI passing, failing (hover for the failing checks) or running,
+  then *conflicts*, *behind base*, and *approved* or *changes requested*. A
+  red build or a PR that conflicts with (or is behind) its base becomes the
+  suggested next step: **✎ Request changes** with the note already written
+  (`CI is failing on api#12: lint. Fix the build.`, `Rebase feat/x onto main
+  and resolve the conflicts.`), for you to edit and send. The inbox lists
+  items whose PR fails CI.
 
 ## Many pull requests
 
@@ -843,8 +887,8 @@ configured webhook. Your own clicks never post.
 - `review.md` (your decisions) and `agent-review.md` (the reviewers' rounds);
 - `annotations.json`;
 - `explain-plan.*`, `explain-diff.*` and `drift.*`;
-- `handoff.md`, `explainers.json` and `run.json`;
-- `history/<NNN>/` round snapshots.
+- `handoff.md`, `decisions.json`, `explainers.json` and `run.json`;
+- `history/<NNN>/` round snapshots (the hand-off included).
 
 The contract for what agents may write, and when, is
 [workflows.md](workflows.md).

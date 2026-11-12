@@ -21,7 +21,7 @@
   /// explains it, and how it got here. Settings stand apart, at the bottom.
   const OUTLINE_GROUPS = [
     { id: "build", label: "Build", ids: ["waves", "plan", "diff", "prs"] },
-    { id: "feedback", label: "Feedback", ids: ["review", "agentReview", "handoff"] },
+    { id: "feedback", label: "Feedback", ids: ["review", "agentReview", "decisions", "handoff"] },
     { id: "explained", label: "Explained", ids: ["explainPlan", "explainDiff", "drift"] },
     { id: "history", label: "History", ids: ["revisions", "history"] },
   ];

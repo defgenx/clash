@@ -10,6 +10,7 @@
 //! ├── review.md          # append-only iteration audit trail (clash-written)
 //! ├── agent-review.md    # append-only agent review rounds (agent-written)
 //! ├── annotations.json   # AnnotationsFile — line-level diff comments
+//! ├── decisions.json     # DecisionsFile — the hand-offs' decisions (clash-only)
 //! └── history/<NNN>/     # per-iteration snapshots (diff.patch + annotations)
 //! ```
 //!
@@ -70,9 +71,16 @@ pub const ANNOTATIONS_FILE: &str = "annotations.json";
 /// The executor's note to the human at the end of each phase, overwritten
 /// every phase. Agent-written, read-only to clash.
 pub const HANDOFF_FILE: &str = "handoff.md";
+/// clash-only record of the decisions the hand-offs asked for — see
+/// `application::decisions`.
+pub const DECISIONS_FILE: &str = "decisions.json";
 /// clash-only record of the explainer rounds launched alongside the item's
 /// other agents — see `WorkflowExplainer`.
 pub const EXPLAINERS_FILE: &str = "explainers.json";
+/// Where each signed-off wave's documents are frozen: `waves/<id>/`.
+pub const WAVE_DOCS_DIR: &str = "waves";
+/// The stems whose documents are kept per wave.
+pub const WAVE_DOC_STEMS: [&str; 2] = ["explain-diff", "drift"];
 /// clash-only record of the check run in flight — see `RunBatch`.
 pub const RUN_FILE: &str = "run.json";
 /// The waves of a multi-wave item, written by the planner (plan phases) —
@@ -222,6 +230,13 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
     } else {
         (None, Default::default())
     };
+    let handoff_md = std::fs::read_to_string(dir.join(HANDOFF_FILE)).unwrap_or_default();
+    // A finished item's hand-off is final: its decisions are shown, not synced.
+    let decisions = if terminal {
+        read_decisions_in(&dir).unwrap_or_default().decisions
+    } else {
+        sync_decisions_in(&dir, &handoff_md, meta.iteration).decisions
+    };
     Ok(WorkflowItem {
         project: project.to_string(),
         slug: slug.to_string(),
@@ -242,9 +257,8 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         review_rounds,
         review_streaks,
         explainers: explainer_states,
-        handoff: crate::application::workflow::parse_handoff(
-            &std::fs::read_to_string(dir.join(HANDOFF_FILE)).unwrap_or_default(),
-        ),
+        handoff: crate::application::workflow::parse_handoff(&handoff_md),
+        decisions,
         run: run.batch,
         autopilot_steps: run.autopilot_steps,
         // Stacking is a setting plus a forge question; the GUI layer answers it.
@@ -255,6 +269,11 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         waves: None,
         // Found by scanning the workspace's checkouts: the GUI layer.
         repos: Vec::new(),
+        doc_scopes: WAVE_DOC_STEMS
+            .iter()
+            .filter_map(|stem| read_doc_scope_in(&dir, stem).map(|s| (stem.to_string(), s)))
+            .collect(),
+        wave_docs: read_wave_docs_in(&dir),
         // The forge's answers live in the GUI process.
         pr_checked_at: 0,
         pr_errors: Default::default(),
@@ -621,17 +640,150 @@ pub fn read_explain_levels(
     project: &str,
     slug: &str,
     target: crate::domain::workflow::ReviewTarget,
+    wave: Option<&str>,
 ) -> Result<Vec<crate::application::explain_tree::RawLevel>> {
     Ok(read_explain_levels_in(
-        &existing_item_dir(root, project, slug)?,
+        &tree_home(&existing_item_dir(root, project, slug)?, wave)?,
         target,
     ))
+}
+
+/// A wave id as a path component: what `waves.json` ids look like, never a
+/// separator or `..`.
+pub fn valid_wave_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// The folder a tree's documents live in: the item's, or a wave's frozen
+/// copy (`waves/<id>/`).
+fn tree_home(item_dir: &Path, wave: Option<&str>) -> Result<PathBuf> {
+    match wave.map(str::trim).filter(|w| !w.is_empty()) {
+        None => Ok(item_dir.to_path_buf()),
+        Some(w) if valid_wave_id(w) => Ok(item_dir.join(WAVE_DOCS_DIR).join(w)),
+        Some(w) => Err(parse_err(format!("Not a wave: '{}'", w))),
+    }
+}
+
+fn scope_path(dir: &Path, stem: &str) -> PathBuf {
+    dir.join(format!("{stem}.scope.json"))
+}
+
+pub fn read_doc_scope_in(dir: &Path, stem: &str) -> Option<crate::domain::workflow::DocScope> {
+    serde_json::from_str(&std::fs::read_to_string(scope_path(dir, stem)).ok()?).ok()
+}
+
+/// Record which waves the round about to write `stem` covers.
+pub fn write_doc_scope(
+    root: &Path,
+    project: &str,
+    slug: &str,
+    stem: &str,
+    scope: &crate::domain::workflow::DocScope,
+) -> Result<()> {
+    let dir = existing_item_dir(root, project, slug)?;
+    write_atomic(
+        &scope_path(&dir, stem),
+        serde_json::to_string_pretty(scope)?.as_bytes(),
+    )
+    .map_err(DomainError::from)
+}
+
+/// When the item's current `stem` document was last written, if it exists.
+pub fn doc_written_at(root: &Path, project: &str, slug: &str, stem: &str) -> Option<i64> {
+    let dir = existing_item_dir(root, project, slug).ok()?;
+    [format!("{stem}.md"), format!("{stem}.html")]
+        .iter()
+        .filter_map(|n| {
+            let p = dir.join(n);
+            has_content(&p).then(|| mtime_ms(&p)).flatten()
+        })
+        .max()
+}
+
+fn read_wave_docs_in(
+    dir: &Path,
+) -> std::collections::BTreeMap<String, crate::domain::workflow::WaveDocs> {
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(entries) = std::fs::read_dir(dir.join(WAVE_DOCS_DIR)) else {
+        return out;
+    };
+    for e in entries.flatten() {
+        let id = e.file_name().to_string_lossy().into_owned();
+        if !valid_wave_id(&id) || !e.path().is_dir() {
+            continue;
+        }
+        let w = e.path();
+        let (dm, dh) = root_forms(&w, "explain-diff");
+        let (fm, fh) = root_forms(&w, "drift");
+        let docs = crate::domain::workflow::WaveDocs {
+            diff: crate::domain::workflow::ExplainForms { md: dm, html: dh },
+            drift: crate::domain::workflow::ExplainForms { md: fm, html: fh },
+        };
+        if docs.diff.any() || docs.drift.any() {
+            out.insert(id, docs);
+        }
+    }
+    out
+}
+
+/// Freeze the item's current `stem` document — every form, its views, its
+/// drill-down levels and its scope record — as `wave`'s copy, replacing an
+/// earlier one.
+pub fn freeze_wave_doc(
+    root: &Path,
+    project: &str,
+    slug: &str,
+    stem: &str,
+    wave: &str,
+) -> Result<()> {
+    let dir = existing_item_dir(root, project, slug)?;
+    let dest = tree_home(&dir, Some(wave))?;
+    std::fs::create_dir_all(&dest)?;
+    let _ = std::fs::remove_dir_all(dest.join(stem));
+    if let Ok(entries) = std::fs::read_dir(dest.clone()) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with(&format!("{stem}.")) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    for e in std::fs::read_dir(&dir)?.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with(&format!("{stem}.")) && e.path().is_file() {
+            std::fs::copy(e.path(), dest.join(&name))?;
+        }
+    }
+    let sub = dir.join(stem);
+    if sub.is_dir() {
+        copy_dir(&sub, &dest.join(stem))?;
+    }
+    Ok(())
+}
+
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)?.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            copy_dir(&p, &to.join(e.file_name()))?;
+        } else {
+            std::fs::copy(&p, to.join(e.file_name()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Read one level's markdown or HTML (`form` = `md` | `html`), or one of its
 /// view pages (`view` set, HTML only). The overview is `node = ""` and reads
 /// the item's existing documents. Missing reads as empty, like every item
 /// document.
+// One argument per address part of a document (item, tree, level, form, view, wave).
+#[allow(clippy::too_many_arguments)]
 pub fn read_explain_node_doc(
     root: &Path,
     project: &str,
@@ -640,9 +792,10 @@ pub fn read_explain_node_doc(
     node: &str,
     form: &str,
     view: Option<&str>,
+    wave: Option<&str>,
 ) -> Result<String> {
     use crate::application::explain_tree::{tree_dir, valid_node_id, valid_view_id};
-    let dir = existing_item_dir(root, project, slug)?;
+    let dir = tree_home(&existing_item_dir(root, project, slug)?, wave)?;
     let stem =
         tree_dir(target).ok_or_else(|| parse_err(format!("{} has no drill-down", target)))?;
     if form != "md" && form != "html" {
@@ -713,6 +866,83 @@ pub fn write_explainers(
     .map_err(DomainError::from)
 }
 
+// ── Decisions (decisions.json) ──────────────────────────────────────────
+
+/// Serializes every read-modify-write of `decisions.json` in this process:
+/// the list-time sync and an answer from the GUI would otherwise race.
+static DECISIONS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Missing reads as empty; malformed is an error, so nothing written over it
+/// can lose the human's answers.
+fn read_decisions_in(dir: &Path) -> Result<crate::domain::workflow::DecisionsFile> {
+    match std::fs::read_to_string(dir.join(DECISIONS_FILE)) {
+        Ok(raw) => serde_json::from_str(&raw)
+            .map_err(|e| parse_err(format!("malformed {}: {}", DECISIONS_FILE, e))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn write_decisions_in(dir: &Path, file: &crate::domain::workflow::DecisionsFile) -> Result<()> {
+    write_atomic(
+        &dir.join(DECISIONS_FILE),
+        serde_json::to_string_pretty(file)?.as_bytes(),
+    )
+    .map_err(DomainError::from)
+}
+
+/// Merge the hand-off's decisions into `decisions.json`, writing only on
+/// change (the item tree is watched). A malformed file is left alone.
+fn sync_decisions_in(
+    dir: &Path,
+    handoff_md: &str,
+    iteration: u32,
+) -> crate::domain::workflow::DecisionsFile {
+    use crate::application::decisions::{handoff_hash, merge_decisions, parse_decisions};
+    let _guard = DECISIONS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut file = match read_decisions_in(dir) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("{}: {}", dir.display(), e);
+            return Default::default();
+        }
+    };
+    let parsed = parse_decisions(handoff_md);
+    // An item that never had a decision gets no file.
+    let nothing = parsed.is_empty() && !dir.join(DECISIONS_FILE).exists();
+    if merge_decisions(&mut file, &parsed, &handoff_hash(handoff_md), iteration) && !nothing {
+        if let Err(e) = write_decisions_in(dir, &file) {
+            tracing::warn!("cannot write {}: {}", dir.join(DECISIONS_FILE).display(), e);
+        }
+    }
+    file
+}
+
+pub fn read_decisions(
+    root: &Path,
+    project: &str,
+    slug: &str,
+) -> Result<crate::domain::workflow::DecisionsFile> {
+    read_decisions_in(&existing_item_dir(root, project, slug)?)
+}
+
+/// Read-modify-write `decisions.json` under the process lock; `edit` returns
+/// whether it changed anything, and only then is the file written.
+pub fn update_decisions(
+    root: &Path,
+    project: &str,
+    slug: &str,
+    edit: &mut dyn FnMut(&mut crate::domain::workflow::DecisionsFile) -> bool,
+) -> Result<crate::domain::workflow::DecisionsFile> {
+    let dir = existing_item_dir(root, project, slug)?;
+    let _guard = DECISIONS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut file = read_decisions_in(&dir)?;
+    if edit(&mut file) {
+        write_decisions_in(&dir, &file)?;
+    }
+    Ok(file)
+}
+
 // ── Check runs (run.json) ───────────────────────────────────────────────
 
 /// Missing reads as empty. Malformed also reads as empty, with a warning: the
@@ -756,7 +986,8 @@ pub fn write_run(
 /// Snapshot the current iteration into `history/{iteration:03}/`: the given
 /// diff, a frozen copy of `annotations.json`, and a frozen copy of `plan.md`
 /// (when the item has one) — without the plan copy, a revision round leaves
-/// no trace of what it changed in the plan.
+/// no trace of what it changed in the plan — and of `handoff.md` when there
+/// is one.
 ///
 /// Does NOT bump `iteration` or touch `meta.json` — the caller performs the
 /// single meta write (iteration+1 + status) *after* this succeeds, so a
@@ -777,6 +1008,12 @@ pub fn snapshot_iteration(root: &Path, project: &str, slug: &str, diff: &str) ->
     if let Ok(plan) = std::fs::read_to_string(dir.join(PLAN_FILE)) {
         if !plan.trim().is_empty() {
             write_atomic(&snap_dir.join(PLAN_FILE), plan.as_bytes())?;
+        }
+    }
+    // The hand-off is overwritten every phase: the round's copy is kept here.
+    if let Ok(handoff) = std::fs::read_to_string(dir.join(HANDOFF_FILE)) {
+        if !handoff.trim().is_empty() {
+            write_atomic(&snap_dir.join(HANDOFF_FILE), handoff.as_bytes())?;
         }
     }
     Ok(iter)
@@ -1097,6 +1334,7 @@ mod tests {
                 node,
                 "html",
                 view,
+                None,
             )
         };
         assert_eq!(read("", Some("flow")).unwrap(), "<p>flow</p>");
@@ -1111,9 +1349,65 @@ mod tests {
             ReviewTarget::ExplainDiff,
             "",
             "md",
-            Some("flow")
+            Some("flow"),
+            None,
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_signed_off_waves_documents_are_frozen_and_read_back() {
+        use crate::domain::workflow::ReviewTarget;
+        let (_g, root) = root();
+        create_item(&root, &req("p", "item", "")).unwrap();
+        let dir = root.join("p/item");
+        std::fs::write(dir.join("drift.md"), "w2 report").unwrap();
+        std::fs::write(dir.join("drift.html"), "<p>w2</p>").unwrap();
+        std::fs::write(dir.join("drift.json"), "{}").unwrap();
+        std::fs::create_dir_all(dir.join("drift")).unwrap();
+        std::fs::write(dir.join("drift/1.md"), "part").unwrap();
+        freeze_wave_doc(&root, "p", "item", "drift", "w2").unwrap();
+        // The live document moves on; the frozen one stays.
+        std::fs::write(dir.join("drift.md"), "w3 report").unwrap();
+        let read = |node: &str, wave: Option<&str>| {
+            read_explain_node_doc(
+                &root,
+                "p",
+                "item",
+                ReviewTarget::Drift,
+                node,
+                "md",
+                None,
+                wave,
+            )
+            .unwrap()
+        };
+        assert_eq!(read("", Some("w2")), "w2 report");
+        assert_eq!(read("1", Some("w2")), "part");
+        assert_eq!(read("", None), "w3 report");
+        assert!(read_explain_node_doc(
+            &root,
+            "p",
+            "item",
+            ReviewTarget::Drift,
+            "",
+            "md",
+            None,
+            Some("../x")
+        )
+        .is_err());
+        let item = load_items(&root).unwrap().into_iter().next().unwrap();
+        assert!(item.wave_docs["w2"].drift.md && item.wave_docs["w2"].drift.html);
+        assert!(!item.wave_docs["w2"].diff.any());
+        // The scope record beside the live document reads back.
+        let scope = crate::domain::workflow::DocScope {
+            waves: vec!["w3".into()],
+            whole: false,
+            started_at: 5,
+        };
+        write_doc_scope(&root, "p", "item", "drift", &scope).unwrap();
+        let item = load_items(&root).unwrap().into_iter().next().unwrap();
+        assert_eq!(item.doc_scopes["drift"], scope);
     }
 
     #[test]
@@ -1649,6 +1943,69 @@ mod tests {
         );
         // A snapshot that predates plan snapshotting reads as None, not an error.
         assert_eq!(read_history_plan(&root, "p", "planned", 7).unwrap(), None);
+    }
+
+    #[test]
+    fn a_handoffs_decisions_are_kept_and_written_only_when_it_changes() {
+        let (_g, root) = root();
+        create_item(&root, &req("p", "asks", "")).unwrap();
+        let dir = root.join("p").join("asks");
+        // A hand-off that asks nothing leaves no file behind.
+        std::fs::write(dir.join(HANDOFF_FILE), "# Hand-off\n## Unsure\n- nothing\n").unwrap();
+        load_items(&root).unwrap();
+        assert!(!dir.join(DECISIONS_FILE).exists());
+        let handoff = "# Hand-off — implement\n## Unsure / needs your decision\n- [D1] keep it?\n";
+        std::fs::write(dir.join(HANDOFF_FILE), handoff).unwrap();
+        let items = load_items(&root).unwrap();
+        assert_eq!(items[0].decisions[0].id, "D1");
+        let first = std::fs::metadata(dir.join(DECISIONS_FILE))
+            .unwrap()
+            .modified()
+            .unwrap();
+        update_decisions(&root, "p", "asks", &mut |f| {
+            crate::application::decisions::answer_decision(f, "D1", "yes", 1).is_ok()
+        })
+        .unwrap();
+        // The next hand-off overwrites handoff.md; the answer stays.
+        std::fs::write(dir.join(HANDOFF_FILE), "# Hand-off\n## Unsure\n- nothing\n").unwrap();
+        let items = load_items(&root).unwrap();
+        assert_eq!(
+            items[0].decisions[0].status,
+            crate::domain::workflow::DecisionStatus::Answered
+        );
+        // An unchanged hand-off writes nothing.
+        let written = std::fs::metadata(dir.join(DECISIONS_FILE))
+            .unwrap()
+            .modified()
+            .unwrap();
+        load_items(&root).unwrap();
+        let again = std::fs::metadata(dir.join(DECISIONS_FILE))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(written, again);
+        assert!(written >= first);
+        // A malformed file is neither synced over nor written by an answer.
+        std::fs::write(dir.join(DECISIONS_FILE), "{oops").unwrap();
+        assert!(load_items(&root).unwrap()[0].decisions.is_empty());
+        assert!(update_decisions(&root, "p", "asks", &mut |_| true).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.join(DECISIONS_FILE)).unwrap(),
+            "{oops"
+        );
+    }
+
+    #[test]
+    fn snapshot_freezes_the_handoff() {
+        let (_g, root) = root();
+        create_item(&root, &req("p", "h", "")).unwrap();
+        let dir = root.join("p").join("h");
+        std::fs::write(dir.join(HANDOFF_FILE), "# Hand-off — plan\n").unwrap();
+        snapshot_iteration(&root, "p", "h", "d").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join(HISTORY_DIR).join("001").join(HANDOFF_FILE)).unwrap(),
+            "# Hand-off — plan\n"
+        );
     }
 
     #[test]

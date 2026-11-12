@@ -77,6 +77,51 @@
     return f ? f(ids) : ids.join(", ");
   }
 
+  /// `repo#42` (`wf-prs.js`), the URL's number when it is not loaded.
+  function prName(pr) {
+    const f =
+      typeof module !== "undefined" && module.exports
+        ? require("./wf-prs.js").prChipLabel
+        : typeof window !== "undefined" && window.prChipLabel;
+    return f ? f(pr) : `#${pr.number || "?"}`;
+  }
+
+  /// The open PRs whose CI fails, and those that conflict with or are behind
+  /// their base; `known` when any open PR has health recorded at all.
+  function healthProblems(prs) {
+    const live = (prs || []).filter(
+      (p) => p.health && p.state !== "MERGED" && p.state !== "CLOSED"
+    );
+    return {
+      known: live.length > 0,
+      failing: live.filter((p) => p.health.checks === "fail"),
+      stuck: live.filter((p) => p.health.mergeable === "conflicts" || p.health.behind),
+    };
+  }
+
+  /// The change-request note that hands a red build to the next fix round.
+  function ciNote(failing) {
+    return failing
+      .map((p) => {
+        const names = (p.health.failing || []).join(", ");
+        return `CI is failing on ${prName(p)}${names ? `: ${names}` : ""}. Fix the build.`;
+      })
+      .join("\n");
+  }
+
+  /// The note for PRs that conflict with, or are behind, their base.
+  function rebaseNote(stuck) {
+    return stuck
+      .map((p) => {
+        const head = p.headRef || `the branch of ${prName(p)}`;
+        const base = p.baseRef || "its base";
+        return p.health.mergeable === "conflicts"
+          ? `Rebase ${head} onto ${base} and resolve the conflicts.`
+          : `Rebase ${head} onto ${base} — ${prName(p)} is behind it.`;
+      })
+      .join("\n");
+  }
+
   /// The agents' own recommendation, freshest source first: the latest
   /// judging round when it is about this stage's artifact, else the
   /// executor's hand-off. Unknown words were already dropped by the parser.
@@ -135,6 +180,7 @@
           : fallback;
     const open = item.openAnnotations || 0;
     const unanswered = prs.reduce((n, p) => n + (p.unanswered > 0 ? p.unanswered : 0), 0);
+    const health = healthProblems(prs);
     const it = meta.iteration || 0;
 
     // The round that hits the cap is still worth applying — its findings are
@@ -153,6 +199,16 @@
         : "",
       settled: "no review waiting to be applied",
       auto: !!pending && pending.apply === true && !pendingLoop,
+    };
+    // The executor's open questions come first: answering costs nothing, and
+    // the answers ride into whatever round follows (an applied review
+    // included). See docs/workflows.md → Decisions.
+    const openDecisionCount = (item.decisions || []).filter((d) => d.status === "open").length;
+    const decisionsCheck = {
+      id: "decisions",
+      fires: openDecisionCount > 0,
+      reason: `The agent asked ${plural(openDecisionCount, "question", "questions")} only you can answer — the next round applies your answers`,
+      settled: "no decision waiting on you",
     };
 
     switch (st) {
@@ -209,6 +265,7 @@
         const issueFn = wavesFn("wavesIssue");
         const planIssue = issueFn ? issueFn(item) : null;
         return [
+          decisionsCheck,
           applyCheck,
           {
             // The plan cannot be approved with an unreadable waves.json.
@@ -252,7 +309,17 @@
     const deep = !!said("deep-review");
     const lastDiff = meta.review && meta.review.target === "diff" ? meta.review : null;
     const neverDrift = !((item.reviewRounds || {}).drift > 0);
+    // A waved item compares each wave with its part of the plan before the
+    // wave is signed off, then the whole project once every wave is.
+    const summaryFn = wavesFn("waveSummary");
+    const wavesNow = item.waves && !item.waves.issue ? (summaryFn ? summaryFn(item) : null) : null;
+    const inReview = (meta.waves && meta.waves.scope) || [];
+    const driftScope = (item.docScopes || {}).drift || null;
+    const waveDriftDue =
+      !!wavesNow && inReview.length > 0 && !(driftScope && inReview.every((w) => (driftScope.waves || []).includes(w)));
+    const finalDriftDue = !!wavesNow && wavesNow.allDone && !(driftScope && driftScope.whole);
     const code = [
+      decisionsCheck,
       applyCheck,
       {
         id: "request-changes",
@@ -265,6 +332,38 @@
         fires: unanswered > 0,
         reason: `${plural(unanswered, "PR thread is", "PR threads are")} waiting on an answer`,
         settled: "no PR thread waiting on you",
+      },
+      {
+        // A red build is work for the executor, with the note written for it.
+        // Never autopilot: the note is a change request, and that is the
+        // human's to send.
+        id: "request-changes",
+        fires: health.failing.length > 0,
+        reason: health.failing.length
+          ? `CI is failing on ${health.failing
+              .map((p) => {
+                const names = (p.health.failing || []).join(", ");
+                return `${prName(p)}${names ? ` — ${names}` : ""}`;
+              })
+              .join("; ")}`
+          : "",
+        settled: health.known ? "CI is not failing" : "",
+        params: { prefill: ciNote(health.failing) },
+      },
+      {
+        id: "request-changes",
+        fires: health.stuck.length > 0,
+        reason: health.stuck.length
+          ? health.stuck
+              .map((p) =>
+                p.health.mergeable === "conflicts"
+                  ? `${prName(p)} conflicts with its base`
+                  : `${prName(p)} is behind its base`
+              )
+              .join("; ")
+          : "",
+        settled: health.known ? "no PR conflicts with or is behind its base" : "",
+        params: { prefill: rebaseNote(health.stuck) },
       },
       {
         id: "code-review",
@@ -300,12 +399,21 @@
         fires:
           !!facts.hasPlan &&
           !looping("drift") &&
-          !reviewedThisIteration(item, "drift") &&
-          (neverDrift || !!said("drift")),
-        reason: because(
-          said("drift"),
-          "Nothing has compared the change with the plan yet — a diff can pass review and still build something else"
-        ),
+          // On a waved item the recorded scope says whether the waves in
+          // review were compared, whatever ran earlier at this iteration.
+          (finalDriftDue ||
+            (wavesNow && waveDriftDue) ||
+            (!reviewedThisIteration(item, "drift") && (wavesNow ? !!said("drift") : neverDrift || !!said("drift")))),
+        reason: finalDriftDue
+          ? "Every wave is signed off — compare the whole project with the plan: what fell between waves, what a later wave undid"
+          : wavesNow && waveDriftDue
+            ? `${waveNames(inReview)} ${inReview.length > 1 ? "have" : "has"} not been compared with ${
+                inReview.length > 1 ? "their" : "its"
+              } part of the plan yet`
+            : because(
+                said("drift"),
+                "Nothing has compared the change with the plan yet — a diff can pass review and still build something else"
+              ),
         settled: facts.hasPlan ? "the change was compared with the plan" : "no plan to compare against",
         auto: true,
       },
@@ -432,7 +540,8 @@
   /// - `passes` — Set of check-run pass ids the stage allows; absent, checks
   ///   are recommended as buttons like any other action;
   /// - `pending` — `pendingReviewRound(item)`;
-  /// - `prs` — `itemPrs(item.meta)`;
+  /// - `prs` — `itemPrs(item.meta)`, whose `health` feeds the CI and
+  ///   conflict checks (their `params.prefill` is the change request's note);
   /// - `hasPlan` — the item has a plan phase and a written plan;
   /// - `agentStatus` — the live status of the item's recorded session
   ///   (`Thinking`, `Prompting`, `Waiting`…), when one is listed.

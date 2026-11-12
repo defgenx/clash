@@ -272,6 +272,28 @@ pub trait WorkflowRepository: Send + Sync {
         Ok(())
     }
 
+    /// Read `decisions.json` (missing reads as empty; malformed is an error,
+    /// so a write can never clobber the human's answers).
+    fn load_workflow_decisions(
+        &self,
+        _project: &str,
+        _slug: &str,
+    ) -> Result<crate::domain::workflow::DecisionsFile> {
+        Ok(Default::default())
+    }
+
+    /// Read-modify-write `decisions.json`, serialized against the list-time
+    /// sync; `edit` returns whether it changed anything, and only then is the
+    /// file written. Returns the file as it now stands.
+    fn update_workflow_decisions(
+        &self,
+        _project: &str,
+        _slug: &str,
+        _edit: &mut dyn FnMut(&mut crate::domain::workflow::DecisionsFile) -> bool,
+    ) -> Result<crate::domain::workflow::DecisionsFile> {
+        Ok(Default::default())
+    }
+
     /// Snapshot the current iteration's diff + annotations into
     /// `history/{iteration:03}/`. Returns the snapshotted iteration. Never
     /// bumps `iteration` — the caller owns the follow-up meta write.

@@ -13,6 +13,8 @@ const {
   prStateLabel,
   itemPrs,
   prStackLabel,
+  prHealthBadges,
+  prHealthTitle,
   prDashboardModel,
 } = require("../dist/wf-prs.js");
 
@@ -257,4 +259,40 @@ test("the dashboard filters: active by default, what needs you, everything", () 
   assert.deepEqual(prDashboardView(rows, { query: "api #7" }).rows.map((r) => r.slug), ["threads"]);
   assert.deepEqual(prDashboardView(rows, { query: "feat/quiet" }).rows.map((r) => r.slug), ["quiet"]);
   assert.deepEqual(v.projects, [{ name: "p", count: 3 }, { name: "web", count: 1 }]);
+});
+
+test("PR health reads as compact badges, failing checks named in the tooltip", () => {
+  const pr = (health, extra = {}) => ({ url: "u", state: "OPEN", health, ...extra });
+  const red = pr({ checks: "fail", failing: ["lint", "unit"], mergeable: "conflicts", behind: true, review: "changes" });
+  assert.deepEqual(
+    prHealthBadges(red).map((b) => [b.kind, b.text]),
+    [["fail", "✗"], ["conflicts", "conflicts"], ["behind", "behind base"], ["changes", "changes requested"]]
+  );
+  assert.match(prHealthTitle(red), /^CI failing: lint, unit · /);
+  assert.deepEqual(
+    prHealthBadges(pr({ checks: "pass", mergeable: "yes", review: "approved" })).map((b) => b.text),
+    ["✓", "approved"]
+  );
+  assert.deepEqual(prHealthBadges(pr({ checks: "pending" })).map((b) => b.text), ["●"]);
+  // Nothing to say: no checks, unknown mergeability, no review rule.
+  assert.deepEqual(prHealthBadges(pr({ checks: "none", mergeable: "unknown" })), []);
+  // Never fetched, or a PR whose CI no longer decides anything.
+  assert.deepEqual(prHealthBadges(pr(undefined)), []);
+  assert.deepEqual(prHealthBadges(pr(red.health, { state: "MERGED" })), []);
+  assert.equal(prHealthTitle(pr(undefined)), "");
+});
+
+test("itemPrs carries each PR's health, null when never fetched", () => {
+  const meta = {
+    pr: { url: "https://github.com/o/r/pull/7", health: { checks: "fail", failing: ["t"] } },
+    linkedPrs: [
+      { url: "https://github.com/o/a/pull/1", health: { checks: "pass", behind: true } },
+      { url: "https://github.com/o/b/pull/2", state: "MERGED", health: { checks: "fail" } },
+      { url: "https://github.com/o/c/pull/3" },
+    ],
+  };
+  const prs = itemPrs(meta);
+  assert.deepEqual(prs[0].health, { checks: "fail", failing: ["t"] });
+  assert.deepEqual(prs[1].health, { checks: "pass", behind: true });
+  assert.equal(prs[3].health, null);
 });

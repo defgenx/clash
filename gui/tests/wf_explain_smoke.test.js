@@ -66,6 +66,11 @@ function sandboxFor(docs, tree = []) {
   vm.runInContext(APP.slice(start, APP.indexOf("\n};", start) + 3), sandbox);
   vm.runInContext(extractFunction(APP, "wfExplainFormsFor"), sandbox);
   vm.runInContext(extractFunction(APP, "renderWfExplainView"), sandbox);
+  for (const fn of ["wfKeptWaveDocs", "wfDocScopeLabel", "wfWaveDocPicker"])
+    vm.runInContext(extractFunction(APP, fn), sandbox);
+  vm.runInContext("var wfFrozenDocView = new WeakMap();", sandbox);
+  sandbox.waveName = (id) => id;
+  sandbox.waveList = (ids) => ids.join(", ");
   sandbox.dlog = () => {};
   sandbox.WF_DIVE_COST = "Spends tokens.";
   sandbox.dives = [];
@@ -345,4 +350,32 @@ test("a part nobody explained opens a page of what is known, not clash and not a
   assert.equal(sandbox.dives.length, 1);
   assert.equal(sandbox.dives[0][3][0].id, "2");
   assert.equal(sandbox.dives[0][4].focus, "How does invalidation work?");
+});
+
+test("a signed-off wave's kept copy is read from waves/<id>/, and can't be dived into", async () => {
+  const sandbox = sandboxFor({});
+  const calls = sandbox.__calls;
+  const item = {
+    ...ITEM,
+    waves: { waves: [{ id: "w1" }, { id: "w2" }] },
+    waveDocs: { w1: { diff: { md: true, html: false }, drift: { md: false, html: false } } },
+    docScopes: { "explain-diff": { waves: ["w2"], startedAt: 1 } },
+  };
+  const root = stubEl();
+  const ts = { docWave: { diff: "w1" } };
+  await sandbox.renderWfExplainView(stubEl(), root, item, ts, "diff");
+  assert.ok(
+    calls.some(([c, a]) => c === "get_workflow_explain_node" && a.wave === "w1" && a.node === ""),
+    `the overview must come from the kept copy: ${JSON.stringify(calls)}`
+  );
+  assert.ok(calls.some(([c, a]) => c === "get_workflow_explain_tree" && a.wave === "w1"));
+  assert.deepEqual([...sandbox.wfKeptWaveDocs(item, "diff")], ["w1"]);
+  assert.deepEqual([...sandbox.wfKeptWaveDocs(item, "drift")], []);
+  assert.deepEqual([...sandbox.wfKeptWaveDocs(item, "plan")], []);
+  assert.equal(sandbox.wfDocScopeLabel(item, "diff"), "Current · w2");
+  assert.equal(sandbox.wfDocScopeLabel({ docScopes: { drift: { whole: true } } }, "drift"), "Whole project");
+  // A kept wave that disappeared falls back to the current document.
+  const ts2 = { docWave: { diff: "w9" } };
+  await sandbox.renderWfExplainView(stubEl(), stubEl(), item, ts2, "diff");
+  assert.equal(ts2.docWave.diff, "");
 });

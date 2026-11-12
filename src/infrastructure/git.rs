@@ -259,6 +259,42 @@ pub async fn local_only_commits(repo: &Path, branch: &str) -> Option<u64> {
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
+/// The commit local `branch` points at in `repo`, if it exists.
+#[allow(dead_code)]
+pub async fn branch_head(repo: &Path, branch: &str) -> Option<String> {
+    if !valid_rev(branch) {
+        return None;
+    }
+    let sha = run_git(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .await
+    .ok()?;
+    let sha = sha.trim().to_string();
+    (!sha.is_empty()).then_some(sha)
+}
+
+/// How many commits `to` has that `from` does not (`git rev-list --count
+/// from..to`), run in `dir`.
+#[allow(dead_code)]
+pub async fn commits_between(dir: &Path, from: &str, to: &str) -> Option<u64> {
+    if !valid_rev(from) || !valid_rev(to) {
+        return None;
+    }
+    run_git(dir, &["rev-list", "--count", &format!("{from}..{to}")])
+        .await
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
 /// `git worktree remove [--force] <path>` from `repo`, then a prune.
 #[allow(dead_code)]
 pub async fn worktree_remove(repo: &Path, path: &str, force: bool) -> Result<(), String> {

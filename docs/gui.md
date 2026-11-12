@@ -380,8 +380,9 @@ has waited:
 2. workflow agents that died mid-round;
 3. errored sessions;
 4. workflow items parked on a decision;
-5. PRs with open review threads;
-6. sessions waiting for your next message.
+5. workflow items whose open PR fails CI;
+6. PRs with open review threads;
+7. sessions waiting for your next message.
 
 The count turns red only when something is blocked. Clicking a row jumps to it.
 

@@ -103,6 +103,26 @@
   /// work. When the round left no findings text, the verdict is the note: a
   /// round can legitimately end in "no changes needed", and recording that is
   /// more useful than an empty section.
+  /// Past this size a round's findings are not pasted into the note: the
+  /// note lands in `review.md`, which every later round re-reads, while the
+  /// round itself stays in the append-only `agent-review.md`.
+  const APPLY_NOTE_INLINE_MAX = 3000;
+
+  /// A long round's findings as an index: section headings and each
+  /// numbered finding's first line, shortened. The evidence and confidence
+  /// lines stay in `agent-review.md`.
+  function findingsIndex(body) {
+    const out = [];
+    for (const line of body.split("\n")) {
+      if (/^#{2,4}\s/.test(line)) out.push(line.trim());
+      else if (/^\s{0,3}\d+[.)]\s/.test(line)) {
+        const t = line.trim();
+        out.push(t.length > 180 ? `${t.slice(0, 177)}…` : t);
+      }
+    }
+    return out.join("\n");
+  }
+
   function applyReviewNote(round, findings, target) {
     const n = (round && round.round) || 1;
     const what = target === "plan" ? "plan.md" : "the code";
@@ -131,6 +151,16 @@
         "Verify `low` and `medium` findings against the code before changing anything " +
         "for them, most severe first; one that does not hold is reported, not implemented."
       : "";
+    if (body && body.length > APPLY_NOTE_INLINE_MAX) {
+      const index = findingsIndex(body);
+      if (index) {
+        const heading = `## Review ${n} — ${target === "drift" ? "drift" : target === "plan" ? "plan" : "diff"}`;
+        return (
+          `${head}\n\n${how}${verify}\n\nThe full findings, with their evidence and confidence, are in ` +
+          `\`agent-review.md\` under \`${heading}\` — read them there. The list:\n\n${index}\n`
+        );
+      }
+    }
     if (body) return `${head}\n\n${how}${verify}\n\n${body}\n`;
     const verdict = ((round && round.verdict) || "").trim();
     return verdict
@@ -328,6 +358,7 @@
     planCanCompare,
     planDiffTo,
     applyReviewNote,
+    findingsIndex,
     pendingReviewRound,
     reviewAppliedState,
     wfNextReviewRound,

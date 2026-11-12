@@ -14,6 +14,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::domain::forge::{ChangeHealth, MAX_FAILING_CHECKS};
+
 /// Timeout for a read-only query (`gh auth status`, `gh pr view`, `gh pr ready`).
 /// These are one small API call; a minute is already pathological.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -51,10 +53,142 @@ pub struct GhPrView {
     /// Branch the PR is *into* — the diff base.
     #[serde(default)]
     pub base_ref_name: String,
+    /// Every check run and commit status on the head commit.
+    #[serde(default)]
+    pub status_check_rollup: Vec<RollupEntry>,
+    /// "MERGEABLE" | "CONFLICTING" | "UNKNOWN".
+    #[serde(default)]
+    pub mergeable: String,
+    /// "BEHIND" | "BLOCKED" | "CLEAN" | "DIRTY" | "UNSTABLE" | … .
+    #[serde(default)]
+    pub merge_state_status: String,
+    /// "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | "".
+    #[serde(default)]
+    pub review_decision: String,
+}
+
+/// One entry of `statusCheckRollup`: a `CheckRun` (`name`, `status`,
+/// `conclusion`) or a `StatusContext` (`context`, `state`).
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RollupEntry {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub context: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub conclusion: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub started_at: String,
+    #[serde(default)]
+    pub workflow_name: String,
 }
 
 /// The `--json` fields every `gh pr view` call in clash requests.
-const PR_VIEW_FIELDS: &str = "url,number,isDraft,state,title,headRefName,baseRefName";
+const PR_VIEW_FIELDS: &str = "url,number,isDraft,state,title,headRefName,baseRefName,\
+statusCheckRollup,mergeable,mergeStateStatus,reviewDecision";
+
+/// How one rollup entry stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckOutcome {
+    Pass,
+    Fail,
+    Pending,
+}
+
+fn check_outcome(e: &RollupEntry) -> CheckOutcome {
+    let upper = |s: &str| s.trim().to_ascii_uppercase();
+    // A StatusContext carries `state`; a CheckRun `status` + `conclusion`.
+    let verdict = if e.context.is_empty() && e.state.is_empty() {
+        if !upper(&e.status).is_empty() && upper(&e.status) != "COMPLETED" {
+            return CheckOutcome::Pending;
+        }
+        upper(&e.conclusion)
+    } else {
+        upper(&e.state)
+    };
+    match verdict.as_str() {
+        "FAILURE" | "ERROR" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE" => {
+            CheckOutcome::Fail
+        }
+        "PENDING" | "EXPECTED" | "QUEUED" | "IN_PROGRESS" | "WAITING" | "REQUESTED" | "" => {
+            CheckOutcome::Pending
+        }
+        _ => CheckOutcome::Pass,
+    }
+}
+
+/// Pure: reduce `gh pr view`'s raw health fields to a [`ChangeHealth`].
+///
+/// A re-run leaves the earlier run of the same check in the rollup, so each
+/// check (workflow + name, or status context) counts once, by its latest
+/// start. Any failure makes the PR `fail`, else anything unfinished makes it
+/// `pending`.
+pub fn pr_health(v: &GhPrView) -> ChangeHealth {
+    let mut latest: Vec<(String, &RollupEntry)> = Vec::new();
+    for e in &v.status_check_rollup {
+        let key = if e.context.is_empty() {
+            format!("{}\u{1f}{}", e.workflow_name, e.name)
+        } else {
+            e.context.clone()
+        };
+        match latest.iter_mut().find(|(k, _)| *k == key) {
+            Some(slot) if slot.1.started_at <= e.started_at => slot.1 = e,
+            Some(_) => {}
+            None => latest.push((key, e)),
+        }
+    }
+    let mut failing: Vec<String> = Vec::new();
+    let mut pending = false;
+    for (_, e) in &latest {
+        match check_outcome(e) {
+            CheckOutcome::Fail => {
+                let name = if e.context.is_empty() {
+                    &e.name
+                } else {
+                    &e.context
+                };
+                if !failing.contains(name) {
+                    failing.push(name.clone());
+                }
+            }
+            CheckOutcome::Pending => pending = true,
+            CheckOutcome::Pass => {}
+        }
+    }
+    let checks = if latest.is_empty() {
+        "none"
+    } else if !failing.is_empty() {
+        "fail"
+    } else if pending {
+        "pending"
+    } else {
+        "pass"
+    };
+    failing.truncate(MAX_FAILING_CHECKS);
+    let mergeable = match v.mergeable.trim().to_ascii_uppercase().as_str() {
+        "MERGEABLE" => "yes",
+        "CONFLICTING" => "conflicts",
+        _ => "unknown",
+    };
+    let review = match v.review_decision.trim().to_ascii_uppercase().as_str() {
+        "APPROVED" => "approved",
+        "CHANGES_REQUESTED" => "changes",
+        "REVIEW_REQUIRED" => "required",
+        _ => "",
+    };
+    ChangeHealth {
+        checks: checks.to_string(),
+        failing,
+        mergeable: mergeable.to_string(),
+        behind: v.merge_state_status.trim().eq_ignore_ascii_case("BEHIND"),
+        review: review.to_string(),
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum GhError {
@@ -461,9 +595,11 @@ struct CommentUser {
 /// `viewer` is `None` when `gh` could not say who is authenticated; the count
 /// then falls back to "threads with no reply at all", which is the same answer
 /// for every thread nobody has touched and never invents work.
+///
+/// `json` may hold several pages back to back (see
+/// [`parse_review_comment_pages`]).
 pub fn count_unanswered_review_comments(json: &str, viewer: Option<&str>) -> Result<u64, GhError> {
-    let comments: Vec<ReviewComment> =
-        serde_json::from_str(json.trim()).map_err(|e| GhError::Parse(e.to_string()))?;
+    let comments = parse_review_comment_pages(json)?;
     let Some(viewer) = viewer.map(str::trim).filter(|v| !v.is_empty()) else {
         let replied: std::collections::HashSet<u64> =
             comments.iter().filter_map(|c| c.in_reply_to_id).collect();
@@ -537,34 +673,55 @@ pub fn viewer_login(dir: &Path) -> Option<String> {
         .clone()
 }
 
+/// Review comments are fetched this many per page…
+const REVIEW_COMMENTS_PER_PAGE: usize = 100;
+/// …for at most this many pages. A PR past a thousand line comments gets a
+/// count of its first thousand: the number is a button label, not an audit.
+const MAX_REVIEW_COMMENT_PAGES: usize = 10;
+
+/// Pure: every review comment in `s`, which holds one JSON array per page
+/// back to back (`[…][…]`, the shape `gh api --paginate` also prints).
+/// Threads span pages, so they are only countable once all pages are merged.
+fn parse_review_comment_pages(s: &str) -> Result<Vec<ReviewComment>, GhError> {
+    let mut all = Vec::new();
+    for page in serde_json::Deserializer::from_str(s).into_iter::<Vec<ReviewComment>>() {
+        all.extend(page.map_err(|e| GhError::Parse(e.to_string()))?);
+    }
+    Ok(all)
+}
+
 /// Count of this PR's review-comment threads waiting on the authenticated
 /// user, via `gh api repos/{owner}/{repo}/pulls/<n>/comments`. The placeholders resolve
 /// from `dir`'s remotes; an explicit `repo` (`owner/repo`) replaces them —
-/// a linked PR's repository is not the one `dir` points at. One page of 100 —
-/// the count is advisory (a button label), not an audit.
+/// a linked PR's repository is not the one `dir` points at. Pages are
+/// requested one by one (so the walk is bounded, which `--paginate` is not)
+/// until a short page or [`MAX_REVIEW_COMMENT_PAGES`].
 pub fn pr_unanswered_review_comments(
     dir: &Path,
     number: u64,
     repo: Option<&str>,
 ) -> Result<u64, GhError> {
-    let path = match repo {
-        Some(slug) => format!("repos/{}/pulls/{}/comments?per_page=100", slug, number),
-        None => format!(
-            "repos/{{owner}}/{{repo}}/pulls/{}/comments?per_page=100",
-            number
-        ),
-    };
-    let output = run(dir, &["api", &path])?;
-    if output.status.success() {
-        count_unanswered_review_comments(
-            &String::from_utf8_lossy(&output.stdout),
-            viewer_login(dir).as_deref(),
-        )
-    } else {
-        Err(GhError::Command(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ))
+    let slug = repo.unwrap_or("{owner}/{repo}");
+    let mut pages = String::new();
+    for page in 1..=MAX_REVIEW_COMMENT_PAGES {
+        let path = format!(
+            "repos/{}/pulls/{}/comments?per_page={}&page={}",
+            slug, number, REVIEW_COMMENTS_PER_PAGE, page
+        );
+        let output = run(dir, &["api", &path])?;
+        if !output.status.success() {
+            return Err(GhError::Command(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        let body = String::from_utf8_lossy(&output.stdout);
+        let len = parse_review_comment_pages(&body)?.len();
+        pages.push_str(body.trim());
+        if len < REVIEW_COMMENTS_PER_PAGE {
+            break;
+        }
     }
+    count_unanswered_review_comments(&pages, viewer_login(dir).as_deref())
 }
 
 /// `gh pr ready <number>` in `dir` — flips a draft PR to ready-for-review.
@@ -645,6 +802,10 @@ mod tests {
             "title",
             "headRefName",
             "baseRefName",
+            "statusCheckRollup",
+            "mergeable",
+            "mergeStateStatus",
+            "reviewDecision",
         ] {
             assert!(
                 PR_VIEW_FIELDS.split(',').any(|f| f == field),
@@ -805,6 +966,113 @@ mod tests {
             count_unanswered_review_comments(json, Some("  ")).unwrap(),
             1
         );
+    }
+
+    /// A reply that lands on page 2 settles a thread whose root is on page 1:
+    /// threads are only countable once every page is merged.
+    #[test]
+    fn a_reply_on_a_later_page_settles_its_thread() {
+        let page1 = r#"[{"id": 1, "user": {"login": "alice"}}]"#;
+        let page2 = r#"[{"id": 2, "in_reply_to_id": 1, "user": {"login": "me"}}]"#;
+        assert_eq!(
+            count_unanswered_review_comments(page1, Some("me")).unwrap(),
+            1
+        );
+        let both = format!("{}{}", page1, page2);
+        assert_eq!(
+            count_unanswered_review_comments(&both, Some("me")).unwrap(),
+            0
+        );
+        // `gh api --paginate` separates pages with a newline; same answer.
+        let both = format!("{}\n{}\n", page1, page2);
+        assert_eq!(parse_review_comment_pages(&both).unwrap().len(), 2);
+        assert_eq!(
+            count_unanswered_review_comments(&both, Some("me")).unwrap(),
+            0
+        );
+        assert!(parse_review_comment_pages("[] not json").is_err());
+    }
+
+    fn health_of(json: &str) -> ChangeHealth {
+        pr_health(&parse_pr_view_json(json).unwrap())
+    }
+
+    /// The shapes `gh pr view --json statusCheckRollup,…` prints: CheckRuns
+    /// (`status` + `conclusion`) and StatusContexts (`context` + `state`).
+    #[test]
+    fn pr_health_reduces_the_rollup() {
+        let pass = health_of(
+            r#"{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED",
+            "statusCheckRollup":[
+              {"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"SUCCESS","workflowName":"CI"},
+              {"__typename":"CheckRun","name":"docs","status":"COMPLETED","conclusion":"SKIPPED","workflowName":"CI"},
+              {"__typename":"StatusContext","context":"Build","state":"SUCCESS"}]}"#,
+        );
+        assert_eq!(pass.checks, "pass");
+        assert!(pass.failing.is_empty());
+        assert_eq!(pass.mergeable, "yes");
+        assert!(!pass.behind);
+        assert_eq!(pass.review, "approved");
+
+        let fail = health_of(
+            r#"{"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","reviewDecision":"CHANGES_REQUESTED",
+            "statusCheckRollup":[
+              {"name":"unit","status":"IN_PROGRESS","conclusion":""},
+              {"name":"lint","status":"COMPLETED","conclusion":"FAILURE"},
+              {"context":"Integration tests","state":"ERROR"}]}"#,
+        );
+        assert_eq!(fail.checks, "fail");
+        assert_eq!(fail.failing, vec!["lint", "Integration tests"]);
+        assert_eq!(fail.mergeable, "conflicts");
+        assert_eq!(fail.review, "changes");
+
+        let pending = health_of(
+            r#"{"mergeStateStatus":"BEHIND","reviewDecision":"REVIEW_REQUIRED",
+            "statusCheckRollup":[
+              {"name":"lint","status":"COMPLETED","conclusion":"SUCCESS"},
+              {"context":"Build","state":"PENDING"}]}"#,
+        );
+        assert_eq!(pending.checks, "pending");
+        assert!(pending.behind);
+        assert_eq!(pending.mergeable, "unknown");
+        assert_eq!(pending.review, "required");
+
+        let none = health_of(r#"{"number": 3}"#);
+        assert_eq!(none.checks, "none");
+        assert_eq!(none.review, "");
+    }
+
+    /// A re-run leaves the failed run in the rollup; the latest one decides.
+    #[test]
+    fn pr_health_counts_a_rerun_check_once_by_its_latest_run() {
+        let h = health_of(
+            r#"{"statusCheckRollup":[
+              {"name":"test","workflowName":"CI","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-01-01T10:00:00Z"},
+              {"name":"test","workflowName":"CI","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-01-01T11:00:00Z"}]}"#,
+        );
+        assert_eq!(h.checks, "pass");
+        // Same name in two workflows is two checks.
+        let h = health_of(
+            r#"{"statusCheckRollup":[
+              {"name":"test","workflowName":"A","status":"COMPLETED","conclusion":"FAILURE"},
+              {"name":"test","workflowName":"B","status":"COMPLETED","conclusion":"SUCCESS"}]}"#,
+        );
+        assert_eq!(h.checks, "fail");
+        assert_eq!(h.failing, vec!["test"]);
+    }
+
+    #[test]
+    fn pr_health_caps_the_failing_names() {
+        let entries: Vec<String> = (0..8)
+            .map(|i| format!(r#"{{"context":"c{}","state":"FAILURE"}}"#, i))
+            .collect();
+        let h = health_of(&format!(
+            r#"{{"statusCheckRollup":[{}]}}"#,
+            entries.join(",")
+        ));
+        assert_eq!(h.checks, "fail");
+        assert_eq!(h.failing.len(), MAX_FAILING_CHECKS);
+        assert_eq!(h.failing[0], "c0");
     }
 
     #[test]

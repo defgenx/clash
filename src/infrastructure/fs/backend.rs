@@ -1894,6 +1894,23 @@ impl crate::domain::ports::WorkflowRepository for FsBackend {
         super::workflows::write_run(&self.workflows_dir(), project, slug, file)
     }
 
+    fn load_workflow_decisions(
+        &self,
+        project: &str,
+        slug: &str,
+    ) -> Result<crate::domain::workflow::DecisionsFile> {
+        super::workflows::read_decisions(&self.workflows_dir(), project, slug)
+    }
+
+    fn update_workflow_decisions(
+        &self,
+        project: &str,
+        slug: &str,
+        edit: &mut dyn FnMut(&mut crate::domain::workflow::DecisionsFile) -> bool,
+    ) -> Result<crate::domain::workflow::DecisionsFile> {
+        super::workflows::update_decisions(&self.workflows_dir(), project, slug, edit)
+    }
+
     fn snapshot_workflow_iteration(&self, project: &str, slug: &str, diff: &str) -> Result<u32> {
         super::workflows::snapshot_iteration(&self.workflows_dir(), project, slug, diff)
     }
