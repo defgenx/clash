@@ -703,12 +703,29 @@ pub fn pr_unanswered_review_comments(
 ) -> Result<u64, GhError> {
     let slug = repo.unwrap_or("{owner}/{repo}");
     let mut pages = String::new();
+    // One budget for every page: a slow API must not hold the PR refresh for
+    // ten query timeouts.
+    let deadline = Instant::now() + QUERY_TIMEOUT;
     for page in 1..=MAX_REVIEW_COMMENT_PAGES {
         let path = format!(
             "repos/{}/pulls/{}/comments?per_page={}&page={}",
             slug, number, REVIEW_COMMENTS_PER_PAGE, page
         );
-        let output = run(dir, &["api", &path])?;
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left < Duration::from_secs(1) {
+            return Err(GhError::TimedOut {
+                cmd: format!("gh api {path}"),
+                secs: QUERY_TIMEOUT.as_secs(),
+                hint: "Check `gh auth status` in a terminal.",
+            });
+        }
+        let output = run_bounded(
+            "gh",
+            &["api", &path],
+            dir,
+            left,
+            "Check `gh auth status` in a terminal.",
+        )?;
         if !output.status.success() {
             return Err(GhError::Command(
                 String::from_utf8_lossy(&output.stderr).trim().to_string(),
