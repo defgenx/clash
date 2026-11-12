@@ -88,6 +88,7 @@ omp_subagent_model = ""    # model those subagents run on (OMP); empty = omp's o
 review_sizing = "auto"     # size code reviews (verdicts included) by the change: auto | off (Claude Code only)
 small_review_model = "claude-sonnet-5-5"          # lead of a small sized review; empty = lead_model
 large_review_subagent_model = "claude-opus-5-5"   # subagents of a large sized review; empty = subagent_model
+workspace_dir = ""         # folder holding your repositories, where new items live; empty = ask
 pr_skill = "hivebrite-engineering:github-pr"  # skill the PR phase opens PRs with; "none" disables
 forge = "auto"             # code forge for PR features: auto | github | none
 pr_stacking = false        # treat an item's PRs as a GitHub stack (per-item override)

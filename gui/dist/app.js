@@ -7091,26 +7091,34 @@ async function wfRemoveItem(item) {
   const plural = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`;
   const sessions = (state.sessions || []).filter((s) => s.workflow_item === key && !s.wild_pid);
   const rows = [];
-  if (preview.worktree)
+  const wts = preview.worktrees || [];
+  const brs = preview.branches || [];
+  if (wts.length) {
+    const dirty = wts.reduce((n, w) => n + (w.dirty || 0), 0);
     rows.push({
       value: "worktree",
-      label: "Remove its worktree",
-      detail: `${preview.worktree} — ${
-        preview.worktreeDirty
-          ? `${plural(preview.worktreeDirty, "uncommitted file")} will be lost`
-          : "nothing uncommitted"
+      label: wts.length > 1 ? `Remove its ${wts.length} worktrees` : "Remove its worktree",
+      detail: `${wts.map((w) => w.path).join(", ")} — ${
+        dirty ? `${plural(dirty, "uncommitted file")} will be lost` : "nothing uncommitted"
       }`,
       checked: true,
     });
-  if (preview.branch)
+  }
+  if (brs.length) {
+    const lost = brs.reduce((n, b) => n + (b.localOnly || 0), 0);
+    const names = brs.map((b) => (brs.length > 1 ? `${b.repo}: ${b.name}` : b.name)).join(", ");
     rows.push({
       value: "branch",
-      label: `Delete its local branch ${preview.branch}`,
-      detail: preview.branchLocalOnly
-        ? `${plural(preview.branchLocalOnly, "commit")} exist only in this branch and will be lost`
-        : "every commit is on a remote — the remote branch and the PRs stay",
-      checked: !preview.branchLocalOnly,
+      label:
+        brs.length > 1 ? `Delete its ${brs.length} local branches` : `Delete its local branch ${brs[0].name}`,
+      detail: `${brs.length > 1 ? `${names} — ` : ""}${
+        lost
+          ? `${plural(lost, "commit")} exist only locally and will be lost`
+          : "every commit is on a remote — the remote branches and the PRs stay"
+      }`,
+      checked: !lost,
     });
+  }
   if (sessions.length)
     rows.push({
       value: "sessions",
@@ -7207,6 +7215,49 @@ function wfRepoCandidates() {
     if (dir && name && !candidates.has(dir)) candidates.set(dir, name);
   }
   return candidates;
+}
+
+/// Where a new item lives. The workspace is the default: the ticket and the
+/// plan decide which repositories change, and agents create a worktree in
+/// each. Tying the item to one repository stays available.
+async function pickWorkflowHome() {
+  let ws = "";
+  try {
+    ws = await invoke("get_workflow_workspace");
+  } catch (_) {}
+  const pick = await uiListChoice({
+    message: "Where does this item's work happen?",
+    items: [
+      {
+        label: ws ? `Workspace — ${ws}` : "Workspace…",
+        detail: "Whatever repositories the ticket and the plan need — agents create a worktree in each",
+        value: "ws",
+      },
+      {
+        label: "One repository…",
+        detail: "Tie the item to a single repository (its diff and PR buttons work on that one)",
+        value: "repo",
+      },
+    ],
+  });
+  if (pick === null) return null;
+  if (pick === "repo") return pickWorkflowRepo();
+  if (!ws) {
+    const dir = await pickDirectory(
+      state.settings.defaultCwd || state.homeDir || "",
+      "Choose the folder that holds your repositories"
+    );
+    if (!dir) return null;
+    try {
+      ws = await invoke("set_workflow_workspace", { dir });
+    } catch (e) {
+      uiAlert(`Workspace: ${e}`);
+      return null;
+    }
+    const el = document.getElementById("set-wf-workspace");
+    if (el) el.value = ws;
+  }
+  return { project: repoBaseName(ws), repoPath: "" };
 }
 
 async function pickWorkflowRepo() {
@@ -7433,7 +7484,8 @@ async function newWorkflowFlow() {
   });
   if (mode === null) return;
 
-  const repo = await pickWorkflowRepo();
+  // A review starts from one PR or branch, so it needs its repository.
+  const repo = mode === "review-only" ? await pickWorkflowRepo() : await pickWorkflowHome();
   if (!repo) return;
 
   // Review-only takes its title from the PR/branch, so it asks for neither.
@@ -12703,6 +12755,18 @@ function renderWfActions(bar, root, item) {
         // Claude Code session can read the actual diff and write a real one.
         // Whether that is worth tokens is the human's call, not a default.
         add("Create draft PR…", "", async () => {
+          // A workspace item's PRs are in several repositories: its agent
+          // opens each from that repository's worktree.
+          if (item.repos && item.repos.length) {
+            if (
+              await uiConfirm(
+                "This item spans repositories, so its agent opens the PRs — one per repository (and per wave). It spends tokens. Start it?",
+                "Start the agent"
+              )
+            )
+              await launchWfAgent(item, "pr", root);
+            return;
+          }
           const how = await uiChoice({
             message: "Open a draft PR for this branch?",
             detail:
@@ -15469,12 +15533,60 @@ const WF_DIFF_COLLAPSE_TOTAL = 20000;
 /// annotatable) and — multi-repo work — any linked PR's diff, fetched from
 /// the forge and **view-only**: annotations anchor to the item's diff, never
 /// to a repository clash has no checkout of.
+/// The Diff tab of a workspace item: one row per repository it touches, each
+/// worktree opening in the diff viewer (its changes since it left the base).
+function renderWfRepoChanges(body, item) {
+  body.innerHTML = "";
+  const intro = document.createElement("p");
+  intro.className = "hint";
+  intro.textContent =
+    "This item's code is in several repositories. Open one repository's changes — line comments come in a later version.";
+  body.appendChild(intro);
+  const base = (item.meta.base || "").trim() || "origin/HEAD";
+  for (const r of item.repos) {
+    const row = document.createElement("div");
+    row.className = "wf-repo-row";
+    const name = document.createElement("strong");
+    name.textContent = r.name;
+    row.appendChild(name);
+    const facts = document.createElement("span");
+    facts.className = "hint";
+    facts.textContent = r.worktrees.length
+      ? ` ${r.worktrees.map((w) => w.branch).join(", ")}`
+      : r.branches.length
+        ? ` branch ${r.branches.join(", ")} (no worktree)`
+        : " PRs only";
+    row.appendChild(facts);
+    for (const w of r.worktrees) {
+      const b = document.createElement("button");
+      b.textContent = r.worktrees.length > 1 ? `± ${w.branch}` : "± Open changes";
+      b.title = `${w.path} — changes since it left ${base}`;
+      b.onclick = () =>
+        openDiffViewer({
+          key: `view:changes:${w.path}@${base}`,
+          title: `${r.name} · ${w.branch}`,
+          dir: w.path,
+          target: "merge-base",
+          rev: base,
+        });
+      row.appendChild(b);
+    }
+    body.appendChild(row);
+  }
+}
+
 async function renderWfDiffView(body, root, item, ts) {
   const { project, slug } = item;
   const linkedPrs = itemPrs(item.meta).filter((p) => !p.primary);
   // A restored tab can point at a PR that has since been unlinked.
   if (ts.diffSource && !linkedPrs.some((p) => p.url === ts.diffSource)) ts.diffSource = null;
   const linkedView = !!ts.diffSource;
+  // A workspace item's code is in several repositories: each worktree opens
+  // in the diff viewer against the branch it came from.
+  if ((item.repos || []).length && !linkedView && ts.iteration == null && linkedPrs.length === 0) {
+    renderWfRepoChanges(body, item);
+    return;
+  }
   body.innerHTML = "<p class='hint'>loading diff…</p>";
   let text = "";
   let anchored = [];
@@ -18844,6 +18956,20 @@ for (const [id, key] of [
   });
 }
 
+/// The workspace folder new workflow items live in (config.toml). clash
+/// never creates it: the backend refuses a path that is not a folder.
+$("set-wf-workspace").addEventListener("change", async () => {
+  const el = $("set-wf-workspace");
+  try {
+    el.value = await invoke("set_workflow_workspace", { dir: el.value.trim() });
+  } catch (e) {
+    uiAlert(`Workspace: ${e}`);
+    try {
+      el.value = await invoke("get_workflow_workspace");
+    } catch (_) {}
+  }
+});
+
 /// The workflow PR skill lives in config.toml (shared with the TUI): when set,
 /// the PR phase's kickoff carries it and the agent opens PRs through that
 /// skill instead of raw `gh pr create`. Empty means repo conventions.
@@ -19433,6 +19559,9 @@ function restartSessionPoll() {
   invoke("get_agent_settings").then(syncAgentSettingsUi).catch(() => {});
   invoke("get_workflow_pr_skill")
     .then((s) => ($("set-wf-pr-skill").value = s))
+    .catch(() => {});
+  invoke("get_workflow_workspace")
+    .then((s) => ($("set-wf-workspace").value = s))
     .catch(() => {});
   invoke("get_update_check")
     .then((on) => ($("set-update-check").checked = !!on))

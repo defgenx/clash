@@ -319,6 +319,8 @@ pub struct Workflows {
     /// Skill the workflow PR phase opens pull requests with; empty means
     /// "follow the repo's own conventions with `gh`".
     pub pr_skill: String,
+    /// Folder of repositories new items live in; empty = ask.
+    pub workspace_dir: String,
     /// Forge override for PR features: `auto` (detect from the origin
     /// remote), `github`, or `none`.
     pub forge: String,
@@ -356,6 +358,7 @@ impl Default for Workflows {
             small_review_model: default_str("workflows.small_review_model"),
             large_review_subagent_model: default_str("workflows.large_review_subagent_model"),
             pr_skill: default_str("workflows.pr_skill"),
+            workspace_dir: default_str("workflows.workspace_dir"),
             forge: default_str("workflows.forge"),
             pr_stacking: default_bool("workflows.pr_stacking"),
             slack_webhook: default_str("workflows.slack_webhook"),

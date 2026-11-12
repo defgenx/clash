@@ -352,6 +352,9 @@
                 <option value="solo">Solo</option>
               </select>
             </label>
+            <label class="setting-row">Workspace
+              <input id="set-wf-workspace" type="text" placeholder="~/Documents/workspace" autocomplete="off" spellcheck="false" title="The folder that holds your repositories. New workflow items live there: their agents start in it, and the ticket and the plan decide which repositories change (an agent creates a worktree in each). Nothing is created — it must be a folder you already have. Empty asks when you create an item." />
+            </label>
             <label class="setting-row">PR skill
               <input id="set-wf-pr-skill" type="text" placeholder="myorg:github-pr" autocomplete="off" spellcheck="false" title="Skill workflow agents open pull requests with, so your org's PR conventions come along. Empty resets to the shipped default; 'none' disables it and the agent follows the repo's own conventions with gh. An item can override this in its ⚙ Settings tab." />
             </label>

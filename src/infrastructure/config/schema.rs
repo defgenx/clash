@@ -433,6 +433,14 @@ pub const PROPS: &[Prop] = &[
          OMP sessions ignore sizing.",
     ),
     Prop::new(
+        "workflows.workspace_dir",
+        Kind::Path,
+        Val::Str(""),
+        "The folder holding your repositories, where new workflow items live: their agents \
+         start there and the ticket and plan decide which repositories change. Nothing is \
+         created — it is a folder you already have. Empty asks when you create an item.",
+    ),
+    Prop::new(
         "workflows.pr_skill",
         Kind::Str,
         Val::Str("hivebrite-engineering:github-pr"),

@@ -53,3 +53,7 @@ pub mod update;
 #[allow(dead_code)]
 pub mod webhook;
 pub mod windowing;
+/// Workspace items are driven by the GUI in v1 — same dead-code allowance
+/// as `gh`/`forge`.
+#[allow(dead_code)]
+pub mod workspace;

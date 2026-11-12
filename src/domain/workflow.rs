@@ -1267,6 +1267,33 @@ pub struct WaveBoard {
     pub unassigned_prs: Vec<String>,
 }
 
+/// One repository a workspace item touches: its main checkout, the
+/// item's worktrees and local branches in it. Derived, never stored.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemRepo {
+    /// The checkout's folder name under the workspace.
+    pub name: String,
+    /// Absolute path of the main checkout.
+    pub path: String,
+    /// `owner/repo` of its origin remote, when it is a GitHub URL.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub origin: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worktrees: Vec<RepoWorktree>,
+    /// The item's local branches in this repository.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<String>,
+}
+
+/// A worktree of one of the item's branches.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoWorktree {
+    pub path: String,
+    pub branch: String,
+}
+
 /// Persisted shape of a workflow item's `meta.json`. Lenient serde like
 /// [`crate::domain::entities::Task`]: missing fields default, unknown fields
 /// survive round-trips via `extra` (the agent and clash both read-modify-write
@@ -1857,6 +1884,12 @@ pub struct WorkflowItem {
     /// Computed by the GUI layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waves: Option<WaveBoard>,
+    /// The repositories a workspace item's work touches (its home is a
+    /// folder of repositories, not one), found from the item's branches and
+    /// PRs. Empty for an item tied to one repository. Computed by the GUI
+    /// layer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<ItemRepo>,
     /// When this process last asked the forge about the item's PRs (epoch
     /// ms; 0 = not yet). A PR record's own `lastCheckedAt` moves only when
     /// its state changed, so it cannot answer "how fresh is this".

@@ -353,6 +353,7 @@ pub fn discussion_prompt(
     item_dir: &str,
     files: &[String],
     topic: Option<&str>,
+    repos: &str,
 ) -> String {
     let title = if meta.title.trim().is_empty() {
         slug
@@ -419,8 +420,7 @@ pub fn discussion_prompt(
         "This is a conversation about the clash workflow item \"{title}\" — not a \
          workflow round. Workflow item directory: {item_dir} ({facts}).\n\n\
          What the item directory holds:\n{map}\n\
-         The code is in the current directory (git log / git diff against the item's \
-         base for what changed).\n\n\
+         {code}\n\n\
          Do not read these up front. Start from the facts above; open a file only when \
          a question needs it, and only the one that answers it — the section you need \
          (grep, or a line range), not the whole file. Never read everything \"for \
@@ -443,7 +443,14 @@ pub fn discussion_prompt(
          suggest recording it in clash (Request changes…) with the note you would \
          write — that is what the next round reads, and it snapshots the round.\n\n\
          {opening}",
-        facts = facts.join(", ")
+        facts = facts.join(", "),
+        code = if repos.trim().is_empty() {
+            "The code is in the current directory (git log / git diff against the item's \
+             base for what changed)."
+                .to_string()
+        } else {
+            repos.trim().to_string()
+        }
     )
 }
 
@@ -2740,7 +2747,7 @@ not landing in the branch: the commit message still ships a MAJOR.\n\n\
             "history/".to_string(),
             "notes.txt".to_string(),
         ];
-        let p = discussion_prompt(&meta, "s", "/w/p/s", &files, None);
+        let p = discussion_prompt(&meta, "s", "/w/p/s", &files, None, "");
         assert!(p.contains("not a workflow round"), "{p}");
         assert!(p.contains("Workflow item directory: /w/p/s (status `pr-ready` (iteration 15), branch `saturn-audit`, PRs https://github.com/o/s/pull/1, waves signed off: w1)"), "{p}");
         assert!(
@@ -2764,19 +2771,32 @@ not landing in the branch: the commit message still ships a MAJOR.\n\n\
         assert!(!p.contains("notes.txt"), "only known files: {p}");
         assert!(p.contains("Do not read these up front"));
         assert!(p.contains("from the facts above alone, reading nothing"));
-        let t = discussion_prompt(&meta, "s", "/w/p/s", &files, Some("why is w2 blocked?"));
+        let t = discussion_prompt(&meta, "s", "/w/p/s", &files, Some("why is w2 blocked?"), "");
         assert!(
             t.ends_with("The human wants to talk about: why is w2 blocked?\n\nAnswer that first."),
             "{t}"
         );
+        // A workspace item names its repositories instead of "the current
+        // directory".
+        let w = discussion_prompt(
+            &meta,
+            "s",
+            "/w/p/s",
+            &files,
+            None,
+            " Repos: from the ticket",
+        );
+        assert!(
+            w.contains("Repos: from the ticket")
+                && !w.contains("The code is in the current directory")
+        );
         // While an agent works, the session may move nothing.
         meta.status = WorkflowStatus::Implementing;
-        assert!(
-            discussion_prompt(&meta, "s", "/d", &[], None).contains("to one of: none from here.")
-        );
+        assert!(discussion_prompt(&meta, "s", "/d", &[], None, "")
+            .contains("to one of: none from here."));
         // An untitled item is named by its slug.
         meta.title.clear();
-        assert!(discussion_prompt(&meta, "s", "/d", &[], None).contains("item \"s\""));
+        assert!(discussion_prompt(&meta, "s", "/d", &[], None, "").contains("item \"s\""));
     }
 
     #[test]

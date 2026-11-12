@@ -3968,6 +3968,8 @@ fn main() {
             workflows::start_workflow_discussion,
             workflows::export_workflow_share,
             workflows::default_share_export_path,
+            workflows::get_workflow_workspace,
+            workflows::set_workflow_workspace,
             workflows::get_workflow_pr_skill,
             workflows::set_workflow_pr_skill,
             check_update,

@@ -1212,6 +1212,38 @@ their names), and v1.142.0's single `workflows.ticket_url` onto the trackers
 → `trackers.jira.site`, `none` → `trackers.primary = "none"`; any other
 template is dropped). The migration runs on load and on the next save.
 
+### Workspace items — no single repository
+
+An item created in the **workspace** (`workflows.workspace_dir`, a folder that
+already holds your repositories — clash never creates it; Settings →
+Workflows → Workspace, or asked once at creation) is tied to no repository:
+the ticket and the plan decide which ones change. Its `repoPath` is that
+folder, so every agent of the item (executor, reviewers, discussion) starts
+there, and its kickoff carries `Repos:` instead of `Workspace: directory`
+(the pure `application::workspace::workspace_clause`): the worktree
+convention `<workspace>/<repo>-worktrees/<branch>` on the item's branch (its
+slug when `meta.branch` is empty; a wave works on its wave branch), created
+by the agent from the repository's default branch when missing, never a
+commit in a main checkout — and the repositories already in play.
+
+- **The repositories are found, never stored.** `infrastructure::workspace::discover`
+  reads each checkout directly under the workspace (skipping `*-worktrees`)
+  from its `.git` files — no `git` process per repository: a checkout belongs
+  to the item when it holds the item's branch or a wave branch (as a local
+  branch or a worktree), or when its origin is the repository of one of the
+  item's PRs. The answer is `WorkflowItem.repos` (`ItemRepo`: name, path,
+  origin, worktrees, branches).
+- **Diff tab:** one row per repository, each worktree opening in the diff
+  viewer against `meta.base` (else `origin/HEAD`) from the merge base. Line
+  comments across repositories are not there yet.
+- **PRs** are opened by the agent, one per repository (and per wave): clash's
+  own *Create draft PR* refuses a workspace item (`workspace-item:`) and the
+  button launches the `pr` phase instead.
+- **Removal** cleans up every repository: each worktree and local branch the
+  discovery found (never a trunk or the base), each as part of the two tick
+  boxes, with their uncommitted and local-only counts.
+- An item created with **One repository…** works exactly as before.
+
 ### Workspace — where an executor round runs
 
 Decided per launch by the pure `resolve_work_dir` (`application::workflow`),
@@ -1220,7 +1252,7 @@ first match wins:
 | Item state | Round runs in | Kickoff |
 |---|---|---|
 | `meta.worktree` recorded | that worktree | *(absent)* |
-| `repoPath` is not a git repository | `repoPath` | `Workspace: directory` |
+| `repoPath` is not a git repository (a workspace item) | `repoPath` | `Repos: …` (see above) |
 | `meta.workInPlace` set, or a `plan` / `revise` phase | `repoPath` | `Workspace: repo` |
 | otherwise (a round that writes code) | a new worktree + branch, recorded | *(absent)* |
 
@@ -1229,10 +1261,10 @@ first match wins:
   most of a minute on a large repo — so a plan round costs no checkout, and an
   item abandoned at `plan-review` leaves no branch behind. (`revise` counts as
   a code round in `review-only`, whose worktree exists from creation.)
-- **A directory that is not a git repository is never refused.** There is
-  nothing to check out, so the agent works on its files directly and the
-  skill skips every git and PR step. The item has no diff: the Diff tab is
-  empty and a change round freezes an empty `diff.patch`.
+- **A directory that is not a git repository is a workspace item.** Its
+  agents work in per-repository worktrees under it (see above), and the item
+  has no single diff: a change round freezes an empty `diff.patch`.
+  `Workspace: directory` ("run no git") is no longer sent.
 - **`meta.workInPlace`** (⚙ Settings → Workspace, clash-only) is the human's
   choice to never create a worktree: every round runs in the repository's own
   checkout, on whatever branch is checked out, and the skill neither creates

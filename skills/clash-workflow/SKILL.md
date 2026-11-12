@@ -47,6 +47,33 @@ The kickoff prompt gives you:
   - `directory` — not a git repository. Work on the files there directly and
     run no git at all: skip every commit, push and PR step below and say so in
     your final message. A `pr` phase has nothing to open: stop and report it.
+- **Repos** — present instead of `Workspace` on a **workspace item**: the
+  item lives in a folder of repositories, not one, and your cwd is that
+  folder. See "Workspace items" below.
+
+## Workspace items
+
+`Repos: from the ticket and the plan — this item lives in the workspace <dir>…`
+means no repository is fixed in advance. Read the ticket (its key is in
+`meta.json`'s `ticket`, or in the title/description) and the plan to decide
+which repositories under `<dir>` the work changes, and name them in the plan
+(and in each wave's `areas`, as `<repo>/…` paths).
+
+- **Worktrees.** In each repository you change, work in the worktree the
+  field names — `<dir>/<repo>-worktrees/<branch>` on the item's branch, or
+  `<dir>/<repo>-worktrees/<wave branch>` for a wave. Create it when it is
+  missing, from the repository's default branch, with the command the field
+  gives (`git -C <dir>/<repo> worktree add ../<repo>-worktrees/<branch> -b
+  <branch> origin/<default>`; `git -C <dir>/<repo> fetch origin` first).
+  **Never commit in a repository's main checkout** — it belongs to the human.
+  clash finds the item's repositories again from those branches and its PRs,
+  so the branch name is the link: never use another one.
+- **Already in play** lists the repositories that already hold the item's
+  branches, with their worktrees: continue there.
+- Git and PR rules below apply per repository, run inside its worktree. Every
+  PR is opened from its worktree's branch and recorded per "Recording PRs".
+- A `plan` or `revise` phase reads the repositories' main checkouts and
+  creates nothing.
 
 ## Opening question — interactive or autonomous
 

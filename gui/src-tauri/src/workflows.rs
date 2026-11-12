@@ -121,6 +121,7 @@ pub(crate) async fn list_workflow_items(
                 head_ref: p.head_ref.clone(),
             })
             .collect();
+        item.repos = item_repos_cached(&item.meta, &item.slug, Path::new(&item.path));
         item.waves = load_wave_plan(Path::new(&item.path)).map(|plan| {
             let mut board = clash::application::waves::wave_board(
                 plan,
@@ -444,6 +445,47 @@ pub(crate) fn set_workflows_dir(
     Ok(effective.to_string_lossy().into_owned())
 }
 
+/// The workspace folder new items live in (`workflows.workspace_dir`), as
+/// typed; empty when unset.
+#[tauri::command]
+pub(crate) fn get_workflow_workspace(state: State<'_, GuiState>) -> String {
+    state
+        .config
+        .get()
+        .workflows
+        .workspace_dir
+        .trim()
+        .to_string()
+}
+
+/// Set (or, empty, reset) the workspace folder. It must already exist:
+/// clash never creates it.
+#[tauri::command]
+pub(crate) fn set_workflow_workspace(
+    state: State<'_, GuiState>,
+    dir: String,
+) -> Result<String, String> {
+    let trimmed = dir.trim();
+    if trimmed.is_empty() {
+        state
+            .config
+            .reset_values(&["workflows.workspace_dir"])
+            .map_err(|e| e.to_string())?;
+    } else {
+        if !crate::expand_tilde(trimmed).is_dir() {
+            return Err(format!("{trimmed} is not a folder"));
+        }
+        state
+            .config
+            .set_json(&[(
+                "workflows.workspace_dir",
+                serde_json::Value::String(trimmed.to_string()),
+            )])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(state.config.get().workflows.workspace_dir)
+}
+
 /// The configured PR-creation skill, for the Settings field.
 #[tauri::command]
 pub(crate) fn get_workflow_pr_skill(state: State<'_, GuiState>) -> String {
@@ -750,6 +792,28 @@ pub(crate) fn create_workflow_item(
     if mode.is_review_only() {
         return Err("review-only items are created by create_workflow_review".to_string());
     }
+    // No repository given: the item lives in the workspace, and the ticket
+    // and the plan decide which repositories change.
+    let repo_path = match repo_path.trim() {
+        "" => {
+            let ws = state
+                .config
+                .get()
+                .workflows
+                .workspace_dir
+                .trim()
+                .to_string();
+            if ws.is_empty() {
+                return Err("no-workspace: choose the folder that holds your repositories".into());
+            }
+            let dir = crate::expand_tilde(&ws);
+            if !dir.is_dir() {
+                return Err(format!("no-workspace: {} is not a folder", dir.display()));
+            }
+            dir.to_string_lossy().into_owned()
+        }
+        p => p.to_string(),
+    };
     let plan = read_plan_seed(plan, plan_file)?;
     if mode == WorkflowMode::FromPlan && plan.trim().is_empty() {
         return Err("A from-plan item needs a plan — the supplied plan is empty".to_string());
@@ -1446,16 +1510,70 @@ pub(crate) fn get_workflow_plan_version(
         .unwrap_or_default())
 }
 
-/// What removing an item would clean up, read before asking: its worktree
-/// (and how many uncommitted paths it holds) and its local branch (and how
-/// many of its commits no remote has).
+/// `(repository, worktree or branch)`.
+type RepoPath = (String, String);
+
+/// What removing an item may clean up: `(repo, worktree)` and
+/// `(repo, branch)` pairs. A one-repo item has at most one of each
+/// (`cleanup_targets`); a workspace item has those of every repository it
+/// touches, never a trunk or the base.
+fn cleanup_list(
+    meta: &clash::domain::workflow::WorkflowMeta,
+    slug: &str,
+    item_dir: &Path,
+) -> (Vec<RepoPath>, Vec<RepoPath>) {
+    let repos = item_repos(meta, slug, item_dir);
+    if repos.is_empty() {
+        let t = clash::application::workflow::cleanup_targets(meta);
+        let repo = meta.repo_path.clone();
+        return (
+            t.worktree.map(|w| (repo.clone(), w)).into_iter().collect(),
+            t.branch.map(|b| (repo, b)).into_iter().collect(),
+        );
+    }
+    let protected = ["main", "master", "develop", "trunk", meta.base.trim()];
+    let mut worktrees = Vec::new();
+    let mut branches = Vec::new();
+    for r in repos {
+        for w in &r.worktrees {
+            worktrees.push((r.path.clone(), w.path.clone()));
+        }
+        for b in r
+            .branches
+            .iter()
+            .filter(|b| !protected.contains(&b.as_str()))
+        {
+            branches.push((r.path.clone(), b.clone()));
+        }
+    }
+    (worktrees, branches)
+}
+
+/// One worktree removal would delete, with how many uncommitted paths it
+/// holds.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorktreePreview {
+    path: String,
+    dirty: Option<usize>,
+}
+
+/// One local branch removal would delete, with how many of its commits no
+/// remote has.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BranchPreview {
+    repo: String,
+    name: String,
+    local_only: u64,
+}
+
+/// What removing an item would clean up, read before asking.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CleanupPreview {
-    worktree: Option<String>,
-    worktree_dirty: Option<usize>,
-    branch: Option<String>,
-    branch_local_only: Option<u64>,
+    worktrees: Vec<WorktreePreview>,
+    branches: Vec<BranchPreview>,
 }
 
 #[tauri::command]
@@ -1468,25 +1586,36 @@ pub(crate) async fn workflow_cleanup_preview(
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
-    let targets = clash::application::workflow::cleanup_targets(&meta);
-    let repo = Path::new(&meta.repo_path);
+    let item_dir = state.backend.workflows_dir().join(&project).join(&slug);
+    let (worktrees, branches) = cleanup_list(&meta, &slug, &item_dir);
     let mut out = CleanupPreview::default();
-    if let Some(wt) = targets.worktree.filter(|w| Path::new(w).exists()) {
-        out.worktree_dirty = clash::infrastructure::git::dirty_count(Path::new(&wt)).await;
-        out.worktree = Some(wt);
+    for (_, wt) in worktrees.into_iter().filter(|(_, w)| Path::new(w).exists()) {
+        let dirty = clash::infrastructure::git::dirty_count(Path::new(&wt)).await;
+        out.worktrees.push(WorktreePreview { path: wt, dirty });
     }
-    if let Some(b) = targets.branch.filter(|_| repo.is_dir()) {
+    for (repo, b) in branches {
+        let repo_path = Path::new(&repo);
+        if !repo_path.is_dir() {
+            continue;
+        }
         // A branch that no longer exists has nothing to delete.
-        if let Some(n) = clash::infrastructure::git::local_only_commits(repo, &b).await {
-            out.branch_local_only = Some(n);
-            out.branch = Some(b);
+        if let Some(n) = clash::infrastructure::git::local_only_commits(repo_path, &b).await {
+            out.branches.push(BranchPreview {
+                repo: repo_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                name: b,
+                local_only: n,
+            });
         }
     }
     Ok(out)
 }
 
-/// Remove an item for good: its worktree and local branch when asked (both
-/// confirmed against [`workflow_cleanup_preview`]), then its directory. A
+/// Remove an item for good: its worktrees and local branches when asked
+/// (confirmed against [`workflow_cleanup_preview`]), then its directory. A
 /// worktree that cannot be removed keeps the item, so nothing is orphaned; a
 /// branch that cannot be deleted is reported and the removal goes on.
 #[tauri::command]
@@ -1501,19 +1630,19 @@ pub(crate) async fn remove_workflow_item(
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
-    let targets = clash::application::workflow::cleanup_targets(&meta);
-    let repo = Path::new(&meta.repo_path);
+    let item_dir = state.backend.workflows_dir().join(&project).join(&slug);
+    let (worktrees, branches) = cleanup_list(&meta, &slug, &item_dir);
     let mut warnings = Vec::new();
     if worktree {
-        if let Some(wt) = targets.worktree.filter(|w| Path::new(w).exists()) {
-            clash::infrastructure::git::worktree_remove(repo, &wt, true)
+        for (repo, wt) in worktrees.iter().filter(|(_, w)| Path::new(w).exists()) {
+            clash::infrastructure::git::worktree_remove(Path::new(repo), wt, true)
                 .await
                 .map_err(|e| format!("Could not remove the worktree {wt}: {e}"))?;
         }
     }
     if branch {
-        if let Some(b) = targets.branch {
-            if let Err(e) = clash::infrastructure::git::branch_delete(repo, &b).await {
+        for (repo, b) in &branches {
+            if let Err(e) = clash::infrastructure::git::branch_delete(Path::new(repo), b).await {
                 warnings.push(format!("branch {b} kept: {e}"));
             }
         }
@@ -1859,7 +1988,11 @@ pub(crate) async fn start_workflow_agent(
             if phase == "implement" {
                 record_wave_scope(&mut meta, &cwd, ordered).await;
             }
-            clash::application::waves::executor_clause(&plan, &meta.waves, &meta.branch)
+            clash::application::waves::executor_clause(
+                &plan,
+                &meta.waves,
+                &item_branch(&meta, &slug),
+            )
         }
         Some(WaveLaunch::Unusable(issue)) => {
             clash::application::waves::unusable_clause(&issue, &meta.waves)
@@ -1870,6 +2003,7 @@ pub(crate) async fn start_workflow_agent(
         }
         None => String::new(),
     };
+    let repos_clause = repos_clause(&meta, &slug, &item_dir);
     let session_id = uuid::Uuid::now_v7().to_string();
 
     // Persist the launch BEFORE spawning (session id + phase-appropriate
@@ -1946,7 +2080,13 @@ pub(crate) async fn start_workflow_agent(
                     delegation: state.config.get().workflow_delegation(
                         clash::domain::entities::AgentKind::parse(&meta.agent),
                     ),
-                    workspace: work_dir.kickoff_field(),
+                    // A workspace item says where its repositories are
+                    // instead (`Repos:`); "directory" would mean "no git".
+                    workspace: if repos_clause.is_empty() {
+                        work_dir.kickoff_field()
+                    } else {
+                        None
+                    },
                     stacking: stack_base.as_ref().map(|b| {
                         use clash::application::workflow::StackingClause;
                         match b {
@@ -1957,6 +2097,7 @@ pub(crate) async fn start_workflow_agent(
                     }),
                 },
             ) + &waves_clause
+                + &repos_clause
                 + &state.config.get().ticket_links_clause()
         },
     )
@@ -2001,6 +2142,98 @@ fn load_wave_plan(item_dir: &Path) -> Option<Result<clash::domain::workflow::Wav
         Ok(plan) if plan.waves.is_empty() => None,
         other => Some(other),
     }
+}
+
+/// The item's branch: the recorded one, else its slug — a workspace item's
+/// agents create it in every repository the work changes.
+fn item_branch(meta: &clash::domain::workflow::WorkflowMeta, slug: &str) -> String {
+    match meta.branch.trim() {
+        "" => slug.to_string(),
+        b => b.to_string(),
+    }
+}
+
+/// The repositories a workspace item touches, found from its branch, its
+/// wave branches and its PRs. Empty for an item tied to one repository.
+fn item_repos(
+    meta: &clash::domain::workflow::WorkflowMeta,
+    slug: &str,
+    item_dir: &Path,
+) -> Vec<clash::domain::workflow::ItemRepo> {
+    if !clash::infrastructure::workspace::is_workspace_home(&meta.repo_path) {
+        return Vec::new();
+    }
+    let branch = item_branch(meta, slug);
+    let mut branches = vec![branch.clone()];
+    if let Some(Ok(plan)) = load_wave_plan(item_dir) {
+        branches.extend(
+            plan.waves
+                .iter()
+                .map(|w| clash::application::waves::wave_branch(&branch, &w.id)),
+        );
+    }
+    let pr_repos: Vec<String> = meta
+        .pr
+        .iter()
+        .chain(meta.linked_prs.iter())
+        .filter_map(|p| clash::infrastructure::gh::parse_pr_url(&p.url).map(|(r, _)| r))
+        .collect();
+    clash::infrastructure::workspace::discover(
+        Path::new(meta.repo_path.trim()),
+        &branches,
+        &pr_repos,
+    )
+}
+
+/// [`item_repos`] for the item list, reused for [`REPOS_TTL`]: the list
+/// refreshes on every workflow change, and a workspace scan is ~10 ms per item.
+/// Launches, removal and the kickoff always scan afresh.
+fn item_repos_cached(
+    meta: &clash::domain::workflow::WorkflowMeta,
+    slug: &str,
+    item_dir: &Path,
+) -> Vec<clash::domain::workflow::ItemRepo> {
+    use std::sync::{Mutex, OnceLock};
+    type Cache = std::collections::HashMap<
+        std::path::PathBuf,
+        (std::time::Instant, Vec<clash::domain::workflow::ItemRepo>),
+    >;
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+    if !clash::infrastructure::workspace::is_workspace_home(&meta.repo_path) {
+        return Vec::new();
+    }
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((at, repos)) = cache.lock().unwrap().get(item_dir) {
+        if at.elapsed() < REPOS_TTL {
+            return repos.clone();
+        }
+    }
+    let repos = item_repos(meta, slug, item_dir);
+    cache.lock().unwrap().insert(
+        item_dir.to_path_buf(),
+        (std::time::Instant::now(), repos.clone()),
+    );
+    repos
+}
+
+/// How long the item list reuses a workspace scan: an agent's new worktree
+/// shows up within it.
+const REPOS_TTL: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The `Repos:` kickoff field of a workspace item; empty otherwise.
+fn repos_clause(
+    meta: &clash::domain::workflow::WorkflowMeta,
+    slug: &str,
+    item_dir: &Path,
+) -> String {
+    if !clash::infrastructure::workspace::is_workspace_home(&meta.repo_path) {
+        return String::new();
+    }
+    clash::application::workspace::workspace_clause(
+        meta.repo_path.trim(),
+        &item_branch(meta, slug),
+        &item_repos(meta, slug, item_dir),
+    )
 }
 
 /// How an executor round launches on a multi-wave item.
@@ -2442,12 +2675,18 @@ pub(crate) async fn launch_review(
                         head_ref: p.head_ref.clone(),
                     })
                     .collect();
-                let owner = clash::application::waves::assign_prs(&plan, &prs, &meta.branch);
+                let branch = item_branch(&meta, &slug);
+                let owner = clash::application::waves::assign_prs(&plan, &prs, &branch);
                 let by_wave = clash::application::waves::prs_by_wave(&owner, &prs);
-                clash::application::waves::review_clause(&plan, &meta.waves, &meta.branch, &by_wave)
+                clash::application::waves::review_clause(&plan, &meta.waves, &branch, &by_wave)
             }
             _ => String::new(),
         };
+    let repos_clause = repos_clause(
+        &meta,
+        &slug,
+        &state.backend.workflows_dir().join(&project).join(&slug),
+    );
     crate::launch_stage(app, &key, "spawn", None);
     let spawned = spawn_item_session(
         state,
@@ -2474,6 +2713,7 @@ pub(crate) async fn launch_review(
                 &cfg.workflow_delegation(agent_kind)
                     .with_subagent(round_models.subagent.as_deref()),
             ) + &waves_clause
+                + &repos_clause
                 + &ticket_links
         },
     )
@@ -3318,6 +3558,12 @@ pub(crate) async fn workflow_create_pr(
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
+    if clash::infrastructure::workspace::is_workspace_home(&meta.repo_path) {
+        return Err(
+            "workspace-item: this item spans repositories — its agent opens the PRs, each from its repository's worktree"
+                .into(),
+        );
+    }
     let dir = pr_dir(&meta)?;
     // An explicit diff base wins; with stacking on, a new layer goes on top
     // of its parent, and a parent nobody can name is asked for, not guessed.
@@ -4480,6 +4726,11 @@ pub(crate) async fn start_workflow_discussion(
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty());
     let prompt_meta = meta.clone();
+    let repos = repos_clause(
+        &meta,
+        &slug,
+        &state.backend.workflows_dir().join(&project).join(&slug),
+    );
     spawn_item_session(
         &state,
         ItemSessionSpawn {
@@ -4515,6 +4766,7 @@ pub(crate) async fn start_workflow_discussion(
                 item_dir,
                 &files,
                 topic.as_deref(),
+                &repos,
             )
         },
     )

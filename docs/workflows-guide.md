@@ -41,8 +41,17 @@ The `+` button on the WORKFLOWS section asks how the item starts:
 | **From a plan I already have** | `plan-review` | the plan exists: paste it, point at a markdown file, or pick a scratch note. No planning agent runs |
 | **Review only** | `diff-review` | the code is already written: give a **PR** (URL or number) or a **local branch** and get just the review loop |
 
-Give it a title, a project and a repo (picked from your open sessions and
-existing projects, or **Browse…**), and optionally a **description** of the
+Then say where the work happens. **Workspace** (the default) ties the item to
+no repository: it lives in the folder that holds your repositories (set once in
+Settings → Workflows → Workspace, or asked the first time — clash never creates
+it), and the ticket and the plan decide which repositories change. The agent
+creates a worktree in each one, `<repo>-worktrees/<branch>`, and clash finds
+them again from the item's branches and PRs: the Diff tab lists one row per
+repository, the agent opens the PRs (one per repository, and per wave), and
+**🗑 Remove…** cleans every worktree and local branch it made. **One
+repository…** keeps the single-repository item (picked from your open sessions
+and existing projects, or **Browse…**). A review-only item always names its
+repository. Give it a title and optionally a **description** of the
 goal. The planning agent reads the description first, which saves half the
 requirements questions.
 
@@ -52,9 +61,9 @@ looked up in its own repository, so a link to another repo is refused by name
 rather than resolved to whatever local PR shares the number. No plan is written
 and no draft-PR stage runs, since the PR isn't clash's.
 
-Planning reads the repo in place. The first round that writes code gets its own
-git worktree and branch, unless the directory isn't a git repository or the item
-is set to work in place.
+Planning reads the repo in place. On a one-repository item, the first round that
+writes code gets its own git worktree and branch, unless the item is set to work
+in place.
 
 ## The pipeline
 

@@ -40,3 +40,6 @@ pub mod workflow_run;
 /// share/export commands) in v1.
 #[allow(dead_code)]
 pub mod workflow_share;
+/// Same allowance as `workflow`: workspace items are driven by the GUI in v1.
+#[allow(dead_code)]
+pub mod workspace;

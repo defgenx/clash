@@ -1322,3 +1322,14 @@ test("session polls never overlap, and an unchanged list rebuilds no sidebar", (
   // Direct callers always repaint, and record what they painted.
   assert.match(extractFunction(APP, "renderSidebar"), /^function renderSidebar\(\) \{\n  sidebarPaintKey = sidebarKey\(\);/);
 });
+
+test("a new item lives in the workspace unless tied to one repository", () => {
+  // Only a review names its repository up front; everything else asks where
+  // the work happens, the workspace first.
+  assert.match(APP, /mode === "review-only" \? await pickWorkflowRepo\(\) : await pickWorkflowHome\(\)/);
+  const home = APP.slice(APP.indexOf("async function pickWorkflowHome("));
+  assert.ok(home.indexOf('value: "ws"') < home.indexOf('value: "repo"'), "the workspace is offered first");
+  // A workspace item's PRs are the agent's: one per repository.
+  const pr = APP.slice(APP.indexOf('add("Create draft PR…"'));
+  assert.ok(pr.indexOf("item.repos && item.repos.length") < pr.indexOf('invoke("workflow_create_pr"'));
+});

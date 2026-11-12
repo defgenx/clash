@@ -4733,3 +4733,12 @@ a.wf-wave-ticket.wf-chip:hover { --chip: var(--accent); }
   .wf-prd-row { grid-template-columns: 70px minmax(0, 1fr) auto 28px; }
   .wf-prd-branch { display: none; }
 }
+
+/* Workspace items: one row per repository the item touches. */
+.wf-repo-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}

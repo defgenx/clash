@@ -253,6 +253,8 @@ fn build_item(root: &Path, project: &str, slug: &str) -> Result<WorkflowItem> {
         pr_stack_issue: None,
         // `waves.json` against `meta.waves` and the status: the GUI layer.
         waves: None,
+        // Found by scanning the workspace's checkouts: the GUI layer.
+        repos: Vec::new(),
         // The forge's answers live in the GUI process.
         pr_checked_at: 0,
         pr_errors: Default::default(),
