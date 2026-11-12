@@ -14829,7 +14829,7 @@ function wfWaveCard(item, root, w, prs, { full = false, onShow = null, onDetails
         "approve-next": () => wfApproveWaves(item, root),
         approve: () => wfApproveWaves(item, root, { next: false }),
         start: () => wfStartWaves(item, root, { preselect: a.ids || [w.id] }),
-        review: () => wfComposeReviewRound(item, { prUrls: a.urls }),
+        review: () => launchWfReview(item, root, { prUrls: a.urls }),
         "open-prs": () => openLinks(a.urls),
         session: () => item.meta.sessionId && openSession(wfSid(item, item.meta.sessionId)),
       }[a.id];

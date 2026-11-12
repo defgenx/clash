@@ -1345,3 +1345,14 @@ test("workflow items can be selected and deleted together", () => {
   // A selection never outlives its items.
   assert.match(APP, /for \(const k of \[\.\.\.state\.wfSelected\]\) if \(!keys\.has\(k\)\) state\.wfSelected\.delete\(k\);/);
 });
+
+test("the review composer is only ever opened by something that launches its answer", () => {
+  // wfComposeReviewRound resolves the round's shape and launches nothing; a
+  // caller that drops its answer is a button that does nothing (a wave
+  // card's "Review its PRs…" did exactly that).
+  const calls = [...APP.matchAll(/wfComposeReviewRound\(/g)].map((m) => APP.slice(Math.max(0, m.index - 40), m.index));
+  const uses = calls.filter((pre) => !/function\s+$/.test(pre));
+  assert.equal(uses.length, 1, "launchWfReview is the composer's only caller");
+  assert.match(uses[0], /const picked = await $/);
+  assert.match(APP, /review: \(\) => launchWfReview\(item, root, \{ prUrls: a\.urls \}\)/);
+});
