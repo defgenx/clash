@@ -287,7 +287,7 @@ test("applying a review round goes through the change-round flow", () => {
   assert.match(apply, /requestChanges\(target, note\)/);
   assert.match(APP, /function wfComposeChangeRequest\(\{ item, target, annotations, onJump, prefill = "" \}\)/);
   // A kept draft outranks the prefill: one is the human's unfinished sentence.
-  assert.match(APP, /const seeded = \(wfDrafts\.get\(key\) \|\| ""\)\.trim\(\) \? "" : prefill;/);
+  assert.match(APP, /const seeded = draftHasContent\(wfDrafts\.get\(key\)\) \? "" : prefill;/);
 });
 
 test("going back a stage is one mechanism, offered from two places", () => {

@@ -314,18 +314,26 @@ lands in an orphan tray.
 
 ## Requesting changes
 
-**✎ Request changes…** opens a composer. The note is appended verbatim to
-`review.md` and is the first thing the next round reads, so it is effectively
-that round's prompt. The composer offers:
+**✎ Request changes…** opens a composer. What it records is appended verbatim
+to `review.md` and is the first thing the next round reads, so it is effectively
+that round's prompt. It has three parts:
 
-- a **What to change / Why / Out of scope** template;
-- *Insert review findings…* from any review round;
-- a preview of exactly what will be recorded;
-- the queued comments as rows you can untick (park), jump to or delete;
-- **After recording**: record only, or launch the fix round now, choosing how it
-  runs and, optionally, a different executor skill.
+- **The note** (left): free text, with a **What / Why / Out of scope** scaffold
+  and *Review findings…* from any review round one click away, plus a
+  **Changes** list — one line per thing to do, numbered in the note
+  (`### Changes`) so the agent can report on each. *Preview* shows exactly what
+  will be recorded, comments included.
+- **Comments to fix** (right, when the diff has open comments): grouped by file,
+  filterable to yours or the agent's. Untick a comment to *park* it — it stays
+  on the diff for a later round; *Include all* / *Park all* act on the filtered
+  list. *How to fix* adds a line of guidance to one comment, recorded under
+  `### On the comments`; ↗ shows it in the diff, ✕ deletes it.
+- **Then** (footer): *Record only*, or *Record & launch the fix round* with its
+  agent, interaction mode and, optionally, a different executor skill. The line
+  beside the buttons says what will be sent and how many comments are parked.
 
-⌘↵ sends, and a dismissed composer keeps its draft.
+⌘↵ sends. A dismissed composer keeps its draft — note, changes and guidance —
+until it is sent.
 
 Recording a round freezes the iteration first (diff, plan, comments and the
 agent's hand-off under `history/`), so every round has a before and after. Where the request lands

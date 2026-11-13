@@ -2394,17 +2394,6 @@ button.busy:disabled { opacity: 1; }
   max-height: 320px;
   overflow-y: auto;
 }
-.wf-compose-annos-label {
-  font-size: 12px;
-  color: var(--fg-dim, #8a8a8a);
-  margin-bottom: 4px !important;
-}
-/* The plumbing line: true but secondary — dim, under the purpose line. */
-.wf-compose-plumbing {
-  font-size: 11px;
-  color: var(--fg-dim);
-  margin: -4px 0 10px !important;
-}
 /* The guided path from a finished review round to this composer. */
 .wf-compose-suggest {
   font-size: 12px;
@@ -2420,77 +2409,227 @@ button.busy:disabled { opacity: 1; }
   cursor: pointer;
   text-decoration: underline;
 }
-/* Section captions give the composer the same scannable zones as the action
-   bar; the Note caption anchors the toolbar row, buttons pushed right. */
-.wf-compose-caption {
-  display: block;
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--fg-dim);
-  margin: 2px 0 4px;
-}
-.wf-compose-tools {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-.wf-compose-tools .wf-compose-caption { margin: 0 auto 0 0; }
-.wf-compose-anno { border-radius: 4px; padding: 3px 4px; }
-.wf-compose-anno:hover { background: var(--bg-hover); }
-.wf-compose-next { margin-top: 2px; }
-.wf-compose-next legend {
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-/* The comments already queued for this round, so the note can complement them
-   rather than repeat them — a bare count could never show that. */
-.wf-compose-annos {
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 4px 10px;
-  margin-bottom: 12px;
-  max-height: 160px;
-  overflow-y: auto;
-  font-size: 12px;
-}
-.wf-compose-annos p, .wf-compose-annos ul { margin: 4px 0; }
-/* One interactive row per queued comment: include-checkbox, jump, delete. */
-.wf-compose-anno {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 0;
-}
-.wf-compose-anno input[type="checkbox"] { flex: none; margin: 0; }
-.wf-compose-anno-text {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.wf-compose-anno-text.dim { color: var(--fg-dim); }
-.wf-compose-anno .icon-btn { flex: none; font-size: 11px; }
-/* The after-recording choice: record only, or launch the fix round now
-   (interaction mode + optional executor-skill override). */
-.wf-compose-next {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px 8px;
-  margin: 0 0 12px;
-}
-.wf-compose-next legend { font-size: 11px; color: var(--fg-dim); padding: 0 4px; }
-.wf-compose-next-opt { display: block; font-size: 12px; padding: 2px 0; cursor: pointer; }
-.wf-compose-launch { display: flex; gap: 8px; padding: 6px 0 0 20px; }
-.wf-compose-launch select { flex: none; }
-.wf-compose-launch input { flex: 1; min-width: 0; }
 .wf-compose-error {
   font-size: 12px;
   color: var(--red, #e06c75);
   margin-bottom: 8px !important;
+}
+
+/* The composer's layout: header, a body that scrolls (note left, the
+   comments to fix right), and a footer that never scrolls away — the send
+   button and the "what will be sent" line must stay in reach. */
+.dialog-box.wfc {
+  width: min(720px, calc(100vw - 48px));
+  max-height: 88vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+.dialog-box.wfc.wfc-wide { width: min(1120px, calc(100vw - 48px)); }
+.dialog-box.wfc p { margin-bottom: 0; }
+.wfc-head { padding: 18px 22px 12px; border-bottom: 1px solid var(--border); }
+.wfc-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wfc-title { font-size: 15px; font-weight: 600; margin-right: 4px; }
+.dialog-box.wfc .wfc-intro { font-size: 12.5px; line-height: 1.5; color: var(--fg-dim); margin-top: 6px; }
+.dialog-box.wfc .wfc-note-line {
+  font-size: 12px;
+  line-height: 1.45;
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--blue) 10%, transparent);
+  color: var(--fg);
+}
+.wfc-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  overflow: hidden;
+}
+.wfc-wide .wfc-body { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
+.wfc-main, .wfc-side { min-height: 0; overflow-y: auto; padding: 14px 22px 16px; }
+.wfc-side { border-left: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 45%, transparent); }
+.wfc-section-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.wfc-section-head > :first-child { margin-right: auto; }
+.wfc-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+.wfc-hint { font-size: 11.5px; color: var(--fg-dim); }
+.dialog-box.wfc .wfc-side-hint { margin: -2px 0 10px; line-height: 1.45; }
+
+/* Segmented control: Write/Preview, the author filter, Record/Launch. */
+.wfc-seg {
+  display: inline-flex;
+  flex: none;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+}
+.wfc-seg button {
+  padding: 4px 11px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.wfc-seg button:hover { color: var(--fg); background: var(--bg-hover); }
+.wfc-seg button.on, .wfc-seg button.on:hover { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+
+/* Insert actions above the note: quiet, so the note is what reads first. */
+.wfc-inserts { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.wfc-inserts[hidden], .wfc-changes[hidden] { display: none; }
+.wfc-insert, .wfc-mini-btn, .wfc-add-btn {
+  padding: 3px 9px;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.wfc-mini-btn, .wfc-add-btn { border-style: solid; }
+.wfc-insert:hover, .wfc-mini-btn:hover, .wfc-add-btn:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.dialog-box .wfc-input { min-height: 150px; margin-bottom: 14px; }
+.dialog-box.wfc .wf-compose-suggest { margin: 0 0 8px; }
+.wfc-preview { min-height: 150px; max-height: none; margin-bottom: 14px; }
+
+/* The numbered change list — one line per thing to do. */
+.wfc-change-list { list-style: none; margin: 0 0 6px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.wfc-change, .wfc-change-add { display: flex; align-items: center; gap: 6px; }
+.wfc-change-num {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10.5px;
+  font-weight: 600;
+  background: var(--bg-active);
+  color: var(--fg);
+}
+.dialog-box input.wfc-change-text { flex: 1; min-width: 0; margin: 0; padding: 5px 8px; font-size: 12.5px; }
+.wfc-change-add { margin-left: 26px; }
+.wfc-mini { flex: none; width: 24px; height: 24px; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; }
+.wfc-mini:disabled { opacity: 0.3; cursor: default; }
+.wfc-mini.danger:hover { color: var(--red); }
+
+/* Comments to fix: grouped by file, one card each. */
+.wfc-side-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.wfc-side-tools .wfc-seg { margin-right: auto; }
+.wfc-groups { display: flex; flex-direction: column; gap: 10px; }
+.wfc-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 2px;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+.wfc-caret { flex: none; width: 10px; color: var(--fg-dim); font-size: 10px; }
+.wfc-file {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono, "SF Mono", Menlo, monospace);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.wfc-group-count { flex: none; font-size: 11px; color: var(--fg-dim); }
+.wfc-anno {
+  margin: 4px 0 0 16px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+}
+.wfc-anno.parked { border-left-color: var(--border); opacity: 0.6; }
+.wfc-anno.parked:hover { opacity: 0.85; }
+.wfc-anno-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.wfc-anno-top .spacer { flex: 1; }
+.wfc-tick { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.wfc-line { font-family: var(--mono, "SF Mono", Menlo, monospace); font-size: 11px; color: var(--fg-dim); }
+.wfc-parked { font-size: 10.5px; font-style: italic; color: var(--fg-dim); }
+.wfc-anno-body {
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  cursor: pointer;
+}
+.wfc-anno-body.open { display: block; -webkit-line-clamp: unset; }
+.wfc-anno-code {
+  display: block;
+  margin-top: 6px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: var(--bg);
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dialog-box textarea.wfc-guide { display: none; min-height: 44px; margin: 8px 0 0; font-family: inherit; font-size: 12px; }
+.wfc-anno.guiding textarea.wfc-guide { display: block; }
+
+/* Footer: what happens next, what will be sent, send. */
+.wfc-foot { padding: 12px 22px 16px; border-top: 1px solid var(--border); background: var(--bg-raised); }
+.wfc-next { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wfc-launch { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.wfc-launch[hidden] { display: none; }
+.wfc-field { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 150px; }
+.wfc-field-label { font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-dim); }
+.dialog-box .wfc-field input, .dialog-box .wfc-field select { margin: 0; height: 30px; box-sizing: border-box; }
+.wfc-field select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  padding: 5px 8px;
+  font-size: 12.5px;
+}
+.wfc-foot-row { display: flex; align-items: center; gap: 16px; margin-top: 12px; }
+.dialog-box.wfc .wfc-summary { flex: 1; min-width: 0; font-size: 12px; line-height: 1.4; color: var(--fg-dim); }
+.dialog-box.wfc .wf-compose-error { margin: 10px 0 0 !important; }
+.wfc-foot .modal-actions { margin-top: 0; flex: none; }
+
+@media (max-width: 760px) {
+  .wfc-wide .wfc-body { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
+  .wfc-main, .wfc-side { overflow: visible; }
+  .wfc-side { border-left: 0; border-top: 1px solid var(--border); }
 }
 
 /* Review-round composer: one dialog holding the round's whole shape (depth +

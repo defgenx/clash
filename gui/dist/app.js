@@ -11955,89 +11955,97 @@ function wfComposeChangeRequest({ item, target, annotations, onJump, prefill = "
     const included = new Map(annotations.map((a) => [a.id, true]));
     let live = [...annotations];
     const includedAnnotations = () => live.filter((a) => included.get(a.id));
+    // A kept draft always wins over a prefill: the prefill is clash's
+    // suggestion, the draft is the human's unfinished sentence.
+    const kept = draftOf(wfDrafts.get(key));
+    const seeded = draftHasContent(wfDrafts.get(key)) ? "" : prefill;
+    const changes = [...kept.changes];
+    const guidance = { ...kept.guidance };
+    let filter = "all";
+    let previewing = false;
+    const collapsed = new Set();
+
+    const el = (tag, cls, text) => {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text != null) n.textContent = text;
+      return n;
+    };
+    const btn = (label, cls, title, onclick) => {
+      const b = el("button", cls, label);
+      b.type = "button";
+      if (title) b.title = title;
+      if (onclick) b.onclick = onclick;
+      return b;
+    };
 
     const backdrop = document.createElement("div");
     backdrop.className = "dialog-backdrop";
-    const box = document.createElement("div");
-    box.className = "dialog-box wf-compose";
+    const box = el("div", `dialog-box wf-compose wfc${live.length ? " wfc-wide" : ""}`);
 
-    const title = document.createElement("p");
-    title.textContent =
-      target === "plan" ? "Request changes to the plan" : "Request changes";
-    box.appendChild(title);
+    // ── Header: what this is, which round it becomes.
+    const head = el("div", "wfc-head");
+    const titleRow = el("div", "wfc-title-row");
+    titleRow.append(
+      el("span", "wfc-title", target === "plan" ? "Request changes to the plan" : "Request changes"),
+      el("span", `wf-chip ${target === "plan" ? "wf-review" : "wf-changes"}`, target === "plan" ? "plan" : "code"),
+      el("span", "wf-chip", `round ${(item.meta.iteration || 0) + 1}`)
+    );
+    head.appendChild(titleRow);
+    head.appendChild(el("p", "wfc-intro", composerIntro(target, live.length)));
+    const answers = unsentAnswersNote(item).trim();
+    if (answers) head.appendChild(el("p", "wfc-note-line", `❓ ${answers}`));
+    box.appendChild(head);
 
-    const hint = document.createElement("p");
-    hint.className = "dialog-detail";
-    hint.textContent = composerIntro(target, live.length);
-    box.appendChild(hint);
-    const plumbing = document.createElement("p");
-    plumbing.className = "wf-compose-plumbing";
-    plumbing.textContent = `Recorded as iteration ${(item.meta.iteration || 0) + 1} — the first thing the agent reads next round. Markdown, ⌘↵ to send.${unsentAnswersNote(item)}`;
-    box.appendChild(plumbing);
+    const body = el("div", "wfc-body");
+    box.appendChild(body);
 
-    // Toolbar: template + preview. Both are opt-in so the one-sentence path
-    // stays a one-sentence path.
-    const tools = document.createElement("div");
-    tools.className = "wf-compose-tools";
-    const noteCap = document.createElement("span");
-    noteCap.className = "wf-compose-caption";
-    noteCap.textContent = noteCaption(target, live.length);
-    tools.appendChild(noteCap);
-    const tmplBtn = document.createElement("button");
-    tmplBtn.type = "button";
-    tmplBtn.className = "icon-btn wide";
-    tmplBtn.textContent = "What / Why / Out of scope";
-    tmplBtn.title =
-      "Insert the three-section scaffold for a thorough request — most rounds are fine as one sentence";
-    tools.appendChild(tmplBtn);
-    const previewBtn = document.createElement("button");
-    previewBtn.type = "button";
-    previewBtn.className = "icon-btn wide";
-    previewBtn.textContent = "Preview";
-    tools.appendChild(previewBtn);
-    // The bridge from an agent review round to applied work: the note is the
-    // next round's prompt, so a round's findings must become that note without
-    // retyping. Only offered once a round exists — and offers EVERY round,
-    // not just the latest: round 2's findings stay insertable after round 5.
+    // ── Left: the instructions.
+    const main = el("section", "wfc-main");
+    body.appendChild(main);
+    const mainHead = el("div", "wfc-section-head");
+    mainHead.appendChild(el("span", "wfc-section-title", noteCaption(target, live.length)));
+    const seg = el("div", "wfc-seg");
+    const writeTab = btn("Write", "on", "Edit the note");
+    const previewTab = btn("Preview", "", "Exactly what lands in review.md — note, changes, guidance and the comments that ride along");
+    seg.append(writeTab, previewTab);
+    mainHead.appendChild(seg);
+    main.appendChild(mainHead);
+
+    const inserts = el("div", "wfc-inserts");
+    const tmplBtn = btn(
+      "＋ What / Why / Out of scope",
+      "wfc-insert",
+      "Insert the three-section scaffold for a thorough request — most rounds are fine as one sentence"
+    );
+    inserts.appendChild(tmplBtn);
     let findingsBtn = null;
     if (item.hasAgentReview || item.meta.reviewRound) {
-      findingsBtn = document.createElement("button");
-      findingsBtn.type = "button";
-      findingsBtn.className = "icon-btn wide";
-      findingsBtn.textContent = "Insert review findings…";
-      findingsBtn.title =
-        "Paste an agent review round's findings here, to edit into this round's instructions";
-      tools.appendChild(findingsBtn);
+      findingsBtn = btn(
+        "＋ Review findings…",
+        "wfc-insert",
+        "Paste an agent review round's findings here, to edit into this round's instructions"
+      );
+      inserts.appendChild(findingsBtn);
     }
-    box.appendChild(tools);
+    main.appendChild(inserts);
 
-    // A kept draft always wins over a prefill: the prefill is clash's
-    // suggestion, the draft is the human's unfinished sentence.
-    const seeded = (wfDrafts.get(key) || "").trim() ? "" : prefill;
     let suggest = null;
-    if (!seeded && item.lastAgentReview && !(wfDrafts.get(key) || "").trim()) {
-      suggest = document.createElement("p");
-      suggest.className = "wf-compose-suggest";
-      const stext = document.createElement("span");
-      stext.textContent = `${roundLabel(item.lastAgentReview)} left findings — `;
-      const slink = document.createElement("button");
-      slink.type = "button";
-      slink.className = "wf-compose-suggest-link";
-      slink.textContent = "insert them as your starting point";
-      suggest.append(stext, slink);
-      box.appendChild(suggest);
+    if (!seeded && item.lastAgentReview && !draftHasContent(wfDrafts.get(key))) {
+      suggest = el("p", "wf-compose-suggest");
+      const slink = btn("insert them as your starting point", "wf-compose-suggest-link");
+      suggest.append(el("span", null, `${roundLabel(item.lastAgentReview)} left findings — `), slink);
+      main.appendChild(suggest);
     }
 
-    const field = document.createElement("textarea");
-    field.className = "wf-compose-input";
-    field.rows = 14;
+    const field = el("textarea", "wf-compose-input wfc-input");
+    field.rows = live.length ? 9 : 12;
     field.spellcheck = false;
-    field.value = wfDrafts.get(key) || seeded || "";
+    field.value = kept.text || seeded || "";
     field.placeholder = composerPlaceholder(target, live.length);
-    box.appendChild(field);
+    main.appendChild(field);
     if (suggest) {
-      const slink = suggest.querySelector("button");
-      slink.onclick = () => {
+      suggest.querySelector("button").onclick = () => {
         if (findingsBtn) findingsBtn.onclick();
         suggest.remove();
       };
@@ -12045,46 +12053,319 @@ function wfComposeChangeRequest({ item, target, annotations, onJump, prefill = "
         if (field.value.trim()) suggest.remove();
       });
     }
-
-    // Rendered preview of exactly what will land in review.md.
-    const preview = document.createElement("div");
-    preview.className = "wf-md wf-compose-preview";
+    const preview = el("div", "wf-md wf-compose-preview wfc-preview");
     preview.hidden = true;
-    box.appendChild(preview);
+    main.appendChild(preview);
 
-    let previewing = false;
-    previewBtn.onclick = () => {
-      previewing = !previewing;
-      previewBtn.textContent = previewing ? "Edit" : "Preview";
-      field.hidden = previewing;
-      preview.hidden = !previewing;
-      if (previewing) {
-        const body = field.value.trim();
-        const annos = annotationsMarkdown(includedAnnotations());
-        const full =
-          body + (annos ? `${body ? "\n\n" : ""}### Open annotations\n\n${annos}` : "");
-        renderMarkdown(preview, full || "_(nothing to send yet)_");
-      } else {
-        field.focus();
-      }
+    // The change list: one line per thing to do, numbered in the note so the
+    // agent can report on each.
+    const changesWrap = el("div", "wfc-changes");
+    main.appendChild(changesWrap);
+    const renderChanges = () => {
+      changesWrap.innerHTML = "";
+      const h = el("div", "wfc-section-head");
+      h.appendChild(el("span", "wfc-section-title", "Changes"));
+      h.appendChild(el("span", "wfc-hint", changes.length ? `${changes.length} — numbered in the note` : "one line per thing to do, optional"));
+      changesWrap.appendChild(h);
+      const list = el("ol", "wfc-change-list");
+      changes.forEach((c, i) => {
+        const li = el("li", "wfc-change");
+        const num = el("span", "wfc-change-num", String(i + 1));
+        const input = el("input", "wfc-change-text");
+        input.type = "text";
+        input.value = c;
+        input.oninput = () => {
+          changes[i] = input.value;
+          paintSummary();
+        };
+        const up = btn("↑", "icon-btn wfc-mini", "Move up", () => {
+          if (i === 0) return;
+          [changes[i - 1], changes[i]] = [changes[i], changes[i - 1]];
+          renderChanges();
+        });
+        up.disabled = i === 0;
+        const rm = btn("✕", "icon-btn wfc-mini danger", "Remove this change", () => {
+          changes.splice(i, 1);
+          renderChanges();
+        });
+        li.append(num, input, up, rm);
+        list.appendChild(li);
+      });
+      changesWrap.appendChild(list);
+      const add = el("div", "wfc-change-add");
+      const input = el("input", "wfc-change-text");
+      input.type = "text";
+      input.placeholder = "Add a change — e.g. rename the flag to match the API (Enter)";
+      const addBtn = btn("＋ Add", "wfc-add-btn", "Add this change to the list");
+      const commit = () => {
+        const v = input.value.trim();
+        if (!v) return;
+        changes.push(v);
+        renderChanges();
+        const next = changesWrap.querySelector(".wfc-change-add input");
+        if (next && next.focus) next.focus();
+      };
+      addBtn.onclick = commit;
+      input.onkeydown = (e) => {
+        if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
+          e.preventDefault();
+          commit();
+        }
+      };
+      add.append(input, addBtn);
+      changesWrap.appendChild(add);
+      paintSummary();
     };
+
+    // ── Right: the comments to fix.
+    const side = el("section", "wfc-side");
+    if (live.length) body.appendChild(side);
+    const renderAnnos = () => {
+      side.innerHTML = "";
+      if (!live.length) {
+        side.remove();
+        box.classList.remove("wfc-wide");
+        paintSummary();
+        return;
+      }
+      const inc = includedAnnotations().length;
+      const sh = el("div", "wfc-section-head");
+      sh.appendChild(el("span", "wfc-section-title", "Comments to fix"));
+      sh.appendChild(el("span", `wf-chip ${inc === live.length ? "wf-done" : "wf-changes"}`, `${inc} of ${live.length}`));
+      side.appendChild(sh);
+      side.appendChild(
+        el(
+          "p",
+          "wfc-hint wfc-side-hint",
+          "Ticked comments go to the agent with this round. Untick one to park it — it stays on the diff for a later round."
+        )
+      );
+
+      const bar = el("div", "wfc-side-tools");
+      const fseg = el("div", "wfc-seg");
+      const count = (f) => filterAnnotations(live, f).length;
+      for (const [f, label] of [
+        ["all", `All ${live.length}`],
+        ["you", `Yours ${count("you")}`],
+        ["agent", `Agent ${count("agent")}`],
+      ]) {
+        if (f !== "all" && !count(f)) continue;
+        const b = btn(label, filter === f ? "on" : "", null, () => {
+          filter = f;
+          renderAnnos();
+        });
+        fseg.appendChild(b);
+      }
+      bar.appendChild(fseg);
+      const shown = filterAnnotations(live, filter);
+      bar.appendChild(
+        btn("Include all", "wfc-mini-btn", "Send every listed comment with this round", () => {
+          for (const a of shown) included.set(a.id, true);
+          renderAnnos();
+        })
+      );
+      bar.appendChild(
+        btn("Park all", "wfc-mini-btn", "Keep every listed comment for a later round", () => {
+          for (const a of shown) included.set(a.id, false);
+          renderAnnos();
+        })
+      );
+      side.appendChild(bar);
+
+      const groups = el("div", "wfc-groups");
+      for (const g of groupAnnotationsByFile(shown)) {
+        const grp = el("div", "wfc-group");
+        const gin = g.items.filter((a) => included.get(a.id)).length;
+        const gh = btn("", "wfc-group-head", collapsed.has(g.file) ? "Show this file's comments" : "Hide this file's comments");
+        gh.innerHTML =
+          `<span class="wfc-caret">${collapsed.has(g.file) ? "▸" : "▾"}</span>` +
+          `<span class="wfc-file">${escapeHtml(g.file)}</span>` +
+          `<span class="wfc-group-count">${gin}/${g.items.length}</span>`;
+        gh.onclick = () => {
+          if (collapsed.has(g.file)) collapsed.delete(g.file);
+          else collapsed.add(g.file);
+          renderAnnos();
+        };
+        grp.appendChild(gh);
+        if (!collapsed.has(g.file)) for (const a of g.items) grp.appendChild(annoCard(a));
+        groups.appendChild(grp);
+      }
+      side.appendChild(groups);
+      paintSummary();
+    };
+
+    function annoCard(a) {
+      const on = !!included.get(a.id);
+      const card = el("div", `wfc-anno${on ? "" : " parked"}`);
+      const top = el("div", "wfc-anno-top");
+      const tick = el("label", "wfc-tick");
+      const cb = el("input");
+      cb.type = "checkbox";
+      cb.checked = on;
+      cb.title = "Send this comment with the round (unticked = park it for a later round)";
+      cb.onchange = () => {
+        included.set(a.id, cb.checked);
+        renderAnnos();
+      };
+      tick.append(cb, el("span", "wfc-line", `L${a.line}`));
+      top.appendChild(tick);
+      const who = annotationAuthor(a);
+      top.appendChild(el("span", `wf-chip ${who === "agent" ? "wf-pr" : "wf-review"}`, who === "agent" ? "agent" : "you"));
+      const conf = wfConfidenceBadge(annotationConfidence(a));
+      if (conf) top.appendChild(conf);
+      if (!on) top.appendChild(el("span", "wfc-parked", "parked"));
+      top.appendChild(el("span", "spacer"));
+      const hasGuide = !!(guidance[a.id] || "").trim();
+      const guideBtn = btn(hasGuide ? "✎ How to fix" : "＋ How to fix", "wfc-mini-btn", "Tell the agent how you want this one fixed — added to the note", () => {
+        guidance[a.id] = guidance[a.id] || "";
+        card.classList.add("guiding");
+        const g = card.querySelector(".wfc-guide");
+        if (g && g.focus) g.focus();
+      });
+      const jump = btn("↗", "icon-btn wfc-mini", "Show this comment in the diff (the dialog closes; everything here is kept as a draft)", () => {
+        keepDraft();
+        done(null);
+        if (onJump) onJump(a.id);
+      });
+      const del = btn("✕", "icon-btn wfc-mini danger", "Delete this comment thread", async () => {
+        if (!(await uiConfirm(`Delete the comment on ${a.file}:${a.line}?`, "Delete"))) return;
+        try {
+          await invoke("delete_workflow_annotation", { project: item.project, slug: item.slug, id: a.id });
+          live = live.filter((x) => x.id !== a.id);
+          included.delete(a.id);
+          delete guidance[a.id];
+          renderAnnos();
+        } catch (e) {
+          uiAlert(`Delete failed: ${e}`);
+        }
+      });
+      top.append(guideBtn, jump, del);
+      card.appendChild(top);
+      const text = el("div", "wfc-anno-body", (a.body || "").trim() || "(no text)");
+      text.title = "Click to expand";
+      text.onclick = () => text.classList.toggle("open");
+      card.appendChild(text);
+      if ((a.lineContent || "").trim()) card.appendChild(el("code", "wfc-anno-code", a.lineContent.trim()));
+      const guide = el("textarea", "wfc-guide");
+      guide.rows = 2;
+      guide.placeholder = "How should this be fixed? (goes to the agent under “On the comments”)";
+      guide.value = guidance[a.id] || "";
+      guide.oninput = () => {
+        guidance[a.id] = guide.value;
+        paintSummary();
+      };
+      if (hasGuide || guidance[a.id] !== undefined) card.classList.add("guiding");
+      card.appendChild(guide);
+      return card;
+    }
+
+    // ── Footer: what happens after, what will be sent, send.
+    const foot = el("div", "wfc-foot");
+    box.appendChild(foot);
+    const nextRow = el("div", "wfc-next");
+    nextRow.appendChild(el("span", "wfc-section-title", "Then"));
+    const nseg = el("div", "wfc-seg");
+    const recordTab = btn("Record only", "on", "Record the round; launch the agent later from the action bar");
+    const launchTab = btn("Record & launch the fix round", "", "Record the round and start the agent right away");
+    nseg.append(recordTab, launchTab);
+    nextRow.appendChild(nseg);
+    foot.appendChild(nextRow);
+    let launching = false;
+    const launchRow = el("div", "wfc-launch");
+    launchRow.hidden = true;
+    const field2 = (label, control) => {
+      const l = el("label", "wfc-field");
+      l.append(el("span", "wfc-field-label", label), control);
+      return l;
+    };
+    const interactionSel = el("select");
+    interactionSel.title = "How the round runs — the agent asks in-session when you leave it on 'ask'";
+    for (const [v, l] of [
+      ["ask", "Ask me when it starts"],
+      ["interactive", "Interactive"],
+      ["autonomous", "Autonomous"],
+    ]) {
+      const o = el("option", null, l);
+      o.value = v;
+      interactionSel.appendChild(o);
+    }
+    const skillInput = el("input");
+    skillInput.type = "text";
+    skillInput.placeholder = "clash-workflow";
+    skillInput.spellcheck = false;
+    skillInput.title =
+      "Executor skill for this round. Leave empty for clash-workflow; a custom skill must honor the same file contract (docs/workflows.md).";
+    const agentSel = wfAgentSelect(item);
+    launchRow.append(field2("Agent", agentSel), field2("Mode", interactionSel), field2("Skill", skillInput));
+    foot.appendChild(launchRow);
+
+    const error = el("p", "wf-compose-error");
+    error.hidden = true;
+    foot.appendChild(error);
+    const footRow = el("div", "wfc-foot-row");
+    const summary = el("p", "wfc-summary");
+    const actions = el("div", "modal-actions");
+    const cancel = btn("Cancel", "", "Close — everything typed here is kept as a draft");
+    const send = btn(submitLabel(false), "primary", "⌘↵");
+    actions.append(cancel, send);
+    footRow.append(summary, actions);
+    foot.appendChild(footRow);
+
+    function paintSummary() {
+      const guided = includedAnnotations().filter((a) => (guidance[a.id] || "").trim()).length;
+      summary.textContent = composerSummary({
+        text: field.value,
+        changes,
+        included: includedAnnotations().length,
+        total: live.length,
+        guided,
+      });
+    }
+    const setLaunch = (on) => {
+      launching = on;
+      recordTab.classList.toggle("on", !on);
+      launchTab.classList.toggle("on", on);
+      launchRow.hidden = !on;
+      send.textContent = submitLabel(on);
+    };
+    recordTab.onclick = () => setLaunch(false);
+    launchTab.onclick = () => setLaunch(true);
+
+    const composed = () =>
+      composeChangeNote({ text: field.value, changes, guidance, annotations: includedAnnotations() });
+    const showPreview = (on) => {
+      previewing = on;
+      writeTab.classList.toggle("on", !on);
+      previewTab.classList.toggle("on", on);
+      field.hidden = on;
+      changesWrap.hidden = on;
+      inserts.hidden = on;
+      preview.hidden = !on;
+      if (on) {
+        const note = composed();
+        const annos = annotationsMarkdown(includedAnnotations());
+        const full = note + (annos ? `${note ? "\n\n" : ""}### Open annotations\n\n${annos}` : "");
+        renderMarkdown(preview, full || "_(nothing to send yet)_");
+      } else field.focus();
+    };
+    writeTab.onclick = () => showPreview(false);
+    previewTab.onclick = () => showPreview(true);
+    field.addEventListener("input", paintSummary);
+
     tmplBtn.onclick = () => {
       const tmpl = changeRequestTemplate(target);
       // Prepend rather than replace — never destroy what is already typed.
       field.value = field.value.trim() ? `${tmpl}\n${field.value}` : tmpl;
-      if (previewing) previewBtn.onclick();
+      if (previewing) showPreview(false);
       field.focus();
       field.setSelectionRange(0, 0);
+      paintSummary();
     };
     if (findingsBtn) {
       findingsBtn.onclick = async () => {
         let md = "";
         try {
-          md = await invoke("get_workflow_doc", {
-            project: item.project,
-            slug: item.slug,
-            doc: "agent-review.md",
-          });
+          md = await invoke("get_workflow_doc", { project: item.project, slug: item.slug, doc: "agent-review.md" });
         } catch (e) {
           dlog(`insert findings failed: ${e}`);
         }
@@ -12093,22 +12374,16 @@ function wfComposeChangeRequest({ item, target, annotations, onJump, prefill = "
           flashToast("No agent review rounds to insert from");
           return;
         }
-        // One round → insert it; several → pick (newest first, latest primary).
-        // Picked by *index*, not by number: numbers restart per phase, so
+        // Picked by *index*, not by number: numbers restart per target, so
         // "Review 1" can name two different rounds in one file.
         let index = rounds.length - 1;
         if (rounds.length > 1) {
           const picked = await uiChoice({
             message: "Insert which review round's findings?",
             choices: [...rounds].reverse().map((r, i) => {
-              // How sure the round was, so a pick can favour the verified one.
-              const tally = confidenceTally(
-                findingConfidenceCounts((roundFindingsAt(md, r.index) || {}).text)
-              );
+              const tally = confidenceTally(findingConfidenceCounts((roundFindingsAt(md, r.index) || {}).text));
               return {
-                label:
-                  `${roundLabel(r)}${r.heading ? ` — ${r.heading}` : ""}` +
-                  (tally ? ` · ${tally} confidence` : ""),
+                label: `${roundLabel(r)}${r.heading ? ` — ${r.heading}` : ""}` + (tally ? ` · ${tally} confidence` : ""),
                 value: String(r.index),
                 primary: i === 0,
               };
@@ -12122,164 +12397,14 @@ function wfComposeChangeRequest({ item, target, annotations, onJump, prefill = "
           flashToast(`${roundLabel(rounds[index])} has no findings to insert`);
           return;
         }
-        // Append rather than replace — the note frames the findings, so what
-        // is already typed stays on top.
-        field.value = field.value.trim()
-          ? `${field.value.replace(/\s+$/, "")}\n\n${found.text}\n`
-          : `${found.text}\n`;
-        if (previewing) previewBtn.onclick();
+        // Append rather than replace — the note frames the findings.
+        field.value = field.value.trim() ? `${field.value.replace(/\s+$/, "")}\n\n${found.text}\n` : `${found.text}\n`;
+        if (previewing) showPreview(false);
         field.focus();
         field.setSelectionRange(field.value.length, field.value.length);
+        paintSummary();
       };
     }
-
-    // The comments queued for this round — interactive, not a bare list: each
-    // row can be excluded (parked: kept, but the agent won't see it), jumped
-    // to in the diff, or deleted outright. Open comments used to be swept
-    // along wholesale and were hard to find again once written.
-    const annosWrap = document.createElement("div");
-    box.appendChild(annosWrap);
-    const renderAnnos = () => {
-      annosWrap.innerHTML = "";
-      if (!live.length) return;
-      const n = includedAnnotations().length;
-      const cap = document.createElement("span");
-      cap.className = "wf-compose-caption";
-      cap.textContent = "Comments in this round";
-      annosWrap.appendChild(cap);
-      const label = document.createElement("p");
-      label.className = "wf-compose-annos-label";
-      label.textContent =
-        n === live.length
-          ? `${n} open comment${n > 1 ? "s" : ""} ride along — uncheck to park one for a later round`
-          : `${n} of ${live.length} comments ride along (unchecked ones are parked, not lost)`;
-      annosWrap.appendChild(label);
-      const list = document.createElement("div");
-      list.className = "wf-compose-annos";
-      for (const a of live) {
-        const row = document.createElement("div");
-        row.className = "wf-compose-anno";
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = !!included.get(a.id);
-        cb.title = "Send this comment with the round (unchecked = park it for a later round)";
-        cb.onchange = () => {
-          included.set(a.id, cb.checked);
-          renderAnnos();
-        };
-        const text = document.createElement("span");
-        text.className = "wf-compose-anno-text" + (cb.checked ? "" : " dim");
-        text.textContent = `${a.file}:${a.line} — ${a.body || ""}`;
-        text.title = a.body || "";
-        const jump = document.createElement("button");
-        jump.type = "button";
-        jump.className = "icon-btn";
-        jump.textContent = "view →";
-        jump.title = "Show this comment in the diff (the dialog closes; your note is kept as a draft)";
-        jump.onclick = () => {
-          keepDraft();
-          done(null);
-          if (onJump) onJump(a.id);
-        };
-        const del = document.createElement("button");
-        del.type = "button";
-        del.className = "icon-btn danger";
-        del.textContent = "✕";
-        del.title = "Delete this comment thread";
-        del.onclick = async () => {
-          if (!(await uiConfirm(`Delete the comment on ${a.file}:${a.line}?`, "Delete"))) return;
-          try {
-            await invoke("delete_workflow_annotation", {
-              project: item.project,
-              slug: item.slug,
-              id: a.id,
-            });
-            live = live.filter((x) => x.id !== a.id);
-            included.delete(a.id);
-            renderAnnos();
-          } catch (e) {
-            uiAlert(`Delete failed: ${e}`);
-          }
-        };
-        const conf = wfConfidenceBadge(annotationConfidence(a));
-        row.append(...[cb, conf, text, jump, del].filter(Boolean));
-        list.appendChild(row);
-      }
-      annosWrap.appendChild(list);
-    };
-    renderAnnos();
-
-    // What happens once the request is recorded. "Launch now" folds the
-    // second click — and the how — into the same screen, so the composer is
-    // the round's whole launchpad: interaction mode and even the executor
-    // skill (a custom skill honoring the docs/workflows.md file contract).
-    const next = document.createElement("fieldset");
-    next.className = "wf-compose-next";
-    const legend = document.createElement("legend");
-    legend.textContent = "After recording";
-    next.appendChild(legend);
-    const mkNext = (value, label, checked) => {
-      const row = document.createElement("label");
-      row.className = "wf-compose-next-opt";
-      const input = document.createElement("input");
-      input.type = "radio";
-      input.name = "wf-compose-next";
-      input.value = value;
-      input.checked = checked;
-      row.appendChild(input);
-      row.appendChild(document.createTextNode(` ${label}`));
-      next.appendChild(row);
-      return input;
-    };
-    const recordOnly = mkNext("record", "Record only — launch the agent later from the action bar", true);
-    const launchNow = mkNext("launch", "Record and launch the fix round now", false);
-    const launchRow = document.createElement("div");
-    launchRow.className = "wf-compose-launch";
-    launchRow.hidden = true;
-    const interactionSel = document.createElement("select");
-    interactionSel.title = "How the round runs — the agent asks in-session when you leave it on 'ask'";
-    for (const [v, l] of [
-      ["ask", "Ask me when it starts"],
-      ["interactive", "Interactive"],
-      ["autonomous", "Autonomous"],
-    ]) {
-      const o = document.createElement("option");
-      o.value = v;
-      o.textContent = l;
-      interactionSel.appendChild(o);
-    }
-    const skillInput = document.createElement("input");
-    skillInput.type = "text";
-    skillInput.placeholder = "clash-workflow (default skill)";
-    skillInput.spellcheck = false;
-    skillInput.title =
-      "Executor skill for this round. Leave empty for clash-workflow; a custom skill must honor the same file contract (docs/workflows.md).";
-    const agentSel = wfAgentSelect(item);
-    launchRow.append(agentSel, interactionSel, skillInput);
-    next.appendChild(launchRow);
-    const syncLaunchRow = () => {
-      launchRow.hidden = !launchNow.checked;
-      send.textContent = submitLabel(launchNow.checked);
-    };
-    recordOnly.onchange = syncLaunchRow;
-    launchNow.onchange = syncLaunchRow;
-    box.appendChild(next);
-
-    const error = document.createElement("p");
-    error.className = "wf-compose-error";
-    error.hidden = true;
-    box.appendChild(error);
-
-    const actions = document.createElement("div");
-    actions.className = "modal-actions";
-    const cancel = document.createElement("button");
-    cancel.textContent = "Cancel";
-    actions.appendChild(cancel);
-    const send = document.createElement("button");
-    send.className = "primary";
-    send.textContent = submitLabel(false);
-    actions.appendChild(send);
-    box.appendChild(actions);
 
     const done = (value) => {
       backdrop.remove();
@@ -12287,8 +12412,8 @@ function wfComposeChangeRequest({ item, target, annotations, onJump, prefill = "
       if (typeof fitAll === "function") fitAll();
     };
     const keepDraft = () => {
-      const text = field.value;
-      if (text.trim()) wfDrafts.set(key, text);
+      const d = { text: field.value, changes: changes.filter((c) => (c || "").trim()), guidance };
+      if (draftHasContent(d)) wfDrafts.set(key, d);
       else wfDrafts.delete(key);
     };
     const dismiss = () => {
@@ -12296,12 +12421,8 @@ function wfComposeChangeRequest({ item, target, annotations, onJump, prefill = "
       done(null);
     };
     const submit = () => {
-      const note = field.value.trim();
-      const check = canSubmitChangeRequest({
-        note,
-        openCount: includedAnnotations().length,
-        target,
-      });
+      const note = composed().trim();
+      const check = canSubmitChangeRequest({ note, openCount: includedAnnotations().length, target });
       if (!check.ok) {
         error.textContent = check.reason;
         error.hidden = false;
@@ -12312,7 +12433,7 @@ function wfComposeChangeRequest({ item, target, annotations, onJump, prefill = "
       done({
         note,
         park: live.filter((a) => !included.get(a.id)).map((a) => a.id),
-        launch: launchNow.checked
+        launch: launching
           ? {
               interactive: interactiveParam(interactionSel.value),
               skill: skillInput.value.trim() || null,
@@ -12328,14 +12449,16 @@ function wfComposeChangeRequest({ item, target, annotations, onJump, prefill = "
     backdrop.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key === "Escape") dismiss();
-      // Enter types a newline; ⌘/Ctrl+Enter sends — same contract as the
-      // multiline uiDialog, so the muscle memory carries over.
+      // Enter types a newline; ⌘/Ctrl+Enter sends — the multiline uiDialog's
+      // contract, so the muscle memory carries over.
       if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         submit();
       }
     });
 
+    renderChanges();
+    renderAnnos();
     backdrop.appendChild(box);
     if (typeof hideBrowserWebviews === "function") hideBrowserWebviews();
     document.body.appendChild(backdrop);

@@ -338,7 +338,90 @@
     return ["plan", "revise", "implement", "pr"].includes(p) ? p : fallback;
   }
 
+  /// A kept composer draft: `{ text, changes, guidance }`. An older draft
+  /// was the note's text alone.
+  function draftOf(raw) {
+    if (typeof raw === "string") return { text: raw, changes: [], guidance: {} };
+    const d = raw || {};
+    return {
+      text: typeof d.text === "string" ? d.text : "",
+      changes: Array.isArray(d.changes) ? d.changes.filter((c) => typeof c === "string" && c.trim()) : [],
+      guidance: d.guidance && typeof d.guidance === "object" ? { ...d.guidance } : {},
+    };
+  }
+
+  /// Is a draft worth keeping (anything typed at all)?
+  function draftHasContent(d) {
+    const x = draftOf(d);
+    return !!(x.text.trim() || x.changes.length || Object.values(x.guidance).some((g) => (g || "").trim()));
+  }
+
+  /// The note that lands in `review.md`: the free text, then the change list
+  /// (numbered, so the agent can report on each), then any how-to-fix
+  /// guidance given on a comment that rides along. Comments themselves are
+  /// appended by the backend under `### Open annotations`.
+  function composeChangeNote({ text = "", changes = [], guidance = {}, annotations = [] } = {}) {
+    const parts = [];
+    const body = (text || "").trim();
+    if (body) parts.push(body);
+    const items = (changes || []).map((c) => (c || "").trim()).filter(Boolean);
+    if (items.length) parts.push(`### Changes\n\n${items.map((c, i) => `${i + 1}. ${c}`).join("\n")}`);
+    const guided = (annotations || [])
+      .map((a) => [a, ((guidance || {})[a.id] || "").trim()])
+      .filter(([, g]) => g);
+    if (guided.length)
+      parts.push(
+        `### On the comments\n\n${guided.map(([a, g]) => `- \`${a.file}:${a.line}\` — ${g}`).join("\n")}`
+      );
+    return parts.join("\n\n");
+  }
+
+  /// The comments grouped by file, files and lines in order — the shape the
+  /// composer lists them in.
+  function groupAnnotationsByFile(annotations) {
+    const by = new Map();
+    for (const a of annotations || []) {
+      const f = (a && a.file) || "(no file)";
+      if (!by.has(f)) by.set(f, []);
+      by.get(f).push(a);
+    }
+    return [...by.entries()]
+      .sort((x, y) => x[0].localeCompare(y[0]))
+      .map(([file, items]) => ({ file, items: items.sort((a, b) => (a.line || 0) - (b.line || 0)) }));
+  }
+
+  /// Who wrote a comment, as the composer filters it: `agent` or `you`.
+  function annotationAuthor(a) {
+    return a && a.author === "agent" ? "agent" : "you";
+  }
+
+  /// The comments a filter keeps: `all`, `you` or `agent`.
+  function filterAnnotations(annotations, filter) {
+    if (filter !== "you" && filter !== "agent") return annotations || [];
+    return (annotations || []).filter((a) => annotationAuthor(a) === filter);
+  }
+
+  /// One line under the composer saying exactly what will be sent.
+  function composerSummary({ text = "", changes = [], included = 0, total = 0, guided = 0 } = {}) {
+    const bits = [];
+    if ((text || "").trim()) bits.push("your note");
+    const n = (changes || []).filter((c) => (c || "").trim()).length;
+    if (n) bits.push(`${n} change${n === 1 ? "" : "s"}`);
+    if (total) bits.push(`${included} of ${total} comment${total === 1 ? "" : "s"}`);
+    if (guided) bits.push(`guidance on ${guided}`);
+    const parked = total - included;
+    const sends = bits.length ? `Sends ${bits.join(" · ")}` : "Nothing to send yet";
+    return parked > 0 ? `${sends} — ${parked} parked for a later round` : sends;
+  }
+
   const api = {
+    draftOf,
+    draftHasContent,
+    composeChangeNote,
+    groupAnnotationsByFile,
+    annotationAuthor,
+    filterAnnotations,
+    composerSummary,
     changeRoundPhase,
     recordedPhase,
     changeRequestTemplate,

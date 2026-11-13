@@ -534,3 +534,81 @@ test("the badge names the level and its tooltip the evidence", () => {
   assert.equal(confidenceTooltip({ level: "high", basis: "" }), "Reviewer confidence: high (no basis given)");
   assert.equal(confidenceTooltip(null), "");
 });
+
+const W = require("../dist/wf-compose.js");
+
+test("a draft from before the change list still reads, as its text", () => {
+  assert.deepEqual(W.draftOf("fix the flag"), { text: "fix the flag", changes: [], guidance: {} });
+  assert.deepEqual(W.draftOf(undefined), { text: "", changes: [], guidance: {} });
+  assert.deepEqual(W.draftOf({ text: "a", changes: ["x", " ", 3], guidance: { a1: "g" } }), {
+    text: "a",
+    changes: ["x"],
+    guidance: { a1: "g" },
+  });
+});
+
+test("a draft is kept only when something was typed", () => {
+  assert.equal(W.draftHasContent(""), false);
+  assert.equal(W.draftHasContent({ text: "  ", changes: [], guidance: { a1: " " } }), false);
+  assert.equal(W.draftHasContent({ changes: ["rename it"] }), true);
+  assert.equal(W.draftHasContent({ guidance: { a1: "use the helper" } }), true);
+  assert.equal(W.draftHasContent("note"), true);
+});
+
+test("the note numbers the changes and names each guided comment", () => {
+  const annotations = [
+    { id: "a1", file: "src/x.rs", line: 12 },
+    { id: "a2", file: "src/y.rs", line: 3 },
+  ];
+  const note = W.composeChangeNote({
+    text: "Tighten the parser.",
+    changes: ["Reject empty keys", "  ", "Log the skipped line"],
+    guidance: { a1: "reuse parse_key", a2: "  ", parked: "never sent" },
+    annotations,
+  });
+  assert.equal(
+    note,
+    "Tighten the parser.\n\n### Changes\n\n1. Reject empty keys\n2. Log the skipped line\n\n" +
+      "### On the comments\n\n- `src/x.rs:12` — reuse parse_key"
+  );
+  // Guidance on a comment that is not sent (parked) never reaches the note.
+  assert.equal(W.composeChangeNote({ guidance: { a1: "x" }, annotations: [] }), "");
+  // A changes-only round is still a note, so it can be submitted.
+  assert.match(W.composeChangeNote({ changes: ["one"] }), /^### Changes\n\n1\. one$/);
+});
+
+test("comments are grouped by file, files and lines in order", () => {
+  const g = W.groupAnnotationsByFile([
+    { id: "1", file: "b.rs", line: 9 },
+    { id: "2", file: "a.rs", line: 5 },
+    { id: "3", file: "b.rs", line: 2 },
+    { id: "4" },
+  ]);
+  assert.deepEqual(
+    g.map((x) => [x.file, x.items.map((a) => a.id)]),
+    [
+      ["(no file)", ["4"]],
+      ["a.rs", ["2"]],
+      ["b.rs", ["3", "1"]],
+    ]
+  );
+});
+
+test("the author filter splits agent findings from your comments", () => {
+  const list = [{ id: "1", author: "agent" }, { id: "2" }, { id: "3", author: "someone" }];
+  assert.equal(W.annotationAuthor(list[0]), "agent");
+  assert.equal(W.annotationAuthor(list[2]), "you");
+  assert.deepEqual(W.filterAnnotations(list, "agent").map((a) => a.id), ["1"]);
+  assert.deepEqual(W.filterAnnotations(list, "you").map((a) => a.id), ["2", "3"]);
+  assert.equal(W.filterAnnotations(list, "all"), list);
+});
+
+test("the summary says what will be sent and what stays parked", () => {
+  assert.equal(W.composerSummary({}), "Nothing to send yet");
+  assert.equal(
+    W.composerSummary({ text: "x", changes: ["a", "b", " "], included: 2, total: 3, guided: 1 }),
+    "Sends your note · 2 changes · 2 of 3 comments · guidance on 1 — 1 parked for a later round"
+  );
+  assert.equal(W.composerSummary({ changes: ["a"] }), "Sends 1 change");
+  assert.equal(W.composerSummary({ included: 0, total: 2 }), "Sends 0 of 2 comments — 2 parked for a later round");
+});
