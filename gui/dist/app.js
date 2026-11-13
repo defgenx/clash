@@ -2138,6 +2138,7 @@ async function refreshSessionsOnce() {
     syncInbox();
     if (state.detailsFor) renderDetails();
     wfSyncAgentLiveness();
+    wfDriveTurnEnds();
 
     // Teams change on disk when Claude spawns/retires agents, and members go
     // live/idle as sessions come and go — keep the open section AND the open
@@ -11433,6 +11434,27 @@ function wfAgentSig(item) {
 /// only the tabs whose agent state changed.
 let wfLivenessSig = null;
 let wfLivenessBusy = false;
+/// A run whose reviewer handed back while still in its turn waits for that
+/// turn to end (the backend's rule), and nothing on disk announces the end — so
+/// re-drive those runs whenever their reviewer's session status moves.
+let wfTurnSig = "";
+function wfDriveTurnEnds() {
+  const waiting = [];
+  for (const it of state.workflows) {
+    if (!it.run || it.meta.status === "reviewing") continue;
+    for (const p of it.run.passes || []) {
+      if (p.state !== "running" || !p.sessionId) continue;
+      const sid = wfSid(it, p.sessionId);
+      const row = state.sessions.find((s) => s.id === sid);
+      waiting.push([it, `${wfKey(it.project, it.slug)}=${row && row.is_running ? row.status : "gone"}`]);
+    }
+  }
+  const sig = waiting.map(([, k]) => k).join(",");
+  if (sig === wfTurnSig) return;
+  wfTurnSig = sig;
+  for (const [it] of waiting) wfDriveRun(it.project, it.slug);
+}
+
 async function wfSyncAgentLiveness() {
   if (wfLivenessBusy || !state.workflows.length) return;
   const running = new Set(state.sessions.filter((s) => s.is_running).map((s) => s.id));

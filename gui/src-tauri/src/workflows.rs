@@ -24,6 +24,37 @@ fn e2s(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// `meta.json` as it is on disk now. A command that awaits after reading meta
+/// re-reads with this (or [`fresh_meta`]) before it writes: agents, PR polls
+/// and other commands write the file meanwhile, and a copy held across an
+/// await writes their changes away. Pinned by a source test.
+fn reload_meta(
+    state: &GuiState,
+    project: &str,
+    slug: &str,
+) -> Result<clash::domain::workflow::WorkflowMeta, String> {
+    state.backend.load_workflow_meta(project, slug).map_err(e2s)
+}
+
+/// [`reload_meta`] for a command whose checks ran against status `seen`: an
+/// item that moved meanwhile is refused (`item-moved:`) rather than written
+/// over, since those checks no longer hold.
+fn fresh_meta(
+    state: &GuiState,
+    project: &str,
+    slug: &str,
+    seen: WorkflowStatus,
+) -> Result<clash::domain::workflow::WorkflowMeta, String> {
+    let meta = reload_meta(state, project, slug)?;
+    if meta.status != seen {
+        return Err(format!(
+            "item-moved: the item moved from {} to {} while this was being set up — try again",
+            seen, meta.status
+        ));
+    }
+    Ok(meta)
+}
+
 /// Payload for `workflow-attention` events (sidebar badges + toasts).
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1229,7 +1260,7 @@ pub(crate) async fn workflow_request_changes(
     park: Option<Vec<String>>,
     applied_keys: Option<Vec<String>>,
 ) -> Result<clash::domain::workflow::WorkflowMeta, String> {
-    let mut meta = state
+    let meta = state
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
@@ -1276,6 +1307,7 @@ pub(crate) async fn workflow_request_changes(
         Err(_) if meta.status == WorkflowStatus::PlanReview => String::new(),
         Err(e) => return Err(format!("cannot freeze this iteration's diff: {}", e)),
     };
+    let mut meta = fresh_meta(&state, &project, &slug, meta.status)?;
     let snapped = state
         .backend
         .snapshot_workflow_iteration(&project, &slug, &diff)
@@ -1663,6 +1695,40 @@ pub(crate) async fn remove_workflow_item(
     Ok(warnings)
 }
 
+/// Sessions the last refresh saw in a turn — working, or held on a tool
+/// approval — under every id their registry entry answers to.
+fn busy_session_ids(state: &GuiState) -> Vec<String> {
+    use clash::domain::entities::SessionStatus;
+    let busy: Vec<String> = state
+        .previous
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| {
+            s.is_running
+                && matches!(
+                    s.status,
+                    SessionStatus::Starting
+                        | SessionStatus::Running
+                        | SessionStatus::Thinking
+                        | SessionStatus::Prompting
+                )
+        })
+        .map(|s| s.id.clone())
+        .collect();
+    if busy.is_empty() {
+        return busy;
+    }
+    let registry = clash::infrastructure::hooks::registry::load();
+    let mut ids: Vec<String> = busy
+        .iter()
+        .flat_map(|id| clash::infrastructure::hooks::registry::session_aliases(&registry, id))
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 /// Ids of the sessions the last refresh saw running.
 fn live_session_ids(state: &GuiState) -> HashSet<String> {
     state
@@ -1991,7 +2057,6 @@ pub(crate) async fn start_workflow_agent(
         }
         _ => meta.repo_path.clone(),
     };
-    let rollback_waves = meta.waves.clone();
     let waves_clause = match wave_scope {
         Some(WaveLaunch::Plan(plan, ordered)) => {
             if phase == "implement" {
@@ -2031,6 +2096,14 @@ pub(crate) async fn start_workflow_agent(
     } else {
         String::new()
     };
+    // Everything above may have awaited (a worktree checkout takes a minute):
+    // carry this launch's own fields onto the file as it is now.
+    let prepared = meta;
+    let mut meta = fresh_meta(&state, &project, &slug, prepared.status)?;
+    let rollback_waves = std::mem::replace(&mut meta.waves, prepared.waves);
+    meta.agent = prepared.agent;
+    meta.worktree = prepared.worktree;
+    meta.branch = prepared.branch;
     let (decisions_clause, handed) = decisions_kickoff(&state, &project, &slug, meta.iteration);
     let session_id = uuid::Uuid::now_v7().to_string();
 
@@ -2137,9 +2210,12 @@ pub(crate) async fn start_workflow_agent(
         // Undo the launch record (keep the worktree/branch — they exist on
         // disk). Best-effort: if this write also fails, the item still shows
         // the recoverable "agent gone" state rather than a phantom session.
-        let mut restored = rollback;
-        restored.worktree = meta.worktree.clone();
-        restored.branch = meta.branch.clone();
+        // Undo only what the launch wrote, onto the file as it is now.
+        let mut restored = reload_meta(&state, &project, &slug).unwrap_or_else(|_| meta.clone());
+        restored.session_id = rollback.session_id;
+        restored.phase = rollback.phase;
+        restored.status = rollback.status;
+        restored.waves = rollback.waves;
         if let Err(e2) = state
             .backend
             .write_workflow_meta(&project, &slug, &restored)
@@ -2572,7 +2648,7 @@ pub(crate) async fn approve_workflow_waves(
     project: String,
     slug: String,
 ) -> Result<Vec<String>, String> {
-    let mut meta = state
+    let meta = state
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
@@ -2634,6 +2710,10 @@ pub(crate) async fn approve_workflow_waves(
         }
     }
     let seals = wave_seals(&meta, &slug, &item_dir).await;
+    let mut meta = fresh_meta(&state, &project, &slug, meta.status)?;
+    if meta.waves.scope != approved {
+        return Err("item-moved: the waves in review changed meanwhile — try again".into());
+    }
     meta.waves =
         clash::application::waves::approve_scope(&meta.waves, head.as_deref(), now_ms(), &seals);
     state
@@ -2919,6 +2999,9 @@ pub(crate) async fn launch_review(
     // `annotations.json` on an item that isn't in `reviewing` (approval open,
     // annotations unlocked, cancel refusing) has no recovery path.
     crate::launch_stage(app, &key, "record", None);
+    let agent_name = meta.agent.clone();
+    let mut meta = fresh_meta(state, &project, &slug, review.return_status)?;
+    meta.agent = agent_name;
     let rollback = meta.clone();
     meta.session_id = Some(session_id.clone());
     // The item-wide total keeps climbing — it is what "Agent reviews (n)" and
@@ -2994,9 +3077,16 @@ pub(crate) async fn launch_review(
     .await;
 
     if let Err(e) = spawned {
+        // Undo only what the launch wrote, onto the file as it is now.
+        let mut restored = reload_meta(state, &project, &slug).unwrap_or_else(|_| meta.clone());
+        restored.session_id = rollback.session_id;
+        restored.review_round = rollback.review_round;
+        restored.review_marks = rollback.review_marks;
+        restored.review = rollback.review;
+        restored.status = rollback.status;
         if let Err(e2) = state
             .backend
-            .write_workflow_meta(&project, &slug, &rollback)
+            .write_workflow_meta(&project, &slug, &restored)
         {
             tracing::warn!(
                 "review rollback write failed for {}/{}: {}",
@@ -3005,7 +3095,7 @@ pub(crate) async fn launch_review(
                 e2
             );
         } else {
-            seed_local(state, &project, &slug, rollback.status);
+            seed_local(state, &project, &slug, restored.status);
         }
         return Err(e);
     }
@@ -3853,7 +3943,7 @@ pub(crate) async fn workflow_create_pr(
     title: Option<String>,
     body: Option<String>,
 ) -> Result<clash::domain::workflow::WorkflowMeta, String> {
-    let mut meta = state
+    let meta = state
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
@@ -3907,6 +3997,7 @@ pub(crate) async fn workflow_create_pr(
     .map_err(|e| e.to_string())?
     .map_err(forge_err)?;
 
+    let mut meta = reload_meta(&state, &project, &slug)?;
     merge_pr_view(&mut meta, &view);
     if meta.status.can_transition_to(WorkflowStatus::PrDraft) {
         meta.status = WorkflowStatus::PrDraft;
@@ -3937,7 +4028,7 @@ pub(crate) async fn refresh_workflow_pr(
     slug: String,
     force: bool,
 ) -> Result<clash::domain::workflow::WorkflowMeta, String> {
-    let mut meta = state
+    let meta = state
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
@@ -4039,6 +4130,8 @@ pub(crate) async fn refresh_workflow_pr(
         })
         .await
         .map_err(|e| e.to_string())?;
+    // `gh` took seconds; fold its answers onto the file as it is now.
+    let mut meta = reload_meta(&state, &project, &slug)?;
     // What failed this time, by URL — the list says which PR is stale and
     // why, instead of showing its last known state as if it were current.
     let mut failures: std::collections::BTreeMap<String, String> = linked_errors
@@ -4071,7 +4164,11 @@ pub(crate) async fn refresh_workflow_pr(
         }
     }
     for (i, view, unanswered) in linked_results {
-        let Some(pr) = meta.linked_prs.get_mut(i) else {
+        // By URL: the list may have changed while gh answered.
+        let Some(pr) = linked_urls
+            .get(i)
+            .and_then(|url| meta.linked_prs.iter_mut().find(|p| &p.url == url))
+        else {
             continue;
         };
         changed |= fold_pr_view(pr, &view);
@@ -4276,7 +4373,7 @@ pub(crate) async fn mark_workflow_pr_ready(
     slug: String,
     prs: Option<Vec<String>>,
 ) -> Result<MarkReadyOutcome, String> {
-    let mut meta = state
+    let meta = state
         .backend
         .load_workflow_meta(&project, &slug)
         .map_err(e2s)?;
@@ -4305,12 +4402,14 @@ pub(crate) async fn mark_workflow_pr_ready(
     .await
     .map_err(|e| e.to_string())?;
 
+    // The flips happened on the forge; record them on the file as it is now.
+    let mut meta = reload_meta(&state, &project, &slug)?;
     let mut flipped: Vec<String> = Vec::new();
     let mut primary_flipped = false;
     for (index, url, number, result) in results {
         let record = match index {
-            None => meta.pr.as_mut(),
-            Some(i) => meta.linked_prs.get_mut(i),
+            None => meta.pr.as_mut().filter(|p| p.url == url),
+            Some(_) => meta.linked_prs.iter_mut().find(|p| p.url == url),
         };
         let Some(pr) = record else { continue };
         match result {
@@ -4406,7 +4505,12 @@ pub(crate) async fn attach_workflow_pr(
     .await
     .map(|r| r.map_err(forge_err))
     {
-        if merge_pr_view(&mut meta, &view) {
+        let mut fresh = reload_meta(&state, &project, &slug)?;
+        // Only while the attached PR is still the item's primary.
+        if fresh.pr.as_ref().is_some_and(|p| p.url == url.trim())
+            && merge_pr_view(&mut fresh, &view)
+        {
+            meta = fresh;
             state
                 .backend
                 .write_workflow_meta(&project, &slug, &meta)
@@ -4468,6 +4572,7 @@ pub(crate) async fn attach_workflow_linked_pr(
         })
         .await
         {
+            meta = reload_meta(&state, &project, &slug)?;
             if let Some(pr) = meta.linked_prs.iter_mut().find(|p| p.url == url) {
                 fold_pr_view(pr, &view);
                 state
@@ -5332,6 +5437,7 @@ async fn run_step(
                 .collect();
             (held.contains(&key), explaining)
         };
+        let busy = busy_session_ids(state);
         let (next, action) = wr::reconcile(
             &run,
             &wr::RunInput {
@@ -5344,6 +5450,7 @@ async fn run_step(
                 applied_keys: &applied,
                 item_claimed,
                 explainers_claimed: &explainers_claimed,
+                busy_sessions: &busy,
                 now: now_ms(),
             },
         );
@@ -5691,6 +5798,46 @@ mod tests {
     /// The status cannot stand in for it: `implementing` is reached from a
     /// plan approval and from a code change round alike, and
     /// `changes-requested` says a round is waiting without saying about what.
+    /// No command writes a `meta.json` copy it held across an await.
+    ///
+    /// The file is co-edited by agents, the PR poll and other commands; a copy
+    /// read before a slow step (`gh`, a checkout, a diff) and written after it
+    /// writes away whatever landed meanwhile. That is how a PR poll undid an
+    /// apply: the item fell back a stage and pointed at the finished reviewer
+    /// instead of the agent just launched.
+    #[test]
+    fn no_command_writes_meta_it_read_before_an_await() {
+        const SRC: &str = include_str!("workflows.rs");
+        let code = SRC.split("\n#[cfg(test)]").next().unwrap();
+        let mut offenders = Vec::new();
+        for chunk in code
+            .split("\nasync fn ")
+            .chain(code.split("pub(crate) async fn "))
+            .skip(1)
+        {
+            let name = chunk.split('(').next().unwrap_or("").to_string();
+            let body = chunk.split("\n}\n").next().unwrap_or(chunk);
+            let Some(load) = body.find("load_workflow_meta") else {
+                continue;
+            };
+            let mut from = load;
+            while let Some(w) = body[from..].find("write_workflow_meta") {
+                let write = from + w;
+                if let Some(a) = body[load..write].rfind(".await") {
+                    let after = &body[load + a..write];
+                    if !after.contains("reload_meta(") && !after.contains("fresh_meta(") {
+                        offenders.push(name.clone());
+                    }
+                }
+                from = write + 1;
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "re-read meta (reload_meta / fresh_meta) after the last await before writing it: {offenders:?}"
+        );
+    }
+
     #[test]
     fn a_round_records_the_phase_it_runs_in() {
         const SRC: &str = include_str!("workflows.rs");

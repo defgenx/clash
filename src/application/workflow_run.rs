@@ -158,6 +158,10 @@ pub struct RunInput<'a> {
     pub item_claimed: bool,
     /// Explainer targets whose launch is in flight in this process.
     pub explainers_claimed: &'a [ReviewTarget],
+    /// Sessions still in a turn (working, or held on a tool approval), by
+    /// every id they answer to. A round that handed back is not over until
+    /// its agent's turn is: it may still be writing its report.
+    pub busy_sessions: &'a [String],
     pub now: i64,
 }
 
@@ -312,7 +316,7 @@ pub fn reconcile(run: &RunFile, input: &RunInput) -> (RunFile, RunAction) {
                     batch.paused = true;
                 }
             }
-            PassState::Running if parked => {
+            PassState::Running if parked && !input.busy_sessions.contains(&p.session_id) => {
                 if tally(input.rounds, p.target) >= p.round {
                     p.state = PassState::Done;
                 } else {
@@ -664,6 +668,7 @@ mod tests {
         explainers: Vec<ExplainerState>,
         applied: Vec<String>,
         claimed: bool,
+        busy: Vec<String>,
         now: i64,
     }
 
@@ -677,6 +682,7 @@ mod tests {
                 explainers: Vec::new(),
                 applied: Vec::new(),
                 claimed: false,
+                busy: Vec::new(),
                 now: T0 + 10,
             }
         }
@@ -693,6 +699,7 @@ mod tests {
                     applied_keys: &self.applied,
                     item_claimed: self.claimed,
                     explainers_claimed: &[],
+                    busy_sessions: &self.busy,
                     now: self.now,
                 },
             )
@@ -942,6 +949,26 @@ mod tests {
         let apply = &after.batch.as_ref().unwrap().apply;
         assert_eq!(apply.state, ApplyState::Pending);
         assert!(apply.auto);
+    }
+
+    /// A reviewer that handed back is still in its turn — it may be finishing
+    /// its report. Applying now starts the executor beside it.
+    #[test]
+    fn a_round_is_not_over_while_its_agent_is_still_in_its_turn() {
+        let (run, mut disk) = finished_review(true, vec![], vec![round("diff", 1, Some(true))]);
+        disk.busy = vec!["sid".into()];
+        let (run, action) = disk.step(&run);
+        assert_eq!(action, RunAction::None);
+        assert_eq!(pass(&run, 0).state, PassState::Running);
+        // Also when no report landed yet: the agent may still write it.
+        let (no_report, mut early) = finished_review(true, vec![], vec![]);
+        early.busy = vec!["sid".into()];
+        assert_eq!(pass(&early.step(&no_report).0, 0).state, PassState::Running);
+        // The turn ends: the round is done and the apply goes ahead.
+        disk.busy.clear();
+        let (after, action) = disk.step(&run);
+        assert_eq!(pass(&after, 0).state, PassState::Done);
+        assert_eq!(action, RunAction::Apply(vec!["diff:1".into()]));
     }
 
     #[test]

@@ -1942,8 +1942,9 @@ on every step and settles each pass:
 |---|---|---|
 | pass `launching` | `meta.review` of its target, started after the launch | `running`, with its round and session |
 | pass `launching` | nothing, past the 2-minute grace, no launch in flight | queued again (failed after 3 attempts) |
-| pass `running`, item parked again | that target's round count reached the pass's round | `done` |
-| pass `running`, item parked again | no round entry | `failed` — the round ended without a report; the run pauses |
+| pass `running`, item parked again, its session still in a turn | anything | stays `running` — the agent may still be writing its report |
+| pass `running`, item parked again, turn over | that target's round count reached the pass's round | `done` |
+| pass `running`, item parked again, turn over | no round entry | `failed` — the round ended without a report; the run pauses |
 | apply `pending`/`applying` | `meta.appliedReviewKeys` holds every key | closed as applied |
 | apply `applying` | keys absent, past the grace | `pending` again |
 | any | `meta.iteration` moved, or the item left the run's stage | closed |
@@ -1955,9 +1956,14 @@ into `meta.appliedReviewKeys` in the same meta write that bumps the iteration �
 that stamp is the proof the apply happened. The backend command
 `workflow_run_step` holds a per-item lock, reconciles, writes `run.json` only on
 a real change and launches what the reconcile asks for through the same
-`launch_review` a click uses. The GUI calls it after every hand-back, at boot
-and on every workflow refresh, so a run closed mid-way by a restart resumes on
-the next launch; while clash is closed, nothing advances.
+`launch_review` a click uses. The GUI calls it after every hand-back, at boot,
+on every workflow refresh and whenever a handed-back reviewer's session status
+moves (`wfDriveTurnEnds` — a turn ending writes no file), so a run closed mid-way
+by a restart resumes on the next launch; while clash is closed, nothing
+advances. "In a turn" is the session list's `starting`/`running`/`thinking`/
+`prompting` (`RunInput::busy_sessions`): a reviewer hands back as its last
+file write but not its last act, and an apply that fires on the hand-back alone
+starts the executor beside it.
 
 The human decides **before** (the checklist, or the strip's chips) and
 **during**: the strip shows `Checks · 1 of 2 done · code review running · next:
