@@ -45,6 +45,9 @@ fn copy_via_command(text: &str) -> bool {
         };
         if let Some(mut stdin) = child.stdin.take() {
             if stdin.write_all(text.as_bytes()).is_err() {
+                drop(stdin);
+                let _ = child.kill();
+                let _ = child.wait();
                 continue;
             }
             drop(stdin); // close stdin so the tool flushes and exits

@@ -17,6 +17,7 @@ use clash::infrastructure::config::{Config, ConfigHandle};
 use clash::infrastructure::daemon::client::DaemonClient;
 use clash::infrastructure::daemon::protocol::Event;
 use clash::infrastructure::daemon::server::DaemonServer;
+use clash::infrastructure::detached::spawn_reaped;
 use clash::infrastructure::fs::backend::{encode_project_dir, FsBackend};
 use clash::infrastructure::session_refresh;
 use tauri::{Emitter, Manager, State};
@@ -183,19 +184,21 @@ fn native_notify(title: &str, body: &str) {
             body.replace('\\', "").replace('"', "'"),
             title.replace('\\', "").replace('"', "'")
         );
-        let _ = std::process::Command::new("osascript")
-            .args(["-e", &script])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+        let _ = spawn_reaped(
+            std::process::Command::new("osascript")
+                .args(["-e", &script])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null()),
+        );
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = std::process::Command::new("notify-send")
-            .args([title, body])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+        let _ = spawn_reaped(
+            std::process::Command::new("notify-send")
+                .args([title, body])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null()),
+        );
     }
 }
 
@@ -1613,7 +1616,9 @@ fn explorer_reveal(path: String) -> Result<(), String> {
         });
         c
     };
-    cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+    spawn_reaped(&mut cmd)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// The directories the GUI watches, and what a change in each means.
@@ -3014,11 +3019,9 @@ async fn restart_app(state: State<'_, GuiState>, app: tauri::AppHandle) -> Resul
 fn relaunch_self() -> Result<(std::path::PathBuf, u32), String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot locate own binary: {}", e))?;
     let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
-    let child = std::process::Command::new(&exe)
-        .args(std::env::args_os().skip(1))
-        .spawn()
+    let pid = spawn_reaped(std::process::Command::new(&exe).args(std::env::args_os().skip(1)))
         .map_err(|e| format!("cannot relaunch {}: {}", exe.display(), e))?;
-    Ok((exe, child.id()))
+    Ok((exe, pid))
 }
 
 /// Parse a terminal notification escape sequence from raw PTY output.
@@ -3448,9 +3451,7 @@ fn open_external(url: String) -> Result<(), String> {
     let cmd = "open";
     #[cfg(not(target_os = "macos"))]
     let cmd = "xdg-open";
-    std::process::Command::new(cmd)
-        .arg(&url)
-        .spawn()
+    spawn_reaped(std::process::Command::new(cmd).arg(&url))
         .map(|_| ())
         .map_err(|e| e.to_string())
 }

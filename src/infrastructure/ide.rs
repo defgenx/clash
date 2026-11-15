@@ -167,13 +167,14 @@ pub fn detect_editors(custom: &[IdeEntry]) -> Vec<PickerItem> {
 
 /// Launch a GUI IDE with the given project directory (fire-and-forget).
 pub fn open_ide(command: &str, project_dir: &str) -> Result<(), String> {
-    std::process::Command::new(command)
-        .arg(project_dir)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("Failed to launch {}: {}", command, e))?;
+    crate::infrastructure::detached::spawn_reaped(
+        std::process::Command::new(command)
+            .arg(project_dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null()),
+    )
+    .map_err(|e| format!("Failed to launch {}: {}", command, e))?;
     Ok(())
 }
 

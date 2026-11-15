@@ -234,8 +234,9 @@ fn spawn_pane(
 }
 
 /// Spawn a command with stdout/stderr suppressed to prevent TUI corruption.
-pub(crate) fn spawn_detached(cmd: &mut Command) -> std::io::Result<std::process::Child> {
-    cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+/// Reaped when it exits (`detached::spawn_reaped`); returns its pid.
+pub(crate) fn spawn_detached(cmd: &mut Command) -> std::io::Result<u32> {
+    crate::infrastructure::detached::spawn_reaped(cmd.stdout(Stdio::null()).stderr(Stdio::null()))
 }
 
 /// Run an AppleScript synchronously and surface script errors.
