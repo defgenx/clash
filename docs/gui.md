@@ -51,6 +51,7 @@ only their arrangement changes, live, without a restart:
 | **Tabbed** | One sidebar with the workspace chips, like Classic, but a tab strip at its top switches between Sessions, Workflows, Scratches and Teams (with badges), and the open view takes the sidebar's full height. The quick settings stay in the footer. |
 | **Dock** | The terminals take the window's full width; the sidebar becomes a panel **under** them, with its views side by side as columns — Sessions (with the workspace chips), Workflows, Scratches, Teams, then the settings. Every view is open at once. Drag the panel's top edge to set its height (kept apart from the sidebar's width). |
 | **Split** | Two sidebars: Sessions (with the workspace chips and the settings) on the left, and Workflows, Scratches and Teams stacked in a second sidebar on the **right** of the terminals, all open, Workflows taking the larger share. Each sidebar has its own width handle. |
+| **Rail Split** | Rail's icon rail on the left, with Sessions always open beside it, and Split's sidebar on the right showing **one** of Workflows, Scratches or Teams at a time, full height. The rail's view icons switch the right sidebar; clicking an open view's icon folds its side alone (Sessions folds the left panel). The quick settings sit behind the rail's ⚙. |
 | **Topbar** | No sidebar column: the rail runs **across the top** of the window — workspaces on the left, then the views, the inbox, an update button and the ⚙. Opening a view drops its panel down under the bar, over the terminals; Esc, a click outside, or picking a session puts it away. |
 
 A layout chosen before **Flyout** was retired (it was Rail with the panel over
@@ -58,7 +59,7 @@ the terminals, too close to tell apart) opens as Rail.
 
 The right-hand panels — **Files** (`⌘E`) and the **Inspector** (`ⓘ`) — follow
 the same logic. Classic docks them side by side and lets both stay open; Rail
-and Split dock **one at a time**, with a *Files | Inspector* switch in the
+Split and Rail Split dock **one at a time**, with a *Files | Inspector* switch in the
 panel's header; Dock and Tabbed stack them like Classic; Topbar opens either as
 a **drawer** over the terminals, closing on Esc or a press outside. The top-right actions are grouped the same way in every layout:
 new tab · stash all · panes · panels (lit while open).
@@ -68,7 +69,7 @@ branch and Wild badge; quick actions (conversation, subagents, diff, open in IDE
 browser, listening ports); the summary; where it runs, with the worktree and
 directory copied by a click; activity; and the session ID, also copyable.
 
-`⌘B` hides or brings back the sidebar (both of Split's; Dock's panel); in Topbar
+`⌘B` hides or brings back the sidebar (both sides in Split and Rail Split; Dock's panel); in Topbar
 it drops the panel down and puts it away.
 A second click on the open view's rail icon does the same. Switching back to
 Classic restores the sections you had open there. The tour follows the layout:
@@ -81,8 +82,9 @@ in the pure `gui/dist/layout.js` (tested by `gui/tests/layout.test.js`); the
 adapter in `app.js` (*Sidebar layout adapter*) applies them to the DOM. A layout
 is described by where the sidebar sits (`place`: left, bottom, split, top) and
 how its sections behave (`sections`: collapsible, one at a time, all open);
-Split's right-hand views are the same nodes moved into `#sidebar-right` and
-back (`placeSplitViews`). Adding a layout is one entry in `LAYOUTS` plus its CSS; adding a view is one entry in
+Split's and Rail Split's right-hand views are the same nodes moved into
+`#sidebar-right` and back (`placeSplitViews`); which side a view sits on and
+which rail icons are lit are the pure `sideOf` and `railLit`. Adding a layout is one entry in `LAYOUTS` plus its CSS; adding a view is one entry in
 `SIDEBAR_VIEWS`. The setting is `appearance.layout` (GUI-local, in
 `gui-state.json`).
 
@@ -94,7 +96,7 @@ Workspaces (cmux-style) each own a pane layout *and* their sessions.
 
 - `⌘N` creates one, `⌘1–9` switches, and `⌘⇧R` or a double-click on the chip
   renames it.
-- Drag a workspace's chip (or its rail button, in Rail and Topbar) to reorder
+- Drag a workspace's chip (or its rail button, in Rail, Rail Split and Topbar) to reorder
   the workspaces; `⌘1–9` follow the new order, and the active one stays active.
 - `⌘⇧W` or the chip's `×` closes it; the last one can't be closed. Closing a
   workspace **kills its sessions** (after one confirm) and closes its other
@@ -420,7 +422,7 @@ the sidebar's SETTINGS panel. A search box at the top searches every tab (type
 | Tab | Settings |
 |---|---|
 | **General** | how links open · refresh interval · default shell · terminal for the TUI launcher · default agent (Claude Code / OMP) · desktop notifications · attention count in the window title · confirm before killing a session · check for updates in the background · ▶ Show the tour |
-| **Appearance** | theme (12 palettes, below) · layout (Classic / Rail / Tabbed / Dock / Split / Topbar, [above](#layouts)) · workflow item view (Workbench / Tabs, see [Reading an item](workflows-guide.md#reading-an-item)) · terminal text: font family (searchable picker), size, weight, bold weight, line height, letter spacing · cursor: style, unfocused style, bar width, blink · colors: minimum contrast ratio, bold text in bright colors |
+| **Appearance** | theme (12 palettes, below) · layout (Classic / Rail / Tabbed / Dock / Split / Rail Split / Topbar, [above](#layouts)) · workflow item view (Workbench / Tabs, see [Reading an item](workflows-guide.md#reading-an-item)) · terminal text: font family (searchable picker), size, weight, bold weight, line height, letter spacing · cursor: style, unfocused style, bar width, blink · colors: minimum contrast ratio, bold text in bright colors |
 | **Terminal** | scrollback · scroll speed · smooth scroll · copy on select · right-click selects word · ⌥ sends Esc (Meta) · toast on terminal bell |
 | **Paths** | default session directory · scratch directory · workflows directory · `claude` binary · OMP binary |
 | **Workflows** | workflow agent (ask / Claude Code / OMP) · next-step assist (suggest / autopilot / off) · explanation detail · delegation (team / solo) · PR skill · forge · PR stacking · skill updates |

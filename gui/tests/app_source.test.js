@@ -1126,12 +1126,17 @@ test("the sidebar's arrangement goes through the layout adapter only", () => {
   assert.doesNotMatch(APP, /if \(!state\.(wfOpen|notesOpen|teamsOpen)\) (await )?toggle(Workflows|Notes|Teams)\(\)/);
   // ⌘B and the rail fold the panel through one function, which folds Split's
   // right-hand sidebar with it.
-  const folds = APP.match(/\$\("sidebar(-right)?"\)\.classList\.(toggle|remove|add)\("collapsed"/g) || [];
-  assert.equal(folds.length, 2, "only setSidebarCollapsed folds the sidebars");
+  const folds = APP.match(/classList\.(toggle|remove|add)\("collapsed"/g) || [];
+  assert.equal(folds.length, 1, "only setSidebarCollapsed folds the sidebars");
   const set = extractFunction(APP, "setSidebarCollapsed");
-  assert.match(set, /\$\("sidebar"\)\.classList\.toggle\("collapsed", collapsed\)/);
-  assert.match(set, /\$\("sidebar-right"\)\.classList\.toggle\("collapsed", collapsed\)/);
+  assert.match(set, /sides = \["left", "right"\]/, "both sides unless told otherwise");
+  assert.match(set, /\$\(SIDEBAR_IDS\[side\]\)\.classList\.toggle\("collapsed", collapsed\)/);
   assert.match(extractFunction(APP, "sidebarCollapse"), /setSidebarCollapsed\(/);
+  // Showing a view unfolds its own side, and Rail Split's left side is Sessions.
+  const show = extractFunction(APP, "sidebarShow");
+  assert.match(show, /setSidebarCollapsed\(false, \[SidebarLayout\.sideOf\(layout\.id, id\)\]\)/);
+  assert.match(show, /if \(!\(layout\.place === "split" && id === "sessions"\)\) sidebarView = id;/);
+  assert.match(extractFunction(APP, "syncSidebarRail"), /SidebarLayout\.railLit\(plan,/);
   // The layout is applied at boot, after the saved sections are restored.
   const boot = APP.slice(APP.indexOf("await restoreSidebarState();"));
   assert.match(boot.slice(0, 120), /await applySidebarLayout\(\);/);

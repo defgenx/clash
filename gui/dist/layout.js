@@ -97,6 +97,17 @@
       quickSettings: "footer",
     },
     {
+      id: "railsplit",
+      label: "Rail Split",
+      detail: "An icon rail and Sessions on the left; a second sidebar on the right shows Workflows, Scratches or Teams, one at a time.",
+      place: "split",
+      sections: "one",
+      rail: true,
+      overlay: false,
+      panels: "single",
+      quickSettings: "popover",
+    },
+    {
       id: "topbar",
       label: "Topbar",
       detail: "No sidebar: workspaces and views are one bar across the top, and a view drops down under it when you open it.",
@@ -136,15 +147,24 @@
   ///
   /// `active` is the view the user last chose (the one-view layouts); `open`
   /// the Classic collapse flags; `panelOpen` whether an overlay panel is out.
+  ///
+  /// A one-view Split (Rail Split) keeps Sessions on the left at all times and
+  /// shows one right-hand view: `active` when it is one, else the first.
   function sidebarPlan(layoutId, { active = "sessions", open = {}, panelOpen = false } = {}) {
     const layout = layoutOf(layoutId);
     const current = viewOf(active) ? active : "sessions";
+    const oneRight = layout.place === "split" && layout.sections === "one";
+    const rightView = oneRight ? (SPLIT_RIGHT.includes(current) ? current : SPLIT_RIGHT[0]) : null;
     const views = SIDEBAR_VIEWS.map((v) => {
       if (layout.sections === "collapsible") {
         // Classic: everything stacked, each section as its own flag says.
         return { id: v.id, shown: true, expanded: v.openKey ? !!open[v.openKey] : true, fill: false };
       }
       if (layout.sections === "all") return { id: v.id, shown: true, expanded: true, fill: true };
+      if (rightView) {
+        const on = v.id === "sessions" || v.id === rightView;
+        return { id: v.id, shown: on, expanded: on, fill: on };
+      }
       // One view at a time: the active one alone, full height.
       const on = v.id === current;
       return { id: v.id, shown: on, expanded: on, fill: on };
@@ -154,6 +174,7 @@
       active: current,
       views,
       place: layout.place,
+      rightView,
       rail: layout.rail,
       viewTabs: !!layout.tabs,
       panel: layout.overlay ? !!panelOpen : true,
@@ -165,6 +186,23 @@
 
   /// Which views a Split layout moves into its right-hand sidebar.
   const SPLIT_RIGHT = ["workflows", "scratches", "teams"];
+
+  /// The sidebar a view sits in under a layout: `right` for Split's work
+  /// lists, `left` for everything else (the side ⌘B and the rail fold).
+  function sideOf(layoutId, viewId) {
+    return layoutOf(layoutId).place === "split" && SPLIT_RIGHT.includes(viewId) ? "right" : "left";
+  }
+
+  /// The rail icons lit for a plan, given which sidebars are on screen: the
+  /// open view in Rail and Topbar; in Rail Split, Sessions while the left
+  /// panel shows and the right view while the right one does.
+  function railLit(plan, { left = true, right = true } = {}) {
+    if (!plan.panel) return [];
+    if (plan.place === "split") {
+      return [left && "sessions", right && plan.rightView].filter(Boolean);
+    }
+    return left ? [plan.active] : [];
+  }
 
   /// A workspace's rail badge: up to two initials of its name (`Saturn Core`
   /// → `SC`, `main` → `MA`), its number when the name has no letters.
@@ -210,6 +248,8 @@
     RETIRED_LAYOUTS,
     DEFAULT_LAYOUT,
     SPLIT_RIGHT,
+    sideOf,
+    railLit,
     layoutOf,
     managesSections,
     viewOf,

@@ -18887,25 +18887,35 @@ async function switchSidebarLayout(next) {
   saveWorkspaces();
 }
 
-/// ⌘B's fold: the sidebar, and Split's right-hand one with it.
-function setSidebarCollapsed(collapsed) {
-  $("sidebar").classList.toggle("collapsed", collapsed);
-  $("sidebar-right").classList.toggle("collapsed", collapsed);
+/// The element of a sidebar side (layout.js `sideOf`).
+const SIDEBAR_IDS = { left: "sidebar", right: "sidebar-right" };
+
+/// Fold or unfold the sidebars: both by default (⌘B), or the `sides` given —
+/// Rail Split's rail folds each side on its own.
+function setSidebarCollapsed(collapsed, sides = ["left", "right"]) {
+  for (const side of sides) $(SIDEBAR_IDS[side]).classList.toggle("collapsed", collapsed);
+}
+
+function sidebarFolded(side) {
+  return $(SIDEBAR_IDS[side]).classList.contains("collapsed");
 }
 
 /// Put a view on screen, as the layout means it: Classic expands the section,
 /// Rail and Tabbed switch to it, Topbar drops it down; Dock and Split already
-/// show every view. A collapsed sidebar (⌘B) comes back — a request to show must show.
+/// show every view, Rail Split switches its right sidebar (Sessions always
+/// stays on the left). A folded side comes back — a request to show must show.
 async function sidebarShow(id) {
   const layout = currentLayout();
-  setSidebarCollapsed(false);
+  setSidebarCollapsed(false, [SidebarLayout.sideOf(layout.id, id)]);
   if (!SidebarLayout.managesSections(layout)) {
     const def = SidebarLayout.viewOf(id);
     if (def && def.openKey && !state[def.openKey]) await SECTION_TOGGLES[id]();
     fitAll();
     return;
   }
-  sidebarView = id;
+  // Rail Split's left panel is always Sessions: showing it must not replace
+  // the right-hand view.
+  if (!(layout.place === "split" && id === "sessions")) sidebarView = id;
   if (layout.overlay) panelOut = true;
   await applySidebarLayout();
   saveWorkspaces();
@@ -18925,7 +18935,7 @@ function sidebarCollapse() {
     applySidebarLayout();
     return;
   }
-  setSidebarCollapsed(!$("sidebar").classList.contains("collapsed"));
+  setSidebarCollapsed(!sidebarFolded("left"));
   fitAll();
 }
 
@@ -18942,14 +18952,16 @@ function tourAnchorFor(id) {
     return { id: "rail-settings", revealed: true };
   }
   const el = $(id);
-  const inSidebar = !!(el && el.closest("#sidebar, #sidebar-right"));
+  const box = el && el.closest("#sidebar, #sidebar-right");
+  const inSidebar = !!box;
   let revealed = false;
-  if (inSidebar && $("sidebar").classList.contains("collapsed")) {
+  if (box && box.classList.contains("collapsed")) {
     setSidebarCollapsed(false);
     revealed = true;
   }
   const view = SidebarLayout.SIDEBAR_VIEWS.find((v) => v.elements.includes(id));
-  if (view && layout.sections === "one" && sidebarView !== view.id) {
+  const alwaysShown = layout.place === "split" && view?.id === "sessions";
+  if (view && layout.sections === "one" && !alwaysShown && sidebarView !== view.id) {
     sidebarView = view.id;
     revealed = true;
   }
@@ -18983,8 +18995,8 @@ $("sidebar").addEventListener("click", (ev) => {
   if (ev.target instanceof Element && ev.target.closest(".session-item")) setTimeout(closeOverlayPanel, 0);
 });
 
-/// Repaint the view switcher of the one-view layouts: the rail of Rail and
-/// Topbar (workspaces, views with their badges, the inbox, quick settings and
+/// Repaint the view switcher of the one-view layouts: the rail of Rail, Rail
+/// Split and Topbar (workspaces, views with their badges, the inbox, quick settings and
 /// an update button when one is found) or Tabbed's tab strip. Cheap, and
 /// called after anything that changes a badge.
 function syncSidebarRail() {
@@ -19017,19 +19029,18 @@ function syncSidebarRail() {
   button("rail-ws rail-add", svgIcon("plus", 14), "New workspace (⌘N)", () => $("new-ws-btn").click());
   rail.appendChild(Object.assign(document.createElement("div"), { className: "rail-sep" }));
   const plan = sidebarPlanNow();
-  const shown = plan.panel && !$("sidebar").classList.contains("collapsed");
+  const lit = SidebarLayout.railLit(plan, { left: !sidebarFolded("left"), right: !sidebarFolded("right") });
   for (const item of SidebarLayout.railItems(plan.active, { workflows: state.wfUnread.size })) {
-    button(
-      "rail-view" + (item.active && shown ? " active" : ""),
-      svgIcon(item.icon, 18) + badge(item.badge, false),
-      item.label,
-      () => {
-        // A second click on the open view puts it away: Topbar lifts it,
-        // Rail folds the panel (⌘B does the same).
-        if (item.active && shown) sidebarCollapse();
-        else sidebarShow(item.id);
-      }
-    );
+    const on = lit.includes(item.id);
+    button("rail-view" + (on ? " active" : ""), svgIcon(item.icon, 18) + badge(item.badge, false), item.label, () => {
+      // A second click on an open view puts it away: Topbar lifts it, Rail
+      // folds the panel (⌘B does the same), Rail Split folds that view's side.
+      if (!on) return sidebarShow(item.id);
+      if (plan.place !== "split") return sidebarCollapse();
+      setSidebarCollapsed(true, [SidebarLayout.sideOf(plan.layout, item.id)]);
+      syncSidebarRail();
+      fitAll();
+    });
   }
   rail.appendChild(Object.assign(document.createElement("div"), { className: "spacer" }));
   const inbox = attentionSummary(inboxRows());
