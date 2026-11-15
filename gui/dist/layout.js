@@ -8,7 +8,7 @@
 
   /// Everything the sidebar can show. `elements` are the DOM ids a view owns;
   /// `openKey` is the `state` flag a collapsible section keeps (Classic
-  /// collapses sections, the rail layouts never do).
+  /// collapses sections, the other layouts decide it themselves).
   const SIDEBAR_VIEWS = [
     { id: "sessions", label: "Sessions", icon: "terminal", elements: ["new-session-btn", "search-wrap", "session-list"] },
     { id: "workflows", label: "Workflows", icon: "pr", elements: ["wf-section"], resizer: "wf-resizer", openKey: "wfOpen" },
@@ -18,26 +18,34 @@
 
   /// The layouts a user can pick (Settings → Appearance → Layout).
   ///
-  /// - `exclusive`: one section is open at a time and takes the room.
-  /// - `rail`: workspaces and views live in an icon rail; the panel shows one
-  ///   view at a time, full height.
+  /// - `place`: where the sidebar sits — `left` (beside the terminals),
+  ///   `bottom` (Dock: a panel under them, the views as columns), `split`
+  ///   (Sessions on the left, the other views in a second sidebar on the
+  ///   right) or `top` (Topbar: the rail runs across the window's top and a
+  ///   view drops down under it).
+  /// - `sections`: `collapsible` (each section keeps its own expanded flag),
+  ///   `one` (one view at a time, full height) or `all` (every view open at
+  ///   once, sharing the room).
+  /// - `rail`: workspaces and views live in an icon rail (vertical on the
+  ///   left, horizontal at the top for Topbar).
   /// - `tabs`: the sidebar keeps its workspace chips and switches views with
-  ///   a tab strip at its top (the exclusive rule without a rail).
+  ///   a tab strip at its top (the one-view rule without a rail).
   /// - `overlay`: the panel floats over the terminals and closes on its own,
   ///   so the terminals keep the window's whole width.
   /// - `panels`: how the right-hand panels (Files ⌘E, Inspector ⓘ) open —
-  ///   `stack`: docked, any together; `single`: docked, one at a time (the
-  ///   rail's one-view rule, on the right); `overlay`: a drawer over the
-  ///   panes, one at a time, closing like Flyout's panel.
+  ///   `stack`: docked, any together; `single`: docked, one at a time;
+  ///   `overlay`: a drawer over the panes, one at a time, closing like an
+  ///   overlay panel.
   /// - `quickSettings`: where the sidebar's quick settings live — `footer`
-  ///   (a collapsible section under the lists) or `popover` (behind the ⚙ at
-  ///   the rail's foot, so they never read as part of the open view).
+  ///   (a collapsible section under the lists) or `popover` (behind the rail's
+  ///   ⚙, so they never read as part of the open view).
   const LAYOUTS = [
     {
       id: "classic",
       label: "Classic",
       detail: "One sidebar: workspaces, sessions, then collapsible Workflows, Scratches and Teams.",
-      exclusive: false,
+      place: "left",
+      sections: "collapsible",
       rail: false,
       overlay: false,
       panels: "stack",
@@ -47,7 +55,8 @@
       id: "rail",
       label: "Rail",
       detail: "An icon rail for workspaces and views; the panel beside it shows one view, full height.",
-      exclusive: true,
+      place: "left",
+      sections: "one",
       rail: true,
       overlay: false,
       panels: "single",
@@ -57,7 +66,8 @@
       id: "tabbed",
       label: "Tabbed",
       detail: "One sidebar with workspace chips; a tab strip at its top switches between the views, each full height.",
-      exclusive: true,
+      place: "left",
+      sections: "one",
       rail: false,
       tabs: true,
       overlay: false,
@@ -65,10 +75,33 @@
       quickSettings: "footer",
     },
     {
-      id: "flyout",
-      label: "Flyout",
-      detail: "Only the icon rail stays; a view slides over the terminals when you open it, so they keep the full width.",
-      exclusive: true,
+      id: "dock",
+      label: "Dock",
+      detail: "The terminals take the full width; Sessions, Workflows, Scratches and Teams sit side by side in a panel under them.",
+      place: "bottom",
+      sections: "all",
+      rail: false,
+      overlay: false,
+      panels: "stack",
+      quickSettings: "footer",
+    },
+    {
+      id: "split",
+      label: "Split",
+      detail: "Sessions on the left; Workflows, Scratches and Teams in a second sidebar on the right.",
+      place: "split",
+      sections: "all",
+      rail: false,
+      overlay: false,
+      panels: "single",
+      quickSettings: "footer",
+    },
+    {
+      id: "topbar",
+      label: "Topbar",
+      detail: "No sidebar: workspaces and views are one bar across the top, and a view drops down under it when you open it.",
+      place: "top",
+      sections: "one",
       rail: true,
       overlay: true,
       panels: "overlay",
@@ -76,10 +109,21 @@
     },
   ];
 
+  /// Layouts that no longer exist, and the one a saved choice becomes.
+  /// Flyout was Rail with an overlaid panel — too close to tell apart.
+  const RETIRED_LAYOUTS = { flyout: "rail" };
+
   const DEFAULT_LAYOUT = "classic";
 
   function layoutOf(id) {
-    return LAYOUTS.find((l) => l.id === id) || LAYOUTS.find((l) => l.id === DEFAULT_LAYOUT);
+    const want = RETIRED_LAYOUTS[id] || id;
+    return LAYOUTS.find((l) => l.id === want) || LAYOUTS.find((l) => l.id === DEFAULT_LAYOUT);
+  }
+
+  /// Whether the layout decides which sections are expanded (`one`, `all`)
+  /// rather than leaving it to each section's own flag (`collapsible`).
+  function managesSections(layout) {
+    return layout.sections !== "collapsible";
   }
 
   function viewOf(id) {
@@ -87,20 +131,21 @@
   }
 
   /// What the sidebar shows: per view, whether it is on screen (`shown`), its
-  /// list expanded (`expanded`) and stretched to the free height (`fill`),
-  /// plus whether the panel itself is visible.
+  /// list expanded (`expanded`) and stretched to the free room (`fill`), plus
+  /// whether the panel itself is visible.
   ///
-  /// `active` is the view the user last chose (the rail layouts); `open` the
-  /// Classic collapse flags; `panelOpen` whether a Flyout panel is out.
+  /// `active` is the view the user last chose (the one-view layouts); `open`
+  /// the Classic collapse flags; `panelOpen` whether an overlay panel is out.
   function sidebarPlan(layoutId, { active = "sessions", open = {}, panelOpen = false } = {}) {
     const layout = layoutOf(layoutId);
     const current = viewOf(active) ? active : "sessions";
     const views = SIDEBAR_VIEWS.map((v) => {
-      if (!layout.exclusive) {
+      if (layout.sections === "collapsible") {
         // Classic: everything stacked, each section as its own flag says.
         return { id: v.id, shown: true, expanded: v.openKey ? !!open[v.openKey] : true, fill: false };
       }
-      // Rail / Flyout: the active view alone, full height.
+      if (layout.sections === "all") return { id: v.id, shown: true, expanded: true, fill: true };
+      // One view at a time: the active one alone, full height.
       const on = v.id === current;
       return { id: v.id, shown: on, expanded: on, fill: on };
     });
@@ -108,6 +153,7 @@
       layout: layout.id,
       active: current,
       views,
+      place: layout.place,
       rail: layout.rail,
       viewTabs: !!layout.tabs,
       panel: layout.overlay ? !!panelOpen : true,
@@ -116,6 +162,9 @@
       quickSettings: layout.quickSettings || "footer",
     };
   }
+
+  /// Which views a Split layout moves into its right-hand sidebar.
+  const SPLIT_RIGHT = ["workflows", "scratches", "teams"];
 
   /// A workspace's rail badge: up to two initials of its name (`Saturn Core`
   /// → `SC`, `main` → `MA`), its number when the name has no letters.
@@ -158,8 +207,11 @@
     rightPanelsAfterOpen,
     SIDEBAR_VIEWS,
     LAYOUTS,
+    RETIRED_LAYOUTS,
     DEFAULT_LAYOUT,
+    SPLIT_RIGHT,
     layoutOf,
+    managesSections,
     viewOf,
     sidebarPlan,
     workspaceInitials,

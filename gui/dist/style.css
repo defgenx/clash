@@ -3266,8 +3266,8 @@ body > [id^="dwf-mmd-"], body > [id^="iwf-mmd-"], body > [id^="wf-mmd-"] { posit
    The body carries `layout-<id>`; the adapter marks each view's elements
    `layout-off` (not shown) or `layout-fill` (takes the free height). */
 .layout-off { display: none !important; }
-/* An exclusive layout's open view takes the room: a saved Classic height
-   (inline, from the section resizer) must not cap it. */
+/* A layout that drives the sections gives its open views the room: a saved
+   Classic height (inline, from the section resizer) must not cap them. */
 #wf-section.layout-fill,
 #notes-section.layout-fill,
 #teams-section.layout-fill {
@@ -3277,7 +3277,7 @@ body > [id^="dwf-mmd-"], body > [id^="iwf-mmd-"], body > [id^="wf-mmd-"] { posit
   min-height: 0 !important;
 }
 
-/* The rail (Rail, Flyout): workspaces, views, inbox, settings. */
+/* The rail (Rail; horizontal in Topbar): workspaces, views, inbox, settings. */
 #layout-rail {
   width: 52px;
   flex: none;
@@ -3356,14 +3356,14 @@ body > [id^="dwf-mmd-"], body > [id^="iwf-mmd-"], body > [id^="wf-mmd-"] { posit
   text-align: center;
 }
 .rail-badge.hot { background: var(--red); }
-/* In the one-view layouts a section header is the view's title, not a toggle. */
-body.layout-exclusive .section-label.collapsible { cursor: default; }
-body.layout-exclusive #wf-caret,
-body.layout-exclusive #notes-caret,
-body.layout-exclusive #teams-caret { display: none; }
-body.layout-exclusive #wf-section,
-body.layout-exclusive #notes-section,
-body.layout-exclusive #teams-section { border-top: 0; }
+/* Outside Classic a section header is the view's title, not a toggle. */
+body.layout-managed .section-label.collapsible { cursor: default; }
+body.layout-managed #wf-caret,
+body.layout-managed #notes-caret,
+body.layout-managed #teams-caret { display: none; }
+body.layout-managed #wf-section,
+body.layout-managed #notes-section,
+body.layout-managed #teams-section { border-top: 0; }
 
 /* Tabbed: the views as a tab strip under the workspace chips. */
 #layout-tabs {
@@ -3418,21 +3418,101 @@ body.layout-has-rail #settings-toggle { display: none; }
 #rail-settings #settings-body.hidden { display: flex !important; }
 #rail-settings #settings-body { max-height: min(70vh, 560px); }
 
-/* Flyout: the panel floats over the terminals beside the rail and slides
-   in only when a view is opened, so the panes keep the whole width. */
-body.layout-flyout #sidebar {
+/* Dock: the terminals on top at the full width, the sidebar under them with
+   its views as columns — Sessions (with the header and workspace chips),
+   Workflows, Scratches, Teams, then the footer's settings. The sidebar's
+   handle above it sets the height (--dock-h, applyDockHeight). */
+body.layout-dock #app { flex-direction: column; }
+body.layout-dock #main { order: 1; min-height: 0; }
+body.layout-dock #sidebar-resizer {
+  order: 2;
+  width: auto;
+  min-width: 0;
+  height: 4px;
+  min-height: 4px;
+  cursor: row-resize;
+}
+body.layout-dock #sidebar {
+  order: 3;
+  width: auto !important;
+  min-width: 0 !important;
+  height: var(--dock-h, 280px);
+  flex: none;
+  border-right: 0;
+  border-top: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: minmax(240px, 1.2fr) repeat(3, minmax(170px, 1fr)) minmax(190px, 0.8fr);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+body.layout-dock #sidebar > * { grid-column: 1; min-width: 0; }
+body.layout-dock #session-list { min-height: 0; }
+body.layout-dock #wf-section { grid-column: 2; grid-row: 1 / -1; }
+body.layout-dock #notes-section { grid-column: 3; grid-row: 1 / -1; }
+body.layout-dock #teams-section { grid-column: 4; grid-row: 1 / -1; }
+body.layout-dock #sidebar-footer { grid-column: 5; grid-row: 1 / -1; border-top: 0; min-height: 0; }
+body.layout-dock #settings-body { max-height: none; flex: 1 1 auto; min-height: 0; }
+body.layout-dock #sidebar-footer .footer-row { margin-top: auto; }
+body.layout-dock #wf-section,
+body.layout-dock #notes-section,
+body.layout-dock #teams-section,
+body.layout-dock #sidebar-footer { border-left: 1px solid var(--border); }
+
+/* Split: Sessions alone in the left sidebar; Workflows, Scratches and Teams
+   stacked in a second one on the right (placeSplitViews moves them there),
+   Workflows taking twice the others' share. */
+#sidebar-right {
+  width: 300px;
+  min-width: 300px;
+  background: var(--bg-sidebar);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#sidebar-right.collapsed { display: none; }
+body.layout-split #sidebar-right #wf-section.layout-fill { flex-grow: 2 !important; }
+body.layout-split #notes-section,
+body.layout-split #teams-section { border-top: 1px solid var(--border); }
+
+/* Topbar: no sidebar column. The rail runs across the window's top and a view
+   drops down under it, over the terminals, only while it is open. */
+body.layout-topbar #app { flex-direction: column; }
+body.layout-topbar #main { min-height: 0; }
+body.layout-topbar #layout-rail {
+  width: auto;
+  height: 44px;
+  flex-direction: row;
+  padding: 0 10px;
+  gap: 4px;
+  border-right: 0;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+body.layout-topbar .rail-sep { width: 1px; height: 22px; margin: 0 6px; }
+body.layout-topbar .rail-ws { width: 30px; height: 30px; border-radius: 8px; }
+body.layout-topbar .rail-view { width: 34px; height: 34px; }
+body.layout-topbar .rail-view.active::before { left: 9px; right: 9px; top: auto; bottom: -5px; width: auto; height: 3px; }
+body.layout-topbar .rail-ws.ws-drop-before { box-shadow: -5px 0 0 -2px var(--accent); }
+body.layout-topbar .rail-ws.ws-drop-after { box-shadow: 5px 0 0 -2px var(--accent); }
+body.layout-topbar #sidebar {
   position: fixed;
-  top: 0;
-  bottom: 0;
-  left: 52px;
+  top: 44px;
+  left: 0;
+  height: min(640px, calc(100vh - 56px));
   z-index: 120;
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 10px 0;
   box-shadow: var(--shadow-lg, 0 18px 50px rgba(0, 0, 0, 0.45));
   transition: transform 0.16s ease, visibility 0.16s;
 }
-body.layout-flyout:not(.layout-panel-out) #sidebar { transform: translateX(-105%); visibility: hidden; }
-body.layout-flyout #sidebar-resizer { display: none; }
+body.layout-topbar:not(.layout-panel-out) #sidebar { transform: translateY(-105%); visibility: hidden; }
+body.layout-topbar #sidebar-resizer { display: none; }
+body.layout-topbar #rail-settings { left: auto; right: 12px; top: 52px; bottom: auto; }
 @media (prefers-reduced-motion: reduce) {
-  body.layout-flyout #sidebar { transition: none; }
+  body.layout-topbar #sidebar { transition: none; }
 }
 
 /* ── Workflow item view: Workbench (wf-outline.js + buildWorkflowView) ──
@@ -3727,7 +3807,7 @@ body.panels-single .panel-switch {
 .panel-switch button:hover { color: var(--fg); }
 .panel-switch button.on { background: var(--bg-hover); color: var(--fg); font-weight: 600; }
 body.panels-single #details-title { display: none; }
-/* Flyout: drawers over the panes, closing on Esc or a press outside. */
+/* Topbar: drawers over the panes, closing on Esc or a press outside. */
 body.panels-overlay #files-panel,
 body.panels-overlay #details {
   position: fixed;
@@ -3738,6 +3818,8 @@ body.panels-overlay #details {
   width: min(400px, 92vw);
   box-shadow: var(--shadow-lg, -18px 0 50px rgba(0, 0, 0, 0.45));
 }
+body.layout-topbar.panels-overlay #files-panel,
+body.layout-topbar.panels-overlay #details { top: 45px; }
 
 /* ── Inspector (ⓘ): session and team details ─────────────────────── */
 #details { display: flex; flex-direction: column; }

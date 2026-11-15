@@ -20,8 +20,8 @@ test("Classic stacks every view and keeps each section's own collapse flag", () 
   assert.equal(p.workspaceChips, true);
 });
 
-test("Rail and Flyout show the active view alone, full height", () => {
-  for (const id of ["rail", "flyout"]) {
+test("Rail and Topbar show the active view alone, full height", () => {
+  for (const id of ["rail", "topbar"]) {
     const p = L.sidebarPlan(id, { active: "workflows" });
     assert.deepEqual(p.views.filter((x) => x.shown).map((x) => x.id), ["workflows"]);
     assert.equal(by(p).workflows.fill, true);
@@ -29,8 +29,39 @@ test("Rail and Flyout show the active view alone, full height", () => {
     assert.equal(p.workspaceChips, false, "workspaces live in the rail");
   }
   assert.equal(L.sidebarPlan("rail", {}).panel, true, "Rail docks its panel");
-  assert.equal(L.sidebarPlan("flyout", {}).panel, false, "Flyout's panel is out only when opened");
-  assert.equal(L.sidebarPlan("flyout", { panelOpen: true }).panel, true);
+  assert.equal(L.sidebarPlan("topbar", {}).panel, false, "Topbar's panel is out only when opened");
+  assert.equal(L.sidebarPlan("topbar", { panelOpen: true }).panel, true);
+  assert.equal(L.sidebarPlan("topbar", {}).place, "top");
+  assert.equal(L.sidebarPlan("rail", {}).place, "left");
+});
+
+test("Dock and Split show every view at once, open and filling, whatever was active or collapsed", () => {
+  for (const id of ["dock", "split"]) {
+    const p = L.sidebarPlan(id, { active: "teams", open: { wfOpen: false, notesOpen: false } });
+    assert.ok(p.views.every((v) => v.shown && v.expanded && v.fill), id);
+    assert.equal(p.rail, false, id);
+    assert.equal(p.workspaceChips, true, `${id} keeps the chips`);
+    assert.equal(p.panel, true, `${id} docks its views`);
+    assert.ok(L.managesSections(L.layoutOf(id)), `${id} drives the sections`);
+  }
+  assert.equal(L.sidebarPlan("dock", {}).place, "bottom");
+  assert.equal(L.sidebarPlan("split", {}).place, "split");
+  assert.equal(L.managesSections(L.layoutOf("classic")), false, "Classic leaves them to their flags");
+  // Split moves the work lists, never Sessions.
+  assert.deepEqual(L.SPLIT_RIGHT, ["workflows", "scratches", "teams"]);
+  for (const id of L.SPLIT_RIGHT) assert.ok(L.viewOf(id), id);
+});
+
+test("every layout says where it sits and how its sections behave", () => {
+  for (const l of L.LAYOUTS) {
+    assert.ok(["left", "bottom", "split", "top"].includes(l.place), `${l.id}: place`);
+    assert.ok(["collapsible", "one", "all"].includes(l.sections), `${l.id}: sections`);
+    // An overlay panel needs a rail to open it from.
+    if (l.overlay) assert.ok(l.rail, `${l.id}: overlay without a rail`);
+  }
+  // The places are what make the layouts different; no two may share one shape.
+  const shapes = L.LAYOUTS.map((l) => [l.place, l.sections, l.rail, !!l.tabs, l.overlay].join("/"));
+  assert.equal(new Set(shapes).size, shapes.length, "two layouts with the same shape");
 });
 
 test("unknown layouts and views fall back instead of blanking the sidebar", () => {
@@ -68,15 +99,18 @@ test("every view's elements and every layout exist where app.js expects them", (
   assert.equal(typeof sandbox.SidebarLayout.sidebarPlan, "function");
 });
 
-test("Focus is gone: a saved Focus layout falls back to Classic", () => {
-  assert.deepEqual(L.LAYOUTS.map((l) => l.id), ["classic", "rail", "tabbed", "flyout"]);
+test("retired layouts: Focus falls back to Classic, Flyout becomes Rail", () => {
+  assert.deepEqual(L.LAYOUTS.map((l) => l.id), ["classic", "rail", "tabbed", "dock", "split", "topbar"]);
   assert.equal(L.layoutOf("focus").id, "classic");
+  assert.equal(L.layoutOf("flyout").id, "rail");
+  assert.equal(L.sidebarPlan("flyout", {}).layout, "rail");
 });
 
-test("right panels: stacked in Classic, one at a time in Rail, drawers in Flyout", () => {
+test("right panels: stacked in Classic, one at a time in Rail and Split, drawers in Topbar", () => {
   assert.equal(L.sidebarPlan("classic", {}).panels, "stack");
   assert.equal(L.sidebarPlan("rail", {}).panels, "single");
-  assert.equal(L.sidebarPlan("flyout", {}).panels, "overlay");
+  assert.equal(L.sidebarPlan("split", {}).panels, "single", "beside a second sidebar, one panel is enough");
+  assert.equal(L.sidebarPlan("topbar", {}).panels, "overlay");
   assert.deepEqual(L.rightPanelsAfterOpen("stack", ["files"], "details"), ["files", "details"]);
   assert.deepEqual(L.rightPanelsAfterOpen("single", ["files"], "details"), ["details"]);
   assert.deepEqual(L.rightPanelsAfterOpen("overlay", ["details"], "files"), ["files"]);
@@ -84,10 +118,10 @@ test("right panels: stacked in Classic, one at a time in Rail, drawers in Flyout
   for (const l of L.LAYOUTS) assert.ok(["stack", "single", "overlay"].includes(l.panels), `${l.id} says how panels open`);
 });
 
-test("quick settings: a footer section in Classic, the rail's ⚙ popover in Rail and Flyout", () => {
+test("quick settings: a footer section in Classic, the rail's ⚙ popover in Rail and Topbar", () => {
   assert.equal(L.sidebarPlan("classic", {}).quickSettings, "footer");
   assert.equal(L.sidebarPlan("rail", {}).quickSettings, "popover");
-  assert.equal(L.sidebarPlan("flyout", {}).quickSettings, "popover");
+  assert.equal(L.sidebarPlan("topbar", {}).quickSettings, "popover");
   // A rail layout without the popover would leave them under the open view.
   for (const l of L.LAYOUTS) assert.equal(l.quickSettings === "popover", l.rail, `${l.id}: popover iff rail`);
 });
@@ -101,5 +135,5 @@ test("Tabbed: one view at a time like Rail, but switched by a tab strip beside t
   assert.deepEqual(plan.views.filter((v) => v.shown).map((v) => v.id), ["teams"]);
   assert.ok(plan.views.find((v) => v.id === "teams").fill);
   assert.equal(plan.quickSettings, "footer");
-  for (const id of ["classic", "rail", "flyout"]) assert.equal(L.sidebarPlan(id, {}).viewTabs, false, id);
+  for (const id of ["classic", "rail", "dock", "split", "topbar"]) assert.equal(L.sidebarPlan(id, {}).viewTabs, false, id);
 });

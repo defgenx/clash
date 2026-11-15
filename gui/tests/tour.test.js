@@ -19,7 +19,7 @@ test("steps are well-formed: unique ids, anchors, tooltip-sized prose", () => {
     assert.ok(s.title && s.title.length <= 40, `${s.id}: title fits a tooltip header`);
   }
   // Every layout gets a complete tour, every body fitting the tooltip.
-  for (const layout of ["classic", "rail", "tabbed", "flyout"]) {
+  for (const layout of ["classic", "rail", "tabbed", "dock", "split", "topbar"]) {
     for (const s of windowTourSteps(layout)) {
       assert.equal(typeof s.body, "string", `${layout}/${s.id}: one body`);
       assert.ok(s.body.length >= 40 && s.body.length <= 400, `${layout}/${s.id}: body fits (${s.body.length})`);
@@ -106,14 +106,19 @@ test("the window tour speaks the layout: rail buttons, one-at-a-time panels, dra
   const body = (layout, id) => windowTourSteps(layout).find((s) => s.id === id).body;
   assert.match(body("classic", "workspaces"), /⌘N creates one/);
   assert.match(body("rail", "workspaces"), /button on the rail/);
-  assert.match(body("flyout", "workspaces"), /button on the rail/, "Flyout falls back to Rail's text");
+  assert.match(body("topbar", "workspaces"), /top bar/);
   assert.match(body("rail", "files"), /one panel at a time/);
-  assert.match(body("flyout", "files"), /drawer over the terminals/);
-  assert.match(body("flyout", "sessions"), /slides out from the rail/);
+  assert.match(body("topbar", "files"), /drawer over the terminals/);
+  assert.match(body("topbar", "sessions"), /drops down from the top bar/);
+  assert.match(body("topbar", "inbox"), /One list/, "a step with one text is the same everywhere");
+  assert.match(body("dock", "sessions"), /panel under the terminals/);
+  assert.match(body("split", "sessions"), /sidebar on the right/);
+  assert.match(body("split", "workflows"), /right sidebar/);
+  assert.match(body("dock", "workspaces"), /⌘N creates one/, "Dock keeps the chips, so Classic's text");
   assert.match(body("classic", "inspector"), /beside Files/);
-  for (const l of ["classic", "rail", "tabbed", "flyout"]) assert.match(body(l, "workspaces"), /drag one to reorder/, l);
+  for (const l of ["classic", "rail", "tabbed", "dock", "split", "topbar"]) assert.match(body(l, "workspaces"), /drag one to reorder/, l);
   assert.match(body("rail", "settings"), /⚙ at the foot of the rail/);
-  assert.match(body("flyout", "settings"), /⚙ at the foot of the rail/);
+  assert.match(body("topbar", "settings"), /right end of the top bar/);
   assert.match(body("classic", "settings"), /Quick settings live here/);
   assert.match(body("tabbed", "sessions"), /The tabs above switch/);
   assert.match(body("tabbed", "workspaces"), /⌘N creates one/, "Tabbed keeps the chips, so Classic's text");

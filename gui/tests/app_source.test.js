@@ -1124,15 +1124,26 @@ test("the sidebar's arrangement goes through the layout adapter only", () => {
   }
   // Revealing a section is sidebarShow's job, never a bare toggle.
   assert.doesNotMatch(APP, /if \(!state\.(wfOpen|notesOpen|teamsOpen)\) (await )?toggle(Workflows|Notes|Teams)\(\)/);
-  // ⌘B and the rail fold the panel through one function.
-  const collapses = APP.match(/\$\("sidebar"\)\.classList\.toggle\("collapsed"\)/g) || [];
-  assert.equal(collapses.length, 1, "only sidebarCollapse folds the sidebar");
-  assert.match(extractFunction(APP, "sidebarCollapse"), /classList\.toggle\("collapsed"\)/);
+  // ⌘B and the rail fold the panel through one function, which folds Split's
+  // right-hand sidebar with it.
+  const folds = APP.match(/\$\("sidebar(-right)?"\)\.classList\.(toggle|remove|add)\("collapsed"/g) || [];
+  assert.equal(folds.length, 2, "only setSidebarCollapsed folds the sidebars");
+  const set = extractFunction(APP, "setSidebarCollapsed");
+  assert.match(set, /\$\("sidebar"\)\.classList\.toggle\("collapsed", collapsed\)/);
+  assert.match(set, /\$\("sidebar-right"\)\.classList\.toggle\("collapsed", collapsed\)/);
+  assert.match(extractFunction(APP, "sidebarCollapse"), /setSidebarCollapsed\(/);
   // The layout is applied at boot, after the saved sections are restored.
   const boot = APP.slice(APP.indexOf("await restoreSidebarState();"));
   assert.match(boot.slice(0, 120), /await applySidebarLayout\(\);/);
-  // A Flyout panel paints over the panes: native browser webviews must hide.
+  // Topbar's drop-down paints over the panes: native browser webviews must hide.
   assert.match(extractFunction(APP, "applySidebarLayout"), /hideBrowserWebviews\(\)/);
+  // Split's work lists are moved, and moved back, by the one painter.
+  assert.match(extractFunction(APP, "applySidebarLayout"), /placeSplitViews\(plan\.place === "split"\)/);
+  const place = extractFunction(APP, "placeSplitViews");
+  assert.match(place, /SidebarLayout\.SPLIT_RIGHT/);
+  assert.match(place, /sidebar\.insertBefore\(el, footer\)/, "back above the footer, in order");
+  // Dock's height is its own size, set by the sidebar's handle while docked.
+  assert.match(APP, /when: \(\) => currentLayout\(\)\.place === "bottom",\n  key: "dock",/);
 });
 
 test("both workflow item views come from one sub-view list, and More clicks the real buttons", () => {
@@ -1149,17 +1160,17 @@ test("both workflow item views come from one sub-view list, and More clicks the 
 });
 
 test("the tour reaches every anchor under every layout and leaves the sidebar as it was", () => {
-  // Flyout hides its panel and ⌘B folds the sidebar: a step anchored inside it
-  // would ring an invisible element.
+  // Topbar hides its panel and ⌘B folds the sidebars: a step anchored inside
+  // one would ring an invisible element.
   const anchor = extractFunction(APP, "tourAnchorFor");
-  assert.match(anchor, /el\.closest\("#sidebar"\)/);
-  assert.match(anchor, /classList\.remove\("collapsed"\)/);
-  assert.match(anchor, /layout\.overlay && !flyoutOpen/);
+  assert.match(anchor, /el\.closest\("#sidebar, #sidebar-right"\)/);
+  assert.match(anchor, /setSidebarCollapsed\(false\)/);
+  assert.match(anchor, /layout\.overlay && !panelOut/);
   assert.match(anchor, /"layout-rail"/, "the workspaces step points at the rail when there is one");
   const tour = extractFunction(APP, "startGuiTour");
   assert.match(tour, /const layoutBefore = \{/);
   assert.match(tour, /sidebarView = layoutBefore\.view;/);
-  assert.match(tour, /flyoutOpen = layoutBefore\.flyout;/);
+  assert.match(tour, /panelOut = layoutBefore\.panelOut;/);
 });
 
 test("the item tour runs once on its own, inside the item's tab, and can be replayed", () => {
@@ -1178,7 +1189,7 @@ test("the item tour runs once on its own, inside the item's tab, and can be repl
 test("both right panels open through the layout's rule, and no overlay lets a webview paint over it", () => {
   // Files and the inspector both make room the way the layout says (stack /
   // one at a time / drawer); an opener that skipped it would stack panels in
-  // Rail or dock one in Flyout.
+  // Rail or dock one in Topbar.
   assert.match(extractFunction(APP, "openDetailsPanel"), /rightPanelOpening\("details"\)/);
   assert.match(extractFunction(APP, "toggleFilesPanel"), /rightPanelOpening\("files"\)/);
   assert.match(extractFunction(APP, "rightPanelOpening"), /SidebarLayout\.rightPanelsAfterOpen\(/);
@@ -1187,7 +1198,7 @@ test("both right panels open through the layout's rule, and no overlay lets a we
   assert.match(extractFunction(APP, "syncBrowserWebviews"), /overlayOut\(\)\) return;/);
   const over = extractFunction(APP, "overlayOut");
   assert.match(over, /settings-backdrop:not\(\.hidden\)/);
-  assert.match(over, /flyoutOpen/);
+  assert.match(over, /panelOut/);
   assert.match(over, /rightDrawerOpen\(\)/);
   assert.match(over, /railSettingsOpen/, "the rail's ⚙ popover paints over the panes too");
 });
@@ -1205,9 +1216,10 @@ test("the rail layouts keep the quick settings behind the rail's ⚙, not under 
 });
 
 test("workspaces reorder by drag in every layout, through TabOrder's rule", () => {
-  // Chips (Classic, Tabbed) and rail buttons (Rail, Flyout) share one drag.
+  // Chips (Classic, Tabbed, Dock, Split) and rail buttons (Rail, Topbar) share one drag.
   assert.match(extractFunction(APP, "renderWorkspaceBar"), /wireWorkspaceDrag\(chip, i, "x"\)/);
-  assert.match(extractFunction(APP, "syncSidebarRail"), /wireWorkspaceDrag\(b, i, "y"\)/);
+  // The rail runs down the side in Rail and across the top in Topbar.
+  assert.match(extractFunction(APP, "syncSidebarRail"), /wireWorkspaceDrag\(b, i, currentLayout\(\)\.place === "top" \? "x" : "y"\)/);
   assert.match(extractFunction(APP, "workspaceOrderAfter"), /TabOrder\.moveKey\(/);
   // The active workspace is tracked by index: it must follow its object.
   const reorder = extractFunction(APP, "reorderWorkspace");

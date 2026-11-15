@@ -733,14 +733,14 @@ function workspacesJson() {
 /// What the sidebar looks like right now, for persistence: open/collapsed per
 /// section plus every panel size (widths + section heights).
 // Sidebar layout adapter state (see "Sidebar layout adapter").
-/// The view the rail layouts show.
+/// The view the one-view layouts show.
 let sidebarView = "sessions";
-/// Whether the Flyout panel is out.
-let flyoutOpen = false;
-/// Whether the rail's ⚙ quick-settings popover is out (Rail, Flyout).
+/// Whether an overlay layout's panel (Topbar's drop-down) is out.
+let panelOut = false;
+/// Whether the rail's ⚙ quick-settings popover is out (Rail, Topbar).
 let railSettingsOpen = false;
-/// Classic's own open sections, kept while an exclusive layout drives the
-/// flags — switching back restores them, and they are what gets persisted.
+/// Classic's own open sections, kept while another layout drives the flags —
+/// switching back restores them, and they are what gets persisted.
 let classicOpen = null;
 /// The layout last painted — what a switch moves away from.
 let appliedLayout = "classic";
@@ -753,7 +753,7 @@ function sidebarPersistState() {
     void e;
   }
   return {
-    // Classic's own sections, even while an exclusive layout drives the flags.
+    // Classic's own sections, even while another layout drives the flags.
     open: {
       teams: !!(classicOpen ? classicOpen.teamsOpen : state.teamsOpen),
       notes: !!(classicOpen ? classicOpen.notesOpen : state.notesOpen),
@@ -4781,7 +4781,7 @@ function detailsShown() {
 
 /// The right-hand panels (Files ⌘E, Inspector ⓘ) follow the layout's
 /// `panels` mode (layout.js): Classic stacks them, Rail shows one at a time,
-/// Flyout opens them as drawers over the panes. Called before a panel shows,
+/// Topbar opens them as drawers over the panes. Called before a panel shows,
 /// it closes whichever the mode says must make room.
 function rightPanelOpening(which) {
   const open = [filesPanel.open ? "files" : null, detailsShown() ? "details" : null].filter(Boolean);
@@ -4801,7 +4801,7 @@ function afterRightPanelOpened() {
   else fitAll();
 }
 
-/// An open right-panel drawer (Flyout), if any.
+/// An open right-panel drawer (Topbar), if any.
 function rightDrawerOpen() {
   return sidebarPlanNow().panels === "overlay" && (filesPanel.open || detailsShown());
 }
@@ -4816,7 +4816,7 @@ function closeRightDrawers() {
 function overlayOut() {
   return (
     !!document.querySelector(".settings-backdrop:not(.hidden)") ||
-    (currentLayout().overlay && flyoutOpen) ||
+    (currentLayout().overlay && panelOut) ||
     railSettingsOpen ||
     rightDrawerOpen()
   );
@@ -17506,7 +17506,7 @@ for (const b of document.querySelectorAll(".panel-switch button")) {
     else $("details-btn").click();
   };
 }
-// The Flyout drawer closes like Flyout's panel: a press outside it (and
+// A right-panel drawer closes like Topbar's drop-down: a press outside it (and
 // outside a menu or dialog it opened) puts it away.
 document.addEventListener("mousedown", (ev) => {
   if (!rightDrawerOpen()) return;
@@ -17910,8 +17910,8 @@ document.addEventListener("keydown", (e) => {
       toggleRailSettings(false);
       return;
     }
-    if (flyoutOpen) {
-      closeFlyout();
+    if (panelOut) {
+      closeOverlayPanel();
       return;
     }
     hideNewSessionModal();
@@ -18526,8 +18526,8 @@ function syncBrowserWebviews() {
   // still open. Whichever dialog closes last runs fitAll() with no backdrop
   // left, and that call restores the webviews.
   if (document.querySelector(".dialog-backdrop")) return;
-  // The same for the Settings modal and the layouts' overlays (Flyout's
-  // panel, the right-panel drawers): they are not `.dialog-backdrop`s.
+  // The same for the Settings modal and the layouts' overlays (Topbar's
+  // drop-down, the right-panel drawers): they are not `.dialog-backdrop`s.
   if (typeof overlayOut === "function" && overlayOut()) return;
   const w = ws();
   const visible = new Set(
@@ -18654,9 +18654,20 @@ function loadPanelSizes() {
     if (sizes.sidebar) apply($("sidebar"), sizes.sidebar);
     if (sizes.details) apply($("details"), sizes.details);
     if (sizes.files) apply($("files-panel"), sizes.files);
+    if (sizes.sidebarRight) apply($("sidebar-right"), sizes.sidebarRight);
   } catch (e) {
     console.error("loadPanelSizes failed:", e);
   }
+  applyDockHeight();
+}
+
+/// Dock's panel height, saved apart from the sidebar's width (`sizes.dock`).
+/// It rides a CSS variable that only Dock's rules read, so the other layouts
+/// never see it.
+function applyDockHeight(px = panelSize("dock")) {
+  const sidebar = $("sidebar");
+  if (px) sidebar.style.setProperty("--dock-h", `${px}px`);
+  else sidebar.style.removeProperty("--dock-h");
 }
 
 function savePanelSize(key, px) {
@@ -18673,11 +18684,14 @@ function savePanelSize(key, px) {
 }
 
 /// Horizontal drag-to-resize. `compute(clientX)` returns the new width.
-function initResizer(handleId, panelId, storageKey, min, max, compute) {
+/// `vertical`, when its `when()` holds at mousedown, drags a height instead
+/// (Dock puts the sidebar under the terminals, so its handle sets the height).
+function initResizer(handleId, panelId, storageKey, min, max, compute, vertical = null) {
   const handle = $(handleId);
   const panel = $(panelId);
   handle.addEventListener("mousedown", (e) => {
     e.preventDefault();
+    if (vertical && vertical.when()) return dragHeight(handle, vertical);
     handle.classList.add("dragging");
     document.body.style.cursor = "col-resize";
     const onMove = (ev) => {
@@ -18699,7 +18713,38 @@ function initResizer(handleId, panelId, storageKey, min, max, compute) {
   });
 }
 
-initResizer("sidebar-resizer", "sidebar", "sidebar", 180, 480, (x) => x);
+/// The vertical half of initResizer: `compute(clientY)` is the new height,
+/// clamped to [min, max()], applied by `apply` and saved under `key`.
+function dragHeight(handle, { key, min, max, compute, apply }) {
+  handle.classList.add("dragging");
+  document.body.style.cursor = "row-resize";
+  let h = null;
+  const onMove = (ev) => {
+    h = Math.max(min, Math.min(max(), compute(ev.clientY)));
+    apply(h);
+    fitAll();
+  };
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    handle.classList.remove("dragging");
+    document.body.style.cursor = "";
+    if (h != null) savePanelSize(key, Math.round(h));
+    fitAll();
+  };
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
+initResizer("sidebar-resizer", "sidebar", "sidebar", 180, 480, (x) => x, {
+  when: () => currentLayout().place === "bottom",
+  key: "dock",
+  min: 140,
+  max: () => Math.max(140, window.innerHeight - 220),
+  compute: (y) => window.innerHeight - y,
+  apply: (h) => applyDockHeight(h),
+});
+initResizer("sidebar-right-resizer", "sidebar-right", "sidebarRight", 220, 520, (x) => window.innerWidth - x);
 initResizer("details-resizer", "details", "details", 240, 640, (x) => window.innerWidth - x);
 initResizer(
   "files-resizer",
@@ -18725,7 +18770,7 @@ const SECTION_TOGGLES = {
   scratches: () => toggleNotes(),
   teams: () => toggleTeams(),
 };
-/// (The adapter's state — sidebarView, flyoutOpen, classicOpen — is declared
+/// (The adapter's state — sidebarView, panelOut, classicOpen — is declared
 /// with sidebarPersistState, which reads it during load.)
 
 function currentLayout() {
@@ -18740,8 +18785,28 @@ function sidebarPlanNow() {
   return SidebarLayout.sidebarPlan(currentLayout().id, {
     active: sidebarView,
     open: sidebarOpenFlags(),
-    panelOpen: flyoutOpen,
+    panelOpen: panelOut,
   });
+}
+
+/// Split moves Workflows, Scratches and Teams (with their resizers) into the
+/// right-hand sidebar; every other layout keeps them in #sidebar, above its
+/// footer. The same nodes move, so their bindings travel with them.
+function placeSplitViews(split) {
+  const sidebar = $("sidebar");
+  const right = $("sidebar-right");
+  const footer = $("sidebar-footer");
+  for (const id of SidebarLayout.SPLIT_RIGHT) {
+    const def = SidebarLayout.viewOf(id);
+    for (const elId of [def.resizer, ...def.elements].filter(Boolean)) {
+      const el = $(elId);
+      if (!el) continue;
+      if (split && el.parentElement !== right) right.appendChild(el);
+      else if (!split && el.parentElement !== sidebar) sidebar.insertBefore(el, footer);
+    }
+  }
+  right.classList.toggle("hidden", !split);
+  $("sidebar-right-resizer").classList.toggle("hidden", !split);
 }
 
 /// Toggle the sections whose expanded flag differs from `want` (by view id).
@@ -18754,17 +18819,19 @@ async function setSectionsOpen(want) {
   await Promise.all(jobs).catch(() => {});
 }
 
-/// Paint the current layout: body classes, which views show and fill, the
-/// rail. Idempotent — call it after anything that changes the plan.
+/// Paint the current layout: body classes, where the views sit, which show
+/// and fill, the rail. Idempotent — call it after anything that changes the plan.
 async function applySidebarLayout() {
   const layout = currentLayout();
   const plan = sidebarPlanNow();
+  const managed = SidebarLayout.managesSections(layout);
   appliedLayout = layout.id;
   const body = document.body.classList;
   for (const l of SidebarLayout.LAYOUTS) body.toggle(`layout-${l.id}`, l.id === layout.id);
   body.toggle("layout-has-rail", plan.rail);
-  body.toggle("layout-exclusive", layout.exclusive);
+  body.toggle("layout-managed", managed);
   body.toggle("layout-panel-out", plan.panel);
+  placeSplitViews(plan.place === "split");
   for (const v of plan.views) {
     const def = SidebarLayout.viewOf(v.id);
     for (const id of def.elements) {
@@ -18773,10 +18840,11 @@ async function applySidebarLayout() {
       el.classList.toggle("layout-off", !v.shown);
       el.classList.toggle("layout-fill", v.fill);
     }
-    // Exclusive layouts size their one open view themselves.
-    if (def.resizer && layout.exclusive) $(def.resizer)?.classList.add("hidden");
+    // Layouts that drive the sections size them themselves.
+    if (def.resizer && managed) $(def.resizer)?.classList.add("hidden");
   }
-  if (!layout.exclusive) reapplySectionHeights();
+  if (!managed) reapplySectionHeights();
+  applyDockHeight();
   $("workspace-bar").classList.toggle("layout-off", !plan.workspaceChips);
   for (const m of ["stack", "single", "overlay"]) body.toggle(`panels-${m}`, plan.panels === m);
   // A switch to a one-at-a-time layout with both panels open keeps the inspector.
@@ -18789,24 +18857,24 @@ async function applySidebarLayout() {
   syncSidebarRail();
   // What shows is painted above, before any list has to load: expanding a
   // section fetches its data, and a view switch must not wait on that.
-  if (layout.exclusive) {
+  if (managed) {
     await setSectionsOpen(Object.fromEntries(plan.views.map((v) => [v.id, v.expanded])));
   }
-  // A Flyout panel paints over the panes, and the native browser webviews
+  // An overlay panel paints over the panes, and the native browser webviews
   // paint over everything — hide them while it is out (fitAll restores).
   if (layout.overlay && plan.panel) hideBrowserWebviews();
   else fitAll();
 }
 
 /// Switch layouts (the setting's change). Classic's open sections are put
-/// aside when an exclusive layout takes over, and given back on return.
+/// aside when another layout takes over, and given back on return.
 async function switchSidebarLayout(next) {
-  const was = SidebarLayout.layoutOf(appliedLayout);
-  const now = SidebarLayout.layoutOf(next);
-  flyoutOpen = false;
-  if (!was.exclusive && now.exclusive) {
+  const wasManaged = SidebarLayout.managesSections(SidebarLayout.layoutOf(appliedLayout));
+  const nowManaged = SidebarLayout.managesSections(SidebarLayout.layoutOf(next));
+  panelOut = false;
+  if (!wasManaged && nowManaged) {
     classicOpen = sidebarOpenFlags();
-  } else if (was.exclusive && !now.exclusive && classicOpen) {
+  } else if (wasManaged && !nowManaged && classicOpen) {
     await setSectionsOpen({
       workflows: classicOpen.wfOpen,
       scratches: classicOpen.notesOpen,
@@ -18814,50 +18882,57 @@ async function switchSidebarLayout(next) {
     });
     classicOpen = null;
   }
-  $("sidebar").classList.remove("collapsed");
+  setSidebarCollapsed(false);
   await applySidebarLayout();
   saveWorkspaces();
 }
 
+/// ⌘B's fold: the sidebar, and Split's right-hand one with it.
+function setSidebarCollapsed(collapsed) {
+  $("sidebar").classList.toggle("collapsed", collapsed);
+  $("sidebar-right").classList.toggle("collapsed", collapsed);
+}
+
 /// Put a view on screen, as the layout means it: Classic expands the section,
-/// Rail switches to it, Flyout slides it out. A collapsed sidebar (⌘B) comes back — a request to show must show.
+/// Rail and Tabbed switch to it, Topbar drops it down; Dock and Split already
+/// show every view. A collapsed sidebar (⌘B) comes back — a request to show must show.
 async function sidebarShow(id) {
   const layout = currentLayout();
-  $("sidebar").classList.remove("collapsed");
-  if (!layout.exclusive) {
+  setSidebarCollapsed(false);
+  if (!SidebarLayout.managesSections(layout)) {
     const def = SidebarLayout.viewOf(id);
     if (def && def.openKey && !state[def.openKey]) await SECTION_TOGGLES[id]();
     fitAll();
     return;
   }
   sidebarView = id;
-  if (layout.overlay) flyoutOpen = true;
+  if (layout.overlay) panelOut = true;
   await applySidebarLayout();
   saveWorkspaces();
 }
 
 /// A click on a section's header: Classic collapses or expands it. In the
-/// rail layouts the header is the view's title and does nothing.
+/// other layouts the header is the view's title and does nothing.
 async function sidebarToggle(id) {
-  if (!currentLayout().exclusive) return SECTION_TOGGLES[id]();
+  if (!SidebarLayout.managesSections(currentLayout())) return SECTION_TOGGLES[id]();
 }
 
-/// ⌘B: hide or bring back the sidebar. Flyout's rail always stays — the key
-/// slides its panel in and out instead.
+/// ⌘B: hide or bring back the sidebar. Topbar's bar always stays — the key
+/// drops its panel down and puts it away instead.
 function sidebarCollapse() {
   if (currentLayout().overlay) {
-    flyoutOpen = !flyoutOpen;
+    panelOut = !panelOut;
     applySidebarLayout();
     return;
   }
-  $("sidebar").classList.toggle("collapsed");
+  setSidebarCollapsed(!$("sidebar").classList.contains("collapsed"));
   fitAll();
 }
 
 /// Where a tour step points under the current layout, made visible first:
 /// the workspace chips are the rail's workspace buttons when there is a rail;
 /// anything in the sidebar needs the sidebar back (⌘B may have folded it) and,
-/// in Flyout, its panel out; a step about a view switches the exclusive
+/// in Topbar, its panel out; a step about a view switches the one-view
 /// layouts to that view. `startGuiTour` puts all of it back when it ends.
 function tourAnchorFor(id) {
   const layout = currentLayout();
@@ -18867,49 +18942,49 @@ function tourAnchorFor(id) {
     return { id: "rail-settings", revealed: true };
   }
   const el = $(id);
-  const inSidebar = !!(el && el.closest("#sidebar"));
+  const inSidebar = !!(el && el.closest("#sidebar, #sidebar-right"));
   let revealed = false;
   if (inSidebar && $("sidebar").classList.contains("collapsed")) {
-    $("sidebar").classList.remove("collapsed");
+    setSidebarCollapsed(false);
     revealed = true;
   }
   const view = SidebarLayout.SIDEBAR_VIEWS.find((v) => v.elements.includes(id));
-  if (view && layout.exclusive && sidebarView !== view.id) {
+  if (view && layout.sections === "one" && sidebarView !== view.id) {
     sidebarView = view.id;
     revealed = true;
   }
-  if (inSidebar && layout.overlay && !flyoutOpen) {
-    flyoutOpen = true;
+  if (inSidebar && layout.overlay && !panelOut) {
+    panelOut = true;
     revealed = true;
   }
   if (revealed) applySidebarLayout();
   return { id, revealed };
 }
 
-function closeFlyout() {
-  if (!currentLayout().overlay || !flyoutOpen) return;
-  flyoutOpen = false;
+function closeOverlayPanel() {
+  if (!currentLayout().overlay || !panelOut) return;
+  panelOut = false;
   applySidebarLayout();
 }
 
-// A Flyout panel is a popover: a press outside it (and outside the rail, a
-// menu or a dialog it opened) puts it away, and so does picking a session or
-// an item from it — the point of the layout is that the terminals get the
-// room back.
+// An overlay panel (Topbar's drop-down) is a popover: a press outside it (and
+// outside the bar, a menu or a dialog it opened) puts it away, and so does
+// picking a session from it — the point of the layout is that the terminals
+// get the room back.
 document.addEventListener("mousedown", (ev) => {
-  if (!flyoutOpen || !currentLayout().overlay) return;
+  if (!panelOut || !currentLayout().overlay) return;
   const t = ev.target;
   if (!(t instanceof Element)) return;
   if (t.closest("#sidebar, #layout-rail, #context-menu, .dialog-backdrop, .settings-backdrop, #modal-backdrop, .tour-backdrop, .tour-tip")) return;
-  closeFlyout();
+  closeOverlayPanel();
 });
 $("sidebar").addEventListener("click", (ev) => {
-  if (!flyoutOpen || !currentLayout().overlay) return;
-  if (ev.target instanceof Element && ev.target.closest(".session-item")) setTimeout(closeFlyout, 0);
+  if (!panelOut || !currentLayout().overlay) return;
+  if (ev.target instanceof Element && ev.target.closest(".session-item")) setTimeout(closeOverlayPanel, 0);
 });
 
 /// Repaint the view switcher of the one-view layouts: the rail of Rail and
-/// Flyout (workspaces, views with their badges, the inbox, quick settings and
+/// Topbar (workspaces, views with their badges, the inbox, quick settings and
 /// an update button when one is found) or Tabbed's tab strip. Cheap, and
 /// called after anything that changes a badge.
 function syncSidebarRail() {
@@ -18937,7 +19012,7 @@ function syncSidebarRail() {
     );
     b.ondblclick = () => renameWorkspace(i);
     b.oncontextmenu = (ev) => workspaceMenu(ev, i);
-    wireWorkspaceDrag(b, i, "y");
+    wireWorkspaceDrag(b, i, currentLayout().place === "top" ? "x" : "y");
   });
   button("rail-ws rail-add", svgIcon("plus", 14), "New workspace (⌘N)", () => $("new-ws-btn").click());
   rail.appendChild(Object.assign(document.createElement("div"), { className: "rail-sep" }));
@@ -18949,7 +19024,7 @@ function syncSidebarRail() {
       svgIcon(item.icon, 18) + badge(item.badge, false),
       item.label,
       () => {
-        // A second click on the open view puts it away: Flyout slides it in,
+        // A second click on the open view puts it away: Topbar lifts it,
         // Rail folds the panel (⌘B does the same).
         if (item.active && shown) sidebarCollapse();
         else sidebarShow(item.id);
@@ -19015,7 +19090,7 @@ function toggleRailSettings(open = !railSettingsOpen) {
   railSettingsOpen = !!open && currentLayout().rail;
   $("rail-settings").classList.toggle("hidden", !railSettingsOpen);
   if (railSettingsOpen) {
-    closeFlyout();
+    closeOverlayPanel();
     syncQuickSettings();
     hideBrowserWebviews();
   } else {
@@ -19058,7 +19133,7 @@ async function restoreSidebarState() {
   if (open.files) toggleFilesPanel(true);
   await Promise.all(jobs).catch(() => {});
   if (SidebarLayout.viewOf(savedSidebar.view)) sidebarView = savedSidebar.view;
-  if (currentLayout().exclusive) classicOpen = sidebarOpenFlags();
+  if (SidebarLayout.managesSections(currentLayout())) classicOpen = sidebarOpenFlags();
   reapplySectionHeights();
 }
 
@@ -20132,7 +20207,7 @@ function startGuiTour() {
   // leaves the sidebar the way it found it.
   const layoutBefore = {
     view: sidebarView,
-    flyout: flyoutOpen,
+    panelOut,
     collapsed: $("sidebar").classList.contains("collapsed"),
   };
   // The steps' text follows the layout: chips or rail buttons, docked panels
@@ -20145,8 +20220,8 @@ function startGuiTour() {
     },
     onEnd: () => {
       sidebarView = layoutBefore.view;
-      flyoutOpen = layoutBefore.flyout;
-      $("sidebar").classList.toggle("collapsed", layoutBefore.collapsed);
+      panelOut = layoutBefore.panelOut;
+      setSidebarCollapsed(layoutBefore.collapsed);
       if (railSettingsOpen) toggleRailSettings(false);
       applySidebarLayout();
       // Completed or skipped, the tour has been seen — never auto-runs again.

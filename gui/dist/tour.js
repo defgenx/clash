@@ -26,6 +26,10 @@
           "Each workspace is a button on the rail, with its initials — one per project or per train " +
           "of thought. ＋ or ⌘N creates one, ⌘1-9 switches, drag one to reorder, right-click renames " +
           "or closes it. Layout and open tabs survive a restart.",
+        topbar:
+          "Each workspace is a button at the left of the top bar, with its initials — one per " +
+          "project or per train of thought. ＋ or ⌘N creates one, ⌘1-9 switches, drag one to " +
+          "reorder, right-click renames or closes it. Layout and open tabs survive a restart.",
       },
     },
     {
@@ -53,9 +57,17 @@
           "The Sessions view: every session, grouped by state. Click to open its terminal, " +
           "right-click for actions, ⟳ hot-restarts it. The tabs above switch between Sessions, " +
           "Workflows, Scratches and Teams, each taking the sidebar's full height.",
-        flyout:
-          "The Sessions view slides out from the rail: every session, grouped by state. Pick one " +
-          "and the panel slides away so the terminals keep the whole width; Esc or a click " +
+        dock:
+          "The first column of the panel under the terminals: every session, grouped by state. " +
+          "Click to open its terminal, right-click for actions. Workflows, Scratches and Teams " +
+          "sit beside it; drag the panel's top edge to give it more height.",
+        split:
+          "The left sidebar holds sessions only, grouped by state. Click to open its terminal, " +
+          "right-click for actions, ⟳ hot-restarts it. Workflows, Scratches and Teams live in " +
+          "the sidebar on the right; ⌘B folds both.",
+        topbar:
+          "The Sessions view drops down from the top bar: every session, grouped by state. Pick " +
+          "one and the panel lifts away so the terminals keep the whole window; Esc or a click " +
           "outside does the same, and ⌘B brings it back.",
       },
     },
@@ -80,6 +92,10 @@
         rail:
           "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
           "by your decisions. Its rail icon counts the items waiting on you. An item opens as a " +
+          "Workbench: documents on the left, the next step on top. ⊞ board, ⇄ PR dashboard.",
+        split:
+          "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
+          "by your decisions — always open at the top of the right sidebar. An item opens as a " +
           "Workbench: documents on the left, the next step on top. ⊞ board, ⇄ PR dashboard.",
       },
     },
@@ -112,7 +128,7 @@
           "file and ⌘P to find one; right-click a file for its changes, history or blame. It " +
           "docks on the right one panel at a time: its header switches between Files and the " +
           "Inspector.",
-        flyout:
+        topbar:
           "A file explorer for the focused session's folder (⌘E), with git status on every " +
           "file and ⌘P to find one; right-click a file for its changes, history or blame. It " +
           "opens as a drawer over the terminals; Esc or a click outside closes it.",
@@ -131,7 +147,7 @@
           "ⓘ opens the focused session at a glance: status, agent, branch, where it runs " +
           "(click a path to copy it), and one-click conversation, subagents, diff, IDE and " +
           "ports. It shares the right side with Files, one at a time.",
-        flyout:
+        topbar:
           "ⓘ opens the focused session at a glance: status, agent, branch, where it runs " +
           "(click a path to copy it), and one-click conversation, subagents, diff, IDE and " +
           "ports — as a drawer over the terminals, like Files.",
@@ -163,24 +179,33 @@
         classic:
           "Quick settings live here; ⚙ All settings… (⌘,) opens every setting by topic — " +
           "theme, terminal, paths, workflows, models, trackers. Appearance → Layout rearranges " +
-          "this window (Classic, Rail, Flyout); Workflow item view picks Workbench or Tabs. " +
-          "Rerun this tour from Settings → General.",
+          "this window (Classic, Rail, Tabbed, Dock, Split, Topbar); Workflow item view picks " +
+          "Workbench or Tabs. Rerun this tour from Settings → General.",
         rail:
           "Quick settings open from the ⚙ at the foot of the rail; ⚙ All settings… (⌘,) opens " +
           "every setting by topic — theme, terminal, paths, workflows, models, trackers. " +
-          "Appearance → Layout rearranges this window (Classic, Rail, Flyout); Workflow item " +
-          "view picks Workbench or Tabs. Rerun this tour from Settings → General.",
+          "Appearance → Layout rearranges this window (six layouts); Workflow item view picks " +
+          "Workbench or Tabs. Rerun this tour from Settings → General.",
+        topbar:
+          "Quick settings open from the ⚙ at the right end of the top bar; ⚙ All settings… (⌘,) " +
+          "opens every setting by topic — theme, terminal, paths, workflows, models, trackers. " +
+          "Appearance → Layout rearranges this window (six layouts). Rerun this tour from " +
+          "Settings → General.",
       },
     },
   ];
 
+  /// Whose text a layout borrows where a step says nothing of its own:
+  /// Topbar is a rail layout too; the others keep Classic's workspace chips.
+  const TOUR_FALLBACK = { topbar: "rail" };
+
   /// The window tour for one sidebar layout (layout.js ids). A step's body
-  /// is a string or `{ classic, rail, flyout }`; Flyout falls back to Rail's
-  /// text where it says nothing of its own (it is a rail layout too).
+  /// is a string or `{ classic, rail, tabbed, dock, split, topbar }`; a
+  /// missing layout borrows its TOUR_FALLBACK's text, else Classic's.
   function windowTourSteps(layout) {
     const pick = (v) => {
       if (!v || typeof v !== "object") return v;
-      return v[layout] || (layout === "flyout" ? v.rail : null) || v.classic;
+      return v[layout] || v[TOUR_FALLBACK[layout]] || v.classic;
     };
     return TOUR_STEPS.map((s) => ({ id: s.id, target: s.target, title: s.title, body: pick(s.body) }));
   }
