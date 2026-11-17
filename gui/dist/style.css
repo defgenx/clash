@@ -3277,7 +3277,7 @@ body > [id^="dwf-mmd-"], body > [id^="iwf-mmd-"], body > [id^="wf-mmd-"] { posit
   min-height: 0 !important;
 }
 
-/* The rail (Rail; horizontal in Topbar): workspaces, views, inbox, settings. */
+/* The rail (Rail, Stack; horizontal in Topbar): workspaces, views, inbox, settings. */
 #layout-rail {
   width: 52px;
   flex: none;
@@ -3474,6 +3474,11 @@ body.layout-dock #sidebar-footer { border-left: 1px solid var(--border); }
 body.layout-split #sidebar-right #wf-section.layout-fill { flex-grow: 2 !important; }
 body.layout-split #notes-section,
 body.layout-split #teams-section { border-top: 1px solid var(--border); }
+
+/* Stack: the stacked views share the panel's height, each under a rule. */
+body.layout-stack #wf-section,
+body.layout-stack #notes-section,
+body.layout-stack #teams-section { border-top: 1px solid var(--border); }
 
 /* Topbar: no sidebar column. The rail runs across the window's top and a view
    drops down under it, over the terminals, only while it is open. */

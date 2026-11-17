@@ -613,14 +613,14 @@ pub const PROPS: &[Prop] = &[
     .local(),
     Prop::new(
         "appearance.layout",
-        Kind::Enum(&["classic", "rail", "tabbed", "dock", "split", "railsplit", "topbar"]),
+        Kind::Enum(&["classic", "rail", "stack", "tabbed", "dock", "split", "topbar"]),
         Val::Str("classic"),
         "How the GUI's sidebar is arranged: `classic` (one column, collapsible sections), \
-         `rail` (an icon rail and one full-height view), `tabbed` (one column, a tab strip \
-         switches views), `dock` (the views side by side under the terminals), `split` \
-         (sessions on the left, the other views on the right), `railsplit` (the rail and \
-         sessions on the left, one other view at a time on the right) or `topbar` (one bar \
-         across the top, views drop down under it).",
+         `rail` (an icon rail and sessions on the left, one other view at a time on the \
+         right), `stack` (an icon rail whose icons stack views in one panel), `tabbed` \
+         (one column, a tab strip switches views), `dock` (the views side by side under the terminals), `split` \
+         (sessions on the left, the other views on the right) or `topbar` (one bar across \
+         the top, views drop down under it).",
     )
     .gui("layout")
     .local(),

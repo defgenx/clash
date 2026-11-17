@@ -50,9 +50,13 @@
           "actions, ⟳ hot-restarts it on the newest claude binary. Sessions started " +
           "elsewhere show up as “wild” — one click adopts them.",
         rail:
-          "The Sessions view: every session, grouped by state. Click to open its terminal, " +
-          "right-click for actions, ⟳ hot-restarts it. The rail switches between Sessions, " +
-          "Workflows, Scratches and Teams; clicking the open one folds the panel (⌘B).",
+          "Sessions always sit beside the rail: every session, grouped by state. The rail's other " +
+          "icons switch the sidebar on the right between Workflows, Scratches and Teams; clicking " +
+          "an open one folds its side, and ⌘B folds both.",
+        stack:
+          "The rail's icons stack views in this panel: click one to add or remove it, ⌥-click to " +
+          "show it alone. Sessions, Workflows, Scratches and Teams always stack in that order and " +
+          "share the height; removing the last one folds the panel.",
         tabbed:
           "The Sessions view: every session, grouped by state. Click to open its terminal, " +
           "right-click for actions, ⟳ hot-restarts it. The tabs above switch between Sessions, " +
@@ -65,10 +69,6 @@
           "The left sidebar holds sessions only, grouped by state. Click to open its terminal, " +
           "right-click for actions, ⟳ hot-restarts it. Workflows, Scratches and Teams live in " +
           "the sidebar on the right; ⌘B folds both.",
-        railsplit:
-          "Sessions always sit beside the rail: every session, grouped by state. The rail's other " +
-          "icons switch the sidebar on the right between Workflows, Scratches and Teams; clicking " +
-          "an open one folds its side, and ⌘B folds both.",
         topbar:
           "The Sessions view drops down from the top bar: every session, grouped by state. Pick " +
           "one and the panel lifts away so the terminals keep the whole window; Esc or a click " +
@@ -95,16 +95,20 @@
           "the next step on top. ⊞ opens the board, ⇄ the PR dashboard across all projects.",
         rail:
           "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
+          "by your decisions. It opens in the right sidebar from its rail icon, which counts the " +
+          "items waiting on you. ⊞ board, ⇄ PR dashboard.",
+        stack:
+          "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
           "by your decisions. Its rail icon counts the items waiting on you. An item opens as a " +
           "Workbench: documents on the left, the next step on top. ⊞ board, ⇄ PR dashboard.",
+        topbar:
+          "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
+          "by your decisions. Its icon in the top bar counts the items waiting on you. An item " +
+          "opens as a Workbench: documents on the left, the next step on top.",
         split:
           "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
           "by your decisions — always open at the top of the right sidebar. An item opens as a " +
           "Workbench: documents on the left, the next step on top. ⊞ board, ⇄ PR dashboard.",
-        railsplit:
-          "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
-          "by your decisions. It opens in the right sidebar from its rail icon, which counts the " +
-          "items waiting on you. ⊞ board, ⇄ PR dashboard.",
       },
     },
     {
@@ -187,7 +191,7 @@
         classic:
           "Quick settings live here; ⚙ All settings… (⌘,) opens every setting by topic — " +
           "theme, terminal, paths, workflows, models, trackers. Appearance → Layout rearranges " +
-          "this window (Classic, Rail, Tabbed, Dock, Split, Rail Split, Topbar); Workflow item view " +
+          "this window (Classic, Rail, Stack, Tabbed, Dock, Split, Topbar); Workflow item view " +
           "picks Workbench or Tabs. Rerun this tour from Settings → General.",
         rail:
           "Quick settings open from the ⚙ at the foot of the rail; ⚙ All settings… (⌘,) opens " +
@@ -204,8 +208,8 @@
   ];
 
   /// Whose text a layout borrows where a step says nothing of its own:
-  /// Topbar and Rail Split are rail layouts too; the others keep Classic's chips.
-  const TOUR_FALLBACK = { topbar: "rail", railsplit: "rail" };
+  /// Topbar and Stack are rail layouts too; the others keep Classic's chips.
+  const TOUR_FALLBACK = { topbar: "rail", stack: "rail" };
 
   /// The window tour for one sidebar layout (layout.js ids). A step's body
   /// is a string or `{ classic, rail, tabbed, dock, split, topbar }`; a

@@ -1137,6 +1137,11 @@ test("the sidebar's arrangement goes through the layout adapter only", () => {
   assert.match(show, /setSidebarCollapsed\(false, \[SidebarLayout\.sideOf\(layout\.id, id\)\]\)/);
   assert.match(show, /if \(!\(layout\.place === "split" && id === "sessions"\)\) sidebarView = id;/);
   assert.match(extractFunction(APP, "syncSidebarRail"), /SidebarLayout\.railLit\(plan,/);
+  // Stack's icons toggle through the pure rule, ⌥ solos, and the stack is saved.
+  assert.match(extractFunction(APP, "syncSidebarRail"), /if \(plan\.stacked\) return stackClick\(item\.id, ev\.altKey\);/);
+  assert.match(extractFunction(APP, "stackClick"), /SidebarLayout\.stackToggle\(stackViews, id, \{ solo \}\)/);
+  assert.match(extractFunction(APP, "sidebarPersistState"), /stack: stackViews,/);
+  assert.match(extractFunction(APP, "restoreSidebarState"), /stackViews = SidebarLayout\.normalizeStack\(savedSidebar\.stack\);/);
   // The layout is applied at boot, after the saved sections are restored.
   const boot = APP.slice(APP.indexOf("await restoreSidebarState();"));
   assert.match(boot.slice(0, 120), /await applySidebarLayout\(\);/);

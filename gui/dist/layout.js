@@ -24,8 +24,8 @@
   ///   right) or `top` (Topbar: the rail runs across the window's top and a
   ///   view drops down under it).
   /// - `sections`: `collapsible` (each section keeps its own expanded flag),
-  ///   `one` (one view at a time, full height) or `all` (every view open at
-  ///   once, sharing the room).
+  ///   `one` (one view at a time, full height), `some` (the views you stacked,
+  ///   sharing the room) or `all` (every view open at once).
   /// - `rail`: workspaces and views live in an icon rail (vertical on the
   ///   left, horizontal at the top for Topbar).
   /// - `tabs`: the sidebar keeps its workspace chips and switches views with
@@ -54,9 +54,20 @@
     {
       id: "rail",
       label: "Rail",
-      detail: "An icon rail for workspaces and views; the panel beside it shows one view, full height.",
-      place: "left",
+      detail: "An icon rail and Sessions on the left; a sidebar on the right shows Workflows, Scratches or Teams, one at a time.",
+      place: "split",
       sections: "one",
+      rail: true,
+      overlay: false,
+      panels: "single",
+      quickSettings: "popover",
+    },
+    {
+      id: "stack",
+      label: "Stack",
+      detail: "An icon rail whose icons stack views in one panel: click to add or remove one, ⌥-click to show it alone.",
+      place: "left",
+      sections: "some",
       rail: true,
       overlay: false,
       panels: "single",
@@ -97,17 +108,6 @@
       quickSettings: "footer",
     },
     {
-      id: "railsplit",
-      label: "Rail Split",
-      detail: "An icon rail and Sessions on the left; a second sidebar on the right shows Workflows, Scratches or Teams, one at a time.",
-      place: "split",
-      sections: "one",
-      rail: true,
-      overlay: false,
-      panels: "single",
-      quickSettings: "popover",
-    },
-    {
       id: "topbar",
       label: "Topbar",
       detail: "No sidebar: workspaces and views are one bar across the top, and a view drops down under it when you open it.",
@@ -121,8 +121,9 @@
   ];
 
   /// Layouts that no longer exist, and the one a saved choice becomes.
-  /// Flyout was Rail with an overlaid panel — too close to tell apart.
-  const RETIRED_LAYOUTS = { flyout: "rail" };
+  /// Flyout was Rail with an overlaid panel — too close to tell apart — and
+  /// Rail Split became what Rail is.
+  const RETIRED_LAYOUTS = { flyout: "rail", railsplit: "rail" };
 
   const DEFAULT_LAYOUT = "classic";
 
@@ -146,11 +147,12 @@
   /// whether the panel itself is visible.
   ///
   /// `active` is the view the user last chose (the one-view layouts); `open`
-  /// the Classic collapse flags; `panelOpen` whether an overlay panel is out.
+  /// the Classic collapse flags; `panelOpen` whether an overlay panel is out;
+  /// `stacked` the views Stack shows.
   ///
-  /// A one-view Split (Rail Split) keeps Sessions on the left at all times and
+  /// A one-view Split (Rail) keeps Sessions on the left at all times and
   /// shows one right-hand view: `active` when it is one, else the first.
-  function sidebarPlan(layoutId, { active = "sessions", open = {}, panelOpen = false } = {}) {
+  function sidebarPlan(layoutId, { active = "sessions", open = {}, panelOpen = false, stacked = DEFAULT_STACK } = {}) {
     const layout = layoutOf(layoutId);
     const current = viewOf(active) ? active : "sessions";
     const oneRight = layout.place === "split" && layout.sections === "one";
@@ -161,6 +163,10 @@
         return { id: v.id, shown: true, expanded: v.openKey ? !!open[v.openKey] : true, fill: false };
       }
       if (layout.sections === "all") return { id: v.id, shown: true, expanded: true, fill: true };
+      if (layout.sections === "some") {
+        const on = normalizeStack(stacked).includes(v.id);
+        return { id: v.id, shown: on, expanded: on, fill: on };
+      }
       if (rightView) {
         const on = v.id === "sessions" || v.id === rightView;
         return { id: v.id, shown: on, expanded: on, fill: on };
@@ -175,6 +181,7 @@
       views,
       place: layout.place,
       rightView,
+      stacked: layout.sections === "some" ? normalizeStack(stacked) : null,
       rail: layout.rail,
       viewTabs: !!layout.tabs,
       panel: layout.overlay ? !!panelOpen : true,
@@ -194,14 +201,39 @@
   }
 
   /// The rail icons lit for a plan, given which sidebars are on screen: the
-  /// open view in Rail and Topbar; in Rail Split, Sessions while the left
-  /// panel shows and the right view while the right one does.
+  /// open view in Topbar; in Rail, Sessions while the left panel shows and the
+  /// right view while the right one does; in Stack, every stacked view.
   function railLit(plan, { left = true, right = true } = {}) {
     if (!plan.panel) return [];
     if (plan.place === "split") {
       return [left && "sessions", right && plan.rightView].filter(Boolean);
     }
+    if (plan.stacked) return left ? plan.stacked : [];
     return left ? [plan.active] : [];
+  }
+
+  /// What Stack shows before you choose.
+  const DEFAULT_STACK = ["sessions", "workflows"];
+
+  /// A stack as the plan uses it: known views only, once each, in the
+  /// catalogue's order — never the order they were clicked, so a view always
+  /// lands in the same place. An empty or unreadable stack is the default.
+  function normalizeStack(ids) {
+    const want = new Set(Array.isArray(ids) ? ids : []);
+    const out = SIDEBAR_VIEWS.map((v) => v.id).filter((id) => want.has(id));
+    return out.length ? out : DEFAULT_STACK.slice();
+  }
+
+  /// A click on a Stack rail icon: adds the view, or removes it; `solo` (⌥)
+  /// shows it alone. Removing the last view folds the panel instead of
+  /// emptying it (`fold`), so the next click brings back what was there.
+  function stackToggle(stacked, id, { solo = false } = {}) {
+    const now = normalizeStack(stacked);
+    if (!viewOf(id)) return { stacked: now, fold: false };
+    if (solo) return { stacked: [id], fold: false };
+    if (!now.includes(id)) return { stacked: normalizeStack([...now, id]), fold: false };
+    if (now.length === 1) return { stacked: now, fold: true };
+    return { stacked: now.filter((v) => v !== id), fold: false };
   }
 
   /// A workspace's rail badge: up to two initials of its name (`Saturn Core`
@@ -250,6 +282,9 @@
     SPLIT_RIGHT,
     sideOf,
     railLit,
+    DEFAULT_STACK,
+    normalizeStack,
+    stackToggle,
     layoutOf,
     managesSections,
     viewOf,

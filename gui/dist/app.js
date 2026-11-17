@@ -737,6 +737,8 @@ function workspacesJson() {
 let sidebarView = "sessions";
 /// Whether an overlay layout's panel (Topbar's drop-down) is out.
 let panelOut = false;
+/// The views Stack shows together (layout.js `normalizeStack`).
+let stackViews = SidebarLayout.DEFAULT_STACK.slice();
 /// Whether the rail's ⚙ quick-settings popover is out (Rail, Topbar).
 let railSettingsOpen = false;
 /// Classic's own open sections, kept while another layout drives the flags —
@@ -763,6 +765,7 @@ function sidebarPersistState() {
     },
     files: { showIgnored: filesPanel.showIgnored, changedOnly: filesPanel.changedOnly },
     view: sidebarView,
+    stack: stackViews,
     sizes,
   };
 }
@@ -18786,6 +18789,7 @@ function sidebarPlanNow() {
     active: sidebarView,
     open: sidebarOpenFlags(),
     panelOpen: panelOut,
+    stacked: stackViews,
   });
 }
 
@@ -18891,7 +18895,7 @@ async function switchSidebarLayout(next) {
 const SIDEBAR_IDS = { left: "sidebar", right: "sidebar-right" };
 
 /// Fold or unfold the sidebars: both by default (⌘B), or the `sides` given —
-/// Rail Split's rail folds each side on its own.
+/// Rail's rail folds each side on its own.
 function setSidebarCollapsed(collapsed, sides = ["left", "right"]) {
   for (const side of sides) $(SIDEBAR_IDS[side]).classList.toggle("collapsed", collapsed);
 }
@@ -18901,9 +18905,10 @@ function sidebarFolded(side) {
 }
 
 /// Put a view on screen, as the layout means it: Classic expands the section,
-/// Rail and Tabbed switch to it, Topbar drops it down; Dock and Split already
-/// show every view, Rail Split switches its right sidebar (Sessions always
-/// stays on the left). A folded side comes back — a request to show must show.
+/// Tabbed switches to it, Topbar drops it down, Stack adds it to the stack;
+/// Dock and Split already show every view, Rail switches its right sidebar
+/// (Sessions always stays on the left). A folded side comes back — a request
+/// to show must show.
 async function sidebarShow(id) {
   const layout = currentLayout();
   setSidebarCollapsed(false, [SidebarLayout.sideOf(layout.id, id)]);
@@ -18913,9 +18918,11 @@ async function sidebarShow(id) {
     fitAll();
     return;
   }
-  // Rail Split's left panel is always Sessions: showing it must not replace
-  // the right-hand view.
-  if (!(layout.place === "split" && id === "sessions")) sidebarView = id;
+  // Rail's left panel is always Sessions: showing it must not replace the
+  // right-hand view. Stack adds the view to what it already shows.
+  if (layout.sections === "some") {
+    if (!stackViews.includes(id)) stackViews = SidebarLayout.normalizeStack([...stackViews, id]);
+  } else if (!(layout.place === "split" && id === "sessions")) sidebarView = id;
   if (layout.overlay) panelOut = true;
   await applySidebarLayout();
   saveWorkspaces();
@@ -18965,6 +18972,10 @@ function tourAnchorFor(id) {
     sidebarView = view.id;
     revealed = true;
   }
+  if (view && layout.sections === "some" && !stackViews.includes(view.id)) {
+    stackViews = SidebarLayout.normalizeStack([...stackViews, view.id]);
+    revealed = true;
+  }
   if (inSidebar && layout.overlay && !panelOut) {
     panelOut = true;
     revealed = true;
@@ -18995,8 +19006,8 @@ $("sidebar").addEventListener("click", (ev) => {
   if (ev.target instanceof Element && ev.target.closest(".session-item")) setTimeout(closeOverlayPanel, 0);
 });
 
-/// Repaint the view switcher of the one-view layouts: the rail of Rail, Rail
-/// Split and Topbar (workspaces, views with their badges, the inbox, quick settings and
+/// Repaint the view switcher of the one-view layouts: the rail of Rail, Stack
+/// and Topbar (workspaces, views with their badges, the inbox, quick settings and
 /// an update button when one is found) or Tabbed's tab strip. Cheap, and
 /// called after anything that changes a badge.
 function syncSidebarRail() {
@@ -19032,9 +19043,11 @@ function syncSidebarRail() {
   const lit = SidebarLayout.railLit(plan, { left: !sidebarFolded("left"), right: !sidebarFolded("right") });
   for (const item of SidebarLayout.railItems(plan.active, { workflows: state.wfUnread.size })) {
     const on = lit.includes(item.id);
-    button("rail-view" + (on ? " active" : ""), svgIcon(item.icon, 18) + badge(item.badge, false), item.label, () => {
+    const title = plan.stacked ? `${item.label} — click to stack or unstack · ⌥-click to show alone` : item.label;
+    button("rail-view" + (on ? " active" : ""), svgIcon(item.icon, 18) + badge(item.badge, false), title, (ev) => {
+      if (plan.stacked) return stackClick(item.id, ev.altKey);
       // A second click on an open view puts it away: Topbar lifts it, Rail
-      // folds the panel (⌘B does the same), Rail Split folds that view's side.
+      // folds that view's side (⌘B folds both).
       if (!on) return sidebarShow(item.id);
       if (plan.place !== "split") return sidebarCollapse();
       setSidebarCollapsed(true, [SidebarLayout.sideOf(plan.layout, item.id)]);
@@ -19058,6 +19071,18 @@ function syncSidebarRail() {
     "Quick settings — ⌘, opens every setting",
     () => toggleRailSettings()
   );
+}
+
+/// A Stack rail icon: on a folded panel it brings the panel back with that view
+/// in it; otherwise it adds or removes the view (⌥: shows it alone), and
+/// removing the last one folds the panel (layout.js `stackToggle`).
+async function stackClick(id, solo) {
+  if (sidebarFolded("left")) return sidebarShow(id);
+  const next = SidebarLayout.stackToggle(stackViews, id, { solo });
+  stackViews = next.stacked;
+  if (next.fold) setSidebarCollapsed(true, ["left"]);
+  await applySidebarLayout();
+  saveWorkspaces();
 }
 
 /// Tabbed's tab strip: one tab per view, badged like the rail's icons.
@@ -19144,6 +19169,7 @@ async function restoreSidebarState() {
   if (open.files) toggleFilesPanel(true);
   await Promise.all(jobs).catch(() => {});
   if (SidebarLayout.viewOf(savedSidebar.view)) sidebarView = savedSidebar.view;
+  stackViews = SidebarLayout.normalizeStack(savedSidebar.stack);
   if (SidebarLayout.managesSections(currentLayout())) classicOpen = sidebarOpenFlags();
   reapplySectionHeights();
 }
@@ -20218,6 +20244,7 @@ function startGuiTour() {
   // leaves the sidebar the way it found it.
   const layoutBefore = {
     view: sidebarView,
+    stack: stackViews,
     panelOut,
     collapsed: $("sidebar").classList.contains("collapsed"),
   };
@@ -20231,6 +20258,7 @@ function startGuiTour() {
     },
     onEnd: () => {
       sidebarView = layoutBefore.view;
+      stackViews = layoutBefore.stack;
       panelOut = layoutBefore.panelOut;
       setSidebarCollapsed(layoutBefore.collapsed);
       if (railSettingsOpen) toggleRailSettings(false);
