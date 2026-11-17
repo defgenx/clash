@@ -1142,6 +1142,17 @@ test("the sidebar's arrangement goes through the layout adapter only", () => {
   assert.match(extractFunction(APP, "stackClick"), /SidebarLayout\.stackToggle\(stackViews, id, \{ solo \}\)/);
   assert.match(extractFunction(APP, "sidebarPersistState"), /stack: stackViews,/);
   assert.match(extractFunction(APP, "restoreSidebarState"), /stackViews = SidebarLayout\.normalizeStack\(savedSidebar\.stack\);/);
+  // Stack's dividers are its own: built from the stack, sized by its weights,
+  // never Classic's section resizers or saved heights.
+  assert.match(extractFunction(APP, "applySidebarLayout"), /placeStackDividers\(plan\.stacked\);/);
+  const dividers = extractFunction(APP, "placeStackDividers");
+  assert.match(dividers, /SidebarLayout\.stackDividers\(stacked\)/);
+  assert.doesNotMatch(dividers, /initSectionResizer|applySectionHeight|savePanelSize/);
+  const drag = extractFunction(APP, "dragStackDivider");
+  assert.match(drag, /SidebarLayout\.stackResize\(start, above, below,/);
+  assert.doesNotMatch(drag, /savePanelSize/, "Stack's sizes are not Classic's heights");
+  assert.match(extractFunction(APP, "sidebarPersistState"), /stackWeights,/);
+  assert.match(extractFunction(APP, "restoreSidebarState"), /stackWeights = SidebarLayout\.normalizeStackWeights\(savedSidebar\.stackWeights\);/);
   // The layout is applied at boot, after the saved sections are restored.
   const boot = APP.slice(APP.indexOf("await restoreSidebarState();"));
   assert.match(boot.slice(0, 120), /await applySidebarLayout\(\);/);

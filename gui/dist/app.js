@@ -739,6 +739,8 @@ let sidebarView = "sessions";
 let panelOut = false;
 /// The views Stack shows together (layout.js `normalizeStack`).
 let stackViews = SidebarLayout.DEFAULT_STACK.slice();
+/// Stack's share of the height per view, set by its dividers (`stackResize`).
+let stackWeights = SidebarLayout.normalizeStackWeights({});
 /// Whether the rail's ⚙ quick-settings popover is out (Rail, Topbar).
 let railSettingsOpen = false;
 /// Classic's own open sections, kept while another layout drives the flags —
@@ -766,6 +768,7 @@ function sidebarPersistState() {
     files: { showIgnored: filesPanel.showIgnored, changedOnly: filesPanel.changedOnly },
     view: sidebarView,
     stack: stackViews,
+    stackWeights,
     sizes,
   };
 }
@@ -18836,6 +18839,7 @@ async function applySidebarLayout() {
   body.toggle("layout-managed", managed);
   body.toggle("layout-panel-out", plan.panel);
   placeSplitViews(plan.place === "split");
+  placeStackDividers(plan.stacked);
   for (const v of plan.views) {
     const def = SidebarLayout.viewOf(v.id);
     for (const id of def.elements) {
@@ -19073,6 +19077,61 @@ function syncSidebarRail() {
   );
 }
 
+/// Stack's height shares: each view's body grows by its weight (a CSS
+/// variable only Stack's rules read, so no other layout sees it).
+function applyStackWeights(on) {
+  for (const v of SidebarLayout.SIDEBAR_VIEWS) {
+    const el = $(v.body);
+    if (on) el.style.setProperty("--stack-w", String(stackWeights[v.id]));
+    else el.style.removeProperty("--stack-w");
+  }
+}
+
+/// Stack's own dividers, one between each pair of stacked views (layout.js
+/// `stackDividers`), rebuilt on every paint and removed outside Stack.
+/// Dragging one moves height between its two neighbours only; a double-click
+/// shares the height equally again.
+function placeStackDividers(stacked) {
+  document.querySelectorAll(".stack-divider").forEach((d) => d.remove());
+  applyStackWeights(!!stacked);
+  if (!stacked) return;
+  for (const { above, below } of SidebarLayout.stackDividers(stacked)) {
+    const div = document.createElement("div");
+    div.className = "stack-divider";
+    div.title = "Drag to resize · double-click to share the height equally";
+    $(SidebarLayout.viewOf(below).elements[0]).before(div);
+    div.addEventListener("mousedown", (e) => dragStackDivider(e, div, above, below));
+    div.addEventListener("dblclick", () => {
+      stackWeights = SidebarLayout.normalizeStackWeights({});
+      applyStackWeights(true);
+      saveWorkspaces();
+    });
+  }
+}
+
+function dragStackDivider(e, div, above, below) {
+  e.preventDefault();
+  const [a, b] = [above, below].map((id) => SidebarLayout.viewOf(id));
+  const start = { ...stackWeights };
+  const geometry = { hAbove: $(a.body).offsetHeight, hBelow: $(b.body).offsetHeight, minAbove: a.min, minBelow: b.min };
+  const y0 = e.clientY;
+  div.classList.add("dragging");
+  document.body.style.cursor = "row-resize";
+  const onMove = (ev) => {
+    stackWeights = SidebarLayout.stackResize(start, above, below, { ...geometry, delta: ev.clientY - y0 });
+    applyStackWeights(true);
+  };
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    div.classList.remove("dragging");
+    document.body.style.cursor = "";
+    saveWorkspaces();
+  };
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
 /// A Stack rail icon: on a folded panel it brings the panel back with that view
 /// in it; otherwise it adds or removes the view (⌥: shows it alone), and
 /// removing the last one folds the panel (layout.js `stackToggle`).
@@ -19170,6 +19229,7 @@ async function restoreSidebarState() {
   await Promise.all(jobs).catch(() => {});
   if (SidebarLayout.viewOf(savedSidebar.view)) sidebarView = savedSidebar.view;
   stackViews = SidebarLayout.normalizeStack(savedSidebar.stack);
+  stackWeights = SidebarLayout.normalizeStackWeights(savedSidebar.stackWeights);
   if (SidebarLayout.managesSections(currentLayout())) classicOpen = sidebarOpenFlags();
   reapplySectionHeights();
 }

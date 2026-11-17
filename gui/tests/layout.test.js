@@ -53,6 +53,32 @@ test("Stack: the rail's icons stack views in one panel, always in the catalogue'
   assert.deepEqual(L.railLit(p, { left: false }), []);
 });
 
+test("Stack's dividers: one per pair of neighbours, trading height between those two only", () => {
+  assert.deepEqual(L.stackDividers(["teams", "sessions", "workflows"]), [
+    { above: "sessions", below: "workflows" },
+    { above: "workflows", below: "teams" },
+  ]);
+  assert.deepEqual(L.stackDividers(["scratches"]), [], "one view, no divider");
+  const g = { hAbove: 200, hBelow: 200, minAbove: 80, minBelow: 56 };
+  const w = L.stackResize({}, "sessions", "workflows", { ...g, delta: 100 });
+  assert.equal(w.sessions, 1.5);
+  assert.equal(w.workflows, 0.5);
+  assert.equal(w.teams, 1, "a view outside the pair keeps its share");
+  assert.equal(w.sessions + w.workflows, 2, "the pair keeps its combined weight");
+  // Each side stops at its minimum.
+  assert.equal(L.stackResize({}, "sessions", "workflows", { ...g, delta: -500 }).sessions, 0.4);
+  assert.equal(L.stackResize({}, "sessions", "workflows", { ...g, delta: 500 }).workflows, 0.28);
+  // A pair with no room to move is left alone.
+  assert.deepEqual(L.stackResize({}, "sessions", "workflows", { hAbove: 50, hBelow: 50, delta: 30, minAbove: 80, minBelow: 56 }), L.normalizeStackWeights({}));
+});
+
+test("Stack's weights: anything unreadable is an equal share, nothing collapses to zero", () => {
+  assert.deepEqual(L.normalizeStackWeights(null), { sessions: 1, workflows: 1, scratches: 1, teams: 1 });
+  const w = L.normalizeStackWeights({ sessions: 0, workflows: -2, scratches: "x", teams: 1e9 });
+  assert.deepEqual(w, { sessions: 1, workflows: 1, scratches: 1, teams: 20 });
+  assert.equal(L.normalizeStackWeights({ teams: 0.001 }).teams, 0.05);
+});
+
 test("a Stack click adds, removes or solos a view, and the last one folds instead of emptying", () => {
   assert.deepEqual(L.stackToggle(["sessions", "teams"], "workflows"), { stacked: ["sessions", "workflows", "teams"], fold: false });
   assert.deepEqual(L.stackToggle(["sessions", "teams"], "teams"), { stacked: ["sessions"], fold: false });
@@ -144,6 +170,8 @@ test("workspace initials and rail badges", () => {
 test("every view's elements and every layout exist where app.js expects them", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "dist", "index.html"), "utf8");
   for (const v of L.SIDEBAR_VIEWS) {
+    assert.ok(v.elements.includes(v.body), `${v.id}'s body is one of its elements`);
+    assert.ok(v.min > 0, `${v.id} says how small it may get`);
     for (const id of [...v.elements, ...(v.resizer ? [v.resizer] : [])]) {
       assert.ok(html.includes(`id="${id}"`), `${v.id} owns #${id}, which index.html lacks`);
     }

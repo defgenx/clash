@@ -3475,10 +3475,20 @@ body.layout-split #sidebar-right #wf-section.layout-fill { flex-grow: 2 !importa
 body.layout-split #notes-section,
 body.layout-split #teams-section { border-top: 1px solid var(--border); }
 
-/* Stack: the stacked views share the panel's height, each under a rule. */
-body.layout-stack #wf-section,
-body.layout-stack #notes-section,
-body.layout-stack #teams-section { border-top: 1px solid var(--border); }
+/* Stack: the stacked views share the panel's height by their weights
+   (--stack-w, set by the adapter), split by Stack's own dividers. */
+body.layout-stack #session-list,
+body.layout-stack #wf-section.layout-fill,
+body.layout-stack #notes-section.layout-fill,
+body.layout-stack #teams-section.layout-fill { flex: var(--stack-w, 1) 1 0 !important; }
+.stack-divider {
+  flex: none;
+  height: 7px;
+  cursor: row-resize;
+  background: linear-gradient(var(--border), var(--border)) center / 100% 1px no-repeat;
+}
+.stack-divider:hover,
+.stack-divider.dragging { background: var(--accent); }
 
 /* Topbar: no sidebar column. The rail runs across the window's top and a view
    drops down under it, over the terminals, only while it is open. */

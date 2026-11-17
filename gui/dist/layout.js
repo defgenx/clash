@@ -7,13 +7,15 @@
   "use strict";
 
   /// Everything the sidebar can show. `elements` are the DOM ids a view owns;
-  /// `openKey` is the `state` flag a collapsible section keeps (Classic
-  /// collapses sections, the other layouts decide it themselves).
+  /// `body` the one of them that grows and shrinks (Stack's dividers size it);
+  /// `min` the height below which it stops being usable; `openKey` is the
+  /// `state` flag a collapsible section keeps (Classic collapses sections, the
+  /// other layouts decide it themselves).
   const SIDEBAR_VIEWS = [
-    { id: "sessions", label: "Sessions", icon: "terminal", elements: ["new-session-btn", "search-wrap", "session-list"] },
-    { id: "workflows", label: "Workflows", icon: "pr", elements: ["wf-section"], resizer: "wf-resizer", openKey: "wfOpen" },
-    { id: "scratches", label: "Scratches", icon: "pencil", elements: ["notes-section"], resizer: "notes-resizer", openKey: "notesOpen" },
-    { id: "teams", label: "Teams", icon: "users", elements: ["teams-section"], resizer: "teams-resizer", openKey: "teamsOpen" },
+    { id: "sessions", label: "Sessions", icon: "terminal", elements: ["new-session-btn", "search-wrap", "session-list"], body: "session-list", min: 80 },
+    { id: "workflows", label: "Workflows", icon: "pr", elements: ["wf-section"], body: "wf-section", min: 56, resizer: "wf-resizer", openKey: "wfOpen" },
+    { id: "scratches", label: "Scratches", icon: "pencil", elements: ["notes-section"], body: "notes-section", min: 56, resizer: "notes-resizer", openKey: "notesOpen" },
+    { id: "teams", label: "Teams", icon: "users", elements: ["teams-section"], body: "teams-section", min: 56, resizer: "teams-resizer", openKey: "teamsOpen" },
   ];
 
   /// The layouts a user can pick (Settings → Appearance → Layout).
@@ -224,6 +226,38 @@
     return out.length ? out : DEFAULT_STACK.slice();
   }
 
+  /// Stack's share of the height per view, as flex weights: a missing, zero,
+  /// negative or non-numeric weight is 1 (an equal share), and the rest are
+  /// clamped so no view can be dragged to nothing or take everything.
+  function normalizeStackWeights(weights) {
+    const out = {};
+    for (const v of SIDEBAR_VIEWS) {
+      const w = Number(weights && weights[v.id]);
+      out[v.id] = Number.isFinite(w) && w > 0 ? Math.min(20, Math.max(0.05, w)) : 1;
+    }
+    return out;
+  }
+
+  /// A drag of the divider between two stacked views by `delta` px: height
+  /// moves from one to the other and nobody else changes. The pair keeps its
+  /// combined weight, so the other views keep their share; each side stops at
+  /// its `min`. Heights are what the two showed when the drag began.
+  function stackResize(weights, above, below, { hAbove, hBelow, delta, minAbove = 0, minBelow = 0 }) {
+    const w = normalizeStackWeights(weights);
+    const total = hAbove + hBelow;
+    if (!(total > 0) || total < minAbove + minBelow) return w;
+    const a = Math.max(minAbove, Math.min(total - minBelow, hAbove + delta));
+    const pair = w[above] + w[below];
+    const wa = Math.round(((pair * a) / total) * 1000) / 1000;
+    return normalizeStackWeights({ ...w, [above]: wa, [below]: Math.round((pair - wa) * 1000) / 1000 });
+  }
+
+  /// The dividers a stack shows: one between each pair of neighbours.
+  function stackDividers(stacked) {
+    const s = normalizeStack(stacked);
+    return s.slice(1).map((below, i) => ({ above: s[i], below }));
+  }
+
   /// A click on a Stack rail icon: adds the view, or removes it; `solo` (⌥)
   /// shows it alone. Removing the last view folds the panel instead of
   /// emptying it (`fold`), so the next click brings back what was there.
@@ -285,6 +319,9 @@
     DEFAULT_STACK,
     normalizeStack,
     stackToggle,
+    normalizeStackWeights,
+    stackResize,
+    stackDividers,
     layoutOf,
     managesSections,
     viewOf,
