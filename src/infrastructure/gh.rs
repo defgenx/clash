@@ -316,18 +316,6 @@ fn run(dir: &Path, args: &[&str]) -> Result<std::process::Output, GhError> {
     )
 }
 
-/// Cheap health probe: is `gh` installed and authenticated?
-pub fn check_gh() -> Result<(), GhError> {
-    let output = run(Path::new("."), &["auth", "status"])?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(GhError::NotAuthenticated(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ))
-    }
-}
-
 /// Pure: parse the JSON emitted by `gh pr view --json url,number,isDraft,state`.
 pub fn parse_pr_view_json(s: &str) -> Result<GhPrView, GhError> {
     serde_json::from_str(s.trim()).map_err(|e| GhError::Parse(e.to_string()))
