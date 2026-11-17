@@ -6,6 +6,7 @@
 <meta name="referrer" content="no-referrer" />
 <meta name="theme-color" content="#16171a" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
 <title>clash remote</title>
 <style>
   :root {
@@ -118,6 +119,34 @@
   button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
   button.link { border: 0; background: none; color: var(--fg-dim); padding: 4px 0; font-weight: 500; font-size: 13px; }
   .note { font-size: 12px; color: var(--fg-dim); margin: 6px 2px; }
+  .row.tappable { cursor: pointer; position: relative; padding-right: 30px; }
+  .row.tappable::after { content: "›"; position: absolute; right: 14px; top: 50%; transform: translateY(-50%); color: var(--fg-dim); font-size: 22px; }
+  .hidden { display: none !important; }
+  /* The session view replaces the lists while it is open. */
+  body.in-session #lists { display: none; }
+  #session h2 { margin-top: 4px; }
+  .s-head { display: flex; align-items: center; gap: 8px; }
+  .s-head .s-title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .s-error { color: var(--red); font-size: 14px; margin: 8px 2px; }
+  .s-question { font-weight: 600; margin-bottom: 8px; overflow-wrap: anywhere; }
+  .choices { display: flex; flex-direction: column; gap: 8px; }
+  .choices button { text-align: left; padding: 13px 14px; font-size: 15px; overflow-wrap: anywhere; }
+  button.armed { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  #s-screen {
+    margin: 0; padding: 10px; border-radius: 10px; border: 1px solid var(--border);
+    background: #0f1012; color: #d6d6d3; font: 10.5px/1.35 ui-monospace, "SF Mono", Menlo, monospace;
+    overflow: auto; max-height: 46vh; white-space: pre;
+  }
+  .keys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+  .keys button { padding: 12px 6px; }
+  #followup-form { flex-direction: column; }
+  #followup-text {
+    font: inherit; font-size: 15px; color: var(--fg); min-height: 76px; resize: vertical;
+    background: var(--bg-raised); border: 1px solid var(--border); border-radius: 9px; padding: 9px 10px;
+  }
+  .s-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .s-actions button { flex: 1; }
+  button.danger.armed { background: var(--red); border-color: var(--red); color: #fff; }
 </style>
 </head>
 <body>
@@ -126,6 +155,7 @@
     <span id="conn" class="conn" role="status" aria-live="polite">No instance paired</span>
   </header>
 
+  <div id="lists">
   <h2>Instances</h2>
   <div id="machines"></div>
   <form id="pair-form" autocomplete="off">
@@ -136,7 +166,33 @@
 
   <h2 id="inbox-title">Waiting on you</h2>
   <div id="inbox"></div>
-  <p class="note">Read-only for now: decisions are made in clash on the machine.</p>
+  <p class="note">Tap a session to see its screen and answer it — that clash needs Settings → Remote → Allow actions.</p>
+  </div>
+
+  <section id="session" class="hidden" aria-label="Session">
+    <div class="s-head">
+      <button id="s-back" class="link" type="button">‹ Back</button>
+      <span id="s-title" class="s-title"></span>
+    </div>
+    <p id="s-error" class="s-error hidden" role="alert"></p>
+    <div id="s-prompt" class="card hidden">
+      <div id="s-question" class="s-question"></div>
+      <div id="s-choices" class="choices"></div>
+    </div>
+    <h2>Screen</h2>
+    <pre id="s-screen" aria-label="The session's screen"></pre>
+    <div id="s-keys" class="keys"></div>
+    <h2>Follow-up</h2>
+    <form id="followup-form" autocomplete="off">
+      <textarea id="followup-text" placeholder="Sent when the session is next idle at its prompt"></textarea>
+      <button class="primary" type="submit">Queue follow-up</button>
+    </form>
+    <p id="s-note" class="note"></p>
+    <div class="s-actions">
+      <button id="s-stash" class="danger" type="button">Stash session</button>
+    </div>
+    <p class="note">A button that answers, interrupts or stashes asks for a second tap.</p>
+  </section>
 
   <script src="attention.js"></script>
   <script src="remote-model.js"></script>

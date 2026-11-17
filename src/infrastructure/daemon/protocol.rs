@@ -78,6 +78,9 @@ pub enum Request {
     /// Kill a session.
     Kill { session_id: String },
 
+    /// The session's visible screen as text, one entry per row.
+    Screen { session_id: String },
+
     /// Ping (keepalive).
     Ping,
 
@@ -117,6 +120,12 @@ pub enum Event {
 
     /// Pong (keepalive response).
     Pong,
+
+    /// Response to Screen: the visible rows, trailing blanks trimmed.
+    Screen {
+        session_id: String,
+        lines: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

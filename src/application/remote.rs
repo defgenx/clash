@@ -219,6 +219,131 @@ pub fn needs_you(sessions: &[Session], items: &[WorkflowItem]) -> usize {
     session_rows + item_rows
 }
 
+// ── Actions (`remote.actions`) ──────────────────────────────────────────
+
+/// The keys a paired device may send, by name. A fixed list rather than raw
+/// bytes: answering a prompt needs these, and a phone that could send any
+/// byte sequence could type anything into a shell.
+pub fn key_bytes(name: &str) -> Option<&'static [u8]> {
+    Some(match name {
+        "1" => b"1",
+        "2" => b"2",
+        "3" => b"3",
+        "4" => b"4",
+        "5" => b"5",
+        "6" => b"6",
+        "7" => b"7",
+        "8" => b"8",
+        "9" => b"9",
+        "enter" => b"\r",
+        "esc" => b"\x1b",
+        "ctrl-c" => b"\x03",
+        "tab" => b"\t",
+        "shift-tab" => b"\x1b[Z",
+        "up" => b"\x1b[A",
+        "down" => b"\x1b[B",
+        _ => return None,
+    })
+}
+
+/// One option of a numbered prompt on screen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PromptChoice {
+    /// The key that picks it (`"1"`…`"9"`).
+    pub key: String,
+    pub label: String,
+}
+
+/// A numbered prompt found on screen (a permission dialog, a question).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct ScreenPrompt {
+    /// The line just above the options, when it reads like the question.
+    pub question: Option<String>,
+    pub choices: Vec<PromptChoice>,
+}
+
+/// A row's text without the box it may be drawn in (`│ … │`) or the cursor
+/// marker (`❯`, `>`).
+fn unboxed(line: &str) -> &str {
+    line.trim()
+        .trim_start_matches(['│', '|', '┃'])
+        .trim_end_matches(['│', '|', '┃'])
+        .trim()
+}
+
+/// A row that only continues the option above it: indented, inside the box.
+fn is_continuation(line: &str) -> bool {
+    let inner = line.trim_start().trim_start_matches(['│', '|', '┃']);
+    inner.starts_with("     ") && !unboxed(line).is_empty()
+}
+
+/// `"❯ 2. Yes, and don't ask again"` → `(2, "Yes, and don't ask again")`.
+fn numbered(line: &str) -> Option<(u32, String)> {
+    let t = unboxed(line)
+        .trim_start_matches(['❯', '>', '›'])
+        .trim_start();
+    let (num, rest) = t.split_once(". ")?;
+    if num.len() != 1 {
+        return None;
+    }
+    let n = num.parse::<u32>().ok().filter(|n| (1..=9).contains(n))?;
+    let label = rest.trim();
+    (!label.is_empty()).then(|| (n, label.to_string()))
+}
+
+/// The numbered prompt at the bottom of the screen, if there is one: the last
+/// run of options numbered 1, 2, 3… with at least two of them, within the
+/// last 20 rows (a list further up is scrollback the agent printed, not a
+/// question). Numbering must start at 1 and be consecutive, so ordinary
+/// numbered prose ("3. Run the tests") doesn't read as a prompt.
+pub fn screen_prompt(lines: &[String]) -> Option<ScreenPrompt> {
+    let tail = &lines[lines.len().saturating_sub(20)..];
+    let mut best: Option<(usize, Vec<PromptChoice>)> = None;
+    let mut run: Vec<PromptChoice> = Vec::new();
+    let mut start = 0;
+    for (i, line) in tail.iter().enumerate() {
+        match numbered(line) {
+            Some((n, label)) if n as usize == run.len() + 1 => {
+                if run.is_empty() {
+                    start = i;
+                }
+                run.push(PromptChoice {
+                    key: n.to_string(),
+                    label,
+                });
+            }
+            Some((1, label)) => {
+                run = vec![PromptChoice {
+                    key: "1".into(),
+                    label,
+                }];
+                start = i;
+            }
+            // A wrapped option label continues on the next row, indented
+            // past the number.
+            None if !run.is_empty() && is_continuation(line) => {}
+            _ => {
+                if run.len() >= 2 {
+                    best = Some((start, std::mem::take(&mut run)));
+                }
+                run.clear();
+            }
+        }
+    }
+    if run.len() >= 2 {
+        best = Some((start, run));
+    }
+    let (start, choices) = best?;
+    let question = tail[..start]
+        .iter()
+        .rev()
+        .map(|l| unboxed(l))
+        .find(|l| !l.is_empty() && !l.chars().all(|c| "─━═╭╮╰╯┌┐└┘".contains(c)))
+        .filter(|l| l.ends_with('?'))
+        .map(str::to_string);
+    Some(ScreenPrompt { question, choices })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,5 +488,70 @@ mod tests {
         assert_eq!(st.app, "clash");
         assert_eq!(st.sessions_running, 3);
         assert_eq!(st.needs_you, 7);
+    }
+
+    #[test]
+    fn only_named_keys_can_be_sent() {
+        assert_eq!(key_bytes("1"), Some(&b"1"[..]));
+        assert_eq!(key_bytes("enter"), Some(&b"\r"[..]));
+        assert_eq!(key_bytes("esc"), Some(&b"\x1b"[..]));
+        assert_eq!(key_bytes("ctrl-c"), Some(&b"\x03"[..]));
+        for nope in ["0", "10", "a", "rm -rf /", "\x1b", "", "ctrl-d"] {
+            assert_eq!(key_bytes(nope), None, "{nope:?}");
+        }
+    }
+
+    fn lines(s: &str) -> Vec<String> {
+        s.lines().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn a_permission_dialog_reads_as_its_options_and_question() {
+        let screen = lines(
+            "some earlier output\n\
+             ╭──────────────────────────────────────────╮\n\
+             │ Bash command                             │\n\
+             │   cargo test --workspace                 │\n\
+             │ Do you want to proceed?                  │\n\
+             │ ❯ 1. Yes                                 │\n\
+             │   2. Yes, and don't ask again for cargo  │\n\
+             │   3. No, and tell Claude what to do (esc)│\n\
+             ╰──────────────────────────────────────────╯",
+        );
+        let p = screen_prompt(&screen).unwrap();
+        assert_eq!(p.question.as_deref(), Some("Do you want to proceed?"));
+        let keys: Vec<_> = p.choices.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, ["1", "2", "3"]);
+        assert_eq!(p.choices[0].label, "Yes");
+        assert_eq!(p.choices[2].label, "No, and tell Claude what to do (esc)");
+    }
+
+    #[test]
+    fn numbered_prose_is_not_a_prompt() {
+        // Not starting at 1, a single item, or a gap: none of these is a question.
+        assert_eq!(screen_prompt(&lines("3. Run the tests\n4. Ship it")), None);
+        assert_eq!(screen_prompt(&lines("1. Only one")), None);
+        assert_eq!(screen_prompt(&lines("1. a\n3. c")), None);
+        assert_eq!(screen_prompt(&[]), None);
+        // A list far up the screen is scrollback, not the prompt.
+        let mut old = lines("1. first\n2. second");
+        old.extend(std::iter::repeat_n(String::from("output"), 25));
+        assert_eq!(screen_prompt(&old), None);
+    }
+
+    #[test]
+    fn the_last_numbered_run_wins_and_no_question_is_invented() {
+        let p = screen_prompt(&lines("1. old\n2. older\n\nPick one\n1. Red\n2. Blue")).unwrap();
+        assert_eq!(p.choices[0].label, "Red");
+        assert_eq!(p.question, None, "\"Pick one\" is no question");
+    }
+
+    #[test]
+    fn a_wrapped_option_label_does_not_end_the_run() {
+        let p = screen_prompt(&lines(
+            "│ ❯ 1. Yes                 │\n│   2. Yes, and don't ask    │\n│      again for this tool   │\n│   3. No                    │",
+        ))
+        .unwrap();
+        assert_eq!(p.choices.len(), 3);
     }
 }

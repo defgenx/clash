@@ -226,6 +226,8 @@ impl Default for Notifications {
 pub struct Remote {
     pub enabled: bool,
     pub bind: String,
+    /// Whether a paired device may act (keys, follow-ups, stash), not only read.
+    pub actions: bool,
 }
 
 impl Default for Remote {
@@ -233,6 +235,7 @@ impl Default for Remote {
         Self {
             enabled: default_bool("remote.enabled"),
             bind: default_str("remote.bind"),
+            actions: default_bool("remote.actions"),
         }
     }
 }

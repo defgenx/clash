@@ -390,6 +390,20 @@ impl PtySession {
         detect_claude_status(&bottom_text, last)
     }
 
+    /// The visible screen as text, one entry per row, each with its trailing
+    /// blanks trimmed (the remote page shows it as-is).
+    pub fn screen_lines(&self) -> Vec<String> {
+        match self.screen.lock() {
+            Ok(p) => p
+                .screen()
+                .contents()
+                .split('\n')
+                .map(|l| l.trim_end().to_string())
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// Read the bottom N lines of the vt100 screen as plain text.
     fn read_bottom_lines(&self, n: u16) -> String {
         let parser = match self.screen.lock() {

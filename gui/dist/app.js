@@ -20419,6 +20419,7 @@ function renderRemoteInfo(info) {
   remoteInfo = info || null;
   if (!info) return;
   $("set-remote-enabled").checked = !!info.enabled;
+  $("set-remote-actions").checked = !!info.actions;
   if (document.activeElement !== $("set-remote-bind")) $("set-remote-bind").value = info.bind || "";
   $("remote-status").textContent = info.error
     ? `Not serving: ${info.error}`
@@ -20437,6 +20438,7 @@ async function setRemote(patch) {
 }
 $("set-remote-enabled").addEventListener("change", () => setRemote({ enabled: $("set-remote-enabled").checked }));
 $("set-remote-bind").addEventListener("change", () => setRemote({ bind: $("set-remote-bind").value }));
+$("set-remote-actions").addEventListener("change", () => setRemote({ actions: $("set-remote-actions").checked }));
 $("remote-copy-link").onclick = () => {
   if (remoteInfo && remoteInfo.pairingUrl) {
     copyText(remoteInfo.pairingUrl);

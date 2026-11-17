@@ -30,17 +30,22 @@
   }
   if (!selected && machines.length) selected = machines[0].url;
 
-  async function call(machine, path) {
+  async function call(machine, path, body) {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 4000);
     try {
+      const headers = { Authorization: `Bearer ${machine.token}` };
+      if (body !== undefined) headers["Content-Type"] = "application/json";
       const res = await fetch(machine.url + path, {
-        headers: { Authorization: `Bearer ${machine.token}` },
+        method: body === undefined ? "GET" : "POST",
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
         cache: "no-store",
         signal: ctl.signal,
       });
-      if (res.status === 401) return { unauthorized: true };
-      if (!res.ok) return { error: `HTTP ${res.status}` };
+      if (res.status === 401) return { unauthorized: true, status: 401 };
+      if (!res.ok) return { error: `HTTP ${res.status}`, status: res.status };
+      if (res.status === 204) return { ok: true, body: null };
       return { ok: true, body: await res.json() };
     } catch (e) {
       return { error: e && e.name === "AbortError" ? "timed out" : "no answer" };
@@ -137,14 +142,159 @@
     }
     if (!inbox.rows.length) box.append(el("p", "empty", "Nothing is waiting on you."));
     for (const r of inbox.rows) {
-      const card = el("div", `card row band-${r.band}`);
+      const tappable = r.kind === "session" && r.sessionId;
+      const card = el("div", `card row band-${r.band}${tappable ? " tappable" : ""}`);
       card.append(el("span", "title", r.title));
       if (r.context) card.append(el("span", "ctx", r.context));
       card.append(el("span", "why", r.reasons.join(" · ")));
+      if (tappable) card.onclick = () => openSession(current.url, r.sessionId, r.title);
       box.append(card);
     }
     if (current.state !== "connected") box.append(el("p", "note", `As of ${remoteAgo(now - inbox.at)}.`));
   }
+
+  // ── A session: its screen, its prompt, keys, a follow-up, stash ─────────
+
+  let session = null; // { url, id, title }
+  let screen = null; // { lines, prompt, at } | null
+  let sessionError = "";
+  let armed = null; // { id, at } — the button waiting for its second tap
+  let screenTimer = null;
+
+  function sessionMachine() {
+    return session && machines.find((m) => m.url === session.url);
+  }
+
+  function sessionPath(what) {
+    return `/api/sessions/${encodeURIComponent(session.id)}/${what}`;
+  }
+
+  function openSession(url, id, title) {
+    session = { url, id, title };
+    screen = null;
+    sessionError = "";
+    armed = null;
+    $("followup-text").value = "";
+    $("s-note").textContent = "";
+    document.body.classList.add("in-session");
+    $("session").classList.remove("hidden");
+    window.scrollTo(0, 0);
+    renderSession();
+    pollScreen();
+    clearInterval(screenTimer);
+    screenTimer = setInterval(pollScreen, SCREEN_POLL_MS);
+  }
+
+  function closeSession() {
+    session = null;
+    clearInterval(screenTimer);
+    document.body.classList.remove("in-session");
+    $("session").classList.add("hidden");
+    render();
+  }
+
+  async function pollScreen() {
+    const m = sessionMachine();
+    if (!m || document.visibilityState !== "visible") return;
+    const r = await call(m, sessionPath("screen"));
+    if (!session) return;
+    if (r.ok) {
+      screen = { lines: r.body.lines || [], prompt: r.body.prompt || null, at: Date.now() };
+      sessionError = "";
+    } else {
+      sessionError = actionError(r.status);
+    }
+    renderSession();
+  }
+
+  /// A tap on a key or choice: armed buttons send on the second tap.
+  async function press(button, id) {
+    const step = tapButton(button, armed, id, Date.now());
+    armed = step.armed;
+    if (step.do === "arm") {
+      renderSession();
+      setTimeout(renderSession, ARM_MS + 50);
+      return;
+    }
+    const m = sessionMachine();
+    if (!m) return;
+    const r = await call(m, sessionPath("keys"), { key: button.key });
+    sessionError = r.ok ? "" : actionError(r.status);
+    renderSession();
+    setTimeout(pollScreen, 250);
+  }
+
+  function actionButton(button, id, extra = "") {
+    const live = armed && armed.id === id && Date.now() - armed.at < ARM_MS;
+    const b = el("button", `${extra}${live ? " armed" : ""}`.trim(), live ? `Tap again: ${button.label}` : button.label);
+    b.type = "button";
+    b.onclick = () => press(button, id);
+    return b;
+  }
+
+  function renderSession() {
+    if (!session) return;
+    $("s-title").textContent = session.title;
+    const err = $("s-error");
+    err.textContent = sessionError;
+    err.classList.toggle("hidden", !sessionError);
+
+    const choices = choiceButtons(screen && screen.prompt);
+    $("s-prompt").classList.toggle("hidden", !choices.length);
+    $("s-question").textContent = (screen && screen.prompt && screen.prompt.question) || "Choose an option";
+    const list = $("s-choices");
+    list.replaceChildren(...choices.map((c) => actionButton(c, `choice-${c.key}`)));
+
+    const pre = $("s-screen");
+    const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+    pre.textContent = screen ? screenTail(screen.lines).join("\n") : "Loading…";
+    if (atBottom) pre.scrollTop = pre.scrollHeight;
+
+    $("s-keys").replaceChildren(...KEY_BAR.map((k) => actionButton(k, `key-${k.key}`)));
+
+    const stash = $("s-stash");
+    const live = armed && armed.id === "stash" && Date.now() - armed.at < ARM_MS;
+    stash.classList.toggle("armed", !!live);
+    stash.textContent = live ? "Tap again to stash" : "Stash session";
+  }
+
+  $("s-back").onclick = closeSession;
+
+  $("s-stash").onclick = async () => {
+    const step = tapButton({ confirm: true }, armed, "stash", Date.now());
+    armed = step.armed;
+    if (step.do === "arm") {
+      renderSession();
+      setTimeout(renderSession, ARM_MS + 50);
+      return;
+    }
+    const m = sessionMachine();
+    if (!m) return;
+    const r = await call(m, sessionPath("stash"), {});
+    if (r.ok) {
+      closeSession();
+      tick();
+    } else {
+      sessionError = actionError(r.status);
+      renderSession();
+    }
+  };
+
+  $("followup-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = $("followup-text").value.trim();
+    const m = sessionMachine();
+    if (!text || !m) return;
+    const r = await call(m, sessionPath("followup"), { text });
+    if (r.ok) {
+      $("followup-text").value = "";
+      $("s-note").textContent = `Queued (${r.body.queued} waiting): sent when the session is next idle at its prompt.`;
+      sessionError = "";
+    } else {
+      sessionError = actionError(r.status);
+    }
+    renderSession();
+  });
 
   $("pair-form").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -167,6 +317,8 @@
   tick();
   setInterval(tick, REMOTE_POLL_MS);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") tick();
+    if (document.visibilityState !== "visible") return;
+    tick();
+    if (session) pollScreen();
   });
 })();

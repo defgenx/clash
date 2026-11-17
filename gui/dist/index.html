@@ -501,11 +501,13 @@
             <div class="settings-group">Remote</div>
             <p class="settings-note">
               Let your phone — or another clash — see this one: whether it is
-              running, its sessions, what waits on you. Read-only. Keep the
+              running, its sessions, what waits on you; with <i>Allow actions</i>,
+              it can also open a session and answer it. Keep the
               address on loopback for this machine only, or set your Tailscale
               address to reach it from elsewhere. See docs/remote.md.
             </p>
-            <label class="setting-check" title="Serve the remote page and its token-guarded, read-only API from this clash."><input id="set-remote-enabled" type="checkbox" /> Serve the remote page</label>
+            <label class="setting-check" title="Serve the remote page and its token-guarded API from this clash."><input id="set-remote-enabled" type="checkbox" /> Serve the remote page</label>
+            <label class="setting-check" title="Let a paired phone read a session's screen, answer its prompt (option keys, Enter, Esc, Ctrl-C, arrows), queue a follow-up and stash it. Off keeps the remote read-only."><input id="set-remote-actions" type="checkbox" /> Allow actions from paired phones</label>
             <label class="setting-row">Listen on
               <input id="set-remote-bind" type="text" placeholder="127.0.0.1:7878" autocomplete="off" spellcheck="false" title="host:port. 127.0.0.1 is this machine only; your Tailscale address (100.x.y.z:7878) makes it reachable from your phone over the tailnet." />
             </label>

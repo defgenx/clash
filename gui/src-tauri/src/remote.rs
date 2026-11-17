@@ -1,5 +1,6 @@
-//! The phone remote's server: the phone page and a read-only, token-guarded
-//! API, served from this GUI process when `remote.enabled` is on. Decisions
+//! The phone remote's server: the phone page and a token-guarded API, served
+//! from this GUI process when `remote.enabled` is on. Reads are always on;
+//! acting on a session needs `remote.actions` too. Decisions
 //! (token check, status, bind rules) are `clash::application::remote`; the
 //! design and the security model are `docs/remote.md`.
 
@@ -8,10 +9,10 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-use axum::extract::State as AxState;
+use axum::extract::{Path as AxPath, State as AxState};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use clash::application::remote as core;
 use clash::infrastructure::config::Config;
@@ -176,19 +177,80 @@ const PAGE_JS: &str = include_str!("../../dist/remote/remote.js");
 const MODEL_JS: &str = include_str!("../../dist/remote-model.js");
 const ATTENTION_JS: &str = include_str!("../../dist/attention.js");
 
-/// What the API serves, as two readers — the GUI's caches in the app, fixed
-/// values in tests.
+type Fut<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
+type Act<A, T> = std::sync::Arc<dyn Fn(String, A) -> Fut<Result<T, String>> + Send + Sync>;
+
+/// What the API serves and does — the GUI's caches and commands in the app,
+/// fixed values in tests.
 #[derive(Clone)]
 struct Source {
     status: std::sync::Arc<dyn Fn() -> core::InstanceStatus + Send + Sync>,
     state: std::sync::Arc<dyn Fn() -> serde_json::Value + Send + Sync>,
+    /// `remote.actions`, read on every call so a change applies at once.
+    actions: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
+    /// Whether the GUI's session list holds this id (a phone acts only on a
+    /// session it was shown).
+    known: std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    screen: Act<(), Vec<String>>,
+    keys: Act<&'static [u8], ()>,
+    followup: Act<String, usize>,
+    stash: Act<(), ()>,
 }
 
 /// The GUI's own caches: what the frontend was last given, never rebuilt here,
-/// so a poll cannot run the session merge or drain the prompt queue.
+/// so a poll cannot run the session merge or drain the prompt queue. Actions
+/// go through the same paths the desktop uses: the control client's input
+/// (as queued follow-ups are delivered), the prompt queue, `stash_session`.
 fn gui_source(app: AppHandle) -> Source {
     let for_state = app.clone();
+    let for_actions = app.clone();
+    let for_known = app.clone();
+    let for_screen = app.clone();
+    let for_keys = app.clone();
+    let for_followup = app.clone();
+    let for_stash = app.clone();
     Source {
+        actions: std::sync::Arc::new(move || {
+            for_actions.state::<GuiState>().config.get().remote.actions
+        }),
+        known: std::sync::Arc::new(move |id| {
+            for_known
+                .state::<GuiState>()
+                .previous
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|s| s.id == id)
+        }),
+        screen: std::sync::Arc::new(move |id, ()| {
+            let app = for_screen.clone();
+            Box::pin(async move {
+                let state = app.state::<GuiState>();
+                let mut control = state.control.lock().await;
+                crate::ensure_connected(&mut control).await;
+                control.screen(&id).await.map_err(|e| e.to_string())
+            })
+        }),
+        keys: std::sync::Arc::new(move |id, bytes| {
+            let app = for_keys.clone();
+            Box::pin(async move {
+                let state = app.state::<GuiState>();
+                let mut control = state.control.lock().await;
+                crate::ensure_connected(&mut control).await;
+                control
+                    .send_input(&id, bytes)
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+        }),
+        followup: std::sync::Arc::new(move |id, text| {
+            let app = for_followup.clone();
+            Box::pin(async move { crate::queue_prompt(app.state::<GuiState>(), id, text) })
+        }),
+        stash: std::sync::Arc::new(move |id, ()| {
+            let app = for_stash.clone();
+            Box::pin(async move { crate::stash_session(app.state::<GuiState>(), id, None).await })
+        }),
         status: std::sync::Arc::new(move || status_now(&app)),
         state: std::sync::Arc::new(move || {
             let state = for_state.state::<GuiState>();
@@ -220,6 +282,19 @@ fn router(source: Source) -> Router {
         )
         .route("/api/status", get(api_status).options(preflight))
         .route("/api/state", get(api_state).options(preflight))
+        .route(
+            "/api/sessions/{id}/screen",
+            get(api_screen).options(preflight),
+        )
+        .route("/api/sessions/{id}/keys", post(api_keys).options(preflight))
+        .route(
+            "/api/sessions/{id}/followup",
+            post(api_followup).options(preflight),
+        )
+        .route(
+            "/api/sessions/{id}/stash",
+            post(api_stash).options(preflight),
+        )
         .with_state(source)
 }
 
@@ -256,11 +331,11 @@ fn cors(mut r: Response) -> Response {
     );
     h.insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static("authorization"),
+        HeaderValue::from_static("authorization, content-type"),
     );
     h.insert(
         header::ACCESS_CONTROL_ALLOW_METHODS,
-        HeaderValue::from_static("GET, OPTIONS"),
+        HeaderValue::from_static("GET, POST, OPTIONS"),
     );
     h.insert(
         "access-control-allow-private-network",
@@ -322,6 +397,113 @@ async fn api_state(AxState(src): AxState<Source>, headers: HeaderMap) -> Respons
     cors(axum::Json((src.state)()).into_response())
 }
 
+/// Why an action route refused, or `None` to go ahead: the token first, then
+/// `remote.actions`, then a session the GUI actually lists.
+fn refuse(src: &Source, headers: &HeaderMap, id: &str) -> Option<Response> {
+    if !authorized(headers) {
+        return Some(unauthorized());
+    }
+    if !(src.actions)() {
+        return Some(cors(
+            (
+                StatusCode::FORBIDDEN,
+                "actions are off on this clash (Settings → Remote → Allow actions)",
+            )
+                .into_response(),
+        ));
+    }
+    if !(src.known)(id) {
+        return Some(cors(
+            (StatusCode::NOT_FOUND, "no such session").into_response(),
+        ));
+    }
+    None
+}
+
+fn failed(e: String) -> Response {
+    cors((StatusCode::BAD_GATEWAY, e).into_response())
+}
+
+/// A session's visible screen, and the numbered prompt on it if any.
+async fn api_screen(
+    AxState(src): AxState<Source>,
+    AxPath(id): AxPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(r) = refuse(&src, &headers, &id) {
+        return r;
+    }
+    match (src.screen)(id, ()).await {
+        Ok(lines) => {
+            let prompt = core::screen_prompt(&lines);
+            cors(
+                axum::Json(serde_json::json!({ "lines": lines, "prompt": prompt })).into_response(),
+            )
+        }
+        Err(e) => failed(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct KeyBody {
+    key: String,
+}
+
+/// Press one named key (`core::key_bytes` — never raw bytes).
+async fn api_keys(
+    AxState(src): AxState<Source>,
+    AxPath(id): AxPath<String>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<KeyBody>,
+) -> Response {
+    if let Some(r) = refuse(&src, &headers, &id) {
+        return r;
+    }
+    let Some(bytes) = core::key_bytes(&body.key) else {
+        return cors((StatusCode::BAD_REQUEST, "unknown key").into_response());
+    };
+    match (src.keys)(id, bytes).await {
+        Ok(()) => cors(StatusCode::NO_CONTENT.into_response()),
+        Err(e) => failed(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct FollowupBody {
+    text: String,
+}
+
+/// Queue a follow-up, delivered when the session is next idle at its prompt.
+async fn api_followup(
+    AxState(src): AxState<Source>,
+    AxPath(id): AxPath<String>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<FollowupBody>,
+) -> Response {
+    if let Some(r) = refuse(&src, &headers, &id) {
+        return r;
+    }
+    match (src.followup)(id, body.text).await {
+        Ok(queued) => cors(axum::Json(serde_json::json!({ "queued": queued })).into_response()),
+        Err(e) => cors((StatusCode::BAD_REQUEST, e).into_response()),
+    }
+}
+
+/// Stash the session: stop it, keep it resumable.
+async fn api_stash(
+    AxState(src): AxState<Source>,
+    AxPath(id): AxPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(r) = refuse(&src, &headers, &id) {
+        return r;
+    }
+    match (src.stash)(id, ()).await {
+        Ok(()) => cors(StatusCode::NO_CONTENT.into_response()),
+        Err(e) => failed(e),
+    }
+}
+
 // ── Settings commands ───────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -329,6 +511,7 @@ async fn api_state(AxState(src): AxState<Source>, headers: HeaderMap) -> Respons
 pub(crate) struct RemoteInfo {
     enabled: bool,
     bind: String,
+    actions: bool,
     /// The address actually listening, when the server runs.
     listening: Option<String>,
     error: Option<String>,
@@ -343,6 +526,7 @@ fn info(app: &AppHandle) -> RemoteInfo {
     RemoteInfo {
         enabled: cfg.enabled,
         bind: cfg.bind,
+        actions: cfg.actions,
         listening: listening.map(|a| a.to_string()),
         error: LAST_ERROR.lock().unwrap().clone(),
         pairing_url: listening
@@ -356,15 +540,20 @@ pub(crate) fn get_remote_info(app: AppHandle) -> RemoteInfo {
     info(&app)
 }
 
-/// Patch `remote.enabled` / `remote.bind` in config.toml and apply at once.
+/// Patch `remote.enabled` / `remote.bind` / `remote.actions` in config.toml
+/// and apply at once.
 #[tauri::command]
 pub(crate) fn set_remote_settings(
     app: AppHandle,
     state: State<'_, GuiState>,
     enabled: Option<bool>,
     bind: Option<String>,
+    actions: Option<bool>,
 ) -> Result<RemoteInfo, String> {
     let mut patch = Vec::new();
+    if let Some(a) = actions {
+        patch.push(("remote.actions", serde_json::Value::Bool(a)));
+    }
     if let Some(b) = bind {
         let b = b.trim().to_string();
         core::parse_bind(&b)?;
@@ -610,6 +799,7 @@ mod tests {
                 )
             }),
             state: std::sync::Arc::new(|| serde_json::json!({ "sessions": [], "workflows": [] })),
+            ..test_actions(false)
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -651,6 +841,172 @@ mod tests {
         assert!(http_get("https://h", "/api/status", &token).await.is_err());
     }
 
+    /// Actions that record what they were asked, for a session called "s1".
+    fn test_actions(on: bool) -> Source {
+        use std::sync::{Arc, Mutex};
+        static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        Source {
+            status: Arc::new(|| {
+                core::instance_status(
+                    core::InstanceFacts {
+                        hostname: "h",
+                        version: "0",
+                        pid: 1,
+                        started_at: 1,
+                        now: 2,
+                    },
+                    &[],
+                    &[],
+                )
+            }),
+            state: Arc::new(|| serde_json::json!({})),
+            actions: Arc::new(move || on),
+            known: Arc::new(|id| id == "s1"),
+            screen: Arc::new(|_, ()| {
+                Box::pin(async {
+                    Ok(vec![
+                        "Do you want to proceed?".to_string(),
+                        "❯ 1. Yes".to_string(),
+                        "  2. No".to_string(),
+                    ])
+                })
+            }),
+            keys: Arc::new(|id, bytes| {
+                LOG.lock().unwrap().push(format!("keys {id} {bytes:?}"));
+                Box::pin(async { Ok(()) })
+            }),
+            followup: Arc::new(|id, text| {
+                LOG.lock().unwrap().push(format!("followup {id} {text}"));
+                Box::pin(async { Ok(1) })
+            }),
+            stash: Arc::new(|id, ()| {
+                LOG.lock().unwrap().push(format!("stash {id}"));
+                Box::pin(async { Ok(()) })
+            }),
+        }
+    }
+
+    /// One raw HTTP/1.1 request; returns the status code and the body.
+    async fn raw(base: &str, method: &str, path: &str, token: &str, body: &str) -> (u16, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let addr = base.strip_prefix("http://").unwrap();
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\n\
+             Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        s.write_all(req.as_bytes()).await.unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).await.unwrap();
+        let code = out[9..12].parse().unwrap();
+        let body = out
+            .split_once("\r\n\r\n")
+            .map(|(_, b)| b.to_string())
+            .unwrap_or_default();
+        (code, body)
+    }
+
+    async fn serve(source: Source) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router(source)).await;
+        });
+        base
+    }
+
+    /// Acting needs the token, then `remote.actions`, then a session the GUI
+    /// lists; and only named keys reach the session.
+    #[tokio::test]
+    async fn actions_need_the_token_the_setting_and_a_listed_session() {
+        // The same token as the other server test: TOKEN is process-wide and
+        // the tests run in parallel.
+        let token = core::encode_token(&[7; core::TOKEN_BYTES]);
+        *TOKEN.lock().unwrap() = token.clone();
+        let off = serve(test_actions(false)).await;
+        assert_eq!(
+            raw(&off, "GET", "/api/sessions/s1/screen", &token, "")
+                .await
+                .0,
+            403
+        );
+        assert_eq!(
+            raw(
+                &off,
+                "POST",
+                "/api/sessions/s1/keys",
+                &token,
+                r#"{"key":"1"}"#
+            )
+            .await
+            .0,
+            403
+        );
+
+        let on = serve(test_actions(true)).await;
+        assert_eq!(
+            raw(&on, "GET", "/api/sessions/s1/screen", "nope", "")
+                .await
+                .0,
+            401
+        );
+        assert_eq!(
+            raw(&on, "GET", "/api/sessions/zz/screen", &token, "")
+                .await
+                .0,
+            404
+        );
+        let (code, body) = raw(&on, "GET", "/api/sessions/s1/screen", &token, "").await;
+        assert_eq!(code, 200);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["prompt"]["question"], "Do you want to proceed?");
+        assert_eq!(v["prompt"]["choices"][1]["key"], "2");
+
+        assert_eq!(
+            raw(
+                &on,
+                "POST",
+                "/api/sessions/s1/keys",
+                &token,
+                r#"{"key":"rm -rf"}"#
+            )
+            .await
+            .0,
+            400
+        );
+        assert_eq!(
+            raw(
+                &on,
+                "POST",
+                "/api/sessions/s1/keys",
+                &token,
+                r#"{"key":"1"}"#
+            )
+            .await
+            .0,
+            204
+        );
+        let (code, body) = raw(
+            &on,
+            "POST",
+            "/api/sessions/s1/followup",
+            &token,
+            r#"{"text":"go on"}"#,
+        )
+        .await;
+        assert_eq!((code, body.contains("\"queued\":1")), (200, true));
+        assert_eq!(
+            raw(&on, "POST", "/api/sessions/s1/stash", &token, "")
+                .await
+                .0,
+            204
+        );
+        // The preflight lets a page on another instance POST with a JSON body.
+        let (code, _) = raw(&on, "OPTIONS", "/api/sessions/s1/keys", "", "").await;
+        assert_eq!(code, 204);
+    }
+
     /// The API reads the GUI's caches; rebuilding a list here would run the
     /// session merge or drain the prompt queue from a phone poll.
     #[test]
@@ -670,11 +1026,25 @@ mod tests {
         ] {
             assert!(!http.contains(forbidden), "{forbidden}");
         }
-        // Every API route checks the token first.
+        // Every API route checks the token first; every action route goes
+        // through `refuse` (token, then remote.actions, then a listed session).
         for handler in ["async fn api_status(", "async fn api_state("] {
             let body = http.split_once(handler).unwrap().1;
             let first = body.split_once('}').unwrap().0;
             assert!(first.contains("if !authorized(&headers)"), "{handler}");
+        }
+        for handler in [
+            "async fn api_screen(",
+            "async fn api_keys(",
+            "async fn api_followup(",
+            "async fn api_stash(",
+        ] {
+            let body = http.split_once(handler).unwrap().1;
+            let first = body.split_once("if let Some(r) = refuse(").map(|(a, _)| a);
+            assert!(
+                first.is_some_and(|a| !a.contains("(src.")),
+                "{handler} must refuse before it reads or acts"
+            );
         }
     }
 }

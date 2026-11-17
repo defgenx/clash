@@ -137,3 +137,34 @@ test("the phone page never puts the token in a URL", () => {
   // The pairing fragment is dropped from the address bar once read.
   assert.match(page, /history\.replaceState\(null, "", location\.pathname\)/);
 });
+
+test("a prompt's options become buttons, and every answer takes a second tap", () => {
+  const prompt = { question: "Proceed?", choices: [{ key: "1", label: "Yes" }, { key: "2", label: "No" }, { key: "x", label: "bad" }] };
+  assert.deepEqual(m.choiceButtons(prompt).map((b) => [b.key, b.label, b.confirm]), [
+    ["1", "1 · Yes", true],
+    ["2", "2 · No", true],
+  ]);
+  assert.deepEqual(m.choiceButtons(null), []);
+  // Keys that answer or interrupt confirm; moving the selection doesn't.
+  const bar = Object.fromEntries(m.KEY_BAR.map((k) => [k.key, k.confirm]));
+  assert.deepEqual(bar, { up: false, down: false, "shift-tab": false, enter: true, esc: true, "ctrl-c": true });
+});
+
+test("a confirming button arms on the first tap and sends on a second one in time", () => {
+  const yes = { key: "1", confirm: true };
+  const first = m.tapButton(yes, null, "c1", 1000);
+  assert.equal(first.do, "arm");
+  assert.equal(m.tapButton(yes, first.armed, "c1", 1000 + m.ARM_MS - 1).do, "send");
+  assert.equal(m.tapButton(yes, first.armed, "c1", 1000 + m.ARM_MS).do, "arm", "too late: arms again");
+  assert.equal(m.tapButton(yes, first.armed, "c2", 1500).do, "arm", "another button never fires the armed one");
+  assert.equal(m.tapButton({ key: "up", confirm: false }, null, "up", 0).do, "send");
+});
+
+test("the screen shows its last rows without the blank ones below the prompt", () => {
+  assert.deepEqual(m.screenTail(["a", "b", "", "  "]), ["a", "b"]);
+  assert.deepEqual(m.screenTail(["1", "2", "3"], 2), ["2", "3"]);
+  assert.deepEqual(m.screenTail(null), []);
+  assert.match(m.actionError(403), /Allow actions/);
+  assert.match(m.actionError(404), /gone/);
+  assert.match(m.actionError(502), /isn't running/);
+});

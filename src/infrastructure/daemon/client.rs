@@ -233,6 +233,20 @@ impl DaemonClient {
         }
     }
 
+    /// The session's visible screen as text rows.
+    #[allow(dead_code)] // GUI-only: the phone remote's screen route (gui/src-tauri/src/remote.rs).
+    pub async fn screen(&mut self, session_id: &str) -> std::io::Result<Vec<String>> {
+        self.send(&Request::Screen {
+            session_id: session_id.to_string(),
+        })
+        .await?;
+        match self.recv_response().await? {
+            Event::Screen { lines, .. } => Ok(lines),
+            Event::Error { message } => Err(std::io::Error::other(message)),
+            _ => Ok(Vec::new()),
+        }
+    }
+
     /// Create a new PTY session on the daemon.
     ///
     /// `raw_startup` selects the PTY's startup line discipline (see

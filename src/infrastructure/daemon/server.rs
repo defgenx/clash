@@ -437,6 +437,21 @@ async fn handle_client(
                     }
                 }
             }
+
+            Request::Screen { session_id } => {
+                let lines = sessions
+                    .lock()
+                    .await
+                    .get(&session_id)
+                    .map(|s| s.screen_lines());
+                let event = match lines {
+                    Some(lines) => Event::Screen { session_id, lines },
+                    None => Event::Error {
+                        message: format!("Session {} not found", session_id),
+                    },
+                };
+                send_event(&writer, &event).await;
+            }
         }
     }
 

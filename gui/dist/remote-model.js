@@ -189,7 +189,67 @@
     return { state: "lost", text: `Lost ${view.name}` };
   }
 
+  // ── A session, from the phone (remote.actions) ──────────────────────
+
+  /// How often the session view re-reads the screen.
+  const SCREEN_POLL_MS = 1500;
+  /// How long a tap that needs a second one stays armed.
+  const ARM_MS = 3000;
+
+  /// The key bar under the screen. `confirm`: the key answers or interrupts
+  /// something (Enter accepts, Esc rejects, ⌃C stops), so it takes a second
+  /// tap; moving the selection does not.
+  const KEY_BAR = [
+    { key: "up", label: "↑", confirm: false },
+    { key: "down", label: "↓", confirm: false },
+    { key: "shift-tab", label: "⇧⇥", confirm: false },
+    { key: "enter", label: "⏎ Enter", confirm: true },
+    { key: "esc", label: "Esc", confirm: true },
+    { key: "ctrl-c", label: "⌃C", confirm: true },
+  ];
+
+  /// One big button per option of the prompt on screen; every one answers,
+  /// so every one takes a second tap.
+  function choiceButtons(prompt) {
+    if (!prompt || !Array.isArray(prompt.choices)) return [];
+    return prompt.choices
+      .filter((c) => /^[1-9]$/.test(c.key) && c.label)
+      .map((c) => ({ key: c.key, label: `${c.key} · ${c.label}`, confirm: true }));
+  }
+
+  /// A tap on a button: `send` when it goes now, `arm` when it waits for a
+  /// second tap. `armed` is `{ id, at }` of the button armed last, if any.
+  function tapButton(button, armed, id, now) {
+    if (!button.confirm) return { do: "send", armed: null };
+    if (armed && armed.id === id && now - armed.at < ARM_MS) return { do: "send", armed: null };
+    return { do: "arm", armed: { id, at: now } };
+  }
+
+  /// What the session view says when an action call fails.
+  function actionError(status) {
+    if (status === 401) return "This phone is no longer paired with that clash.";
+    if (status === 403) return "Actions are off on that clash: turn on Settings → Remote → Allow actions.";
+    if (status === 404) return "That session is gone.";
+    if (status === 502) return "That session isn't running on its clash (stashed or exited).";
+    return status ? `Failed (HTTP ${status}).` : "No answer.";
+  }
+
+  /// The rows worth showing: the last `max`, without the trailing blank ones
+  /// a terminal keeps below the prompt.
+  function screenTail(lines, max = 40) {
+    const out = Array.isArray(lines) ? lines.slice() : [];
+    while (out.length && !out[out.length - 1].trim()) out.pop();
+    return out.slice(-max);
+  }
+
   const api = {
+    SCREEN_POLL_MS,
+    ARM_MS,
+    KEY_BAR,
+    choiceButtons,
+    tapButton,
+    actionError,
+    screenTail,
     REMOTE_POLL_MS,
     REMOTE_LOST_AFTER,
     REMOTE_STORAGE_KEY,

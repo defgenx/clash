@@ -353,6 +353,14 @@ pub const PROPS: &[Prop] = &[
         "Address the remote server listens on, `host:port`. The default is loopback only; set \
          your Tailscale address (`100.x.y.z:7878`) to reach it from your phone.",
     ),
+    Prop::new(
+        "remote.actions",
+        Kind::Bool,
+        Val::Bool(false),
+        "Let a paired phone act, not only look: read a session's screen, answer its prompt \
+         (option keys, Enter, Esc, Ctrl-C, arrows), queue a follow-up and stash it. Off keeps \
+         the remote API read-only. See docs/remote.md.",
+    ),
     // ── [workflows] ─────────────────────────────────────────────────
     Prop::new(
         "workflows.agent",
