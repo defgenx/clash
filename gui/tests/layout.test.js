@@ -32,31 +32,41 @@ test("Topbar shows the active view alone, full height, only while dropped down",
   assert.equal(L.sidebarPlan("rail", {}).panel, true, "Rail docks its panels");
 });
 
-test("Stack: the rail's icons stack views in one panel, always in the catalogue's order", () => {
+test("Rail's Stack option: Sessions stays left, the right sidebar stacks its views in catalogue order", () => {
   const shown = (p) => p.views.filter((v) => v.shown).map((v) => v.id);
-  const p = L.sidebarPlan("stack", { stacked: ["teams", "sessions", "teams", "nope"] });
-  assert.deepEqual(shown(p), ["sessions", "teams"], "known views, once each, catalogue order");
-  assert.deepEqual(p.stacked, ["sessions", "teams"]);
+  const p = L.sidebarPlan("rail", { stack: true, stacked: ["teams", "sessions", "teams", "workflows", "nope"] });
+  assert.deepEqual(shown(p), ["sessions", "workflows", "teams"], "known views, once each, catalogue order");
+  assert.deepEqual(p.stacked, ["workflows", "teams"], "Sessions is never stacked: it keeps the left panel");
+  assert.equal(p.stacking, true);
   assert.ok(p.views.filter((v) => v.shown).every((v) => v.expanded && v.fill), "they share the height");
-  assert.equal(p.place, "left");
+  assert.equal(p.place, "split");
   assert.equal(p.rail, true);
-  assert.equal(p.rightView, null, "one panel, no right side");
-  assert.ok(L.managesSections(L.layoutOf("stack")));
-  // Nothing (or garbage) saved is the default stack, never an empty panel.
+  assert.equal(p.rightView, null, "no single right view while stacking");
+  assert.equal(L.layoutOf("rail", { stack: true }).sections, "some");
+  assert.match(L.layoutOf("rail", { stack: true }).detail, /stacks/);
+  assert.ok(L.managesSections(L.layoutOf("rail", { stack: true })));
+  // Nothing (or garbage) saved is the default stack, never an empty sidebar.
   assert.deepEqual(L.normalizeStack([]), L.DEFAULT_STACK);
   assert.deepEqual(L.normalizeStack("teams"), L.DEFAULT_STACK);
-  assert.deepEqual(shown(L.sidebarPlan("stack", {})), L.DEFAULT_STACK);
-  // Only Stack carries a stack.
+  assert.deepEqual(L.normalizeStack(["sessions"]), L.DEFAULT_STACK, "an old left-panel stack of Sessions alone");
+  assert.deepEqual(shown(L.sidebarPlan("rail", { stack: true })), ["sessions", ...L.DEFAULT_STACK]);
+  // The option only means something to a stackable layout, and off is plain Rail.
   assert.equal(L.sidebarPlan("rail", {}).stacked, null);
-  // The lit icons are the stack, and a folded panel lights none.
-  assert.deepEqual(L.railLit(p), ["sessions", "teams"]);
-  assert.deepEqual(L.railLit(p, { left: false }), []);
+  assert.equal(L.sidebarPlan("rail", {}).stacking, false);
+  for (const id of ["classic", "tabbed", "dock", "split", "topbar"]) {
+    assert.equal(L.sidebarPlan(id, { stack: true }).stacked, null, id);
+    assert.deepEqual(L.layoutOf(id, { stack: true }), L.layoutOf(id), id);
+  }
+  // Lit icons: Sessions while the left shows, the stack while the right does.
+  assert.deepEqual(L.railLit(p), ["sessions", "workflows", "teams"]);
+  assert.deepEqual(L.railLit(p, { right: false }), ["sessions"]);
+  assert.deepEqual(L.railLit(p, { left: false }), ["workflows", "teams"]);
 });
 
 test("Stack's dividers: one per pair of neighbours, trading height between those two only", () => {
-  assert.deepEqual(L.stackDividers(["teams", "sessions", "workflows"]), [
-    { above: "sessions", below: "workflows" },
-    { above: "workflows", below: "teams" },
+  assert.deepEqual(L.stackDividers(["teams", "scratches", "workflows"]), [
+    { above: "workflows", below: "scratches" },
+    { above: "scratches", below: "teams" },
   ]);
   assert.deepEqual(L.stackDividers(["scratches"]), [], "one view, no divider");
   const g = { hAbove: 200, hBelow: 200, minAbove: 80, minBelow: 56 };
@@ -79,12 +89,13 @@ test("Stack's weights: anything unreadable is an equal share, nothing collapses 
   assert.equal(L.normalizeStackWeights({ teams: 0.001 }).teams, 0.05);
 });
 
-test("a Stack click adds, removes or solos a view, and the last one folds instead of emptying", () => {
-  assert.deepEqual(L.stackToggle(["sessions", "teams"], "workflows"), { stacked: ["sessions", "workflows", "teams"], fold: false });
-  assert.deepEqual(L.stackToggle(["sessions", "teams"], "teams"), { stacked: ["sessions"], fold: false });
-  assert.deepEqual(L.stackToggle(["sessions"], "sessions"), { stacked: ["sessions"], fold: true });
-  assert.deepEqual(L.stackToggle(["sessions", "teams"], "workflows", { solo: true }), { stacked: ["workflows"], fold: false });
-  assert.deepEqual(L.stackToggle(["sessions"], "nope"), { stacked: ["sessions"], fold: false });
+test("a stacking click adds, removes or solos a view, and the last one folds instead of emptying", () => {
+  assert.deepEqual(L.stackToggle(["scratches", "teams"], "workflows"), { stacked: ["workflows", "scratches", "teams"], fold: false });
+  assert.deepEqual(L.stackToggle(["workflows", "teams"], "teams"), { stacked: ["workflows"], fold: false });
+  assert.deepEqual(L.stackToggle(["teams"], "teams"), { stacked: ["teams"], fold: true });
+  assert.deepEqual(L.stackToggle(["workflows", "teams"], "scratches", { solo: true }), { stacked: ["scratches"], fold: false });
+  assert.deepEqual(L.stackToggle(["teams"], "nope"), { stacked: ["teams"], fold: false });
+  assert.deepEqual(L.stackToggle(["teams"], "sessions"), { stacked: ["teams"], fold: false }, "Sessions stays on the left");
 });
 
 test("Dock and Split show every view at once, open and filling, whatever was active or collapsed", () => {
@@ -128,7 +139,7 @@ test("a view's side, and the rail icons lit for what is on screen", () => {
   assert.equal(L.sideOf("rail", "teams"), "right");
   assert.equal(L.sideOf("rail", "sessions"), "left");
   assert.equal(L.sideOf("split", "workflows"), "right");
-  assert.equal(L.sideOf("stack", "workflows"), "left", "only the split layouts have a right side");
+  assert.equal(L.sideOf("tabbed", "workflows"), "left", "only the split layouts have a right side");
   const rs = L.sidebarPlan("rail", { active: "teams" });
   assert.deepEqual(L.railLit(rs), ["sessions", "teams"]);
   assert.deepEqual(L.railLit(rs, { left: false }), ["teams"], "a folded side lights nothing");
@@ -186,8 +197,10 @@ test("every view's elements and every layout exist where app.js expects them", (
   assert.equal(typeof sandbox.SidebarLayout.sidebarPlan, "function");
 });
 
-test("retired layouts: Focus falls back to Classic, Flyout and Rail Split become Rail", () => {
-  assert.deepEqual(L.LAYOUTS.map((l) => l.id), ["classic", "rail", "stack", "tabbed", "dock", "split", "topbar"]);
+test("retired layouts: Focus falls back to Classic, Flyout, Rail Split and Stack become Rail", () => {
+  assert.deepEqual(L.LAYOUTS.map((l) => l.id), ["classic", "rail", "tabbed", "dock", "split", "topbar"]);
+  assert.equal(L.layoutOf("stack").id, "rail");
+  assert.equal(L.RETIRED_LAYOUTS.stack, "rail");
   assert.equal(L.layoutOf("railsplit").id, "rail");
   assert.equal(L.layoutOf("focus").id, "classic");
   assert.equal(L.layoutOf("flyout").id, "rail");
@@ -209,7 +222,7 @@ test("right panels: stacked in Classic, one at a time in Rail and Split, drawers
 test("quick settings: a footer section in Classic, the rail's ⚙ popover in Rail and Topbar", () => {
   assert.equal(L.sidebarPlan("classic", {}).quickSettings, "footer");
   assert.equal(L.sidebarPlan("rail", {}).quickSettings, "popover");
-  assert.equal(L.sidebarPlan("stack", {}).quickSettings, "popover");
+  assert.equal(L.sidebarPlan("rail", { stack: true }).quickSettings, "popover");
   assert.equal(L.sidebarPlan("topbar", {}).quickSettings, "popover");
   // A rail layout without the popover would leave them under the open view.
   for (const l of L.LAYOUTS) assert.equal(l.quickSettings === "popover", l.rail, `${l.id}: popover iff rail`);
@@ -224,5 +237,5 @@ test("Tabbed: one view at a time like Rail, but switched by a tab strip beside t
   assert.deepEqual(plan.views.filter((v) => v.shown).map((v) => v.id), ["teams"]);
   assert.ok(plan.views.find((v) => v.id === "teams").fill);
   assert.equal(plan.quickSettings, "footer");
-  for (const id of ["classic", "rail", "stack", "dock", "split", "topbar"]) assert.equal(L.sidebarPlan(id, {}).viewTabs, false, id);
+  for (const id of ["classic", "rail", "dock", "split", "topbar"]) assert.equal(L.sidebarPlan(id, {}).viewTabs, false, id);
 });

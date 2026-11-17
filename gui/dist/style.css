@@ -3473,12 +3473,12 @@ body.layout-split #sidebar-right #wf-section.layout-fill { flex-grow: 2 !importa
 body.layout-split #notes-section,
 body.layout-split #teams-section { border-top: 1px solid var(--border); }
 
-/* Stack: the stacked views share the panel's height by their weights
-   (--stack-w, set by the adapter), split by Stack's own dividers. */
-body.layout-stack #session-list,
-body.layout-stack #wf-section.layout-fill,
-body.layout-stack #notes-section.layout-fill,
-body.layout-stack #teams-section.layout-fill { flex: var(--stack-w, 1) 1 0 !important; }
+/* Rail's Stack option: the views stacked in the right sidebar share its
+   height by their weights (--stack-w, set by the adapter), split by the
+   stack's own dividers. */
+body.layout-stacking #wf-section.layout-fill,
+body.layout-stacking #notes-section.layout-fill,
+body.layout-stacking #teams-section.layout-fill { flex: var(--stack-w, 1) 1 0 !important; }
 .stack-divider {
   flex: none;
   height: 7px;

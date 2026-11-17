@@ -19,7 +19,7 @@ test("steps are well-formed: unique ids, anchors, tooltip-sized prose", () => {
     assert.ok(s.title && s.title.length <= 40, `${s.id}: title fits a tooltip header`);
   }
   // Every layout gets a complete tour, every body fitting the tooltip.
-  for (const layout of ["classic", "rail", "stack", "tabbed", "dock", "split", "topbar"]) {
+  for (const layout of ["classic", "rail", "railstack", "tabbed", "dock", "split", "topbar"]) {
     for (const s of windowTourSteps(layout)) {
       assert.equal(typeof s.body, "string", `${layout}/${s.id}: one body`);
       assert.ok(s.body.length >= 40 && s.body.length <= 400, `${layout}/${s.id}: body fits (${s.body.length})`);
@@ -116,14 +116,14 @@ test("the window tour speaks the layout: rail buttons, one-at-a-time panels, dra
   assert.match(body("split", "workflows"), /right sidebar/);
   assert.match(body("rail", "sessions"), /beside the rail/);
   assert.match(body("rail", "workflows"), /right sidebar from its rail icon/);
-  assert.match(body("stack", "sessions"), /⌥-click to show it alone/);
-  assert.match(body("stack", "workflows"), /rail icon counts/);
+  assert.match(body("railstack", "sessions"), /⌥-click to show/);
+  assert.match(body("railstack", "workflows"), /stacks it in the right sidebar/);
   assert.match(body("topbar", "workflows"), /icon in the top bar/, "Topbar no longer borrows Rail's right sidebar");
-  assert.match(body("stack", "workspaces"), /button on the rail/, "Stack borrows Rail's text");
-  assert.match(body("stack", "settings"), /⚙ at the foot of the rail/);
+  assert.match(body("railstack", "workspaces"), /button on the rail/, "Rail's Stack option borrows Rail's text");
+  assert.match(body("railstack", "settings"), /⚙ at the foot of the rail/);
   assert.match(body("dock", "workspaces"), /⌘N creates one/, "Dock keeps the chips, so Classic's text");
   assert.match(body("classic", "inspector"), /beside Files/);
-  for (const l of ["classic", "rail", "stack", "tabbed", "dock", "split", "topbar"]) assert.match(body(l, "workspaces"), /drag one to reorder/, l);
+  for (const l of ["classic", "rail", "railstack", "tabbed", "dock", "split", "topbar"]) assert.match(body(l, "workspaces"), /drag one to reorder/, l);
   assert.match(body("rail", "settings"), /⚙ at the foot of the rail/);
   assert.match(body("topbar", "settings"), /right end of the top bar/);
   assert.match(body("classic", "settings"), /Quick settings live here/);

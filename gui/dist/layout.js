@@ -28,6 +28,8 @@
   /// - `sections`: `collapsible` (each section keeps its own expanded flag),
   ///   `one` (one view at a time, full height), `some` (the views you stacked,
   ///   sharing the room) or `all` (every view open at once).
+  /// - `stackable`: the layout's `one` becomes `some` when the Stack option
+  ///   (`railStack`) is on — Rail's right sidebar then stacks its views.
   /// - `rail`: workspaces and views live in an icon rail (vertical on the
   ///   left, horizontal at the top for Topbar).
   /// - `tabs`: the sidebar keeps its workspace chips and switches views with
@@ -57,19 +59,10 @@
       id: "rail",
       label: "Rail",
       detail: "An icon rail and Sessions on the left; a sidebar on the right shows Workflows, Scratches or Teams, one at a time.",
+      stackDetail: "An icon rail and Sessions on the left; the sidebar on the right stacks Workflows, Scratches and Teams: click an icon to add or remove one, ⌥-click to show it alone.",
       place: "split",
       sections: "one",
-      rail: true,
-      overlay: false,
-      panels: "single",
-      quickSettings: "popover",
-    },
-    {
-      id: "stack",
-      label: "Stack",
-      detail: "An icon rail whose icons stack views in one panel: click to add or remove one, ⌥-click to show it alone.",
-      place: "left",
-      sections: "some",
+      stackable: true,
       rail: true,
       overlay: false,
       panels: "single",
@@ -123,15 +116,20 @@
   ];
 
   /// Layouts that no longer exist, and the one a saved choice becomes.
-  /// Flyout was Rail with an overlaid panel — too close to tell apart — and
-  /// Rail Split became what Rail is.
-  const RETIRED_LAYOUTS = { flyout: "rail", railsplit: "rail" };
+  /// Flyout was Rail with an overlaid panel — too close to tell apart — Rail
+  /// Split became what Rail is, and Stack is Rail's Stack option (the config
+  /// migration turns a saved `stack` into `rail` + `railStack`, migrate.rs).
+  const RETIRED_LAYOUTS = { flyout: "rail", railsplit: "rail", stack: "rail" };
 
   const DEFAULT_LAYOUT = "classic";
 
-  function layoutOf(id) {
+  /// A layout by id, with its Stack option applied: a `stackable` layout
+  /// stacks its views (`sections: "some"`) while `stack` is on.
+  function layoutOf(id, { stack = false } = {}) {
     const want = RETIRED_LAYOUTS[id] || id;
-    return LAYOUTS.find((l) => l.id === want) || LAYOUTS.find((l) => l.id === DEFAULT_LAYOUT);
+    const base = LAYOUTS.find((l) => l.id === want) || LAYOUTS.find((l) => l.id === DEFAULT_LAYOUT);
+    if (!(stack && base.stackable)) return base;
+    return { ...base, sections: "some", detail: base.stackDetail || base.detail, stacking: true };
   }
 
   /// Whether the layout decides which sections are expanded (`one`, `all`)
@@ -150,12 +148,14 @@
   ///
   /// `active` is the view the user last chose (the one-view layouts); `open`
   /// the Classic collapse flags; `panelOpen` whether an overlay panel is out;
-  /// `stacked` the views Stack shows.
+  /// `stack` whether the Stack option is on; `stacked` the views it stacks.
   ///
   /// A one-view Split (Rail) keeps Sessions on the left at all times and
   /// shows one right-hand view: `active` when it is one, else the first.
-  function sidebarPlan(layoutId, { active = "sessions", open = {}, panelOpen = false, stacked = DEFAULT_STACK } = {}) {
-    const layout = layoutOf(layoutId);
+  /// With the Stack option, Sessions still stays left and the right sidebar
+  /// shows every stacked view.
+  function sidebarPlan(layoutId, { active = "sessions", open = {}, panelOpen = false, stack = false, stacked = DEFAULT_STACK } = {}) {
+    const layout = layoutOf(layoutId, { stack });
     const current = viewOf(active) ? active : "sessions";
     const oneRight = layout.place === "split" && layout.sections === "one";
     const rightView = oneRight ? (SPLIT_RIGHT.includes(current) ? current : SPLIT_RIGHT[0]) : null;
@@ -166,7 +166,7 @@
       }
       if (layout.sections === "all") return { id: v.id, shown: true, expanded: true, fill: true };
       if (layout.sections === "some") {
-        const on = normalizeStack(stacked).includes(v.id);
+        const on = v.id === "sessions" || normalizeStack(stacked).includes(v.id);
         return { id: v.id, shown: on, expanded: on, fill: on };
       }
       if (rightView) {
@@ -183,6 +183,7 @@
       views,
       place: layout.place,
       rightView,
+      stacking: !!layout.stacking,
       stacked: layout.sections === "some" ? normalizeStack(stacked) : null,
       rail: layout.rail,
       viewTabs: !!layout.tabs,
@@ -204,25 +205,26 @@
 
   /// The rail icons lit for a plan, given which sidebars are on screen: the
   /// open view in Topbar; in Rail, Sessions while the left panel shows and the
-  /// right view while the right one does; in Stack, every stacked view.
+  /// right view — or, stacking, every stacked view — while the right one does.
   function railLit(plan, { left = true, right = true } = {}) {
     if (!plan.panel) return [];
     if (plan.place === "split") {
-      return [left && "sessions", right && plan.rightView].filter(Boolean);
+      const rightLit = plan.stacked || [plan.rightView];
+      return [left && "sessions", ...(right ? rightLit : [])].filter(Boolean);
     }
-    if (plan.stacked) return left ? plan.stacked : [];
     return left ? [plan.active] : [];
   }
 
-  /// What Stack shows before you choose.
-  const DEFAULT_STACK = ["sessions", "workflows"];
+  /// What the Stack option stacks before you choose.
+  const DEFAULT_STACK = ["workflows"];
 
-  /// A stack as the plan uses it: known views only, once each, in the
-  /// catalogue's order — never the order they were clicked, so a view always
-  /// lands in the same place. An empty or unreadable stack is the default.
+  /// A stack as the plan uses it: the right sidebar's views only (Sessions
+  /// keeps the left), once each, in the catalogue's order — never the order
+  /// they were clicked, so a view always lands in the same place. An empty or
+  /// unreadable stack is the default.
   function normalizeStack(ids) {
     const want = new Set(Array.isArray(ids) ? ids : []);
-    const out = SIDEBAR_VIEWS.map((v) => v.id).filter((id) => want.has(id));
+    const out = SPLIT_RIGHT.filter((id) => want.has(id));
     return out.length ? out : DEFAULT_STACK.slice();
   }
 
@@ -258,12 +260,13 @@
     return s.slice(1).map((below, i) => ({ above: s[i], below }));
   }
 
-  /// A click on a Stack rail icon: adds the view, or removes it; `solo` (⌥)
-  /// shows it alone. Removing the last view folds the panel instead of
-  /// emptying it (`fold`), so the next click brings back what was there.
+  /// A click on a stacking rail icon: adds the view, or removes it; `solo`
+  /// (⌥) shows it alone. Removing the last view folds the right sidebar
+  /// instead of emptying it (`fold`), so the next click brings back what was
+  /// there. Sessions is not stacked — it keeps the left panel.
   function stackToggle(stacked, id, { solo = false } = {}) {
     const now = normalizeStack(stacked);
-    if (!viewOf(id)) return { stacked: now, fold: false };
+    if (!SPLIT_RIGHT.includes(id)) return { stacked: now, fold: false };
     if (solo) return { stacked: [id], fold: false };
     if (!now.includes(id)) return { stacked: normalizeStack([...now, id]), fold: false };
     if (now.length === 1) return { stacked: now, fold: true };

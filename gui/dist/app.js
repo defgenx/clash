@@ -40,6 +40,7 @@ const state = {
   settings: {
     theme: "clash-dark", // key into THEMES — drives the chrome and the terminals
     layout: "classic", // a SidebarLayout id (layout.js) — how the sidebar is arranged
+    railStack: false, // Rail's Stack option: the right sidebar stacks its views
     workflowView: "workbench", // a WfOutline item view (wf-outline.js) — how an item tab is laid out
     defaultCwd: "",
     fontSize: 13,
@@ -739,9 +740,9 @@ function workspacesJson() {
 let sidebarView = "sessions";
 /// Whether an overlay layout's panel (Topbar's drop-down) is out.
 let panelOut = false;
-/// The views Stack shows together (layout.js `normalizeStack`).
+/// The views Rail's Stack option shows together (layout.js `normalizeStack`).
 let stackViews = SidebarLayout.DEFAULT_STACK.slice();
-/// Stack's share of the height per view, set by its dividers (`stackResize`).
+/// The stack's share of the height per view, set by its dividers (`stackResize`).
 let stackWeights = SidebarLayout.normalizeStackWeights({});
 /// Whether the rail's ⚙ quick-settings popover is out (Rail, Topbar).
 let railSettingsOpen = false;
@@ -18954,7 +18955,7 @@ const SECTION_TOGGLES = {
 /// with sidebarPersistState, which reads it during load.)
 
 function currentLayout() {
-  return SidebarLayout.layoutOf(state.settings.layout);
+  return SidebarLayout.layoutOf(state.settings.layout, { stack: !!state.settings.railStack });
 }
 
 function sidebarOpenFlags() {
@@ -18966,6 +18967,7 @@ function sidebarPlanNow() {
     active: sidebarView,
     open: sidebarOpenFlags(),
     panelOpen: panelOut,
+    stack: !!state.settings.railStack,
     stacked: stackViews,
   });
 }
@@ -19012,6 +19014,7 @@ async function applySidebarLayout() {
   body.toggle("layout-has-rail", plan.rail);
   body.toggle("layout-managed", managed);
   body.toggle("layout-panel-out", plan.panel);
+  body.toggle("layout-stacking", plan.stacking);
   placeSplitViews(plan.place === "split");
   placeStackDividers(plan.stacked);
   for (const v of plan.views) {
@@ -19036,6 +19039,7 @@ async function applySidebarLayout() {
   $("layout-rail").classList.toggle("hidden", !plan.rail);
   $("layout-tabs").classList.toggle("hidden", !plan.viewTabs);
   placeQuickSettings(plan.quickSettings);
+  syncRailStackRow();
   syncSidebarRail();
   // What shows is painted above, before any list has to load: expanding a
   // section fetches its data, and a view switch must not wait on that.
@@ -19083,10 +19087,10 @@ function sidebarFolded(side) {
 }
 
 /// Put a view on screen, as the layout means it: Classic expands the section,
-/// Tabbed switches to it, Topbar drops it down, Stack adds it to the stack;
-/// Dock and Split already show every view, Rail switches its right sidebar
-/// (Sessions always stays on the left). A folded side comes back — a request
-/// to show must show.
+/// Tabbed switches to it, Topbar drops it down; Dock and Split already show
+/// every view, Rail switches its right sidebar — or, stacking, adds the view
+/// to its stack (Sessions always stays on the left). A folded side comes
+/// back — a request to show must show.
 async function sidebarShow(id) {
   const layout = currentLayout();
   setSidebarCollapsed(false, [SidebarLayout.sideOf(layout.id, id)]);
@@ -19097,7 +19101,8 @@ async function sidebarShow(id) {
     return;
   }
   // Rail's left panel is always Sessions: showing it must not replace the
-  // right-hand view. Stack adds the view to what it already shows.
+  // right-hand view. Stacking adds the view to what it already shows (a stack
+  // never holds Sessions, so normalizeStack drops it).
   if (layout.sections === "some") {
     if (!stackViews.includes(id)) stackViews = SidebarLayout.normalizeStack([...stackViews, id]);
   } else if (!(layout.place === "split" && id === "sessions")) sidebarView = id;
@@ -19150,7 +19155,7 @@ function tourAnchorFor(id) {
     sidebarView = view.id;
     revealed = true;
   }
-  if (view && layout.sections === "some" && !stackViews.includes(view.id)) {
+  if (view && layout.sections === "some" && !alwaysShown && !stackViews.includes(view.id)) {
     stackViews = SidebarLayout.normalizeStack([...stackViews, view.id]);
     revealed = true;
   }
@@ -19184,7 +19189,7 @@ $("sidebar").addEventListener("click", (ev) => {
   if (ev.target instanceof Element && ev.target.closest(".session-item")) setTimeout(closeOverlayPanel, 0);
 });
 
-/// Repaint the view switcher of the one-view layouts: the rail of Rail, Stack
+/// Repaint the view switcher of the one-view layouts: the rail of Rail
 /// and Topbar (workspaces, views with their badges, the inbox, quick settings and
 /// an update button when one is found) or Tabbed's tab strip. Cheap, and
 /// called after anything that changes a badge.
@@ -19221,9 +19226,10 @@ function syncSidebarRail() {
   const lit = SidebarLayout.railLit(plan, { left: !sidebarFolded("left"), right: !sidebarFolded("right") });
   for (const item of SidebarLayout.railItems(plan.active, { workflows: state.wfUnread.size })) {
     const on = lit.includes(item.id);
-    const title = plan.stacked ? `${item.label} — click to stack or unstack · ⌥-click to show alone` : item.label;
+    const stacks = plan.stacked && SidebarLayout.sideOf(plan.layout, item.id) === "right";
+    const title = stacks ? `${item.label} — click to stack or unstack · ⌥-click to show alone` : item.label;
     button("rail-view" + (on ? " active" : ""), svgIcon(item.icon, 18) + badge(item.badge, false), title, (ev) => {
-      if (plan.stacked) return stackClick(item.id, ev.altKey);
+      if (stacks) return stackClick(item.id, ev.altKey);
       // A second click on an open view puts it away: Topbar lifts it, Rail
       // folds that view's side (⌘B folds both).
       if (!on) return sidebarShow(item.id);
@@ -19251,8 +19257,8 @@ function syncSidebarRail() {
   );
 }
 
-/// Stack's height shares: each view's body grows by its weight (a CSS
-/// variable only Stack's rules read, so no other layout sees it).
+/// The stack's height shares: each view's body grows by its weight (a CSS
+/// variable only the stacking rules read, so no other layout sees it).
 function applyStackWeights(on) {
   for (const v of SidebarLayout.SIDEBAR_VIEWS) {
     const el = $(v.body);
@@ -19261,8 +19267,8 @@ function applyStackWeights(on) {
   }
 }
 
-/// Stack's own dividers, one between each pair of stacked views (layout.js
-/// `stackDividers`), rebuilt on every paint and removed outside Stack.
+/// The stack's own dividers, one between each pair of stacked views (layout.js
+/// `stackDividers`), rebuilt on every paint and removed when not stacking.
 /// Dragging one moves height between its two neighbours only; a double-click
 /// shares the height equally again.
 function placeStackDividers(stacked) {
@@ -19306,14 +19312,14 @@ function dragStackDivider(e, div, above, below) {
   document.addEventListener("mouseup", onUp);
 }
 
-/// A Stack rail icon: on a folded panel it brings the panel back with that view
-/// in it; otherwise it adds or removes the view (⌥: shows it alone), and
-/// removing the last one folds the panel (layout.js `stackToggle`).
+/// A stacking rail icon: on a folded right sidebar it brings the sidebar back
+/// with that view in it; otherwise it adds or removes the view (⌥: shows it
+/// alone), and removing the last one folds the sidebar (layout.js `stackToggle`).
 async function stackClick(id, solo) {
-  if (sidebarFolded("left")) return sidebarShow(id);
+  if (sidebarFolded("right")) return sidebarShow(id);
   const next = SidebarLayout.stackToggle(stackViews, id, { solo });
   stackViews = next.stacked;
-  if (next.fold) setSidebarCollapsed(true, ["left"]);
+  if (next.fold) setSidebarCollapsed(true, ["right"]);
   await applySidebarLayout();
   saveWorkspaces();
 }
@@ -19557,6 +19563,8 @@ async function loadScratchDir() {
 function syncSettingsUi() {
   const s = state.settings;
   if ($("set-layout")) $("set-layout").value = SidebarLayout.layoutOf(s.layout).id;
+  if ($("set-rail-stack")) $("set-rail-stack").checked = !!s.railStack;
+  syncRailStackRow();
   if ($("set-wf-item-view")) $("set-wf-item-view").value = WfOutline.itemViewOf(s.workflowView).id;
   syncLayoutNote();
   const theme = $("set-theme");
@@ -19946,11 +19954,25 @@ bindChoiceSetting("set-layout", "layout", {
     switchSidebarLayout(id);
   },
 });
+// Rail's Stack option: the right sidebar stacks its views instead of showing one.
+bindChoiceSetting("set-rail-stack", "railStack", {
+  onChange: () => {
+    syncLayoutNote();
+    setSidebarCollapsed(false, ["right"]);
+    applySidebarLayout();
+  },
+});
 
 /// The Layout setting's one-line description of the chosen layout.
 function syncLayoutNote() {
   const note = $("set-layout-note");
   if (note) note.textContent = currentLayout().detail;
+}
+
+/// The Stack option shows only under a layout that has one (layout.js `stackable`).
+function syncRailStackRow() {
+  const stackable = !!SidebarLayout.layoutOf(state.settings.layout).stackable;
+  for (const el of document.querySelectorAll(".rail-stack-row")) el.classList.toggle("hidden", !stackable);
 }
 
 // Terminal · text (metrics changes need a refit so cols/rows track the cell box)
@@ -20484,7 +20506,7 @@ function startGuiTour() {
   };
   // The steps' text follows the layout: chips or rail buttons, docked panels
   // or drawers (tour.js windowTourSteps).
-  return runTour(windowTourSteps(currentLayout().id), {
+  return runTour(windowTourSteps(currentLayout().stacking ? "railstack" : currentLayout().id), {
     exists: (step) => !!document.getElementById(step.target),
     resolve: (step) => {
       const a = tourAnchorFor(step.target);

@@ -613,16 +613,25 @@ pub const PROPS: &[Prop] = &[
     .local(),
     Prop::new(
         "appearance.layout",
-        Kind::Enum(&["classic", "rail", "stack", "tabbed", "dock", "split", "topbar"]),
+        Kind::Enum(&["classic", "rail", "tabbed", "dock", "split", "topbar"]),
         Val::Str("classic"),
         "How the GUI's sidebar is arranged: `classic` (one column, collapsible sections), \
          `rail` (an icon rail and sessions on the left, one other view at a time on the \
-         right), `stack` (an icon rail whose icons stack views in one panel), `tabbed` \
-         (one column, a tab strip switches views), `dock` (the views side by side under the terminals), `split` \
+         right — or several, with `appearance.rail_stack`), `tabbed` (one column, a tab \
+         strip switches views), `dock` (the views side by side under the terminals), `split` \
          (sessions on the left, the other views on the right) or `topbar` (one bar across \
          the top, views drop down under it).",
     )
     .gui("layout")
+    .local(),
+    Prop::new(
+        "appearance.rail_stack",
+        Kind::Bool,
+        Val::Bool(false),
+        "Rail layout only: the right sidebar stacks Workflows, Scratches and Teams (a rail \
+         icon adds or removes its view) instead of showing one at a time.",
+    )
+    .gui("railStack")
     .local(),
     Prop::new(
         "appearance.workflow_view",
@@ -1285,7 +1294,7 @@ mod tests {
         // GUI-local keys added after the migration — never in the legacy blob,
         // listed so the "nothing else claims a GUI key" check below stays a
         // deliberate decision.
-        const ADDED_LOCAL: &[&str] = &["layout", "workflowView"];
+        const ADDED_LOCAL: &[&str] = &["layout", "railStack", "workflowView"];
         for key in ADDED_LOCAL {
             let p = prop_by_gui_key(key).unwrap_or_else(|| panic!("{} has no schema entry", key));
             assert_eq!(p.scope, Scope::GuiLocal, "{} should be GUI-local", key);

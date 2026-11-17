@@ -1138,7 +1138,7 @@ test("the sidebar's arrangement goes through the layout adapter only", () => {
   assert.match(show, /if \(!\(layout\.place === "split" && id === "sessions"\)\) sidebarView = id;/);
   assert.match(extractFunction(APP, "syncSidebarRail"), /SidebarLayout\.railLit\(plan,/);
   // Stack's icons toggle through the pure rule, ⌥ solos, and the stack is saved.
-  assert.match(extractFunction(APP, "syncSidebarRail"), /if \(plan\.stacked\) return stackClick\(item\.id, ev\.altKey\);/);
+  assert.match(extractFunction(APP, "syncSidebarRail"), /if \(stacks\) return stackClick\(item\.id, ev\.altKey\);/);
   assert.match(extractFunction(APP, "stackClick"), /SidebarLayout\.stackToggle\(stackViews, id, \{ solo \}\)/);
   assert.match(extractFunction(APP, "sidebarPersistState"), /stack: stackViews,/);
   assert.match(extractFunction(APP, "restoreSidebarState"), /stackViews = SidebarLayout\.normalizeStack\(savedSidebar\.stack\);/);
@@ -1203,7 +1203,7 @@ test("the item tour runs once on its own, inside the item's tab, and can be repl
   assert.match(view, /tourBtn\.onclick = \(\) => startItemTour\(el\)/, "the ? in the header replays it");
   assert.match(APP, /tour: \{ seen: tourSeen, itemSeen: itemTourSeen \}/, "the flag persists like the window tour's");
   // Both tours share one overlay engine.
-  assert.match(extractFunction(APP, "startGuiTour"), /return runTour\(windowTourSteps\(currentLayout\(\)\.id\),/);
+  assert.match(extractFunction(APP, "startGuiTour"), /return runTour\(windowTourSteps\(currentLayout\(\)\.stacking \? "railstack" : currentLayout\(\)\.id\),/);
   assert.match(item, /return runTour\(itemTourSteps\(view\),/);
 });
 

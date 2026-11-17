@@ -53,10 +53,10 @@
           "Sessions always sit beside the rail: every session, grouped by state. The rail's other " +
           "icons switch the sidebar on the right between Workflows, Scratches and Teams; clicking " +
           "an open one folds its side, and ⌘B folds both.",
-        stack:
-          "The rail's icons stack views in this panel: click one to add or remove it, ⌥-click to " +
-          "show it alone. Sessions, Workflows, Scratches and Teams always stack in that order and " +
-          "share the height; removing the last one folds the panel.",
+        railstack:
+          "Sessions always sit beside the rail. The rail's other icons stack Workflows, Scratches " +
+          "and Teams in the sidebar on the right: click one to add or remove it, ⌥-click to show " +
+          "it alone. They share the height; removing the last one folds that side.",
         tabbed:
           "The Sessions view: every session, grouped by state. Click to open its terminal, " +
           "right-click for actions, ⟳ hot-restarts it. The tabs above switch between Sessions, " +
@@ -97,10 +97,10 @@
           "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
           "by your decisions. It opens in the right sidebar from its rail icon, which counts the " +
           "items waiting on you. ⊞ board, ⇄ PR dashboard.",
-        stack:
+        railstack:
           "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
-          "by your decisions. Its rail icon counts the items waiting on you. An item opens as a " +
-          "Workbench: documents on the left, the next step on top. ⊞ board, ⇄ PR dashboard.",
+          "by your decisions. Its rail icon stacks it in the right sidebar and counts the items " +
+          "waiting on you. ⊞ board, ⇄ PR dashboard.",
         topbar:
           "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
           "by your decisions. Its icon in the top bar counts the items waiting on you. An item " +
@@ -208,8 +208,9 @@
   ];
 
   /// Whose text a layout borrows where a step says nothing of its own:
-  /// Topbar and Stack are rail layouts too; the others keep Classic's chips.
-  const TOUR_FALLBACK = { topbar: "rail", stack: "rail" };
+  /// Topbar and Rail's Stack option (`railstack`) are rail layouts too; the
+  /// others keep Classic's chips.
+  const TOUR_FALLBACK = { topbar: "rail", railstack: "rail" };
 
   /// The window tour for one sidebar layout (layout.js ids). A step's body
   /// is a string or `{ classic, rail, tabbed, dock, split, topbar }`; a

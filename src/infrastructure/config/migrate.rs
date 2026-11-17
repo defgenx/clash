@@ -221,6 +221,7 @@ pub fn migrate_gui_blob(blob: &Json) -> GuiMigration {
     let Some(map) = blob.as_object() else {
         return out;
     };
+    let map = &retire_layouts(map);
 
     for p in schema::PROPS {
         let Some(key) = p.gui_key else { continue };
@@ -249,6 +250,24 @@ pub fn migrate_gui_blob(blob: &Json) -> GuiMigration {
     // schema declaration order changing.
     out.shared.sort_by(|a, b| a.0.cmp(&b.0));
     out.warnings.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
+/// Sidebar layouts that no longer exist, rewritten to what replaced them
+/// before validation (which would otherwise reset them to `classic`). `stack`
+/// became Rail's Stack option, so it also turns `railStack` on unless the blob
+/// already says. The frontend's `RETIRED_LAYOUTS` (layout.js) is the same list.
+#[allow(dead_code)] // GUI-only; see GuiMigration.
+fn retire_layouts(map: &JsonMap<String, Json>) -> JsonMap<String, Json> {
+    let mut out = map.clone();
+    let retired = match map.get("layout").and_then(Json::as_str) {
+        Some(id @ ("flyout" | "railsplit" | "stack")) => id,
+        _ => return out,
+    };
+    out.insert("layout".into(), Json::String("rail".into()));
+    if retired == "stack" && !out.contains_key("railStack") {
+        out.insert("railStack".into(), Json::Bool(true));
+    }
     out
 }
 
@@ -666,6 +685,24 @@ debounce_ms = 350
         assert_eq!(m.gui_local["linkOpen"], json!("embedded"));
         let m = migrate_gui_blob(&json!({ "embedLinks": false }));
         assert_eq!(m.gui_local["linkOpen"], json!("external"));
+    }
+
+    #[test]
+    fn retired_layouts_become_rail_and_stack_turns_its_option_on() {
+        let m = migrate_gui_blob(&json!({ "layout": "stack" }));
+        assert!(m.warnings.is_empty(), "{:?}", m.warnings);
+        assert_eq!(m.gui_local["layout"], json!("rail"));
+        assert_eq!(m.gui_local["railStack"], json!(true));
+        for old in ["flyout", "railsplit"] {
+            let m = migrate_gui_blob(&json!({ "layout": old }));
+            assert_eq!(m.gui_local["layout"], json!("rail"), "{old}");
+            assert!(!m.gui_local.contains_key("railStack"), "{old}");
+        }
+        // An explicit choice of the option is kept.
+        let m = migrate_gui_blob(&json!({ "layout": "stack", "railStack": false }));
+        assert_eq!(m.gui_local["railStack"], json!(false));
+        let m = migrate_gui_blob(&json!({ "layout": "dock" }));
+        assert_eq!(m.gui_local["layout"], json!("dock"));
     }
 
     #[test]
