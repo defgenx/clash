@@ -1400,7 +1400,8 @@ test("the review composer is only ever opened by something that launches its ans
   assert.match(APP, /review: \(\) => launchWfReview\(item, root, \{ prUrls: a\.urls \}\)/);
 });
 
-test("WebKit's own context menu never shows; clash's menus run before the guard", () => {
-  assert.match(APP, /^document\.addEventListener\("contextmenu", \(e\) => e\.preventDefault\(\)\);$/m);
-  assert.doesNotMatch(APP, /addEventListener\("contextmenu", \(e\) => e\.preventDefault\(\), true\)/, "capture phase would pre-empt nothing but read as a block");
+test("WebKit's own context menu never shows, whatever a handler stops", () => {
+  // Capture phase: a bubble-phase guard is skipped by any handler that calls
+  // stopPropagation (a dozen do), and the native menu then shows there.
+  assert.match(APP, /^document\.addEventListener\("contextmenu", \(e\) => e\.preventDefault\(\), true\);$/m);
 });

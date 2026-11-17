@@ -18039,9 +18039,10 @@ function handleInputClipboard(e) {
 // listener exactly where text entry matters most.
 document.addEventListener("keydown", handleInputClipboard, true);
 // WebKit's own right-click menu (Reload, AutoFill, Inspect Element…) is not
-// clash's and never shows: bubble phase, so clash's menus and xterm's
-// right-click handling run first. Copy/paste stay on ⌘C/⌘V (above).
-document.addEventListener("contextmenu", (e) => e.preventDefault());
+// clash's and never shows. Capture phase, so no handler's stopPropagation can
+// skip it; preventDefault stops nothing else, so clash's menus and xterm's
+// right-click still run. Copy/paste stay on ⌘C/⌘V (above).
+document.addEventListener("contextmenu", (e) => e.preventDefault(), true);
 
 /// The text field `handleFieldForwardDelete` may edit, or null.
 function editableTextField(el) {
