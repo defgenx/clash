@@ -19290,9 +19290,10 @@ function syncSidebarRail() {
 /// The stack's height shares: each view's body grows by its weight (a CSS
 /// variable only the stacking rules read, so no other layout sees it).
 function applyStackWeights(on) {
+  const grow = SidebarLayout.stackFlex(stackViews, stackSides, stackWeights);
   for (const v of SidebarLayout.SIDEBAR_VIEWS) {
     const el = $(v.body);
-    if (on) el.style.setProperty("--stack-w", String(stackWeights[v.id]));
+    if (on) el.style.setProperty("--stack-w", String(grow[v.id]));
     else el.style.removeProperty("--stack-w");
   }
 }

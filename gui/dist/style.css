@@ -387,7 +387,11 @@ body.ws-dragging, body.ws-dragging * { cursor: grabbing !important; user-select:
 
 .session-meta { flex: 1; min-width: 0; }
 
+/* Block, whatever the tag (workflow rows build it as a <span>): an inline
+   name never clips, so a long title widened the row and the list scrolled
+   sideways. */
 .session-name {
+  display: block;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

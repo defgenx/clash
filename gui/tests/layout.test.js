@@ -102,6 +102,18 @@ test("Stack's dividers: one per pair of neighbours, trading height between those
   assert.deepEqual(L.stackResize({}, "sessions", "workflows", { hAbove: 50, hBelow: 50, delta: 30, minAbove: 80, minBelow: 56 }), L.normalizeStackWeights({}));
 });
 
+test("each side's stacked views fill its height, whatever weights a drag left behind", () => {
+  // The reported case: Workflows alone on the right with 0.918 left over from
+  // the old one-panel Stack — it must take the whole side, not 91.8% of it.
+  const stacked = ["sessions", "workflows", "scratches"];
+  const sides = { sessions: "left", workflows: "right", scratches: "left", teams: "right" };
+  const f = L.stackFlex(stacked, sides, { sessions: 1.754, workflows: 0.918, scratches: 0.328, teams: 1 });
+  assert.equal(f.workflows, 1, "alone on its side");
+  assert.equal(Math.round((f.sessions + f.scratches) * 1000) / 1000, 2, "a side's grows add up to its count");
+  assert.ok(Math.abs(f.sessions / f.scratches - 1.754 / 0.328) < 0.01, "the ratio a drag set is kept");
+  assert.equal(f.teams, 1, "an unstacked view is left at 1");
+});
+
 test("Stack's weights: anything unreadable is an equal share, nothing collapses to zero", () => {
   assert.deepEqual(L.normalizeStackWeights(null), { sessions: 1, workflows: 1, scratches: 1, teams: 1 });
   const w = L.normalizeStackWeights({ sessions: 0, workflows: -2, scratches: "x", teams: 1e9 });
@@ -259,4 +271,12 @@ test("Tabbed: one view at a time like Rail, but switched by a tab strip beside t
   assert.ok(plan.views.find((v) => v.id === "teams").fill);
   assert.equal(plan.quickSettings, "footer");
   for (const id of ["classic", "rail", "dock", "split", "topbar"]) assert.equal(L.sidebarPlan(id, {}).viewTabs, false, id);
+});
+
+test("a row's name clips to its column whatever element it is built from", () => {
+  const css = fs.readFileSync(path.join(__dirname, "..", "dist", "style.css"), "utf8");
+  const rule = css.match(/\n\.session-name \{([^}]*)\}/);
+  assert.ok(rule, ".session-name rule");
+  assert.match(rule[1], /display: block;/, "an inline <span> name never ellipsizes and widens the row");
+  assert.match(rule[1], /text-overflow: ellipsis;/);
 });

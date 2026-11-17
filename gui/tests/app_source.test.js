@@ -1159,6 +1159,8 @@ test("the sidebar's arrangement goes through the layout adapter only", () => {
   assert.match(drag, /SidebarLayout\.stackResize\(start, above, below,/);
   assert.doesNotMatch(drag, /savePanelSize/, "Stack's sizes are not Classic's heights");
   assert.match(extractFunction(APP, "sidebarPersistState"), /stackWeights,/);
+  // What reaches the CSS is per-side normalized, never a raw weight.
+  assert.match(extractFunction(APP, "applyStackWeights"), /SidebarLayout\.stackFlex\(stackViews, stackSides, stackWeights\)/);
   assert.match(extractFunction(APP, "restoreSidebarState"), /stackWeights = SidebarLayout\.normalizeStackWeights\(savedSidebar\.stackWeights\);/);
   // The layout is applied at boot, after the saved sections are restored.
   const boot = APP.slice(APP.indexOf("await restoreSidebarState();"));

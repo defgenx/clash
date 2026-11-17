@@ -298,6 +298,24 @@
     return normalizeStackWeights({ ...w, [above]: wa, [below]: Math.round((pair - wa) * 1000) / 1000 });
   }
 
+  /// The flex-grow each stacked view gets: its weight, rescaled so the views
+  /// of one side add up to their count — a side always fills its height, and
+  /// a view alone on its side takes all of it, whatever weights a drag left
+  /// behind (flex hands out only a fraction of the room when the grows of a
+  /// column sum below 1).
+  function stackFlex(stacked, sides, weights) {
+    const w = normalizeStackWeights(weights);
+    const side = normalizeSides(sides);
+    const out = {};
+    for (const v of SIDEBAR_VIEWS) out[v.id] = 1;
+    for (const s of ["left", "right"]) {
+      const col = normalizeStack(stacked).filter((id) => side[id] === s);
+      const sum = col.reduce((t, id) => t + w[id], 0);
+      for (const id of col) out[id] = Math.round(((w[id] * col.length) / sum) * 1000) / 1000;
+    }
+    return out;
+  }
+
   /// The dividers a stack shows: one between each pair of neighbours on the
   /// same side.
   function stackDividers(stacked, sides = DEFAULT_SIDES) {
@@ -380,6 +398,7 @@
     stackToggle,
     normalizeStackWeights,
     stackResize,
+    stackFlex,
     stackDividers,
     layoutOf,
     managesSections,
