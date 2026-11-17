@@ -32,35 +32,53 @@ test("Topbar shows the active view alone, full height, only while dropped down",
   assert.equal(L.sidebarPlan("rail", {}).panel, true, "Rail docks its panels");
 });
 
-test("Rail's Stack option: Sessions stays left, the right sidebar stacks its views in catalogue order", () => {
+test("Rail's Stack option: both sidebars stack, each view on its own side, in catalogue order", () => {
   const shown = (p) => p.views.filter((v) => v.shown).map((v) => v.id);
-  const p = L.sidebarPlan("rail", { stack: true, stacked: ["teams", "sessions", "teams", "workflows", "nope"] });
+  const sides = { sessions: "left", workflows: "left", scratches: "right", teams: "right" };
+  const p = L.sidebarPlan("rail", { stack: true, stacked: ["teams", "sessions", "teams", "workflows", "nope"], sides });
   assert.deepEqual(shown(p), ["sessions", "workflows", "teams"], "known views, once each, catalogue order");
-  assert.deepEqual(p.stacked, ["workflows", "teams"], "Sessions is never stacked: it keeps the left panel");
+  assert.deepEqual(p.stacked, ["sessions", "workflows", "teams"]);
   assert.equal(p.stacking, true);
+  assert.deepEqual(p.right, ["scratches", "teams"], "placed by side, shown or not");
+  assert.deepEqual(p.empty, { left: false, right: false });
   assert.ok(p.views.filter((v) => v.shown).every((v) => v.expanded && v.fill), "they share the height");
   assert.equal(p.place, "split");
-  assert.equal(p.rail, true);
   assert.equal(p.rightView, null, "no single right view while stacking");
   assert.equal(L.layoutOf("rail", { stack: true }).sections, "some");
-  assert.match(L.layoutOf("rail", { stack: true }).detail, /stacks/);
+  assert.match(L.layoutOf("rail", { stack: true }).detail, /two sidebars that stack/);
   assert.ok(L.managesSections(L.layoutOf("rail", { stack: true })));
-  // Nothing (or garbage) saved is the default stack, never an empty sidebar.
+  // Everything moved left leaves the right side empty: hidden, not folded.
+  const allLeft = L.sidebarPlan("rail", { stack: true, stacked: ["sessions", "teams"], sides: { teams: "left" } });
+  assert.deepEqual(allLeft.empty, { left: false, right: true });
+  // Defaults: Sessions left with Workflows on the right; garbage sides are their default.
   assert.deepEqual(L.normalizeStack([]), L.DEFAULT_STACK);
   assert.deepEqual(L.normalizeStack("teams"), L.DEFAULT_STACK);
-  assert.deepEqual(L.normalizeStack(["sessions"]), L.DEFAULT_STACK, "an old left-panel stack of Sessions alone");
-  assert.deepEqual(shown(L.sidebarPlan("rail", { stack: true })), ["sessions", ...L.DEFAULT_STACK]);
+  assert.deepEqual(L.DEFAULT_STACK, ["sessions", "workflows"]);
+  assert.deepEqual(L.normalizeSides({ sessions: "up", teams: "left" }), { sessions: "left", workflows: "right", scratches: "right", teams: "left" });
   // The option only means something to a stackable layout, and off is plain Rail.
   assert.equal(L.sidebarPlan("rail", {}).stacked, null);
   assert.equal(L.sidebarPlan("rail", {}).stacking, false);
+  assert.deepEqual(L.sidebarPlan("rail", {}).right, L.SPLIT_RIGHT);
   for (const id of ["classic", "tabbed", "dock", "split", "topbar"]) {
     assert.equal(L.sidebarPlan(id, { stack: true }).stacked, null, id);
     assert.deepEqual(L.layoutOf(id, { stack: true }), L.layoutOf(id), id);
   }
-  // Lit icons: Sessions while the left shows, the stack while the right does.
+  // A view's side follows the option; lit icons are the stacked views whose side shows.
+  assert.equal(L.sideOf("rail", "workflows", { stack: true, sides }), "left");
+  assert.equal(L.sideOf("rail", "workflows", { sides }), "right", "without the option, Rail's fixed sides");
   assert.deepEqual(L.railLit(p), ["sessions", "workflows", "teams"]);
-  assert.deepEqual(L.railLit(p, { right: false }), ["sessions"]);
-  assert.deepEqual(L.railLit(p, { left: false }), ["workflows", "teams"]);
+  assert.deepEqual(L.railLit(p, { right: false }), ["sessions", "workflows"]);
+  assert.deepEqual(L.railLit(p, { left: false }), ["teams"]);
+});
+
+test("moving a view to a side stacks it there, and a drop lands in the half it is over", () => {
+  const m = L.stackMove(["sessions"], {}, "teams", "left");
+  assert.deepEqual(m.stacked, ["sessions", "teams"]);
+  assert.equal(m.sides.teams, "left");
+  assert.equal(m.sides.workflows, "right", "nothing else moves");
+  assert.deepEqual(L.stackMove(["sessions"], {}, "teams", "up").sides, L.normalizeSides({}), "an unknown side changes nothing");
+  assert.equal(L.stackDropSide(100, 1400), "left");
+  assert.equal(L.stackDropSide(900, 1400), "right");
 });
 
 test("Stack's dividers: one per pair of neighbours, trading height between those two only", () => {
@@ -69,6 +87,8 @@ test("Stack's dividers: one per pair of neighbours, trading height between those
     { above: "scratches", below: "teams" },
   ]);
   assert.deepEqual(L.stackDividers(["scratches"]), [], "one view, no divider");
+  // Neighbours only within a side: no divider runs across the window.
+  assert.deepEqual(L.stackDividers(["sessions", "workflows", "teams"], { workflows: "left" }), [{ above: "sessions", below: "workflows" }]);
   const g = { hAbove: 200, hBelow: 200, minAbove: 80, minBelow: 56 };
   const w = L.stackResize({}, "sessions", "workflows", { ...g, delta: 100 });
   assert.equal(w.sessions, 1.5);
@@ -89,13 +109,14 @@ test("Stack's weights: anything unreadable is an equal share, nothing collapses 
   assert.equal(L.normalizeStackWeights({ teams: 0.001 }).teams, 0.05);
 });
 
-test("a stacking click adds, removes or solos a view, and the last one folds instead of emptying", () => {
-  assert.deepEqual(L.stackToggle(["scratches", "teams"], "workflows"), { stacked: ["workflows", "scratches", "teams"], fold: false });
-  assert.deepEqual(L.stackToggle(["workflows", "teams"], "teams"), { stacked: ["workflows"], fold: false });
-  assert.deepEqual(L.stackToggle(["teams"], "teams"), { stacked: ["teams"], fold: true });
-  assert.deepEqual(L.stackToggle(["workflows", "teams"], "scratches", { solo: true }), { stacked: ["scratches"], fold: false });
-  assert.deepEqual(L.stackToggle(["teams"], "nope"), { stacked: ["teams"], fold: false });
-  assert.deepEqual(L.stackToggle(["teams"], "sessions"), { stacked: ["teams"], fold: false }, "Sessions stays on the left");
+test("a stacking click adds, removes or solos a view on its side, and a side's last one folds that side", () => {
+  assert.deepEqual(L.stackToggle(["sessions", "teams"], "workflows"), { stacked: ["sessions", "workflows", "teams"], fold: null });
+  assert.deepEqual(L.stackToggle(["sessions", "workflows", "teams"], "teams"), { stacked: ["sessions", "workflows"], fold: null });
+  assert.deepEqual(L.stackToggle(["sessions", "teams"], "teams"), { stacked: ["sessions", "teams"], fold: "right" }, "last on the right");
+  assert.deepEqual(L.stackToggle(["sessions", "teams"], "sessions"), { stacked: ["sessions", "teams"], fold: "left" }, "last on the left");
+  // ⌥ solos within the view's side; the other side keeps what it shows.
+  assert.deepEqual(L.stackToggle(["sessions", "workflows", "teams"], "scratches", { solo: true }), { stacked: ["sessions", "scratches"], fold: null });
+  assert.deepEqual(L.stackToggle(["teams"], "nope"), { stacked: ["teams"], fold: null });
 });
 
 test("Dock and Split show every view at once, open and filling, whatever was active or collapsed", () => {

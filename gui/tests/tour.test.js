@@ -117,7 +117,8 @@ test("the window tour speaks the layout: rail buttons, one-at-a-time panels, dra
   assert.match(body("rail", "sessions"), /beside the rail/);
   assert.match(body("rail", "workflows"), /right sidebar from its rail icon/);
   assert.match(body("railstack", "sessions"), /⌥-click to show/);
-  assert.match(body("railstack", "workflows"), /stacks it in the right sidebar/);
+  assert.match(body("railstack", "workflows"), /stacks it in its sidebar/);
+  assert.match(body("railstack", "sessions"), /move its view to the other sidebar/);
   assert.match(body("topbar", "workflows"), /icon in the top bar/, "Topbar no longer borrows Rail's right sidebar");
   assert.match(body("railstack", "workspaces"), /button on the rail/, "Rail's Stack option borrows Rail's text");
   assert.match(body("railstack", "settings"), /⚙ at the foot of the rail/);

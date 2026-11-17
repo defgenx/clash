@@ -740,8 +740,10 @@ function workspacesJson() {
 let sidebarView = "sessions";
 /// Whether an overlay layout's panel (Topbar's drop-down) is out.
 let panelOut = false;
-/// The views Rail's Stack option shows together (layout.js `normalizeStack`).
+/// The views Rail's Stack option shows together (layout.js `normalizeStack`),
+/// and the sidebar each one sits in (`normalizeSides`).
 let stackViews = SidebarLayout.DEFAULT_STACK.slice();
+let stackSides = SidebarLayout.normalizeSides({});
 /// The stack's share of the height per view, set by its dividers (`stackResize`).
 let stackWeights = SidebarLayout.normalizeStackWeights({});
 /// Whether the rail's ⚙ quick-settings popover is out (Rail, Topbar).
@@ -771,6 +773,7 @@ function sidebarPersistState() {
     files: { showIgnored: filesPanel.showIgnored, changedOnly: filesPanel.changedOnly },
     view: sidebarView,
     stack: stackViews,
+    stackSides,
     stackWeights,
     sizes,
   };
@@ -18035,6 +18038,10 @@ function handleInputClipboard(e) {
 // keydown handler calls stopPropagation(), which would starve a bubble-phase
 // listener exactly where text entry matters most.
 document.addEventListener("keydown", handleInputClipboard, true);
+// WebKit's own right-click menu (Reload, AutoFill, Inspect Element…) is not
+// clash's and never shows: bubble phase, so clash's menus and xterm's
+// right-click handling run first. Copy/paste stay on ⌘C/⌘V (above).
+document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 /// The text field `handleFieldForwardDelete` may edit, or null.
 function editableTextField(el) {
@@ -18969,27 +18976,43 @@ function sidebarPlanNow() {
     panelOpen: panelOut,
     stack: !!state.settings.railStack,
     stacked: stackViews,
+    sides: stackSides,
   });
 }
 
-/// Split moves Workflows, Scratches and Teams (with their resizers) into the
-/// right-hand sidebar; every other layout keeps them in #sidebar, above its
-/// footer. The same nodes move, so their bindings travel with them.
-function placeSplitViews(split) {
+/// The sidebar a view sits in right now (layout.js `sideOf`).
+function viewSide(id) {
+  return SidebarLayout.sideOf(currentLayout().id, id, { stack: !!state.settings.railStack, sides: stackSides });
+}
+
+/// The split layouts move the views of `plan.right` (with their resizers)
+/// into the right-hand sidebar and keep the rest in #sidebar, above its
+/// footer, each side in catalogue order. The same nodes move, so their
+/// bindings travel with them; nothing moves when the order is already right,
+/// so a repaint never blurs a focused field. A side with nothing stacked
+/// (Rail's Stack option) is hidden, not folded.
+function placeSplitViews(plan) {
+  const split = plan.place === "split";
   const sidebar = $("sidebar");
   const right = $("sidebar-right");
   const footer = $("sidebar-footer");
-  for (const id of SidebarLayout.SPLIT_RIGHT) {
-    const def = SidebarLayout.viewOf(id);
-    for (const elId of [def.resizer, ...def.elements].filter(Boolean)) {
-      const el = $(elId);
-      if (!el) continue;
-      if (split && el.parentElement !== right) right.appendChild(el);
-      else if (!split && el.parentElement !== sidebar) sidebar.insertBefore(el, footer);
-    }
-  }
-  right.classList.toggle("hidden", !split);
-  $("sidebar-right-resizer").classList.toggle("hidden", !split);
+  const nodes = (onRight) =>
+    SidebarLayout.SIDEBAR_VIEWS.filter((v) => plan.right.includes(v.id) === onRight)
+      .flatMap((v) => [v.resizer, ...v.elements])
+      .filter(Boolean)
+      .map((id) => $(id))
+      .filter(Boolean);
+  const arrange = (box, els, before) => {
+    const now = [...box.children].filter((c) => els.includes(c));
+    if (now.length === els.length && now.every((c, i) => c === els[i])) return;
+    for (const el of els) box.insertBefore(el, before);
+  };
+  arrange(sidebar, nodes(false), footer);
+  arrange(right, nodes(true), null);
+  right.classList.toggle("hidden", !split || plan.empty.right);
+  $("sidebar-right-resizer").classList.toggle("hidden", !split || plan.empty.right);
+  sidebar.classList.toggle("layout-empty", plan.empty.left);
+  $("sidebar-resizer").classList.toggle("layout-empty", plan.empty.left);
 }
 
 /// Toggle the sections whose expanded flag differs from `want` (by view id).
@@ -19015,7 +19038,7 @@ async function applySidebarLayout() {
   body.toggle("layout-managed", managed);
   body.toggle("layout-panel-out", plan.panel);
   body.toggle("layout-stacking", plan.stacking);
-  placeSplitViews(plan.place === "split");
+  placeSplitViews(plan);
   placeStackDividers(plan.stacked);
   for (const v of plan.views) {
     const def = SidebarLayout.viewOf(v.id);
@@ -19093,7 +19116,7 @@ function sidebarFolded(side) {
 /// back — a request to show must show.
 async function sidebarShow(id) {
   const layout = currentLayout();
-  setSidebarCollapsed(false, [SidebarLayout.sideOf(layout.id, id)]);
+  setSidebarCollapsed(false, [viewSide(id)]);
   if (!SidebarLayout.managesSections(layout)) {
     const def = SidebarLayout.viewOf(id);
     if (def && def.openKey && !state[def.openKey]) await SECTION_TOGGLES[id]();
@@ -19101,8 +19124,7 @@ async function sidebarShow(id) {
     return;
   }
   // Rail's left panel is always Sessions: showing it must not replace the
-  // right-hand view. Stacking adds the view to what it already shows (a stack
-  // never holds Sessions, so normalizeStack drops it).
+  // right-hand view. Stacking adds the view to its side's stack.
   if (layout.sections === "some") {
     if (!stackViews.includes(id)) stackViews = SidebarLayout.normalizeStack([...stackViews, id]);
   } else if (!(layout.place === "split" && id === "sessions")) sidebarView = id;
@@ -19150,7 +19172,7 @@ function tourAnchorFor(id) {
     revealed = true;
   }
   const view = SidebarLayout.SIDEBAR_VIEWS.find((v) => v.elements.includes(id));
-  const alwaysShown = layout.place === "split" && view?.id === "sessions";
+  const alwaysShown = layout.place === "split" && !layout.stacking && view?.id === "sessions";
   if (view && layout.sections === "one" && !alwaysShown && sidebarView !== view.id) {
     sidebarView = view.id;
     revealed = true;
@@ -19226,18 +19248,25 @@ function syncSidebarRail() {
   const lit = SidebarLayout.railLit(plan, { left: !sidebarFolded("left"), right: !sidebarFolded("right") });
   for (const item of SidebarLayout.railItems(plan.active, { workflows: state.wfUnread.size })) {
     const on = lit.includes(item.id);
-    const stacks = plan.stacked && SidebarLayout.sideOf(plan.layout, item.id) === "right";
-    const title = stacks ? `${item.label} — click to stack or unstack · ⌥-click to show alone` : item.label;
-    button("rail-view" + (on ? " active" : ""), svgIcon(item.icon, 18) + badge(item.badge, false), title, (ev) => {
+    const stacks = !!plan.stacked;
+    const title = stacks
+      ? `${item.label} — click to stack or unstack · ⌥-click to show it alone on its side · right-click or drag to move it to the other side`
+      : item.label;
+    const b = button("rail-view" + (on ? " active" : ""), svgIcon(item.icon, 18) + badge(item.badge, false), title, (ev) => {
+      if (b.dataset.dragged) return delete b.dataset.dragged;
       if (stacks) return stackClick(item.id, ev.altKey);
       // A second click on an open view puts it away: Topbar lifts it, Rail
       // folds that view's side (⌘B folds both).
       if (!on) return sidebarShow(item.id);
       if (plan.place !== "split") return sidebarCollapse();
-      setSidebarCollapsed(true, [SidebarLayout.sideOf(plan.layout, item.id)]);
+      setSidebarCollapsed(true, [viewSide(item.id)]);
       syncSidebarRail();
       fitAll();
     });
+    if (stacks) {
+      b.oncontextmenu = (ev) => stackSideMenu(ev, item.id);
+      b.addEventListener("mousedown", (ev) => dragViewToSide(ev, item.id, b));
+    }
   }
   rail.appendChild(Object.assign(document.createElement("div"), { className: "spacer" }));
   const inbox = attentionSummary(inboxActiveRows());
@@ -19275,7 +19304,7 @@ function placeStackDividers(stacked) {
   document.querySelectorAll(".stack-divider").forEach((d) => d.remove());
   applyStackWeights(!!stacked);
   if (!stacked) return;
-  for (const { above, below } of SidebarLayout.stackDividers(stacked)) {
+  for (const { above, below } of SidebarLayout.stackDividers(stacked, stackSides)) {
     const div = document.createElement("div");
     div.className = "stack-divider";
     div.title = "Drag to resize · double-click to share the height equally";
@@ -19312,16 +19341,92 @@ function dragStackDivider(e, div, above, below) {
   document.addEventListener("mouseup", onUp);
 }
 
-/// A stacking rail icon: on a folded right sidebar it brings the sidebar back
-/// with that view in it; otherwise it adds or removes the view (⌥: shows it
-/// alone), and removing the last one folds the sidebar (layout.js `stackToggle`).
+/// A stacking rail icon: on a folded side it brings that side back with the
+/// view in it; otherwise it adds or removes the view (⌥: shows it alone on its
+/// side), and removing a side's last view folds that side (layout.js
+/// `stackToggle`).
 async function stackClick(id, solo) {
-  if (sidebarFolded("right")) return sidebarShow(id);
-  const next = SidebarLayout.stackToggle(stackViews, id, { solo });
+  if (sidebarFolded(viewSide(id))) return sidebarShow(id);
+  const next = SidebarLayout.stackToggle(stackViews, id, { solo, sides: stackSides });
   stackViews = next.stacked;
-  if (next.fold) setSidebarCollapsed(true, ["right"]);
+  if (next.fold) setSidebarCollapsed(true, [next.fold]);
   await applySidebarLayout();
   saveWorkspaces();
+}
+
+/// Move a view to a sidebar (layout.js `stackMove`): stacked there, the side
+/// unfolded so the move is seen.
+async function moveViewToSide(id, side) {
+  const next = SidebarLayout.stackMove(stackViews, stackSides, id, side);
+  stackViews = next.stacked;
+  stackSides = next.sides;
+  setSidebarCollapsed(false, [side]);
+  await applySidebarLayout();
+  saveWorkspaces();
+}
+
+/// A stacking rail icon's right-click: which sidebar the view sits in.
+function stackSideMenu(ev, id) {
+  ev.preventDefault();
+  const here = stackSides[id];
+  showContextMenu(ev.clientX, ev.clientY, [
+    { label: "Move to left sidebar", hint: here === "left" ? "✓" : "", action: () => moveViewToSide(id, "left") },
+    { label: "Move to right sidebar", hint: here === "right" ? "✓" : "", action: () => moveViewToSide(id, "right") },
+  ]);
+}
+
+/// Drag a view (its rail icon, or its header in a sidebar) to the half of the
+/// window it should sit in (layout.js `stackDropSide`). Pointer-driven, with a
+/// hint over the landing side; a press that never moves stays a click, and a
+/// drag swallows the click that follows it (`src.dataset.dragged`).
+function dragViewToSide(e, id, src) {
+  if (e.button !== 0 || !currentLayout().stacking) return;
+  const x0 = e.clientX;
+  const y0 = e.clientY;
+  let hint = null;
+  let side = null;
+  const onMove = (ev) => {
+    if (!hint && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
+    if (!hint) {
+      hint = document.createElement("div");
+      hint.className = "stack-drop-hint";
+      document.body.appendChild(hint);
+      hideBrowserWebviews();
+      document.body.style.cursor = "grabbing";
+    }
+    side = SidebarLayout.stackDropSide(ev.clientX, window.innerWidth);
+    const box = $(SIDEBAR_IDS[side]);
+    const r = box.classList.contains("hidden") || box.classList.contains("layout-empty") || sidebarFolded(side)
+      ? null
+      : box.getBoundingClientRect();
+    const w = r ? r.width : 280;
+    hint.style.left = `${r ? r.left : side === "left" ? $("main").getBoundingClientRect().left : window.innerWidth - w}px`;
+    hint.style.width = `${w}px`;
+    hint.textContent = `${SidebarLayout.viewOf(id).label} → ${side} sidebar`;
+  };
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    if (!hint) return;
+    hint.remove();
+    document.body.style.cursor = "";
+    if (src) src.dataset.dragged = "1";
+    // A header's own click (Classic's collapse) must not follow a drag either.
+    setTimeout(() => src && delete src.dataset.dragged, 0);
+    if (side && side !== stackSides[id]) moveViewToSide(id, side);
+    else fitAll();
+  };
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
+// A view's header drags it to the other sidebar while Rail stacks.
+for (const v of SidebarLayout.SIDEBAR_VIEWS) {
+  const h = v.header && $(v.header);
+  if (h) h.addEventListener("mousedown", (ev) => {
+    if (ev.target instanceof Element && ev.target.closest("button")) return;
+    dragViewToSide(ev, v.id, h);
+  });
 }
 
 /// Tabbed's tab strip: one tab per view, badged like the rail's icons.
@@ -19408,7 +19513,11 @@ async function restoreSidebarState() {
   if (open.files) toggleFilesPanel(true);
   await Promise.all(jobs).catch(() => {});
   if (SidebarLayout.viewOf(savedSidebar.view)) sidebarView = savedSidebar.view;
-  stackViews = SidebarLayout.normalizeStack(savedSidebar.stack);
+  // A stack saved before views had sides never listed Sessions, which was
+  // always shown; it keeps showing.
+  const savedStack = savedSidebar.stack && !savedSidebar.stackSides ? [...savedSidebar.stack, "sessions"] : savedSidebar.stack;
+  stackViews = SidebarLayout.normalizeStack(savedStack);
+  stackSides = SidebarLayout.normalizeSides(savedSidebar.stackSides);
   stackWeights = SidebarLayout.normalizeStackWeights(savedSidebar.stackWeights);
   if (SidebarLayout.managesSections(currentLayout())) classicOpen = sidebarOpenFlags();
   reapplySectionHeights();

@@ -8,14 +8,15 @@
 
   /// Everything the sidebar can show. `elements` are the DOM ids a view owns;
   /// `body` the one of them that grows and shrinks (Stack's dividers size it);
-  /// `min` the height below which it stops being usable; `openKey` is the
+  /// `min` the height below which it stops being usable; `header` the label a
+  /// view is dragged by to move it to the other sidebar; `openKey` is the
   /// `state` flag a collapsible section keeps (Classic collapses sections, the
   /// other layouts decide it themselves).
   const SIDEBAR_VIEWS = [
     { id: "sessions", label: "Sessions", icon: "terminal", elements: ["new-session-btn", "search-wrap", "session-list"], body: "session-list", min: 80 },
-    { id: "workflows", label: "Workflows", icon: "pr", elements: ["wf-section"], body: "wf-section", min: 56, resizer: "wf-resizer", openKey: "wfOpen" },
-    { id: "scratches", label: "Scratches", icon: "pencil", elements: ["notes-section"], body: "notes-section", min: 56, resizer: "notes-resizer", openKey: "notesOpen" },
-    { id: "teams", label: "Teams", icon: "users", elements: ["teams-section"], body: "teams-section", min: 56, resizer: "teams-resizer", openKey: "teamsOpen" },
+    { id: "workflows", label: "Workflows", icon: "pr", elements: ["wf-section"], body: "wf-section", header: "wf-toggle", min: 56, resizer: "wf-resizer", openKey: "wfOpen" },
+    { id: "scratches", label: "Scratches", icon: "pencil", elements: ["notes-section"], body: "notes-section", header: "notes-toggle", min: 56, resizer: "notes-resizer", openKey: "notesOpen" },
+    { id: "teams", label: "Teams", icon: "users", elements: ["teams-section"], body: "teams-section", header: "teams-toggle", min: 56, resizer: "teams-resizer", openKey: "teamsOpen" },
   ];
 
   /// The layouts a user can pick (Settings → Appearance → Layout).
@@ -29,7 +30,8 @@
   ///   `one` (one view at a time, full height), `some` (the views you stacked,
   ///   sharing the room) or `all` (every view open at once).
   /// - `stackable`: the layout's `one` becomes `some` when the Stack option
-  ///   (`railStack`) is on — Rail's right sidebar then stacks its views.
+  ///   (`railStack`) is on — both of Rail's sidebars then stack views, each
+  ///   view on the side it was moved to (`sides`).
   /// - `rail`: workspaces and views live in an icon rail (vertical on the
   ///   left, horizontal at the top for Topbar).
   /// - `tabs`: the sidebar keeps its workspace chips and switches views with
@@ -59,7 +61,7 @@
       id: "rail",
       label: "Rail",
       detail: "An icon rail and Sessions on the left; a sidebar on the right shows Workflows, Scratches or Teams, one at a time.",
-      stackDetail: "An icon rail and Sessions on the left; the sidebar on the right stacks Workflows, Scratches and Teams: click an icon to add or remove one, ⌥-click to show it alone.",
+      stackDetail: "An icon rail and two sidebars that stack views: click an icon to add or remove its view, ⌥-click to show it alone on its side, right-click or drag it to move it to the other side.",
       place: "split",
       sections: "one",
       stackable: true,
@@ -148,13 +150,15 @@
   ///
   /// `active` is the view the user last chose (the one-view layouts); `open`
   /// the Classic collapse flags; `panelOpen` whether an overlay panel is out;
-  /// `stack` whether the Stack option is on; `stacked` the views it stacks.
+  /// `stack` whether the Stack option is on; `stacked` the views it stacks
+  /// and `sides` which sidebar each view sits in.
   ///
   /// A one-view Split (Rail) keeps Sessions on the left at all times and
   /// shows one right-hand view: `active` when it is one, else the first.
-  /// With the Stack option, Sessions still stays left and the right sidebar
-  /// shows every stacked view.
-  function sidebarPlan(layoutId, { active = "sessions", open = {}, panelOpen = false, stack = false, stacked = DEFAULT_STACK } = {}) {
+  /// With the Stack option each side shows its stacked views; `right` lists
+  /// the views placed in the right sidebar and `empty` the sides with nothing
+  /// stacked (hidden, not folded).
+  function sidebarPlan(layoutId, { active = "sessions", open = {}, panelOpen = false, stack = false, stacked = DEFAULT_STACK, sides = DEFAULT_SIDES } = {}) {
     const layout = layoutOf(layoutId, { stack });
     const current = viewOf(active) ? active : "sessions";
     const oneRight = layout.place === "split" && layout.sections === "one";
@@ -166,7 +170,7 @@
       }
       if (layout.sections === "all") return { id: v.id, shown: true, expanded: true, fill: true };
       if (layout.sections === "some") {
-        const on = v.id === "sessions" || normalizeStack(stacked).includes(v.id);
+        const on = normalizeStack(stacked).includes(v.id);
         return { id: v.id, shown: on, expanded: on, fill: on };
       }
       if (rightView) {
@@ -177,9 +181,19 @@
       const on = v.id === current;
       return { id: v.id, shown: on, expanded: on, fill: on };
     });
+    const split = layout.place === "split";
+    const side = layout.stacking ? normalizeSides(sides) : null;
+    const stackedNow = normalizeStack(stacked);
+    const right = !split ? [] : side ? SIDEBAR_VIEWS.map((v) => v.id).filter((id) => side[id] === "right") : SPLIT_RIGHT.slice();
+    const empty = side
+      ? { left: !stackedNow.some((id) => side[id] === "left"), right: !stackedNow.some((id) => side[id] === "right") }
+      : { left: false, right: !split };
     return {
       layout: layout.id,
       active: current,
+      sides: side,
+      right,
+      empty,
       views,
       place: layout.place,
       rightView,
@@ -197,35 +211,65 @@
   /// Which views a Split layout moves into its right-hand sidebar.
   const SPLIT_RIGHT = ["workflows", "scratches", "teams"];
 
-  /// The sidebar a view sits in under a layout: `right` for Split's work
-  /// lists, `left` for everything else (the side ⌘B and the rail fold).
-  function sideOf(layoutId, viewId) {
-    return layoutOf(layoutId).place === "split" && SPLIT_RIGHT.includes(viewId) ? "right" : "left";
+  /// The sidebar a view sits in under a layout: under Rail's Stack option
+  /// the side it was moved to, `right` for Split's work lists, `left` for
+  /// everything else (the side ⌘B and the rail fold).
+  function sideOf(layoutId, viewId, { stack = false, sides = DEFAULT_SIDES } = {}) {
+    const layout = layoutOf(layoutId, { stack });
+    if (layout.place !== "split") return "left";
+    if (layout.stacking) return normalizeSides(sides)[viewId] || "left";
+    return SPLIT_RIGHT.includes(viewId) ? "right" : "left";
   }
 
   /// The rail icons lit for a plan, given which sidebars are on screen: the
   /// open view in Topbar; in Rail, Sessions while the left panel shows and the
-  /// right view — or, stacking, every stacked view — while the right one does.
+  /// right view while the right one does; stacking, every stacked view whose
+  /// side shows.
   function railLit(plan, { left = true, right = true } = {}) {
     if (!plan.panel) return [];
     if (plan.place === "split") {
-      const rightLit = plan.stacked || [plan.rightView];
-      return [left && "sessions", ...(right ? rightLit : [])].filter(Boolean);
+      const shows = { left, right };
+      if (plan.stacked) return plan.stacked.filter((id) => shows[plan.sides[id]]);
+      return [left && "sessions", right && plan.rightView].filter(Boolean);
     }
     return left ? [plan.active] : [];
   }
 
-  /// What the Stack option stacks before you choose.
-  const DEFAULT_STACK = ["workflows"];
+  /// What the Stack option stacks before you choose, and where each view sits.
+  const DEFAULT_STACK = ["sessions", "workflows"];
+  const DEFAULT_SIDES = { sessions: "left", workflows: "right", scratches: "right", teams: "right" };
 
-  /// A stack as the plan uses it: the right sidebar's views only (Sessions
-  /// keeps the left), once each, in the catalogue's order — never the order
-  /// they were clicked, so a view always lands in the same place. An empty or
-  /// unreadable stack is the default.
+  /// A stack as the plan uses it: known views only, once each, in the
+  /// catalogue's order — never the order they were clicked, so a view always
+  /// lands in the same place. An empty or unreadable stack is the default.
   function normalizeStack(ids) {
     const want = new Set(Array.isArray(ids) ? ids : []);
-    const out = SPLIT_RIGHT.filter((id) => want.has(id));
+    const out = SIDEBAR_VIEWS.map((v) => v.id).filter((id) => want.has(id));
     return out.length ? out : DEFAULT_STACK.slice();
+  }
+
+  /// Every view's side, `left` or `right`; anything else is its default.
+  function normalizeSides(sides) {
+    const out = {};
+    for (const v of SIDEBAR_VIEWS) {
+      const want = sides && sides[v.id];
+      out[v.id] = want === "left" || want === "right" ? want : DEFAULT_SIDES[v.id];
+    }
+    return out;
+  }
+
+  /// Move a view to a side (right-click → Move to…, or a drag): it is stacked
+  /// there, and nothing else moves.
+  function stackMove(stacked, sides, id, side) {
+    if (!viewOf(id) || (side !== "left" && side !== "right")) {
+      return { stacked: normalizeStack(stacked), sides: normalizeSides(sides) };
+    }
+    return { stacked: normalizeStack([...normalizeStack(stacked), id]), sides: { ...normalizeSides(sides), [id]: side } };
+  }
+
+  /// The side a view dragged to `x` lands in: the half of the window it is over.
+  function stackDropSide(x, width) {
+    return x < width / 2 ? "left" : "right";
   }
 
   /// Stack's share of the height per view, as flex weights: a missing, zero,
@@ -254,23 +298,31 @@
     return normalizeStackWeights({ ...w, [above]: wa, [below]: Math.round((pair - wa) * 1000) / 1000 });
   }
 
-  /// The dividers a stack shows: one between each pair of neighbours.
-  function stackDividers(stacked) {
-    const s = normalizeStack(stacked);
-    return s.slice(1).map((below, i) => ({ above: s[i], below }));
+  /// The dividers a stack shows: one between each pair of neighbours on the
+  /// same side.
+  function stackDividers(stacked, sides = DEFAULT_SIDES) {
+    const side = normalizeSides(sides);
+    const out = [];
+    for (const s of ["left", "right"]) {
+      const col = normalizeStack(stacked).filter((id) => side[id] === s);
+      col.slice(1).forEach((below, i) => out.push({ above: col[i], below }));
+    }
+    return out;
   }
 
-  /// A click on a stacking rail icon: adds the view, or removes it; `solo`
-  /// (⌥) shows it alone. Removing the last view folds the right sidebar
-  /// instead of emptying it (`fold`), so the next click brings back what was
-  /// there. Sessions is not stacked — it keeps the left panel.
-  function stackToggle(stacked, id, { solo = false } = {}) {
+  /// A click on a stacking rail icon: adds the view to its side, or removes
+  /// it; `solo` (⌥) shows it alone on its side, leaving the other side as it
+  /// is. Removing the last view of a side folds that side instead of emptying
+  /// it (`fold` names it), so the next click brings back what was there.
+  function stackToggle(stacked, id, { solo = false, sides = DEFAULT_SIDES } = {}) {
     const now = normalizeStack(stacked);
-    if (!SPLIT_RIGHT.includes(id)) return { stacked: now, fold: false };
-    if (solo) return { stacked: [id], fold: false };
-    if (!now.includes(id)) return { stacked: normalizeStack([...now, id]), fold: false };
-    if (now.length === 1) return { stacked: now, fold: true };
-    return { stacked: now.filter((v) => v !== id), fold: false };
+    if (!viewOf(id)) return { stacked: now, fold: null };
+    const side = normalizeSides(sides);
+    const mine = now.filter((v) => side[v] === side[id]);
+    if (solo) return { stacked: normalizeStack([...now.filter((v) => side[v] !== side[id]), id]), fold: null };
+    if (!now.includes(id)) return { stacked: normalizeStack([...now, id]), fold: null };
+    if (mine.length === 1) return { stacked: now, fold: side[id] };
+    return { stacked: now.filter((v) => v !== id), fold: null };
   }
 
   /// A workspace's rail badge: up to two initials of its name (`Saturn Core`
@@ -320,7 +372,11 @@
     sideOf,
     railLit,
     DEFAULT_STACK,
+    DEFAULT_SIDES,
     normalizeStack,
+    normalizeSides,
+    stackMove,
+    stackDropSide,
     stackToggle,
     normalizeStackWeights,
     stackResize,

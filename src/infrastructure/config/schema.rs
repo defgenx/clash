@@ -617,7 +617,7 @@ pub const PROPS: &[Prop] = &[
         Val::Str("classic"),
         "How the GUI's sidebar is arranged: `classic` (one column, collapsible sections), \
          `rail` (an icon rail and sessions on the left, one other view at a time on the \
-         right — or several, with `appearance.rail_stack`), `tabbed` (one column, a tab \
+         right — or views stacked in both sidebars, with `appearance.rail_stack`), `tabbed` (one column, a tab \
          strip switches views), `dock` (the views side by side under the terminals), `split` \
          (sessions on the left, the other views on the right) or `topbar` (one bar across \
          the top, views drop down under it).",
@@ -628,8 +628,8 @@ pub const PROPS: &[Prop] = &[
         "appearance.rail_stack",
         Kind::Bool,
         Val::Bool(false),
-        "Rail layout only: the right sidebar stacks Workflows, Scratches and Teams (a rail \
-         icon adds or removes its view) instead of showing one at a time.",
+        "Rail layout only: both sidebars stack views (a rail icon adds or removes its view, \
+         right-click or drag moves it to the other side) instead of showing one at a time.",
     )
     .gui("railStack")
     .local(),

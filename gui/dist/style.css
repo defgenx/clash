@@ -3473,9 +3473,28 @@ body.layout-split #sidebar-right #wf-section.layout-fill { flex-grow: 2 !importa
 body.layout-split #notes-section,
 body.layout-split #teams-section { border-top: 1px solid var(--border); }
 
-/* Rail's Stack option: the views stacked in the right sidebar share its
-   height by their weights (--stack-w, set by the adapter), split by the
-   stack's own dividers. */
+/* Rail's Stack option: the views stacked in each sidebar share its height by
+   their weights (--stack-w, set by the adapter), split by the stack's own
+   dividers. A side with nothing stacked is hidden, and a view being dragged
+   to the other side shows where it lands. */
+#sidebar.layout-empty,
+#sidebar-resizer.layout-empty { display: none !important; }
+.stack-drop-hint {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 2px dashed var(--accent);
+  color: var(--fg);
+  font-size: 12px;
+  pointer-events: none;
+}
+body.layout-stacking .section-label[id$="-toggle"] { cursor: grab; }
+body.layout-stacking #session-list,
 body.layout-stacking #wf-section.layout-fill,
 body.layout-stacking #notes-section.layout-fill,
 body.layout-stacking #teams-section.layout-fill { flex: var(--stack-w, 1) 1 0 !important; }

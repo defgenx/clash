@@ -47,7 +47,7 @@ only their arrangement changes, live, without a restart:
 | Layout | Arrangement |
 |---|---|
 | **Classic** (default) | One sidebar: workspace chips, sessions, then collapsible Workflows, Scratches and Teams, each with its own height. |
-| **Rail** | An icon rail on the left holds the workspaces (their initials; right-click for the workspace menu), the views (Sessions, Workflows, Scratches, Teams, with badges), the inbox, an update button when a release is found, and a ⚙ at its foot that opens the quick settings in a popover (*All settings…* and `⌘,` open the full Settings). Sessions stay open beside the rail, and a second sidebar on the **right** shows one of Workflows, Scratches or Teams at a time, full height. The rail's view icons switch the right sidebar; clicking an open view's icon folds its side alone (Sessions folds the left panel). **Stack views in the right sidebar** (a checkbox under the Layout setting, also in the quick settings) makes the right sidebar **stack** its views instead: a rail icon adds or removes its view, ⌥-click shows it alone. Stacked views always sit in the same order (Workflows, Scratches, Teams) and share the height; drag the divider between two of them to move height from one to the other (the rest keep theirs), double-click it to share the height equally again. Removing the last view folds the right sidebar rather than leaving it empty, and the next click brings it back. The stack and its sizes are remembered across restarts. |
+| **Rail** | An icon rail on the left holds the workspaces (their initials; right-click for the workspace menu), the views (Sessions, Workflows, Scratches, Teams, with badges), the inbox, an update button when a release is found, and a ⚙ at its foot that opens the quick settings in a popover (*All settings…* and `⌘,` open the full Settings). Sessions stay open beside the rail, and a second sidebar on the **right** shows one of Workflows, Scratches or Teams at a time, full height. The rail's view icons switch the right sidebar; clicking an open view's icon folds its side alone (Sessions folds the left panel). **Stack views in both sidebars** (a checkbox under the Layout setting, also in the quick settings) makes both sidebars **stack** views instead: every view sits on a side (Sessions left, the others right to begin with), a rail icon adds or removes its view there, ⌥-click shows it alone on its side. To move a view to the other side, right-click its rail icon (*Move to left / right sidebar*) or drag the icon — or the view's header — over the half of the window it should go to. Stacked views always sit in the same order (Sessions, Workflows, Scratches, Teams) on their side and share its height; drag the divider between two of them to move height from one to the other (the rest keep theirs), double-click it to share the height equally again. Removing a side's last view folds that side, and the next click brings it back; a side holding no view at all (everything moved across) disappears. The stack, the sides and the sizes are remembered across restarts. |
 | **Tabbed** | One sidebar with the workspace chips, like Classic, but a tab strip at its top switches between Sessions, Workflows, Scratches and Teams (with badges), and the open view takes the sidebar's full height. The quick settings stay in the footer. |
 | **Dock** | The terminals take the window's full width; the sidebar becomes a panel **under** them, with its views side by side as columns — Sessions (with the workspace chips), Workflows, Scratches, Teams, then the settings. Every view is open at once. Drag the panel's top edge to set its height (kept apart from the sidebar's width). |
 | **Split** | Two sidebars: Sessions (with the workspace chips and the settings) on the left, and Workflows, Scratches and Teams stacked in a second sidebar on the **right** of the terminals, all open, Workflows taking the larger share. Each sidebar has its own width handle. |
@@ -57,8 +57,7 @@ A layout chosen before **Flyout** was retired (it was Rail with the panel over
 the terminals, too close to tell apart) opens as Rail, and so does **Rail
 Split**, whose arrangement Rail now has. **Stack** — a rail whose icons stacked
 views in one left panel — became Rail's Stack option: a saved `stack` opens as
-Rail with the option on (Sessions keeps the left panel, the rest stack on the
-right).
+Rail with the option on.
 
 The right-hand panels — **Files** (`⌘E`) and the **Inspector** (`ⓘ`) — follow
 the same logic. Classic docks them side by side and lets both stay open; Rail
@@ -90,8 +89,9 @@ Split's and Rail's right-hand views are the same nodes moved into
 which rail icons are lit are the pure `sideOf` and `railLit`. Rail's Stack
 option is a layout variant, not a layout: `layoutOf(id, { stack })` turns a
 `stackable` layout's `one` sections into `some` (the `layout-stacking` body
-class), its clicks are the pure `stackToggle` over a stack kept in
-`normalizeStack`'s order (right-hand views only). The stack's dividers are its own (`placeStackDividers`, one per `stackDividers`
+class), each view's side is `normalizeSides`, its clicks are the pure
+`stackToggle` (per side) over a stack kept in `normalizeStack`'s order, and a
+move is `stackMove` (the menu, or a drag landing by `stackDropSide`). The stack's dividers are its own (`placeStackDividers`, one per `stackDividers`
 pair), not Classic's section resizers: a drag runs the pure `stackResize`,
 which moves height between the two neighbours as flex weights
 (`sidebar.stackWeights`, applied as `--stack-w`) and stops each at its view's

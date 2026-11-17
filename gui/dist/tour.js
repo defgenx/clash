@@ -54,9 +54,9 @@
           "icons switch the sidebar on the right between Workflows, Scratches and Teams; clicking " +
           "an open one folds its side, and ⌘B folds both.",
         railstack:
-          "Sessions always sit beside the rail. The rail's other icons stack Workflows, Scratches " +
-          "and Teams in the sidebar on the right: click one to add or remove it, ⌥-click to show " +
-          "it alone. They share the height; removing the last one folds that side.",
+          "Both sidebars stack views: click a rail icon to add or remove its view, ⌥-click to " +
+          "show it alone on its side. Right-click an icon, or drag it, to move its view to the " +
+          "other sidebar. Views on a side share its height; drag a divider to resize.",
         tabbed:
           "The Sessions view: every session, grouped by state. Click to open its terminal, " +
           "right-click for actions, ⟳ hot-restarts it. The tabs above switch between Sessions, " +
@@ -99,7 +99,7 @@
           "items waiting on you. ⊞ board, ⇄ PR dashboard.",
         railstack:
           "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
-          "by your decisions. Its rail icon stacks it in the right sidebar and counts the items " +
+          "by your decisions. Its rail icon stacks it in its sidebar and counts the items " +
           "waiting on you. ⊞ board, ⇄ PR dashboard.",
         topbar:
           "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +

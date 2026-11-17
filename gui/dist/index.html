@@ -71,7 +71,7 @@
         <label class="setting-row inline">Layout
           <select data-mirror="set-layout"></select>
         </label>
-        <label class="setting-check rail-stack-row hidden"><input data-mirror="set-rail-stack" type="checkbox" /> Stack views on the right</label>
+        <label class="setting-check rail-stack-row hidden"><input data-mirror="set-rail-stack" type="checkbox" /> Stack views</label>
         <label class="setting-row inline">Font size
           <input data-mirror="set-fontsize" type="number" min="9" max="24" step="1" />
         </label>
@@ -204,7 +204,7 @@
               <select id="set-theme" title="Recolors the whole app and every terminal (◐ dark · ◑ light)"></select>
             </label>
             <label class="setting-row inline">Layout
-              <select id="set-layout" title="How the sidebar is arranged. Classic: one column, collapsible sections. Rail: an icon rail and Sessions on the left, one other view at a time on the right (or several stacked, with its Stack option). Tabbed: one column, a tab strip switches between full-height views. Dock: the views side by side in a panel under the terminals. Split: Sessions on the left, the other views on the right. Topbar: one bar across the top, views drop down under it.">
+              <select id="set-layout" title="How the sidebar is arranged. Classic: one column, collapsible sections. Rail: an icon rail and Sessions on the left, one other view at a time on the right (or, with its Stack option, views stacked in both sidebars). Tabbed: one column, a tab strip switches between full-height views. Dock: the views side by side in a panel under the terminals. Split: Sessions on the left, the other views on the right. Topbar: one bar across the top, views drop down under it.">
                 <option value="classic">Classic</option>
                 <option value="rail">Rail</option>
                 <option value="tabbed">Tabbed</option>
@@ -213,7 +213,7 @@
                 <option value="topbar">Topbar</option>
               </select>
             </label>
-            <label class="setting-check rail-stack-row hidden" title="Rail's right sidebar stacks Workflows, Scratches and Teams instead of showing one: a rail icon adds or removes its view, ⌥-click shows it alone, and dividers share the height."><input id="set-rail-stack" type="checkbox" /> Stack views in the right sidebar</label>
+            <label class="setting-check rail-stack-row hidden" title="Both of Rail's sidebars stack views instead of showing one: a rail icon adds or removes its view, ⌥-click shows it alone on its side, right-click or drag moves it to the other side, and dividers share the height."><input id="set-rail-stack" type="checkbox" /> Stack views in both sidebars</label>
             <p class="settings-note" id="set-layout-note"></p>
             <label class="setting-row inline">Workflow item view
               <select id="set-wf-item-view" title="How a workflow item's tab is laid out. Workbench: a grouped outline (Build, Feedback, Explained, History) beside the content, the next step on top of it. Tabs: one row of tabs above the content, the actions below it.">

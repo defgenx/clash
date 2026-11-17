@@ -1134,19 +1134,26 @@ test("the sidebar's arrangement goes through the layout adapter only", () => {
   assert.match(extractFunction(APP, "sidebarCollapse"), /setSidebarCollapsed\(/);
   // Showing a view unfolds its own side, and Rail Split's left side is Sessions.
   const show = extractFunction(APP, "sidebarShow");
-  assert.match(show, /setSidebarCollapsed\(false, \[SidebarLayout\.sideOf\(layout\.id, id\)\]\)/);
+  assert.match(show, /setSidebarCollapsed\(false, \[viewSide\(id\)\]\)/);
+  assert.match(extractFunction(APP, "viewSide"), /SidebarLayout\.sideOf\(currentLayout\(\)\.id, id, \{ stack: !!state\.settings\.railStack, sides: stackSides \}\)/);
   assert.match(show, /if \(!\(layout\.place === "split" && id === "sessions"\)\) sidebarView = id;/);
   assert.match(extractFunction(APP, "syncSidebarRail"), /SidebarLayout\.railLit\(plan,/);
   // Stack's icons toggle through the pure rule, ⌥ solos, and the stack is saved.
   assert.match(extractFunction(APP, "syncSidebarRail"), /if \(stacks\) return stackClick\(item\.id, ev\.altKey\);/);
-  assert.match(extractFunction(APP, "stackClick"), /SidebarLayout\.stackToggle\(stackViews, id, \{ solo \}\)/);
+  assert.match(extractFunction(APP, "stackClick"), /SidebarLayout\.stackToggle\(stackViews, id, \{ solo, sides: stackSides \}\)/);
+  // A view moves sides through the pure rule, from the right-click menu or a drag.
+  assert.match(extractFunction(APP, "moveViewToSide"), /SidebarLayout\.stackMove\(stackViews, stackSides, id, side\)/);
+  assert.match(extractFunction(APP, "stackSideMenu"), /moveViewToSide\(id, "left"\)[\s\S]*moveViewToSide\(id, "right"\)/);
+  assert.match(extractFunction(APP, "dragViewToSide"), /SidebarLayout\.stackDropSide\(ev\.clientX, window\.innerWidth\)/);
+  assert.match(extractFunction(APP, "sidebarPersistState"), /stackSides,/);
+  assert.match(extractFunction(APP, "restoreSidebarState"), /stackSides = SidebarLayout\.normalizeSides\(savedSidebar\.stackSides\);/);
   assert.match(extractFunction(APP, "sidebarPersistState"), /stack: stackViews,/);
-  assert.match(extractFunction(APP, "restoreSidebarState"), /stackViews = SidebarLayout\.normalizeStack\(savedSidebar\.stack\);/);
+  assert.match(extractFunction(APP, "restoreSidebarState"), /stackViews = SidebarLayout\.normalizeStack\(savedStack\);/);
   // Stack's dividers are its own: built from the stack, sized by its weights,
   // never Classic's section resizers or saved heights.
   assert.match(extractFunction(APP, "applySidebarLayout"), /placeStackDividers\(plan\.stacked\);/);
   const dividers = extractFunction(APP, "placeStackDividers");
-  assert.match(dividers, /SidebarLayout\.stackDividers\(stacked\)/);
+  assert.match(dividers, /SidebarLayout\.stackDividers\(stacked, stackSides\)/);
   assert.doesNotMatch(dividers, /initSectionResizer|applySectionHeight|savePanelSize/);
   const drag = extractFunction(APP, "dragStackDivider");
   assert.match(drag, /SidebarLayout\.stackResize\(start, above, below,/);
@@ -1159,10 +1166,13 @@ test("the sidebar's arrangement goes through the layout adapter only", () => {
   // Topbar's drop-down paints over the panes: native browser webviews must hide.
   assert.match(extractFunction(APP, "applySidebarLayout"), /hideBrowserWebviews\(\)/);
   // Split's work lists are moved, and moved back, by the one painter.
-  assert.match(extractFunction(APP, "applySidebarLayout"), /placeSplitViews\(plan\.place === "split"\)/);
+  assert.match(extractFunction(APP, "applySidebarLayout"), /placeSplitViews\(plan\);/);
   const place = extractFunction(APP, "placeSplitViews");
-  assert.match(place, /SidebarLayout\.SPLIT_RIGHT/);
-  assert.match(place, /sidebar\.insertBefore\(el, footer\)/, "back above the footer, in order");
+  // The plan says which views go right; each side is kept in catalogue order,
+  // and an already-right order moves nothing (a move would blur a focused field).
+  assert.match(place, /plan\.right\.includes\(v\.id\)/);
+  assert.match(place, /arrange\(sidebar, nodes\(false\), footer\)/, "back above the footer, in order");
+  assert.match(place, /now\.every\(\(c, i\) => c === els\[i\]\)\) return;/);
   // Dock's height is its own size, set by the sidebar's handle while docked.
   assert.match(APP, /when: \(\) => currentLayout\(\)\.place === "bottom",\n  key: "dock",/);
 });
@@ -1388,4 +1398,9 @@ test("the review composer is only ever opened by something that launches its ans
   assert.equal(uses.length, 1, "launchWfReview is the composer's only caller");
   assert.match(uses[0], /const picked = await $/);
   assert.match(APP, /review: \(\) => launchWfReview\(item, root, \{ prUrls: a\.urls \}\)/);
+});
+
+test("WebKit's own context menu never shows; clash's menus run before the guard", () => {
+  assert.match(APP, /^document\.addEventListener\("contextmenu", \(e\) => e\.preventDefault\(\)\);$/m);
+  assert.doesNotMatch(APP, /addEventListener\("contextmenu", \(e\) => e\.preventDefault\(\), true\)/, "capture phase would pre-empt nothing but read as a block");
 });
