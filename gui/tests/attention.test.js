@@ -9,6 +9,18 @@ const {
   workflowReasons,
   attentionRows,
   attentionSummary,
+  INBOX_GROUPS,
+  groupOf,
+  rowSignature,
+  snoozeEntry,
+  isSnoozed,
+  pruneSnoozes,
+  normalizeSnoozes,
+  splitSnoozed,
+  inboxView,
+  rowActions,
+  problemPrUrls,
+  inboxMove,
 } = require("../dist/attention.js");
 
 const sess = (over = {}) => ({
@@ -227,4 +239,131 @@ test("a red build on an open PR is its own band, after decisions and before PR t
   const rows = attentionRows({ workflows: [item({ meta: { status: "pr-ready", pr: red } })] });
   assert.equal(rows[0].band, BAND.ciFailing);
   assert.equal(attentionSummary(rows).blocking, 0);
+});
+
+// ── The inbox view: sections, filters, search, snooze, actions ─────────────
+
+const mixed = () =>
+  attentionRows({
+    sessions: [
+      sess({ id: "p", name: "approve", status: "Prompting", last_modified: "2026-09-01 08:00" }),
+      sess({ id: "w", name: "idle", status: "Waiting", last_modified: "2026-09-01 09:00" }),
+    ],
+    workflows: [
+      item({ slug: "d", meta: { title: "parked", status: "plan-review", updatedAt: 5 } }),
+      item({ slug: "c", meta: { title: "red build", status: "pr-ready", pr: { url: "u1", state: "OPEN", health: { checks: "fail" } } } }),
+    ],
+  });
+
+test("the inbox sorts its rows into sections by their most urgent reason, empty ones left out", () => {
+  const v = inboxView(mixed(), { now: 0 });
+  assert.deepEqual(
+    v.groups.map((g) => [g.id, g.rows.map((r) => r.title)]),
+    [
+      ["now", ["approve"]],
+      ["decisions", ["parked"]],
+      ["prs", ["red build"]],
+      ["turns", ["idle"]],
+    ]
+  );
+  assert.deepEqual(v.counts, { all: 4, snoozed: 0, now: 1, decisions: 1, prs: 1, turns: 1 });
+  assert.equal(v.total, 4);
+  assert.equal(v.blocking, 1);
+  // Every band has a section.
+  for (const b of Object.values(BAND)) assert.ok(INBOX_GROUPS.some((g) => g.bands.includes(b)), `band ${b}`);
+  // One item wanting two things stays one row, in its most urgent section.
+  const two = attentionRows({ workflows: [item({ meta: { status: "diff-review", pr: { url: "u", unansweredComments: 2 } } })] });
+  assert.equal(groupOf(two[0]).id, "decisions");
+});
+
+test("a filter shows one section; search narrows every count; an unknown filter is All", () => {
+  const rows = mixed();
+  assert.deepEqual(inboxView(rows, { filter: "prs", now: 0 }).groups.map((g) => g.id), ["prs"]);
+  const q = inboxView(rows, { query: "RED", now: 0 });
+  assert.deepEqual(q.groups.map((g) => g.rows.map((r) => r.title)), [["red build"]]);
+  assert.equal(q.counts.all, 1);
+  assert.equal(q.counts.turns, 0);
+  // Reasons are searchable too.
+  assert.equal(inboxView(rows, { query: "approval", now: 0 }).counts.all, 1);
+  assert.equal(inboxView(rows, { filter: "nope", now: 0 }).filter, "all");
+});
+
+test("a snooze hides a row until it changes, or for an hour — and the count drops with it", () => {
+  const rows = mixed();
+  const idle = rows.find((r) => r.title === "idle");
+  const until = { [idle.key]: snoozeEntry(idle, "change", 1000) };
+  assert.ok(isSnoozed(until, idle, 10 ** 12), "until it changes: no clock");
+  const v = inboxView(rows, { snoozes: until, now: 2000 });
+  assert.equal(v.total, 3, "the badge counts what is not snoozed");
+  assert.equal(v.counts.snoozed, 1);
+  assert.deepEqual(inboxView(rows, { filter: "snoozed", snoozes: until, now: 2000 }).groups[0].rows.map((r) => r.title), ["idle"]);
+  // New activity is news: the row comes back.
+  const moved = { ...idle, since: idle.since + 60000 };
+  assert.notEqual(rowSignature(moved), rowSignature(idle));
+  assert.equal(isSnoozed(until, moved, 2000), false);
+  // An hour's snooze ends on time, and on a change before that.
+  const hour = { [idle.key]: snoozeEntry(idle, "hour", 0) };
+  assert.equal(isSnoozed(hour, idle, 59 * 60 * 1000), true);
+  assert.equal(isSnoozed(hour, idle, 60 * 60 * 1000), false);
+  assert.equal(isSnoozed(hour, moved, 1), false);
+  const { active, snoozed } = splitSnoozed(rows, until, 2000);
+  assert.equal(active.length + snoozed.length, rows.length);
+});
+
+test("pruning keeps a snooze while it still matters, and while its row is only briefly absent", () => {
+  const rows = mixed();
+  const idle = rows.find((r) => r.title === "idle");
+  const s = { [idle.key]: snoozeEntry(idle, "change", 0) };
+  assert.deepEqual(Object.keys(pruneSnoozes(s, rows, 1)), [idle.key]);
+  // Changed while on screen: gone.
+  assert.deepEqual(pruneSnoozes(s, [{ ...idle, status: "Prompting" }], 1), {});
+  // Absent (answered, or the list is reloading): kept for a week…
+  assert.deepEqual(Object.keys(pruneSnoozes(s, [], 6 * 24 * 3600 * 1000)), [idle.key]);
+  // …then forgotten; an hour's snooze is forgotten once it would have ended.
+  assert.deepEqual(pruneSnoozes(s, [], 8 * 24 * 3600 * 1000), {});
+  assert.deepEqual(pruneSnoozes({ [idle.key]: snoozeEntry(idle, "hour", 0) }, [], 2 * 3600 * 1000), {});
+});
+
+test("saved snoozes are read leniently: anything malformed is dropped", () => {
+  assert.deepEqual(normalizeSnoozes(null), {});
+  assert.deepEqual(normalizeSnoozes({ a: { sig: "x", until: null, at: 5 }, b: { sig: 1 }, c: null, d: { sig: "y", until: "soon" } }), {
+    a: { sig: "x", until: null, at: 5 },
+  });
+  assert.deepEqual(normalizeSnoozes({ a: { sig: "x", until: 9 } }).a.at, 0);
+});
+
+test("each row offers the actions its reason calls for", () => {
+  const rows = mixed();
+  const by = (title) => rows.find((r) => r.title === title);
+  assert.deepEqual(rowActions(by("idle"), { running: true }), ["followup", "stash"]);
+  assert.deepEqual(rowActions(by("idle"), { running: false }), [], "a stopped session takes neither");
+  assert.deepEqual(rowActions(by("approve"), { running: true }), [], "an approval is answered in the session");
+  const errored = attentionRows({ sessions: [sess({ status: "Errored", is_running: false })] })[0];
+  assert.deepEqual(rowActions(errored), ["reload"]);
+  assert.deepEqual(rowActions(by("red build"), { hasPr: true }), ["open-pr"]);
+  assert.deepEqual(rowActions(by("red build"), { hasPr: false }), []);
+  assert.deepEqual(rowActions(by("parked"), { hasPr: true }), [], "a decision is not about a PR");
+});
+
+test("Open PR opens the PRs the row is about, primary first", () => {
+  const meta = {
+    pr: { url: "a", state: "OPEN", health: { checks: "pass" }, unansweredComments: 0 },
+    linkedPrs: [
+      { url: "b", state: "OPEN", health: { checks: "fail" } },
+      { url: "c", state: "OPEN", unansweredComments: 3 },
+      { url: "d", state: "MERGED", health: { checks: "fail" } },
+    ],
+  };
+  assert.deepEqual(problemPrUrls(meta), ["b", "c"]);
+  assert.deepEqual(problemPrUrls({}), []);
+});
+
+test("keyboard selection walks the drawn order and stops at both ends", () => {
+  const keys = ["a", "b", "c"];
+  assert.equal(inboxMove(keys, null, 1), "a");
+  assert.equal(inboxMove(keys, "a", 1), "b");
+  assert.equal(inboxMove(keys, "c", 1), "c");
+  assert.equal(inboxMove(keys, "a", -1), "a");
+  assert.equal(inboxMove(keys, "gone", -1), "a");
+  assert.equal(inboxMove([], "a", 1), null);
 });

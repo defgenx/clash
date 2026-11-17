@@ -149,6 +149,7 @@
         context: [s.worktree ? `⊟ ${s.worktree}` : "", s.project].filter(Boolean).join(" · "),
         status: s.status,
         band: reason.band,
+        bands: [reason.band],
         reasons: [reason.text],
         since: parseStamp(s.last_modified),
         unread: !!(unread && unread.has(s.id)),
@@ -168,6 +169,7 @@
         context: item.project,
         status: meta.status || "unknown",
         band: Math.min.apply(null, reasons.map((r) => r.band)),
+        bands: reasons.map((r) => r.band),
         reasons: reasons.map((r) => r.text),
         since: parseStamp(meta.updatedAt),
         unread: !!(wfUnread && wfUnread.has(key)),
@@ -196,8 +198,172 @@
     };
   }
 
+  /// The inbox's sections, in order. A row sits in the section of its most
+  /// urgent reason, so one item never appears twice.
+  const INBOX_GROUPS = [
+    { id: "now", label: "Needs you now", bands: [BAND.prompting, BAND.stalled, BAND.errored] },
+    { id: "decisions", label: "Decisions", bands: [BAND.decision] },
+    { id: "prs", label: "Pull requests", bands: [BAND.ciFailing, BAND.prComments] },
+    { id: "turns", label: "Finished turns", bands: [BAND.waiting] },
+  ];
+
+  function groupOf(row) {
+    return INBOX_GROUPS.find((g) => g.bands.includes(row.band)) || INBOX_GROUPS[INBOX_GROUPS.length - 1];
+  }
+
+  /// What a snooze is pinned to: when any of it changes — a new status, new
+  /// activity, a new reason — the row is news again and comes back.
+  function rowSignature(row) {
+    return [row.status, row.since || 0, (row.reasons || []).join("|")].join("·");
+  }
+
+  const SNOOZE_HOUR_MS = 60 * 60 * 1000;
+  /// How long a snooze outlives its row's absence (a session answered, a list
+  /// still loading) before it is forgotten.
+  const SNOOZE_KEEP_MS = 7 * 24 * SNOOZE_HOUR_MS;
+
+  /// A snooze for `row`: `until` null hides it until it changes; "hour" also
+  /// brings it back after an hour if nothing has changed by then.
+  function snoozeEntry(row, kind, now) {
+    return { sig: rowSignature(row), until: kind === "hour" ? now + SNOOZE_HOUR_MS : null, at: now };
+  }
+
+  function isSnoozed(snoozes, row, now) {
+    const s = snoozes && snoozes[row.key];
+    if (!s || s.sig !== rowSignature(row)) return false;
+    return !(s.until && now >= s.until);
+  }
+
+  /// Snoozes worth keeping. One whose row is on screen stays while it still
+  /// hides that row (changed or expired: dropped). One whose row is absent —
+  /// answered, or in a list that has not loaded yet — is kept until it would
+  /// have expired, or for SNOOZE_KEEP_MS, so a reload never resurfaces it.
+  function pruneSnoozes(snoozes, rows, now) {
+    const out = {};
+    const byKey = new Map((rows || []).map((r) => [r.key, r]));
+    for (const [key, s] of Object.entries(snoozes || {})) {
+      const row = byKey.get(key);
+      const keep = row
+        ? isSnoozed(snoozes, row, now)
+        : s.until
+          ? now < s.until
+          : now - (s.at || 0) < SNOOZE_KEEP_MS;
+      if (keep) out[key] = s;
+    }
+    return out;
+  }
+
+  /// Saved snoozes as the model reads them; anything malformed is dropped.
+  function normalizeSnoozes(raw) {
+    const out = {};
+    if (!raw || typeof raw !== "object") return out;
+    for (const [k, v] of Object.entries(raw)) {
+      if (v && typeof v.sig === "string" && (v.until === null || Number.isFinite(v.until))) {
+        out[k] = { sig: v.sig, until: v.until, at: Number.isFinite(v.at) ? v.at : 0 };
+      }
+    }
+    return out;
+  }
+
+  /// The inbox split into what it shows and what is snoozed. The badge and
+  /// the rail count `active` only — snoozing exists so the count can drop.
+  function splitSnoozed(rows, snoozes, now) {
+    const active = [];
+    const snoozed = [];
+    for (const r of rows || []) (isSnoozed(snoozes, r, now) ? snoozed : active).push(r);
+    return { active, snoozed };
+  }
+
+  /// The filters the view offers, by id: every section, all of them, or the
+  /// snoozed rows.
+  const INBOX_FILTERS = ["all"].concat(INBOX_GROUPS.map((g) => g.id), ["snoozed"]);
+
+  function matchesQuery(row, query) {
+    const q = String(query || "").trim().toLowerCase();
+    if (!q) return true;
+    return [row.title, row.context, row.status, (row.reasons || []).join(" ")]
+      .join(" ")
+      .toLowerCase()
+      .includes(q);
+  }
+
+  /// What the inbox tab draws: its sections (empty ones left out) for the
+  /// chosen filter and search, plus each filter's count under that search.
+  function inboxView(rows, { filter = "all", query = "", snoozes = {}, now = Date.now() } = {}) {
+    const { active, snoozed } = splitSnoozed(rows, snoozes, now);
+    const found = active.filter((r) => matchesQuery(r, query));
+    const sleeping = snoozed.filter((r) => matchesQuery(r, query));
+    const counts = { all: found.length, snoozed: sleeping.length };
+    for (const g of INBOX_GROUPS) counts[g.id] = found.filter((r) => groupOf(r).id === g.id).length;
+    const want = INBOX_FILTERS.includes(filter) ? filter : "all";
+    let groups;
+    if (want === "snoozed") {
+      groups = sleeping.length ? [{ id: "snoozed", label: "Snoozed", rows: sleeping }] : [];
+    } else {
+      groups = INBOX_GROUPS.filter((g) => want === "all" || g.id === want)
+        .map((g) => ({ id: g.id, label: g.label, rows: found.filter((r) => groupOf(r).id === g.id) }))
+        .filter((g) => g.rows.length);
+    }
+    return {
+      filter: want,
+      groups,
+      counts,
+      total: active.length,
+      blocking: attentionSummary(active).blocking,
+    };
+  }
+
+  /// The actions a row offers beyond opening it, chosen by why it is there:
+  /// a finished turn can take a follow-up or be stashed, an errored session
+  /// reloaded, an item with failing CI or open threads opens its PR. A
+  /// session that is not running cannot take a follow-up or a stash.
+  function rowActions(row, { running = false, hasPr = false } = {}) {
+    const out = [];
+    const bands = row.bands || [row.band];
+    if (row.kind === "session") {
+      if (running && row.band === BAND.waiting) out.push("followup", "stash");
+      if (row.band === BAND.errored) out.push("reload");
+    } else if (hasPr && (bands.includes(BAND.ciFailing) || bands.includes(BAND.prComments))) {
+      out.push("open-pr");
+    }
+    return out;
+  }
+
+  /// The PRs an item's row is about: the open ones failing CI or holding
+  /// unanswered threads, primary first. Empty when the row is not about a PR.
+  function problemPrUrls(meta) {
+    const prs = [(meta && meta.pr) || null].concat((meta && meta.linkedPrs) || []);
+    const failing = new Set(ciFailingPrs(meta).map((pr) => pr.url));
+    return prs
+      .filter((pr) => pr && pr.url && (failing.has(pr.url) || pr.unansweredComments > 0))
+      .map((pr) => pr.url);
+  }
+
+  /// Keyboard selection: the key `delta` rows away from `current` in the
+  /// order the rows are drawn, clamped at both ends; the first row when
+  /// nothing (or a row that has gone) was selected.
+  function inboxMove(keys, current, delta) {
+    if (!keys.length) return null;
+    const i = keys.indexOf(current);
+    if (i < 0) return keys[0];
+    return keys[Math.max(0, Math.min(keys.length - 1, i + delta))];
+  }
+
   const api = {
     BAND,
+    INBOX_GROUPS,
+    INBOX_FILTERS,
+    groupOf,
+    rowSignature,
+    snoozeEntry,
+    isSnoozed,
+    pruneSnoozes,
+    normalizeSnoozes,
+    splitSnoozed,
+    inboxView,
+    rowActions,
+    problemPrUrls,
+    inboxMove,
     parseStamp,
     unansweredCount,
     ciFailingPrs,

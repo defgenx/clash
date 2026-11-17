@@ -404,6 +404,33 @@ has waited:
 
 The count turns red only when something is blocked. Clicking a row jumps to it.
 
+The list is split into sections — **Needs you now** (1–3), **Decisions** (4),
+**Pull requests** (5–6), **Finished turns** (7) — each with its count. An item
+that wants two things stays one row, in the section of its most urgent reason.
+The filter chips show one section at a time, and the search box narrows every
+count to rows whose title, project, status or reason matches.
+
+Each row carries the actions its reason calls for, beside the row itself:
+
+| Row | Actions |
+|---|---|
+| finished turn (running session) | **Queue follow-up…**, **Stash** |
+| errored session | **Reload** |
+| item with failing CI or unanswered PR threads | **Open PR** (only the PRs the row is about) |
+| every row | **Snooze ▾** |
+
+**Snooze** hides a row *until it changes* — a new status, new activity, a new
+reason — or *for an hour*, whichever comes first, and the badge drops with it:
+snoozing is how a finished turn you will get to later stops counting. The
+**Snoozed** chip (shown while anything is) lists them with **Unsnooze**. Snoozes
+are remembered across restarts (`gui-state.json` → `inbox.snoozes`) and
+forgotten once they no longer hide anything.
+
+With the list focused: `↑`/`↓` or `j`/`k` move, `Enter` opens, `z` snoozes
+until the row changes, `⇧Z` for an hour (`z` unsnoozes in the Snoozed view),
+`f` queues a follow-up, `/` jumps to the search box (`Esc` or `↓` back to the
+list).
+
 ## Queued follow-ups
 
 **Queue follow-up…** (a running session's `⋯` menu, the inbox, or `f` in the
@@ -483,7 +510,7 @@ face and tagged *mono* or *proportional*. *Monospace only* is on by default, and
 | `F7` / `⇧F7` | next / previous change in the diff viewer |
 | `⌘⇧B` | new browser tab |
 | `⌘F` or `/` | search |
-| `⌘I` | inbox |
+| `⌘I` | inbox (in the list: `↑`/`↓` `j`/`k` move, `Enter` open, `z`/`⇧Z` snooze, `f` follow-up, `/` search) |
 | `⌘,` | settings |
 | `⌘K` | clear the terminal |
 | `⌘R` | reload the focused session (in a browser pane: reload the page) |

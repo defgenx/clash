@@ -725,6 +725,8 @@ function workspacesJson() {
     sidebar: sidebarPersistState(),
     // First-run guided tour: shown once, rerunnable from Settings.
     tour: { seen: tourSeen, itemSeen: itemTourSeen },
+    // Inbox rows snoozed until they change or for an hour (attention.js).
+    inbox: { snoozes: inboxSnoozes },
     // The diff viewer's layout and options (diff-view.js diffPrefsFrom).
     diffView: diffPrefs,
   });
@@ -860,6 +862,7 @@ function applyWorkspacesData(data, { migratable = false } = {}) {
   }
   if (data.tour && data.tour.seen) tourSeen = true;
   if (data.tour && data.tour.itemSeen) itemTourSeen = true;
+  if (data.inbox) inboxSnoozes = normalizeSnoozes(data.inbox.snoozes);
   if (data.diffView) Object.assign(diffPrefs, DiffView.diffPrefsFrom(data.diffView));
   // Settings ride along with the workspaces blob but load independently — a
   // fresh install with no workspaces yet still gets its saved settings. First
@@ -8353,87 +8356,258 @@ function inboxRows() {
   });
 }
 
-function renderInbox(el) {
-  const rows = inboxRows();
-  const { total, blocking } = attentionSummary(rows);
+/// The inbox's filter and search survive repaints; its snoozes are saved
+/// (gui-state.json `inbox.snoozes`, attention.js `normalizeSnoozes`), and
+/// `inboxSelected` is the keyboard's row.
+const inboxFilter = { filter: "all", query: "" };
+let inboxSnoozes = {};
+let inboxSelected = null;
+
+/// What the badge and the rail count: the inbox minus what is snoozed.
+function inboxActiveRows() {
+  return splitSnoozed(inboxRows(), inboxSnoozes, Date.now()).active;
+}
+
+function snoozeInboxRow(row, kind) {
+  inboxSnoozes = { ...inboxSnoozes, [row.key]: snoozeEntry(row, kind, Date.now()) };
+  saveWorkspaces();
+  syncInbox();
+}
+
+function unsnoozeInboxRow(row) {
+  const next = { ...inboxSnoozes };
+  delete next[row.key];
+  inboxSnoozes = next;
+  saveWorkspaces();
+  syncInbox();
+}
+
+/// The snooze choice for a row, at the pointer.
+function inboxSnoozeMenu(ev, row) {
+  showContextMenu(ev.clientX, ev.clientY, [
+    { label: "Snooze until it changes", icon: "pause", action: () => snoozeInboxRow(row, "change") },
+    { label: "Snooze for an hour", icon: "history", action: () => snoozeInboxRow(row, "hour") },
+  ]);
+}
+
+/// Open what a row is about: the session, or the workflow item's tab.
+function openInboxRow(r) {
+  if (r.kind === "session") {
+    openSession(r.sessionId, r.title);
+  } else {
+    const item = wfItem(r.project, r.slug);
+    if (item) openWorkflowTab(item);
+  }
+  // Jumping to a row is how you acknowledge it: the unread dot and the badge
+  // must drop on this click, not on the next poll tick.
+  syncInbox();
+}
+
+/// The buttons a row carries (attention.js `rowActions`), plus Snooze or,
+/// in the Snoozed filter, Unsnooze.
+function inboxRowButtons(r, snoozed) {
+  const sess = r.kind === "session" ? state.sessions.find((x) => x.id === r.sessionId) : null;
+  const item = r.kind === "workflow" ? wfItem(r.project, r.slug) : null;
+  const prUrls = item ? problemPrUrls(item.meta) : [];
+  const out = [];
+  const add = (label, title, onclick) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "inbox-action";
+    b.textContent = label;
+    b.title = title;
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      onclick(ev);
+    };
+    out.push(b);
+  };
+  for (const act of rowActions(r, { running: !!(sess && sess.is_running), hasPr: prUrls.length > 0 })) {
+    if (act === "followup") {
+      add("Queue follow-up…", "Type the next instruction now — delivered when this session is idle (f)", () =>
+        queueFollowUp(sess)
+      );
+    } else if (act === "stash") {
+      add("Stash", "Stop this session and keep it resumable", async () => {
+        await invoke("stash_session", { sessionId: sess.id }).catch(console.error);
+        dropTerminal(sess.id);
+        refreshSessions();
+      });
+    } else if (act === "reload") {
+      add("Reload", "Restart this session on the latest agent binary", () =>
+        reloadSessionInteractive(sess || { id: r.sessionId })
+      );
+    } else if (act === "open-pr") {
+      add(prUrls.length > 1 ? `Open ${prUrls.length} PRs` : "Open PR", "The pull requests this row is about", () =>
+        openLinks(prUrls)
+      );
+    }
+  }
+  if (snoozed) add("Unsnooze", "Bring this row back now", () => unsnoozeInboxRow(r));
+  else add("Snooze ▾", "Hide this row until it changes, or for an hour (z / ⇧Z)", (ev) => inboxSnoozeMenu(ev, r));
+  return out;
+}
+
+/// The tab's fixed parts — header, filter chips, search, body — built once
+/// and kept on the element, so a repaint never steals the search field's
+/// focus (the PR dashboard's pattern).
+function buildInboxShell(el) {
   el.innerHTML = "";
-  const wrap = document.createElement("div");
-  wrap.className = "inbox";
-
+  el.classList.add("wf-board-view");
   const head = document.createElement("div");
-  head.className = "wf-prs-head";
-  head.innerHTML =
-    `<h4>INBOX</h4><span class="dim">${
-      total
-        ? `${total} waiting on you${blocking ? ` · ${blocking} blocked` : ""}`
-        : "all clear"
-    }</span>`;
-  wrap.appendChild(head);
+  head.className = "wf-board-head inbox-head";
+  const top = document.createElement("div");
+  top.className = "wf-board-top";
+  const h = document.createElement("h2");
+  h.textContent = "Inbox";
+  const summary = document.createElement("div");
+  summary.className = "wf-board-summary";
+  const search = document.createElement("input");
+  search.type = "search";
+  search.className = "wf-board-search";
+  search.placeholder = "Filter by title, project or reason…  ( / )";
+  search.value = inboxFilter.query;
+  search.oninput = () => {
+    inboxFilter.query = search.value;
+    renderInbox(el);
+  };
+  top.append(h, summary, search);
+  const filters = document.createElement("div");
+  filters.className = "wf-waves-modes inbox-filters";
+  head.append(top, filters);
+  const body = document.createElement("div");
+  body.className = "inbox";
+  body.tabIndex = 0;
+  body.addEventListener("keydown", (e) => inboxKey(e, el));
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" || e.key === "ArrowDown") {
+      e.preventDefault();
+      e.stopPropagation();
+      body.focus();
+    }
+  });
+  el.append(head, body);
+  return { summary, search, filters, body, keys: [], rows: new Map(), snoozed: false };
+}
 
-  if (!rows.length) {
-    const empty = document.createElement("p");
-    empty.className = "hint";
-    empty.textContent =
-      "nothing is waiting on you — every session has been answered and no workflow item is parked on a decision";
-    wrap.appendChild(empty);
-    el.appendChild(wrap);
+/// The inbox's keys while its list has focus: ↑/↓ or j/k move, Enter opens,
+/// z snoozes until the row changes, ⇧Z for an hour, f queues a follow-up, /
+/// searches. Handled keys stop here, before the window's own shortcuts.
+function inboxKey(e, el) {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const shell = el._inbox;
+  const row = shell.rows.get(inboxSelected);
+  const move = { ArrowDown: 1, j: 1, ArrowUp: -1, k: -1 }[e.key];
+  if (move) {
+    inboxSelected = inboxMove(shell.keys, inboxSelected, move);
+    renderInbox(el);
+  } else if (e.key === "Enter" && row) {
+    openInboxRow(row);
+  } else if ((e.key === "z" || e.key === "Z") && row) {
+    if (shell.snoozed) unsnoozeInboxRow(row);
+    else snoozeInboxRow(row, e.key === "Z" ? "hour" : "change");
+  } else if (e.key === "f" && row && row.kind === "session") {
+    const sess = state.sessions.find((x) => x.id === row.sessionId);
+    if (sess && sess.is_running) queueFollowUp(sess);
+  } else if (e.key === "/") {
+    shell.search.focus();
+  } else {
     return;
   }
+  e.preventDefault();
+  e.stopPropagation();
+}
 
-  for (const r of rows) {
-    const row = document.createElement("div");
-    row.className = `inbox-row band-${r.band}`;
-    const info =
-      r.kind === "session"
-        ? statusInfo(state.sessions.find((x) => x.id === r.sessionId) || { status: r.status })
-        : wfStatusInfo(r.status);
-    const ringCls = r.kind === "session" ? "status-ring" : "status-ring wf-ring";
-    row.innerHTML =
-      `<span class="${ringCls} ${info.cls}" title="${info.label}"></span>` +
-      `<span class="inbox-main">` +
-      `<span class="inbox-title">${escapeHtml(r.title)}${
-        r.unread ? '<span class="unread-dot"></span>' : ""
-      }</span>` +
-      `<span class="inbox-sub">` +
-      `<span class="status-label ${info.cls}">${info.label}</span>` +
-      `<span class="dim">${escapeHtml(r.context)}</span>` +
-      `</span>` +
-      `<span class="inbox-why">${escapeHtml(r.reasons.join(" · "))}</span>` +
-      `</span>` +
-      `<span class="inbox-age dim">${escapeHtml(wfAgo(r.since))}</span>`;
-    if (r.kind === "session") {
-      const sess = state.sessions.find((x) => x.id === r.sessionId);
-      if (sess && sess.is_running) {
-        const q = document.createElement("button");
-        q.className = "inbox-action";
-        q.textContent = "Queue follow-up…";
-        q.title = "Type the next instruction now — delivered when this session is idle";
-        q.onclick = (ev) => {
-          ev.stopPropagation();
-          queueFollowUp(sess);
-        };
-        row.appendChild(q);
-      }
-    }
-    row.title =
-      r.kind === "session"
-        ? "Open this session"
-        : "Open this workflow item";
-    row.onclick = () => {
-      if (r.kind === "session") {
-        openSession(r.sessionId, r.title);
-      } else {
-        const item = wfItem(r.project, r.slug);
-        if (item) openWorkflowTab(item);
-      }
-      // Jumping to a row is how you acknowledge it: the unread dot and the
-      // badge must drop on this click, not on the next poll tick.
-      renderInboxBadge();
+function renderInbox(el) {
+  const rows = inboxRows();
+  const now = Date.now();
+  const kept = pruneSnoozes(inboxSnoozes, rows, now);
+  if (Object.keys(kept).length !== Object.keys(inboxSnoozes).length) {
+    inboxSnoozes = kept;
+    saveWorkspaces();
+  }
+  const v = inboxView(rows, { ...inboxFilter, snoozes: inboxSnoozes, now });
+  if (!el._inbox) el._inbox = buildInboxShell(el);
+  const shell = el._inbox;
+
+  shell.summary.textContent = v.total
+    ? `${v.total} waiting on you${v.blocking ? ` · ${v.blocking} blocked` : ""}`
+    : "all clear";
+  shell.filters.innerHTML = "";
+  const labels = { all: "All" };
+  for (const g of INBOX_GROUPS) labels[g.id] = g.label;
+  labels.snoozed = "Snoozed";
+  for (const id of INBOX_FILTERS) {
+    if (id === "snoozed" && !v.counts.snoozed && v.filter !== "snoozed") continue;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `wf-seg${v.filter === id ? " on" : ""}`;
+    b.innerHTML = `${escapeHtml(labels[id])} <span class="wf-seg-n">${v.counts[id]}</span>`;
+    b.onclick = () => {
+      inboxFilter.filter = id;
       renderInbox(el);
     };
-    wrap.appendChild(row);
+    shell.filters.appendChild(b);
   }
-  el.appendChild(wrap);
+
+  const body = shell.body;
+  body.innerHTML = "";
+  shell.snoozed = v.filter === "snoozed";
+  shell.rows = new Map();
+  shell.keys = [];
+  if (!v.groups.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = inboxFilter.query.trim()
+      ? "nothing here matches the filter"
+      : v.filter === "snoozed"
+        ? "nothing is snoozed"
+        : v.total
+          ? "nothing in this section — the other filters still hold rows"
+          : "nothing is waiting on you — every session has been answered and no workflow item is parked on a decision";
+    body.appendChild(empty);
+    return;
+  }
+  // A selection whose row is briefly absent (a list reloading) is kept, not
+  // cleared: it highlights nothing until the row is back.
+  for (const g of v.groups) for (const r of g.rows) shell.keys.push(r.key);
+
+  for (const g of v.groups) {
+    const label = document.createElement("div");
+    label.className = "inbox-group";
+    label.innerHTML = `${escapeHtml(g.label)} <span class="wf-seg-n">${g.rows.length}</span>`;
+    body.appendChild(label);
+    for (const r of g.rows) {
+      shell.rows.set(r.key, r);
+      const row = document.createElement("div");
+      row.className = `inbox-row band-${r.band}${r.key === inboxSelected ? " selected" : ""}`;
+      const info =
+        r.kind === "session"
+          ? statusInfo(state.sessions.find((x) => x.id === r.sessionId) || { status: r.status })
+          : wfStatusInfo(r.status);
+      const ringCls = r.kind === "session" ? "status-ring" : "status-ring wf-ring";
+      row.innerHTML =
+        `<span class="${ringCls} ${info.cls}" title="${info.label}"></span>` +
+        `<span class="inbox-main">` +
+        `<span class="inbox-title">${escapeHtml(r.title)}${
+          r.unread ? '<span class="unread-dot"></span>' : ""
+        }</span>` +
+        `<span class="inbox-sub">` +
+        `<span class="status-label ${info.cls}">${info.label}</span>` +
+        `<span class="dim">${escapeHtml(r.context)}</span>` +
+        `</span>` +
+        `<span class="inbox-why">${escapeHtml(r.reasons.join(" · "))}</span>` +
+        `</span>` +
+        `<span class="inbox-age dim">${escapeHtml(wfAgo(r.since))}</span>`;
+      for (const b of inboxRowButtons(r, shell.snoozed)) row.appendChild(b);
+      row.title = r.kind === "session" ? "Open this session (Enter)" : "Open this workflow item (Enter)";
+      row.onclick = () => {
+        inboxSelected = r.key;
+        openInboxRow(r);
+      };
+      body.appendChild(row);
+    }
+  }
 }
 
 /// The sidebar-header button: icon plus a count pill, `hot` when something is
@@ -8443,7 +8617,7 @@ function renderInbox(el) {
 function renderInboxBadge() {
   const btn = $("inbox-btn");
   if (!btn) return;
-  const { total, blocking } = attentionSummary(inboxRows());
+  const { total, blocking } = attentionSummary(inboxActiveRows());
   btn.innerHTML =
     svgIcon("inbox", 13) +
     (total ? `<span class="inbox-pill${blocking ? " hot" : ""}">${total}</span>` : "");
@@ -19060,7 +19234,7 @@ function syncSidebarRail() {
     });
   }
   rail.appendChild(Object.assign(document.createElement("div"), { className: "spacer" }));
-  const inbox = attentionSummary(inboxRows());
+  const inbox = attentionSummary(inboxActiveRows());
   button("rail-view", svgIcon("inbox", 18) + badge(inbox.total, inbox.blocking > 0), "Inbox (⌘I)", () =>
     $("inbox-btn").click()
   );

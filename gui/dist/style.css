@@ -2797,7 +2797,20 @@ button.busy:disabled { opacity: 1; }
 }
 .inbox-pill.hot { background: var(--red); color: var(--on-accent, #fff); }
 
-.inbox { padding: 14px 18px; max-width: 980px; display: flex; flex-direction: column; gap: 6px; }
+.inbox { padding: 14px 18px; max-width: 980px; display: flex; flex-direction: column; gap: 6px; outline: none; }
+.inbox-head .inbox-filters { margin-top: 10px; align-self: flex-start; }
+/* A section of the inbox: its name and count over its rows. */
+.inbox-group {
+  margin: 10px 0 2px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+.inbox-group:first-child { margin-top: 0; }
+/* The keyboard's row (↑/↓, j/k). */
+.inbox-row.selected { background: var(--bg-hover); box-shadow: inset 0 0 0 1px var(--accent); }
 .inbox-row {
   display: flex;
   align-items: center;
