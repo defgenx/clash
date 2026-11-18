@@ -3828,6 +3828,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             remote::get_remote_info,
+            remote::set_remote_appearance,
             remote::set_remote_settings,
             remote::rotate_remote_token,
             remote::local_instance_status,

@@ -233,17 +233,20 @@ impl DaemonClient {
         }
     }
 
-    /// The session's visible screen as text rows.
+    /// The session's visible screen: text rows, and the coloured view.
     #[allow(dead_code)] // GUI-only: the phone remote's screen route (gui/src-tauri/src/remote.rs).
-    pub async fn screen(&mut self, session_id: &str) -> std::io::Result<Vec<String>> {
+    pub async fn screen(
+        &mut self,
+        session_id: &str,
+    ) -> std::io::Result<(Vec<String>, super::protocol::ScreenView)> {
         self.send(&Request::Screen {
             session_id: session_id.to_string(),
         })
         .await?;
         match self.recv_response().await? {
-            Event::Screen { lines, .. } => Ok(lines),
+            Event::Screen { lines, view, .. } => Ok((lines, view)),
             Event::Error { message } => Err(std::io::Error::other(message)),
-            _ => Ok(Vec::new()),
+            _ => Ok(Default::default()),
         }
     }
 

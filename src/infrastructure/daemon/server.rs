@@ -439,13 +439,17 @@ async fn handle_client(
             }
 
             Request::Screen { session_id } => {
-                let lines = sessions
+                let screen = sessions
                     .lock()
                     .await
                     .get(&session_id)
-                    .map(|s| s.screen_lines());
-                let event = match lines {
-                    Some(lines) => Event::Screen { session_id, lines },
+                    .map(|s| (s.screen_lines(), s.screen_view()));
+                let event = match screen {
+                    Some((lines, view)) => Event::Screen {
+                        session_id,
+                        lines,
+                        view,
+                    },
                     None => Event::Error {
                         message: format!("Session {} not found", session_id),
                     },

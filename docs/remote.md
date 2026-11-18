@@ -3,8 +3,28 @@
 clash can tell you, from your phone or from another machine's clash, whether an
 instance is running and what waits on you there — and, once you allow it, let
 you **answer it from your phone**: open a session, see its screen, pick an
-option of the prompt it is waiting on, press Enter/Esc/⌃C, queue a follow-up or
-stash it.
+option of the prompt it is waiting on, press Enter/Esc/⌃C, queue a follow-up,
+stash it, or answer a workflow item's decisions.
+
+## Same look as the desktop
+
+The phone page is the desktop GUI laid out for a phone, not a page of its own:
+
+- **The same stylesheet and components.** It loads the desktop's `style.css`
+  and builds the desktop's own markup: the sidebar's session rows and status
+  sections, the WORKFLOWS rows, the inbox tab, the Machines cards and the
+  Decisions cards. The status vocabulary (`status-info.js`) and the decision
+  model (`wf-decisions.js`) are the desktop's modules, served as-is.
+- **Your Mac's theme, always.** Whenever the desktop applies a theme or
+  changes the terminal font, it pushes its look (`set_remote_appearance`: the
+  theme's CSS custom properties exactly as `applyTheme` set them, light or
+  dark, the xterm palette and font). The page reads it from `/api/appearance`
+  on every poll and repaints. It never follows the phone's own light/dark
+  setting. A test fails if the page's CSS carries a colour of its own.
+- **Laid out for a phone.** The sidebar is a drawer (☰). The top bar shows
+  the open view as the desktop's active tab. The main area is the inbox, a
+  session or a workflow item. Rows and buttons are finger-sized, and inputs
+  use 16px so iOS doesn't zoom.
 
 ## The model: instances
 
@@ -39,10 +59,11 @@ inbox. The inbox rows are the desktop inbox's own (`attention.js`).
 
 Turn on **Settings → Remote → Allow actions from paired phones**
 (`remote.actions`, off by default). Then, on the phone page, tap a session in
-*Waiting on you*:
+the inbox or the sidebar:
 
-- **Its screen**, re-read every 1.5 s: the session's visible terminal as text,
-  the bottom of it first.
+- **Its screen**, re-read every 1.5 s, drawn by the desktop's terminal (xterm)
+  with your terminal palette and font. It is shrunk to the phone's width;
+  *Actual size* shows it at the desktop's size and scrolls sideways.
 - **The prompt on it**, when there is one — a permission dialog, a numbered
   question — as one big button per option (`1 · Yes`, `2 · Yes, and don't ask
   again…`, `3 · No…`), with the question above them.
@@ -58,6 +79,12 @@ takes **a second tap** within 3 seconds: the first one arms the button and says
 
 With actions off, the page still shows the inbox; tapping a session says the
 actions are off on that clash.
+
+Tap a workflow item to see where it stands and its **decisions** — the
+questions its agents asked in their hand-offs. Answer one by tapping an
+option (twice), typing your own words, or *Let the agent decide*. The answer
+is the one the desktop's Decisions tab records, and it reaches the item's next
+round the same way.
 
 ## Setting it up
 
@@ -131,17 +158,19 @@ Settings or by hand in `config.toml`. No restart is needed.
 
 | Route | Auth | Answer |
 |---|---|---|
-| `GET /remote/` (+ `remote.js`, `remote-model.js`, `attention.js`) | none | the remote page |
+| `GET /remote/` (+ `remote.js`, `remote-model.js`, `attention.js`, `status-info.js`, `wf-decisions.js`, `style.css`, `xterm.js`, `xterm.css`, `logo.svg`) | none | the remote page, and the desktop's own assets it uses |
+| `GET /api/appearance` | token | the look the desktop last pushed: `{ theme, light, vars, terminal }` (`{}` before the first) |
 | `GET /api/status` | token | `{ app: "clash", hostname, version, pid, startedAt, now, sessionsRunning, needsYou }` |
 | `GET /api/state` | token | `{ status, sessions, workflows }`, the lists the GUI last built |
-| `GET /api/sessions/{id}/screen` | token + actions | `{ lines, prompt }`: the visible rows, and `{ question, choices: [{ key, label }] }` when a numbered prompt is on screen (else `null`) |
+| `GET /api/sessions/{id}/screen` | token + actions | `{ lines, prompt, view }`: the visible rows; `{ question, choices: [{ key, label }] }` when a numbered prompt is on screen (else `null`); and `view`, the screen with its colours (`{ ansi, cols, rows, cursor, cursor_hidden }`, `ansi` = base64 of bytes that redraw it) |
 | `POST /api/sessions/{id}/keys` | token + actions | `{ "key": "1" }` → 204; an unknown key is 400 |
 | `POST /api/sessions/{id}/followup` | token + actions | `{ "text": "…" }` → `{ queued }` |
 | `POST /api/sessions/{id}/stash` | token + actions | 204 |
+| `POST /api/workflows/{project}/{slug}/decisions/{id}` | token + actions | `{ "answer": "a) …" }` → the item's decisions; empty or over 4000 characters is 400 |
 
-Action routes answer 403 while `remote.actions` is off, 404 for a session the
-GUI does not list, and 502 when the daemon refused (a stashed session has no
-screen).
+Action routes answer 403 while `remote.actions` is off, 404 for a session or
+workflow item the GUI does not list, and 502 when the daemon refused (a
+stashed session has no screen).
 
 `needsYou` counts the inbox rows (`application::remote::needs_you` mirrors
 `attentionRows`). `/api/state` reads the GUI's caches: the session list
@@ -157,22 +186,28 @@ the GUI's own refresh.
   `InstanceStatus`, `needs_you`, the named keys `key_bytes`, and
   `screen_prompt`, which finds a numbered prompt's options on a screen).
 - The daemon's `Screen` request (`daemon/protocol.rs`, answered from the
-  session's vt100 mirror): the screen as text.
+  session's vt100 mirror): the screen as text, and as `ScreenView` (the same
+  screen with its colours).
 - `gui/src-tauri/src/remote.rs`: the server (axum), the token file, the
   settings commands, the Machines view's commands, and the plain-HTTP client
   that polls peers.
 - `gui/dist/remote-model.js`: the client model shared by the Machines view and
   the remote page, including the session view's buttons and the second-tap
-  rule (`choiceButtons`, `KEY_BAR`, `tapButton`).
+  rule (`choiceButtons`, `KEY_BAR`, `tapButton`), and the phone's look
+  helpers (`lookVars`, `fitScale`, `sessionSections`).
+- `gui/dist/status-info.js`: the status vocabulary both the desktop and the
+  page use.
+- `pushRemoteAppearance` in `gui/dist/app.js`: what the desktop pushes.
 - `gui/dist/remote/`: the remote page.
 - The *Machines* section of `gui/dist/app.js`: the desktop view.
 
 ## Not yet
 
-- **Workflow decisions** from the phone: approving, signing off, requesting
-  changes, answering an item's ❓ decisions.
+- **Moving a workflow item** from the phone: approving, signing off,
+  requesting changes. Decisions can be answered; the stage stays the Mac's.
 - **A live terminal** on the phone (streamed output and free typing); the
-  session view shows the screen and answers prompts, but does not stream.
+  session view redraws the screen every 1.5 s and answers prompts, but does
+  not stream, and never types free text into a session.
 - **Actions from the desktop Machines view** on a paired clash.
 - **"Not running" vs "asleep"**: an always-on helper (a launchd agent) that
   answers when clash is closed and offers ▶ Start clash.

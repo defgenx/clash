@@ -404,6 +404,26 @@ impl PtySession {
         }
     }
 
+    /// The visible screen with its colours, for a remote terminal to redraw.
+    pub fn screen_view(&self) -> super::protocol::ScreenView {
+        use base64::Engine as _;
+        match self.screen.lock() {
+            Ok(p) => {
+                let screen = p.screen();
+                let (rows, cols) = screen.size();
+                super::protocol::ScreenView {
+                    ansi: base64::engine::general_purpose::STANDARD
+                        .encode(screen.contents_formatted()),
+                    cols,
+                    rows,
+                    cursor: screen.cursor_position(),
+                    cursor_hidden: screen.hide_cursor(),
+                }
+            }
+            Err(_) => Default::default(),
+        }
+    }
+
     /// Read the bottom N lines of the vt100 screen as plain text.
     fn read_bottom_lines(&self, n: u16) -> String {
         let parser = match self.screen.lock() {

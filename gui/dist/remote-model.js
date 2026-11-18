@@ -242,7 +242,38 @@
     return out.slice(-max);
   }
 
+  // ── The desktop's look, on the phone ────────────────────────────────
+
+  /// The CSS custom properties of a pushed look (`set_remote_appearance`),
+  /// as [name, value] pairs. Only `--token` names and plain values pass: the
+  /// look comes from another machine.
+  function lookVars(look) {
+    const vars = (look && look.vars) || {};
+    return Object.entries(vars).filter(
+      ([k, v]) => /^--[a-z0-9-]+$/.test(k) && typeof v === "string" && v.length < 200 && !/[;{}]/.test(v)
+    );
+  }
+
+  /// How much a terminal drawn at the desktop's font size shrinks to fit the
+  /// phone's width (never enlarged: 1 is the desktop's own size).
+  function fitScale(screenWidth, boxWidth) {
+    if (!(screenWidth > 0) || !(boxWidth > 0)) return 1;
+    return Math.min(1, boxWidth / screenWidth);
+  }
+
+  /// The sidebar's status sections, in the desktop's order, empty ones left
+  /// out. `sectionOf` is status-info.js's.
+  function sessionSections(sessions, sectionOf) {
+    const order = ["ACTIVE", "FAILED", "STASHED", "DONE"];
+    const by = Object.fromEntries(order.map((k) => [k, []]));
+    for (const s of sessions || []) (by[sectionOf(s)] || by.DONE).push(s);
+    return order.filter((k) => by[k].length).map((label) => ({ label, rows: by[label] }));
+  }
+
   const api = {
+    lookVars,
+    fitScale,
+    sessionSections,
     SCREEN_POLL_MS,
     ARM_MS,
     KEY_BAR,

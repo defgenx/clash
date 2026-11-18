@@ -4,197 +4,141 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="referrer" content="no-referrer" />
-<meta name="theme-color" content="#16171a" />
+<meta id="theme-color" name="theme-color" content="" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="mobile-web-app-capable" content="yes" />
 <title>clash remote</title>
+<!-- The desktop's own stylesheet: the phone page is the desktop laid out for a
+     phone, and the colours are the Mac's (pushed through /api/appearance). -->
+<link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="xterm.css" />
 <style>
-  :root {
-    --bg: #f6f6f4;
-    --bg-raised: #ffffff;
-    --fg: #1c1d20;
-    --fg-dim: #6b6d74;
-    --border: #e2e2de;
-    --accent: #d9822b;
-    --on-accent: #1c1d20;
-    --green: #2f9e5b;
-    --blue: #3a7bd5;
-    --red: #d1453b;
-    color-scheme: light;
+  /* Phone layout only. Every colour is a desktop token (a test pins it). */
+  html, body { height: 100%; overflow: hidden; }
+  body.remote { font-size: 14px; user-select: text; -webkit-text-size-adjust: 100%; }
+  #r-app { display: flex; height: 100%; padding-top: env(safe-area-inset-top); background: var(--bg-sidebar); }
+
+  /* The sidebar is a drawer: the desktop's sidebar, slid in from the left. */
+  body.remote #sidebar {
+    position: fixed; z-index: 20; top: 0; bottom: 0; left: 0;
+    width: min(88vw, 340px); min-width: 0;
+    padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+    transform: translateX(-102%); transition: transform 0.2s ease;
+    box-shadow: var(--shadow-strong);
   }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --bg: #16171a;
-      --bg-raised: #1f2024;
-      --fg: #e8e8e6;
-      --fg-dim: #8d8f96;
-      --border: #2d2f34;
-      --accent: #f0a04b;
-      --on-accent: #1c1d20;
-      --green: #4cc27a;
-      --blue: #6aa0f0;
-      --red: #ef6b61;
-      color-scheme: dark;
-    }
+  body.drawer-open #sidebar { transform: none; }
+  #r-scrim { position: fixed; inset: 0; z-index: 19; background: var(--scrim); opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+  body.drawer-open #r-scrim { opacity: 1; pointer-events: auto; }
+  #r-side-scroll { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: 12px; }
+  body.remote #session-list { flex: none; overflow: visible; min-height: 0; }
+  body.remote #sidebar .mx-list { padding: 4px 10px; }
+  body.remote #sidebar .mx-card { cursor: pointer; }
+  body.remote #sidebar .mx-card.r-selected { border-color: var(--accent); }
+  body.remote .mx-pair { padding: 0 10px; margin-top: 6px; }
+  body.remote #pair-note { padding: 4px 12px 0; }
+  .r-nav { cursor: pointer; }
+  .r-nav.selected { color: var(--fg); }
+
+  /* Touch: rows and buttons at least a finger tall; inputs at 16px so iOS
+     does not zoom the page when one gets focus. */
+  body.remote .session-item { padding: 9px 10px; }
+  body.remote .session-name { font-size: 14px; }
+  body.remote .session-sub { font-size: 12px; }
+  body.remote input, body.remote textarea { font-size: 16px !important; }
+  body.remote #search { padding: 8px 10px; }
+
+  body.remote #main { flex: 1; min-width: 0; background: var(--bg); }
+  body.remote #topbar { min-height: 44px; padding-right: 4px; }
+  body.remote #topbar .icon-btn { width: 44px; height: 44px; }
+  body.remote #tabs { overflow: hidden; }
+  body.remote .tab { height: 44px; font-size: 13px; min-width: 0; max-width: 100%; border-right: 0; }
+  #r-tab-title { overflow: hidden; text-overflow: ellipsis; }
+  .r-conn { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-dim); white-space: nowrap; max-width: 38vw; overflow: hidden; text-overflow: ellipsis; }
+  .r-conn .status-ring { margin: 0; }
+  #r-view { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+
+  /* Views reuse the desktop's tab bodies; only the gutters shrink. */
+  body.remote .wf-board-head { padding: 12px 12px 8px; }
+  body.remote .wf-board-search { width: 100%; }
+  body.remote .inbox { padding: 8px 10px; }
+  body.remote .inbox-row { flex-wrap: wrap; }
+  body.remote .wf-decisions { margin: 6px 10px 16px; }
+  .r-empty { margin: 32px 16px; text-align: center; color: var(--fg-dim); line-height: 1.5; }
+  .r-section { margin: 14px 10px 0; }
+  .r-section > .section-label { padding: 0 2px 6px; }
+  .r-error { margin: 10px; color: var(--red); font-size: 13px; }
+
+  /* A session: the terminal as the desktop draws it, shrunk to the width. */
+  .r-term-box { margin: 10px 10px 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--bg); }
+  .r-term-box.actual { overflow-x: auto; }
+  .r-term-scale { transform-origin: 0 0; padding: 6px; }
+  .r-term-tools { display: flex; align-items: center; gap: 8px; margin: 6px 10px 0; font-size: 11px; color: var(--fg-dim); }
+  .r-term-tools .spacer { flex: 1; }
+  .r-keys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 10px 10px 0; }
+  body.remote .r-keys button { padding: 11px 4px; font-size: 13px; }
+  /* The desktop's button look (style.css's baseline), finger-sized. */
+  .r-wide {
+    width: 100%; margin-top: 8px; padding: 11px 10px; font: inherit; font-size: 14px; font-weight: 600;
+    background: var(--bg-hover); color: var(--fg); border: 1px solid var(--border); border-radius: 5px; cursor: pointer;
   }
-  :root[data-theme="dark"] {
-    --bg: #16171a;
-    --bg-raised: #1f2024;
-    --fg: #e8e8e6;
-    --fg-dim: #8d8f96;
-    --border: #2d2f34;
-    --accent: #f0a04b;
-    --on-accent: #1c1d20;
-    --green: #4cc27a;
-    --blue: #6aa0f0;
-    --red: #ef6b61;
-    color-scheme: dark;
-  }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; background: var(--bg); color: var(--fg); }
-  body {
-    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
-    padding: env(safe-area-inset-top) 16px calc(24px + env(safe-area-inset-bottom));
-    overflow-x: hidden;
-    max-width: 640px;
-    margin: 0 auto;
-  }
-  header {
-    position: sticky; top: 0; z-index: 2;
-    display: flex; align-items: center; gap: 10px;
-    padding: 12px 0 10px; background: var(--bg);
-  }
-  header h1 { font-size: 17px; margin: 0; flex: 1; letter-spacing: 0.01em; }
-  .conn {
-    --c: var(--fg-dim);
-    display: inline-flex; align-items: center; gap: 6px; max-width: 70%;
-    font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 7px;
-    color: var(--c);
-    background: color-mix(in srgb, var(--c) 13%, transparent);
-    border: 1px solid color-mix(in srgb, var(--c) 30%, transparent);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .conn::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--c); flex: none; }
-  .conn.connected { --c: var(--green); }
-  .conn.reconnecting { --c: var(--accent); }
-  .conn.lost { --c: var(--red); }
-  .conn.reconnecting::before { animation: pulse 1.2s ease-in-out infinite; }
-  @keyframes pulse { 50% { opacity: 0.3; } }
-  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-dim); margin: 18px 0 8px; }
-  .card {
-    background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px;
-    padding: 12px 14px; margin-bottom: 8px; min-width: 0;
-  }
-  .machine { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 10px; align-items: center; cursor: pointer; }
-  .machine.selected { border-color: var(--accent); }
-  .dot { --c: var(--fg-dim); width: 10px; height: 10px; border-radius: 50%; background: var(--c); grid-row: span 2; }
-  .dot.connected { --c: var(--green); }
-  .dot.reconnecting, .dot.checking { --c: var(--accent); }
-  .dot.unreachable, .dot.unpaired { --c: var(--red); }
-  .m-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .m-detail { font-size: 13px; color: var(--fg-dim); grid-column: 2 / 4; min-width: 0; overflow-wrap: anywhere; }
-  .m-facts { font-size: 12px; color: var(--fg-dim); grid-column: 2 / 4; overflow-wrap: anywhere; }
-  .badge {
-    --c: var(--accent);
-    font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 6px; white-space: nowrap;
-    color: var(--c); background: color-mix(in srgb, var(--c) 14%, transparent);
-  }
-  .badge.zero { --c: var(--fg-dim); }
-  .row { display: flex; flex-direction: column; gap: 2px; }
-  .row .title { font-weight: 600; overflow-wrap: anywhere; }
-  .row .ctx { font-size: 12px; color: var(--fg-dim); overflow-wrap: anywhere; }
-  .row .why { font-size: 13px; }
-  .row.band-0 .why, .row.band-1 .why, .row.band-2 .why { color: var(--red); }
-  .row.band-3 .why { color: var(--accent); }
-  .empty { color: var(--fg-dim); font-size: 14px; padding: 8px 2px; }
-  form { display: flex; gap: 8px; margin-top: 8px; }
-  input[type="url"] {
-    flex: 1; min-width: 0; font: inherit; font-size: 14px; color: var(--fg);
-    background: var(--bg-raised); border: 1px solid var(--border); border-radius: 9px; padding: 9px 10px;
-  }
-  button {
-    font: inherit; font-size: 14px; font-weight: 600; border-radius: 9px; padding: 9px 12px;
-    border: 1px solid var(--border); background: var(--bg-raised); color: var(--fg); cursor: pointer;
-  }
-  button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
-  button.link { border: 0; background: none; color: var(--fg-dim); padding: 4px 0; font-weight: 500; font-size: 13px; }
-  .note { font-size: 12px; color: var(--fg-dim); margin: 6px 2px; }
-  .row.tappable { cursor: pointer; position: relative; padding-right: 30px; }
-  .row.tappable::after { content: "›"; position: absolute; right: 14px; top: 50%; transform: translateY(-50%); color: var(--fg-dim); font-size: 22px; }
-  .hidden { display: none !important; }
-  /* The session view replaces the lists while it is open. */
-  body.in-session #lists { display: none; }
-  #session h2 { margin-top: 4px; }
-  .s-head { display: flex; align-items: center; gap: 8px; }
-  .s-head .s-title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .s-error { color: var(--red); font-size: 14px; margin: 8px 2px; }
-  .s-question { font-weight: 600; margin-bottom: 8px; overflow-wrap: anywhere; }
-  .choices { display: flex; flex-direction: column; gap: 8px; }
-  .choices button { text-align: left; padding: 13px 14px; font-size: 15px; overflow-wrap: anywhere; }
-  button.armed { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
-  #s-screen {
-    margin: 0; padding: 10px; border-radius: 10px; border: 1px solid var(--border);
-    background: #0f1012; color: #d6d6d3; font: 10.5px/1.35 ui-monospace, "SF Mono", Menlo, monospace;
-    overflow: auto; max-height: 46vh; white-space: pre;
-  }
-  .keys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
-  .keys button { padding: 12px 6px; }
-  #followup-form { flex-direction: column; }
-  #followup-text {
-    font: inherit; font-size: 15px; color: var(--fg); min-height: 76px; resize: vertical;
-    background: var(--bg-raised); border: 1px solid var(--border); border-radius: 9px; padding: 9px 10px;
-  }
-  .s-actions { display: flex; gap: 8px; margin-top: 12px; }
-  .s-actions button { flex: 1; }
-  button.danger.armed { background: var(--red); border-color: var(--red); color: #fff; }
+  .r-wide.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .r-wide.danger { color: var(--red); }
+  body.remote .inbox-filters { display: flex; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+  body.remote .inbox-filters::-webkit-scrollbar { display: none; }
+  body.remote .inbox-filters .wf-seg { flex: none; }
+  body.remote .wf-board-search { max-width: none; }
+  body.remote .mx-pair button { padding: 0 14px; }
+  body.remote .wf-inline-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  button.armed { background: var(--accent) !important; color: var(--on-accent) !important; border-color: var(--accent) !important; }
+  button.danger.armed { background: var(--red) !important; border-color: var(--red) !important; }
+  .r-note { margin: 6px 12px 0; }
+  .wf-decision-option { width: 100%; text-align: left; }
+
+  /* A workflow item's header, like the desktop item tab's. */
+  .r-item-head { padding: 12px 12px 4px; }
+  .r-item-head h2 { margin: 0 0 4px; font-size: 16px; line-height: 1.3; }
+  .r-item-sub { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 12px; color: var(--fg-dim); }
 </style>
 </head>
-<body>
-  <header>
-    <h1>clash</h1>
-    <span id="conn" class="conn" role="status" aria-live="polite">No instance paired</span>
-  </header>
-
-  <div id="lists">
-  <h2>Instances</h2>
-  <div id="machines"></div>
-  <form id="pair-form" autocomplete="off">
-    <input id="pair-link" type="url" placeholder="Paste a pairing link from clash Settings" inputmode="url" />
-    <button class="primary" type="submit">Pair</button>
-  </form>
-  <p id="pair-note" class="note"></p>
-
-  <h2 id="inbox-title">Waiting on you</h2>
-  <div id="inbox"></div>
-  <p class="note">Tap a session to see its screen and answer it — that clash needs Settings → Remote → Allow actions.</p>
+<body class="remote">
+  <div id="r-app">
+    <aside id="sidebar" aria-label="Sidebar">
+      <div id="sidebar-header">
+        <img class="logo" src="logo.svg" alt="clash" />
+        <span class="badge">REMOTE</span>
+        <span class="spacer"></span>
+        <button id="r-close" class="icon-btn" type="button" aria-label="Close the sidebar">✕</button>
+      </div>
+      <div id="r-side-scroll">
+        <div class="section-label">MACHINES</div>
+        <div id="r-machines" class="mx-list"></div>
+        <form id="pair-form" class="mx-pair" autocomplete="off">
+          <input id="pair-link" class="wf-board-search" type="url" placeholder="Paste a pairing link" inputmode="url" />
+          <button class="primary" type="submit">Pair</button>
+        </form>
+        <p id="pair-note" class="hint"></p>
+        <div id="r-inbox-nav" class="section-label r-nav">INBOX <span id="r-inbox-count" class="count">0</span></div>
+        <div id="search-wrap"><input id="search" type="search" placeholder="Search sessions…" autocomplete="off" spellcheck="false" /></div>
+        <div id="session-list"></div>
+        <div id="wf-section"><div id="wf-list"></div></div>
+      </div>
+    </aside>
+    <div id="r-scrim"></div>
+    <main id="main">
+      <div id="topbar">
+        <button id="r-menu" class="icon-btn" type="button" aria-label="Open the sidebar">☰</button>
+        <div id="tabs"><div id="r-tab" class="tab active"><span id="r-tab-dot" class="tab-dot"></span><span id="r-tab-title">Inbox</span></div></div>
+        <div id="topbar-actions"><span id="conn" class="r-conn" role="status" aria-live="polite"></span></div>
+      </div>
+      <div id="r-view"></div>
+    </main>
   </div>
 
-  <section id="session" class="hidden" aria-label="Session">
-    <div class="s-head">
-      <button id="s-back" class="link" type="button">‹ Back</button>
-      <span id="s-title" class="s-title"></span>
-    </div>
-    <p id="s-error" class="s-error hidden" role="alert"></p>
-    <div id="s-prompt" class="card hidden">
-      <div id="s-question" class="s-question"></div>
-      <div id="s-choices" class="choices"></div>
-    </div>
-    <h2>Screen</h2>
-    <pre id="s-screen" aria-label="The session's screen"></pre>
-    <div id="s-keys" class="keys"></div>
-    <h2>Follow-up</h2>
-    <form id="followup-form" autocomplete="off">
-      <textarea id="followup-text" placeholder="Sent when the session is next idle at its prompt"></textarea>
-      <button class="primary" type="submit">Queue follow-up</button>
-    </form>
-    <p id="s-note" class="note"></p>
-    <div class="s-actions">
-      <button id="s-stash" class="danger" type="button">Stash session</button>
-    </div>
-    <p class="note">A button that answers, interrupts or stashes asks for a second tap.</p>
-  </section>
-
+  <script src="xterm.js"></script>
+  <script src="status-info.js"></script>
   <script src="attention.js"></script>
+  <script src="wf-decisions.js"></script>
   <script src="remote-model.js"></script>
   <script src="remote.js"></script>
 </body>

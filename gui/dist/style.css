@@ -5195,7 +5195,11 @@ a.wf-wave-ticket.wf-chip:hover { --chip: var(--accent); }
 .mx-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mx-needs { margin-left: auto; font-size: 11px; font-weight: 700; color: var(--fg-dim); }
 .mx-needs.hot { color: var(--accent); }
-.mx-forget { margin-left: 8px; font-size: 11px; padding: 2px 8px; }
+.mx-forget {
+  margin-left: 8px; font: inherit; font-size: 11px; padding: 2px 8px; cursor: pointer;
+  background: var(--bg-hover); color: var(--fg-dim); border: 1px solid var(--border); border-radius: 5px;
+}
+.mx-forget:hover { color: var(--red); border-color: var(--red); }
 .mx-top .mx-needs + .mx-forget { margin-left: 8px; }
 .mx-detail { font-size: 12px; color: var(--fg-dim); margin-top: 3px; }
 .mx-facts { font-size: 12px; margin-top: 2px; }

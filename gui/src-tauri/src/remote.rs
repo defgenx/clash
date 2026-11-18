@@ -29,6 +29,9 @@ static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 /// The pairing token every `/api/*` call must present. Empty = nobody.
 static TOKEN: Mutex<String> = Mutex::new(String::new());
+/// The desktop's current look (theme colours, terminal palette and font), as
+/// its frontend last pushed it: the phone page paints itself with it.
+static APPEARANCE: Mutex<Option<serde_json::Value>> = Mutex::new(None);
 
 struct Running {
     addr: SocketAddr,
@@ -215,6 +218,14 @@ const PAGE: &str = include_str!("../../dist/remote/index.html");
 const PAGE_JS: &str = include_str!("../../dist/remote/remote.js");
 const MODEL_JS: &str = include_str!("../../dist/remote-model.js");
 const ATTENTION_JS: &str = include_str!("../../dist/attention.js");
+// The desktop's own stylesheet, status vocabulary, decision model and terminal:
+// the phone page is the desktop's look laid out for a phone, never a copy.
+const STYLE_CSS: &str = include_str!("../../dist/style.css");
+const STATUS_JS: &str = include_str!("../../dist/status-info.js");
+const DECISIONS_JS: &str = include_str!("../../dist/wf-decisions.js");
+const XTERM_JS: &str = include_str!("../../dist/vendor/xterm.js");
+const XTERM_CSS: &str = include_str!("../../dist/vendor/xterm.css");
+const LOGO_SVG: &str = include_str!("../../dist/logo.svg");
 
 type Fut<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 type Act<A, T> = std::sync::Arc<dyn Fn(String, A) -> Fut<Result<T, String>> + Send + Sync>;
@@ -230,7 +241,17 @@ struct Source {
     /// Whether the GUI's session list holds this id (a phone acts only on a
     /// session it was shown).
     known: std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>,
-    screen: Act<(), Vec<String>>,
+    screen: Act<
+        (),
+        (
+            Vec<String>,
+            clash::infrastructure::daemon::protocol::ScreenView,
+        ),
+    >,
+    /// Whether the GUI's workflow list holds `<project>/<slug>`.
+    item_known: std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    /// Answer decision `.0` of item `<project>/<slug>` with `.1`.
+    decide: Act<(String, String), serde_json::Value>,
     keys: Act<&'static [u8], ()>,
     followup: Act<String, usize>,
     stash: Act<(), ()>,
@@ -248,7 +269,32 @@ fn gui_source(app: AppHandle) -> Source {
     let for_keys = app.clone();
     let for_followup = app.clone();
     let for_stash = app.clone();
+    let for_items = app.clone();
+    let for_decide = app.clone();
     Source {
+        item_known: std::sync::Arc::new(move |key| {
+            for_items
+                .state::<GuiState>()
+                .last_workflows
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|i| format!("{}/{}", i.project, i.slug) == key)
+        }),
+        decide: std::sync::Arc::new(move |key, (id, answer)| {
+            let app = for_decide.clone();
+            Box::pin(async move {
+                let (project, slug) = key.split_once('/').ok_or("bad item")?;
+                let records = crate::workflows::answer_workflow_decision(
+                    app.state::<GuiState>(),
+                    project.to_string(),
+                    slug.to_string(),
+                    id,
+                    answer,
+                )?;
+                serde_json::to_value(records).map_err(|e| e.to_string())
+            })
+        }),
         actions: std::sync::Arc::new(move || {
             for_actions.state::<GuiState>().config.get().remote.actions
         }),
@@ -319,6 +365,26 @@ fn router(source: Source) -> Router {
             "/remote/attention.js",
             get(|| async { page(ATTENTION_JS, JS) }),
         )
+        .route("/remote/style.css", get(|| async { page(STYLE_CSS, CSS) }))
+        .route(
+            "/remote/status-info.js",
+            get(|| async { page(STATUS_JS, JS) }),
+        )
+        .route(
+            "/remote/wf-decisions.js",
+            get(|| async { page(DECISIONS_JS, JS) }),
+        )
+        .route("/remote/xterm.js", get(|| async { page(XTERM_JS, JS) }))
+        .route("/remote/xterm.css", get(|| async { page(XTERM_CSS, CSS) }))
+        .route(
+            "/remote/logo.svg",
+            get(|| async { page(LOGO_SVG, "image/svg+xml") }),
+        )
+        .route("/api/appearance", get(api_appearance).options(preflight))
+        .route(
+            "/api/workflows/{project}/{slug}/decisions/{id}",
+            post(api_decide).options(preflight),
+        )
         .route("/api/status", get(api_status).options(preflight))
         .route("/api/state", get(api_state).options(preflight))
         .route(
@@ -338,6 +404,7 @@ fn router(source: Source) -> Router {
 }
 
 const JS: &str = "text/javascript; charset=utf-8";
+const CSS: &str = "text/css; charset=utf-8";
 
 fn redirect_to_page() -> Response {
     (StatusCode::FOUND, [(header::LOCATION, "/remote/")]).into_response()
@@ -436,9 +503,24 @@ async fn api_state(AxState(src): AxState<Source>, headers: HeaderMap) -> Respons
     cors(axum::Json((src.state)()).into_response())
 }
 
+/// The desktop's look, as its frontend last pushed it (`{}` before the first).
+async fn api_appearance(headers: HeaderMap) -> Response {
+    if !authorized(&headers) {
+        return unauthorized();
+    }
+    let look = APPEARANCE.lock().unwrap().clone();
+    cors(axum::Json(look.unwrap_or_else(|| serde_json::json!({}))).into_response())
+}
+
+/// What an action acts on: a session, or a workflow item `<project>/<slug>`.
+enum Target<'a> {
+    Session(&'a str),
+    Item(&'a str),
+}
+
 /// Why an action route refused, or `None` to go ahead: the token first, then
-/// `remote.actions`, then a session the GUI actually lists.
-fn refuse(src: &Source, headers: &HeaderMap, id: &str) -> Option<Response> {
+/// `remote.actions`, then a session (or item) the GUI actually lists.
+fn refuse(src: &Source, headers: &HeaderMap, target: Target) -> Option<Response> {
     if !authorized(headers) {
         return Some(unauthorized());
     }
@@ -451,10 +533,12 @@ fn refuse(src: &Source, headers: &HeaderMap, id: &str) -> Option<Response> {
                 .into_response(),
         ));
     }
-    if !(src.known)(id) {
-        return Some(cors(
-            (StatusCode::NOT_FOUND, "no such session").into_response(),
-        ));
+    let (listed, what) = match target {
+        Target::Session(id) => ((src.known)(id), "no such session"),
+        Target::Item(key) => ((src.item_known)(key), "no such workflow item"),
+    };
+    if !listed {
+        return Some(cors((StatusCode::NOT_FOUND, what).into_response()));
     }
     None
 }
@@ -469,14 +553,15 @@ async fn api_screen(
     AxPath(id): AxPath<String>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(r) = refuse(&src, &headers, &id) {
+    if let Some(r) = refuse(&src, &headers, Target::Session(&id)) {
         return r;
     }
     match (src.screen)(id, ()).await {
-        Ok(lines) => {
+        Ok((lines, view)) => {
             let prompt = core::screen_prompt(&lines);
             cors(
-                axum::Json(serde_json::json!({ "lines": lines, "prompt": prompt })).into_response(),
+                axum::Json(serde_json::json!({ "lines": lines, "prompt": prompt, "view": view }))
+                    .into_response(),
             )
         }
         Err(e) => failed(e),
@@ -495,7 +580,7 @@ async fn api_keys(
     headers: HeaderMap,
     axum::Json(body): axum::Json<KeyBody>,
 ) -> Response {
-    if let Some(r) = refuse(&src, &headers, &id) {
+    if let Some(r) = refuse(&src, &headers, Target::Session(&id)) {
         return r;
     }
     let Some(bytes) = core::key_bytes(&body.key) else {
@@ -519,7 +604,7 @@ async fn api_followup(
     headers: HeaderMap,
     axum::Json(body): axum::Json<FollowupBody>,
 ) -> Response {
-    if let Some(r) = refuse(&src, &headers, &id) {
+    if let Some(r) = refuse(&src, &headers, Target::Session(&id)) {
         return r;
     }
     match (src.followup)(id, body.text).await {
@@ -534,12 +619,40 @@ async fn api_stash(
     AxPath(id): AxPath<String>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(r) = refuse(&src, &headers, &id) {
+    if let Some(r) = refuse(&src, &headers, Target::Session(&id)) {
         return r;
     }
     match (src.stash)(id, ()).await {
         Ok(()) => cors(StatusCode::NO_CONTENT.into_response()),
         Err(e) => failed(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct DecideBody {
+    answer: String,
+}
+
+/// Answer a workflow decision, as its Decisions tab does: the answer reaches
+/// the item's next round. Free text is capped; an option's answer is
+/// `<key>) <text>`.
+async fn api_decide(
+    AxState(src): AxState<Source>,
+    AxPath((project, slug, id)): AxPath<(String, String, String)>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<DecideBody>,
+) -> Response {
+    let key = format!("{project}/{slug}");
+    if let Some(r) = refuse(&src, &headers, Target::Item(&key)) {
+        return r;
+    }
+    let answer = body.answer.trim().to_string();
+    if answer.is_empty() || answer.len() > core::MAX_DECISION_ANSWER {
+        return cors((StatusCode::BAD_REQUEST, "an answer of 1–4000 characters").into_response());
+    }
+    match (src.decide)(key, (id, answer)).await {
+        Ok(records) => cors(axum::Json(records).into_response()),
+        Err(e) => cors((StatusCode::BAD_REQUEST, e).into_response()),
     }
 }
 
@@ -614,6 +727,13 @@ pub(crate) fn set_remote_settings(
     state.config.set_json(&patch).map_err(|e| e.to_string())?;
     apply(&app);
     Ok(info(&app))
+}
+
+/// The frontend's current look, pushed on every theme or terminal-font change
+/// so the phone page always matches this window.
+#[tauri::command]
+pub(crate) fn set_remote_appearance(appearance: serde_json::Value) {
+    *APPEARANCE.lock().unwrap() = Some(appearance);
 }
 
 /// Replace the pairing token: every paired phone has to pair again.
@@ -893,6 +1013,23 @@ mod tests {
             http_get(&base, "/remote/attention.js", "").await.unwrap().0,
             200
         );
+        for asset in [
+            "style.css",
+            "status-info.js",
+            "wf-decisions.js",
+            "xterm.js",
+            "xterm.css",
+        ] {
+            let (code, _) = http_get(&base, &format!("/remote/{asset}"), "")
+                .await
+                .unwrap();
+            assert_eq!(code, 200, "{asset}");
+        }
+        assert_eq!(http_get(&base, "/api/appearance", "").await.unwrap().0, 401);
+        assert_eq!(
+            http_get(&base, "/api/appearance", &token).await.unwrap().0,
+            200
+        );
         assert_eq!(http_get(&base, "/remote", "").await.unwrap().0, 302);
         assert_eq!(http_get(&base, "/nope", "").await.unwrap().0, 404);
         // Nothing listens there: an error, not a hang.
@@ -925,12 +1062,28 @@ mod tests {
             known: Arc::new(|id| id == "s1"),
             screen: Arc::new(|_, ()| {
                 Box::pin(async {
-                    Ok(vec![
-                        "Do you want to proceed?".to_string(),
-                        "❯ 1. Yes".to_string(),
-                        "  2. No".to_string(),
-                    ])
+                    let view = clash::infrastructure::daemon::protocol::ScreenView {
+                        ansi: "G1tI".into(),
+                        cols: 80,
+                        rows: 24,
+                        ..Default::default()
+                    };
+                    Ok((
+                        vec![
+                            "Do you want to proceed?".to_string(),
+                            "❯ 1. Yes".to_string(),
+                            "  2. No".to_string(),
+                        ],
+                        view,
+                    ))
                 })
+            }),
+            item_known: Arc::new(|key| key == "proj/item"),
+            decide: Arc::new(|key, (id, answer)| {
+                LOG.lock()
+                    .unwrap()
+                    .push(format!("decide {key} {id} {answer}"));
+                Box::pin(async { Ok(serde_json::json!([{ "id": "D1", "status": "answered" }])) })
             }),
             keys: Arc::new(|id, bytes| {
                 LOG.lock().unwrap().push(format!("keys {id} {bytes:?}"));
@@ -1023,6 +1176,10 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["prompt"]["question"], "Do you want to proceed?");
         assert_eq!(v["prompt"]["choices"][1]["key"], "2");
+        assert_eq!(
+            (v["view"]["cols"].as_u64(), v["view"]["ansi"].as_str()),
+            (Some(80), Some("G1tI"))
+        );
 
         assert_eq!(
             raw(
@@ -1063,6 +1220,47 @@ mod tests {
                 .0,
             204
         );
+        // A decision: only on an item the GUI lists, never an empty answer.
+        let decide = |path: &'static str, body: &'static str| {
+            let (on, token) = (on.clone(), token.clone());
+            async move { raw(&on, "POST", path, &token, body).await }
+        };
+        assert_eq!(
+            decide(
+                "/api/workflows/proj/other/decisions/D1",
+                r#"{"answer":"a) yes"}"#
+            )
+            .await
+            .0,
+            404
+        );
+        assert_eq!(
+            decide(
+                "/api/workflows/proj/item/decisions/D1",
+                r#"{"answer":"  "}"#
+            )
+            .await
+            .0,
+            400
+        );
+        let (code, body) = decide(
+            "/api/workflows/proj/item/decisions/D1",
+            r#"{"answer":"a) yes"}"#,
+        )
+        .await;
+        assert_eq!((code, body.contains("answered")), (200, true));
+        assert_eq!(
+            raw(
+                &off,
+                "POST",
+                "/api/workflows/proj/item/decisions/D1",
+                &token,
+                r#"{"answer":"a"}"#
+            )
+            .await
+            .0,
+            403
+        );
         // The preflight lets a page on another instance POST with a JSON body.
         let (code, _) = raw(&on, "OPTIONS", "/api/sessions/s1/keys", "", "").await;
         assert_eq!(code, 204);
@@ -1089,7 +1287,11 @@ mod tests {
         }
         // Every API route checks the token first; every action route goes
         // through `refuse` (token, then remote.actions, then a listed session).
-        for handler in ["async fn api_status(", "async fn api_state("] {
+        for handler in [
+            "async fn api_status(",
+            "async fn api_state(",
+            "async fn api_appearance(",
+        ] {
             let body = http.split_once(handler).unwrap().1;
             let first = body.split_once('}').unwrap().0;
             assert!(first.contains("if !authorized(&headers)"), "{handler}");
@@ -1099,6 +1301,7 @@ mod tests {
             "async fn api_keys(",
             "async fn api_followup(",
             "async fn api_stash(",
+            "async fn api_decide(",
         ] {
             let body = http.split_once(handler).unwrap().1;
             let first = body.split_once("if let Some(r) = refuse(").map(|(a, _)| a);

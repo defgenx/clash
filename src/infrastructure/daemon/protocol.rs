@@ -121,11 +121,31 @@ pub enum Event {
     /// Pong (keepalive response).
     Pong,
 
-    /// Response to Screen: the visible rows, trailing blanks trimmed.
+    /// Response to Screen: the visible rows, trailing blanks trimmed, and the
+    /// same screen with its colours (see `ScreenView`).
     Screen {
         session_id: String,
         lines: Vec<String>,
+        #[serde(default)]
+        view: ScreenView,
     },
+}
+
+/// The visible screen as a terminal draws it: `ansi` is base64 of bytes that
+/// repaint it, colours included, on a blank terminal of `cols` × `rows`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScreenView {
+    #[serde(default)]
+    pub ansi: String,
+    #[serde(default)]
+    pub cols: u16,
+    #[serde(default)]
+    pub rows: u16,
+    /// (row, col) of the cursor, 0-based.
+    #[serde(default)]
+    pub cursor: (u16, u16),
+    #[serde(default)]
+    pub cursor_hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

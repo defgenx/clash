@@ -71,6 +71,9 @@ pub fn is_loopback(addr: &SocketAddr) -> bool {
     addr.ip().is_loopback()
 }
 
+/// The longest decision answer the phone may send (a paragraph, not a file).
+pub const MAX_DECISION_ANSWER: usize = 4000;
+
 /// One address `remote.bind` could listen on, as Settings offers it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BindChoice {

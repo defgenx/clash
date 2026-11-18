@@ -119,7 +119,7 @@ test("the browser branch publishes every name the GUI and the phone page use", (
     assert.ok(name in win, `${name} must be on window`);
     assert.ok(app.includes(name), `app.js is expected to use ${name}`);
   }
-  for (const name of ["pairingToken", "addInstance", "removeInstance", "loadInstances", "saveInstances", "recordPoll", "instanceView", "connectionIndicator", "remoteAgo"]) {
+  for (const name of ["pairingToken", "addInstance", "removeInstance", "loadInstances", "saveInstances", "recordPoll", "instanceView", "connectionIndicator", "lookVars", "fitScale", "sessionSections"]) {
     assert.ok(name in win, `${name} must be on window`);
     assert.ok(page.includes(name), `remote.js is expected to use ${name}`);
   }
@@ -167,4 +167,50 @@ test("the screen shows its last rows without the blank ones below the prompt", (
   assert.match(m.actionError(403), /Allow actions/);
   assert.match(m.actionError(404), /gone/);
   assert.match(m.actionError(502), /isn't running/);
+});
+
+test("the phone paints itself with the desktop's look, and nothing else", () => {
+  const look = { vars: { "--bg": "#141414", "--accent": "#e8a33d", color: "red", "--x": "red; } body { display:none" } };
+  assert.deepEqual(m.lookVars(look), [["--bg", "#141414"], ["--accent", "#e8a33d"]]);
+  assert.deepEqual(m.lookVars(null), []);
+  assert.equal(m.fitScale(800, 400), 0.5);
+  assert.equal(m.fitScale(300, 400), 1, "never enlarged past the desktop's size");
+  assert.equal(m.fitScale(0, 400), 1);
+});
+
+test("the phone's sidebar lists sessions in the desktop's sections and order", () => {
+  const { sectionOf } = require("../dist/status-info.js");
+  const rows = [
+    { id: "a", status: "done" },
+    { id: "b", is_running: true, status: "Waiting" },
+    { id: "c", status: "idle" },
+    { id: "d", status: "Errored" },
+  ];
+  assert.deepEqual(
+    m.sessionSections(rows, sectionOf).map((g) => [g.label, g.rows.map((r) => r.id)]),
+    [["ACTIVE", ["b"]], ["FAILED", ["d"]], ["STASHED", ["c"]], ["DONE", ["a"]]]
+  );
+});
+
+test("the phone page is the desktop's look: its stylesheet, tokens and components", () => {
+  const dir = path.join(__dirname, "..", "dist");
+  const html = fs.readFileSync(path.join(dir, "remote", "index.html"), "utf8");
+  const page = fs.readFileSync(path.join(dir, "remote", "remote.js"), "utf8");
+  // The desktop's own stylesheet, status vocabulary and terminal — never a copy.
+  for (const s of ['href="style.css"', 'href="xterm.css"', 'src="status-info.js"', 'src="wf-decisions.js"', 'src="xterm.js"'])
+    assert.ok(html.includes(s), s);
+  // No palette of its own: every colour in the phone CSS is a desktop token.
+  const css = html.split("<style>")[1].split("</style>")[0];
+  assert.doesNotMatch(css, /:[^;{}]*#[0-9a-f]{3,8}\b/i, "no hex colour in the phone CSS");
+  assert.doesNotMatch(css, /rgba?\(/, "no literal colour in the phone CSS");
+  assert.doesNotMatch(css, /prefers-color-scheme/, "the Mac's theme decides, not the phone's");
+  // It applies the desktop's pushed look and draws rows with the desktop's classes.
+  assert.match(page, /\/api\/appearance/);
+  assert.match(page, /lookVars\(/);
+  for (const cls of ["session-item", "status-ring", "status-label", "section-label", "inbox-row", "wf-decision-option", "mx-card"])
+    assert.ok(page.includes(cls), cls);
+  // The desktop pushes its look on every theme or terminal-font change.
+  const app = fs.readFileSync(path.join(dir, "app.js"), "utf8");
+  assert.match(app, /function applyTheme[\s\S]*?pushRemoteAppearance\(\);\n\}/);
+  assert.match(app, /function applyTermOption[\s\S]*?pushRemoteAppearance\(\);/);
 });
