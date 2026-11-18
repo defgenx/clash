@@ -20427,6 +20427,22 @@ function renderRemoteInfo(info) {
       ? `Serving on ${info.listening}. Open the pairing link on your phone, or paste it in another clash's Machines view.`
       : "Off.";
   $("remote-copy-link").disabled = !info.pairingUrl;
+  const qr = $("remote-qr");
+  qr.hidden = !info.pairingQr;
+  qr.innerHTML = info.pairingQr || ""; // an SVG the backend drew from the link
+  const choices = $("remote-choices");
+  choices.textContent = "";
+  for (const c of info.choices || []) {
+    const b = document.createElement("button");
+    b.className = "remote-choice" + (c.bind === info.bind ? " active" : "");
+    b.textContent = c.label;
+    b.title = `Listen on ${c.bind}` + (c.reach === "lan" ? " — anyone on this network can try the token, and traffic is not encrypted" : "");
+    b.onclick = () => {
+      $("set-remote-bind").value = c.bind;
+      setRemote({ bind: c.bind });
+    };
+    choices.appendChild(b);
+  }
 }
 async function setRemote(patch) {
   try {

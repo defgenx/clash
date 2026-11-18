@@ -34,6 +34,8 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
+# The pairing link as a QR code in Settings → Remote (SVG only, no image deps).
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

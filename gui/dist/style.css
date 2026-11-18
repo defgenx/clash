@@ -742,6 +742,22 @@ body.ws-dragging, body.ws-dragging * { cursor: grabbing !important; user-select:
   text-align: center;
 }
 .update-big:hover { border-color: var(--accent); color: var(--accent); }
+/* Settings → Remote: the addresses this Mac can listen on, and the pairing QR. */
+.remote-choices { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.remote-choice {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 3px 9px;
+}
+.remote-choice:hover { border-color: var(--accent); color: var(--fg); }
+.remote-choice.active { border-color: var(--accent); color: var(--accent); }
+/* White behind the code whatever the theme: a phone camera needs the contrast. */
+.remote-qr { align-self: flex-start; background: #fff; border-radius: 6px; line-height: 0; padding: 6px; }
+.remote-qr svg { display: block; height: 200px; width: 200px; }
 .footer-row { display: flex; align-items: center; gap: 6px; }
 /* A release the background check found: the version label is the button. */
 #version.has-update { color: var(--accent); font-weight: 600; cursor: pointer; }

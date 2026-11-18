@@ -63,19 +63,27 @@ actions are off on that clash.
 
 1. On the machine whose clash you want to see: **Settings → Trackers & sharing →
    Remote**, tick **Serve the remote page**.
-2. Choose the address it listens on (`remote.bind`):
-   - `127.0.0.1:7878` (the default): this machine only. Another clash on the
+2. Choose the address it listens on (`remote.bind`). Settings lists the ones
+   this Mac has, one click each:
+   - **This Mac only** (`127.0.0.1:7878`, the default). Another clash on the
      same machine can pair with it; your phone cannot reach it.
-   - your **Tailscale** address, e.g. `100.101.102.103:7878`: every device on
-     your tailnet, including your phone (with the Tailscale app connected).
-     Find it with `tailscale ip -4`.
-   - a LAN address works too, but then anyone on that network can try the
-     token, and the traffic is not encrypted (see below).
-3. **Copy pairing link**, then:
-   - on your phone, open it in Safari (send it to yourself through something
-     private). The page remembers the instance and drops the token from the
-     address bar. *Add to Home Screen* makes it an app-like icon.
-   - in another clash, paste it in **Machines → Paste a pairing link**.
+   - **Tailscale** (`100.x.y.z:7878`): every device on your tailnet, including
+     your phone with the Tailscale app connected. It is offered only while
+     Tailscale is up.
+   - **Local network** (the Wi-Fi address on `en0`, e.g. `10.0.0.12:7878`):
+     your phone on the same Wi-Fi. Anyone else on that network can try the
+     token too, and traffic is not encrypted (see below). Office and guest
+     networks often block one device from reaching another, and then the page
+     never loads.
+
+   VM bridges and other VPN interfaces aren't offered, since a phone can't
+   reach them. Any other `host:port` can still be typed in.
+3. Pair:
+   - **a phone**: scan the QR code under the address with the Camera app and
+     open the link, or **Copy pairing link** and send it to yourself through
+     something private. The page remembers the instance and drops the token
+     from the address bar. *Add to Home Screen* makes it an app-like icon.
+   - **another clash**: paste the link in **Machines → Paste a pairing link**.
 
 The server starts, moves or stops as soon as you change the setting, whether in
 Settings or by hand in `config.toml`. No restart is needed.

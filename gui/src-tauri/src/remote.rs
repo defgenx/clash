@@ -63,6 +63,45 @@ fn hostname() -> String {
     String::from_utf8_lossy(&buf[..end]).into_owned()
 }
 
+/// This machine's IPv4 interfaces (name, address), for `bind_choices`.
+fn ipv4_interfaces() -> Vec<(String, std::net::Ipv4Addr)> {
+    let mut out = Vec::new();
+    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs fills `head` with a list we walk read-only and free
+    // once with freeifaddrs; every pointer is null-checked before use.
+    unsafe {
+        if libc::getifaddrs(&mut head) != 0 {
+            return out;
+        }
+        let mut cur = head;
+        while !cur.is_null() {
+            let ifa = &*cur;
+            if !ifa.ifa_addr.is_null() && i32::from((*ifa.ifa_addr).sa_family) == libc::AF_INET {
+                let sin = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+                let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+                let name = std::ffi::CStr::from_ptr(ifa.ifa_name)
+                    .to_string_lossy()
+                    .into_owned();
+                out.push((name, ip));
+            }
+            cur = ifa.ifa_next;
+        }
+        libc::freeifaddrs(head);
+    }
+    out
+}
+
+/// The pairing link as an SVG QR code, for a phone's camera.
+fn qr_svg(url: &str) -> Option<String> {
+    let code = qrcode::QrCode::new(url.as_bytes()).ok()?;
+    Some(
+        code.render::<qrcode::render::svg::Color>()
+            .min_dimensions(200, 200)
+            .quiet_zone(true)
+            .build(),
+    )
+}
+
 /// The pairing token, created on first use: 32 bytes from the OS RNG, written
 /// 0600 through a temp file and a rename so a reader never sees half of it.
 fn load_or_create_token(rotate: bool) -> std::io::Result<String> {
@@ -517,21 +556,31 @@ pub(crate) struct RemoteInfo {
     error: Option<String>,
     /// The link that pairs a phone — carries the token in its fragment.
     pairing_url: Option<String>,
+    /// The same link as an SVG QR code.
+    pairing_qr: Option<String>,
+    /// Addresses `bind` could take on this machine, for one-click picking.
+    choices: Vec<core::BindChoice>,
 }
 
 fn info(app: &AppHandle) -> RemoteInfo {
     let cfg = app.state::<GuiState>().config.get().remote;
     let listening = RUNNING.lock().unwrap().as_ref().map(|r| r.addr);
     let token = TOKEN.lock().unwrap().clone();
+    let pairing_url = listening
+        .filter(|_| !token.is_empty())
+        .map(|a| core::pairing_url(&a, &hostname(), &token));
+    let port = core::parse_bind(&cfg.bind)
+        .map(|a| a.port())
+        .unwrap_or(7878);
     RemoteInfo {
         enabled: cfg.enabled,
         bind: cfg.bind,
         actions: cfg.actions,
         listening: listening.map(|a| a.to_string()),
         error: LAST_ERROR.lock().unwrap().clone(),
-        pairing_url: listening
-            .filter(|_| !token.is_empty())
-            .map(|a| core::pairing_url(&a, &hostname(), &token)),
+        pairing_qr: pairing_url.as_deref().and_then(qr_svg),
+        pairing_url,
+        choices: core::bind_choices(&ipv4_interfaces(), port),
     }
 }
 
@@ -777,6 +826,18 @@ async fn http_get(base: &str, path: &str, token: &str) -> Result<(u16, Vec<u8>),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_settings_read_this_machines_addresses_and_draw_the_link() {
+        let ifaces = ipv4_interfaces();
+        assert!(ifaces.iter().any(|(_, ip)| ip.is_loopback()), "{ifaces:?}");
+        let svg = qr_svg(&format!(
+            "http://10.0.0.2:7878/remote/#token={}",
+            "ab".repeat(32)
+        ))
+        .unwrap();
+        assert!(svg.contains("<svg") && svg.contains("</svg>"));
+    }
 
     /// The server and the peer client against each other over a real socket:
     /// the token is required on every API route and the page is public.

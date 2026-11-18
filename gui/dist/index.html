@@ -503,15 +503,18 @@
               Let your phone — or another clash — see this one: whether it is
               running, its sessions, what waits on you; with <i>Allow actions</i>,
               it can also open a session and answer it. Keep the
-              address on loopback for this machine only, or set your Tailscale
-              address to reach it from elsewhere. See docs/remote.md.
+              address on loopback for this machine only, or pick your Tailscale
+              or Wi-Fi address below to reach it from your phone, then scan the
+              QR code. See docs/remote.md.
             </p>
             <label class="setting-check" title="Serve the remote page and its token-guarded API from this clash."><input id="set-remote-enabled" type="checkbox" /> Serve the remote page</label>
             <label class="setting-check" title="Let a paired phone read a session's screen, answer its prompt (option keys, Enter, Esc, Ctrl-C, arrows), queue a follow-up and stash it. Off keeps the remote read-only."><input id="set-remote-actions" type="checkbox" /> Allow actions from paired phones</label>
             <label class="setting-row">Listen on
               <input id="set-remote-bind" type="text" placeholder="127.0.0.1:7878" autocomplete="off" spellcheck="false" title="host:port. 127.0.0.1 is this machine only; your Tailscale address (100.x.y.z:7878) makes it reachable from your phone over the tailnet." />
             </label>
+            <div id="remote-choices" class="remote-choices"></div>
             <p id="remote-status" class="settings-note"></p>
+            <div id="remote-qr" class="remote-qr" hidden title="Scan with your phone's camera to pair it. It carries the token — don't show it to anyone."></div>
             <button id="remote-copy-link" class="update-big" title="Copy the link that pairs a phone or another clash with this one. It carries the token — share it like a password.">Copy pairing link</button>
             <button id="remote-rotate" class="update-big" title="Make a new token. Every paired phone and clash has to pair again.">New pairing token</button>
             <div class="settings-group">Notifications</div>

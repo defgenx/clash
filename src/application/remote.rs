@@ -2,7 +2,7 @@
 //! told about this instance. The server is `gui/src-tauri/src/remote.rs`; the
 //! design and security model are `docs/remote.md`.
 
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 
 use serde::Serialize;
 
@@ -69,6 +69,45 @@ pub fn parse_bind(bind: &str) -> Result<SocketAddr, String> {
 /// Only reachable from this machine.
 pub fn is_loopback(addr: &SocketAddr) -> bool {
     addr.ip().is_loopback()
+}
+
+/// One address `remote.bind` could listen on, as Settings offers it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BindChoice {
+    pub bind: String,
+    pub label: String,
+    /// `this-mac` | `tailnet` | `lan`: who can reach it.
+    pub reach: &'static str,
+}
+
+/// The addresses worth offering for `remote.bind`, from this machine's IPv4
+/// interfaces: loopback first, then Tailscale (100.64.0.0/10), then private
+/// addresses on a physical interface (`en*`). VM bridges, other VPNs and
+/// public addresses are left out: a phone can't reach the first two, and the
+/// last would expose the token to the internet.
+pub fn bind_choices(ifaces: &[(String, Ipv4Addr)], port: u16) -> Vec<BindChoice> {
+    let mut out = vec![BindChoice {
+        bind: format!("127.0.0.1:{port}"),
+        label: "This Mac only".into(),
+        reach: "this-mac",
+    }];
+    let tailnet = |ip: &Ipv4Addr| ip.octets()[0] == 100 && (ip.octets()[1] & 0xc0) == 64;
+    let mut lan = Vec::new();
+    for (name, ip) in ifaces {
+        let choice = |label: String, reach| BindChoice {
+            bind: format!("{ip}:{port}"),
+            label,
+            reach,
+        };
+        if tailnet(ip) {
+            out.push(choice(format!("Tailscale ({ip})"), "tailnet"));
+        } else if ip.is_private() && name.starts_with("en") {
+            lan.push(choice(format!("Local network, {name} ({ip})"), "lan"));
+        }
+    }
+    out.extend(lan);
+    out.dedup_by(|a, b| a.bind == b.bind);
+    out
 }
 
 /// The link that pairs a phone: the page, with the token in the fragment so it
@@ -348,6 +387,37 @@ pub fn screen_prompt(lines: &[String]) -> Option<ScreenPrompt> {
 mod tests {
     use super::*;
     use crate::domain::workflow::{WorkflowPr, WorkflowStatus};
+
+    #[test]
+    fn bind_choices_offer_loopback_tailscale_then_the_wifi_only() {
+        let ip = |s: &str| s.parse::<Ipv4Addr>().unwrap();
+        let ifaces = [
+            ("lo0".to_string(), ip("127.0.0.1")),
+            ("en0".to_string(), ip("10.33.59.96")),
+            ("bridge100".to_string(), ip("192.168.139.3")),
+            ("utun4".to_string(), ip("249.24.160.41")),
+            ("utun7".to_string(), ip("100.101.102.103")),
+            ("en1".to_string(), ip("203.0.113.9")),
+            ("en0".to_string(), ip("10.33.59.96")),
+        ];
+        let got: Vec<_> = bind_choices(&ifaces, 7878)
+            .into_iter()
+            .map(|c| (c.bind, c.reach))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("127.0.0.1:7878".to_string(), "this-mac"),
+                ("100.101.102.103:7878".to_string(), "tailnet"),
+                ("10.33.59.96:7878".to_string(), "lan"),
+            ]
+        );
+        // 100.128.x is outside the tailnet range (100.64.0.0/10).
+        assert_eq!(
+            bind_choices(&[("utun1".into(), ip("100.128.0.1"))], 1).len(),
+            1
+        );
+    }
 
     #[test]
     fn tokens_are_64_hex_chars_and_compare_exactly() {

@@ -479,7 +479,7 @@ the sidebar's SETTINGS panel. A search box at the top searches every tab (type
 | **Paths** | default session directory · scratch directory · workflows directory · `claude` binary · OMP binary |
 | **Workflows** | workflow agent (ask / Claude Code / OMP) · next-step assist (suggest / autopilot / off) · explanation detail · delegation (team / solo) · PR skill · forge · PR stacking · skill updates |
 | **Models** | Claude Code: lead model, subagent model, review sizing, small review lead, large review subagents · OMP: lead model, subagent model |
-| **Trackers & sharing** | primary tracker · Jira (site, key prefixes, who posts: agent / clash, skill, email, API token) · Linear (workspace, key prefixes, who posts, skill, API key) · who posts to Slack/Discord (agent / clash), chat skill, webhooks · remote page (serve it, listen address, allow actions from paired phones, copy pairing link, new token — [remote.md](remote.md)) · decision notifications |
+| **Trackers & sharing** | primary tracker · Jira (site, key prefixes, who posts: agent / clash, skill, email, API token) · Linear (workspace, key prefixes, who posts, skill, API key) · who posts to Slack/Discord (agent / clash), chat skill, webhooks · remote page (serve it, listen address with this Mac's addresses one click each, allow actions from paired phones, pairing QR code, copy pairing link, new token — [remote.md](remote.md)) · decision notifications |
 
 The sidebar's **SETTINGS** panel keeps only the quick settings — theme, layout,
 font size, how links open, default agent — plus **⚙ All settings…** and the
