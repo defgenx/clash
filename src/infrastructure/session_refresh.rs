@@ -781,6 +781,11 @@ fn filter_by_registry(
             }
             if !entry.cwd.is_empty() {
                 session.cwd = Some(entry.cwd.clone());
+                // A Hermes session created by title records no cwd in its
+                // store; the registry knows where clash started it.
+                if session.project_path.is_empty() {
+                    session.project_path = entry.cwd.clone();
+                }
             }
             if entry.source_branch.is_some() {
                 session.source_branch = entry.source_branch.clone();

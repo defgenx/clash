@@ -289,6 +289,8 @@ pub struct FsBackend {
     /// OMP agent dir (`~/.omp/agent`) whose `sessions/` is listed alongside
     /// Claude's projects. `None` lists Claude sessions only.
     omp_dir: Option<PathBuf>,
+    /// Hermes home whose `state.db` is listed alongside, when set.
+    hermes_home: Option<PathBuf>,
 }
 
 impl FsBackend {
@@ -301,6 +303,7 @@ impl FsBackend {
             workflows_dir: Mutex::new(workflows_dir),
             session_cache: Mutex::new(SessionCache::new()),
             omp_dir: None,
+            hermes_home: None,
         }
     }
 
@@ -308,6 +311,67 @@ impl FsBackend {
     pub fn with_omp_dir(mut self, dir: Option<PathBuf>) -> Self {
         self.omp_dir = dir;
         self
+    }
+
+    /// Builder: also list Hermes sessions from the store under `home`.
+    pub fn with_hermes_home(mut self, home: Option<PathBuf>) -> Self {
+        self.hermes_home = home;
+        self
+    }
+
+    /// The Hermes conversation of `session_id` (a clash id or any Hermes id).
+    fn hermes_conversation(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::infrastructure::hermes::Conversation> {
+        let home = self.hermes_home.as_deref()?;
+        let convs = crate::infrastructure::hermes::load_conversations(home);
+        crate::infrastructure::hermes::find(&convs, session_id).cloned()
+    }
+
+    /// One Hermes conversation as a session row. Status is the most idle
+    /// thing a store can say (`Waiting`); liveness is the pipeline's call.
+    fn build_hermes_session(
+        home: &Path,
+        c: &crate::infrastructure::hermes::Conversation,
+    ) -> Session {
+        let first_prompt = crate::infrastructure::hermes::first_prompt(home, &c.root);
+        let summary = match c.title.as_deref() {
+            Some(t) => t.to_string(),
+            None => first_prompt
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("")
+                .chars()
+                .take(80)
+                .collect(),
+        };
+        let last_modified = chrono::DateTime::from_timestamp(c.last_activity as i64, 0)
+            .map(|t| {
+                t.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            })
+            .unwrap_or_default();
+        let (worktree, worktree_project) = match Self::detect_worktree(&c.cwd) {
+            Some(info) => (Some(info.name), info.parent_project),
+            None => (None, None),
+        };
+        Session {
+            id: c.row_id.clone(),
+            agent: crate::domain::entities::AgentKind::Hermes,
+            project: encode_project_dir(&c.cwd),
+            project_path: c.cwd.clone(),
+            last_modified,
+            summary,
+            first_prompt,
+            git_branch: Self::detect_git_branch(&c.cwd),
+            is_running: true,
+            status: crate::domain::entities::SessionStatus::Waiting,
+            worktree,
+            worktree_project,
+            ..Session::default()
+        }
     }
 
     /// `<omp_dir>/sessions`, when OMP sessions are listed.
@@ -1097,8 +1161,17 @@ impl DataRepository for FsBackend {
     fn load_sessions(&self) -> Result<Vec<Session>> {
         let projects_dir = self.base_dir.join("projects");
         let omp_root = self.omp_sessions_dir().filter(|d| d.is_dir());
+        // Read afresh every cycle: one indexed query, and the store is
+        // written by Hermes's gateway, which the watcher does not follow.
+        let hermes: Vec<Session> = match self.hermes_home.as_deref() {
+            Some(home) => crate::infrastructure::hermes::load_conversations(home)
+                .iter()
+                .map(|c| Self::build_hermes_session(home, c))
+                .collect(),
+            None => Vec::new(),
+        };
         if !projects_dir.exists() && omp_root.is_none() {
-            return Ok(Vec::new());
+            return Ok(hermes);
         }
 
         // Determine which projects need re-scanning vs can use cached data
@@ -1360,6 +1433,12 @@ impl DataRepository for FsBackend {
             cache.initialized = true;
         }
 
+        for s in hermes {
+            if global_seen_ids.insert(s.id.clone()) {
+                sessions.push(s);
+            }
+        }
+
         // No sorting here — session_refresh::build_session_list() sorts after
         // all status overlays are applied.
         Ok(sessions)
@@ -1486,6 +1565,22 @@ impl DataRepository for FsBackend {
             .join("projects")
             .join(project)
             .join(format!("{}.jsonl", session_id));
+        if !path.exists() {
+            if let (Some(home), Some(c)) = (
+                self.hermes_home.as_deref(),
+                self.hermes_conversation(session_id),
+            ) {
+                return Ok(crate::infrastructure::hermes::load_messages(home, &c.chain)
+                    .into_iter()
+                    .map(
+                        |(role, text, _)| crate::domain::entities::ConversationMessage {
+                            role,
+                            text,
+                        },
+                    )
+                    .collect());
+            }
+        }
         Self::parse_conversation(&path)
     }
 

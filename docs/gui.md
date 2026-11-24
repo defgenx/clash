@@ -176,7 +176,7 @@ elsewhere is described in [sessions.md](sessions.md).
 
 - **Status**: the sidebar shows status sections with animated status labels
   (PROMPTING / THINKING / RUNNING / WAITING / STARTING / STASHED / ERRORED /
-  DONE), and each tab gets a colored dot. Every row carries a **CC** / **OMP**
+  DONE), and each tab gets a colored dot. Every row carries a **CC** / **OMP** / **HM**
   agent badge.
   - STASHED means *resumable*: sessions are stashed when clash starts, because a
     transcript can't say whether its process still lives.
@@ -186,7 +186,7 @@ elsewhere is described in [sessions.md](sessions.md).
   - pick a directory (prefilled from the default directory or the focused
     project, with a 📁 picker);
   - pick a [preset](sessions.md#session-presets), optionally a git worktree, and
-    the agent (Claude Code or OMP; one whose binary doesn't resolve is greyed
+    the agent (Claude Code, OMP or Hermes; one whose binary doesn't resolve is greyed
     out).
 - **Session actions**: each row's `⋯` menu (or right-click) offers rename,
   ⟳ reload, details, stash, kill, open PR, queue or cancel a follow-up, and take
@@ -473,10 +473,10 @@ the sidebar's SETTINGS panel. A search box at the top searches every tab (type
 
 | Tab | Settings |
 |---|---|
-| **General** | how links open · refresh interval · default shell · terminal for the TUI launcher · default agent (Claude Code / OMP) · desktop notifications · attention count in the window title · confirm before killing a session · check for updates in the background · ▶ Show the tour |
+| **General** | how links open · refresh interval · default shell · terminal for the TUI launcher · default agent (Claude Code / OMP / Hermes) · desktop notifications · attention count in the window title · confirm before killing a session · check for updates in the background · ▶ Show the tour |
 | **Appearance** | theme (12 palettes, below) · layout (Classic / Rail — with its *Stack views in the right sidebar* option — / Tabbed / Dock / Split / Topbar, [above](#layouts)) · workflow item view (Workbench / Tabs, see [Reading an item](workflows-guide.md#reading-an-item)) · terminal text: font family (searchable picker), size, weight, bold weight, line height, letter spacing · cursor: style, unfocused style, bar width, blink · colors: minimum contrast ratio, bold text in bright colors |
 | **Terminal** | scrollback · scroll speed · smooth scroll · copy on select · right-click selects word · ⌥ sends Esc (Meta) · toast on terminal bell |
-| **Paths** | default session directory · scratch directory · workflows directory · `claude` binary · OMP binary |
+| **Paths** | default session directory · scratch directory · workflows directory · `claude` binary · OMP binary · Hermes binary (with the one-time `hermes plugins enable clash-status` hint until Hermes loads clash's status plugin) |
 | **Workflows** | workflow agent (ask / Claude Code / OMP) · next-step assist (suggest / autopilot / off) · explanation detail · delegation (team / solo) · PR skill · forge · PR stacking · skill updates |
 | **Models** | Claude Code: lead model, subagent model, review sizing, small review lead, large review subagents · OMP: lead model, subagent model |
 | **Trackers & sharing** | primary tracker · Jira (site, key prefixes, who posts: agent / clash, skill, email, API token) · Linear (workspace, key prefixes, who posts, skill, API key) · who posts to Slack/Discord (agent / clash), chat skill, webhooks · remote page (serve it, listen address with this Mac's addresses one click each, allow actions from paired phones, pairing QR code, copy pairing link, new token — [remote.md](remote.md)) · decision notifications |

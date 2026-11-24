@@ -91,7 +91,8 @@ pub enum SignalDecision {
 /// Which agent CLI a command line runs, by executable basename — `claude`,
 /// `omp`, or a JS runtime (`bun`/`node`) running an `omp` script, which is how
 /// omp's `#!/usr/bin/env bun` shebang shows up in `ps`. Basename-exact, so
-/// `/Users/foo/claude-experiments/runner` is not an agent.
+/// `/Users/foo/claude-experiments/runner` is not an agent. A Hermes chat is
+/// recognised by [`hermes_chat_args`].
 pub fn agent_of_command(command: &str) -> Option<crate::domain::entities::AgentKind> {
     use crate::domain::entities::AgentKind;
     let base = |t: &str| t.rsplit('/').next().unwrap_or(t).to_string();
@@ -100,8 +101,80 @@ pub fn agent_of_command(command: &str) -> Option<crate::domain::entities::AgentK
         "claude" => Some(AgentKind::Claude),
         "omp" => Some(AgentKind::Omp),
         "bun" | "node" => (base(tokens.next()?) == "omp").then_some(AgentKind::Omp),
-        _ => None,
+        _ => hermes_chat_args(command).map(|_| AgentKind::Hermes),
     }
+}
+
+/// The line `hermes`'s launcher ends its inline Python with; what follows it
+/// in `ps` is the user's argv. The launcher runs as `python3 -I -c '<script>'
+/// <args>`, so no basename names it.
+const HERMES_LAUNCHER_MARKER: &str = "from hermes_cli.main import main";
+
+/// The argv of a Hermes **chat** (bare `hermes` is one too): after the
+/// launcher's inline script, or after a `python3 …/hermes` script path. Any
+/// other subcommand — the gateway, `sessions list` — is not a session.
+pub fn hermes_chat_args(command: &str) -> Option<Vec<String>> {
+    let base = |t: &str| t.rsplit('/').next().unwrap_or(t).to_string();
+    // `ps` prints the inline script's newlines as `\012`.
+    let command = command.replace("\\012", " ");
+    let mut tokens = command.split_whitespace();
+    let first = base(tokens.next()?);
+    let args: Vec<String> = if first == "hermes" {
+        tokens.map(str::to_string).collect()
+    } else if first.starts_with("python") {
+        match command.split_once(HERMES_LAUNCHER_MARKER) {
+            Some((_, rest)) => rest
+                .split_once("sys.exit(main())")
+                .map_or(rest, |(_, a)| a)
+                .split_whitespace()
+                .map(str::to_string)
+                .collect(),
+            None => {
+                let mut rest = command
+                    .split_whitespace()
+                    .skip(1)
+                    .skip_while(|t| t.starts_with('-'));
+                if base(rest.next()?) != "hermes" {
+                    return None;
+                }
+                rest.map(str::to_string).collect()
+            }
+        }
+    } else {
+        return None;
+    };
+    let sub = args.iter().position(|a| !a.starts_with('-'));
+    // A flag's value can come first (`-m x chat`); only a non-chat
+    // subcommand in first position disqualifies on sight.
+    match sub {
+        None => Some(args),
+        Some(i) if args[i] == "chat" => Some(args),
+        Some(0) => None,
+        Some(_) => args.iter().any(|a| a == "chat").then_some(args),
+    }
+}
+
+/// The session ids a Hermes chat names: `-c clash:<id>` is a session clash
+/// spawned (the clash id), `--resume <id>` a Hermes id.
+fn hermes_argv_session_ids(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut it = args.iter().map(String::as_str);
+    while let Some(a) = it.next() {
+        let (flag, inline) = a.split_once('=').map_or((a, None), |(f, v)| (f, Some(v)));
+        let value = match flag {
+            "-c" | "--continue" | "-r" | "--resume" => inline.or_else(|| it.next()),
+            _ => None,
+        };
+        let Some(v) = value.filter(|v| !v.starts_with('-')) else {
+            continue;
+        };
+        if let Some(id) = crate::infrastructure::hermes::clash_id_of_title(v) {
+            out.push(id.to_string());
+        } else if matches!(flag, "-r" | "--resume") && v != "latest" {
+            out.push(v.to_string());
+        }
+    }
+    out
 }
 
 /// The session id a `.jsonl` path names: an omp transcript is
@@ -175,6 +248,9 @@ pub fn parse_ps_line(line: &str) -> Option<WildProcess> {
 /// admit a `Session` keyed off a mis-parsed token. We don't require
 /// strict RFC 4122 — just ≥ 8 chars and `[0-9a-fA-F-]` only.
 pub fn parse_argv_session_ids(command: &str) -> Vec<String> {
+    if let Some(args) = hermes_chat_args(command) {
+        return hermes_argv_session_ids(&args);
+    }
     let mut out = Vec::new();
     let tokens: Vec<&str> = command.split_whitespace().collect();
     let mut i = 0;
@@ -667,7 +743,7 @@ pub fn gather_wild_processes(probe: &impl FdProbe) -> Vec<WildProcess> {
         // as `bun /path/to/omp …` (its shebang), or as `omp` when compiled.
         .args([
             "-fl",
-            r"^claude($|[[:space:]])|^[^[:space:]]*omp($|[[:space:]])|^(bun|node)[[:space:]]+[^[:space:]]*/omp($|[[:space:]])",
+            r"^claude($|[[:space:]])|^[^[:space:]]*omp($|[[:space:]])|^(bun|node)[[:space:]]+[^[:space:]]*/omp($|[[:space:]])|hermes_cli\.main import main|^[^[:space:]]*hermes($|[[:space:]])",
         ])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -797,6 +873,37 @@ mod tests {
             t0,
         );
         assert_eq!(kept.iter().map(|w| w.pid).collect::<Vec<_>>(), vec![2, 3]);
+    }
+
+    #[test]
+    fn hermes_chats_are_agents_and_other_hermes_processes_are_not() {
+        use crate::domain::entities::AgentKind;
+        let launcher = "/h/python3 -I -c import os, re, sys\\012from hermes_cli.main import main\\012\
+                        sys.argv[0] = x\\012sys.exit(main())\\012 chat -c clash:0199aaaa --create-if-missing";
+        assert_eq!(agent_of_command(launcher), Some(AgentKind::Hermes));
+        assert_eq!(parse_argv_session_ids(launcher), ["0199aaaa"]);
+        let resumed =
+            "/h/python3 -I -c from hermes_cli.main import main\\012sys.exit(main())\\012 \
+                       chat --resume local-5192";
+        assert_eq!(parse_argv_session_ids(resumed), ["local-5192"]);
+        // Bare `hermes` is a chat; `-c` without a clash title names nothing.
+        assert_eq!(
+            agent_of_command("/usr/local/bin/hermes"),
+            Some(AgentKind::Hermes)
+        );
+        assert!(parse_argv_session_ids("hermes chat -c Refactor").is_empty());
+        assert!(parse_argv_session_ids("hermes chat --resume latest").is_empty());
+        // The gateway and one-off subcommands are not sessions.
+        assert_eq!(
+            agent_of_command("/h/python3 -m hermes_cli.main --profile default gateway run --quiet"),
+            None
+        );
+        assert_eq!(agent_of_command("hermes sessions list"), None);
+        assert_eq!(
+            agent_of_command("/opt/python3 /h/bin/hermes chat"),
+            Some(AgentKind::Hermes)
+        );
+        assert_eq!(agent_of_command("/opt/python3 /h/bin/server.py"), None);
     }
 
     #[test]

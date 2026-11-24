@@ -24,7 +24,7 @@ pub fn render_input_bar(
             Style::default().fg(theme::PROMPT_COLOR),
         ),
         InputMode::NewSessionAgent => (
-            "Agent (claude/omp): ",
+            "Agent (claude/omp/hermes): ",
             Style::default().fg(theme::PROMPT_COLOR),
         ),
         InputMode::TeamDescription => (

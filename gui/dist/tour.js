@@ -37,7 +37,7 @@
       target: "new-session-btn",
       title: "Start a session",
       body:
-        "Launches a Claude Code or OMP session in any directory (⌘T) — pick the agent at the top " +
+        "Launches a Claude Code, OMP or Hermes session in any directory (⌘T) — pick the agent at the top " +
         "of the dialog. Tick “git worktree” to give it an isolated branch and folder.",
     },
     {

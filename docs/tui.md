@@ -63,7 +63,7 @@ Status icons and the `⊞` / 🌿 source prefixes are explained in
 | `F` | Cancel a queued follow-up (picker when several are pending) |
 | `o` | Open in new pane / tab / window |
 | `O` | Open ALL running sessions (smart layout) |
-| `c` / `n` | New session (directory, name, worktree?, then agent: `claude`/`omp`); with [presets](sessions.md#session-presets), a picker first |
+| `c` / `n` | New session (directory, name, worktree?, then agent: `claude`/`omp`/`hermes`); with [presets](sessions.md#session-presets), a picker first |
 | `s` | Stash / unstash session (stop process, keep in registry) |
 | `w` | Spawn session in a git worktree |
 | `Tab` | Expand / collapse subagents |
@@ -83,7 +83,7 @@ is resized to fit above the bar.
 | Key | Action |
 |-----|--------|
 | `Ctrl+B` | Detach (works across all terminal encodings) |
-| Everything else | Forwarded to the session's agent (`claude` or `omp`), mouse scroll included |
+| Everything else | Forwarded to the session's agent (`claude`, `omp` or `hermes`), mouse scroll included |
 
 ## Session detail
 
@@ -220,7 +220,7 @@ an expand/collapse caret. The GUI renders the same tree
 | `:member rename <old> <new>` | Rename a member |
 | `:create task <team> <subject>` | Create a task |
 | `:new [path]` | Spawn a new session (default agent) |
-| `:new --agent <claude\|omp> <path>` | Spawn a new Claude Code or OMP session (the path is required for the agent to stick) |
+| `:new --agent <claude\|omp\|hermes> <path>` | Spawn a new Claude Code, OMP or Hermes session (the path is required for the agent to stick) |
 | `:new --preset <name>` | Spawn session from a preset |
 | `:diff` | View git diff for current session |
 | `:rename <name>` | Rename session (from detail view) |

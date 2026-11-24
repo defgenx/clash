@@ -113,7 +113,9 @@ pub struct General {
     pub claude_bin: String,
     /// The `omp` binary OMP sessions are spawned with.
     pub omp_bin: String,
-    /// Agent pre-selected by the new-session dialogs: `claude` | `omp`.
+    /// The `hermes` binary Hermes sessions are spawned with.
+    pub hermes_bin: String,
+    /// Agent pre-selected by the new-session dialogs: `claude` | `omp` | `hermes`.
     pub default_agent: String,
     /// Filesystem-watcher debounce.
     pub debounce_ms: u64,
@@ -129,6 +131,7 @@ impl Default for General {
         Self {
             claude_bin: default_str("general.claude_bin"),
             omp_bin: default_str("general.omp_bin"),
+            hermes_bin: default_str("general.hermes_bin"),
             default_agent: default_str("general.default_agent"),
             debounce_ms: default_int("general.debounce_ms") as u64,
             skills_update: default_str("general.skills_update"),
@@ -151,6 +154,11 @@ pub struct Paths {
         skip_serializing_if = "Option::is_none"
     )]
     pub omp_dir: Option<PathBuf>,
+    #[serde(
+        deserialize_with = "empty_as_none",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub hermes_dir: Option<PathBuf>,
     #[serde(
         deserialize_with = "empty_as_none",
         skip_serializing_if = "Option::is_none"
@@ -449,6 +457,14 @@ impl Config {
             .unwrap_or_else(crate::infrastructure::omp::default_agent_dir)
     }
 
+    /// Hermes home: the configured override, else `$HERMES_HOME`, else `~/.hermes`.
+    pub fn hermes_home(&self) -> PathBuf {
+        self.paths
+            .hermes_dir
+            .clone()
+            .unwrap_or_else(crate::infrastructure::hermes::default_home)
+    }
+
     /// Agent the new-session dialogs pre-select.
     pub fn default_agent(&self) -> crate::domain::entities::AgentKind {
         crate::domain::entities::AgentKind::parse(&self.general.default_agent)
@@ -493,6 +509,7 @@ impl Config {
             match agent {
                 crate::domain::entities::AgentKind::Claude => &self.workflows.subagent_model,
                 crate::domain::entities::AgentKind::Omp => &self.workflows.omp_subagent_model,
+                crate::domain::entities::AgentKind::Hermes => "",
             },
         )
     }

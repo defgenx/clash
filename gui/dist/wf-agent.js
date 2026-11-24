@@ -10,10 +10,13 @@
   /// Every agent a workflow session can run on, each with whether it can be
   /// picked right now. A settings field that never arrived (the command
   /// failed) counts as available rather than greying out a working agent.
-  function wfAgentChoices(settings = {}) {
+  /// `{ sessions: true }` is the new-session picker's list: it also offers
+  /// Hermes, which runs plain sessions but no workflow ones yet.
+  function wfAgentChoices(settings = {}, { sessions = false } = {}) {
     const claude = settings.claudeAvailable !== false;
     const omp = settings.ompAvailable !== false;
-    return [
+    const hermes = settings.hermesAvailable !== false;
+    const list = [
       {
         value: "claude",
         label: "Claude Code",
@@ -29,14 +32,24 @@
           : `omp not found (${settings.ompBin || "omp"}) — set the OMP binary in Settings`,
       },
     ];
+    if (sessions)
+      list.push({
+        value: "hermes",
+        label: "Hermes",
+        available: hermes,
+        reason: hermes
+          ? ""
+          : `hermes not found (${settings.hermesBin || "hermes"}) — set the Hermes binary in Settings`,
+      });
+    return list;
   }
 
   /// The pre-selected agent: the item's own (the last one it was started on),
   /// else the global workflow agent — unless that one is unavailable, in which
   /// case the first agent that is. With nothing available the preference
   /// stands, so the backend's refusal names the binary that is missing.
-  function wfAgentDefault(itemAgent, settings = {}) {
-    const choices = wfAgentChoices(settings);
+  function wfAgentDefault(itemAgent, settings = {}, opts = {}) {
+    const choices = wfAgentChoices(settings, opts);
     const global = settings.workflowAgent === "ask" ? "" : settings.workflowAgent;
     const want = itemAgent || global || "claude";
     const hit = choices.find((c) => c.value === want && c.available);

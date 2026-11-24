@@ -504,8 +504,14 @@ pub fn resolve_latest_conversation(
     session_id: &str,
 ) -> String {
     let rid = resolve_resume_id(registry, session_id).unwrap_or_else(|| session_id.to_string());
-    // Only `claude --resume` forks; `omp --resume <file>` appends to the file.
-    if cwd.is_empty() || registered_agent(registry, session_id) == Some(AgentKind::Omp) {
+    // Only `claude --resume` forks; omp appends to its file and Hermes
+    // follows its own compression chain.
+    if cwd.is_empty()
+        || matches!(
+            registered_agent(registry, session_id),
+            Some(AgentKind::Omp | AgentKind::Hermes)
+        )
+    {
         return rid;
     }
     chase_resume_forks(projects_dir, cwd, &rid)

@@ -1866,6 +1866,12 @@ fn launch_agent(
         &cfg.workflows.agent,
         &meta.agent,
     );
+    if !clash::application::workflow::runs_workflows(agent) {
+        return Err(format!(
+            "agent-unavailable: workflow sessions don't run on {} yet — pick Claude Code or OMP",
+            clash::application::state::agent_label(agent)
+        ));
+    }
     meta.agent = agent.as_str().to_string();
     let bin = state.agents().bin(agent);
     if !crate::bin_available(&bin) {

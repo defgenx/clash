@@ -1566,7 +1566,7 @@ function renderExternalSection(list, items) {
   const header = document.createElement("div");
   header.className = "section-label external";
   header.innerHTML = `⚡ EXTERNAL<span class="count">${items.length}</span>`;
-  header.title = "Agent processes (Claude Code / OMP) running outside clash — click to take over and attach";
+  header.title = "Agent processes (Claude Code / OMP / Hermes) running outside clash — click to take over and attach";
   // Kill every associated (wild) claude process at once — each row's
   // dynamically-associated PID is signalled, same as a per-row kill.
   header.appendChild(
@@ -1709,11 +1709,11 @@ function sessionItem(s) {
   const stLabel = document.createElement("span");
   stLabel.className = `status-label ${st.cls}`;
   stLabel.textContent = `${st.icon} ${st.label}`;
-  const isOmp = s.agent === "omp";
+  const badge = AGENT_BADGES[s.agent] || AGENT_BADGES.claude;
   const agentBadge = document.createElement("span");
   agentBadge.className = "agent-badge";
-  agentBadge.textContent = isOmp ? "OMP" : "CC";
-  agentBadge.title = isOmp ? "Runs on OMP (oh-my-pi)" : "Runs on Claude Code";
+  agentBadge.textContent = badge.short;
+  agentBadge.title = badge.title;
   sub.appendChild(agentBadge);
   sub.appendChild(stLabel);
   // Queued follow-ups: the whole point is to be visible while the session is
@@ -5093,7 +5093,7 @@ function renderDetails() {
   }
   detailsShellFor = s.id;
   const st = statusInfo(s);
-  const agent = s.agent === "omp" ? "OMP" : "Claude Code";
+  const agent = (AGENT_BADGES[s.agent] || AGENT_BADGES.claude).name;
   const where = s.cwd || s.project_path || "";
   // A path or id row copies on click: these are exactly the values one pastes
   // into a terminal or a ticket.
@@ -17284,14 +17284,14 @@ function showNewSessionModal() {
 /// an agent whose binary does not resolve, instead of letting the spawn fail.
 async function syncAgentPicker() {
   const cfg = await wfAgentSettings();
-  for (const c of wfAgentChoices(cfg)) {
+  for (const c of wfAgentChoices(cfg, { sessions: true })) {
     const input = document.querySelector(`input[name="ns-agent"][value="${c.value}"]`);
     const wrap = $(`ns-agent-${c.value}-wrap`);
     input.disabled = !c.available;
     wrap.classList.toggle("unavailable", !c.available);
-    wrap.title = c.available ? (c.value === "omp" ? "oh-my-pi" : "Claude Code") : c.reason;
+    wrap.title = c.available ? AGENT_BADGES[c.value].name : c.reason;
   }
-  const want = wfAgentDefault("", { ...cfg, workflowAgent: cfg.defaultAgent });
+  const want = wfAgentDefault("", { ...cfg, workflowAgent: cfg.defaultAgent }, { sessions: true });
   document.querySelector(`input[name="ns-agent"][value="${want}"]`).checked = true;
 }
 
@@ -20255,10 +20255,35 @@ $("set-claude-bin").addEventListener("change", async () => {
   }
 });
 
+/// Hermes sessions report their status through a plugin Hermes loads only
+/// once you enable it; until then the note under the binary says how.
+function syncHermesPluginNote(cfg) {
+  const note = $("set-hermes-plugin-note");
+  const off = cfg.hermesAvailable !== false && cfg.hermesPlugin === "off";
+  note.classList.toggle("hidden", !off);
+  if (!off || note.dataset.built) return;
+  note.dataset.built = "1";
+  const cmd = "hermes plugins enable clash-status";
+  note.append(
+    "Hermes sessions show their status (thinking, waiting, blocked on an approval) once Hermes " +
+      "loads clash's plugin. Run once: ",
+  );
+  const code = document.createElement("code");
+  code.textContent = cmd;
+  note.append(code, " ");
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.textContent = "Copy";
+  copy.onclick = () => copyText(cmd, "the command — run it in a terminal");
+  note.append(copy);
+}
+
 /// Agent-CLI settings live in config.toml (shared with the TUI) and round trip
 /// through `set_agent_setting`, which validates and echoes the effective values.
 function syncAgentSettingsUi(cfg) {
   $("set-omp-bin").value = cfg.ompBin;
+  $("set-hermes-bin").value = cfg.hermesBin || "";
+  syncHermesPluginNote(cfg);
   $("set-default-agent").value = cfg.defaultAgent;
   $("set-wf-agent").value = cfg.workflowAgent;
   $("set-wf-omp-model").value = cfg.ompModel;
@@ -20288,6 +20313,7 @@ function syncAgentSettingsUi(cfg) {
 }
 for (const [id, key] of [
   ["set-omp-bin", "general.omp_bin"],
+  ["set-hermes-bin", "general.hermes_bin"],
   ["set-default-agent", "general.default_agent"],
   ["set-wf-agent", "workflows.agent"],
   ["set-wf-omp-model", "workflows.omp_model"],
@@ -20552,6 +20578,7 @@ const PATH_SETTINGS = [
   // A binary has no extension to filter on, so this is an unfiltered file pick.
   { id: "set-claude-bin", kind: "file", title: "Choose the claude executable" },
   { id: "set-omp-bin", kind: "file", title: "Choose the omp executable" },
+  { id: "set-hermes-bin", kind: "file", title: "Choose the hermes executable" },
 ];
 for (const { id, kind, title } of PATH_SETTINGS) {
   const btn = $(`${id}-browse`);

@@ -75,7 +75,8 @@ impl App {
         let backend = FsBackend::new(data_dir.clone())
             .with_scratch_dir(settings.paths.scratch_dir.clone())
             .with_workflows_dir(settings.paths.workflows_dir.clone())
-            .with_omp_dir(Some(settings.omp_dir()));
+            .with_omp_dir(Some(settings.omp_dir()))
+            .with_hermes_home(Some(settings.hermes_home()));
         let mut agents = crate::infrastructure::agent::Agents::from_config(&settings);
         agents.claude_bin = claude_bin;
         agents.claude_projects_dir = data_dir.join("projects");
@@ -83,6 +84,16 @@ impl App {
         // Install Claude Code hooks for instant status detection
         if let Err(e) = crate::infrastructure::hooks::install_hooks(&data_dir) {
             tracing::warn!("Failed to install hooks: {}", e);
+        }
+        match crate::infrastructure::hooks::install_hermes_plugin(&settings.hermes_home()) {
+            Ok(true) if !crate::infrastructure::hermes::plugin_enabled(&settings.hermes_home()) => {
+                tracing::info!(
+                    "Hermes sessions show live status once Hermes loads clash's plugin: \
+                     run `hermes plugins enable clash-status`"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("Hermes status plugin not installed: {}", e),
         }
         // Skills: everything clash itself wrote is brought up to date at
         // startup — missing installs, refreshes of untouched files, retired
@@ -2465,7 +2476,7 @@ pub async fn terminate_pid_if_safe(pid: u32) {
 /// Gracefully stop external Claude Code processes for a session.
 pub async fn terminate_claude_process(session_id: &str) {
     let output = tokio::process::Command::new("pgrep")
-        .args(["-f", &format!("(claude|omp).*{}", session_id)])
+        .args(["-f", &format!("(claude|omp|hermes).*{}", session_id)])
         .output()
         .await;
 
@@ -2508,7 +2519,11 @@ pub async fn terminate_claude_process(session_id: &str) {
     }
 
     let _ = tokio::process::Command::new("pkill")
-        .args(["-TERM", "-f", &format!("(claude|omp).*{}", session_id)])
+        .args([
+            "-TERM",
+            "-f",
+            &format!("(claude|omp|hermes).*{}", session_id),
+        ])
         .output()
         .await;
 }

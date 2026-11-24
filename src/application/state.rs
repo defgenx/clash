@@ -142,7 +142,7 @@ pub enum InputMode {
     NewSessionName,
     /// Prompting user whether to start the new session in a worktree (y/n).
     NewSessionWorktree,
-    /// Prompting user for the agent CLI of the new session (claude/omp).
+    /// Prompting user for the agent CLI of the new session (claude/omp/hermes).
     NewSessionAgent,
     /// Editing a team's description (team name in `pending_team_edit`).
     TeamDescription,
@@ -260,6 +260,7 @@ pub fn agent_label(agent: crate::domain::entities::AgentKind) -> &'static str {
     match agent {
         crate::domain::entities::AgentKind::Claude => "Claude Code",
         crate::domain::entities::AgentKind::Omp => "OMP",
+        crate::domain::entities::AgentKind::Hermes => "Hermes",
     }
 }
 
@@ -274,6 +275,7 @@ pub fn parse_agent_answer(
         "" => Some(default),
         "claude" | "c" => Some(AgentKind::Claude),
         "omp" | "o" => Some(AgentKind::Omp),
+        "hermes" | "h" => Some(AgentKind::Hermes),
         _ => None,
     }
 }

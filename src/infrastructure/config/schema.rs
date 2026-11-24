@@ -223,11 +223,20 @@ pub const PROPS: &[Prop] = &[
     )
     .restart(),
     Prop::new(
+        "general.hermes_bin",
+        Kind::Str,
+        Val::Str("hermes"),
+        "The `hermes` (Hermes Agent) binary to spawn Hermes sessions with — a name resolved on \
+         PATH, or an absolute path.",
+    )
+    .restart(),
+    Prop::new(
         "general.default_agent",
-        Kind::Enum(&["claude", "omp"]),
+        Kind::Enum(&["claude", "omp", "hermes"]),
         Val::Str("claude"),
-        "Agent pre-selected when starting a new session: `claude` (Claude Code) or `omp` \
-         (oh-my-pi). Every new-session dialog still lets you pick the other one.",
+        "Agent pre-selected when starting a new session: `claude` (Claude Code), `omp` \
+         (oh-my-pi) or `hermes` (Hermes Agent). Every new-session dialog still lets you pick \
+         another one.",
     ),
     Prop::new(
         "general.debounce_ms",
@@ -268,6 +277,14 @@ pub const PROPS: &[Prop] = &[
         Val::Str(""),
         "OMP (oh-my-pi) agent directory — where its sessions and skills live. Empty means \
          `~/.omp/agent`.",
+    )
+    .restart(),
+    Prop::new(
+        "paths.hermes_dir",
+        Kind::Path,
+        Val::Str(""),
+        "Hermes Agent home — where its session store (`state.db`) and plugins live. Empty \
+         means `$HERMES_HOME`, else `~/.hermes`.",
     )
     .restart(),
     Prop::new(

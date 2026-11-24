@@ -191,6 +191,7 @@
               <select id="set-default-agent" title="Agent the New session dialog pre-selects. You can still pick the other one each time.">
                 <option value="claude">Claude Code</option>
                 <option value="omp">OMP</option>
+                <option value="hermes">Hermes</option>
               </select>
             </label>
             <div class="settings-group">Updates</div>
@@ -331,6 +332,13 @@
                 <button id="set-omp-bin-browse" class="icon-btn" title="Browse for the omp executable" type="button"></button>
               </span>
             </label>
+            <label class="setting-row">Hermes binary
+              <span class="input-with-btn">
+                <input id="set-hermes-bin" type="text" placeholder="hermes" autocomplete="off" spellcheck="false" title="The Hermes Agent binary — a name resolved on PATH, or an absolute path. Applies to Hermes sessions started from now on." />
+                <button id="set-hermes-bin-browse" class="icon-btn" title="Browse for the hermes executable" type="button"></button>
+              </span>
+            </label>
+            <p id="set-hermes-plugin-note" class="settings-note hidden"></p>
               </section>
           <section class="settings-tab" data-tab="workflows" data-label="Workflows">
             <div class="settings-group">Workflows · agents</div>
@@ -544,6 +552,7 @@
       <div class="ns-agent" role="radiogroup" aria-label="Agent">
         <label class="ns-agent-opt" id="ns-agent-claude-wrap"><input type="radio" name="ns-agent" value="claude" checked /> Claude Code</label>
         <label class="ns-agent-opt" id="ns-agent-omp-wrap"><input type="radio" name="ns-agent" value="omp" /> OMP</label>
+        <label class="ns-agent-opt" id="ns-agent-hermes-wrap"><input type="radio" name="ns-agent" value="hermes" /> Hermes</label>
       </div>
       <label>Working directory
         <span class="input-with-btn">

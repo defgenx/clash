@@ -60,6 +60,9 @@ vt100 = "0.15"
 
 # Data
 chrono = { version = "0.4", features = ["serde"] }
+# Hermes keeps its sessions in SQLite (`~/.hermes/state.db`); clash only reads
+# it. Bundled, so no system libsqlite is required.
+rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v7"] }
 
 [dev-dependencies]

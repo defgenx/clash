@@ -30,6 +30,7 @@ pub mod git;
 /// dead-code allowance as `gh`/`forge`.
 #[allow(dead_code)]
 pub mod git_log;
+pub mod hermes;
 pub mod hooks;
 pub mod ide;
 /// Jira transport is consumed only through the lib crate (the GUI share

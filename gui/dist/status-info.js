@@ -69,6 +69,14 @@
     }
   }
 
+  /// How each agent CLI (`Session.agent`) is named: the row badge, its
+  /// tooltip, and the name used in prose.
+  const AGENT_BADGES = {
+    claude: { short: "CC", name: "Claude Code", title: "Runs on Claude Code" },
+    omp: { short: "OMP", name: "OMP", title: "Runs on OMP (oh-my-pi)" },
+    hermes: { short: "HM", name: "Hermes", title: "Runs on Hermes Agent" },
+  };
+
   /// "just now" / "5m ago" / "3h ago" / "2d ago".
   function wfAgo(ms) {
     if (!ms) return "";
@@ -79,7 +87,7 @@
     return `${Math.round(s / 86400)}d ago`;
   }
 
-  const api = { statusInfo, statusClass, sectionOf, displayName, wfStatusInfo, wfAgo };
+  const api = { statusInfo, statusClass, sectionOf, displayName, wfStatusInfo, wfAgo, AGENT_BADGES };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else Object.assign(window, api);
 })();

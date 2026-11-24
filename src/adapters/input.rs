@@ -1005,7 +1005,7 @@ pub fn parse_command(cmd: &str) -> Action {
                 preset_name: preset_name.to_string(),
             });
         }
-        // `new --agent <claude|omp> <path>` picks the agent; bare `new <path>`
+        // `new --agent <claude|omp|hermes> <path>` picks the agent; bare `new <path>`
         // takes the configured default.
         let (agent, rest) = match rest.strip_prefix("--agent") {
             Some(after) => {

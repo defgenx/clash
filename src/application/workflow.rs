@@ -1001,6 +1001,7 @@ pub fn delegation_env(
             };
             vec![(OMP_CONFIG_FILES_ENV.to_string(), value)]
         }
+        AgentKind::Hermes => Vec::new(),
     }
 }
 
@@ -1348,6 +1349,12 @@ pub fn resolve_launch_agent(
     AgentKind::parse(if item.is_empty() { global } else { item })
 }
 
+/// Whether workflow sessions may run on `agent`. Hermes runs plain sessions
+/// only: clash installs no skills into it and pins none of its models yet.
+pub fn runs_workflows(agent: crate::domain::entities::AgentKind) -> bool {
+    agent != crate::domain::entities::AgentKind::Hermes
+}
+
 /// The `--model` a workflow session is launched with. Claude sessions run on
 /// `workflows.lead_model`; OMP ones on `workflows.omp_model`, since clash's
 /// Claude model ids mean nothing to a provider omp may be configured with.
@@ -1360,6 +1367,7 @@ pub fn launch_model<'a>(
     let m = match agent {
         crate::domain::entities::AgentKind::Claude => lead_model,
         crate::domain::entities::AgentKind::Omp => omp_model,
+        crate::domain::entities::AgentKind::Hermes => "",
     };
     Some(m.trim()).filter(|m| !m.is_empty())
 }

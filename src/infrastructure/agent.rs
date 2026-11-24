@@ -1,15 +1,16 @@
 //! What to exec for a session, per agent CLI. Every spawn site — both
 //! frontends, the workflow launchers — builds its command line here, so the
-//! Claude-vs-OMP differences live in one file:
+//! differences between the agent CLIs live in one file:
 //!
-//! | | Claude Code | OMP |
-//! |---|---|---|
-//! | new session under clash id `X` | `--session-id X` | `--resume <bucket>/<ts>_X.jsonl` (clash seeds the file; omp resumes it) |
-//! | resume | `--resume <conversation>` (forks; chased in the registry) | `--resume <file>` (appends in place) |
-//! | initial prompt | positional | positional |
+//! | | Claude Code | OMP | Hermes |
+//! |---|---|---|---|
+//! | new session under clash id `X` | `--session-id X` | `--resume <bucket>/<ts>_X.jsonl` (clash seeds the file; omp resumes it) | `chat -c clash:X --create-if-missing` (Hermes mints its own id; the title names it) |
+//! | resume | `--resume <conversation>` (forks; chased in the registry) | `--resume <file>` (appends in place) | the same `-c clash:X` (Hermes follows compression to the tip); `chat --resume <id>` for a session clash did not name |
+//! | initial prompt | positional | positional | not used yet (Hermes runs no workflow sessions) |
 //!
 //! Status hooks are injected by the daemon at spawn (`daemon::session`), not
-//! here, so a bare `claude`/`omp` from any caller still gets them.
+//! here, so a bare `claude`/`omp` from any caller still gets them. Hermes's
+//! are a plugin it loads itself (`hooks::install_hooks`).
 //!
 //! A **workflow** session's models are applied here too
 //! ([`Agents::with_workflow_models`]) — at its first launch *and* at every
@@ -23,7 +24,7 @@ use crate::application::review_size::RoundModels;
 use crate::domain::entities::AgentKind;
 use crate::infrastructure::config::Config;
 use crate::infrastructure::hooks::registry::{self, ClashSession};
-use crate::infrastructure::omp;
+use crate::infrastructure::{hermes, omp};
 
 /// Binary, argv and extra env for one daemon spawn.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -49,10 +50,13 @@ pub struct WorkflowModels {
 pub struct Agents {
     pub claude_bin: String,
     pub omp_bin: String,
+    pub hermes_bin: String,
     /// `~/.claude/projects` — Claude transcripts.
     pub claude_projects_dir: PathBuf,
     /// `~/.omp/agent` — OMP sessions and skills.
     pub omp_dir: PathBuf,
+    /// `~/.hermes` — Hermes's session store.
+    pub hermes_home: PathBuf,
     pub workflow: WorkflowModels,
     /// Where the OMP subagent overlay is written (clash's data dir).
     pub omp_overlay_path: PathBuf,
@@ -65,14 +69,17 @@ pub fn fresh_args(agent: AgentKind, id: &str, omp_file: &Path) -> Vec<String> {
     match agent {
         AgentKind::Claude => vec!["--session-id".into(), id.into()],
         AgentKind::Omp => vec!["--resume".into(), omp_file.to_string_lossy().into_owned()],
+        AgentKind::Hermes => hermes::launch_args(id),
     }
 }
 
-/// Argv resuming `conversation` (Claude) / the transcript at `omp_file` (OMP).
+/// Argv resuming `conversation` (Claude; for Hermes its Hermes id) / the
+/// transcript at `omp_file` (OMP).
 pub fn resume_args(agent: AgentKind, conversation: &str, omp_file: &Path) -> Vec<String> {
     match agent {
         AgentKind::Claude => vec!["--resume".into(), conversation.into()],
         AgentKind::Omp => vec!["--resume".into(), omp_file.to_string_lossy().into_owned()],
+        AgentKind::Hermes => hermes::resume_args(conversation),
     }
 }
 
@@ -92,8 +99,10 @@ impl Agents {
         Self {
             claude_bin: cfg.general.claude_bin.clone(),
             omp_bin: cfg.general.omp_bin.clone(),
+            hermes_bin: cfg.general.hermes_bin.clone(),
             claude_projects_dir: cfg.claude_dir().join("projects"),
             omp_dir: cfg.omp_dir(),
+            hermes_home: cfg.hermes_home(),
             workflow: WorkflowModels {
                 delegation: cfg.workflows.delegation.clone(),
                 claude_lead: cfg.workflows.lead_model.clone(),
@@ -130,6 +139,7 @@ impl Agents {
             match agent {
                 AgentKind::Claude => round.subagent.as_deref().unwrap_or(&w.claude_subagent),
                 AgentKind::Omp => &w.omp_subagent,
+                AgentKind::Hermes => "",
             },
         );
         let overlay = match agent {
@@ -174,6 +184,7 @@ impl Agents {
         match agent {
             AgentKind::Claude => self.claude_bin.clone(),
             AgentKind::Omp => self.omp_bin.clone(),
+            AgentKind::Hermes => self.hermes_bin.clone(),
         }
     }
 
@@ -192,7 +203,7 @@ impl Agents {
                 }
                 file
             }
-            AgentKind::Claude => PathBuf::new(),
+            AgentKind::Claude | AgentKind::Hermes => PathBuf::new(),
         };
         Launch {
             bin: self.bin(agent),
@@ -233,6 +244,10 @@ impl Agents {
         let agent = registry::registered_agent(registry, session_id).unwrap_or_else(|| {
             if omp::find_session_file(&self.omp_dir, session_id).is_some() {
                 AgentKind::Omp
+            } else if hermes::find(&hermes::load_conversations(&self.hermes_home), session_id)
+                .is_some()
+            {
+                AgentKind::Hermes
             } else {
                 AgentKind::Claude
             }
@@ -265,6 +280,19 @@ impl Agents {
                 },
                 None => self.fresh(agent, session_id, cwd),
             },
+            // A session clash named resumes by its title, which Hermes
+            // resolves to the live tip; one started elsewhere by its id.
+            AgentKind::Hermes => {
+                let convs = hermes::load_conversations(&self.hermes_home);
+                match hermes::find(&convs, &conversation).filter(|c| !c.spawned_by_clash()) {
+                    Some(c) => Launch {
+                        bin: self.bin(agent),
+                        args: resume_args(agent, &c.tip, Path::new("")),
+                        ..Launch::default()
+                    },
+                    None => self.fresh(agent, session_id, cwd),
+                }
+            }
         };
         // A resume keeps none of the first launch's flags or env, so a
         // workflow session would otherwise come back on the agent's default
@@ -403,6 +431,43 @@ mod tests {
         );
     }
 
+    /// Hermes mints its own ids, so a clash session is named by title — the
+    /// same argv starts it and resumes it.
+    #[test]
+    fn hermes_sessions_start_and_resume_by_their_clash_title() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = agents_with(dir.path(), WorkflowModels::default());
+        let fresh = a.fresh(AgentKind::Hermes, "X", "/p");
+        assert_eq!(fresh.bin, "hermes");
+        assert_eq!(fresh.args, ["chat", "-c", "clash:X", "--create-if-missing"]);
+        let reg: HashMap<String, ClashSession> = [(
+            "X".to_string(),
+            ClashSession {
+                session_id: "X".into(),
+                name: "X".into(),
+                cwd: "/p".into(),
+                claude_session_id: "X".into(),
+                created_at: String::new(),
+                source_branch: None,
+                previous_ids: Vec::new(),
+                agent: AgentKind::Hermes,
+                workflow: false,
+                workflow_item: None,
+                lead_model: None,
+                subagent_model: None,
+            },
+        )]
+        .into();
+        assert_eq!(
+            a.relaunch_with(&reg, "X", Some("/p"), |_| false).args,
+            fresh.args
+        );
+        assert_eq!(
+            resume_args(AgentKind::Hermes, "local-1", Path::new("")),
+            ["chat", "--resume", "local-1"]
+        );
+    }
+
     #[test]
     fn the_prompt_is_the_last_argument() {
         let base = vec!["--model".to_string(), "opus".to_string()];
@@ -413,8 +478,10 @@ mod tests {
         Agents {
             claude_bin: "claude".into(),
             omp_bin: "omp".into(),
+            hermes_bin: "hermes".into(),
             claude_projects_dir: dir.join("projects"),
             omp_dir: dir.join("omp"),
+            hermes_home: dir.join("hermes"),
             workflow: w,
             omp_overlay_path: dir.join("clash").join("workflow-models.yml"),
         }
@@ -563,8 +630,10 @@ mod tests {
         let agents = Agents {
             claude_bin: "claude".into(),
             omp_bin: "/opt/omp".into(),
+            hermes_bin: "hermes".into(),
             claude_projects_dir: PathBuf::from("/nope"),
             omp_dir: dir.path().join("omp-agent"),
+            hermes_home: PathBuf::from("/nope"),
             workflow: WorkflowModels::default(),
             omp_overlay_path: PathBuf::from("/nope/overlay.yml"),
         };
@@ -593,8 +662,10 @@ mod tests {
         let agents = Agents {
             claude_bin: "claude".into(),
             omp_bin: "omp".into(),
+            hermes_bin: "hermes".into(),
             claude_projects_dir: PathBuf::from("/nope"),
             omp_dir: omp_dir.clone(),
+            hermes_home: PathBuf::from("/nope"),
             workflow: WorkflowModels::default(),
             omp_overlay_path: PathBuf::from("/nope/overlay.yml"),
         };

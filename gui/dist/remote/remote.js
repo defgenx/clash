@@ -131,7 +131,7 @@
     const meta = el("div", "session-meta");
     meta.append(el("div", "session-name", displayName(s)));
     const sub = el("div", "session-sub");
-    sub.append(el("span", "agent-badge", s.agent === "omp" ? "OMP" : "CC"));
+    sub.append(el("span", "agent-badge", (AGENT_BADGES[s.agent] || AGENT_BADGES.claude).short));
     const st = statusInfo(s);
     sub.append(el("span", `status-label ${st.cls}`, `${st.icon} ${st.label}`));
     if (s.git_branch) sub.append(el("span", "branch", s.git_branch));

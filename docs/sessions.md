@@ -8,6 +8,7 @@ new ones. Everything here applies to both frontends; the GUI's session UI is in
 - [Session sources](#session-sources)
 - [Wild sessions](#wild-sessions)
 - [OMP sessions](#omp-sessions)
+- [Hermes sessions](#hermes-sessions)
 - [Session presets](#session-presets)
 
 ## Status detection
@@ -119,6 +120,36 @@ applies:
 Settings: `general.omp_bin`, `general.default_agent`, `paths.omp_dir`,
 `workflows.agent`, `workflows.omp_model`, `workflows.omp_subagent_model`.
 Details: [hooks.md](hooks.md#omp-sessions).
+
+## Hermes sessions
+
+clash also runs [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+(`hermes`) sessions, picked the same way (the new-session dialog,
+`:new --agent hermes <path>`, or `general.default_agent = "hermes"`). The GUI
+badges them `HM`. **Workflow items do not run on Hermes yet**: the workflow
+pickers do not offer it, `workflows.agent` refuses it, and a launch on it is
+refused before any set-up — clash installs no skills into Hermes and pins none
+of its models.
+
+- **Identity and resume.** Hermes mints its own session ids, so clash names
+  each session it starts by title: `hermes chat -c clash:<id>
+  --create-if-missing` creates it the first time and resumes it every time
+  after (Hermes follows a compression to the live end of the conversation).
+  Hermes keeps sessions in SQLite (`~/.hermes/state.db`), which clash only
+  reads; a compression continues a conversation on a new row, and the list
+  shows the whole chain as one session. Renaming a clash-started session in
+  Hermes (`/title`) breaks that link — the next resume starts a fresh session.
+- **Status.** At startup clash writes a status plugin into
+  `~/.hermes/plugins/clash-status/`. Hermes loads it only once it is enabled,
+  which is Hermes's own consent step: run `hermes plugins enable clash-status`
+  once (Settings → Paths shows the command until it is done). Until then
+  status comes from the screen, which can miss an approval prompt.
+- **Stopping.** A Hermes chat is a viewer of a session its background gateway
+  runs. Stashing or killing the terminal ends the chat; a turn already in
+  flight finishes in the gateway.
+
+Settings: `general.hermes_bin`, `general.default_agent`, `paths.hermes_dir`.
+Details: [hooks.md](hooks.md#hermes-sessions).
 
 ## Session presets
 

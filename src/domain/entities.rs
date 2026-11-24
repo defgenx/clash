@@ -365,14 +365,17 @@ pub enum AgentKind {
     Claude,
     /// oh-my-pi (`omp`).
     Omp,
+    /// Nous Research's Hermes Agent (`hermes`).
+    Hermes,
 }
 
 impl AgentKind {
-    /// Wire / config spelling (`claude`, `omp`).
+    /// Wire / config spelling (`claude`, `omp`, `hermes`).
     pub fn as_str(&self) -> &'static str {
         match self {
             AgentKind::Claude => "claude",
             AgentKind::Omp => "omp",
+            AgentKind::Hermes => "hermes",
         }
     }
 
@@ -381,6 +384,7 @@ impl AgentKind {
     pub fn parse(s: &str) -> AgentKind {
         match s.trim().to_ascii_lowercase().as_str() {
             "omp" | "oh-my-pi" => AgentKind::Omp,
+            "hermes" => AgentKind::Hermes,
             _ => AgentKind::Claude,
         }
     }

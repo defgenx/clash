@@ -43,7 +43,8 @@ Three properties of that injection are load-bearing:
 - **It is agent-only.** The daemon also spawns shells (`shellterm-*`), which
   would reject the flag. Decided by `wants_hook_flag`, on the binary's
   basename: `claude` gets `--settings`, `omp` gets `-e` (see
-  [OMP sessions](#omp-sessions)).
+  [OMP sessions](#omp-sessions)); `hermes` gets nothing, since Hermes loads
+  its plugin itself (see [Hermes sessions](#hermes-sessions)).
 - **It is existence-guarded.** claude refuses to start at all on a
   `--settings` path it cannot read (`Error: Settings file not found`), so a
   missing hooks file must cost the status hooks and never the session.
@@ -213,4 +214,67 @@ names it.
 `chase_resume_forks` / `heal_registry_forks` skip OMP entries (the registry
 records `agent: "omp"`; a missing field reads as Claude, which is what every
 older entry is).
+
+## Hermes sessions
+
+Hermes Agent (`hermes`) has a plugin system rather than settings-file hooks,
+and its hooks run in its **gateway** — the background process that owns every
+session — not in the chat process clash spawns. Two consequences shape the
+design: nothing clash puts in the spawn's environment reaches a hook, and a
+plugin is global to the Hermes install, so clash cannot add it per spawn.
+
+```
+~/.hermes/plugins/clash-status/plugin.yaml    # written by install_hermes_plugin,
+~/.hermes/plugins/clash-status/__init__.py    # only when Hermes is installed and the bytes change
+```
+
+Hermes loads a user plugin only when `plugins.enabled` in its `config.yaml`
+lists it. That list is Hermes's consent mechanism and the file is Hermes's, so
+clash never edits it: the user runs `hermes plugins enable clash-status` once.
+The GUI shows that command under Settings → Paths → Hermes binary while
+`plugins.enabled` (read with the pure `hermes::plugin_enabled_in`) lacks it;
+the TUI logs it at startup.
+
+| Hermes hook | status |
+|---|---|
+| `on_session_open` | `waiting` |
+| `pre_llm_call`, `post_approval_response`, `on_human_input_resolved` | `thinking` |
+| `on_session_end` | `waiting` — Hermes fires it at the end of **every turn** |
+| `pre_approval_request`, `on_human_input_request` | `prompting` |
+| `on_session_finalize` | `idle` |
+
+`on_human_input_request` covers Hermes's clarify/sudo/secret prompts, which
+block on the human exactly like an approval does.
+
+**Identity.** Hermes mints its own ids (`local-<hex>`) and stores sessions in
+SQLite (`~/.hermes/state.db`, which clash opens read-only — `immutable` when
+no `-wal` file exists, because the gateway deletes its WAL files when it exits
+and a read-only connection cannot recreate them). clash therefore
+names every session it spawns by **title**: `hermes chat -c clash:<clash-id>
+--create-if-missing` creates the session on first launch and, on every later
+one, resolves the title to the live end of the conversation — so fresh start
+and resume are the same argv (`hermes::launch_args`). The registry key stays
+the clash id. A session clash did not name (taken over from a terminal) is
+listed under its Hermes id and resumed with `hermes chat --resume <id>`.
+
+**Compression.** A compression ends a session row with `end_reason =
+'compression'` and continues the conversation on a child row
+(`parent_session_id`). The pure `hermes::conversations` folds each chain into
+one listed row — under the clash id when the root's title is `clash:<id>`,
+else the root's id — taking the tip by Hermes's own rule (a continuation that
+compressed again, then an open one, then the most recent). The plugin walks
+the same parent links back to the root to name its status file. Any other
+child (a `/branch`) is a conversation of its own.
+
+**No resume forks, no cwd.** Hermes follows its own chain, so
+`resolve_latest_conversation` skips Hermes entries like OMP ones. A session
+created by title records no cwd in Hermes's store; the registry's cwd fills
+the row's project path.
+
+**Wild processes.** `hermes` is a shell launcher that execs `python3 -I -c
+'<inline script>' <args>`, so no basename names it in `ps`.
+`process_scan::hermes_chat_args` recognises the launcher by the line its
+inline script ends with and accepts only a chat (bare `hermes` or `chat`):
+the gateway and one-off subcommands are not sessions. `-c clash:<id>` names
+the clash id, `--resume <id>` a Hermes id.
 

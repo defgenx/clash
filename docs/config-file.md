@@ -38,7 +38,7 @@ Later layers win, key by key:
 
 A project config may set only `paths.claude_dir`, `paths.scratch_dir`,
 `paths.workflows_dir`, `[actions]` and `notifications.hooks`. It deliberately
-**cannot** change `claude_bin`, `omp_bin` or any other key — clash spawns
+**cannot** change `claude_bin`, `omp_bin`, `hermes_bin` or any other key — clash spawns
 processes, so a cloned repo must not be able to decide which binary runs.
 Rejected keys and unknown `CLASH_*` variables are reported by
 `clash config --validate`, not silently ignored (`CLASH_LOG_RETENTION_HOURS` is
@@ -54,12 +54,14 @@ claude_bin = "claude"      # name on PATH, or an absolute path
 skills_update = "ask"      # when an upgrade ships skills you edited: ask | all | keep
 update_check = true        # look for a new release in the background (GUI: startup + every 6h; TUI: startup)
 omp_bin = "omp"            # OMP (oh-my-pi) binary for OMP sessions
-default_agent = "claude"   # agent new sessions pre-select: claude | omp
+hermes_bin = "hermes"      # Hermes Agent binary for Hermes sessions
+default_agent = "claude"   # agent new sessions pre-select: claude | omp | hermes
 debounce_ms = 200          # filesystem-watcher debounce
 
 [paths]
 claude_dir = ""            # empty = ~/.claude
 omp_dir = ""               # OMP agent dir; empty = ~/.omp/agent
+hermes_dir = ""            # Hermes home (state.db, plugins); empty = $HERMES_HOME, else ~/.hermes
 scratch_dir = ""           # empty = <claude_dir>/clash/scratch
 workflows_dir = ""         # empty = <claude_dir>/clash/workflows
 
@@ -142,7 +144,8 @@ can't apply them. Everything above is read by both.
 - **Edits apply live.** The config directory is watched; a change by hand, by
   the GUI, or by another clash instance is picked up without a restart.
   `:reload` forces it. `general.claude_bin`, `general.omp_bin`,
-  `general.debounce_ms` and `paths.omp_dir` take effect on restart, and clash
+  `general.hermes_bin`, `general.debounce_ms`, `paths.omp_dir` and
+  `paths.hermes_dir` take effect on restart, and clash
   says so rather than pretending otherwise.
 - **A typo never loses your settings.** A parse error keeps the last good values
   in memory, reports the failure with `line:column`, and *blocks writes* until

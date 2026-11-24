@@ -1855,10 +1855,15 @@ pub(crate) fn omp_skills_root(settings: &clash::infrastructure::config::Config) 
 struct AgentSettings {
     default_agent: String,
     omp_bin: String,
+    hermes_bin: String,
     /// Whether each binary resolves — the pickers grey the choice out
     /// otherwise, rather than letting a spawn die with ENOENT.
     omp_available: bool,
     claude_available: bool,
+    hermes_available: bool,
+    /// The clash status plugin in Hermes: `absent` (no Hermes home), `off`
+    /// (installed, not in `plugins.enabled`) or `on`.
+    hermes_plugin: String,
     workflow_agent: String,
     omp_model: String,
     lead_model: String,
@@ -1893,6 +1898,23 @@ fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
         default_agent: cfg.default_agent().as_str().to_string(),
         omp_available: bin_available(&cfg.general.omp_bin),
         claude_available: bin_available(&cfg.general.claude_bin),
+        hermes_available: bin_available(&cfg.general.hermes_bin),
+        hermes_plugin: {
+            let home = cfg.hermes_home();
+            if !home
+                .join("plugins")
+                .join(clash::infrastructure::hermes::PLUGIN_NAME)
+                .is_dir()
+            {
+                "absent"
+            } else if clash::infrastructure::hermes::plugin_enabled(&home) {
+                "on"
+            } else {
+                "off"
+            }
+            .to_string()
+        },
+        hermes_bin: cfg.general.hermes_bin.clone(),
         omp_bin: cfg.general.omp_bin,
         workflow_agent: if clash::application::workflow::agent_asks("", &cfg.workflows.agent) {
             "ask".to_string()
@@ -1922,7 +1944,7 @@ fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
 }
 
 /// Write one agent-CLI setting to the shared `config.toml`. `key` is one of
-/// `general.default_agent`, `general.omp_bin`, `workflows.agent`,
+/// `general.default_agent`, `general.omp_bin`, `general.hermes_bin`, `workflows.agent`,
 /// `workflows.omp_model`, `workflows.lead_model`, `workflows.delegation`,
 /// `workflows.subagent_model`, `workflows.omp_subagent_model`, `workflows.assist`,
 /// `workflows.explain_detail`, `workflows.review_sizing`,
@@ -1938,12 +1960,19 @@ fn set_agent_setting(
     let value = value.trim();
     let value = match key.as_str() {
         "workflows.agent" if value.eq_ignore_ascii_case("ask") => "ask".to_string(),
+        "workflows.agent"
+            if !clash::application::workflow::runs_workflows(
+                clash::domain::entities::AgentKind::parse(value),
+            ) =>
+        {
+            return Err(format!("Workflow sessions don't run on {value} yet"));
+        }
         "general.default_agent" | "workflows.agent" if !value.is_empty() => {
             clash::domain::entities::AgentKind::parse(value)
                 .as_str()
                 .to_string()
         }
-        "general.omp_bin" if value.contains('/') => {
+        "general.omp_bin" | "general.hermes_bin" if value.contains('/') => {
             let expanded = expand_tilde(value);
             if !expanded.is_file() {
                 return Err(format!("Not a file: {}", expanded.display()));
@@ -1969,6 +1998,7 @@ fn set_agent_setting(
         "general.default_agent"
         | "workflows.agent"
         | "general.omp_bin"
+        | "general.hermes_bin"
         | "workflows.omp_model"
         | "workflows.lead_model"
         | "workflows.delegation"
@@ -3684,7 +3714,8 @@ fn main() {
         backend: FsBackend::new(data_dir)
             .with_scratch_dir(settings.paths.scratch_dir.clone())
             .with_workflows_dir(settings.paths.workflows_dir.clone())
-            .with_omp_dir(Some(settings.omp_dir())),
+            .with_omp_dir(Some(settings.omp_dir()))
+            .with_hermes_home(Some(settings.hermes_home())),
         config,
         previous: Mutex::new(Vec::new()),
         missing_streaks: Mutex::new(HashMap::new()),
@@ -3713,6 +3744,12 @@ fn main() {
     // missing install now costs every session its status signals.
     if let Err(e) = clash::infrastructure::hooks::install_hooks(state.backend.base_dir()) {
         tracing::warn!("Failed to install hooks: {}", e);
+    }
+    // Hermes loads its plugin itself, once `plugins.enabled` lists it.
+    if let Err(e) =
+        clash::infrastructure::hooks::install_hermes_plugin(&state.config.get().hermes_home())
+    {
+        tracing::warn!("Hermes status plugin not installed: {}", e);
     }
 
     // Skills: everything clash itself wrote is synced at startup (missing

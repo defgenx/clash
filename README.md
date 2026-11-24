@@ -17,8 +17,8 @@
 
 ---
 
-clash manages every Claude Code and [OMP](https://omp.sh) (oh-my-pi) agent
-session on your machine from one place: it lists them with live status, starts,
+clash manages every Claude Code, [OMP](https://omp.sh) (oh-my-pi) and
+[Hermes](https://github.com/NousResearch/hermes-agent) agent session on your machine from one place: it lists them with live status, starts,
 attaches, stashes, resumes and kills them, and takes over `claude` processes
 started elsewhere. On top of that it runs **Workflows** — one item per piece of
 work, taken from plan to code to PR by agents, with you approving each step.
@@ -27,7 +27,7 @@ the terminal-native fallback, backed by the same core.
 
 ## Features
 
-- **One place for every agent session** — Claude Code and OMP sessions grouped
+- **One place for every agent session** — Claude Code, OMP and Hermes sessions grouped
   by status, with live three-layer status detection (hooks, PTY screen
   analysis, transcripts). [Sessions](docs/sessions.md)
 - **Two frontends, one core** — the desktop **GUI** (Tauri) and a
@@ -105,7 +105,8 @@ regular desktop application, discoverable like any other app:
 
 ### Requirements
 
-- Claude Code CLI (`claude`), and/or OMP (`omp`, oh-my-pi) for OMP sessions
+- Claude Code CLI (`claude`), and/or OMP (`omp`, oh-my-pi) for OMP sessions,
+  and/or Hermes Agent (`hermes`) for Hermes sessions
 - `git` (worktrees, diffs) and, for every PR feature, the GitHub CLI `gh`
 - Building from source: a recent stable Rust (1.82+); for the GUI on Linux, the
   webkit2gtk / GTK development packages (see
@@ -117,7 +118,7 @@ regular desktop application, discoverable like any other app:
    launch opens a guided tour; replay it from *Settings → General → ▶ Show the
    tour*.
 2. Press `⌘T` (**＋ New session**), pick a directory, optionally a preset or a
-   git worktree, and the agent (Claude Code or OMP).
+   git worktree, and the agent (Claude Code, OMP or Hermes).
 3. Your existing sessions are already in the sidebar, grouped by status. Click
    one to open it; closing its tab stashes it, and it resumes on the next
    click.
@@ -160,7 +161,7 @@ restores workspaces, tabs, layout and browser tabs.
 ### Sessions
 
 The sidebar groups sessions by status (PROMPTING, THINKING, RUNNING, WAITING,
-STARTING, STASHED, ERRORED, DONE), with a **CC** / **OMP** badge on every row.
+STARTING, STASHED, ERRORED, DONE), with a **CC** / **OMP** / **HM** badge on every row.
 Each row's `⋯` menu renames, ⟳ reloads (hot-restarts on the newest `claude`
 binary), stashes, kills, queues a follow-up or opens the PR. A `claude` started
 outside clash appears under `⚡ EXTERNAL` as a 🌿 Wild session; clicking it takes
@@ -295,12 +296,12 @@ Every key and the layering rules: [docs/config-file.md](docs/config-file.md).
 | [docs/gui.md](docs/gui.md) | The desktop app in full: panes, sessions, terminals, browser, files, scratches, teams, inbox, settings, shortcuts |
 | [docs/workflows-guide.md](docs/workflows-guide.md) | Workflows from the user's side, including ticket trackers and sharing |
 | [docs/tui.md](docs/tui.md) | Every TUI keybinding and command |
-| [docs/sessions.md](docs/sessions.md) | Status detection, session sources, wild sessions, OMP sessions, presets |
+| [docs/sessions.md](docs/sessions.md) | Status detection, session sources, wild sessions, OMP and Hermes sessions, presets |
 | [docs/config-file.md](docs/config-file.md) | The configuration file and every key |
 | [docs/data.md](docs/data.md) | Every file clash reads and writes |
 | [docs/workflows.md](docs/workflows.md) | The workflow file contract for agents and skills |
 | [docs/configuration.md](docs/configuration.md) | Configuration internals |
-| [docs/hooks.md](docs/hooks.md) | Status hooks and the OMP status extension |
+| [docs/hooks.md](docs/hooks.md) | Status hooks, the OMP status extension and the Hermes status plugin |
 | [docs/development.md](docs/development.md) | Building, testing, architecture |
 
 The index is [docs/README.md](docs/README.md).

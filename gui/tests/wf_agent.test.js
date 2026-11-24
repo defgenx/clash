@@ -67,3 +67,18 @@ test("a global ask pre-selects the last agent, never the word ask", () => {
   assert.equal(wfAgentDefault("omp", both), "omp");
   assert.equal(wfAgentDefault("", both), "claude");
 });
+
+test("Hermes is offered to new sessions only, never to workflow launches", () => {
+  assert.deepEqual(
+    wfAgentChoices({}).map((c) => c.value),
+    ["claude", "omp"],
+  );
+  const sessions = wfAgentChoices({ hermesAvailable: false, hermesBin: "/x/hermes" }, { sessions: true });
+  const hermes = sessions.find((c) => c.value === "hermes");
+  assert.equal(hermes.available, false);
+  assert.match(hermes.reason, /\/x\/hermes/);
+  // A Hermes default stands for a new session, and falls back for a workflow.
+  const cfg = { workflowAgent: "hermes" };
+  assert.equal(wfAgentDefault("", cfg, { sessions: true }), "hermes");
+  assert.equal(wfAgentDefault("", cfg), "claude");
+});

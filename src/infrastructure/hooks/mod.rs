@@ -1,6 +1,7 @@
 //! Agent hooks integration for instant session status detection: a hook
-//! script for Claude Code, a status extension for OMP (`omp-status.js`),
-//! both writing the same status files.
+//! script for Claude Code, a status extension for OMP (`omp-status.js`) and a
+//! status plugin for Hermes (`hermes-status.py`), all writing the same status
+//! files.
 //!
 //! Everything clash needs lives in clash's own data directory
 //! (`~/.claude/clash/`): the status/name state files, the hook script, and
@@ -39,6 +40,14 @@ const HOOK_SETTINGS_NAME: &str = "settings.json";
 const OMP_EXTENSION_NAME: &str = "omp-status.js";
 /// Source of that extension; `{DATA_DIR}` is replaced at install time.
 const OMP_EXTENSION_TEMPLATE: &str = include_str!("omp-status.js");
+/// Source of the Hermes status plugin's `__init__.py`; `{DATA_DIR}` likewise.
+const HERMES_PLUGIN_TEMPLATE: &str = include_str!("hermes-status.py");
+/// The Hermes plugin's manifest.
+const HERMES_PLUGIN_MANIFEST: &str = "name: clash-status\nversion: \"1.0\"\n\
+description: Session status for clash (thinking, waiting, blocked on an approval)\n\
+provides_hooks:\n  - on_session_open\n  - pre_llm_call\n  - on_session_end\n  \
+- pre_approval_request\n  - post_approval_response\n  - on_human_input_request\n  \
+- on_human_input_resolved\n  - on_session_finalize\n";
 
 /// The hook script that Claude Code calls on lifecycle events.
 /// It reads JSON from stdin, extracts event + session_id, and writes
@@ -202,6 +211,32 @@ pub fn install_hooks(claude_dir: &Path) -> std::io::Result<()> {
     remove_legacy_hook_settings(claude_dir);
 
     Ok(())
+}
+
+/// Write clash's status plugin into `<hermes_home>/plugins/clash-status/`, when
+/// Hermes is installed (its home exists) — only the bytes that changed. Hermes
+/// loads it only once `plugins.enabled` lists it, which is Hermes's own
+/// consent step (`hermes plugins enable clash-status`): clash never edits
+/// Hermes's config. Returns whether the plugin is in place.
+pub fn install_hermes_plugin(hermes_home: &Path) -> std::io::Result<bool> {
+    if !hermes_home.is_dir() {
+        return Ok(false);
+    }
+    let dir = hermes_home
+        .join("plugins")
+        .join(crate::infrastructure::hermes::PLUGIN_NAME);
+    std::fs::create_dir_all(&dir)?;
+    let init = HERMES_PLUGIN_TEMPLATE.replace("{DATA_DIR}", &clash_data_dir().to_string_lossy());
+    for (name, body) in [
+        ("plugin.yaml", HERMES_PLUGIN_MANIFEST),
+        ("__init__.py", init.as_str()),
+    ] {
+        let path = dir.join(name);
+        if std::fs::read_to_string(&path).unwrap_or_default() != body {
+            crate::infrastructure::fs::atomic::write_atomic(&path, body.as_bytes())?;
+        }
+    }
+    Ok(true)
 }
 
 /// Path of the settings file that registers clash's hooks — what the daemon
@@ -467,6 +502,45 @@ fn remove_legacy_hook_settings(claude_dir: &Path) {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// The plugin lands only where Hermes is installed, and its manifest
+    /// declares exactly the hooks its `register()` registers.
+    #[test]
+    fn the_hermes_plugin_installs_only_into_an_existing_hermes_home() {
+        let dir = TempDir::new().unwrap();
+        assert!(!install_hermes_plugin(&dir.path().join("absent")).unwrap());
+        assert!(!dir.path().join("absent").exists());
+
+        assert!(install_hermes_plugin(dir.path()).unwrap());
+        let plugin = dir.path().join("plugins").join("clash-status");
+        let init = std::fs::read_to_string(plugin.join("__init__.py")).unwrap();
+        assert!(!init.contains("{DATA_DIR}"));
+        let manifest = std::fs::read_to_string(plugin.join("plugin.yaml")).unwrap();
+        assert!(manifest.starts_with("name: clash-status\n"));
+        let registered: Vec<&str> = init
+            .split("ctx.register_hook(\"")
+            .skip(1)
+            .filter_map(|r| r.split('"').next())
+            .collect();
+        let declared: Vec<&str> = manifest
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("- "))
+            .collect();
+        assert_eq!(registered, declared);
+
+        // Python that does not parse would be a plugin Hermes skips quietly.
+        if let Ok(out) = std::process::Command::new("python3")
+            .args(["-c", "import ast,sys; ast.parse(open(sys.argv[1]).read())"])
+            .arg(plugin.join("__init__.py"))
+            .output()
+        {
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
 
     #[test]
     fn install_writes_the_settings_file_the_spawn_points_at() {

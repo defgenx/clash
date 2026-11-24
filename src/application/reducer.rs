@@ -1706,7 +1706,7 @@ fn reduce_ui(state: &mut AppState, action: UiAction) -> Vec<Effect> {
                         crate::application::state::parse_agent_answer(&input, state.default_agent)
                     else {
                         state.toast = Some(format!(
-                            "Unknown agent '{}' — type claude or omp",
+                            "Unknown agent '{}' — type claude, omp or hermes",
                             input.trim()
                         ));
                         state.input_mode = InputMode::NewSessionAgent;
@@ -3246,6 +3246,31 @@ mod tests {
             }
         )));
         assert_eq!(state.input_mode, InputMode::Attached);
+    }
+
+    #[test]
+    fn test_new_session_agent_step_accepts_hermes() {
+        for answer in ["hermes", "h"] {
+            let mut state = test_state();
+            state.input_mode = InputMode::NewSessionAgent;
+            state.pending_session = Some(crate::application::state::PendingSession {
+                cwd: "/tmp/project".to_string(),
+                name: None,
+                worktree: false,
+                preset: None,
+            });
+            let effects = reduce(
+                &mut state,
+                Action::Ui(UiAction::SubmitInput(answer.to_string())),
+            );
+            assert!(effects.iter().any(|e| matches!(
+                e,
+                Effect::DaemonAttach {
+                    fresh: Some(crate::domain::entities::AgentKind::Hermes),
+                    ..
+                }
+            )));
+        }
     }
 
     #[test]
