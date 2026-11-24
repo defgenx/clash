@@ -1328,6 +1328,12 @@ runs on the blocking pool in the GUI.
   item leaves when it leaves `done`, so a reopened item is cleaned again). The
   guards are gathered once per batch. The outcome is logged and announced
   (`workflow-worktrees-cleaned` → a toast).
+- **The dialog decides nothing.** `gui/dist/wt-cleanup.js` (pure, tested in
+  `gui/tests/wt_cleanup.test.js`) turns the backend's verdicts into the
+  `uiCheckChoice` rows — removable first and pre-ticked, kept ones disabled
+  with their reason — and the run and done toasts. A source test pins that the
+  sweep hangs off the list refresh and that `worktree_cleanup_run` removes only
+  what its own re-scan approves.
 
 ### Workspace items — no single repository
 

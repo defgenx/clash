@@ -643,8 +643,9 @@ after updating, items already done have their leftover worktrees cleaned the
 same way.
 
 **⌫** in the WORKFLOWS header (*Clean up worktrees…*) does the same across the
-whole workspace folder (`workflows.workspace_dir`; it asks for a folder when
-none is set). It lists every git worktree of every repository there — found
+whole workspace folder (`workflows.workspace_dir`; with none set it asks for
+the folder that holds your repositories once, and saves it as the workspace,
+like creating an item does). It lists every git worktree of every repository there — found
 by asking git, so a worktree stored anywhere is found and a folder that only
 looks like one is left alone — with its branch, size and verdict. The ones that
 can go are pre-ticked; the others are shown with their reason and cannot be

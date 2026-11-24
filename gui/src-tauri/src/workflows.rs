@@ -6218,6 +6218,48 @@ mod tests {
         );
     }
 
+    /// Every way of reaching done is cleaned up because the sweep hangs off
+    /// the list refresh, not off one button; it touches only the item's own
+    /// worktrees; and the on-demand run removes only what the backend's own
+    /// scan approves — a path from the frontend is a pick, never a licence.
+    #[test]
+    fn worktree_cleanup_is_one_guarded_path() {
+        const SRC: &str = include_str!("workflows.rs");
+        let body = |name: &str| {
+            let rest = SRC.split_once(name).expect(name).1;
+            &rest[..rest.find("\n}\n").expect("end of fn")]
+        };
+        assert!(
+            body("pub(crate) async fn list_workflow_items(")
+                .contains("sweep_done_worktrees(&app, &state, &items)"),
+            "the list refresh runs the done sweep"
+        );
+        let sweep = body("fn sweep_done_worktrees(");
+        assert!(
+            sweep.contains("cleanup_list(&item.meta"),
+            "only the item's own worktrees"
+        );
+        assert!(sweep.contains("wc::scan_pairs(") && sweep.contains("wc::run("));
+        assert!(
+            sweep.contains("seen.remove(&key)"),
+            "a reopened item is cleaned again"
+        );
+        let run = body("pub(crate) async fn worktree_cleanup_run(");
+        assert!(
+            run.contains("wc::scan(&root, &guards, false)")
+                && run.contains(".filter(|c| paths.contains(&c.path))"),
+            "the run re-scans and filters the picks"
+        );
+        assert!(
+            !run.contains("wc::remove("),
+            "never a removal of a raw path"
+        );
+        // The item Remove dialog (the human ticked the worktree, uncommitted
+        // count shown) stays the only forced removal outside the verdict.
+        let forced = concat!("worktree_remove(", "Path::new(repo), wt, true)");
+        assert!(SRC.matches(forced).count() <= 1);
+    }
+
     /// A multi-wave launch is refused before anything exists: the pick is
     /// validated before the worktree is created (a refusal after it would
     /// leave a branch the next attempt trips over as `branch-exists:`), and

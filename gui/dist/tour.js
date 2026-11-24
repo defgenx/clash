@@ -92,15 +92,16 @@
         classic:
           "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
           "by your decisions. An item opens as a Workbench: its documents grouped on the left, " +
-          "the next step on top. ⊞ opens the board, ⇄ the PR dashboard across all projects.",
+          "the next step on top. ⊞ opens the board, ⇄ the PR dashboard across all projects, ⌫ " +
+          "removes the worktrees nothing needs any more.",
         rail:
           "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
           "by your decisions. It opens in the right sidebar from its rail icon, which counts the " +
-          "items waiting on you. ⊞ board, ⇄ PR dashboard.",
+          "items waiting on you. ⊞ board, ⇄ PR dashboard, ⌫ worktree cleanup.",
         railstack:
           "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
           "by your decisions. Its rail icon stacks it in its sidebar and counts the items " +
-          "waiting on you. ⊞ board, ⇄ PR dashboard.",
+          "waiting on you. ⊞ board, ⇄ PR dashboard, ⌫ worktree cleanup.",
         topbar:
           "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
           "by your decisions. Its icon in the top bar counts the items waiting on you. An item " +
@@ -108,7 +109,8 @@
         split:
           "A plan → review → implement → PR pipeline per work item, driven by agents and gated " +
           "by your decisions — always open at the top of the right sidebar. An item opens as a " +
-          "Workbench: documents on the left, the next step on top. ⊞ board, ⇄ PR dashboard.",
+          "Workbench: documents on the left, the next step on top. ⊞ board, ⇄ PR dashboard, ⌫ " +
+          "worktree cleanup.",
       },
     },
     {

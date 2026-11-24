@@ -7024,55 +7024,40 @@ async function wfCleanWorktrees(root = null) {
   try {
     preview = await invoke("worktree_cleanup_preview", { root });
   } catch (e) {
-    if (String(e).startsWith("no-workspace:")) {
-      const picked = await uiPathPrompt(
-        "Which folder holds your repositories? (Set it for good under Settings → Workflows → Workspace.)",
-        state.homeDir ? `${state.homeDir}/Documents/workspace` : "",
+    if (String(e).startsWith("no-workspace:") && root === null) {
+      // The same folder new items live in, so it is asked once and saved,
+      // like `pickWorkflowHome` does.
+      const dir = await pickDirectory(
+        state.settings.defaultCwd || state.homeDir || "",
+        "Choose the folder that holds your repositories",
       );
-      if (picked) return wfCleanWorktrees(picked.trim());
-      return;
+      if (!dir) return;
+      try {
+        const ws = await invoke("set_workflow_workspace", { dir });
+        const el = document.getElementById("set-wf-workspace");
+        if (el) el.value = ws;
+      } catch (err) {
+        return uiAlert(`Workspace: ${err}`);
+      }
+      return wfCleanWorktrees(dir);
     }
     return uiAlert(`Could not list worktrees: ${e}`);
   }
-  const fmt = (b) =>
-    b == null ? "" : b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(1)} GB` : `${Math.round(b / (1 << 20))} MB`;
-  const cands = preview.candidates;
-  const removable = cands.filter((c) => c.removable);
-  if (!removable.length) {
-    return uiAlert(
-      cands.length
-        ? `Nothing to clean up in ${preview.root}: every one of its ${cands.length} worktrees is kept (in use, uncommitted changes or unpushed commits).`
-        : `No git worktrees in ${preview.root}.`,
-    );
-  }
-  const rel = (p) => (p.startsWith(preview.root + "/") ? p.slice(preview.root.length + 1) : p);
-  const order = [...cands].sort((a, b) => b.removable - a.removable || a.path.localeCompare(b.path));
-  const total = removable.reduce((n, c) => n + (c.bytes || 0), 0);
+  const dialog = wtCleanupDialog(preview);
+  if (dialog.empty) return uiAlert(dialog.empty);
   const picked = await uiCheckChoice({
-    message: `Clean up worktrees in ${preview.root}`,
-    detail:
-      `${removable.length} can go (${fmt(total)}): clean, pushed, and used by no open item or running session. ` +
-      `${cands.length - removable.length} are kept and can't be ticked. Branches always stay.`,
-    items: order.map((c) => ({
-      label: rel(c.path),
-      detail: [c.branch || "detached", fmt(c.bytes), c.reason].filter(Boolean).join(" · "),
-      value: c.path,
-      checked: c.removable,
-      disabled: !c.removable,
-    })),
+    message: dialog.message,
+    detail: dialog.detail,
+    items: dialog.items,
     allLabel: "Every worktree that can go",
     okLabel: "Remove",
   });
   if (!picked || !picked.length) return;
   try {
     const out = await invoke("worktree_cleanup_run", { root: preview.root, paths: picked });
-    const freed = cands.filter((c) => out.removed.includes(c.path)).reduce((n, c) => n + (c.bytes || 0), 0);
-    const bits = [`Removed ${out.removed.length} worktree${out.removed.length === 1 ? "" : "s"} (${fmt(freed)})`];
-    if (out.kept.length) bits.push(`${out.kept.length} kept — changed since the preview`);
-    if (out.failed.length) bits.push(`${out.failed.length} failed`);
-    flashToast(bits.join(" · "));
-    if (out.failed.length)
-      uiAlert(`Some worktrees could not be removed:\n\n${out.failed.map(([p, e]) => `${rel(p)}: ${e}`).join("\n")}`);
+    const report = wtRunReport(out, preview);
+    flashToast(report.toast);
+    if (report.failures) uiAlert(report.failures);
   } catch (e) {
     uiAlert(`Cleanup failed: ${e}`);
   }
@@ -18604,15 +18589,8 @@ function rebuildViewTab(key, entry) {
 // An item that reached done had its worktrees cleaned up backend-side
 // (`sweep_done_worktrees`): say what went and what stayed.
 listen("workflow-worktrees-cleaned", (event) => {
-  const { title, outcome } = event.payload;
-  const name = title || event.payload.item;
-  const bits = [];
-  if (outcome.removed.length)
-    bits.push(`removed ${outcome.removed.length} worktree${outcome.removed.length === 1 ? "" : "s"}`);
-  if (outcome.kept.length)
-    bits.push(`kept ${outcome.kept.length}: ${outcome.kept.map(([, why]) => why).join("; ")}`);
-  if (outcome.failed.length) bits.push(`${outcome.failed.length} could not be removed`);
-  if (bits.length) flashToast(`“${name}” is done — ${bits.join(" · ")}`);
+  const line = wtDoneToast(event.payload);
+  if (line) flashToast(line);
 });
 
 // Decision-needed transitions (agent writes only — clash's own clicks are
