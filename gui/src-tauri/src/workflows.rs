@@ -707,21 +707,20 @@ pub(crate) fn set_workflow_item_settings(
     Ok(meta)
 }
 
-/// What a skills upgrade would touch, computed fresh from disk. The frontend
-/// asks at boot: `needsDecision` drives the popup (or the automatic
-/// application when `general.skills_update` is not `ask`).
+/// What a skills upgrade would touch across every installed agent CLI's
+/// folder, computed fresh from disk. The frontend asks at boot: `needsDecision`
+/// (an edit in any harness's copy) drives the popup, or the automatic
+/// application when `general.skills_update` is not `ask`.
 #[tauri::command]
 pub(crate) fn get_skills_plan(
     state: State<'_, GuiState>,
 ) -> clash::infrastructure::skills::SkillsPlan {
-    clash::infrastructure::skills::plan_install(
-        state.backend.base_dir(),
-        clash::domain::entities::AgentKind::Claude,
-    )
+    clash::infrastructure::skills::plan_folders(&skill_folders(&state))
 }
 
-/// Apply a skills-update decision (`all` | `untouched` | `keep`) and stamp
-/// it, so the question only returns on the next actual upgrade.
+/// Apply a skills-update decision (`all` | `untouched` | `keep`) to the
+/// folders waiting for one, and stamp them, so the question only returns on
+/// the next actual upgrade.
 #[tauri::command]
 pub(crate) fn apply_skills_decision(
     state: State<'_, GuiState>,
@@ -729,24 +728,8 @@ pub(crate) fn apply_skills_decision(
 ) -> Result<clash::infrastructure::skills::SkillsReport, String> {
     let mode = clash::infrastructure::skills::ApplyMode::parse(&mode)
         .ok_or_else(|| format!("Unknown skills-update mode '{}'", mode))?;
-    if let Some(omp) = crate::omp_skills_root(&state.config.get()) {
-        clash::infrastructure::skills::apply_decision(
-            &omp,
-            clash::domain::entities::AgentKind::Omp,
-            mode,
-        );
-    }
-    let hermes = state.config.get().hermes_home();
-    if hermes.is_dir() {
-        clash::infrastructure::skills::apply_decision_in(
-            &clash::infrastructure::hermes::skills_dir(&hermes),
-            clash::domain::entities::AgentKind::Hermes,
-            mode,
-        );
-    }
-    Ok(clash::infrastructure::skills::apply_decision(
-        state.backend.base_dir(),
-        clash::domain::entities::AgentKind::Claude,
+    Ok(clash::infrastructure::skills::apply_decision_folders(
+        &skill_folders(&state),
         mode,
     ))
 }
@@ -5313,18 +5296,11 @@ pub(crate) struct SkillText {
 /// Each installed agent CLI with the folder clash installs its skills into.
 fn skill_folders(state: &GuiState) -> Vec<(AgentKind, std::path::PathBuf)> {
     let cfg = state.config.get();
-    let mut out = vec![(AgentKind::Claude, state.backend.base_dir().join("skills"))];
-    if let Some(omp) = crate::omp_skills_root(&cfg) {
-        out.push((AgentKind::Omp, omp.join("skills")));
-    }
-    let hermes = cfg.hermes_home();
-    if hermes.is_dir() {
-        out.push((
-            AgentKind::Hermes,
-            clash::infrastructure::hermes::skills_dir(&hermes),
-        ));
-    }
-    out
+    clash::infrastructure::skills::installed_folders(
+        state.backend.base_dir(),
+        &cfg.omp_dir(),
+        &cfg.hermes_home(),
+    )
 }
 
 /// Every `name → SKILL.md` a harness offers. Hermes nests its skills one

@@ -15,14 +15,16 @@
 //! What is left over is the real diff: a skill (or a retired directory)
 //! hand-edited since clash wrote it, which an update would overwrite.
 //!
-//! - [`plan_install`] compares embedded ↔ installed ↔ manifest and
+//! - [`plan_install_in`] compares embedded ↔ installed ↔ manifest for one
+//!   folder ([`plan_folders`] does it for every installed agent CLI) and
 //!   categorizes each skill: missing, outdated (changed upstream, untouched
 //!   locally) or locally-edited (changed upstream AND touched since clash
 //!   last wrote it), plus any retired skill still present — flagging which of
 //!   those clash did not write. Only the hand-edited ones ask.
 //! - The human (GUI popup, or the `general.skills_update` setting when it is
 //!   not `ask`) picks an [`ApplyMode`]: overwrite those edits, or keep them.
-//! - [`apply_decision`] performs exactly that and stamps the manifest's
+//! - [`apply_decision_folders`] performs exactly that, in the folders waiting
+//!   for a decision only, and stamps each manifest's
 //!   `resolvedFingerprint`, so the question comes back only when the embedded
 //!   set actually changes again (fingerprint, not version — dev builds change
 //!   content without bumping the version).
@@ -34,7 +36,7 @@
 //! fingerprint.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::application::skill_template;
 use crate::domain::entities::AgentKind;
@@ -248,7 +250,9 @@ fn write_skill(skills_dir: &Path, skill: &EmbeddedSkill, text: &str) -> bool {
 }
 
 /// What an upgrade would touch, computed fresh from disk. `root` holds the
-/// `skills/` folder (`<claude_dir>`, `<omp_dir>`).
+/// `skills/` folder (`<claude_dir>`, `<omp_dir>`). Callers decide over every
+/// folder at once with [`plan_folders`].
+#[cfg(test)]
 pub fn plan_install(root: &Path, kind: AgentKind) -> SkillsPlan {
     plan_install_in(&root.join("skills"), kind)
 }
@@ -357,13 +361,93 @@ pub fn sync_unattended_in(skills_dir: &Path, kind: AgentKind) -> SkillsReport {
 /// the embedded set changes again. `keep` writes nothing (beyond the stamp)
 /// and removes nothing; `untouched` skips hand-edited skills; `all` restores
 /// every managed skill to the embedded copy.
+#[cfg(test)]
 pub fn apply_decision(root: &Path, kind: AgentKind, mode: ApplyMode) -> SkillsReport {
     apply(&root.join("skills"), kind, mode, true)
 }
 
-/// [`apply_decision`] for a skills directory given directly.
-pub fn apply_decision_in(skills_dir: &Path, kind: AgentKind, mode: ApplyMode) -> SkillsReport {
-    apply(skills_dir, kind, mode, true)
+/// Every installed agent CLI with the folder its rendering lives in: Claude
+/// Code always, OMP and Hermes only where installed (never created here).
+pub fn installed_folders(
+    claude_dir: &Path,
+    omp_dir: &Path,
+    hermes_home: &Path,
+) -> Vec<(AgentKind, PathBuf)> {
+    let mut out = vec![(AgentKind::Claude, claude_dir.join("skills"))];
+    if omp_dir.is_dir() {
+        out.push((AgentKind::Omp, omp_dir.join("skills")));
+    }
+    if hermes_home.is_dir() {
+        out.push((
+            AgentKind::Hermes,
+            crate::infrastructure::hermes::skills_dir(hermes_home),
+        ));
+    }
+    out
+}
+
+/// A skill name as the decision shows it: bare with one folder, else tagged
+/// with its harness, so "your edits" says which copy was edited.
+fn folder_label(name: &str, kind: AgentKind, folders: usize) -> String {
+    if folders <= 1 {
+        return name.to_string();
+    }
+    let h = match kind {
+        AgentKind::Claude => "Claude Code",
+        AgentKind::Omp => "OMP",
+        AgentKind::Hermes => "Hermes",
+    };
+    format!("{name} ({h})")
+}
+
+/// The update decision across every folder: one question for all of them.
+/// It needs the human when **any** folder holds a hand edit an update would
+/// overwrite, and lists each with its harness.
+pub fn plan_folders(folders: &[(AgentKind, PathBuf)]) -> SkillsPlan {
+    let n = folders.len();
+    let mut out = SkillsPlan {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        resolved: true,
+        ..SkillsPlan::default()
+    };
+    let mut prints = String::new();
+    for (kind, dir) in folders {
+        let p = plan_install_in(dir, *kind);
+        let tag = |v: Vec<String>| v.into_iter().map(|s| folder_label(&s, *kind, n));
+        out.missing.extend(tag(p.missing));
+        out.outdated.extend(tag(p.outdated));
+        out.locally_edited.extend(tag(p.locally_edited));
+        out.retired_present.extend(tag(p.retired_present));
+        out.retired_edited.extend(tag(p.retired_edited));
+        out.resolved &= p.resolved;
+        out.needs_decision |= p.needs_decision;
+        prints.push_str(&p.fingerprint);
+    }
+    out.fingerprint = content_hash(&prints);
+    out
+}
+
+/// Apply a decision to the folders that are waiting for one, and only those:
+/// a folder whose edits were already settled (or that has none) is not
+/// overwritten because another harness's copy raised the question.
+pub fn apply_decision_folders(folders: &[(AgentKind, PathBuf)], mode: ApplyMode) -> SkillsReport {
+    let n = folders.len();
+    let mut out = SkillsReport {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        ..SkillsReport::default()
+    };
+    for (kind, dir) in folders {
+        if !plan_install_in(dir, *kind).needs_decision {
+            continue;
+        }
+        let r = apply(dir, *kind, mode, true);
+        let tag = |v: Vec<String>| v.into_iter().map(|s| folder_label(&s, *kind, n));
+        out.updated.extend(tag(r.updated));
+        out.locally_edited.extend(tag(r.locally_edited));
+        out.kept.extend(tag(r.kept));
+        out.removed.extend(tag(r.removed));
+    }
+    out
 }
 
 /// `stamp` records the embedded set as decided on; only `sync_unattended`
@@ -765,6 +849,110 @@ mod tests {
         let report = apply_decision(dir.path(), K, ApplyMode::All);
         assert_eq!(report.removed, vec!["clash-review".to_string()]);
         assert!(!retired.exists());
+    }
+
+    /// Two folders, each with its own `skills/` under `root`: Claude Code's
+    /// and Hermes's, synced the way startup syncs them.
+    fn two_folders(dir: &Path) -> Vec<(AgentKind, PathBuf)> {
+        let folders = vec![
+            (AgentKind::Claude, dir.join("cc").join("skills")),
+            (AgentKind::Hermes, dir.join("hm").join("skills")),
+        ];
+        for (kind, d) in &folders {
+            sync_unattended_in(d, *kind);
+        }
+        folders
+    }
+
+    #[test]
+    fn an_edit_in_another_harness_copy_asks_and_names_its_harness() {
+        let dir = TempDir::new().unwrap();
+        let folders = two_folders(dir.path());
+        assert!(!plan_folders(&folders).needs_decision);
+        let a = SKILLS[0].name;
+        let hm = dir.path().join("hm");
+        simulate(
+            &hm,
+            a,
+            "my Hermes variant",
+            &content_hash("what clash wrote"),
+        );
+        simulate_upgrade(&hm);
+        let plan = plan_folders(&folders);
+        assert!(plan.needs_decision, "{plan:?}");
+        assert_eq!(plan.locally_edited, vec![format!("{a} (Hermes)")]);
+        assert!(!plan.resolved);
+    }
+
+    #[test]
+    fn a_decision_touches_only_the_folders_waiting_for_one() {
+        let dir = TempDir::new().unwrap();
+        let folders = two_folders(dir.path());
+        let a = SKILLS[0].name;
+        let (cc, hm) = (dir.path().join("cc"), dir.path().join("hm"));
+        // Claude Code: an edit already settled (resolved, nothing pending).
+        simulate(
+            &cc,
+            a,
+            "my settled CC edit",
+            &content_hash("what clash wrote"),
+        );
+        // Hermes: an edit an upgrade would overwrite — the pending question.
+        simulate(
+            &hm,
+            a,
+            "my Hermes variant",
+            &content_hash("what clash wrote"),
+        );
+        simulate_upgrade(&hm);
+
+        let report = apply_decision_folders(&folders, ApplyMode::All);
+        assert_eq!(report.locally_edited, vec![format!("{a} (Hermes)")]);
+        let read = |root: &Path| {
+            std::fs::read_to_string(root.join("skills").join(a).join("SKILL.md")).unwrap()
+        };
+        assert_eq!(read(&hm), SKILLS[0].render(AgentKind::Hermes));
+        assert_eq!(
+            read(&cc),
+            "my settled CC edit",
+            "a settled folder is not overwritten"
+        );
+        assert!(!plan_folders(&folders).needs_decision);
+    }
+
+    #[test]
+    fn one_folder_keeps_bare_names() {
+        let dir = TempDir::new().unwrap();
+        sync_unattended(dir.path(), K);
+        let a = SKILLS[0].name;
+        simulate(dir.path(), a, "edit", &content_hash("what clash wrote"));
+        simulate_upgrade(dir.path());
+        let folders = vec![(K, dir.path().join("skills"))];
+        assert_eq!(plan_folders(&folders).locally_edited, vec![a.to_string()]);
+    }
+
+    #[test]
+    fn installed_folders_lists_only_installed_harnesses() {
+        let dir = TempDir::new().unwrap();
+        let (cc, omp, hm) = (
+            dir.path().join("cc"),
+            dir.path().join("omp"),
+            dir.path().join("hm"),
+        );
+        let kinds =
+            |f: Vec<(AgentKind, PathBuf)>| f.into_iter().map(|(k, _)| k).collect::<Vec<_>>();
+        assert_eq!(
+            kinds(installed_folders(&cc, &omp, &hm)),
+            vec![AgentKind::Claude]
+        );
+        std::fs::create_dir_all(&omp).unwrap();
+        std::fs::create_dir_all(&hm).unwrap();
+        let all = installed_folders(&cc, &omp, &hm);
+        assert_eq!(
+            kinds(all.clone()),
+            vec![AgentKind::Claude, AgentKind::Omp, AgentKind::Hermes]
+        );
+        assert_eq!(all[2].1, hm.join("skills").join("clash"));
     }
 
     #[test]

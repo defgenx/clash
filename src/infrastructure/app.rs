@@ -123,21 +123,13 @@ impl App {
                     synced.removed
                 );
             }
-            let plan = skills::plan_install(&data_dir, AgentKind::Claude);
+            // One decision over every harness's folder: an edit in any copy asks.
+            let folders = skills::installed_folders(&data_dir, &settings.omp_dir(), &hermes_home);
+            let plan = skills::plan_folders(&folders);
             if plan.needs_decision {
                 match skills::ApplyMode::parse(&settings.general.skills_update) {
                     Some(mode) => {
-                        let r = skills::apply_decision(&data_dir, AgentKind::Claude, mode);
-                        if let Some(ref d) = omp_root {
-                            skills::apply_decision(d, AgentKind::Omp, mode);
-                        }
-                        if hermes_home.is_dir() {
-                            skills::apply_decision_in(
-                                &crate::infrastructure::hermes::skills_dir(&hermes_home),
-                                AgentKind::Hermes,
-                                mode,
-                            );
-                        }
+                        let r = skills::apply_decision_folders(&folders, mode);
                         tracing::info!(
                             "skills updated per general.skills_update (updated: {:?}, kept: {:?}, removed: {:?})",
                             r.updated,

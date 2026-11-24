@@ -2248,6 +2248,13 @@ becomes a **decision only where it could lose work**:
   edits keep their old hash, so they stay detectable as edits forever.
 - The TUI has no popup: it runs the same unattended sync, honors a non-`ask`
   setting, and otherwise logs a pointer to the GUI.
+- **One question covers every agent CLI's folder** (`plan_folders` over
+  `installed_folders`): a hand edit in the OMP or Hermes copy asks exactly
+  like one in Claude Code's, and the popup names each with its harness
+  (`clash-workflow (Hermes)`). The answer (`apply_decision_folders`) is applied
+  **only to the folders waiting for one** — a folder whose edits were settled
+  earlier, or that has none, is left as it is, so answering *Overwrite* for one
+  harness's edit never overwrites another harness's kept edit.
 
 ### Skills per agent CLI
 
