@@ -638,6 +638,10 @@ the ones that lose nothing go: clean (no uncommitted change), pushed (no
 commit that exists on no remote), and used by no other open item and no
 running session. The rest stay, and a toast says which and why. Branches
 always stay, so a removed worktree can be re-created with `git worktree add`.
+If an open item's worktree folder disappears anyway (deleted by hand), the
+next action that needs it (*Request changes*, the Diff tab) says so and offers
+to check a branch out there again — the one git last recorded there, a PR's
+branch, or the item's own.
 This happens once per item each time it reaches done; on the first launch
 after updating, items already done have their leftover worktrees cleaned the
 same way.

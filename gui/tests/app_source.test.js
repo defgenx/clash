@@ -409,8 +409,9 @@ test("a check run's findings are applied through the one change-round mechanism"
   // the run as applied.
   assert.match(mech, /park: null,\n\s+appliedKeys,/);
   assert.match(mech, /launchWfAgent\(fresh, changeRoundPhase\(item\.meta\.status\)/);
-  // def + the single-round Apply button + the run's apply.
-  assert.equal((APP.match(/wfRecordAndRevise\(/g) || []).length, 3);
+  // def + the single-round Apply button (and its retry after a worktree
+  // recovery) + the run's apply.
+  assert.equal((APP.match(/wfRecordAndRevise\(/g) || []).length, 4);
   const apply = extractFunction(APP, "wfApplyRun");
   // Claimed before anything is recorded, so two drivers cannot both start the
   // change round, and handed back to the human when it fails.

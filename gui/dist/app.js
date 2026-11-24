@@ -10115,6 +10115,53 @@ async function wfPrRecovery(item, err, retry) {
   return true;
 }
 
+/// The item's worktree folder is gone (`worktree-missing:` — deleted outside
+/// git): offer to check a branch out at the same path again, then retry. True
+/// when handled.
+async function wfWorktreeRecovery(item, err, retry) {
+  const msg = String(err);
+  if (!msg.startsWith("worktree-missing:")) return false;
+  const path = msg.slice("worktree-missing:".length).trim();
+  const { project, slug } = item;
+  let choices = [];
+  try {
+    choices = await invoke("workflow_worktree_restore_choices", { project, slug });
+  } catch (e) {
+    uiAlert(`This item's worktree is gone (${path}), and clash could not list its branches: ${e}`);
+    return true;
+  }
+  let branch = await uiListChoice({
+    message:
+      `This item's worktree folder is gone: ${path}. Pick the branch to check out there again. ` +
+      "Commits live on the branches; only uncommitted changes in the deleted folder are lost.",
+    items: [
+      ...choices.map((c) => ({ label: c.branch, detail: c.why, value: c.branch })),
+      { label: "Another branch…", value: "" },
+    ],
+  });
+  if (branch === null) return true;
+  if (!branch) {
+    branch = ((await uiPrompt("Branch to check out in the item's worktree:")) || "").trim();
+    if (!branch) return true;
+  }
+  const key = `${project}/${slug}`;
+  wfLaunching.add(key);
+  showProgress(`Recreating the worktree on “${branch}”…`);
+  try {
+    await invoke("restore_workflow_worktree", { project, slug, branch });
+  } catch (e) {
+    uiAlert(`Recreating the worktree failed: ${e}`);
+    return true;
+  } finally {
+    wfLaunching.delete(key);
+    if (!wfLaunching.size) hideProgress();
+  }
+  flashToast(`Worktree recreated on “${branch}”`);
+  await refreshWorkflows();
+  if (retry) await retry(wfItem(project, slug) || item);
+  return true;
+}
+
 /// A new PR whose parent layer cannot be told (`stack-unclear:` — stacking is
 /// on and several linked PRs could be it): ask which branch it builds on,
 /// save that as the item's diff base, and retry. True when handled.
@@ -10201,7 +10248,7 @@ async function wfRequestChanges(item, root, target = "diff", prefill = "", appli
     onJump: (annId) => wfJumpToAnnotation(root, item.project, item.slug, annId),
   });
   if (!req) return;
-  try {
+  const record = async () => {
     await invoke("workflow_request_changes", {
       project: item.project,
       slug: item.slug,
@@ -10226,8 +10273,12 @@ async function wfRequestChanges(item, root, target = "diff", prefill = "", appli
     } else {
       buildWorkflowView(root, item.project, item.slug);
     }
+  };
+  const failed = (e) => uiAlert(`Request changes failed: ${e}`);
+  try {
+    await record();
   } catch (e) {
-    uiAlert(`Request changes failed: ${e}`);
+    if (!(await wfWorktreeRecovery(item, e, () => record().catch(failed)))) failed(e);
   }
 }
 
@@ -13090,10 +13141,12 @@ function renderWfActions(bar, root, item) {
     });
     if (!pick) return;
     if (pick === "edit") return requestChanges(target, note);
+    const failed = (e) => uiAlert(`Apply review failed: ${e}`);
     try {
       await wfRecordAndRevise(item, root, note);
     } catch (e) {
-      uiAlert(`Apply review failed: ${e}`);
+      const retry = (fresh) => wfRecordAndRevise(fresh, root, note).catch(failed);
+      if (!(await wfWorktreeRecovery(item, e, retry))) failed(e);
     }
   };
 
@@ -16744,6 +16797,15 @@ async function renderWfDiffView(body, root, item, ts) {
     }
   } catch (e) {
     body.innerHTML = `<p class='hint'>diff failed: ${escapeHtml(e)}</p>`;
+    if (String(e).startsWith("worktree-missing:")) {
+      const b = document.createElement("button");
+      b.textContent = "Recreate the worktree…";
+      b.onclick = () =>
+        wfWorktreeRecovery(item, e, () => buildWorkflowView(root, project, slug)).catch((x) =>
+          uiAlert(`${x}`)
+        );
+      body.appendChild(b);
+    }
     return;
   }
   body.innerHTML = "";

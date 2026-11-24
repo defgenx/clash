@@ -144,25 +144,27 @@ fn item_owns(branches: &[String], branch: Option<&str>, path: &str) -> bool {
         .any(|b| branch.is_some_and(|name| names_it(name, b)) || names_it(dir, b))
 }
 
-/// Pure: the verdict for one worktree. The order is the design: a folder
-/// that is gone has nothing to lose; ownership (git's lock, an open item, a
-/// live session) comes before content, since those are kept even when clean;
-/// then uncommitted work, then unpushed commits, and an unknown answer keeps.
+/// Pure: the verdict for one worktree. The order is the design: an open
+/// item's worktree is kept even when its folder is gone, since git's record
+/// of what was checked out there is what restoring it starts from; any other
+/// gone folder has nothing to lose; ownership (git's lock, a live session)
+/// comes before content, since those are kept even when clean; then
+/// uncommitted work, then unpushed commits, and an unknown answer keeps.
 pub fn verdict(w: &Worktree, facts: Facts, guards: &Guards) -> Verdict {
     if w.main {
         return Verdict::Main;
-    }
-    if w.prunable {
-        return Verdict::Prune;
-    }
-    if w.locked {
-        return Verdict::Locked;
     }
     for (label, recorded, branches) in &guards.items {
         let at = recorded.as_deref().is_some_and(|r| path_within(&w.path, r));
         if at || item_owns(branches, w.branch.as_deref(), &w.path) {
             return Verdict::Item(label.clone());
         }
+    }
+    if w.prunable {
+        return Verdict::Prune;
+    }
+    if w.locked {
+        return Verdict::Locked;
     }
     if let Some((label, _)) = guards
         .sessions
@@ -179,9 +181,53 @@ pub fn verdict(w: &Worktree, facts: Facts, guards: &Guards) -> Verdict {
     }
 }
 
+/// Pure: the branches to offer when an item's worktree folder is gone, most
+/// likely first, each with why it is offered: what git still records as
+/// checked out there, then each PR's head, then the item's own branch.
+// GUI-only (`workflow_worktree_restore_choices`): unused by the bin's private `mod`.
+#[allow(dead_code)]
+pub fn restore_choices(
+    recorded: Option<&str>,
+    meta: &crate::domain::workflow::WorkflowMeta,
+) -> Vec<(String, &'static str)> {
+    let prs = meta.pr.iter().chain(meta.linked_prs.iter());
+    let all = recorded
+        .map(|b| (b.to_string(), "checked out there last"))
+        .into_iter()
+        .chain(prs.map(|p| (p.head_ref.clone(), "a PR's branch")))
+        .chain(std::iter::once((meta.branch.clone(), "the item's branch")));
+    let mut out: Vec<(String, &'static str)> = Vec::new();
+    for (b, why) in all {
+        if !b.trim().is_empty() && !out.iter().any(|(o, _)| *o == b) {
+            out.push((b, why));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lost_worktree_offers_its_last_branch_first_then_the_prs() {
+        use crate::domain::workflow::{WorkflowMeta, WorkflowPr};
+        let pr = |h: &str| WorkflowPr {
+            head_ref: h.into(),
+            ..WorkflowPr::default()
+        };
+        let meta = WorkflowMeta {
+            branch: "item".into(),
+            linked_prs: vec![pr("w1"), pr(""), pr("w3")],
+            ..WorkflowMeta::default()
+        };
+        let names = |c: Vec<(String, &str)>| c.into_iter().map(|(b, _)| b).collect::<Vec<_>>();
+        assert_eq!(
+            names(restore_choices(Some("w3"), &meta)),
+            ["w3", "w1", "item"]
+        );
+        assert_eq!(names(restore_choices(None, &meta)), ["w1", "w3", "item"]);
+    }
 
     const LIST: &str = "\
 worktree /w/repo

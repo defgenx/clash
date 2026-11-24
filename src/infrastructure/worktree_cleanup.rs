@@ -136,7 +136,7 @@ pub fn guards(
             }
             let slug = item.file_name().to_string_lossy().into_owned();
             g.items
-                .push((key, meta.worktree.clone(), vec![meta.branch.clone(), slug]));
+                .push((key, meta.worktree.clone(), item_branches(&meta, slug)));
         }
     }
     for p in crate::infrastructure::process_scan::gather_wild_processes(
@@ -147,6 +147,21 @@ pub fn guards(
         }
     }
     g
+}
+
+/// The branches an open item owns: its own (and slug), plus the head of
+/// every PR it tracks — a wave's branch is often named after its ticket,
+/// not `<item branch>-<id>`.
+fn item_branches(meta: &crate::domain::workflow::WorkflowMeta, slug: String) -> Vec<String> {
+    let mut out = vec![meta.branch.clone(), slug];
+    out.extend(
+        meta.pr
+            .iter()
+            .chain(meta.linked_prs.iter())
+            .map(|p| p.head_ref.clone())
+            .filter(|h| !h.is_empty()),
+    );
+    out
 }
 
 fn candidate(repo: &Path, w: &Worktree, guards: &Guards, measure: bool) -> Candidate {
@@ -281,6 +296,25 @@ pub fn run(candidates: &[Candidate], guards: &Guards) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_item_owns_the_head_branch_of_every_pr_it_tracks() {
+        use crate::domain::workflow::{WorkflowMeta, WorkflowPr};
+        let pr = |h: &str| WorkflowPr {
+            head_ref: h.into(),
+            ..WorkflowPr::default()
+        };
+        let meta = WorkflowMeta {
+            branch: "item".into(),
+            pr: Some(pr("feat/tt-1-a-w1")),
+            linked_prs: vec![pr("fix/tt-2-b-w2"), pr("")],
+            ..WorkflowMeta::default()
+        };
+        assert_eq!(
+            item_branches(&meta, "slug".into()),
+            ["item", "slug", "feat/tt-1-a-w1", "fix/tt-2-b-w2"]
+        );
+    }
 
     fn sh(dir: &Path, args: &[&str]) {
         let ok = Command::new("git")

@@ -520,6 +520,11 @@ pub(crate) async fn workflow_diff_text(
         }
         None => return Ok(String::new()),
     };
+    // Deleted outside git (a `rm -rf` of the worktrees folder): git would
+    // only say ENOENT. The GUI answers this prefix with `wfWorktreeRecovery`.
+    if !Path::new(&dir).is_dir() {
+        return Err(format!("worktree-missing: {dir}"));
+    }
     // A stacked PR's own change starts at its parent layer's head; measured
     // from the trunk it would include every layer below it.
     let stacked_base = match item_stack_base_for(state, &meta).await {
@@ -1801,6 +1806,98 @@ pub(crate) async fn workflow_cleanup_preview(
         }
     }
     Ok(out)
+}
+
+/// The item's recorded worktree, when its folder is gone (`worktree-missing:`).
+fn lost_worktree(meta: &clash::domain::workflow::WorkflowMeta) -> Result<String, String> {
+    let wt = meta
+        .worktree
+        .clone()
+        .filter(|w| !w.is_empty())
+        .ok_or("this item records no worktree")?;
+    if Path::new(&wt).exists() {
+        return Err(format!("the worktree {wt} exists"));
+    }
+    Ok(wt)
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct RestoreChoice {
+    branch: String,
+    why: &'static str,
+}
+
+/// The branches `wfWorktreeRecovery` offers for a lost worktree, most likely
+/// first (`application::worktree_cleanup::restore_choices`).
+#[tauri::command]
+pub(crate) async fn workflow_worktree_restore_choices(
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+) -> Result<Vec<RestoreChoice>, String> {
+    let meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    let wt = lost_worktree(&meta)?;
+    let repo = meta.repo_path.clone();
+    let path = wt.clone();
+    let recorded = tauri::async_runtime::spawn_blocking(move || {
+        clash::infrastructure::worktree_cleanup::worktrees_of(Path::new(&repo))
+            .into_iter()
+            .find(|w| w.path == path)
+            .and_then(|w| w.branch)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(
+        clash::application::worktree_cleanup::restore_choices(recorded.as_deref(), &meta)
+            .into_iter()
+            .map(|(branch, why)| RestoreChoice { branch, why })
+            .collect(),
+    )
+}
+
+/// Check `branch` out again at the item's recorded worktree path, after the
+/// folder was deleted outside git. Git's dead registration of the path is
+/// pruned first (git refuses a registered path). Writes no meta: the path is
+/// the one already recorded.
+#[tauri::command]
+pub(crate) async fn restore_workflow_worktree(
+    app: tauri::AppHandle,
+    state: State<'_, GuiState>,
+    project: String,
+    slug: String,
+    branch: String,
+) -> Result<(), String> {
+    let meta = state
+        .backend
+        .load_workflow_meta(&project, &slug)
+        .map_err(e2s)?;
+    let wt = lost_worktree(&meta)?;
+    let branch = branch.trim();
+    if branch.is_empty() || branch.starts_with('-') {
+        return Err(format!("not a branch name: {branch:?}"));
+    }
+    let repo = Path::new(&meta.repo_path);
+    let pruned = tokio::process::Command::new("git")
+        .args(["worktree", "prune"])
+        .current_dir(repo)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run git in {}: {e}", meta.repo_path))?;
+    if !pruned.status.success() {
+        return Err(String::from_utf8_lossy(&pruned.stderr).trim().to_string());
+    }
+    if let Some(parent) = Path::new(&wt).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let key = format!("{project}/{slug}");
+    crate::launch_stage(&app, &key, "worktree", Some(branch));
+    clash::infrastructure::git::worktree_add(repo, &[wt.as_str(), branch], |p| {
+        crate::checkout_stage(&app, &key, branch, p)
+    })
+    .await
 }
 
 /// Remove an item for good: its worktrees and local branches when asked

@@ -2496,20 +2496,30 @@ pub(crate) async fn create_worktree(
     }
     launch_stage(app, key, "worktree", Some(name));
     clash::infrastructure::git::worktree_add(project_dir, &git_args, |p| {
-        let _ = app.emit(
-            "launch-stage",
-            LaunchStage {
-                key: key.to_string(),
-                stage: "checkout",
-                branch: Some(name.to_string()),
-                percent: Some(p.percent),
-                files: Some(p.files),
-                total: Some(p.total),
-            },
-        );
+        checkout_stage(app, key, name, p)
     })
     .await?;
     Ok((wt_str, git_branch))
+}
+
+/// One `checkout` launch step: git's own progress through a worktree checkout.
+pub(crate) fn checkout_stage(
+    app: &tauri::AppHandle,
+    key: &str,
+    branch: &str,
+    p: clash::infrastructure::git::CheckoutProgress,
+) {
+    let _ = app.emit(
+        "launch-stage",
+        LaunchStage {
+            key: key.to_string(),
+            stage: "checkout",
+            branch: Some(branch.to_string()),
+            percent: Some(p.percent),
+            files: Some(p.files),
+            total: Some(p.total),
+        },
+    );
 }
 
 /// Create a git worktree and spawn a new session in it — the TUI's
@@ -4005,6 +4015,8 @@ fn main() {
             workflows::answer_workflow_decision,
             workflows::drop_workflow_decision,
             workflows::workflow_cleanup_preview,
+            workflows::workflow_worktree_restore_choices,
+            workflows::restore_workflow_worktree,
             workflows::workflow_wave_seal_preview,
             workflows::remove_workflow_item,
             workflows::worktree_cleanup_preview,

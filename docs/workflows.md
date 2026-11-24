@@ -1308,12 +1308,15 @@ runs on the blocking pool in the GUI.
   worktree list --porcelain` (`parse_porcelain`) lists its worktrees wherever
   they live. A `*-worktrees` name pattern caught log files and plain copies and
   missed worktrees stored elsewhere (`.claude/worktrees/agent-…`).
-- **The verdict, in order:** the repository's own checkout never; a
-  registration whose folder is gone is pruned; then *ownership* keeps it even
-  when clean — `git worktree lock`, an open item (its recorded `worktree`, its
-  branch or slug, or a wave branch `<branch>-<id>`, checked out there or naming
-  the folder), a running session whose cwd is inside it (the GUI's session
-  list plus every live agent process the process scan sees); then *content* —
+- **The verdict, in order:** the repository's own checkout never; an open
+  item's worktree never (its recorded `worktree`, its branch or slug, a wave
+  branch `<branch>-<id>`, or the head branch of any PR it tracks — a wave's
+  branch is often named after its ticket — checked out there or naming the
+  folder), even when its folder is gone, because git's registration is what
+  restoring it starts from; any other registration whose folder is gone is
+  pruned; then *ownership* keeps it even when clean — `git worktree lock`, a
+  running session whose cwd is inside it (the GUI's session list plus every
+  live agent process the process scan sees); then *content* —
   uncommitted or untracked changes, then commits on no remote (`rev-list HEAD
   --not --remotes`). Only clean + pushed + unowned is removed, and an answer
   git could not give (`None`) keeps it: unknown is not "nothing to lose".
@@ -1334,6 +1337,16 @@ runs on the blocking pool in the GUI.
   with their reason — and the run and done toasts. A source test pins that the
   sweep hangs off the list refresh and that `worktree_cleanup_run` removes only
   what its own re-scan approves.
+
+- **A lost worktree is recreated in place.** When an item's recorded
+  worktree folder is gone (deleted outside git), `workflow_diff_text` fails
+  with `worktree-missing: <path>` rather than git's bare ENOENT — an empty
+  diff would be frozen as what the human reviewed. `wfWorktreeRecovery` (from
+  *Request changes*, *Apply review* and the Diff tab) offers the branches of
+  the pure `restore_choices` — what git still records as checked out there,
+  each PR's head, the item's branch, or one typed in — and
+  `restore_workflow_worktree` prunes the dead registration and checks that
+  branch out at the same path (no meta write), then the action is retried.
 
 ### Workspace items — no single repository
 
