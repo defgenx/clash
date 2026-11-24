@@ -640,6 +640,15 @@ test("a gradient theme's export carries its chrome and accent gradients", () => 
   assert.equal(shareThemePalette("x", { ui: {}, gradient: { chrome: ["red"], accent: [] } }).vars["grad-top"], undefined);
 });
 
+test("on a narrow screen the export's header wraps, so every chapter stays visible", () => {
+  const ch = (t) => ({ target: t, label: t, levels: { "": { node: "", title: "O", md: "<p>x</p>", drawing: "", views: [], parts: [] } } });
+  const page = shareHtmlDocument("T", "<p>doc</p>", [ch("explain-plan"), ch("explain-diff")]);
+  const narrow = page.slice(page.lastIndexOf("@media (max-width: 900px)"));
+  assert.match(narrow, /\.top \{ flex-wrap: wrap; height: auto;/);
+  assert.match(narrow, /\.chapters \{ order: 3; flex: 1 0 100%; flex-wrap: wrap; overflow: visible; \}/);
+  assert.doesNotMatch(narrow.slice(0, narrow.indexOf("}\n  }")), /\.top h1 \{ display: none/, "the title stays");
+});
+
 test("an export without a palette still follows the reader's OS", () => {
   const page = shareHtmlDocument("T", "<p>doc</p>");
   assert.match(page, /<html lang="en">/);

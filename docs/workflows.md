@@ -1834,7 +1834,9 @@ built for a reader rather than a copy of the GUI tab:
 - a level's extra views (flow, rollout…) are angles of the same stage;
 - the share document is the **Document** chapter, and each explanation is a
   chapter of its own. A light/dark/auto toggle sits in the header, unless the
-  page was saved in a fixed clash theme.
+  page was saved in a fixed clash theme. Below 900px (a phone held upright)
+  the header wraps: the title keeps the first row, and the chapters wrap onto
+  rows of their own, so none is hidden past the screen's edge.
 
 Saving asks for the page's colours first: one of clash's themes, the one on
 screen listed first, or *Follow the reader's system*, which is the light/dark

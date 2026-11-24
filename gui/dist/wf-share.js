@@ -1359,7 +1359,14 @@
   .noscript { max-width: 52rem; margin: 16px auto 0; padding: 10px 24px; color: var(--fg-dim); }
 
   @media (max-width: 900px) {
-    .top h1 { display: none; }
+    /* Narrow (a phone upright): the title keeps the first row with the theme
+       toggle, and the chapters wrap onto rows of their own, so every one
+       stays visible — a sideways-scrolling strip hid them past the edge. */
+    .top { flex-wrap: wrap; height: auto; min-height: 52px; padding: 8px 12px; row-gap: 6px; }
+    .top h1 { flex: 1 1 0; min-width: 0; max-width: none; }
+    .top .spacer { display: none; }
+    .chapters { order: 3; flex: 1 0 100%; flex-wrap: wrap; overflow: visible; }
+    .chapters button { padding: 6px 10px; }
     .explorer { height: auto; }
     .body { flex-direction: column; }
     .stage { height: 70vh; flex: none; }
