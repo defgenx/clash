@@ -2277,6 +2277,10 @@ button.busy:disabled { opacity: 1; }
 }
 .check-list .dialog-list-row input[type="checkbox"] { margin: 2px 0 0; flex: none; }
 .check-list .dialog-list-text { min-width: 0; }
+/* A row shown for its reason, never ticked (a worktree that must stay). */
+.check-list .dialog-list-row.disabled { cursor: default; }
+.check-list .dialog-list-row.disabled .dialog-list-label { color: var(--fg-dim); }
+.check-list .dialog-list-row.disabled:hover { background: none; }
 /* The all/none toggle reads as a header for the rows under it, not as one
    more of them. */
 .check-list .check-all {

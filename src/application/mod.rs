@@ -50,3 +50,4 @@ pub mod workflow_share;
 /// Same allowance as `workflow`: workspace items are driven by the GUI in v1.
 #[allow(dead_code)]
 pub mod workspace;
+pub mod worktree_cleanup;

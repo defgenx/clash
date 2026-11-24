@@ -1295,6 +1295,40 @@ their names), and v1.142.0's single `workflows.ticket_url` onto the trackers
 → `trackers.jira.site`, `none` → `trackers.primary = "none"`; any other
 template is dropped). The migration runs on load and on the next save.
 
+### Worktree cleanup
+
+One check decides whether a git worktree can go, for three callers: an item
+reaching `done`, the ⌫ *Clean up worktrees…* action, and `clash worktrees
+clean`. The verdict is the pure `application::worktree_cleanup::verdict`; the
+IO (`infrastructure::worktree_cleanup`) asks git, waits for every child, and
+runs on the blocking pool in the GUI.
+
+- **Worktrees come from git, never from folder names.** `repos_in(root)` takes
+  the root and each child whose `.git` is a directory; each repository's `git
+  worktree list --porcelain` (`parse_porcelain`) lists its worktrees wherever
+  they live. A `*-worktrees` name pattern caught log files and plain copies and
+  missed worktrees stored elsewhere (`.claude/worktrees/agent-…`).
+- **The verdict, in order:** the repository's own checkout never; a
+  registration whose folder is gone is pruned; then *ownership* keeps it even
+  when clean — `git worktree lock`, an open item (its recorded `worktree`, its
+  branch or slug, or a wave branch `<branch>-<id>`, checked out there or naming
+  the folder), a running session whose cwd is inside it (the GUI's session
+  list plus every live agent process the process scan sees); then *content* —
+  uncommitted or untracked changes, then commits on no remote (`rev-list HEAD
+  --not --remotes`). Only clean + pushed + unowned is removed, and an answer
+  git could not give (`None`) keeps it: unknown is not "nothing to lose".
+- **A removal re-checks** the worktree at that moment (`remove`), so a preview
+  that went stale cannot force one, and deletes the folder only (`git worktree
+  remove --force`, safe because `git status` was clean, so only ignored build
+  output is left). Branches are never touched.
+- **On `done`**, `sweep_done_worktrees` runs from `list_workflow_items` — the
+  one path every way of reaching done passes through (button, move, PR merge,
+  agent) — over the item's own `(repo, worktree)` pairs (`cleanup_list`,
+  `scan_pairs`), once per item per process (`GuiState.done_cleaned`, which an
+  item leaves when it leaves `done`, so a reopened item is cleaned again). The
+  guards are gathered once per batch. The outcome is logged and announced
+  (`workflow-worktrees-cleaned` → a toast).
+
 ### Workspace items — no single repository
 
 An item created in the **workspace** (`workflows.workspace_dir`, a folder that

@@ -460,6 +460,19 @@ impl Config {
             .unwrap_or_else(crate::infrastructure::omp::default_agent_dir)
     }
 
+    /// The workspace folder (`workflows.workspace_dir`, `~` expanded), when set.
+    pub fn workspace_root(&self) -> Option<PathBuf> {
+        let raw = self.workflows.workspace_dir.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        Some(match raw.strip_prefix("~/") {
+            Some(rest) => dirs::home_dir().map_or_else(|| PathBuf::from(raw), |h| h.join(rest)),
+            None if raw == "~" => dirs::home_dir().unwrap_or_else(|| PathBuf::from(raw)),
+            None => PathBuf::from(raw),
+        })
+    }
+
     /// Hermes home: the configured override, else `$HERMES_HOME`, else `~/.hermes`.
     pub fn hermes_home(&self) -> PathBuf {
         self.paths

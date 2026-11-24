@@ -141,6 +141,7 @@ clash --claude-bin /path/to/claude # Custom CLI path
 clash --debug                      # Enable debug logging
 clash update                       # Update clash and clash-gui to the latest release
 clash config [--path|--defaults|--validate|--schema]   # Inspect configuration
+clash worktrees clean [--yes] [--root DIR]  # Remove worktrees that are clean, pushed and unused (dry run without --yes)
 clash attach <session-id>          # Attach to a session owned by a running clash (used by external panes)
 clash daemon                       # Run the session daemon standalone (normally in-process)
 clash --version

@@ -303,8 +303,156 @@ pub(crate) async fn list_workflow_items(
         }
     }
 
+    sweep_done_worktrees(&app, &state, &items);
     *state.last_workflows.lock().unwrap() = items.clone();
     Ok(items)
+}
+
+/// Working directories of the sessions the last refresh saw running, for the
+/// cleanup's "a session works in it" guard.
+fn running_session_cwds(state: &GuiState) -> Vec<(String, String)> {
+    state
+        .previous
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| s.is_running)
+        .filter_map(|s| {
+            let cwd = s
+                .cwd
+                .clone()
+                .filter(|c| !c.is_empty())
+                .or_else(|| Some(s.project_path.clone()).filter(|p| !p.is_empty()))?;
+            Some((s.name.clone().unwrap_or_else(|| s.id.clone()), cwd))
+        })
+        .collect()
+}
+
+/// However an item reaches `done` — the ✓ button, a move, its PR merging, an
+/// agent — its worktrees are cleaned up: each one clean, pushed and unused is
+/// removed (`infrastructure::worktree_cleanup`), the rest kept and said why;
+/// branches stay. Run from the list refresh, once per item per process, off
+/// the async pool, with the guards gathered once for the whole batch.
+fn sweep_done_worktrees(app: &tauri::AppHandle, state: &GuiState, items: &[WorkflowItem]) {
+    use clash::domain::workflow::WorkflowStatus;
+    let mut batch = Vec::new();
+    {
+        let mut seen = state.done_cleaned.lock().unwrap();
+        for item in items {
+            let key = format!("{}/{}", item.project, item.slug);
+            if item.meta.status != WorkflowStatus::Done {
+                seen.remove(&key);
+                continue;
+            }
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            let item_dir = state
+                .backend
+                .workflows_dir()
+                .join(&item.project)
+                .join(&item.slug);
+            let (worktrees, _) = cleanup_list(&item.meta, &item.slug, &item_dir);
+            if !worktrees.is_empty() {
+                batch.push((key, item.meta.title.clone(), worktrees));
+            }
+        }
+    }
+    if batch.is_empty() {
+        return;
+    }
+    let workflows_root = state.backend.workflows_dir();
+    let sessions = running_session_cwds(state);
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        use clash::infrastructure::worktree_cleanup as wc;
+        let guards = wc::guards(&workflows_root, None, sessions);
+        for (key, title, pairs) in batch {
+            let out = wc::run(&wc::scan_pairs(&pairs, &guards), &guards);
+            if out.removed.is_empty() && out.kept.is_empty() && out.failed.is_empty() {
+                continue;
+            }
+            tracing::info!(
+                "done item {key}: worktrees removed {:?}, kept {:?}, failed {:?}",
+                out.removed,
+                out.kept,
+                out.failed
+            );
+            let _ = app.emit(
+                "workflow-worktrees-cleaned",
+                serde_json::json!({ "item": key, "title": title, "outcome": out }),
+            );
+        }
+    });
+}
+
+/// The folder "Clean up worktrees…" scans: the one given, else the workspace.
+fn cleanup_root(state: &GuiState, root: Option<String>) -> Result<std::path::PathBuf, String> {
+    let root = root
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| state.config.get().workspace_root())
+        .ok_or_else(|| {
+            "no-workspace: no workspace folder is set (Settings → Workflows)".to_string()
+        })?;
+    if !root.is_dir() {
+        return Err(format!("Not a folder: {}", root.display()));
+    }
+    Ok(root)
+}
+
+/// What "Clean up worktrees…" would do: every worktree of every repository
+/// under the root (git's own list, not folder names), with its verdict and size.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorktreeCleanupPreview {
+    root: String,
+    candidates: Vec<clash::infrastructure::worktree_cleanup::Candidate>,
+}
+
+#[tauri::command]
+pub(crate) async fn worktree_cleanup_preview(
+    state: State<'_, GuiState>,
+    root: Option<String>,
+) -> Result<WorktreeCleanupPreview, String> {
+    let root = cleanup_root(&state, root)?;
+    let workflows_root = state.backend.workflows_dir();
+    let sessions = running_session_cwds(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        use clash::infrastructure::worktree_cleanup as wc;
+        let guards = wc::guards(&workflows_root, None, sessions);
+        WorktreeCleanupPreview {
+            candidates: wc::scan(&root, &guards, true),
+            root: root.to_string_lossy().into_owned(),
+        }
+    })
+    .await
+    .map_err(e2s)
+}
+
+/// Remove the picked worktrees. Each is re-checked first: one that stopped
+/// being safe since the preview is kept and reported, never forced.
+#[tauri::command]
+pub(crate) async fn worktree_cleanup_run(
+    state: State<'_, GuiState>,
+    root: Option<String>,
+    paths: Vec<String>,
+) -> Result<clash::infrastructure::worktree_cleanup::Outcome, String> {
+    let root = cleanup_root(&state, root)?;
+    let workflows_root = state.backend.workflows_dir();
+    let sessions = running_session_cwds(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        use clash::infrastructure::worktree_cleanup as wc;
+        let guards = wc::guards(&workflows_root, None, sessions);
+        let picked: Vec<_> = wc::scan(&root, &guards, false)
+            .into_iter()
+            .filter(|c| paths.contains(&c.path))
+            .collect();
+        wc::run(&picked, &guards)
+    })
+    .await
+    .map_err(e2s)
 }
 
 /// Read `plan.md` or `review.md` (whitelisted by the port).

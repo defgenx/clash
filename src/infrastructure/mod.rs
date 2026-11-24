@@ -59,3 +59,4 @@ pub mod windowing;
 /// as `gh`/`forge`.
 #[allow(dead_code)]
 pub mod workspace;
+pub mod worktree_cleanup;

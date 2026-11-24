@@ -121,6 +121,10 @@ struct GuiState {
     /// the first's `sessionId` in meta — orphaning a running agent nothing can
     /// reach.
     launching: Mutex<std::collections::HashSet<String>>,
+    /// Items (`<project>/<slug>`) whose worktrees this process already
+    /// cleaned up on reaching `done` (`sweep_done_worktrees`); an item leaves
+    /// the set when it leaves `done`, so a reopened item is cleaned again.
+    done_cleaned: Mutex<std::collections::HashSet<String>>,
     /// The workflow list the frontend was last given — what the phone
     /// remote's API serves, so a phone poll never rebuilds it (`remote.rs`).
     last_workflows: Mutex<Vec<clash::domain::workflow::WorkflowItem>>,
@@ -3729,6 +3733,7 @@ fn main() {
         prompt_queue: Mutex::new(clash::application::prompt_queue::PromptQueue::default()),
         pty_outbox: std::sync::Arc::new(pty_outbox::PtyOutbox::default()),
         launching: Mutex::new(std::collections::HashSet::new()),
+        done_cleaned: Mutex::new(std::collections::HashSet::new()),
         last_workflows: Mutex::new(Vec::new()),
     };
 
@@ -4002,6 +4007,8 @@ fn main() {
             workflows::workflow_cleanup_preview,
             workflows::workflow_wave_seal_preview,
             workflows::remove_workflow_item,
+            workflows::worktree_cleanup_preview,
+            workflows::worktree_cleanup_run,
             workflows::start_workflow_agent,
             workflows::approve_workflow_waves,
             workflows::start_workflow_review_agent,

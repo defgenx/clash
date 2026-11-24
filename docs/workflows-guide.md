@@ -630,6 +630,28 @@ no agent runs. While an agent is working, it is stopped first (its
 conversation kept), then the item goes to the stage you pick. A finished or
 abandoned item also offers **↩ Reopen at diff review** and **🗑 Remove…**.
 
+## Worktrees are cleaned up when an item is done
+
+However an item reaches **done** (✓ Approve → done, ✓ Mark done, ↩ Move to…,
+its PR merging, or an agent), clash removes the worktrees it made for it. Only
+the ones that lose nothing go: clean (no uncommitted change), pushed (no
+commit that exists on no remote), and used by no other open item and no
+running session. The rest stay, and a toast says which and why. Branches
+always stay, so a removed worktree can be re-created with `git worktree add`.
+This happens once per item each time it reaches done; on the first launch
+after updating, items already done have their leftover worktrees cleaned the
+same way.
+
+**⌫** in the WORKFLOWS header (*Clean up worktrees…*) does the same across the
+whole workspace folder (`workflows.workspace_dir`; it asks for a folder when
+none is set). It lists every git worktree of every repository there — found
+by asking git, so a worktree stored anywhere is found and a folder that only
+looks like one is left alone — with its branch, size and verdict. The ones that
+can go are pre-ticked; the others are shown with their reason and cannot be
+ticked. Each is checked again at removal, so one that changed since the
+preview is kept. The same from a terminal: `clash worktrees clean` (dry run),
+`--yes` to remove, `--root <dir>` for another folder.
+
 ## Removing an item
 
 **🗑 Remove…** (on a finished or abandoned item, and *Delete…* in the sidebar

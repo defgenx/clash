@@ -49,6 +49,25 @@ enum Cmd {
     },
     /// Inspect configuration (default: show the effective config)
     Config(ConfigArgs),
+    /// Git worktrees under the workspace folder
+    Worktrees {
+        #[command(subcommand)]
+        action: WorktreesCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum WorktreesCmd {
+    /// Remove every worktree that is clean, pushed and unused (dry run
+    /// unless --yes). Branches are kept.
+    Clean {
+        /// Actually remove them
+        #[arg(long)]
+        yes: bool,
+        /// Folder to scan (default: workflows.workspace_dir)
+        #[arg(long)]
+        root: Option<std::path::PathBuf>,
+    },
 }
 
 /// `clash config` — everything you need to answer "why is this setting not
@@ -113,6 +132,11 @@ async fn main() -> Result<()> {
         }
         Some(Cmd::Config(args)) => {
             return run_config(args);
+        }
+        Some(Cmd::Worktrees {
+            action: WorktreesCmd::Clean { yes, root },
+        }) => {
+            return run_worktrees_clean(yes, root);
         }
         None => {}
     }
@@ -224,6 +248,67 @@ fn restore_terminal() {
 ///
 /// Everything here is read-only; nothing writes config. `--validate` is the
 /// only mode that can fail the process, so it is usable in a pre-commit hook.
+/// `clash worktrees clean`: the same check and removal as the GUI's
+/// "Clean up worktrees…" (`infrastructure::worktree_cleanup`).
+fn run_worktrees_clean(yes: bool, root: Option<std::path::PathBuf>) -> Result<()> {
+    use infrastructure::worktree_cleanup as wc;
+    let cfg = infrastructure::config::ConfigHandle::load().get();
+    let Some(root) = root.or_else(|| cfg.workspace_root()) else {
+        color_eyre::eyre::bail!(
+            "no workspace folder: set workflows.workspace_dir, or pass --root <dir>"
+        );
+    };
+    let guards = wc::guards(&cfg.workflows_dir(), None, Vec::new());
+    let cands = wc::scan(&root, &guards, true);
+    let human = |b: Option<u64>| match b {
+        Some(b) if b >= 1 << 30 => format!("{:.1}G", b as f64 / (1u64 << 30) as f64),
+        Some(b) => format!("{}M", b >> 20),
+        None => "-".to_string(),
+    };
+    let freed: u64 = cands
+        .iter()
+        .filter(|c| c.removable)
+        .filter_map(|c| c.bytes)
+        .sum();
+    for c in &cands {
+        let tag = if c.removable { "remove" } else { "keep  " };
+        let branch = c.branch.as_deref().unwrap_or("(detached)");
+        println!(
+            "{tag} {:>6}  {}  [{branch}] — {}",
+            human(c.bytes),
+            c.path,
+            c.reason
+        );
+    }
+    let n = cands.iter().filter(|c| c.removable).count();
+    println!();
+    if !yes {
+        println!(
+            "{n} to remove, {} kept — would free {}. Dry run: re-run with --yes.",
+            cands.len() - n,
+            human(Some(freed))
+        );
+        return Ok(());
+    }
+    let out = wc::run(&cands, &guards);
+    for (path, e) in &out.failed {
+        eprintln!("failed  {path}: {e}");
+    }
+    let freed: u64 = cands
+        .iter()
+        .filter(|c| out.removed.contains(&c.path))
+        .filter_map(|c| c.bytes)
+        .sum();
+    println!(
+        "removed {}, kept {}, failed {} — freed about {}.",
+        out.removed.len(),
+        out.kept.len(),
+        out.failed.len(),
+        human(Some(freed))
+    );
+    Ok(())
+}
+
 fn run_config(args: ConfigArgs) -> Result<()> {
     use infrastructure::config::{schema, Config, ConfigHandle};
 
