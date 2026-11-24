@@ -1,6 +1,6 @@
 //! Which git worktrees can be removed without losing anything. Pure.
 //!
-//! One answer for every caller: the ⊞ "Clean up worktrees…" action, an item
+//! One answer for every caller: the ⌫ "Clean up worktrees…" action, an item
 //! reaching `done`, and `clash worktrees clean`. Worktrees are found by asking
 //! git (`git worktree list --porcelain`), never by folder name — a name pattern
 //! catches folders that are not worktrees and misses ones stored elsewhere.
@@ -99,6 +99,11 @@ impl Verdict {
         matches!(self, Verdict::Remove | Verdict::Prune)
     }
 
+    /// Kept only until a session ends: worth checking again later.
+    pub fn waits(&self) -> bool {
+        matches!(self, Verdict::Session(_))
+    }
+
     /// One line for the preview and the CLI.
     pub fn reason(&self) -> String {
         match self {
@@ -127,6 +132,21 @@ fn plural(n: u64) -> &'static str {
 pub fn path_within(child: &str, parent: &str) -> bool {
     let (c, p) = (child.trim_end_matches('/'), parent.trim_end_matches('/'));
     !p.is_empty() && (c == p || Path::new(c).starts_with(Path::new(p)))
+}
+
+/// Pure: the branches an open item owns: its own (and its slug), plus the
+/// head of every PR it tracks — a wave's branch is often named after its
+/// ticket, not `<item branch>-<id>`.
+pub fn item_branches(meta: &crate::domain::workflow::WorkflowMeta, slug: String) -> Vec<String> {
+    let mut out = vec![meta.branch.clone(), slug];
+    out.extend(
+        meta.pr
+            .iter()
+            .chain(meta.linked_prs.iter())
+            .map(|p| p.head_ref.clone())
+            .filter(|h| !h.is_empty()),
+    );
+    out
 }
 
 /// Pure: whether an item owning `branches` uses a worktree on `branch` at
@@ -208,6 +228,25 @@ pub fn restore_choices(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_item_owns_the_head_branch_of_every_pr_it_tracks() {
+        use crate::domain::workflow::{WorkflowMeta, WorkflowPr};
+        let pr = |h: &str| WorkflowPr {
+            head_ref: h.into(),
+            ..WorkflowPr::default()
+        };
+        let meta = WorkflowMeta {
+            branch: "item".into(),
+            pr: Some(pr("feat/tt-1-a-w1")),
+            linked_prs: vec![pr("fix/tt-2-b-w2"), pr("")],
+            ..WorkflowMeta::default()
+        };
+        assert_eq!(
+            item_branches(&meta, "slug".into()),
+            ["item", "slug", "feat/tt-1-a-w1", "fix/tt-2-b-w2"]
+        );
+    }
 
     #[test]
     fn a_lost_worktree_offers_its_last_branch_first_then_the_prs() {

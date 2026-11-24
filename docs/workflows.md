@@ -1314,22 +1314,32 @@ runs on the blocking pool in the GUI.
   branch is often named after its ticket — checked out there or naming the
   folder), even when its folder is gone, because git's registration is what
   restoring it starts from; any other registration whose folder is gone is
-  pruned; then *ownership* keeps it even when clean — `git worktree lock`, a
+  dropped — that one only (`git worktree remove --force` on the gone path,
+  never the repository-wide `git worktree prune`); then *ownership* keeps it even when clean — `git worktree lock`, a
   running session whose cwd is inside it (the GUI's session list plus every
   live agent process the process scan sees); then *content* —
-  uncommitted or untracked changes, then commits on no remote (`rev-list HEAD
-  --not --remotes`). Only clean + pushed + unowned is removed, and an answer
+  uncommitted or untracked changes (`status --untracked-files=normal`,
+  because a `status.showUntrackedFiles=no` config would report untracked
+  files as clean), then commits on no remote (`rev-list HEAD --not
+  --remotes`). Paths are compared resolved (`resolved`: symlinks followed, a
+  gone folder through its parent), since git reports `/private/tmp` for a
+  worktree added as `/tmp`. Only clean + pushed + unowned is removed, and an answer
   git could not give (`None`) keeps it: unknown is not "nothing to lose".
 - **A removal re-checks** the worktree at that moment (`remove`), so a preview
-  that went stale cannot force one, and deletes the folder only (`git worktree
-  remove --force`, safe because `git status` was clean, so only ignored build
-  output is left). Branches are never touched.
+  that went stale cannot force one, and deletes the folder only. The removal
+  is not forced (`git -c status.showUntrackedFiles=normal worktree remove`),
+  so git checks once more and refuses a worktree that gained changes since;
+  ignored build output does not stop it. Branches are never touched.
 - **On `done`**, `sweep_done_worktrees` runs from `list_workflow_items` — the
   one path every way of reaching done passes through (button, move, PR merge,
   agent) — over the item's own `(repo, worktree)` pairs (`cleanup_list`,
-  `scan_pairs`), once per item per process (`GuiState.done_cleaned`, which an
-  item leaves when it leaves `done`, so a reopened item is cleaned again). The
-  guards are gathered once per batch. The outcome is logged and announced
+  `scan_pairs`, on the blocking pool), once per item per process
+  (`GuiState.done_cleaned`, which an item leaves when it leaves `done`, so a
+  reopened item is cleaned again) — except that a worktree kept only because
+  a session works in it (`Verdict::waits`; an item approved with its agent
+  still open) is checked again at most every `DONE_SWEEP_RETRY` (60 s), and a
+  retry is announced only when it removed something. The guards are gathered
+  once per batch. The outcome is logged and announced
   (`workflow-worktrees-cleaned` → a toast).
 - **The dialog decides nothing.** `gui/dist/wt-cleanup.js` (pure, tested in
   `gui/tests/wt_cleanup.test.js`) turns the backend's verdicts into the
@@ -1345,7 +1355,8 @@ runs on the blocking pool in the GUI.
   *Request changes*, *Apply review* and the Diff tab) offers the branches of
   the pure `restore_choices` — what git still records as checked out there,
   each PR's head, the item's branch, or one typed in — and
-  `restore_workflow_worktree` prunes the dead registration and checks that
+  `restore_workflow_worktree` drops that path's dead registration (that one
+  only) and checks that
   branch out at the same path (no meta write), then the action is retried.
 
 ### Workspace items — no single repository

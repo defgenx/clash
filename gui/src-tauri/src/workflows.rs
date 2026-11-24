@@ -335,6 +335,7 @@ fn running_session_cwds(state: &GuiState) -> Vec<(String, String)> {
 /// the async pool, with the guards gathered once for the whole batch.
 fn sweep_done_worktrees(app: &tauri::AppHandle, state: &GuiState, items: &[WorkflowItem]) {
     use clash::domain::workflow::WorkflowStatus;
+    let now = std::time::Instant::now();
     let mut batch = Vec::new();
     {
         let mut seen = state.done_cleaned.lock().unwrap();
@@ -344,18 +345,20 @@ fn sweep_done_worktrees(app: &tauri::AppHandle, state: &GuiState, items: &[Workf
                 seen.remove(&key);
                 continue;
             }
-            if !seen.insert(key.clone()) {
-                continue;
-            }
+            // None: never swept. Some(None): swept, nothing to wait for.
+            // Some(Some(t)): kept for a session, checked again from `t`.
+            let retry = match seen.get(&key) {
+                None => false,
+                Some(Some(t)) if *t <= now => true,
+                Some(_) => continue,
+            };
+            seen.insert(key.clone(), None);
             let item_dir = state
                 .backend
                 .workflows_dir()
                 .join(&item.project)
                 .join(&item.slug);
-            let (worktrees, _) = cleanup_list(&item.meta, &item.slug, &item_dir);
-            if !worktrees.is_empty() {
-                batch.push((key, item.meta.title.clone(), worktrees));
-            }
+            batch.push((key, retry, item.meta.clone(), item.slug.clone(), item_dir));
         }
     }
     if batch.is_empty() {
@@ -366,10 +369,32 @@ fn sweep_done_worktrees(app: &tauri::AppHandle, state: &GuiState, items: &[Workf
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         use clash::infrastructure::worktree_cleanup as wc;
-        let guards = wc::guards(&workflows_root, None, sessions);
-        for (key, title, pairs) in batch {
-            let out = wc::run(&wc::scan_pairs(&pairs, &guards), &guards);
-            if out.removed.is_empty() && out.kept.is_empty() && out.failed.is_empty() {
+        let mut guards = None;
+        for (key, retry, meta, slug, item_dir) in batch {
+            let (pairs, _) = cleanup_list(&meta, &slug, &item_dir);
+            if pairs.is_empty() {
+                continue;
+            }
+            let guards =
+                guards.get_or_insert_with(|| wc::guards(&workflows_root, sessions.clone()));
+            let out = wc::run(&wc::scan_pairs(&pairs, guards), guards);
+            if out.waiting {
+                let again = std::time::Instant::now() + DONE_SWEEP_RETRY;
+                let state = app.state::<GuiState>();
+                state
+                    .done_cleaned
+                    .lock()
+                    .unwrap()
+                    .insert(key.clone(), Some(again));
+            }
+            // A retry speaks only when it removed something: the first sweep
+            // already said what was kept and why.
+            let quiet = if retry {
+                out.removed.is_empty()
+            } else {
+                out.removed.is_empty() && out.kept.is_empty() && out.failed.is_empty()
+            };
+            if quiet {
                 continue;
             }
             tracing::info!(
@@ -380,11 +405,15 @@ fn sweep_done_worktrees(app: &tauri::AppHandle, state: &GuiState, items: &[Workf
             );
             let _ = app.emit(
                 "workflow-worktrees-cleaned",
-                serde_json::json!({ "item": key, "title": title, "outcome": out }),
+                serde_json::json!({ "item": key, "title": meta.title, "outcome": out }),
             );
         }
     });
 }
+
+/// How long a done item's worktree kept for a running session waits before
+/// it is checked again.
+const DONE_SWEEP_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The folder "Clean up worktrees…" scans: the one given, else the workspace.
 fn cleanup_root(state: &GuiState, root: Option<String>) -> Result<std::path::PathBuf, String> {
@@ -421,7 +450,7 @@ pub(crate) async fn worktree_cleanup_preview(
     let sessions = running_session_cwds(&state);
     tauri::async_runtime::spawn_blocking(move || {
         use clash::infrastructure::worktree_cleanup as wc;
-        let guards = wc::guards(&workflows_root, None, sessions);
+        let guards = wc::guards(&workflows_root, sessions);
         WorktreeCleanupPreview {
             candidates: wc::scan(&root, &guards, true),
             root: root.to_string_lossy().into_owned(),
@@ -444,7 +473,7 @@ pub(crate) async fn worktree_cleanup_run(
     let sessions = running_session_cwds(&state);
     tauri::async_runtime::spawn_blocking(move || {
         use clash::infrastructure::worktree_cleanup as wc;
-        let guards = wc::guards(&workflows_root, None, sessions);
+        let guards = wc::guards(&workflows_root, sessions);
         let picked: Vec<_> = wc::scan(&root, &guards, false)
             .into_iter()
             .filter(|c| paths.contains(&c.path))
@@ -1843,9 +1872,11 @@ pub(crate) async fn workflow_worktree_restore_choices(
     let repo = meta.repo_path.clone();
     let path = wt.clone();
     let recorded = tauri::async_runtime::spawn_blocking(move || {
-        clash::infrastructure::worktree_cleanup::worktrees_of(Path::new(&repo))
+        use clash::infrastructure::worktree_cleanup as wc;
+        let want = wc::resolved(&path);
+        wc::worktrees_of(Path::new(&repo))
             .into_iter()
-            .find(|w| w.path == path)
+            .find(|w| wc::resolved(&w.path) == want)
             .and_then(|w| w.branch)
     })
     .await
@@ -1859,9 +1890,10 @@ pub(crate) async fn workflow_worktree_restore_choices(
 }
 
 /// Check `branch` out again at the item's recorded worktree path, after the
-/// folder was deleted outside git. Git's dead registration of the path is
-/// pruned first (git refuses a registered path). Writes no meta: the path is
-/// the one already recorded.
+/// folder was deleted outside git. Git's dead registration of that path is
+/// dropped first (git refuses a registered path) — that one only, never
+/// `git worktree prune`, which would drop other items' too. Writes no meta:
+/// the path is the one already recorded.
 #[tauri::command]
 pub(crate) async fn restore_workflow_worktree(
     app: tauri::AppHandle,
@@ -1880,15 +1912,21 @@ pub(crate) async fn restore_workflow_worktree(
         return Err(format!("not a branch name: {branch:?}"));
     }
     let repo = Path::new(&meta.repo_path);
-    let pruned = tokio::process::Command::new("git")
-        .args(["worktree", "prune"])
-        .current_dir(repo)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run git in {}: {e}", meta.repo_path))?;
-    if !pruned.status.success() {
-        return Err(String::from_utf8_lossy(&pruned.stderr).trim().to_string());
-    }
+    let (r, p) = (meta.repo_path.clone(), wt.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        use clash::infrastructure::worktree_cleanup as wc;
+        let want = wc::resolved(&p);
+        match wc::worktrees_of(Path::new(&r))
+            .into_iter()
+            .find(|w| !w.main && wc::resolved(&w.path) == want)
+        {
+            Some(w) => wc::forget(Path::new(&r), &w.path),
+            None => Ok(()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("could not drop git's record of {wt}: {e}"))?;
     if let Some(parent) = Path::new(&wt).parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -6333,7 +6371,8 @@ mod tests {
         );
         let sweep = body("fn sweep_done_worktrees(");
         assert!(
-            sweep.contains("cleanup_list(&item.meta"),
+            sweep.contains("cleanup_list(&meta, &slug, &item_dir)")
+                && sweep.contains("spawn_blocking"),
             "only the item's own worktrees"
         );
         assert!(sweep.contains("wc::scan_pairs(") && sweep.contains("wc::run("));

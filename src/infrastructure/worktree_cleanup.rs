@@ -22,6 +22,9 @@ pub struct Candidate {
     pub reason: String,
     /// Disk use in bytes, when measured.
     pub bytes: Option<u64>,
+    /// Kept only while a session works in it ([`Verdict::waits`]).
+    #[serde(skip)]
+    pub waits: bool,
 }
 
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
@@ -65,11 +68,27 @@ pub fn worktrees_of(repo: &Path) -> Vec<Worktree> {
 }
 
 pub fn facts(path: &Path) -> Facts {
-    let dirty = git(path, &["status", "--porcelain"])
+    // Explicit: `status.showUntrackedFiles=no` would otherwise report a
+    // worktree holding untracked files as clean.
+    let dirty = git(path, &["status", "--porcelain", "--untracked-files=normal"])
         .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count());
     let unpushed = git(path, &["rev-list", "--count", "HEAD", "--not", "--remotes"])
         .and_then(|s| s.trim().parse().ok());
     Facts { dirty, unpushed }
+}
+
+/// `p` as git reports it: symlinks resolved (`/tmp` → `/private/tmp`). A
+/// gone folder resolves through its parent; an unresolvable one is kept as
+/// spelled, minus a trailing slash.
+pub fn resolved(p: &str) -> String {
+    let path = Path::new(p.trim_end_matches('/'));
+    if let Ok(c) = std::fs::canonicalize(path) {
+        return c.to_string_lossy().into_owned();
+    }
+    match (path.parent().map(std::fs::canonicalize), path.file_name()) {
+        (Some(Ok(parent)), Some(name)) => parent.join(name).to_string_lossy().into_owned(),
+        _ => path.to_string_lossy().into_owned(),
+    }
 }
 
 /// Disk use of a folder, via `du -sk` (fast, and what a person would check).
@@ -90,20 +109,13 @@ pub fn bytes(path: &Path) -> Option<u64> {
 }
 
 /// Guards from the open workflow items under `workflows_root` (every status
-/// but done and abandoned) — `except` (`<project>/<slug>`) left out, for the
-/// item being cleaned up — plus the working directories of running agents:
+/// but done and abandoned), plus the working directories of running agents:
 /// `sessions` from the caller, and every live agent process the process scan
-/// sees (both frontends, and sessions started outside clash).
-pub fn guards(
-    workflows_root: &Path,
-    except: Option<&str>,
-    sessions: Vec<(String, String)>,
-) -> Guards {
+/// sees (both frontends, and sessions started outside clash). Paths are
+/// [`resolved`], so they compare with git's spelling.
+pub fn guards(workflows_root: &Path, sessions: Vec<(String, String)>) -> Guards {
     use crate::domain::workflow::{WorkflowMeta, WorkflowStatus};
-    let mut g = Guards {
-        sessions,
-        ..Guards::default()
-    };
+    let mut g = Guards::default();
     for project in std::fs::read_dir(workflows_root)
         .into_iter()
         .flatten()
@@ -131,37 +143,24 @@ pub fn guards(
                 project.file_name().to_string_lossy(),
                 item.file_name().to_string_lossy()
             );
-            if except == Some(key.as_str()) {
-                continue;
-            }
             let slug = item.file_name().to_string_lossy().into_owned();
-            g.items
-                .push((key, meta.worktree.clone(), item_branches(&meta, slug)));
+            let branches = pure::item_branches(&meta, slug);
+            let recorded = meta.worktree.as_deref().map(resolved);
+            g.items.push((key, recorded, branches));
         }
     }
-    for p in crate::infrastructure::process_scan::gather_wild_processes(
+    let wild = crate::infrastructure::process_scan::gather_wild_processes(
         &crate::infrastructure::process_scan::default_fd_probe(),
-    ) {
-        if let Some(cwd) = p.cwd {
-            g.sessions.push((format!("pid {}", p.pid), cwd));
-        }
-    }
-    g
-}
-
-/// The branches an open item owns: its own (and slug), plus the head of
-/// every PR it tracks — a wave's branch is often named after its ticket,
-/// not `<item branch>-<id>`.
-fn item_branches(meta: &crate::domain::workflow::WorkflowMeta, slug: String) -> Vec<String> {
-    let mut out = vec![meta.branch.clone(), slug];
-    out.extend(
-        meta.pr
-            .iter()
-            .chain(meta.linked_prs.iter())
-            .map(|p| p.head_ref.clone())
-            .filter(|h| !h.is_empty()),
     );
-    out
+    let found = wild
+        .into_iter()
+        .filter_map(|p| p.cwd.map(|cwd| (format!("pid {}", p.pid), cwd)));
+    g.sessions = sessions
+        .into_iter()
+        .chain(found)
+        .map(|(label, cwd)| (label, resolved(&cwd)))
+        .collect();
+    g
 }
 
 fn candidate(repo: &Path, w: &Worktree, guards: &Guards, measure: bool) -> Candidate {
@@ -177,6 +176,7 @@ fn candidate(repo: &Path, w: &Worktree, guards: &Guards, measure: bool) -> Candi
         branch: w.branch.clone(),
         removable: v.removable(),
         reason: v.reason(),
+        waits: v.waits(),
         bytes: (measure && !w.prunable)
             .then(|| bytes(Path::new(&w.path)))
             .flatten(),
@@ -203,15 +203,10 @@ pub fn scan_pairs(pairs: &[(String, String)], guards: &Guards) -> Vec<Candidate>
     let mut out = Vec::new();
     for (repo, path) in pairs {
         let repo = Path::new(repo);
-        let canon = |p: &str| {
-            std::fs::canonicalize(p)
-                .map(|c| c.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| p.trim_end_matches('/').to_string())
-        };
-        let want = canon(path);
+        let want = resolved(path);
         if let Some(w) = worktrees_of(repo)
             .iter()
-            .find(|w| !w.main && (w.path == *path || canon(&w.path) == want))
+            .find(|w| !w.main && resolved(&w.path) == want)
         {
             out.push(candidate(repo, w, guards, false));
         }
@@ -219,9 +214,40 @@ pub fn scan_pairs(pairs: &[(String, String)], guards: &Guards) -> Vec<Candidate>
     out
 }
 
+/// Drop git's registration of a worktree whose folder is gone — that one
+/// only: `git worktree prune` would drop every dead registration of the
+/// repository, an open item's among them.
+pub fn forget(repo: &Path, path: &str) -> Result<(), String> {
+    worktree_remove(repo, &["--force"], path)
+}
+
+fn worktree_remove(repo: &Path, flags: &[&str], path: &str) -> Result<(), String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        // A config hiding untracked files would let `remove` delete them.
+        .args([
+            "-c",
+            "status.showUntrackedFiles=normal",
+            "worktree",
+            "remove",
+        ])
+        .args(flags)
+        .arg("--")
+        .arg(path)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
 /// Remove one worktree — re-checked now, since anything may have changed
-/// since the preview. A gone folder is pruned; anything no longer safe is
-/// refused with its reason. The branch is never touched.
+/// since the preview. A gone folder's registration is dropped; anything no
+/// longer safe is refused with its reason. The branch is never touched.
 pub fn remove(repo: &Path, path: &str, guards: &Guards) -> Result<(), String> {
     let Some(w) = worktrees_of(repo).into_iter().find(|w| w.path == path) else {
         return Err(format!(
@@ -239,26 +265,10 @@ pub fn remove(repo: &Path, path: &str, guards: &Guards) -> Result<(), String> {
         guards,
     );
     match v {
-        Verdict::Prune => git(repo, &["worktree", "prune"])
-            .map(|_| ())
-            .ok_or_else(|| "git worktree prune failed".to_string()),
-        Verdict::Remove => {
-            // Clean per `git status`, so only ignored files (build output)
-            // are left, which plain `remove` would refuse to delete.
-            let out = Command::new("git")
-                .arg("-C")
-                .arg(repo)
-                .args(["worktree", "remove", "--force", "--"])
-                .arg(path)
-                .stdin(Stdio::null())
-                .output()
-                .map_err(|e| e.to_string())?;
-            if out.status.success() {
-                Ok(())
-            } else {
-                Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-            }
-        }
+        Verdict::Prune => forget(repo, path),
+        // Not forced: git checks again and refuses a worktree that gained
+        // changes since `facts`; ignored build output does not stop it.
+        Verdict::Remove => worktree_remove(repo, &[], path),
         other => Err(format!("kept: {}", other.reason())),
     }
 }
@@ -272,6 +282,9 @@ pub struct Outcome {
     pub kept: Vec<(String, String)>,
     /// `(path, error)` for each removal that failed.
     pub failed: Vec<(String, String)>,
+    /// Something was kept only because a session works in it.
+    #[serde(skip)]
+    pub waiting: bool,
 }
 
 /// Remove every removable candidate; report the rest.
@@ -280,6 +293,7 @@ pub fn run(candidates: &[Candidate], guards: &Guards) -> Outcome {
     for c in candidates {
         if !c.removable {
             o.kept.push((c.path.clone(), c.reason.clone()));
+            o.waiting |= c.waits;
             continue;
         }
         match remove(Path::new(&c.repo), &c.path, guards) {
@@ -296,25 +310,6 @@ pub fn run(candidates: &[Candidate], guards: &Guards) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_item_owns_the_head_branch_of_every_pr_it_tracks() {
-        use crate::domain::workflow::{WorkflowMeta, WorkflowPr};
-        let pr = |h: &str| WorkflowPr {
-            head_ref: h.into(),
-            ..WorkflowPr::default()
-        };
-        let meta = WorkflowMeta {
-            branch: "item".into(),
-            pr: Some(pr("feat/tt-1-a-w1")),
-            linked_prs: vec![pr("fix/tt-2-b-w2"), pr("")],
-            ..WorkflowMeta::default()
-        };
-        assert_eq!(
-            item_branches(&meta, "slug".into()),
-            ["item", "slug", "feat/tt-1-a-w1", "fix/tt-2-b-w2"]
-        );
-    }
 
     fn sh(dir: &Path, args: &[&str]) {
         let ok = Command::new("git")
@@ -353,6 +348,8 @@ mod tests {
             &["remote", "add", "origin", origin.to_str().unwrap()],
         );
         sh(&repo, &["push", "-q", "origin", "main"]);
+        // A config that hides untracked files must not make them look clean.
+        sh(&repo, &["config", "status.showUntrackedFiles", "no"]);
         let wt = |name: &str| ws.join("repo-worktrees").join(name);
         for name in ["pushed", "dirty", "ahead"] {
             sh(
@@ -396,14 +393,36 @@ mod tests {
             "the branch stays"
         );
 
-        // A folder deleted by hand leaves a registration that is pruned.
+        // A folder deleted by hand leaves a registration that is dropped —
+        // that one only: an open item's lost worktree keeps its record.
         std::fs::remove_dir_all(wt("dirty")).unwrap();
+        std::fs::remove_dir_all(wt("ahead")).unwrap();
+        let g = Guards {
+            items: vec![("p/ahead".into(), None, vec!["ahead".into()])],
+            ..Guards::default()
+        };
         let cands = scan(&ws, &g, false);
         let gone = cands.iter().find(|c| c.path.ends_with("dirty")).unwrap();
         assert!(gone.removable && gone.reason.contains("gone"), "{gone:?}");
         run(&cands, &g);
-        assert!(worktrees_of(&repo)
-            .iter()
-            .all(|w| !w.path.ends_with("dirty")));
+        let left = worktrees_of(&repo);
+        assert!(left.iter().all(|w| !w.path.ends_with("dirty")));
+        assert!(
+            left.iter().any(|w| w.path.ends_with("ahead") && w.prunable),
+            "the open item's registration stays: {left:?}"
+        );
+    }
+
+    #[test]
+    fn resolved_follows_symlinks_even_for_a_gone_folder() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let canon = std::fs::canonicalize(&real).unwrap();
+        let gone = format!("{}/gone/", link.display());
+        assert_eq!(resolved(&gone), canon.join("gone").to_string_lossy());
+        assert_eq!(resolved(link.to_str().unwrap()), canon.to_string_lossy());
     }
 }

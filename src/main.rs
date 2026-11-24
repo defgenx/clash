@@ -244,10 +244,6 @@ fn restore_terminal() {
     let _ = std::io::stdout().flush();
 }
 
-/// Run the `clash config` subcommand.
-///
-/// Everything here is read-only; nothing writes config. `--validate` is the
-/// only mode that can fail the process, so it is usable in a pre-commit hook.
 /// `clash worktrees clean`: the same check and removal as the GUI's
 /// "Clean up worktrees…" (`infrastructure::worktree_cleanup`).
 fn run_worktrees_clean(yes: bool, root: Option<std::path::PathBuf>) -> Result<()> {
@@ -258,7 +254,7 @@ fn run_worktrees_clean(yes: bool, root: Option<std::path::PathBuf>) -> Result<()
             "no workspace folder: set workflows.workspace_dir, or pass --root <dir>"
         );
     };
-    let guards = wc::guards(&cfg.workflows_dir(), None, Vec::new());
+    let guards = wc::guards(&cfg.workflows_dir(), Vec::new());
     let cands = wc::scan(&root, &guards, true);
     let human = |b: Option<u64>| match b {
         Some(b) if b >= 1 << 30 => format!("{:.1}G", b as f64 / (1u64 << 30) as f64),
@@ -309,6 +305,10 @@ fn run_worktrees_clean(yes: bool, root: Option<std::path::PathBuf>) -> Result<()
     Ok(())
 }
 
+/// Run the `clash config` subcommand.
+///
+/// Everything here is read-only; nothing writes config. `--validate` is the
+/// only mode that can fail the process, so it is usable in a pre-commit hook.
 fn run_config(args: ConfigArgs) -> Result<()> {
     use infrastructure::config::{schema, Config, ConfigHandle};
 
