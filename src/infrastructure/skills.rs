@@ -1,8 +1,11 @@
-//! Embedded Claude Code skills, shipped inside the clash binary.
+//! Embedded skills, shipped inside the clash binary.
 //!
 //! Skills that clash features depend on (the `clash-workflow` executor, the
 //! two reviewers, the explainer) are compiled in via `include_str!` from the
-//! repo's `skills/` directory and installed under `<claude_dir>/skills/`.
+//! repo's `skills/` directory as templates, and installed rendered for each
+//! agent CLI ([`AgentKind`]) into that CLI's skills folder — every function
+//! here names the harness it writes for, and each folder has its own manifest.
+//! Template syntax: `application::skill_template`.
 //!
 //! Installation only becomes a **decision when it could lose work**. At every
 //! startup [`sync_unattended`] installs what is missing and refreshes every
@@ -33,14 +36,27 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::application::skill_template;
+use crate::domain::entities::AgentKind;
 use crate::infrastructure::fs::atomic::write_atomic;
 
 /// One skill compiled into the binary.
 pub struct EmbeddedSkill {
     /// Directory name under `<claude_dir>/skills/`.
     pub name: &'static str,
-    /// Full `SKILL.md` content.
+    /// The `SKILL.md` template; install [`EmbeddedSkill::render`]ed text.
     pub content: &'static str,
+}
+
+impl EmbeddedSkill {
+    /// The `SKILL.md` text for one harness. A malformed template (which the
+    /// tests refuse) falls back to the raw text rather than installing nothing.
+    pub fn render(&self, kind: AgentKind) -> String {
+        skill_template::render(self.content, kind).unwrap_or_else(|e| {
+            tracing::warn!("skill '{}' template: {}", self.name, e);
+            self.content.to_string()
+        })
+    }
 }
 
 /// Every skill clash ships. Add new entries here and under `skills/` in the
@@ -179,13 +195,14 @@ fn content_hash(content: &str) -> String {
     format!("{:016x}", hash)
 }
 
-/// One value that changes iff any embedded skill changes — the resolution key.
-fn embedded_fingerprint() -> String {
+/// One value that changes iff any skill as rendered for `kind` changes — the
+/// resolution key of that harness's folder.
+fn embedded_fingerprint(kind: AgentKind) -> String {
     let mut acc = String::new();
     for s in SKILLS {
         acc.push_str(s.name);
         acc.push(':');
-        acc.push_str(&content_hash(s.content));
+        acc.push_str(&content_hash(&s.render(kind)));
         acc.push('\n');
     }
     content_hash(&acc)
@@ -212,13 +229,13 @@ fn write_manifest(skills_dir: &Path, manifest: &Manifest) {
     }
 }
 
-fn write_skill(skills_dir: &Path, skill: &EmbeddedSkill) -> bool {
+fn write_skill(skills_dir: &Path, skill: &EmbeddedSkill, text: &str) -> bool {
     let dir = skills_dir.join(skill.name);
     if let Err(e) = std::fs::create_dir_all(&dir) {
         tracing::warn!("skill install: create {} failed: {}", dir.display(), e);
         return false;
     }
-    match write_atomic(&dir.join("SKILL.md"), skill.content.as_bytes()) {
+    match write_atomic(&dir.join("SKILL.md"), text.as_bytes()) {
         Ok(()) => {
             tracing::info!("installed embedded skill '{}'", skill.name);
             true
@@ -230,16 +247,17 @@ fn write_skill(skills_dir: &Path, skill: &EmbeddedSkill) -> bool {
     }
 }
 
-/// What an upgrade would touch, computed fresh from disk.
-pub fn plan_install(claude_dir: &Path) -> SkillsPlan {
-    plan_install_in(&claude_dir.join("skills"))
+/// What an upgrade would touch, computed fresh from disk. `root` holds the
+/// `skills/` folder (`<claude_dir>`, `<omp_dir>`).
+pub fn plan_install(root: &Path, kind: AgentKind) -> SkillsPlan {
+    plan_install_in(&root.join("skills"), kind)
 }
 
 /// [`plan_install`] for a skills directory given directly — Hermes keeps
 /// clash's skills in a category folder (`~/.hermes/skills/clash/`).
-pub fn plan_install_in(skills_dir: &Path) -> SkillsPlan {
+pub fn plan_install_in(skills_dir: &Path, kind: AgentKind) -> SkillsPlan {
     let manifest = read_manifest(skills_dir);
-    let fingerprint = embedded_fingerprint();
+    let fingerprint = embedded_fingerprint(kind);
     let mut plan = SkillsPlan {
         version: env!("CARGO_PKG_VERSION").to_string(),
         resolved: manifest
@@ -252,7 +270,7 @@ pub fn plan_install_in(skills_dir: &Path) -> SkillsPlan {
         let path = skills_dir.join(skill.name).join("SKILL.md");
         match std::fs::read_to_string(&path) {
             Err(_) => plan.missing.push(skill.name.to_string()),
-            Ok(existing) if existing == skill.content => {}
+            Ok(existing) if existing == skill.render(kind) => {}
             Ok(existing) => {
                 let untouched = manifest
                     .as_ref()
@@ -300,8 +318,8 @@ pub fn plan_install_in(skills_dir: &Path) -> SkillsPlan {
 ///
 /// The embedded set is stamped as resolved only when nothing is left to ask,
 /// so a pending local-edit decision still reaches the human.
-pub fn sync_unattended(claude_dir: &Path) -> SkillsReport {
-    sync_unattended_in(&claude_dir.join("skills"))
+pub fn sync_unattended(root: &Path, kind: AgentKind) -> SkillsReport {
+    sync_unattended_in(&root.join("skills"), kind)
 }
 
 /// [`sync_unattended_in`] for a directory another tool may have seeded with
@@ -311,12 +329,12 @@ pub fn sync_unattended(claude_dir: &Path) -> SkillsReport {
 /// an import, not a hand edit: it is kept beside as `SKILL.md.pre-clash` and
 /// replaced, so nothing is lost and nothing asks. From then on the manifest
 /// decides, exactly as everywhere else.
-pub fn sync_adopting(skills_dir: &Path) -> SkillsReport {
+pub fn sync_adopting(skills_dir: &Path, kind: AgentKind) -> SkillsReport {
     if read_manifest(skills_dir).is_none() {
         for skill in SKILLS {
             let file = skills_dir.join(skill.name).join("SKILL.md");
             match std::fs::read_to_string(&file) {
-                Ok(disk) if disk != skill.content => {
+                Ok(disk) if disk != skill.render(kind) => {
                     let kept = file.with_file_name("SKILL.md.pre-clash");
                     if let Err(e) = std::fs::rename(&file, &kept) {
                         tracing::warn!("skill adopt: {} not set aside: {}", file.display(), e);
@@ -326,32 +344,32 @@ pub fn sync_adopting(skills_dir: &Path) -> SkillsReport {
             }
         }
     }
-    sync_unattended_in(skills_dir)
+    sync_unattended_in(skills_dir, kind)
 }
 
 /// [`sync_unattended`] for a skills directory given directly.
-pub fn sync_unattended_in(skills_dir: &Path) -> SkillsReport {
-    let stamp = !plan_install_in(skills_dir).needs_decision;
-    apply(skills_dir, ApplyMode::Untouched, stamp)
+pub fn sync_unattended_in(skills_dir: &Path, kind: AgentKind) -> SkillsReport {
+    let stamp = !plan_install_in(skills_dir, kind).needs_decision;
+    apply(skills_dir, kind, ApplyMode::Untouched, stamp)
 }
 
 /// Apply an update decision and stamp it, so the question only returns when
 /// the embedded set changes again. `keep` writes nothing (beyond the stamp)
 /// and removes nothing; `untouched` skips hand-edited skills; `all` restores
 /// every managed skill to the embedded copy.
-pub fn apply_decision(claude_dir: &Path, mode: ApplyMode) -> SkillsReport {
-    apply(&claude_dir.join("skills"), mode, true)
+pub fn apply_decision(root: &Path, kind: AgentKind, mode: ApplyMode) -> SkillsReport {
+    apply(&root.join("skills"), kind, mode, true)
 }
 
 /// [`apply_decision`] for a skills directory given directly.
-pub fn apply_decision_in(skills_dir: &Path, mode: ApplyMode) -> SkillsReport {
-    apply(skills_dir, mode, true)
+pub fn apply_decision_in(skills_dir: &Path, kind: AgentKind, mode: ApplyMode) -> SkillsReport {
+    apply(skills_dir, kind, mode, true)
 }
 
 /// `stamp` records the embedded set as decided on; only `sync_unattended`
 /// withholds it, to leave a pending decision visible.
-fn apply(skills_dir: &Path, mode: ApplyMode, stamp: bool) -> SkillsReport {
-    let plan = plan_install_in(skills_dir);
+fn apply(skills_dir: &Path, kind: AgentKind, mode: ApplyMode, stamp: bool) -> SkillsReport {
+    let plan = plan_install_in(skills_dir, kind);
     let mut manifest = read_manifest(skills_dir).unwrap_or_default();
     let mut report = SkillsReport {
         version: plan.version.clone(),
@@ -370,10 +388,9 @@ fn apply(skills_dir: &Path, mode: ApplyMode, stamp: bool) -> SkillsReport {
                 ApplyMode::Keep => false,
             };
         if write {
-            if write_skill(skills_dir, skill) {
-                manifest
-                    .skills
-                    .insert(name.clone(), content_hash(skill.content));
+            let text = skill.render(kind);
+            if write_skill(skills_dir, skill, &text) {
+                manifest.skills.insert(name.clone(), content_hash(&text));
                 report.updated.push(name.clone());
                 if edited {
                     report.locally_edited.push(name);
@@ -418,6 +435,9 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// The harness the single-folder tests install for.
+    const K: AgentKind = AgentKind::Claude;
+
     /// An imported copy in a folder clash never managed is replaced, and
     /// kept beside; once clash's manifest is there, an edit is an edit again.
     #[test]
@@ -426,11 +446,11 @@ mod tests {
         let skill = dir.path().join("clash-workflow");
         std::fs::create_dir_all(&skill).unwrap();
         std::fs::write(skill.join("SKILL.md"), "imported, older").unwrap();
-        let report = sync_adopting(dir.path());
+        let report = sync_adopting(dir.path(), AgentKind::Hermes);
         assert!(report.updated.contains(&"clash-workflow".to_string()));
         assert_eq!(
             std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),
-            SKILLS[0].content
+            SKILLS[0].render(AgentKind::Hermes)
         );
         assert_eq!(
             std::fs::read_to_string(skill.join("SKILL.md.pre-clash")).unwrap(),
@@ -439,13 +459,13 @@ mod tests {
         // Managed from now on: a later hand edit is kept, not adopted.
         std::fs::write(skill.join("SKILL.md"), "my edit").unwrap();
         std::fs::remove_file(skill.join("SKILL.md.pre-clash")).unwrap();
-        sync_adopting(dir.path());
+        sync_adopting(dir.path(), AgentKind::Hermes);
         assert_eq!(
             std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),
             "my edit"
         );
         assert!(!skill.join("SKILL.md.pre-clash").exists());
-        assert!(plan_install_in(dir.path())
+        assert!(plan_install_in(dir.path(), AgentKind::Hermes)
             .locally_edited
             .contains(&"clash-workflow".to_string()));
     }
@@ -453,20 +473,20 @@ mod tests {
     #[test]
     fn fresh_dir_is_missing_only_and_installs_silently() {
         let dir = TempDir::new().unwrap();
-        let plan = plan_install(dir.path());
+        let plan = plan_install(dir.path(), K);
         assert_eq!(plan.missing.len(), SKILLS.len());
         // A fresh install is not a decision — nothing pre-existing to protect.
         assert!(!plan.needs_decision, "{:?}", plan);
 
-        let report = sync_unattended(dir.path());
+        let report = sync_unattended(dir.path(), K);
         assert_eq!(report.updated.len(), SKILLS.len());
         for skill in SKILLS {
             let path = dir.path().join("skills").join(skill.name).join("SKILL.md");
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), skill.content);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), skill.render(K));
         }
         // Idempotent, and now fully clean.
-        assert!(sync_unattended(dir.path()).updated.is_empty());
-        let plan = plan_install(dir.path());
+        assert!(sync_unattended(dir.path(), K).updated.is_empty());
+        let plan = plan_install(dir.path(), K);
         assert!(plan.missing.is_empty() && !plan.needs_decision);
     }
 
@@ -497,7 +517,7 @@ mod tests {
     #[test]
     fn outdated_vs_locally_edited_is_the_manifest_oracle() {
         let dir = TempDir::new().unwrap();
-        sync_unattended(dir.path());
+        sync_unattended(dir.path(), K);
         let a = SKILLS[0].name;
         let b = SKILLS[1].name;
         // a: disk == what clash last wrote (old version) != embedded → outdated.
@@ -515,7 +535,7 @@ mod tests {
             &content_hash("what clash wrote"),
         );
         simulate_upgrade(dir.path());
-        let plan = plan_install(dir.path());
+        let plan = plan_install(dir.path(), K);
         assert_eq!(plan.outdated, vec![a.to_string()]);
         assert_eq!(plan.locally_edited, vec![b.to_string()]);
         // The edit is what asks — the outdated one would have gone silently.
@@ -527,7 +547,7 @@ mod tests {
         // The whole point: a new clash shipping new skill text is applied at
         // startup. Asking there was a popup with nothing at stake in it.
         let dir = TempDir::new().unwrap();
-        sync_unattended(dir.path());
+        sync_unattended(dir.path(), K);
         let a = SKILLS[0].name;
         simulate(
             dir.path(),
@@ -536,16 +556,16 @@ mod tests {
             &content_hash("old shipped content"),
         );
         simulate_upgrade(dir.path());
-        let plan = plan_install(dir.path());
+        let plan = plan_install(dir.path(), K);
         assert_eq!(plan.outdated, vec![a.to_string()]);
         assert!(!plan.needs_decision, "{:?}", plan);
 
-        let report = sync_unattended(dir.path());
+        let report = sync_unattended(dir.path(), K);
         assert_eq!(report.updated, vec![a.to_string()]);
         let path = dir.path().join("skills").join(a).join("SKILL.md");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), SKILLS[0].content);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), SKILLS[0].render(K));
         // Nothing was left to ask, so the set is stamped and stays quiet.
-        let plan = plan_install(dir.path());
+        let plan = plan_install(dir.path(), K);
         assert!(plan.resolved && plan.outdated.is_empty());
     }
 
@@ -554,7 +574,7 @@ mod tests {
         // It updates the untouched skill and leaves the edited one *and* the
         // question: stamping here would silently drop the human's call.
         let dir = TempDir::new().unwrap();
-        sync_unattended(dir.path());
+        sync_unattended(dir.path(), K);
         let a = SKILLS[0].name;
         let b = SKILLS[1].name;
         simulate(
@@ -570,10 +590,10 @@ mod tests {
             &content_hash("what clash wrote"),
         );
         simulate_upgrade(dir.path());
-        let report = sync_unattended(dir.path());
+        let report = sync_unattended(dir.path(), K);
         assert_eq!(report.updated, vec![a.to_string()]);
         assert_eq!(report.kept, vec![b.to_string()]);
-        let plan = plan_install(dir.path());
+        let plan = plan_install(dir.path(), K);
         assert!(!plan.resolved, "a pending edit must not be stamped");
         assert_eq!(plan.locally_edited, vec![b.to_string()]);
         assert!(plan.needs_decision);
@@ -585,7 +605,7 @@ mod tests {
         // offer, so asking "undo your edit?" every launch is pure nagging —
         // and the unattended sync must not overwrite it either.
         let dir = TempDir::new().unwrap();
-        sync_unattended(dir.path());
+        sync_unattended(dir.path(), K);
         let a = SKILLS[0].name;
         simulate(
             dir.path(),
@@ -594,11 +614,11 @@ mod tests {
             &content_hash("what clash wrote"),
         );
 
-        let plan = plan_install(dir.path());
+        let plan = plan_install(dir.path(), K);
         assert_eq!(plan.locally_edited, vec![a.to_string()]);
         assert!(plan.resolved && !plan.needs_decision, "{:?}", plan);
 
-        sync_unattended(dir.path());
+        sync_unattended(dir.path(), K);
         let path = dir.path().join("skills").join(a).join("SKILL.md");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "my own variant");
     }
@@ -606,7 +626,7 @@ mod tests {
     #[test]
     fn untouched_mode_updates_outdated_and_keeps_edits() {
         let dir = TempDir::new().unwrap();
-        sync_unattended(dir.path());
+        sync_unattended(dir.path(), K);
         let a = SKILLS[0].name;
         let b = SKILLS[1].name;
         simulate(
@@ -622,7 +642,7 @@ mod tests {
             &content_hash("what clash wrote"),
         );
 
-        let report = apply_decision(dir.path(), ApplyMode::Untouched);
+        let report = apply_decision(dir.path(), K, ApplyMode::Untouched);
         assert_eq!(report.updated, vec![a.to_string()]);
         assert_eq!(report.kept, vec![b.to_string()]);
         assert!(report.locally_edited.is_empty());
@@ -633,7 +653,7 @@ mod tests {
             std::fs::read_to_string(&b_path).unwrap(),
             "user's own variant"
         );
-        let plan = plan_install(dir.path());
+        let plan = plan_install(dir.path(), K);
         assert_eq!(plan.locally_edited, vec![b.to_string()]);
         // …but the decision is stamped: no more popup until the next upgrade.
         assert!(plan.resolved && !plan.needs_decision);
@@ -642,7 +662,7 @@ mod tests {
     #[test]
     fn all_mode_overwrites_and_reports_the_edits_it_ate() {
         let dir = TempDir::new().unwrap();
-        sync_unattended(dir.path());
+        sync_unattended(dir.path(), K);
         let b = SKILLS[1].name;
         simulate(
             dir.path(),
@@ -651,18 +671,21 @@ mod tests {
             &content_hash("what clash wrote"),
         );
 
-        let report = apply_decision(dir.path(), ApplyMode::All);
+        let report = apply_decision(dir.path(), K, ApplyMode::All);
         assert!(report.updated.contains(&b.to_string()));
         assert_eq!(report.locally_edited, vec![b.to_string()]);
         let b_path = dir.path().join("skills").join(b).join("SKILL.md");
-        assert_eq!(std::fs::read_to_string(&b_path).unwrap(), SKILLS[1].content);
-        assert!(!plan_install(dir.path()).needs_decision);
+        assert_eq!(
+            std::fs::read_to_string(&b_path).unwrap(),
+            SKILLS[1].render(K)
+        );
+        assert!(!plan_install(dir.path(), K).needs_decision);
     }
 
     #[test]
     fn keep_mode_touches_nothing_but_still_resolves() {
         let dir = TempDir::new().unwrap();
-        sync_unattended(dir.path());
+        sync_unattended(dir.path(), K);
         let a = SKILLS[0].name;
         simulate(
             dir.path(),
@@ -673,7 +696,7 @@ mod tests {
         let retired = dir.path().join("skills").join("clash-review");
         std::fs::create_dir_all(&retired).unwrap();
 
-        let report = apply_decision(dir.path(), ApplyMode::Keep);
+        let report = apply_decision(dir.path(), K, ApplyMode::Keep);
         assert!(report.updated.is_empty());
         assert_eq!(report.kept, vec![a.to_string()]);
         assert!(
@@ -687,13 +710,13 @@ mod tests {
             "old shipped content"
         );
         // Decided: quiet until the embedded set changes again.
-        assert!(!plan_install(dir.path()).needs_decision);
+        assert!(!plan_install(dir.path(), K).needs_decision);
     }
 
     #[test]
     fn a_retired_dir_clash_wrote_goes_without_asking() {
         let dir = TempDir::new().unwrap();
-        sync_unattended(dir.path());
+        sync_unattended(dir.path(), K);
         // Exactly what clash shipped when the skill still existed.
         simulate(
             dir.path(),
@@ -704,12 +727,12 @@ mod tests {
         simulate_upgrade(dir.path());
         let retired = dir.path().join("skills").join("clash-review");
 
-        let plan = plan_install(dir.path());
+        let plan = plan_install(dir.path(), K);
         assert_eq!(plan.retired_present, vec!["clash-review".to_string()]);
         assert!(plan.retired_edited.is_empty());
         assert!(!plan.needs_decision, "{:?}", plan);
 
-        let report = sync_unattended(dir.path());
+        let report = sync_unattended(dir.path(), K);
         assert_eq!(report.removed, vec!["clash-review".to_string()]);
         assert!(!retired.exists());
     }
@@ -717,29 +740,29 @@ mod tests {
     #[test]
     fn a_hand_edited_retired_dir_asks_and_survives_untouched() {
         let dir = TempDir::new().unwrap();
-        sync_unattended(dir.path());
+        sync_unattended(dir.path(), K);
         let retired = dir.path().join("skills").join("clash-review");
         std::fs::create_dir_all(&retired).unwrap();
         std::fs::write(retired.join("SKILL.md"), "my own harness").unwrap();
         simulate_upgrade(dir.path());
-        let plan = plan_install(dir.path());
+        let plan = plan_install(dir.path(), K);
         assert_eq!(plan.retired_edited, vec!["clash-review".to_string()]);
         assert!(plan.needs_decision);
 
         // The unattended sync must not delete someone's file, and must not
         // stamp the question away either.
-        let report = sync_unattended(dir.path());
+        let report = sync_unattended(dir.path(), K);
         assert!(report.removed.is_empty());
         assert!(retired.exists());
-        assert!(plan_install(dir.path()).needs_decision);
+        assert!(plan_install(dir.path(), K).needs_decision);
 
         // `untouched` spares it too; only `all` takes it.
-        let report = apply_decision(dir.path(), ApplyMode::Untouched);
+        let report = apply_decision(dir.path(), K, ApplyMode::Untouched);
         assert!(report.removed.is_empty());
         assert_eq!(report.kept, vec!["clash-review".to_string()]);
         assert!(retired.exists());
 
-        let report = apply_decision(dir.path(), ApplyMode::All);
+        let report = apply_decision(dir.path(), K, ApplyMode::All);
         assert_eq!(report.removed, vec!["clash-review".to_string()]);
         assert!(!retired.exists());
     }
@@ -754,28 +777,109 @@ mod tests {
         assert_eq!(ApplyMode::parse(""), None);
     }
 
+    /// Every template renders for every harness, and no rendering names
+    /// another harness's tools — that is the whole point of rendering.
+    #[test]
+    fn every_skill_renders_clean_for_every_harness() {
+        let foreign: [(AgentKind, &[&str]); 3] = [
+            (
+                AgentKind::Claude,
+                &["`clarify`", "`delegate_task`", "skill://", "`task` tool"],
+            ),
+            (
+                AgentKind::Omp,
+                &[
+                    "AskUserQuestion",
+                    "`clarify`",
+                    "`delegate_task`",
+                    "`Agent` tool",
+                ],
+            ),
+            (
+                AgentKind::Hermes,
+                &["AskUserQuestion", "`Agent` tool", "`task` tool", "skill://"],
+            ),
+        ];
+        for skill in SKILLS {
+            for (kind, banned) in foreign {
+                let text = skill_template::render(skill.content, kind)
+                    .unwrap_or_else(|e| panic!("{} for {:?}: {e}", skill.name, kind));
+                for marker in ["{{", "clash:if", "clash:end"] {
+                    assert!(
+                        !text.contains(marker),
+                        "{} for {:?} keeps {marker}",
+                        skill.name,
+                        kind
+                    );
+                }
+                for word in banned {
+                    assert!(
+                        !text.contains(word),
+                        "{} for {:?} names {word}",
+                        skill.name,
+                        kind
+                    );
+                }
+            }
+        }
+    }
+
+    /// Two harnesses' folders hold two renderings, each tracked by its own
+    /// manifest: syncing one never makes the other look edited.
+    #[test]
+    fn each_harness_folder_gets_its_own_rendering() {
+        let dir = TempDir::new().unwrap();
+        let claude = dir.path().join("claude");
+        let hermes = dir.path().join("hermes-clash");
+        sync_unattended(&claude, AgentKind::Claude);
+        sync_unattended_in(&hermes, AgentKind::Hermes);
+        let read =
+            |d: &Path| std::fs::read_to_string(d.join(SKILLS[0].name).join("SKILL.md")).unwrap();
+        assert_eq!(
+            read(&claude.join("skills")),
+            SKILLS[0].render(AgentKind::Claude)
+        );
+        assert_eq!(read(&hermes), SKILLS[0].render(AgentKind::Hermes));
+        assert_ne!(read(&claude.join("skills")), read(&hermes));
+        for plan in [
+            plan_install(&claude, AgentKind::Claude),
+            plan_install_in(&hermes, AgentKind::Hermes),
+        ] {
+            assert!(
+                plan.missing.is_empty() && plan.outdated.is_empty(),
+                "{plan:?}"
+            );
+            assert!(plan.locally_edited.is_empty() && plan.resolved, "{plan:?}");
+        }
+        // Read with the wrong harness, a folder is all differences: callers
+        // must pass the harness the folder belongs to.
+        assert!(!plan_install(&claude, AgentKind::Hermes).outdated.is_empty());
+    }
+
     #[test]
     fn embedded_skills_have_frontmatter_matching_their_directory() {
-        // Each skill must stay loadable by Claude Code: frontmatter whose name
+        // Each skill must stay loadable by every harness: frontmatter whose name
         // matches the directory it installs into, plus a description (that is
         // what the model matches a request against).
         for skill in SKILLS {
-            let content = skill.content;
-            assert!(
-                content.starts_with("---\n"),
-                "{}: SKILL.md needs frontmatter",
-                skill.name
-            );
-            assert!(
-                content.contains(&format!("name: {}", skill.name)),
-                "{}: frontmatter name must match the directory",
-                skill.name
-            );
-            assert!(
-                content.contains("description:"),
-                "{}: needs a description",
-                skill.name
-            );
+            for kind in skill_template::HARNESSES {
+                let content = &skill.render(kind);
+                assert!(
+                    content.starts_with("---\n"),
+                    "{}: SKILL.md needs frontmatter",
+                    skill.name
+                );
+                assert!(
+                    content.contains(&format!("name: {}", skill.name)),
+                    "{}: frontmatter name must match the directory",
+                    skill.name
+                );
+                assert!(
+                    content.contains("description:"),
+                    "{}: needs a description",
+                    skill.name
+                );
+            }
         }
     }
 
@@ -812,10 +916,11 @@ mod tests {
         // Every kickoff may carry `Ticket links:`; a skill without the rule
         // would ignore it, or guess a host when the field is absent.
         for skill in SKILLS {
+            let content = skill.render(AgentKind::Claude);
             assert!(
-                skill.content.contains("## Linking tickets")
-                    && skill.content.contains("`Ticket links:`")
-                    && skill.content.contains("ask the human for the ticket host"),
+                content.contains("## Linking tickets")
+                    && content.contains("`Ticket links:`")
+                    && content.contains("ask the human for the ticket host"),
                 "{} has no ticket-linking rule",
                 skill.name
             );

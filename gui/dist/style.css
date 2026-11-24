@@ -2360,15 +2360,28 @@ button.busy:disabled { opacity: 1; }
 .skills-row:hover { background: var(--bg-hover); }
 .skills-row.active { background: var(--bg-active); border-left-color: var(--accent); }
 .skills-row-name { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
-.skills-badge {
+.skills-chips { display: flex; gap: 4px; margin-top: 3px; }
+.skills-chip {
   font-size: 9px;
   font-weight: 600;
-  color: var(--accent);
-  border: 1px solid var(--accent);
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
   border-radius: 3px;
   padding: 0 4px;
+  white-space: nowrap;
 }
-.skills-badge.stale { color: var(--st-waiting); border-color: var(--st-waiting); }
+.skills-head h2 .skills-chip { margin-left: 6px; vertical-align: middle; }
+.skills-chip.st-current { color: var(--accent); border-color: var(--accent); }
+.skills-chip.st-edited,
+.skills-chip.st-outdated { color: var(--st-waiting); border-color: var(--st-waiting); }
+.skills-chip.st-missing { opacity: 0.6; }
+.skills-row.attention .skills-row-name::after { content: "•"; color: var(--st-waiting); }
+.skills-switch { display: inline-flex; gap: 2px; }
+.skills-switch .icon-btn.active { background: var(--bg-active); color: var(--accent); }
+.skills-varies { margin: 8px 0 12px; border-left: 2px solid var(--accent); padding: 4px 10px; }
+.skills-varies summary { cursor: pointer; font-size: 12px; color: var(--fg-dim); }
+.skills-varies-passage { margin-top: 6px; }
+.wf-md code.skills-token { box-shadow: inset 0 -2px 0 var(--accent); }
 .skills-row-desc {
   font-size: 11px;
   color: var(--fg-dim);
@@ -4552,7 +4565,7 @@ button.wf-chip:hover, a.wf-chip:hover {
 .skills-group:first-child { padding-top: 2px; }
 .skills-row { border-left: 0; border-radius: var(--r-md); padding: 8px 10px; margin-bottom: 2px; }
 .skills-row.active { background: var(--bg-active); box-shadow: inset 2px 0 0 var(--accent); }
-.skills-badge { border-radius: 4px; padding: 0 5px; }
+.skills-chip { border-radius: 4px; padding: 0 5px; }
 .skills-content { padding: 20px 28px 32px; }
 .skills-head { border-bottom: 1px solid var(--border); padding-bottom: 14px; margin-bottom: 16px; }
 .skills-head h2 { display: flex; align-items: center; gap: 8px; font-size: 18px; margin: 0 0 6px; }

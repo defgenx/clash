@@ -3756,10 +3756,16 @@ fn main() {
     // nothing there is worth a popup. Only a file hand-edited since clash
     // wrote it is a decision, and the frontend drives that at boot
     // (get_skills_plan → popup/setting → apply_skills_decision).
-    let synced = clash::infrastructure::skills::sync_unattended(state.backend.base_dir());
-    // OMP reads the same skills from `<omp_dir>/skills/`; only where omp is.
+    let synced = clash::infrastructure::skills::sync_unattended(
+        state.backend.base_dir(),
+        clash::domain::entities::AgentKind::Claude,
+    );
+    // OMP reads its rendering from `<omp_dir>/skills/`; only where omp is.
     if let Some(omp) = omp_skills_root(&settings) {
-        clash::infrastructure::skills::sync_unattended(&omp);
+        clash::infrastructure::skills::sync_unattended(
+            &omp,
+            clash::domain::entities::AgentKind::Omp,
+        );
     }
     // Hermes reads them from its `clash` skills category; only where Hermes is.
     clash::infrastructure::hermes::sync_skills(&settings.hermes_home());

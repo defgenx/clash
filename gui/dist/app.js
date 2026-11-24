@@ -7732,6 +7732,13 @@ function openSkillsTab(selectName = null) {
   openViewTab("view:skills", "☰ Skills", (el) => buildSkillsView(el, selectName));
 }
 
+/// The harness the skills viewer last showed — per window, so switching
+/// skills keeps the comparison the reader is making.
+let skillsViewerAgent = "";
+
+/// ☰ Skills: one row per skill with a chip per agent CLI (model:
+/// skills-view.js), and a viewer that switches between the harnesses' copies
+/// and marks what clash wrote for the selected one only.
 async function buildSkillsView(el, selectName) {
   el.classList.add("skills-view");
   el.innerHTML = "<p class='hint'>loading…</p>";
@@ -7756,54 +7763,82 @@ async function buildSkillsView(el, selectName) {
 
   if (!skills.length) {
     content.innerHTML =
-      "<p class='hint'>no skills found under ~/.claude/skills — clash installs its own (clash-workflow) at startup</p>";
+      "<p class='hint'>no skills found — clash installs its own (clash-workflow, …) at startup</p>";
     return;
   }
+
+  const chipsHtml = (skill) =>
+    skillChips(skill)
+      .map(
+        (c) =>
+          `<span class="skills-chip st-${c.state}" title="${escapeHtml(c.title)}">${c.short}${
+            c.glyph ? ` ${c.glyph}` : ""
+          }</span>`
+      )
+      .join("");
 
   let activeRow = null;
   const show = async (skill, row) => {
     if (activeRow) activeRow.classList.remove("active");
     activeRow = row;
     row.classList.add("active");
+    const { agents, pick } = skillViewerChoice(skill, skillsViewerAgent);
+    if (!pick) {
+      content.innerHTML = "<p class='hint'>not installed for any agent CLI yet — clash installs it at the next start</p>";
+      return;
+    }
     content.innerHTML = "<p class='hint'>loading…</p>";
-    let text = "";
+    let doc;
     try {
-      text = await invoke("get_skill", { name: skill.name });
+      doc = await invoke("get_skill", { name: skill.name, agent: pick });
     } catch (e) {
       content.innerHTML = `<p class='hint'>failed: ${escapeHtml(e)}</p>`;
       return;
     }
-    content.innerHTML = "";
+    const copy = (skill.copies || []).find((c) => c.agent === pick) || {};
     const tools = document.createElement("div");
     tools.className = "wf-doc-tools";
+    if (agents.length > 1) {
+      const sw = document.createElement("div");
+      sw.className = "skills-switch";
+      for (const h of SKILL_HARNESSES.filter((x) => agents.includes(x.agent))) {
+        const b = document.createElement("button");
+        b.className = `icon-btn${h.agent === pick ? " active" : ""}`;
+        b.textContent = h.short;
+        b.title = `Show the ${h.label} copy`;
+        b.onclick = () => {
+          skillsViewerAgent = h.agent;
+          show(skill, row);
+        };
+        sw.appendChild(b);
+      }
+      tools.appendChild(sw);
+    }
     if (skill.managed) {
       const note = document.createElement("span");
       note.className = "skills-managed-note";
       const v = skillsVersion ? ` (v${skillsVersion})` : "";
-      note.textContent = skill.upToDate
-        ? `managed by clash${v} — updates are offered at startup (see Settings → Workflows → Skill updates)`
-        : `managed by clash${v} — differs from the embedded version; the startup popup (or your Skill-updates policy) decides what happens`;
+      note.textContent =
+        copy.state === "current"
+          ? `managed by clash${v} — rendered for this agent CLI; updates are applied at startup`
+          : copy.state === "outdated"
+            ? `managed by clash${v} — an older rendering; refreshed at the next start`
+            : `managed by clash${v} — hand-edited; the startup popup (or your Skill-updates policy) decides what happens`;
       tools.appendChild(note);
     }
     const open = document.createElement("button");
     open.className = "icon-btn wide";
     open.innerHTML = `${svgIcon("pencil", 12)}<span>Open in editor</span>`;
-    open.onclick = (ev) =>
-      openScratchInEditor({ path: skill.path, title: skill.name }, ev.clientX, ev.clientY);
+    open.onclick = (ev) => openScratchInEditor({ path: doc.path, title: skill.name }, ev.clientX, ev.clientY);
     tools.appendChild(open);
     // The frontmatter is the skill's identity card, not its first heading:
     // rendered as markdown it came out as one giant bold paragraph of YAML.
-    const { name: fmName, description: fmDesc, body } = skillFrontmatter(text);
+    const { name: fmName, description: fmDesc, body } = skillFrontmatter(doc.text);
     const head = document.createElement("div");
     head.className = "skills-head";
     const h = document.createElement("h2");
     h.textContent = fmName || skill.name;
-    if (skill.managed) {
-      const b = document.createElement("span");
-      b.className = `skills-badge${skill.upToDate ? "" : " stale"}`;
-      b.textContent = skill.upToDate ? "clash" : "clash·stale";
-      h.appendChild(b);
-    }
+    h.insertAdjacentHTML("beforeend", chipsHtml(skill));
     head.appendChild(h);
     if (fmDesc) {
       const d = document.createElement("p");
@@ -7813,41 +7848,51 @@ async function buildSkillsView(el, selectName) {
     }
     head.appendChild(tools);
     content.replaceChildren(head);
+    if (doc.passages?.length) {
+      const det = document.createElement("details");
+      det.className = "skills-varies";
+      const label = SKILL_HARNESSES.find((x) => x.agent === pick)?.label || pick;
+      det.innerHTML = `<summary>Written for ${escapeHtml(label)} only (${doc.passages.length})</summary>`;
+      for (const passage of doc.passages) {
+        const md = document.createElement("div");
+        md.className = "wf-md skills-varies-passage";
+        renderMarkdown(md, passage);
+        det.appendChild(md);
+      }
+      content.appendChild(det);
+    }
     const md = document.createElement("div");
     md.className = "wf-md";
     renderMarkdown(md, body);
+    // Mark this harness's tool names where the text uses them.
+    const tokens = new Set(doc.tokens || []);
+    if (tokens.size) {
+      for (const code of md.querySelectorAll("code")) {
+        if (tokens.has(code.textContent.trim())) code.classList.add("skills-token");
+      }
+    }
     content.appendChild(md);
   };
 
   let first = null;
-  // clash's own skills first, under their own heading: they are the ones the
-  // workflows run, and the ones whose updates clash manages.
-  const ordered = [...skills.filter((s) => s.managed), ...skills.filter((s) => !s.managed)];
-  let group = null;
-  for (const skill of ordered) {
-    const g = skill.managed ? "Managed by clash" : "Other skills";
-    if (g !== group) {
-      group = g;
-      const gh = document.createElement("div");
-      gh.className = "skills-group";
-      gh.textContent = g;
-      list.appendChild(gh);
+  for (const group of skillGroups(skills)) {
+    const gh = document.createElement("div");
+    gh.className = "skills-group";
+    gh.textContent = group.title;
+    list.appendChild(gh);
+    for (const skill of group.skills) {
+      const row = document.createElement("div");
+      row.className = `skills-row${skillNeedsAttention(skill) ? " attention" : ""}`;
+      row.innerHTML =
+        `<div class="skills-row-name">${escapeHtml(skill.name)}</div>` +
+        `<div class="skills-chips">${chipsHtml(skill)}</div>` +
+        `<div class="skills-row-desc">${escapeHtml(
+          (skill.description || "").replace(/^["']|["']$/g, "").slice(0, 140)
+        )}</div>`;
+      row.onclick = () => show(skill, row);
+      list.appendChild(row);
+      if (!first || skill.name === selectName) first = { skill, row };
     }
-    const row = document.createElement("div");
-    row.className = "skills-row";
-    const badge = skill.managed
-      ? `<span class="skills-badge${skill.upToDate ? "" : " stale"}">${
-          skill.upToDate ? "clash" : "clash·stale"
-        }</span>`
-      : "";
-    row.innerHTML =
-      `<div class="skills-row-name">${escapeHtml(skill.name)}${badge}</div>` +
-      `<div class="skills-row-desc">${escapeHtml(
-        (skill.description || "").replace(/^["']|["']$/g, "").slice(0, 140)
-      )}</div>`;
-    row.onclick = () => show(skill, row);
-    list.appendChild(row);
-    if (!first || skill.name === selectName) first = { skill, row };
   }
   if (first) show(first.skill, first.row);
 }

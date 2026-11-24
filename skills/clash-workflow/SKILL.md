@@ -5,13 +5,28 @@ description: Execute one phase of a clash Workflow item (plan | revise | impleme
 
 # clash-workflow — one pipeline phase per run
 
-> **Agent CLI.** clash launches this skill under Claude Code, OMP (oh-my-pi) or
-> Hermes Agent. `AskUserQuestion` below names the structured-question tool: in
-> OMP it is `ask` (a `questions` array, each with `id`, `question`, `options`,
-> optional `multi` and `recommended`); in Hermes it is `clarify` (a `questions`
-> array, each with `question`, `choices` — recommended first — and optional
-> `multi_select`). Every other instruction is the same under all three.
+<!-- clash:if omp -->
+> **Agent CLI: OMP (oh-my-pi).** clash renders this copy of the skill for OMP.
+> Questions to the human use `ask`: a `questions` array, each with `id`,
+> `question`, `options` (`label`, optional `description`), optional `multi` and
+> `recommended` (the index of your pick). To use another skill, `read`
+> `skill://<name>`. Subagents cannot ask the human.
 
+<!-- clash:end -->
+<!-- clash:if hermes -->
+> **Agent CLI: Hermes Agent.** clash renders this copy of the skill for Hermes.
+> Questions to the human use `clarify`: a `questions` array (at most 5), each
+> with `question`, `choices` and optional `multi_select`. Choices are at most 4
+> plain strings with no description, so put each trade-off in the choice text
+> or the question; your pick goes first (Hermes marks the first one
+> recommended). `clarify` gives up after `agent.clarify_timeout` (90 s by
+> default) with `outcome: timed_out` or `undelivered` — that is not an answer,
+> so never choose for the human: ask again as a plain message, end your turn
+> and continue from the reply. To use another skill, call `skill_view` with its
+> name. Subagents cannot ask the human. Hermes loads `AGENTS.md` and then
+> ignores `CLAUDE.md`, so read both yourself.
+
+<!-- clash:end -->
 You are the executor half of clash's Workflows feature. clash (the GUI) is
 the cockpit: the human creates items, reviews your output, annotates diffs,
 and clicks the buttons. You do the work and communicate **exclusively
@@ -93,7 +108,7 @@ Before doing anything else, settle how this run goes:
 - Kickoff says `Interactive: yes` → run interactively, no question asked.
 - Kickoff says `Interactive: no` → run autonomously: no questions, decide
   alone, report your calls in the final message.
-- **The field is absent → ask.** One `AskUserQuestion`, first thing:
+- **The field is absent → ask.** One `{{ask}}`, first thing:
   1. **Interactive** (recommended) — check in at the phase's decision points
      before acting on them.
   2. **Autonomous** — decide alone; every judgement call is reported at the
@@ -532,21 +547,45 @@ What gets split, per phase (details in each phase below):
 - `revise` and `pr` — done by you: one document, one author. Delegate only
   read-only fact-checks against the code.
 
-How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool; Hermes:
-`delegate_task`, several tasks in one call):
+<!-- clash:if claude -->
+How to delegate (the `Agent` tool):
 
 - **Parallel means one message.** Launch every independent subagent of a batch
   in a single response with several tool calls; one call per message runs
   them one after another.
 - **Never pass a `model`, and use the general-purpose agent.** clash pins the
-  subagents' model (the kickoff names it): under Claude Code it is forced for
-  every agent type except the built-in `Explore`, which keeps a model of its
-  own — so brief `general-purpose` subagents, never `Explore`, for work that
-  must run on the pinned model. Under OMP the pin is the `task` role, which the
-  default `task` agent uses; other bundled agents (`sonic`, …) run elsewhere.
-  Under Hermes subagents run on `delegation.model` from Hermes's own config,
-  which clash does not pin.
-  Your own model is for splitting, integrating and judging.
+  subagents' model (the kickoff names it): it is forced for every agent type
+  except the built-in `Explore`, which keeps a model of its own — so brief
+  `general-purpose` subagents, never `Explore`, for work that must run on the
+  pinned model. Your own model is for splitting, integrating and judging.
+<!-- clash:end -->
+<!-- clash:if omp -->
+How to delegate (the `task` tool):
+
+- **Parallel means one call.** Put every independent subagent of a batch in one
+  `task` call's `tasks` array, with what they all need in its shared `context`;
+  several calls run one after another. Collect every result before you
+  integrate.
+- **Never pass a `model`, and use the default `task` agent.** clash pins the
+  subagents' model through the `task` role; other bundled agents (`scout`,
+  `reviewer`, …) run on models of their own. Your own model is for splitting,
+  integrating and judging.
+<!-- clash:end -->
+<!-- clash:if hermes -->
+How to delegate (the `delegate_task` tool):
+
+- **Parallel means one call.** Put every independent subagent of a batch in one
+  `delegate_task` call's `tasks` array (at most
+  `delegation.max_concurrent_children`, 10 by default). Nothing is shared
+  between tasks: each task's `context` carries its whole brief. Top-level
+  delegations run in the background and their results arrive as a later
+  message — end your turn after launching, and integrate when every result is
+  in.
+- **The subagents' model is Hermes's, not yours to pick.** They run on
+  `delegation.model` from Hermes's own config; `delegate_task` takes no model
+  and clash pins none. Your own model is for splitting, integrating and
+  judging.
+<!-- clash:end -->
 - **Brief them as if they know nothing** — they see neither this skill, the
   kickoff nor the item's files unless you put them in the brief. Each brief
   states the goal, the exact files or area it covers, the relevant excerpts
@@ -554,7 +593,7 @@ How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool; Hermes:
   (`CLAUDE.md`/`AGENTS.md`), and the shape of what to return: `file:line`
   evidence, not prose.
 - **The lead owns the item.** Only you write the item's files, run git, post
-  to a PR, ask the human (`AskUserQuestion`) and change the status. Say so in
+  to a PR, ask the human (`{{ask}}`) and change the status. Say so in
   every brief — a subagent that writes `meta.json` or commits corrupts the
   round.
 - **Verify, don't forward.** A subagent's output is a claim. Check it against
@@ -584,7 +623,7 @@ and say so instead of writing a plan.
      scope.
    - Ask about everything you are not sure of — expected behavior, scope
      boundaries, edge cases, constraints, what "done" looks like — as **one
-     round**: the whole open frontier in one `AskUserQuestion` (calls back to
+     round**: the whole open frontier in one `{{ask}}` (calls back to
      back past 4 questions, or one numbered message when there are many),
      each question carrying your recommended answer and a one-line why, so
      the human confirms or corrects instead of composing answers. Then ask

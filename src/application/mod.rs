@@ -24,6 +24,7 @@ pub mod remote;
 /// (the TUI only relaunches them, through `RoundModels`).
 #[allow(dead_code)]
 pub mod review_size;
+pub mod skill_template;
 pub mod state;
 pub mod store;
 /// Same allowance as `workflow`: ticket trackers are used by the GUI's

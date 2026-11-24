@@ -103,14 +103,15 @@ impl App {
         // automatically when `general.skills_update` is not `ask`, otherwise
         // left for the GUI's startup popup (the TUI has no dialog surface).
         {
+            use crate::domain::entities::AgentKind;
             use crate::infrastructure::skills;
-            let synced = skills::sync_unattended(&data_dir);
+            let synced = skills::sync_unattended(&data_dir, AgentKind::Claude);
             // OMP reads skills from `<omp_dir>/skills/` in the same layout;
             // installed only where omp is (never creates `~/.omp`).
             let omp_dir = settings.omp_dir();
             let omp_root = omp_dir.is_dir().then_some(omp_dir);
             if let Some(ref d) = omp_root {
-                skills::sync_unattended(d);
+                skills::sync_unattended(d, AgentKind::Omp);
             }
             // Hermes reads them from its `clash` skills category.
             let hermes_home = settings.hermes_home();
@@ -122,17 +123,18 @@ impl App {
                     synced.removed
                 );
             }
-            let plan = skills::plan_install(&data_dir);
+            let plan = skills::plan_install(&data_dir, AgentKind::Claude);
             if plan.needs_decision {
                 match skills::ApplyMode::parse(&settings.general.skills_update) {
                     Some(mode) => {
-                        let r = skills::apply_decision(&data_dir, mode);
+                        let r = skills::apply_decision(&data_dir, AgentKind::Claude, mode);
                         if let Some(ref d) = omp_root {
-                            skills::apply_decision(d, mode);
+                            skills::apply_decision(d, AgentKind::Omp, mode);
                         }
                         if hermes_home.is_dir() {
                             skills::apply_decision_in(
                                 &crate::infrastructure::hermes::skills_dir(&hermes_home),
+                                AgentKind::Hermes,
                                 mode,
                             );
                         }

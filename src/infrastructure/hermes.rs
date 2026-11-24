@@ -41,8 +41,12 @@ pub fn skills_dir(home: &Path) -> PathBuf {
 /// Sync clash's skills into Hermes, when Hermes is installed (never creates
 /// its home).
 pub fn sync_skills(home: &Path) -> Option<crate::infrastructure::skills::SkillsReport> {
-    home.is_dir()
-        .then(|| crate::infrastructure::skills::sync_adopting(&skills_dir(home)))
+    home.is_dir().then(|| {
+        crate::infrastructure::skills::sync_adopting(
+            &skills_dir(home),
+            crate::domain::entities::AgentKind::Hermes,
+        )
+    })
 }
 
 /// The title clash gives the Hermes session of clash id `id`.

@@ -2217,8 +2217,10 @@ round does not change models halfway through because the pins moved.
 ## Embedded skills — install as a decision
 
 The five skills (`clash-workflow`, `clash-plan-review`, `clash-pr-review`,
-`clash-explain`, `clash-drift-review`) are compiled into both binaries. Installing them under
-`<claude_dir>/skills/` becomes a **decision only where it could lose work**:
+`clash-explain`, `clash-drift-review`) are compiled into both binaries as
+templates and installed **rendered for each agent CLI** into its own skills
+folder (see [Skills per agent CLI](#skills-per-agent-cli)). Installing them
+becomes a **decision only where it could lose work**:
 
 - `sync_unattended` runs at every startup and needs no permission: it
   installs **missing** skills, refreshes every skill whose file is still
@@ -2246,3 +2248,59 @@ The five skills (`clash-workflow`, `clash-plan-review`, `clash-pr-review`,
   edits keep their old hash, so they stay detectable as edits forever.
 - The TUI has no popup: it runs the same unattended sync, honors a non-`ask`
   setting, and otherwise logs a pointer to the GUI.
+
+### Skills per agent CLI
+
+One `skills/<name>/SKILL.md` is the source for every harness;
+`application::skill_template` renders it for one `AgentKind` at install time,
+and `infrastructure::skills` writes each rendering into that harness's folder:
+
+| Harness | Folder | Rendered with |
+|---|---|---|
+| Claude Code | `<claude_dir>/skills/` | `AgentKind::Claude` |
+| OMP | `<omp_dir>/skills/` (only when it exists) | `AgentKind::Omp` |
+| Hermes | `<hermes_home>/skills/clash/` (only when Hermes is installed) | `AgentKind::Hermes` |
+
+Each folder has its **own** `.clash-skills.json`, whose hashes and
+fingerprint are of that folder's rendering — so every installer function takes
+the harness, and reading a folder with the wrong one makes every skill look
+changed. A rendering that changes (a new template, a new token value) is an
+ordinary upgrade: the file still holds what clash last wrote there, so the
+unattended sync refreshes it without asking.
+
+Two markers, both invisible when the source is read as markdown:
+
+- **Inline tokens** `{{name}}`:
+
+  | Token | Claude Code | OMP | Hermes |
+  |---|---|---|---|
+  | `{{ask}}` | `AskUserQuestion` | `ask` | `clarify` |
+  | `{{multi}}` | `multiSelect: true` | `multi: true` | `multi_select: true` |
+  | `{{subagent}}` | `Agent` | `task` | `delegate_task` |
+  | `{{harness}}` | Claude Code | OMP | Hermes |
+
+- **Blocks**: a line `<!-- clash:if <kinds…> -->` (any of `claude`, `omp`,
+  `hermes`, space-separated) up to a line `<!-- clash:end -->` is kept only
+  for those harnesses; the marker lines are dropped. Blocks do not nest, and a
+  marker must be alone on its line.
+
+Write harness-specific text as a block when it is a different instruction (how
+to delegate, how a question times out), as a token when only a tool name
+changes. Today's blocks: the *Agent CLI* note under each skill's title (OMP and
+Hermes only — the tool shapes, how to call another skill, Hermes's 90 s
+`clarify` timeout) and *How to delegate* (one per harness: parallel calls,
+which agent type keeps the pinned model; Hermes subagents share no context,
+report in a later turn and run on Hermes's own `delegation.model`).
+
+The renderer refuses what it cannot render (unknown token or harness, an
+unclosed or nested block) instead of guessing, and the installer tests render
+every skill for every harness and fail when a rendering keeps a marker or names
+another harness's tools. Adding a token is one `TOKENS` row; adding a harness
+is an `AgentKind` variant, a column in `TOKENS` and its folder in the
+installers' callers.
+
+The ☰ Skills tab (`list_skills` / `get_skill`; model `gui/dist/skills-view.js`)
+lists one row per skill name with a chip per installed harness — ✓ current,
+✎ hand-edited, ⚠ outdated, — not installed — and its viewer switches between
+the harnesses' copies, lists the passages written for the selected harness
+only, and underlines that harness's tool names in the text.

@@ -896,10 +896,15 @@ configured webhook. Your own clicks never post.
   Startup installs missing skills and refreshes the ones you never edited. clash
   asks (*Keep my edits* / *Overwrite*) only when an upgrade would replace a
   skill you edited by hand; `general.skills_update` (*Settings → Workflows →
-  Skill updates*) pins the answer. The ☰ button on the WORKFLOWS section lists
-  every installed skill — clash's own first, under *Managed by clash* — and
-  opens each on its name and description (from the frontmatter), then the
-  body.
+  Skill updates*) pins the answer. Each agent CLI gets its own copy, written
+  for its tools (Claude Code's `AskUserQuestion`, OMP's `ask`, Hermes's
+  `clarify`, and so on). The ☰ button on the WORKFLOWS section lists every
+  installed skill once — clash's own first, under *Managed by clash* — with a
+  chip per agent CLI (**CC** / **OMP** / **HM**: ✓ current, ✎ edited by hand,
+  ⚠ outdated, — not installed). Opening one shows its name and description
+  (from the frontmatter), then the body; the **CC / OMP / HM** switch shows
+  another agent CLI's copy, with the passages written only for it listed on
+  top. [Details](workflows.md#skills-per-agent-cli).
 
 ## Storage
 

@@ -108,7 +108,8 @@ applies:
   loaded with `omp -e`) writes the same status files as the Claude hook, from
   omp's own events — a tool-approval prompt or an `ask` question reads as
   *prompting*. `/new` and `/resume` inside omp re-key the row like `/clear`.
-- **Skills.** The embedded `clash-*` skills are also installed into
+- **Skills.** The embedded `clash-*` skills are also installed, rendered for
+  OMP's tools ([Skills per agent CLI](workflows.md#skills-per-agent-cli)), into
   `~/.omp/agent/skills/` at startup (when that directory exists) and again
   before every OMP workflow launch, so an omp installed since startup still has
   the skills its kickoff names.
@@ -156,8 +157,9 @@ change-request composers) offers it.
 
   If a running gateway does not pick a change up, `hermes gateway restart`
   does.
-- **Skills.** The embedded `clash-*` skills are installed into
-  `~/.hermes/skills/clash/` at startup (when Hermes is installed) and again
+- **Skills.** The embedded `clash-*` skills are installed, rendered for
+  Hermes's tools ([Skills per agent CLI](workflows.md#skills-per-agent-cli)),
+  into `~/.hermes/skills/clash/` at startup (when Hermes is installed) and again
   before every Hermes workflow launch. That is the folder Hermes's own setup
   imports `~/.claude/skills` into; Hermes treats two skills of one name as
   ambiguous, so clash manages that folder instead of adding a second copy. An

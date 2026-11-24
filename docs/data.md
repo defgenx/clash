@@ -22,7 +22,9 @@ OMP sessions are read from `~/.omp/agent/sessions/` (see
 Outside its own `~/.claude/clash/` directory, clash writes only where you ask it
 to — team configs, inboxes and tasks when you edit them — plus its embedded
 workflow skills under `~/.claude/skills/<name>/` (with a `.clash-skills.json`
-manifest; also under `~/.omp/agent/skills/` when that directory exists). It
+manifest; also under `~/.omp/agent/skills/` and `~/.hermes/skills/clash/` when
+those agent CLIs are installed, each folder holding the copy written for that
+CLI — [workflows.md](workflows.md#skills-per-agent-cli)). It
 registers nothing in your Claude settings files; older versions' entry in
 `~/.claude/settings.local.json` is withdrawn at startup. See
 [hooks.md](hooks.md) for how status hooks are registered instead.

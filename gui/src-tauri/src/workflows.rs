@@ -714,7 +714,10 @@ pub(crate) fn set_workflow_item_settings(
 pub(crate) fn get_skills_plan(
     state: State<'_, GuiState>,
 ) -> clash::infrastructure::skills::SkillsPlan {
-    clash::infrastructure::skills::plan_install(state.backend.base_dir())
+    clash::infrastructure::skills::plan_install(
+        state.backend.base_dir(),
+        clash::domain::entities::AgentKind::Claude,
+    )
 }
 
 /// Apply a skills-update decision (`all` | `untouched` | `keep`) and stamp
@@ -727,17 +730,23 @@ pub(crate) fn apply_skills_decision(
     let mode = clash::infrastructure::skills::ApplyMode::parse(&mode)
         .ok_or_else(|| format!("Unknown skills-update mode '{}'", mode))?;
     if let Some(omp) = crate::omp_skills_root(&state.config.get()) {
-        clash::infrastructure::skills::apply_decision(&omp, mode);
+        clash::infrastructure::skills::apply_decision(
+            &omp,
+            clash::domain::entities::AgentKind::Omp,
+            mode,
+        );
     }
     let hermes = state.config.get().hermes_home();
     if hermes.is_dir() {
         clash::infrastructure::skills::apply_decision_in(
             &clash::infrastructure::hermes::skills_dir(&hermes),
+            clash::domain::entities::AgentKind::Hermes,
             mode,
         );
     }
     Ok(clash::infrastructure::skills::apply_decision(
         state.backend.base_dir(),
+        clash::domain::entities::AgentKind::Claude,
         mode,
     ))
 }
@@ -1910,7 +1919,10 @@ async fn spawn_item_session(
     // Same for Hermes.
     match agent {
         clash::domain::entities::AgentKind::Omp => {
-            clash::infrastructure::skills::sync_unattended(&cfg.omp_dir());
+            clash::infrastructure::skills::sync_unattended(
+                &cfg.omp_dir(),
+                clash::domain::entities::AgentKind::Omp,
+            );
         }
         clash::domain::entities::AgentKind::Hermes => {
             clash::infrastructure::hermes::sync_skills(&cfg.hermes_home());
@@ -5256,9 +5268,12 @@ pub(crate) fn export_workflow_share(
     Ok(path.to_string_lossy().into_owned())
 }
 
-// ── Skills (visualize the Claude Code skills clash ships/uses) ──────────
+// ── Skills (every agent CLI's skills, grouped by name) ──────────────────
 
-/// One skill under `<claude_dir>/skills/` as listed to the GUI.
+use clash::domain::entities::AgentKind;
+
+/// One skill as listed to the GUI: one row per name, one copy per agent CLI
+/// whose skills folder exists. Model and chips: `gui/dist/skills-view.js`.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SkillInfo {
@@ -5266,13 +5281,85 @@ pub(crate) struct SkillInfo {
     /// First `description:` line of the frontmatter (may be long; the GUI
     /// truncates for display).
     description: String,
-    /// Absolute path of the SKILL.md (for open-in-editor).
-    path: String,
-    /// True when this skill is embedded in the clash binary (managed —
-    /// local edits are overwritten at startup).
+    /// True when this skill is embedded in the clash binary (managed).
     managed: bool,
-    /// For managed skills: whether the installed copy matches the binary.
-    up_to_date: bool,
+    copies: Vec<SkillCopy>,
+}
+
+/// One harness's copy of a skill.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SkillCopy {
+    /// `claude` | `omp` | `hermes`.
+    agent: &'static str,
+    /// Managed: `current` | `edited` | `outdated` | `missing`. Others: `present`.
+    state: &'static str,
+    /// Absolute path of the SKILL.md (empty when `missing`).
+    path: String,
+}
+
+/// A skill's text for one harness, plus what the viewer marks.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SkillText {
+    text: String,
+    path: String,
+    /// Managed skills: the passages written for this harness only.
+    passages: Vec<String>,
+    /// This harness's tool names, highlighted where they appear.
+    tokens: Vec<String>,
+}
+
+/// Each installed agent CLI with the folder clash installs its skills into.
+fn skill_folders(state: &GuiState) -> Vec<(AgentKind, std::path::PathBuf)> {
+    let cfg = state.config.get();
+    let mut out = vec![(AgentKind::Claude, state.backend.base_dir().join("skills"))];
+    if let Some(omp) = crate::omp_skills_root(&cfg) {
+        out.push((AgentKind::Omp, omp.join("skills")));
+    }
+    let hermes = cfg.hermes_home();
+    if hermes.is_dir() {
+        out.push((
+            AgentKind::Hermes,
+            clash::infrastructure::hermes::skills_dir(&hermes),
+        ));
+    }
+    out
+}
+
+/// Every `name → SKILL.md` a harness offers. Hermes nests its skills one
+/// category deep (`skills/<category>/<name>/`), so it is walked from its
+/// skills root rather than from clash's category folder.
+fn harness_skill_files(kind: AgentKind, folder: &Path) -> Vec<(String, std::path::PathBuf)> {
+    let roots: Vec<std::path::PathBuf> = match kind {
+        AgentKind::Hermes => {
+            let root = folder
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_default();
+            std::iter::once(root.clone())
+                .chain(
+                    std::fs::read_dir(&root)
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                        .map(|e| e.path())
+                        .filter(|p| p.is_dir()),
+                )
+                .collect()
+        }
+        _ => vec![folder.to_path_buf()],
+    };
+    let mut out = Vec::new();
+    for root in roots {
+        for entry in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+            let path = entry.path().join("SKILL.md");
+            if path.is_file() {
+                out.push((entry.file_name().to_string_lossy().into_owned(), path));
+            }
+        }
+    }
+    out
 }
 
 /// Pull the `description:` value out of SKILL.md frontmatter (single line).
@@ -5295,53 +5382,125 @@ fn skill_description(content: &str) -> String {
     String::new()
 }
 
-/// List every skill directory containing a SKILL.md, managed ones first.
+/// Every skill of every installed agent CLI, grouped by name, managed first.
 #[tauri::command]
 pub(crate) fn list_skills(state: State<'_, GuiState>) -> Vec<SkillInfo> {
-    let skills_dir = state.backend.base_dir().join("skills");
-    let embedded: std::collections::HashMap<&str, &str> = clash::infrastructure::skills::SKILLS
-        .iter()
-        .map(|s| (s.name, s.content))
-        .collect();
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(&skills_dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-    {
-        let path = entry.path().join("SKILL.md");
-        if !path.is_file() {
-            continue;
+    use clash::infrastructure::skills::{plan_install_in, SKILLS};
+    let mut by_name: std::collections::BTreeMap<String, SkillInfo> = Default::default();
+    for (kind, folder) in skill_folders(&state) {
+        let plan = plan_install_in(&folder, kind);
+        for skill in SKILLS {
+            let name = skill.name.to_string();
+            let has = |list: &Vec<String>| list.contains(&name);
+            let state = if has(&plan.missing) {
+                "missing"
+            } else if has(&plan.locally_edited) {
+                "edited"
+            } else if has(&plan.outdated) {
+                "outdated"
+            } else {
+                "current"
+            };
+            let path = if state == "missing" {
+                String::new()
+            } else {
+                folder
+                    .join(skill.name)
+                    .join("SKILL.md")
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            by_name
+                .entry(name.clone())
+                .or_insert_with(|| SkillInfo {
+                    name,
+                    description: skill_description(skill.content),
+                    managed: true,
+                    copies: Vec::new(),
+                })
+                .copies
+                .push(SkillCopy {
+                    agent: kind.as_str(),
+                    state,
+                    path,
+                });
         }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
-        let managed = embedded.contains_key(name.as_str());
-        out.push(SkillInfo {
-            description: skill_description(&content),
-            up_to_date: !managed || embedded.get(name.as_str()) == Some(&content.as_str()),
-            path: path.to_string_lossy().into_owned(),
-            name,
-            managed,
-        });
+        for (name, path) in harness_skill_files(kind, &folder) {
+            if SKILLS.iter().any(|s| s.name == name) {
+                continue;
+            }
+            let info = by_name.entry(name.clone()).or_insert_with(|| SkillInfo {
+                description: skill_description(&std::fs::read_to_string(&path).unwrap_or_default()),
+                name,
+                managed: false,
+                copies: Vec::new(),
+            });
+            if info.copies.iter().all(|c| c.agent != kind.as_str()) {
+                info.copies.push(SkillCopy {
+                    agent: kind.as_str(),
+                    state: "present",
+                    path: path.to_string_lossy().into_owned(),
+                });
+            }
+        }
     }
+    let mut out: Vec<SkillInfo> = by_name.into_values().collect();
     out.sort_by_key(|s| (!s.managed, s.name.clone()));
     out
 }
 
-/// Full SKILL.md content for the viewer. `name` is sanitized against
-/// traversal the same way workflow components are.
+/// One harness's copy of a skill for the viewer (`agent` defaults to
+/// Claude Code). `name` is sanitized against traversal the same way workflow
+/// components are.
 #[tauri::command]
-pub(crate) fn get_skill(state: State<'_, GuiState>, name: String) -> Result<String, String> {
+pub(crate) fn get_skill(
+    state: State<'_, GuiState>,
+    name: String,
+    agent: Option<String>,
+) -> Result<SkillText, String> {
+    use clash::application::skill_template::{render_lines, HARNESSES, TOKENS};
     if name.is_empty() || name.contains(['/', '\\', '\0']) || name == "." || name == ".." {
         return Err(format!("Invalid skill name: '{}'", name));
     }
-    let path = state
-        .backend
-        .base_dir()
-        .join("skills")
-        .join(&name)
-        .join("SKILL.md");
-    std::fs::read_to_string(&path).map_err(|e| format!("Cannot read {}: {}", path.display(), e))
+    let kind = AgentKind::parse(agent.as_deref().unwrap_or("claude"));
+    let folder = skill_folders(&state)
+        .into_iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, f)| f)
+        .ok_or_else(|| format!("{} is not installed", kind.as_str()))?;
+    let path = harness_skill_files(kind, &folder)
+        .into_iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, p)| p)
+        .ok_or_else(|| format!("{} has no skill '{}'", kind.as_str(), name))?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
+    let mut passages = Vec::new();
+    let mut tokens = Vec::new();
+    if let Some(skill) = clash::infrastructure::skills::SKILLS
+        .iter()
+        .find(|s| s.name == name)
+    {
+        let mut run: Vec<String> = Vec::new();
+        for line in render_lines(skill.content, kind).unwrap_or_default() {
+            if line.varies {
+                run.push(line.text);
+            } else if !run.is_empty() {
+                passages.push(std::mem::take(&mut run).join("\n"));
+            }
+        }
+        if !run.is_empty() {
+            passages.push(run.join("\n"));
+        }
+        let i = HARNESSES.iter().position(|k| *k == kind).unwrap_or(0);
+        tokens = TOKENS.iter().map(|(_, v)| v[i].to_string()).collect();
+    }
+    Ok(SkillText {
+        text,
+        path: path.to_string_lossy().into_owned(),
+        passages,
+        tokens,
+    })
 }
 
 // ── Check runs ──────────────────────────────────────────────────────────
