@@ -1128,6 +1128,7 @@
           --border: #2c2c31; --fg: #d4d4d8; --fg-dim: #8a8a93; --accent: #e8a33d; --on-accent: #141414;
           --green: #4ec975; --warn: #d2be78; --stage: #0f1013; --code: rgba(255,255,255,.06); --shadow: 0 10px 30px rgba(0,0,0,.55); }
   }
+  :root { --grad-top: var(--bg-panel); --grad-accent: var(--accent); }
   * { box-sizing: border-box; }
   html, body { margin: 0; background: var(--bg); color: var(--fg); }
   body { font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
@@ -1143,13 +1144,13 @@
   [hidden] { display: none !important; }
 
   .top { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 14px; height: 52px; padding: 0 16px;
-         background: var(--bg-panel); border-bottom: 1px solid var(--border); }
+         background: var(--grad-top); border-bottom: 1px solid var(--border); }
   .top .brand { color: var(--accent); font-weight: 700; font-size: 16px; }
   .top h1 { margin: 0; font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 34vw; }
   .chapters { display: flex; gap: 4px; overflow-x: auto; }
   .chapters button { background: none; border: 0; border-radius: 8px; padding: 6px 12px; cursor: pointer; color: var(--fg-dim); white-space: nowrap; }
   .chapters button:hover { background: var(--bg-hover); color: var(--fg); }
-  .chapters button.on { background: var(--accent); color: var(--on-accent); }
+  .chapters button.on { background: var(--grad-accent); color: var(--on-accent); }
   .spacer { flex: 1; }
   .icon { background: none; border: 1px solid var(--border); border-radius: 8px; min-width: 32px; height: 30px; cursor: pointer; }
   .icon:hover { border-color: var(--accent); }
@@ -1217,7 +1218,7 @@
   .wf-mmd-bar label { padding: 3px 12px; border-radius: 999px; font-size: 12px; cursor: pointer; color: var(--fg-dim); }
   .wf-mmd-bar label:hover { color: var(--fg); }
   .wf-mmd > .wf-mmd-d:checked ~ .wf-mmd-bar .wf-mmd-ld,
-  .wf-mmd > .wf-mmd-s:checked ~ .wf-mmd-bar .wf-mmd-ls { background: var(--accent); color: var(--on-accent); }
+  .wf-mmd > .wf-mmd-s:checked ~ .wf-mmd-bar .wf-mmd-ls { background: var(--grad-accent); color: var(--on-accent); }
   .wf-mmd > .wf-mmd-d:focus-visible ~ .wf-mmd-bar .wf-mmd-ld,
   .wf-mmd > .wf-mmd-s:focus-visible ~ .wf-mmd-bar .wf-mmd-ls { outline: 2px solid var(--accent); outline-offset: 1px; }
   .wf-mmd .wf-mermaid { margin: 0; padding: clamp(14px, 2vw, 28px); background: var(--bg-panel); text-align: center; overflow-x: auto; }
@@ -1290,7 +1291,7 @@
   .angles:empty { display: none; }
   .angles button { background: var(--bg-raised); border: 0; border-right: 1px solid var(--border); padding: 4px 12px; cursor: pointer; font-size: 12px; }
   .angles button:last-child { border-right: 0; }
-  .angles button.on { background: var(--accent); color: var(--on-accent); }
+  .angles button.on { background: var(--grad-accent); color: var(--on-accent); }
 
   .body { flex: 1; display: flex; min-height: 0; }
   .stage { position: relative; flex: 1; min-width: 0; overflow: hidden; background: var(--stage); }
@@ -1419,7 +1420,20 @@
         stage: hexMix(bg, dark ? -0.25 : -0.04),
         code: dark ? "rgba(255,255,255,.06)" : "rgba(0,0,0,.05)",
         shadow: dark ? "0 10px 30px rgba(0,0,0,.55)" : "0 10px 30px rgba(0,0,0,.12)",
+        ...shareGradients(theme && theme.gradient),
       },
+    };
+  }
+
+  /// A theme's gradients as page variables (the GUI's `themeGradients`):
+  /// the top bar fades like the GUI's chrome, filled buttons like its
+  /// accents. Without one the page's flat defaults stand.
+  function shareGradients(g) {
+    const ok = (pair) => Array.isArray(pair) && pair.length === 2 && pair.every((c) => /^#[0-9a-f]{6}$/i.test(c));
+    if (!g || !ok(g.chrome) || !ok(g.accent)) return {};
+    return {
+      "grad-top": `linear-gradient(90deg, ${g.chrome[0]} 0%, ${g.chrome[1]} 100%)`,
+      "grad-accent": `linear-gradient(135deg, ${g.accent[0]} 0%, ${g.accent[1]} 100%)`,
     };
   }
 

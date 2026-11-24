@@ -493,7 +493,18 @@ TUI can't apply them. Everything else lives in the shared
 
 | Dark | Light |
 |---|---|
-| clash dark *(default)* · Tokyo Night · Catppuccin Mocha · Nord · Dracula · One Dark · Gruvbox Dark · Solarized Dark | clash light · Catppuccin Latte · Solarized Light · GitHub Light |
+| clash dark *(default)* · Tokyo Night · Catppuccin Mocha · Nord · Dracula · One Dark · Gruvbox Dark · Solarized Dark · Aubergine | clash light · Catppuccin Latte · Solarized Light · GitHub Light |
+
+**Aubergine** is a gradient theme: the sidebars, the workspace rail and the tab
+bar fade from deep purple to plum, and every filled accent (primary buttons,
+the selected row, the active tab's underline, chips) fades from yellow to
+orange. Terminals and documents stay flat, so they stay readable. An `.html`
+export in that theme carries the same gradients on its top bar and its
+selected buttons. A theme opts in with a `gradient: { chrome, accent }` pair of
+colour stops in `THEMES` (`gui/dist/app.js`); `themeGradients` turns it into the
+`--grad-*` variables, and gives every theme without one its flat colours. Its
+id must also be in `THEMES` in `src/infrastructure/config/schema.rs`; a test
+checks both lists match.
 
 The **font picker** lists the installed families, each previewed in its own
 face and tagged *mono* or *proportional*. *Monospace only* is on by default, and

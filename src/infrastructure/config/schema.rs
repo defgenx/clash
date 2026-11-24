@@ -196,6 +196,7 @@ const THEMES: &[&str] = &[
     "dracula",
     "one-dark",
     "github-light",
+    "aubergine",
 ];
 
 /// The current config schema version. Bumped whenever a key moves or changes

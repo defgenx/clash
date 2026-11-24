@@ -621,6 +621,25 @@ test("an export in a clash theme carries that theme's colours and no toggle", ()
   assert.match(shareViewer.toString(), /hasAttribute\("data-palette"\)/);
 });
 
+test("a gradient theme's export carries its chrome and accent gradients", () => {
+  const aub = {
+    dark: true,
+    ui: { bg: "#19151c", "bg-sidebar": "#3f0e40", accent: "#ecb22e" },
+    gradient: { chrome: ["#4a154b", "#26092a"], accent: ["#ecb22e", "#e8743b"] },
+  };
+  const pal = shareThemePalette("aubergine", aub);
+  assert.equal(pal.vars["grad-top"], "linear-gradient(90deg, #4a154b 0%, #26092a 100%)");
+  assert.equal(pal.vars["grad-accent"], "linear-gradient(135deg, #ecb22e 0%, #e8743b 100%)");
+  const page = shareHtmlDocument("T", "<p>doc</p>", [], { palette: pal });
+  assert.match(page, /--grad-top: linear-gradient\(90deg, #4a154b 0%, #26092a 100%\);/);
+  // A flat theme sets none, and the page's defaults are its flat colours.
+  const flat = shareThemePalette("x", { dark: false, ui: { bg: "#ffffff" } });
+  assert.equal(flat.vars["grad-top"], undefined);
+  assert.match(shareHtmlDocument("T", "<p>doc</p>"), /--grad-top: var\(--bg-panel\); --grad-accent: var\(--accent\);/);
+  // A malformed gradient is ignored rather than written into the style.
+  assert.equal(shareThemePalette("x", { ui: {}, gradient: { chrome: ["red"], accent: [] } }).vars["grad-top"], undefined);
+});
+
 test("an export without a palette still follows the reader's OS", () => {
   const page = shareHtmlDocument("T", "<p>doc</p>");
   assert.match(page, /<html lang="en">/);

@@ -3495,7 +3495,58 @@ const THEMES = {
     },
     ansi: ["#24292f", "#cf222e", "#1a7f37", "#9a6700", "#0969da", "#8250df", "#1b7c83", "#6e7781"],
   },
+  aubergine: {
+    label: "Aubergine",
+    dark: true,
+    ui: {
+      bg: "#19151c",
+      "bg-sidebar": "#3f0e40",
+      "bg-hover": "#4d2350",
+      "bg-active": "#5c2b60",
+      "bg-raised": "#251b29",
+      border: "#3d2a43",
+      fg: "#ece4ee",
+      "fg-dim": "#ab97b1",
+      accent: "#ecb22e",
+      green: "#2bac76",
+      red: "#e01e5a",
+      blue: "#36c5f0",
+      purple: "#c38bd9",
+    },
+    // Two-stop gradients: the chrome fades top → bottom (left → right along
+    // the top bar), the accent fills fade corner to corner.
+    gradient: { chrome: ["#4a154b", "#26092a"], accent: ["#ecb22e", "#e8743b"] },
+    selection: "#5a3a63",
+    ansi: ["#2c2230", "#e01e5a", "#2bac76", "#ecb22e", "#36c5f0", "#c38bd9", "#5fd4c8", "#d9cfdc"],
+  },
 };
+
+/// The gradient custom properties of a theme. A theme without `gradient`
+/// gets its flat colours, so the rules that read them look exactly as before.
+function themeGradients(t) {
+  const u = t.ui;
+  const g = t.gradient;
+  if (!g) {
+    return {
+      "grad-chrome": u["bg-sidebar"],
+      "grad-topbar": u["bg-sidebar"],
+      "grad-rail": u.bg,
+      "grad-accent": u.accent,
+      "grad-select": u["bg-active"],
+      "grad-tab": u.bg,
+    };
+  }
+  const [c1, c2] = g.chrome;
+  const [a1, a2] = g.accent;
+  return {
+    "grad-chrome": `linear-gradient(180deg, ${c1} 0%, ${c2} 100%)`,
+    "grad-topbar": `linear-gradient(90deg, ${c1} 0%, ${c2} 100%)`,
+    "grad-rail": `linear-gradient(180deg, ${c2} 0%, ${c1} 100%)`,
+    "grad-accent": `linear-gradient(135deg, ${a1} 0%, ${a2} 100%)`,
+    "grad-select": `linear-gradient(90deg, ${a1}40 0%, ${a2}14 100%)`,
+    "grad-tab": `linear-gradient(${u.bg}, ${u.bg}) top / 100% calc(100% - 2px) no-repeat, linear-gradient(90deg, ${a1}, ${a2})`,
+  };
+}
 
 /// Mix `hex` toward white (amount > 0) or black (amount < 0) by that fraction.
 /// Used for the bright ANSI slots and hover tints — a straight linear mix, which
@@ -3554,6 +3605,7 @@ function applyTheme(id) {
   for (const [key, value] of Object.entries(derived)) {
     if (!u[key]) root.style.setProperty(`--${key}`, value);
   }
+  for (const [key, value] of Object.entries(themeGradients(t))) root.style.setProperty(`--${key}`, value);
   // A few rules can't be expressed as a colour (icon filters, image blending).
   root.classList.toggle("theme-light", !t.dark);
 

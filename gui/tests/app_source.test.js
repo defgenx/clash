@@ -1408,3 +1408,20 @@ test("WebKit's own context menu never shows, whatever a handler stops", () => {
   // stopPropagation (a dozen do), and the native menu then shows there.
   assert.match(APP, /^document\.addEventListener\("contextmenu", \(e\) => e\.preventDefault\(\), true\);$/m);
 });
+
+test("every GUI theme is a theme the config accepts, and gradients have flat fallbacks", () => {
+  const table = APP.slice(APP.indexOf("const THEMES = {"), APP.indexOf("function themeGradients("));
+  const gui = [...table.matchAll(/^  "?([a-z-]+)"?: \{$/gm)].map((m) => m[1]);
+  const schema = fs.readFileSync(path.join(__dirname, "../../src/infrastructure/config/schema.rs"), "utf8");
+  const list = schema.slice(schema.indexOf("const THEMES: &[&str] = &["));
+  const rust = [...list.slice(0, list.indexOf("];")).matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(gui.sort(), rust.sort(), "THEMES in app.js and schema.rs must list the same ids");
+  assert.ok(gui.includes("aubergine"));
+  // A theme without a gradient keeps its flat look: every variable the CSS
+  // reads is set either way.
+  const fn = extractFunction(APP, "themeGradients");
+  const css = fs.readFileSync(path.join(__dirname, "../dist/style.css"), "utf8");
+  for (const v of new Set([...css.matchAll(/var\(--(grad-[a-z]+)\)/g)].map((m) => m[1]))) {
+    assert.equal((fn.match(new RegExp(`"${v}"`, "g")) || []).length, 2, `${v} needs a flat and a gradient value`);
+  }
+});
