@@ -229,11 +229,19 @@ plugin is global to the Hermes install, so clash cannot add it per spawn.
 ```
 
 Hermes loads a user plugin only when `plugins.enabled` in its `config.yaml`
-lists it. That list is Hermes's consent mechanism and the file is Hermes's, so
-clash never edits it: the user runs `hermes plugins enable clash-status` once.
-The GUI shows that command under Settings → Paths → Hermes binary while
-`plugins.enabled` (read with the pure `hermes::plugin_enabled_in`) lacks it;
-the TUI logs it at startup.
+lists it. The file is Hermes's, so clash never edits it; instead
+`hooks::ensure_hermes_plugin` (startup, both frontends) runs Hermes's own
+`hermes plugins enable clash-status` on a background thread when the plugin is
+in **neither** `plugins.enabled` nor `plugins.disabled` (the pure
+`hermes::plugin_state_in`). Hermes writes the config, reloads its gateway, and
+asks nothing: consent is prompted only for declared capabilities, and the
+manifest declares hooks only. The outcome is read back from the config rather
+than trusted from the exit status, and the child is killed after 3 minutes
+(Hermes may install its Python dependencies first). `plugins.disabled` is what
+`hermes plugins disable` writes, so a plugin the user turned off is never
+re-enabled. The GUI shows the command under Settings → Paths → Hermes binary
+when the plugin is disabled or the enable failed; the TUI logs it at startup
+when disabled.
 
 | Hermes hook | status |
 |---|---|

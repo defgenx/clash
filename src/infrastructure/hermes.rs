@@ -189,14 +189,15 @@ pub fn find<'a>(convs: &'a [Conversation], id: &str) -> Option<&'a Conversation>
         .find(|c| c.row_id == id || c.chain.iter().any(|h| h == id))
 }
 
-/// Pure: whether `config.yaml` lists the clash plugin under
-/// `plugins.enabled`, inline (`enabled: [a, b]`) or as a block list. A plain
-/// line scan of the top-level `plugins:` mapping — enough for the two shapes
-/// `hermes plugins enable` writes, and a miss only costs a Settings hint.
-pub fn plugin_enabled_in(config_yaml: &str) -> bool {
+/// Pure: whether `config.yaml` lists the clash plugin under `plugins.<list>`
+/// (`enabled` or `disabled`), inline (`enabled: [a, b]`) or as a block list. A
+/// plain line scan of the top-level `plugins:` mapping — enough for the two
+/// shapes `hermes plugins enable|disable` writes.
+pub fn plugin_listed_in(config_yaml: &str, list: &str) -> bool {
     let unquote = |s: &str| s.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
+    let key = format!("{list}:");
     let mut in_plugins = false;
-    let mut in_enabled: Option<usize> = None;
+    let mut in_list: Option<usize> = None;
     for line in config_yaml.lines() {
         let body = line.split(" #").next().unwrap_or(line);
         if body.trim().is_empty() || body.trim_start().starts_with('#') {
@@ -206,13 +207,13 @@ pub fn plugin_enabled_in(config_yaml: &str) -> bool {
         let text = body.trim();
         if indent == 0 {
             in_plugins = text == "plugins:";
-            in_enabled = None;
+            in_list = None;
             continue;
         }
         if !in_plugins {
             continue;
         }
-        if let Some(ind) = in_enabled {
+        if let Some(ind) = in_list {
             if let Some(item) = text.strip_prefix("- ") {
                 if indent >= ind && unquote(item) == PLUGIN_NAME {
                     return true;
@@ -220,28 +221,110 @@ pub fn plugin_enabled_in(config_yaml: &str) -> bool {
                 continue;
             }
             if indent <= ind {
-                in_enabled = None;
+                in_list = None;
             }
         }
-        if let Some(rest) = text.strip_prefix("enabled:") {
+        if let Some(rest) = text.strip_prefix(key.as_str()) {
             let rest = rest.trim();
-            if let Some(list) = rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
-                if list.split(',').any(|p| unquote(p) == PLUGIN_NAME) {
+            if let Some(items) = rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+                if items.split(',').any(|p| unquote(p) == PLUGIN_NAME) {
                     return true;
                 }
             } else if rest.is_empty() {
-                in_enabled = Some(indent);
+                in_list = Some(indent);
             }
         }
     }
     false
 }
 
-/// Whether Hermes is set to load the clash status plugin.
-pub fn plugin_enabled(home: &Path) -> bool {
-    std::fs::read_to_string(home.join("config.yaml"))
-        .map(|c| plugin_enabled_in(&c))
-        .unwrap_or(false)
+/// Where the clash plugin stands in Hermes's own config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginState {
+    /// In `plugins.enabled`: Hermes loads it.
+    On,
+    /// In `plugins.disabled` — `hermes plugins disable` put it there. The
+    /// user's call; clash never enables it again.
+    Disabled,
+    /// In neither list: never decided, so clash may enable it.
+    Unset,
+}
+
+impl PluginState {
+    /// The GUI's spelling. `dead_code` allowed: only the `clash-gui` crate reads it.
+    #[allow(dead_code)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PluginState::On => "on",
+            PluginState::Disabled => "disabled",
+            PluginState::Unset => "off",
+        }
+    }
+}
+
+/// Pure: [`PluginState`] from a `config.yaml`. Hermes's own `enable` removes a
+/// plugin from `disabled`, so `enabled` wins if both name it.
+pub fn plugin_state_in(config_yaml: &str) -> PluginState {
+    if plugin_listed_in(config_yaml, "enabled") {
+        PluginState::On
+    } else if plugin_listed_in(config_yaml, "disabled") {
+        PluginState::Disabled
+    } else {
+        PluginState::Unset
+    }
+}
+
+/// Where the clash plugin stands in the Hermes install at `home`.
+pub fn plugin_state(home: &Path) -> PluginState {
+    plugin_state_in(&std::fs::read_to_string(home.join("config.yaml")).unwrap_or_default())
+}
+
+/// Enable the clash plugin by running Hermes's own `hermes plugins enable`, so
+/// Hermes writes its config itself and reloads its gateway. Blocking (Hermes's
+/// startup can take seconds): callers run it off the UI thread. The child is
+/// always waited for, and killed after `timeout`.
+pub fn enable_plugin(bin: &str, home: &Path, timeout: std::time::Duration) -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(bin)
+        .args(["plugins", "enable", PLUGIN_NAME])
+        .env("HERMES_HOME", home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{bin} not started: {e}"))?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut err = String::new();
+                if let Some(mut e) = child.stderr.take() {
+                    let _ = std::io::Read::read_to_string(&mut e, &mut err);
+                }
+                return if status.success() && plugin_state(home) == PluginState::On {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "`{bin} plugins enable {PLUGIN_NAME}` failed ({status}): {}",
+                        err.trim()
+                    ))
+                };
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("`{bin} plugins enable {PLUGIN_NAME}` timed out"));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e.to_string());
+            }
+        }
+    }
 }
 
 // ── IO ───────────────────────────────────────────────────────────────
@@ -443,24 +526,72 @@ mod tests {
     }
 
     #[test]
-    fn the_plugin_counts_as_enabled_in_either_list_shape_only() {
-        assert!(plugin_enabled_in(
-            "plugins:\n  enabled: [a, clash-status]\n"
-        ));
-        assert!(plugin_enabled_in(
-            "model:\n  default: x\nplugins:\n  enabled:\n    - other\n    - \"clash-status\"\n"
-        ));
-        assert!(plugin_enabled_in(
-            "plugins:\n  enabled:\n  - clash-status\n"
-        ));
-        assert!(!plugin_enabled_in(
-            "plugins:\n  disabled: [clash-status]\n  enabled: []\n"
-        ));
-        assert!(!plugin_enabled_in(
-            "plugins:\n  enabled:\n    - a\n  disabled:\n    - clash-status\n"
-        ));
-        assert!(!plugin_enabled_in("other:\n  enabled: [clash-status]\n"));
-        assert!(!plugin_enabled_in(""));
+    fn the_plugin_state_reads_either_list_shape() {
+        use PluginState::*;
+        assert_eq!(
+            plugin_state_in("plugins:\n  enabled: [a, clash-status]\n"),
+            On
+        );
+        assert_eq!(
+            plugin_state_in(
+                "model:\n  default: x\nplugins:\n  enabled:\n    - other\n    - \"clash-status\"\n"
+            ),
+            On
+        );
+        assert_eq!(
+            plugin_state_in("plugins:\n  enabled:\n  - clash-status\n"),
+            On
+        );
+        assert_eq!(
+            plugin_state_in("plugins:\n  disabled: [clash-status]\n  enabled: []\n"),
+            Disabled
+        );
+        assert_eq!(
+            plugin_state_in("plugins:\n  enabled:\n    - a\n  disabled:\n    - clash-status\n"),
+            Disabled
+        );
+        assert_eq!(
+            plugin_state_in("other:\n  enabled: [clash-status]\n"),
+            Unset
+        );
+        // Exactly what `hermes plugins enable` / `disable` write (0.23.4).
+        assert_eq!(
+            plugin_state_in("plugins:\n  enabled:\n    - clash-status\n  disabled: []\n"),
+            On
+        );
+        assert_eq!(
+            plugin_state_in("plugins:\n  enabled: []\n  disabled:\n    - clash-status\n"),
+            Disabled
+        );
+        assert_eq!(plugin_state_in(""), Unset);
+    }
+
+    /// The enable goes through Hermes's own command, whose outcome is read
+    /// back from the config rather than trusted from the exit status.
+    #[cfg(unix)]
+    #[test]
+    fn enabling_runs_hermes_and_checks_the_config_it_wrote() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let fake = dir.path().join("hermes");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\n[ \"$1 $2 $3\" = \"plugins enable clash-status\" ] || exit 2\n\
+             printf 'plugins:\\n  enabled:\\n    - clash-status\\n' > \"$HERMES_HOME/config.yaml\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let t = std::time::Duration::from_secs(10);
+        assert_eq!(enable_plugin(fake.to_str().unwrap(), dir.path(), t), Ok(()));
+        assert_eq!(plugin_state(dir.path()), PluginState::On);
+
+        // Exit 0 without writing the config is not an enable.
+        let liar = dir.path().join("liar");
+        std::fs::write(&liar, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&liar, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let other = tempfile::TempDir::new().unwrap();
+        assert!(enable_plugin(liar.to_str().unwrap(), other.path(), t).is_err());
+        assert!(enable_plugin("/nonexistent/hermes", other.path(), t).is_err());
     }
 
     /// The regression: with Hermes's gateway gone (it exits when idle) its

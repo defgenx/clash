@@ -85,13 +85,14 @@ impl App {
         if let Err(e) = crate::infrastructure::hooks::install_hooks(&data_dir) {
             tracing::warn!("Failed to install hooks: {}", e);
         }
-        match crate::infrastructure::hooks::install_hermes_plugin(&settings.hermes_home()) {
-            Ok(true) if !crate::infrastructure::hermes::plugin_enabled(&settings.hermes_home()) => {
-                tracing::info!(
-                    "Hermes sessions show live status once Hermes loads clash's plugin: \
-                     run `hermes plugins enable clash-status`"
-                );
-            }
+        match crate::infrastructure::hooks::ensure_hermes_plugin(
+            &settings.hermes_home(),
+            &settings.general.hermes_bin,
+        ) {
+            Ok(Some(crate::infrastructure::hermes::PluginState::Disabled)) => tracing::info!(
+                "Hermes: clash's status plugin is disabled, so Hermes sessions show no live \
+                 status — `hermes plugins enable clash-status` turns it back on"
+            ),
             Ok(_) => {}
             Err(e) => tracing::warn!("Hermes status plugin not installed: {}", e),
         }

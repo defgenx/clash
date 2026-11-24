@@ -139,10 +139,23 @@ change-request composers) offers it.
   shows the whole chain as one session. Renaming a clash-started session in
   Hermes (`/title`) breaks that link — the next resume starts a fresh session.
 - **Status.** At startup clash writes a status plugin into
-  `~/.hermes/plugins/clash-status/`. Hermes loads it only once it is enabled,
-  which is Hermes's own consent step: run `hermes plugins enable clash-status`
-  once (Settings → Paths shows the command until it is done). Until then
-  status comes from the screen, which can miss an approval prompt.
+  `~/.hermes/plugins/clash-status/` and, the first time, enables it by running
+  `hermes plugins enable clash-status` in the background — Hermes's own
+  command, so Hermes writes its config and reloads its gateway; there is
+  nothing to do by hand. If you disable it (`hermes plugins disable
+  clash-status`), clash leaves that choice alone and Hermes sessions fall back
+  to status read from the screen, which can miss an approval prompt.
+  Settings → Paths says so, with the command to turn it back on; it also shows
+  when the automatic enable failed (the reason is in `clash.log`).
+
+  | To… | Run |
+  |---|---|
+  | turn it back on | `hermes plugins enable clash-status` |
+  | turn it off for good | `hermes plugins disable clash-status` |
+  | check it | `hermes plugins list` |
+
+  If a running gateway does not pick a change up, `hermes gateway restart`
+  does.
 - **Skills.** The embedded `clash-*` skills are installed into
   `~/.hermes/skills/clash/` at startup (when Hermes is installed) and again
   before every Hermes workflow launch. That is the folder Hermes's own setup

@@ -1862,7 +1862,8 @@ struct AgentSettings {
     claude_available: bool,
     hermes_available: bool,
     /// The clash status plugin in Hermes: `absent` (no Hermes home), `off`
-    /// (installed, not in `plugins.enabled`) or `on`.
+    /// (installed, never enabled — clash enables it at startup), `disabled`
+    /// (the user turned it off) or `on`.
     hermes_plugin: String,
     workflow_agent: String,
     omp_model: String,
@@ -1908,10 +1909,8 @@ fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
                 .is_dir()
             {
                 "absent"
-            } else if clash::infrastructure::hermes::plugin_enabled(&home) {
-                "on"
             } else {
-                "off"
+                clash::infrastructure::hermes::plugin_state(&home).as_str()
             }
             .to_string()
         },
@@ -3742,10 +3741,14 @@ fn main() {
         tracing::warn!("Failed to install hooks: {}", e);
     }
     // Hermes loads its plugin itself, once `plugins.enabled` lists it.
-    if let Err(e) =
-        clash::infrastructure::hooks::install_hermes_plugin(&state.config.get().hermes_home())
     {
-        tracing::warn!("Hermes status plugin not installed: {}", e);
+        let cfg = state.config.get();
+        if let Err(e) = clash::infrastructure::hooks::ensure_hermes_plugin(
+            &cfg.hermes_home(),
+            &cfg.general.hermes_bin,
+        ) {
+            tracing::warn!("Hermes status plugin not installed: {}", e);
+        }
     }
 
     // Skills: everything clash itself wrote is synced at startup (missing

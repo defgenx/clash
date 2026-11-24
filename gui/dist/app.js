@@ -20257,18 +20257,25 @@ $("set-claude-bin").addEventListener("change", async () => {
   }
 });
 
-/// Hermes sessions report their status through a plugin Hermes loads only
-/// once you enable it; until then the note under the binary says how.
+/// Hermes sessions report their status through a plugin clash enables at
+/// startup (through Hermes's own command). The note under the binary shows
+/// only when that did not happen: the enable failed, or the plugin was
+/// disabled in Hermes — which clash then leaves alone.
 function syncHermesPluginNote(cfg) {
   const note = $("set-hermes-plugin-note");
-  const off = cfg.hermesAvailable !== false && cfg.hermesPlugin === "off";
-  note.classList.toggle("hidden", !off);
-  if (!off || note.dataset.built) return;
-  note.dataset.built = "1";
+  const state = cfg.hermesAvailable !== false ? cfg.hermesPlugin : "";
+  const show = state === "off" || state === "disabled";
+  note.classList.toggle("hidden", !show);
+  if (!show || note.dataset.built === state) return;
+  note.dataset.built = state;
+  note.textContent = "";
   const cmd = "hermes plugins enable clash-status";
   note.append(
-    "Hermes sessions show their status (thinking, waiting, blocked on an approval) once Hermes " +
-      "loads clash's plugin. Run once: ",
+    state === "disabled"
+      ? "clash's status plugin is disabled in Hermes, so Hermes sessions show no live status " +
+          "(thinking, waiting, blocked on an approval). clash leaves your choice alone; to turn it back on, run: "
+      : "clash could not enable its status plugin in Hermes (see clash.log), so Hermes sessions " +
+          "show no live status. Run once: ",
   );
   const code = document.createElement("code");
   code.textContent = cmd;

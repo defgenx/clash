@@ -213,11 +213,46 @@ pub fn install_hooks(claude_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Startup, both frontends: write the status plugin and, when Hermes has never
+/// been told about it (in neither `plugins.enabled` nor `plugins.disabled`),
+/// enable it on a background thread through Hermes's own
+/// `hermes plugins enable` — Hermes writes its config and reloads its gateway;
+/// clash never edits that file. A plugin the user disabled stays disabled.
+/// Returns the state found, `None` when Hermes is not installed.
+pub fn ensure_hermes_plugin(
+    hermes_home: &Path,
+    hermes_bin: &str,
+) -> std::io::Result<Option<crate::infrastructure::hermes::PluginState>> {
+    use crate::infrastructure::hermes::{self, PluginState};
+    if !install_hermes_plugin(hermes_home)? {
+        return Ok(None);
+    }
+    let state = hermes::plugin_state(hermes_home);
+    if state == PluginState::Unset {
+        let (home, bin) = (hermes_home.to_path_buf(), hermes_bin.to_string());
+        let spawned = std::thread::Builder::new()
+            .name("hermes-plugin-enable".into())
+            .spawn(move || {
+                // Generous: Hermes may install its Python dependencies first.
+                match hermes::enable_plugin(&bin, &home, std::time::Duration::from_secs(180)) {
+                    Ok(()) => tracing::info!("Hermes: enabled clash's status plugin"),
+                    Err(e) => tracing::warn!(
+                        "Hermes: clash's status plugin not enabled ({e}) — run \
+                         `hermes plugins enable clash-status`"
+                    ),
+                }
+            });
+        if let Err(e) = spawned {
+            tracing::warn!("Hermes: plugin enable not started: {e}");
+        }
+    }
+    Ok(Some(state))
+}
+
 /// Write clash's status plugin into `<hermes_home>/plugins/clash-status/`, when
 /// Hermes is installed (its home exists) — only the bytes that changed. Hermes
-/// loads it only once `plugins.enabled` lists it, which is Hermes's own
-/// consent step (`hermes plugins enable clash-status`): clash never edits
-/// Hermes's config. Returns whether the plugin is in place.
+/// loads it only once `plugins.enabled` lists it (see
+/// [`ensure_hermes_plugin`]). Returns whether the plugin is in place.
 pub fn install_hermes_plugin(hermes_home: &Path) -> std::io::Result<bool> {
     if !hermes_home.is_dir() {
         return Ok(false);

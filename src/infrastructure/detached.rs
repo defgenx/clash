@@ -62,6 +62,7 @@ mod tests {
             "src/infrastructure/webhook.rs",
             "src/infrastructure/clipboard.rs",
             "src/infrastructure/explorer.rs",
+            "src/infrastructure/hermes.rs",
         ];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut offenders = Vec::new();
