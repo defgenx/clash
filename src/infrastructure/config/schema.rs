@@ -381,10 +381,10 @@ pub const PROPS: &[Prop] = &[
     // ── [workflows] ─────────────────────────────────────────────────
     Prop::new(
         "workflows.agent",
-        Kind::Enum(&["ask", "claude", "omp"]),
+        Kind::Enum(&["ask", "claude", "omp", "hermes"]),
         Val::Str("ask"),
         "Agent CLI workflow sessions (plan, implement, reviews, explanations, shares) run on: \
-         `claude`, `omp`, or `ask` to choose at every step. An item's ⚙ Settings tab can \
+         `claude`, `omp`, `hermes`, or `ask` to choose at every step. An item's ⚙ Settings tab can \
          override it.",
     ),
     Prop::new(
@@ -393,6 +393,15 @@ pub const PROPS: &[Prop] = &[
         Val::Str(""),
         "Model OMP workflow sessions are launched with (`--model`, omp's fuzzy match). Empty \
          uses omp's own default model; Claude sessions use `workflows.lead_model`.",
+    ),
+    Prop::new(
+        "workflows.hermes_model",
+        Kind::Str,
+        Val::Str(""),
+        "Model Hermes workflow sessions are launched with (`-m`, e.g. \
+         `anthropic/claude-opus-4.6`). Empty uses Hermes's own default model. Hermes subagents \
+         always run on `delegation.model` from Hermes's `config.yaml`: Hermes has no \
+         per-session override, and its delegation runs in its shared gateway.",
     ),
     Prop::new(
         "workflows.lead_model",

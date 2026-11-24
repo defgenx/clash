@@ -191,14 +191,13 @@ fn embedded_fingerprint() -> String {
     content_hash(&acc)
 }
 
-fn read_manifest(claude_dir: &Path) -> Option<Manifest> {
-    let raw = std::fs::read_to_string(claude_dir.join("skills").join(MANIFEST_FILE)).ok()?;
+fn read_manifest(skills_dir: &Path) -> Option<Manifest> {
+    let raw = std::fs::read_to_string(skills_dir.join(MANIFEST_FILE)).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
 /// Compare-then-write, like the skills themselves.
-fn write_manifest(claude_dir: &Path, manifest: &Manifest) {
-    let skills_dir = claude_dir.join("skills");
+fn write_manifest(skills_dir: &Path, manifest: &Manifest) {
     let path = skills_dir.join(MANIFEST_FILE);
     let Ok(json) = serde_json::to_string_pretty(manifest) else {
         return;
@@ -207,14 +206,14 @@ fn write_manifest(claude_dir: &Path, manifest: &Manifest) {
         return;
     }
     if let Err(e) =
-        std::fs::create_dir_all(&skills_dir).and_then(|()| write_atomic(&path, json.as_bytes()))
+        std::fs::create_dir_all(skills_dir).and_then(|()| write_atomic(&path, json.as_bytes()))
     {
         tracing::warn!("skill manifest write failed: {}", e);
     }
 }
 
-fn write_skill(claude_dir: &Path, skill: &EmbeddedSkill) -> bool {
-    let dir = claude_dir.join("skills").join(skill.name);
+fn write_skill(skills_dir: &Path, skill: &EmbeddedSkill) -> bool {
+    let dir = skills_dir.join(skill.name);
     if let Err(e) = std::fs::create_dir_all(&dir) {
         tracing::warn!("skill install: create {} failed: {}", dir.display(), e);
         return false;
@@ -233,7 +232,13 @@ fn write_skill(claude_dir: &Path, skill: &EmbeddedSkill) -> bool {
 
 /// What an upgrade would touch, computed fresh from disk.
 pub fn plan_install(claude_dir: &Path) -> SkillsPlan {
-    let manifest = read_manifest(claude_dir);
+    plan_install_in(&claude_dir.join("skills"))
+}
+
+/// [`plan_install`] for a skills directory given directly — Hermes keeps
+/// clash's skills in a category folder (`~/.hermes/skills/clash/`).
+pub fn plan_install_in(skills_dir: &Path) -> SkillsPlan {
+    let manifest = read_manifest(skills_dir);
     let fingerprint = embedded_fingerprint();
     let mut plan = SkillsPlan {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -244,7 +249,7 @@ pub fn plan_install(claude_dir: &Path) -> SkillsPlan {
         ..SkillsPlan::default()
     };
     for skill in SKILLS {
-        let path = claude_dir.join("skills").join(skill.name).join("SKILL.md");
+        let path = skills_dir.join(skill.name).join("SKILL.md");
         match std::fs::read_to_string(&path) {
             Err(_) => plan.missing.push(skill.name.to_string()),
             Ok(existing) if existing == skill.content => {}
@@ -262,7 +267,7 @@ pub fn plan_install(claude_dir: &Path) -> SkillsPlan {
         }
     }
     for name in RETIRED_SKILLS {
-        let dir = claude_dir.join("skills").join(name);
+        let dir = skills_dir.join(name);
         if !dir.is_dir() {
             continue;
         }
@@ -296,8 +301,38 @@ pub fn plan_install(claude_dir: &Path) -> SkillsPlan {
 /// The embedded set is stamped as resolved only when nothing is left to ask,
 /// so a pending local-edit decision still reaches the human.
 pub fn sync_unattended(claude_dir: &Path) -> SkillsReport {
-    let stamp = !plan_install(claude_dir).needs_decision;
-    apply(claude_dir, ApplyMode::Untouched, stamp)
+    sync_unattended_in(&claude_dir.join("skills"))
+}
+
+/// [`sync_unattended_in`] for a directory another tool may have seeded with
+/// copies of clash's skills before clash ever wrote there — Hermes's setup
+/// imports `~/.claude/skills` into `~/.hermes/skills/clash/`. While the folder
+/// has no clash manifest, a copy that differs from the embedded skill is such
+/// an import, not a hand edit: it is kept beside as `SKILL.md.pre-clash` and
+/// replaced, so nothing is lost and nothing asks. From then on the manifest
+/// decides, exactly as everywhere else.
+pub fn sync_adopting(skills_dir: &Path) -> SkillsReport {
+    if read_manifest(skills_dir).is_none() {
+        for skill in SKILLS {
+            let file = skills_dir.join(skill.name).join("SKILL.md");
+            match std::fs::read_to_string(&file) {
+                Ok(disk) if disk != skill.content => {
+                    let kept = file.with_file_name("SKILL.md.pre-clash");
+                    if let Err(e) = std::fs::rename(&file, &kept) {
+                        tracing::warn!("skill adopt: {} not set aside: {}", file.display(), e);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    sync_unattended_in(skills_dir)
+}
+
+/// [`sync_unattended`] for a skills directory given directly.
+pub fn sync_unattended_in(skills_dir: &Path) -> SkillsReport {
+    let stamp = !plan_install_in(skills_dir).needs_decision;
+    apply(skills_dir, ApplyMode::Untouched, stamp)
 }
 
 /// Apply an update decision and stamp it, so the question only returns when
@@ -305,14 +340,19 @@ pub fn sync_unattended(claude_dir: &Path) -> SkillsReport {
 /// and removes nothing; `untouched` skips hand-edited skills; `all` restores
 /// every managed skill to the embedded copy.
 pub fn apply_decision(claude_dir: &Path, mode: ApplyMode) -> SkillsReport {
-    apply(claude_dir, mode, true)
+    apply(&claude_dir.join("skills"), mode, true)
+}
+
+/// [`apply_decision`] for a skills directory given directly.
+pub fn apply_decision_in(skills_dir: &Path, mode: ApplyMode) -> SkillsReport {
+    apply(skills_dir, mode, true)
 }
 
 /// `stamp` records the embedded set as decided on; only `sync_unattended`
 /// withholds it, to leave a pending decision visible.
-fn apply(claude_dir: &Path, mode: ApplyMode, stamp: bool) -> SkillsReport {
-    let plan = plan_install(claude_dir);
-    let mut manifest = read_manifest(claude_dir).unwrap_or_default();
+fn apply(skills_dir: &Path, mode: ApplyMode, stamp: bool) -> SkillsReport {
+    let plan = plan_install_in(skills_dir);
+    let mut manifest = read_manifest(skills_dir).unwrap_or_default();
     let mut report = SkillsReport {
         version: plan.version.clone(),
         ..SkillsReport::default()
@@ -330,7 +370,7 @@ fn apply(claude_dir: &Path, mode: ApplyMode, stamp: bool) -> SkillsReport {
                 ApplyMode::Keep => false,
             };
         if write {
-            if write_skill(claude_dir, skill) {
+            if write_skill(skills_dir, skill) {
                 manifest
                     .skills
                     .insert(name.clone(), content_hash(skill.content));
@@ -354,7 +394,7 @@ fn apply(claude_dir: &Path, mode: ApplyMode, stamp: bool) -> SkillsReport {
                 report.kept.push(name.clone());
                 continue;
             }
-            let dir = claude_dir.join("skills").join(name);
+            let dir = skills_dir.join(name);
             match std::fs::remove_dir_all(&dir) {
                 Ok(()) => {
                     tracing::info!("removed retired skill '{}'", name);
@@ -369,7 +409,7 @@ fn apply(claude_dir: &Path, mode: ApplyMode, stamp: bool) -> SkillsReport {
     if stamp {
         manifest.resolved_fingerprint = plan.fingerprint;
     }
-    write_manifest(claude_dir, &manifest);
+    write_manifest(skills_dir, &manifest);
     report
 }
 
@@ -377,6 +417,38 @@ fn apply(claude_dir: &Path, mode: ApplyMode, stamp: bool) -> SkillsReport {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// An imported copy in a folder clash never managed is replaced, and
+    /// kept beside; once clash's manifest is there, an edit is an edit again.
+    #[test]
+    fn an_imported_copy_is_set_aside_and_replaced_once() {
+        let dir = TempDir::new().unwrap();
+        let skill = dir.path().join("clash-workflow");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(skill.join("SKILL.md"), "imported, older").unwrap();
+        let report = sync_adopting(dir.path());
+        assert!(report.updated.contains(&"clash-workflow".to_string()));
+        assert_eq!(
+            std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+            SKILLS[0].content
+        );
+        assert_eq!(
+            std::fs::read_to_string(skill.join("SKILL.md.pre-clash")).unwrap(),
+            "imported, older"
+        );
+        // Managed from now on: a later hand edit is kept, not adopted.
+        std::fs::write(skill.join("SKILL.md"), "my edit").unwrap();
+        std::fs::remove_file(skill.join("SKILL.md.pre-clash")).unwrap();
+        sync_adopting(dir.path());
+        assert_eq!(
+            std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+            "my edit"
+        );
+        assert!(!skill.join("SKILL.md.pre-clash").exists());
+        assert!(plan_install_in(dir.path())
+            .locally_edited
+            .contains(&"clash-workflow".to_string()));
+    }
 
     #[test]
     fn fresh_dir_is_missing_only_and_installs_silently() {
@@ -405,11 +477,11 @@ mod tests {
         let d = dir.join("skills").join(name);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("SKILL.md"), disk).unwrap();
-        let mut manifest = read_manifest(dir).unwrap_or_default();
+        let mut manifest = read_manifest(&dir.join("skills")).unwrap_or_default();
         manifest
             .skills
             .insert(name.to_string(), last_written_hash.to_string());
-        write_manifest(dir, &manifest);
+        write_manifest(&dir.join("skills"), &manifest);
     }
 
     /// Simulate "a new clash binary": the fingerprint stamped on disk is the
@@ -417,9 +489,9 @@ mod tests {
     /// it the plan is already resolved and nothing is a decision — which is
     /// itself the "don't nag me about my own edit" property, pinned below.
     fn simulate_upgrade(dir: &Path) {
-        let mut manifest = read_manifest(dir).unwrap_or_default();
+        let mut manifest = read_manifest(&dir.join("skills")).unwrap_or_default();
         manifest.resolved_fingerprint = "a previous release".to_string();
-        write_manifest(dir, &manifest);
+        write_manifest(&dir.join("skills"), &manifest);
     }
 
     #[test]

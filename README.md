@@ -216,8 +216,8 @@ installs until you click.
 
 ## Workflows
 
-A Workflow item takes one piece of work from idea to merged PR by Claude Code
-or OMP agents, with you approving every step. Everything is plain files under
+A Workflow item takes one piece of work from idea to merged PR by Claude Code,
+OMP or Hermes agents, with you approving every step. Everything is plain files under
 `~/.claude/clash/workflows/`, so an item's history stays readable outside
 clash. Workflows are GUI-only.
 

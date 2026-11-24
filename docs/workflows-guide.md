@@ -2,7 +2,7 @@
 
 A pipeline manager for AI-assisted development, in the [desktop app](gui.md):
 one **item** per piece of work, taken from idea to plan to code to PR by Claude
-Code (or OMP) agents, with you approving every step. Everything is plain files,
+Code, OMP or Hermes agents, with you approving every step. Everything is plain files,
 so an item's whole history stays readable outside clash. Workflows are
 GUI-only.
 
@@ -606,7 +606,7 @@ On an item with several PRs, the composer's *Which change?* rows pick the PRs; a
 verdict with none ticked posts on every open one, one verdict each. A PR's own
 right-click menu offers *Post a verdict on <PR>…*, which opens the composer with
 that PR ticked. Like every review composer, it also asks which agent runs the
-round (Claude Code or OMP) unless the agent setting fixes one. Verdict rounds
+round (Claude Code, OMP or Hermes) unless the agent setting fixes one. Verdict rounds
 are numbered among themselves: *PR verdict 2* is the item's second verdict.
 
 It needs a PR, not a plan, so review-only items get it too. GitHub doesn't let a
@@ -854,9 +854,10 @@ configured webhook. Your own clicks never post.
 
 ## Agents, models and skills
 
-- **Agent CLI**: workflow sessions run on Claude Code or OMP. `workflows.agent`
-  defaults to `ask` at every step and can be fixed per item. See
-  [OMP sessions](sessions.md#omp-sessions).
+- **Agent CLI**: workflow sessions run on Claude Code, OMP or Hermes.
+  `workflows.agent` defaults to `ask` at every step and can be fixed per item.
+  See [OMP sessions](sessions.md#omp-sessions) and
+  [Hermes sessions](sessions.md#hermes-sessions).
 - **Lead and subagents**: every workflow session runs on one pinned **lead
   model**. Under `workflows.delegation = team` (the default) the lead sizes the
   round first: small work stays with the lead, and large work is split across

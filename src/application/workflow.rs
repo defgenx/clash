@@ -1349,12 +1349,6 @@ pub fn resolve_launch_agent(
     AgentKind::parse(if item.is_empty() { global } else { item })
 }
 
-/// Whether workflow sessions may run on `agent`. Hermes runs plain sessions
-/// only: clash installs no skills into it and pins none of its models yet.
-pub fn runs_workflows(agent: crate::domain::entities::AgentKind) -> bool {
-    agent != crate::domain::entities::AgentKind::Hermes
-}
-
 /// The `--model` a workflow session is launched with. Claude sessions run on
 /// `workflows.lead_model`; OMP ones on `workflows.omp_model`, since clash's
 /// Claude model ids mean nothing to a provider omp may be configured with.
@@ -1363,11 +1357,12 @@ pub fn launch_model<'a>(
     agent: crate::domain::entities::AgentKind,
     lead_model: &'a str,
     omp_model: &'a str,
+    hermes_model: &'a str,
 ) -> Option<&'a str> {
     let m = match agent {
         crate::domain::entities::AgentKind::Claude => lead_model,
         crate::domain::entities::AgentKind::Omp => omp_model,
-        crate::domain::entities::AgentKind::Hermes => "",
+        crate::domain::entities::AgentKind::Hermes => hermes_model,
     };
     Some(m.trim()).filter(|m| !m.is_empty())
 }
@@ -2166,12 +2161,23 @@ mod tests {
     fn launch_model_picks_per_agent_and_empty_means_default() {
         use crate::domain::entities::AgentKind;
         assert_eq!(
-            launch_model(AgentKind::Claude, "claude-opus-5-5", "x"),
+            launch_model(AgentKind::Claude, "claude-opus-5-5", "x", "y"),
             Some("claude-opus-5-5")
         );
-        assert_eq!(launch_model(AgentKind::Claude, " ", "x"), None);
-        assert_eq!(launch_model(AgentKind::Omp, "claude-opus-5-5", ""), None);
-        assert_eq!(launch_model(AgentKind::Omp, "a", "sonnet"), Some("sonnet"));
+        assert_eq!(launch_model(AgentKind::Claude, " ", "x", "y"), None);
+        assert_eq!(
+            launch_model(AgentKind::Omp, "claude-opus-5-5", "", "y"),
+            None
+        );
+        assert_eq!(
+            launch_model(AgentKind::Omp, "a", "sonnet", "y"),
+            Some("sonnet")
+        );
+        assert_eq!(
+            launch_model(AgentKind::Hermes, "a", "b", "anthropic/claude-opus-4.6"),
+            Some("anthropic/claude-opus-4.6")
+        );
+        assert_eq!(launch_model(AgentKind::Hermes, "a", "b", ""), None);
     }
 
     #[test]

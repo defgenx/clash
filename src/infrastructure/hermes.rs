@@ -30,6 +30,21 @@ pub fn state_db(home: &Path) -> PathBuf {
     home.join("state.db")
 }
 
+/// Where clash's skills live in Hermes: the `clash` category folder, which is
+/// also where Hermes's own setup imports them from `~/.claude/skills`. Hermes
+/// treats two skills of one name as ambiguous, so clash manages that folder
+/// rather than adding a second copy.
+pub fn skills_dir(home: &Path) -> PathBuf {
+    home.join("skills").join("clash")
+}
+
+/// Sync clash's skills into Hermes, when Hermes is installed (never creates
+/// its home).
+pub fn sync_skills(home: &Path) -> Option<crate::infrastructure::skills::SkillsReport> {
+    home.is_dir()
+        .then(|| crate::infrastructure::skills::sync_adopting(&skills_dir(home)))
+}
+
 /// The title clash gives the Hermes session of clash id `id`.
 pub fn session_title(id: &str) -> String {
     format!("{TITLE_PREFIX}{id}")

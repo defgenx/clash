@@ -1866,6 +1866,7 @@ struct AgentSettings {
     hermes_plugin: String,
     workflow_agent: String,
     omp_model: String,
+    hermes_model: String,
     lead_model: String,
     delegation: String,
     subagent_model: String,
@@ -1924,6 +1925,7 @@ fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
                 .to_string()
         },
         omp_model: cfg.workflows.omp_model,
+        hermes_model: cfg.workflows.hermes_model,
         lead_model: cfg.workflows.lead_model,
         delegation: if team { "team" } else { "solo" }.to_string(),
         subagent_model: cfg.workflows.subagent_model,
@@ -1945,7 +1947,7 @@ fn get_agent_settings(state: State<'_, GuiState>) -> AgentSettings {
 
 /// Write one agent-CLI setting to the shared `config.toml`. `key` is one of
 /// `general.default_agent`, `general.omp_bin`, `general.hermes_bin`, `workflows.agent`,
-/// `workflows.omp_model`, `workflows.lead_model`, `workflows.delegation`,
+/// `workflows.omp_model`, `workflows.hermes_model`, `workflows.lead_model`, `workflows.delegation`,
 /// `workflows.subagent_model`, `workflows.omp_subagent_model`, `workflows.assist`,
 /// `workflows.explain_detail`, `workflows.review_sizing`,
 /// `workflows.small_review_model`, `workflows.large_review_subagent_model`; an empty
@@ -1960,13 +1962,6 @@ fn set_agent_setting(
     let value = value.trim();
     let value = match key.as_str() {
         "workflows.agent" if value.eq_ignore_ascii_case("ask") => "ask".to_string(),
-        "workflows.agent"
-            if !clash::application::workflow::runs_workflows(
-                clash::domain::entities::AgentKind::parse(value),
-            ) =>
-        {
-            return Err(format!("Workflow sessions don't run on {value} yet"));
-        }
         "general.default_agent" | "workflows.agent" if !value.is_empty() => {
             clash::domain::entities::AgentKind::parse(value)
                 .as_str()
@@ -2000,6 +1995,7 @@ fn set_agent_setting(
         | "general.omp_bin"
         | "general.hermes_bin"
         | "workflows.omp_model"
+        | "workflows.hermes_model"
         | "workflows.lead_model"
         | "workflows.delegation"
         | "workflows.subagent_model"
@@ -3762,6 +3758,8 @@ fn main() {
     if let Some(omp) = omp_skills_root(&settings) {
         clash::infrastructure::skills::sync_unattended(&omp);
     }
+    // Hermes reads them from its `clash` skills category; only where Hermes is.
+    clash::infrastructure::hermes::sync_skills(&settings.hermes_home());
     if !synced.updated.is_empty() || !synced.removed.is_empty() {
         tracing::info!(
             "skills synced (updated: {:?}, removed: {:?})",

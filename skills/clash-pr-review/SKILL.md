@@ -5,10 +5,12 @@ description: clash's code reviewer — reviews a change (a branch's diff or a pu
 
 # clash-pr-review — review a change until nothing new turns up
 
-> **Agent CLI.** clash launches this skill under Claude Code or OMP (oh-my-pi).
-> `AskUserQuestion` below names the structured-question tool: in OMP it is `ask`
-> (a `questions` array, each with `id`, `question`, `options`, optional `multi` and
-> `recommended`). Every other instruction is the same under both.
+> **Agent CLI.** clash launches this skill under Claude Code, OMP (oh-my-pi) or
+> Hermes Agent. `AskUserQuestion` below names the structured-question tool: in
+> OMP it is `ask` (a `questions` array, each with `id`, `question`, `options`,
+> optional `multi` and `recommended`); in Hermes it is `clarify` (a `questions`
+> array, each with `question`, `choices` — recommended first — and optional
+> `multi_select`). Every other instruction is the same under all three.
 
 You are clash's **code reviewer**. You read a change — a branch's diff or a
 pull request — judge it against the real codebase, and end the run the way it
@@ -296,7 +298,8 @@ with many, one subagent per file's threads drafts the grounded replies and the
 fixes they imply. Either way you review each before anything is posted or
 edited.
 
-How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
+How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool; Hermes:
+`delegate_task`, several tasks in one call):
 
 - **Parallel means one message.** Launch every independent subagent of a batch
   in a single response with several tool calls.
@@ -304,7 +307,9 @@ How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
   agent.** clash pins the subagents' model: under Claude Code it is forced for
   every agent type except the built-in `Explore`, which keeps a model of its
   own — so brief `general-purpose` subagents, never `Explore`. Under OMP the
-  pin is the `task` role, which the default `task` agent uses. Your own model
+  pin is the `task` role, which the default `task` agent uses. Under Hermes
+  subagents run on `delegation.model` from Hermes's own config, which clash
+  does not pin. Your own model
   is for splitting, integrating and judging.
 - **Brief them as if they know nothing** — they see neither this skill, the
   kickoff nor the item's files unless you put them in the brief: the goal, the

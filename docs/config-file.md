@@ -84,8 +84,9 @@ bind = "127.0.0.1:7878"    # host:port; loopback = this machine only, a Tailscal
 actions = false            # let a paired phone read a session's screen, answer it, queue a follow-up, stash
 
 [workflows]
-agent = "ask"              # agent CLI workflow sessions run on: ask | claude | omp (per-item override)
+agent = "ask"              # agent CLI workflow sessions run on: ask | claude | omp | hermes (per-item override)
 omp_model = ""             # --model for OMP workflow sessions; empty = omp's default
+hermes_model = ""          # -m for Hermes workflow sessions; empty = Hermes's default (subagents: Hermes's delegation.model)
 lead_model = "claude-opus-5-5"     # --model for every Claude workflow session (the lead)
 delegation = "team"        # team: lead fans work out to parallel subagents | solo
 assist = "suggest"         # suggest: highlight the next step | autopilot: also start it when it decides nothing | off

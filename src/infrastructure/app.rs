@@ -111,6 +111,9 @@ impl App {
             if let Some(ref d) = omp_root {
                 skills::sync_unattended(d);
             }
+            // Hermes reads them from its `clash` skills category.
+            let hermes_home = settings.hermes_home();
+            crate::infrastructure::hermes::sync_skills(&hermes_home);
             if !synced.updated.is_empty() || !synced.removed.is_empty() {
                 tracing::info!(
                     "skills synced (updated: {:?}, removed: {:?})",
@@ -125,6 +128,12 @@ impl App {
                         let r = skills::apply_decision(&data_dir, mode);
                         if let Some(ref d) = omp_root {
                             skills::apply_decision(d, mode);
+                        }
+                        if hermes_home.is_dir() {
+                            skills::apply_decision_in(
+                                &crate::infrastructure::hermes::skills_dir(&hermes_home),
+                                mode,
+                            );
                         }
                         tracing::info!(
                             "skills updated per general.skills_update (updated: {:?}, kept: {:?}, removed: {:?})",

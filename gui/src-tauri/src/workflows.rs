@@ -619,7 +619,7 @@ pub(crate) fn set_workflow_pr_stacking(
 ///   Empty clears it.
 /// - `description`: the item's free-form intent — the planning agent's
 ///   primary source. Editable so it can be refined before launching a plan.
-/// - `agent_setting`: `claude` | `omp` | `ask`; empty inherits the global
+/// - `agent_setting`: `claude` | `omp` | `hermes` | `ask`; empty inherits the global
 ///   `workflows.agent`.
 /// - `work_in_place`: never create a worktree; refused once one exists,
 ///   since the recorded worktree is the item's checkout from then on.
@@ -687,7 +687,7 @@ pub(crate) fn set_workflow_item_settings(
     }
     if let Some(agent) = agent_setting {
         let agent = agent.trim().to_ascii_lowercase();
-        if !["", "claude", "omp", "ask"].contains(&agent.as_str()) {
+        if !["", "claude", "omp", "hermes", "ask"].contains(&agent.as_str()) {
             return Err(format!("Unknown agent '{}'", agent));
         }
         meta.agent_setting = agent;
@@ -728,6 +728,13 @@ pub(crate) fn apply_skills_decision(
         .ok_or_else(|| format!("Unknown skills-update mode '{}'", mode))?;
     if let Some(omp) = crate::omp_skills_root(&state.config.get()) {
         clash::infrastructure::skills::apply_decision(&omp, mode);
+    }
+    let hermes = state.config.get().hermes_home();
+    if hermes.is_dir() {
+        clash::infrastructure::skills::apply_decision_in(
+            &clash::infrastructure::hermes::skills_dir(&hermes),
+            mode,
+        );
     }
     Ok(clash::infrastructure::skills::apply_decision(
         state.backend.base_dir(),
@@ -1866,12 +1873,6 @@ fn launch_agent(
         &cfg.workflows.agent,
         &meta.agent,
     );
-    if !clash::application::workflow::runs_workflows(agent) {
-        return Err(format!(
-            "agent-unavailable: workflow sessions don't run on {} yet — pick Claude Code or OMP",
-            clash::application::state::agent_label(agent)
-        ));
-    }
     meta.agent = agent.as_str().to_string();
     let bin = state.agents().bin(agent);
     if !crate::bin_available(&bin) {
@@ -1906,8 +1907,15 @@ async fn spawn_item_session(
     let agent = clash::domain::entities::AgentKind::parse(&meta.agent);
     // Startup syncs the omp dir only when it already exists; an omp installed
     // since then would otherwise start without the skills its kickoff names.
-    if agent == clash::domain::entities::AgentKind::Omp {
-        clash::infrastructure::skills::sync_unattended(&cfg.omp_dir());
+    // Same for Hermes.
+    match agent {
+        clash::domain::entities::AgentKind::Omp => {
+            clash::infrastructure::skills::sync_unattended(&cfg.omp_dir());
+        }
+        clash::domain::entities::AgentKind::Hermes => {
+            clash::infrastructure::hermes::sync_skills(&cfg.hermes_home());
+        }
+        clash::domain::entities::AgentKind::Claude => {}
     }
     clash::infrastructure::hooks::registry::register(
         session_id,
@@ -1946,7 +1954,7 @@ async fn spawn_item_session(
     // restart comes back on the same models. The prompt goes last.
     let agents = state.agents();
     let launch = agents.with_workflow_models(agent, agents.fresh(agent, session_id, cwd), &round);
-    let args = clash::infrastructure::agent::with_prompt(launch.args, &prompt);
+    let args = clash::infrastructure::agent::with_prompt(agent, launch.args, &prompt);
     let env = launch.env;
     let mut control = state.control.lock().await;
     crate::ensure_connected(&mut control).await;

@@ -18,6 +18,7 @@ test("an agent whose binary is missing is listed, greyed, with the reason", () =
     [
       ["claude", true],
       ["omp", false],
+      ["hermes", true],
     ]
   );
   assert.match(choices[1].reason, /\/opt\/omp/);
@@ -45,7 +46,10 @@ test("an unavailable preference falls back to one that is available", () => {
     "omp"
   );
   // Nothing available: keep the preference so the refusal names its binary.
-  assert.equal(wfAgentDefault("omp", { claudeAvailable: false, ompAvailable: false }), "omp");
+  assert.equal(
+    wfAgentDefault("omp", { claudeAvailable: false, ompAvailable: false, hermesAvailable: false }),
+    "omp"
+  );
 });
 
 test("a start asks only when the item's setting, else the global one, is ask", () => {
@@ -68,17 +72,18 @@ test("a global ask pre-selects the last agent, never the word ask", () => {
   assert.equal(wfAgentDefault("", both), "claude");
 });
 
-test("Hermes is offered to new sessions only, never to workflow launches", () => {
+test("Hermes is offered wherever an agent is picked", () => {
   assert.deepEqual(
     wfAgentChoices({}).map((c) => c.value),
-    ["claude", "omp"],
+    ["claude", "omp", "hermes"],
   );
-  const sessions = wfAgentChoices({ hermesAvailable: false, hermesBin: "/x/hermes" }, { sessions: true });
-  const hermes = sessions.find((c) => c.value === "hermes");
+  const hermes = wfAgentChoices({ hermesAvailable: false, hermesBin: "/x/hermes" }).find(
+    (c) => c.value === "hermes",
+  );
   assert.equal(hermes.available, false);
   assert.match(hermes.reason, /\/x\/hermes/);
-  // A Hermes default stands for a new session, and falls back for a workflow.
-  const cfg = { workflowAgent: "hermes" };
-  assert.equal(wfAgentDefault("", cfg, { sessions: true }), "hermes");
-  assert.equal(wfAgentDefault("", cfg), "claude");
+  assert.equal(wfAgentDefault("hermes", {}), "hermes");
+  assert.equal(wfAgentDefault("", { workflowAgent: "hermes" }), "hermes");
+  // An unavailable Hermes falls back to the first agent that is there.
+  assert.equal(wfAgentDefault("hermes", { hermesAvailable: false }), "claude");
 });

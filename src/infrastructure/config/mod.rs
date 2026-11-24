@@ -322,10 +322,12 @@ impl Default for LinearTracker {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Workflows {
-    /// Agent CLI workflow sessions run on: `claude` | `omp`.
+    /// Agent CLI workflow sessions run on: `claude` | `omp` | `hermes`.
     pub agent: String,
     /// `--model` for OMP workflow sessions; empty = omp's default.
     pub omp_model: String,
+    /// `-m` for Hermes workflow sessions; empty = Hermes's default.
+    pub hermes_model: String,
     /// `--model` for Claude workflow sessions (the lead); empty = Claude's default.
     pub lead_model: String,
     /// `team` (lead + parallel subagents) | `solo`.
@@ -376,6 +378,7 @@ impl Default for Workflows {
         Self {
             agent: default_str("workflows.agent"),
             omp_model: default_str("workflows.omp_model"),
+            hermes_model: default_str("workflows.hermes_model"),
             lead_model: default_str("workflows.lead_model"),
             delegation: default_str("workflows.delegation"),
             assist: default_str("workflows.assist"),

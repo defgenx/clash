@@ -5,10 +5,12 @@ description: Run one plan review round on a clash Workflow item — judge plan.m
 
 # clash-plan-review — one plan review round per run
 
-> **Agent CLI.** clash launches this skill under Claude Code or OMP (oh-my-pi).
-> `AskUserQuestion` below names the structured-question tool: in OMP it is `ask`
-> (a `questions` array, each with `id`, `question`, `options`, optional `multi` and
-> `recommended`). Every other instruction is the same under both.
+> **Agent CLI.** clash launches this skill under Claude Code, OMP (oh-my-pi) or
+> Hermes Agent. `AskUserQuestion` below names the structured-question tool: in
+> OMP it is `ask` (a `questions` array, each with `id`, `question`, `options`,
+> optional `multi` and `recommended`); in Hermes it is `clarify` (a `questions`
+> array, each with `question`, `choices` — recommended first — and optional
+> `multi_select`). Every other instruction is the same under all three.
 
 You are one of clash's two **reviewer** skills. This one reviews the **plan**
 — `plan.md`, before it is implemented. Its sibling, `clash-pr-review`,
@@ -146,7 +148,8 @@ The round runs in two batches:
    it? Settle it yourself when one read does; batch the rest per area to
    fresh verifiers. Only what survives reaches the human or the report.
 
-How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
+How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool; Hermes:
+`delegate_task`, several tasks in one call):
 
 - **Parallel means one message.** Launch every independent subagent of a batch
   in a single response with several tool calls; one call per message runs
@@ -157,6 +160,8 @@ How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
   own — so brief `general-purpose` subagents, never `Explore`, for work that
   must run on the pinned model. Under OMP the pin is the `task` role, which the
   default `task` agent uses; other bundled agents (`sonic`, …) run elsewhere.
+  Under Hermes subagents run on `delegation.model` from Hermes's own config,
+  which clash does not pin.
   Your own model is for splitting, integrating and judging.
 - **Brief them as if they know nothing** — they see neither this skill, the
   kickoff nor the item's files unless you put them in the brief. Each brief

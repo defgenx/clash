@@ -2097,7 +2097,9 @@ because its ground truth is `plan.md` and the diff, and it adopts
 
 Every workflow session runs on one pinned **lead model** per harness —
 `workflows.lead_model` (default `claude-opus-5-5`) under Claude Code,
-`workflows.omp_model` (default empty: omp's own) under OMP — rather than
+`workflows.omp_model` (default empty: omp's own) under OMP,
+`workflows.hermes_model` (default empty: Hermes's own; passed as `-m`) under
+Hermes — rather than
 whatever the user last selected, so rounds are reproducible — two review rounds on one item
 are comparable because the reviewer was the same model both times. The lead
 does the thinking: requirements, planning, splitting, integrating, judging.
@@ -2105,7 +2107,11 @@ does the thinking: requirements, planning, splitting, integrating, judging.
 Under `workflows.delegation = team` (the default) the lead may fan the work out
 to parallel subagents, which run on `workflows.subagent_model` (default
 `claude-sonnet-5-5`) under Claude Code and `workflows.omp_subagent_model`
-(default empty: omp's own `task` role) under OMP. `team` is permission, not a quota: every skill makes the
+(default empty: omp's own `task` role) under OMP. Under Hermes they run on
+`delegation.model` from Hermes's own `config.yaml`, which clash does not pin:
+Hermes has neither a per-session nor a per-call subagent model, and its
+delegation runs in its shared gateway, out of reach of anything clash could put
+in the launch. `team` is permission, not a quota: every skill makes the
 lead **size the round first** and pick the smallest split that keeps quality —
 no split when the work fits in a few reads, one subagent per independent area
 (subsystem, repo, PR) otherwise, and a per-concern split only for large or
@@ -2195,8 +2201,9 @@ More than one PR in scope (several picked, or a stack) is never `small`. An
 empty tier setting falls back to the regular pin, and a measurement that fails
 (or finds no change) is `medium` without a `Size:` field — never a failed
 launch. `workflows.review_sizing = off` measures nothing: exactly the regular
-pins and no `Size:`. **Claude Code only** — an OMP round still states its size
-in the kickoff, but its models are the user's providers', so it keeps its own.
+pins and no `Size:`. **Claude Code only** — an OMP or Hermes round still states
+its size in the kickoff, but its models are the user's providers', so it keeps
+its own.
 
 The kickoff carries `Size: <small|medium|large> (<N> lines, <F> files).` right
 after `Depth:`, recorded as `meta.review.size` / `sizeLines` / `sizeFiles`, so

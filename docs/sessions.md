@@ -126,10 +126,9 @@ Details: [hooks.md](hooks.md#omp-sessions).
 clash also runs [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 (`hermes`) sessions, picked the same way (the new-session dialog,
 `:new --agent hermes <path>`, or `general.default_agent = "hermes"`). The GUI
-badges them `HM`. **Workflow items do not run on Hermes yet**: the workflow
-pickers do not offer it, `workflows.agent` refuses it, and a launch on it is
-refused before any set-up — clash installs no skills into Hermes and pins none
-of its models.
+badges them `HM`. Workflow items run on Hermes too — every agent picker
+(`workflows.agent`, an item's ⚙ Settings, the launch picker, the review and
+change-request composers) offers it.
 
 - **Identity and resume.** Hermes mints its own session ids, so clash names
   each session it starts by title: `hermes chat -c clash:<id>
@@ -144,11 +143,26 @@ of its models.
   which is Hermes's own consent step: run `hermes plugins enable clash-status`
   once (Settings → Paths shows the command until it is done). Until then
   status comes from the screen, which can miss an approval prompt.
+- **Skills.** The embedded `clash-*` skills are installed into
+  `~/.hermes/skills/clash/` at startup (when Hermes is installed) and again
+  before every Hermes workflow launch. That is the folder Hermes's own setup
+  imports `~/.claude/skills` into; Hermes treats two skills of one name as
+  ambiguous, so clash manages that folder instead of adding a second copy. An
+  imported copy found there before clash ever wrote to it is kept beside as
+  `SKILL.md.pre-clash` and replaced; after that, a hand edit is kept and asked
+  about like any other.
+- **Workflows.** A Hermes workflow session launches with
+  `workflows.hermes_model` (`-m`; empty = Hermes's own default) and its kickoff
+  as `-q`, which seeds the interactive chat as its first turn. Its subagents run
+  on `delegation.model` from Hermes's `config.yaml`: Hermes has no per-session
+  override, its delegation runs in the shared gateway, and clash leaves that
+  file alone.
 - **Stopping.** A Hermes chat is a viewer of a session its background gateway
   runs. Stashing or killing the terminal ends the chat; a turn already in
   flight finishes in the gateway.
 
-Settings: `general.hermes_bin`, `general.default_agent`, `paths.hermes_dir`.
+Settings: `general.hermes_bin`, `general.default_agent`, `paths.hermes_dir`,
+`workflows.agent`, `workflows.hermes_model`.
 Details: [hooks.md](hooks.md#hermes-sessions).
 
 ## Session presets

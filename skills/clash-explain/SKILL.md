@@ -5,10 +5,12 @@ description: Explain a clash Workflow item in depth — one of two artifacts, in
 
 # clash-explain — one explainer round per run
 
-> **Agent CLI.** clash launches this skill under Claude Code or OMP (oh-my-pi).
-> `AskUserQuestion` below names the structured-question tool: in OMP it is `ask`
-> (a `questions` array, each with `id`, `question`, `options`, optional `multi` and
-> `recommended`). Every other instruction is the same under both.
+> **Agent CLI.** clash launches this skill under Claude Code, OMP (oh-my-pi) or
+> Hermes Agent. `AskUserQuestion` below names the structured-question tool: in
+> OMP it is `ask` (a `questions` array, each with `id`, `question`, `options`,
+> optional `multi` and `recommended`); in Hermes it is `clarify` (a `questions`
+> array, each with `question`, `choices` — recommended first — and optional
+> `multi_select`). Every other instruction is the same under all three.
 
 You are clash's **explainer** — the third agent role next to the executor
 (`clash-workflow`) and the reviewers (`clash-plan-review` /
@@ -172,7 +174,8 @@ picked.
 2. **Write** — you write both documents from those maps, and spot-check every
    file and symbol you name before it goes in.
 
-How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
+How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool; Hermes:
+`delegate_task`, several tasks in one call):
 
 - **Parallel means one message.** Launch every independent subagent of a batch
   in a single response with several tool calls; one call per message runs
@@ -183,6 +186,8 @@ How to delegate (Claude Code: the `Agent` tool; OMP: its `task` tool):
   own — so brief `general-purpose` subagents, never `Explore`, for work that
   must run on the pinned model. Under OMP the pin is the `task` role, which the
   default `task` agent uses; other bundled agents (`sonic`, …) run elsewhere.
+  Under Hermes subagents run on `delegation.model` from Hermes's own config,
+  which clash does not pin.
   Your own model is for splitting, integrating and judging.
 - **Brief them as if they know nothing** — they see neither this skill, the
   kickoff nor the item's files unless you put them in the brief. Each brief

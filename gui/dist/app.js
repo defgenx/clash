@@ -3807,7 +3807,8 @@ async function openSession(sid, label, opts = {}) {
     // Shift+Enter inserts a newline in agent sessions instead of
     // submitting. xterm encodes Enter and Shift+Enter identically (\r);
     // Claude Code treats ESC+CR as "insert newline" (the same sequence
-    // its /terminal-setup binds in iTerm/VS Code), OMP binds Ctrl+J (LF).
+    // its /terminal-setup binds in iTerm/VS Code), and so does Hermes's
+    // prompt (escape, enter); OMP binds Ctrl+J (LF).
     // Agent sessions only: in shells ESC+CR is readline M-RET and would
     // surprise.
     if (
@@ -9775,7 +9776,7 @@ function wfAgentGroup(item) {
       detail.className = "wf-review-opt-detail";
       detail.textContent = !c.available
         ? c.reason
-        : (c.value === "omp" ? "oh-my-pi (omp)" : "Claude Code (claude)") +
+        : { claude: "Claude Code (claude)", omp: "oh-my-pi (omp)", hermes: "Hermes Agent (hermes)" }[c.value] +
           (c.value === item.meta.agent ? " · this item's last agent" : "");
       text.append(label, detail);
       row.append(input, text);
@@ -16372,6 +16373,7 @@ async function renderWfSubView(body, root, item, ts) {
       ["ask", "ask at every step"],
       ["claude", "Claude Code"],
       ["omp", "OMP"],
+      ["hermes", "Hermes"],
     ]) {
       const o = document.createElement("option");
       o.value = v;
@@ -17284,14 +17286,14 @@ function showNewSessionModal() {
 /// an agent whose binary does not resolve, instead of letting the spawn fail.
 async function syncAgentPicker() {
   const cfg = await wfAgentSettings();
-  for (const c of wfAgentChoices(cfg, { sessions: true })) {
+  for (const c of wfAgentChoices(cfg)) {
     const input = document.querySelector(`input[name="ns-agent"][value="${c.value}"]`);
     const wrap = $(`ns-agent-${c.value}-wrap`);
     input.disabled = !c.available;
     wrap.classList.toggle("unavailable", !c.available);
     wrap.title = c.available ? AGENT_BADGES[c.value].name : c.reason;
   }
-  const want = wfAgentDefault("", { ...cfg, workflowAgent: cfg.defaultAgent }, { sessions: true });
+  const want = wfAgentDefault("", { ...cfg, workflowAgent: cfg.defaultAgent });
   document.querySelector(`input[name="ns-agent"][value="${want}"]`).checked = true;
 }
 
@@ -20287,6 +20289,7 @@ function syncAgentSettingsUi(cfg) {
   $("set-default-agent").value = cfg.defaultAgent;
   $("set-wf-agent").value = cfg.workflowAgent;
   $("set-wf-omp-model").value = cfg.ompModel;
+  $("set-wf-hermes-model").value = cfg.hermesModel || "";
   $("set-wf-lead-model").value = cfg.leadModel;
   $("set-wf-delegation").value = cfg.delegation;
   $("set-wf-assist").value = cfg.assist || "suggest";
@@ -20317,6 +20320,7 @@ for (const [id, key] of [
   ["set-default-agent", "general.default_agent"],
   ["set-wf-agent", "workflows.agent"],
   ["set-wf-omp-model", "workflows.omp_model"],
+  ["set-wf-hermes-model", "workflows.hermes_model"],
   ["set-wf-lead-model", "workflows.lead_model"],
   ["set-wf-delegation", "workflows.delegation"],
   ["set-wf-assist", "workflows.assist"],

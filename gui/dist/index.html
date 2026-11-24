@@ -348,6 +348,7 @@
                 <option value="ask">Ask at every step</option>
                 <option value="claude">Claude Code</option>
                 <option value="omp">OMP</option>
+                <option value="hermes">Hermes</option>
               </select>
             </label>
             <label class="setting-row inline">Next-step assist
@@ -425,6 +426,11 @@
             </label>
             <label class="setting-row" id="set-wf-omp-subagent-row">Subagent model
               <input id="set-wf-omp-subagent-model" type="text" placeholder="omp's task model" autocomplete="off" spellcheck="false" title="Model the lead's subagents run on under Team delegation — pinned through a per-run omp config overlay that sets the task model role (your own config.yml is left alone). Empty leaves omp's own task model." />
+            </label>
+            <div class="settings-group">Models · Hermes</div>
+            <p class="settings-note">What a workflow session launched on Hermes runs on — a model name Hermes knows, provider-prefixed (<code>anthropic/claude-opus-4.6</code>). Applied at launch and on every resume. Its subagents always run on <code>delegation.model</code> from Hermes's own <code>config.yaml</code>: Hermes has no per-session override, and clash leaves that file alone.</p>
+            <label class="setting-row">Lead model
+              <input id="set-wf-hermes-model" type="text" placeholder="Hermes's default" autocomplete="off" spellcheck="false" title="Model Hermes workflow sessions run on (hermes -m). Empty uses Hermes's own default model." />
             </label>
               </section>
           <section class="settings-tab" data-tab="trackers" data-label="Trackers &amp; sharing">

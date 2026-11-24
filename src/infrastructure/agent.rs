@@ -6,7 +6,7 @@
 //! |---|---|---|---|
 //! | new session under clash id `X` | `--session-id X` | `--resume <bucket>/<ts>_X.jsonl` (clash seeds the file; omp resumes it) | `chat -c clash:X --create-if-missing` (Hermes mints its own id; the title names it) |
 //! | resume | `--resume <conversation>` (forks; chased in the registry) | `--resume <file>` (appends in place) | the same `-c clash:X` (Hermes follows compression to the tip); `chat --resume <id>` for a session clash did not name |
-//! | initial prompt | positional | positional | not used yet (Hermes runs no workflow sessions) |
+//! | initial prompt | positional | positional | `-q <prompt>` (on a TTY it seeds the interactive chat as its first turn) |
 //!
 //! Status hooks are injected by the daemon at spawn (`daemon::session`), not
 //! here, so a bare `claude`/`omp` from any caller still gets them. Hermes's
@@ -43,6 +43,7 @@ pub struct WorkflowModels {
     pub claude_subagent: String,
     pub omp_lead: String,
     pub omp_subagent: String,
+    pub hermes_lead: String,
 }
 
 /// Where each agent lives on this machine, from config.
@@ -83,13 +84,17 @@ pub fn resume_args(agent: AgentKind, conversation: &str, omp_file: &Path) -> Vec
     }
 }
 
-/// Append an initial prompt. Both agents take it as the last positional
-/// argument, so it goes after every flag (`--model` included).
+/// Append an initial prompt. Claude Code and OMP take it as the last
+/// positional argument, so it goes after every flag (`--model` included);
+/// Hermes takes it as `-q`, whose text seeds the interactive chat on a TTY.
 ///
 /// `dead_code` is allowed because the only caller is the sibling `clash-gui`
 /// crate (workflow launchers); the TUI launches no prompted sessions.
 #[allow(dead_code)]
-pub fn with_prompt(mut args: Vec<String>, prompt: &str) -> Vec<String> {
+pub fn with_prompt(agent: AgentKind, mut args: Vec<String>, prompt: &str) -> Vec<String> {
+    if agent == AgentKind::Hermes {
+        args.push("-q".into());
+    }
     args.push(prompt.into());
     args
 }
@@ -108,6 +113,7 @@ impl Agents {
                 claude_lead: cfg.workflows.lead_model.clone(),
                 claude_subagent: cfg.workflows.subagent_model.clone(),
                 omp_lead: cfg.workflows.omp_model.clone(),
+                hermes_lead: cfg.workflows.hermes_model.clone(),
                 omp_subagent: cfg.workflows.omp_subagent_model.clone(),
             },
             omp_overlay_path: Config::clash_data_dir()
@@ -130,7 +136,7 @@ impl Agents {
         use crate::application::workflow::{delegation_env, launch_model, Delegation};
         let w = &self.workflow;
         let claude_lead = round.lead.as_deref().unwrap_or(&w.claude_lead);
-        if let Some(m) = launch_model(agent, claude_lead, &w.omp_lead) {
+        if let Some(m) = launch_model(agent, claude_lead, &w.omp_lead, &w.hermes_lead) {
             launch.args.push("--model".into());
             launch.args.push(m.to_string());
         }
@@ -471,7 +477,14 @@ mod tests {
     #[test]
     fn the_prompt_is_the_last_argument() {
         let base = vec!["--model".to_string(), "opus".to_string()];
-        assert_eq!(with_prompt(base, "do it"), ["--model", "opus", "do it"]);
+        assert_eq!(
+            with_prompt(AgentKind::Claude, base.clone(), "do it"),
+            ["--model", "opus", "do it"]
+        );
+        assert_eq!(
+            with_prompt(AgentKind::Hermes, base, "do it"),
+            ["--model", "opus", "-q", "do it"]
+        );
     }
 
     fn agents_with(dir: &Path, w: WorkflowModels) -> Agents {
@@ -494,6 +507,7 @@ mod tests {
             claude_subagent: "claude-sonnet-5-5".into(),
             omp_lead: "glm-5".into(),
             omp_subagent: "glm-5-flash".into(),
+            hermes_lead: "anthropic/claude-opus-4.6".into(),
         }
     }
 
@@ -518,6 +532,26 @@ mod tests {
         let body = std::fs::read_to_string(overlay).unwrap();
         assert!(body.contains("task: \"glm-5-flash\""), "{body}");
         assert!(!o.env.contains_key("CLAUDE_CODE_SUBAGENT_MODEL"));
+
+        // Hermes: the lead only — its subagents follow Hermes's own config,
+        // which runs in its gateway, so no env could pin them.
+        let h = a.with_workflow_models(
+            AgentKind::Hermes,
+            a.fresh(AgentKind::Hermes, "X", "/p"),
+            &RoundModels::default(),
+        );
+        assert_eq!(
+            h.args,
+            [
+                "chat",
+                "-c",
+                "clash:X",
+                "--create-if-missing",
+                "--model",
+                "anthropic/claude-opus-4.6"
+            ]
+        );
+        assert!(h.env.is_empty());
 
         // Solo pins nothing, empty leads leave the agent's own default.
         let bare = agents_with(
