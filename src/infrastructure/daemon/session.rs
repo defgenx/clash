@@ -59,8 +59,9 @@ impl PtySession {
     /// Spawn a new PTY session.
     ///
     /// `raw_startup` selects the slave PTY's line discipline at exec time:
-    /// - `true` for TUI apps (Claude) that immediately set their own termios
-    ///   — see the raw-mode comment below.
+    /// - `true` for agents that immediately set their own termios — see the
+    ///   raw-mode comment below and `agent::raw_startup`, which decides it
+    ///   per agent (Hermes's REPL does not, so it starts cooked).
     /// - `false` for interactive shells, which adopt the startup termios as
     ///   the baseline they restore when running foreground commands. A shell
     ///   started on a raw PTY runs every command with ISIG/OPOST off, so

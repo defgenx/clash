@@ -32,6 +32,20 @@ pub struct Launch {
     pub bin: String,
     pub args: Vec<String>,
     pub env: HashMap<String, String>,
+    /// Start the PTY raw ([`raw_startup`]); the daemon's `raw_startup` flag.
+    pub raw_startup: bool,
+}
+
+/// Whether `agent` gets a raw PTY at exec. Claude Code and OMP switch the
+/// terminal to raw themselves, so a raw start only closes the cooked window
+/// before they do. Hermes prints its banner with bare `\n` before its REPL
+/// takes the terminal, so on a raw PTY each line starts where the last one
+/// ended. See `docs/hooks.md` → Hermes sessions.
+pub fn raw_startup(agent: AgentKind) -> bool {
+    match agent {
+        AgentKind::Claude | AgentKind::Omp => true,
+        AgentKind::Hermes => false,
+    }
 }
 
 /// The `workflows.*` model settings, per harness — what a workflow session
@@ -214,6 +228,7 @@ impl Agents {
         Launch {
             bin: self.bin(agent),
             args: fresh_args(agent, id, &omp_file),
+            raw_startup: raw_startup(agent),
             ..Launch::default()
         }
     }
@@ -272,6 +287,7 @@ impl Agents {
                     Launch {
                         bin: self.bin(agent),
                         args: resume_args(agent, &conversation, Path::new("")),
+                        raw_startup: raw_startup(agent),
                         ..Launch::default()
                     }
                 } else {
@@ -282,6 +298,7 @@ impl Agents {
                 Some(file) => Launch {
                     bin: self.bin(agent),
                     args: resume_args(agent, &conversation, &file),
+                    raw_startup: raw_startup(agent),
                     ..Launch::default()
                 },
                 None => self.fresh(agent, session_id, cwd),
@@ -294,6 +311,7 @@ impl Agents {
                     Some(c) => Launch {
                         bin: self.bin(agent),
                         args: resume_args(agent, &c.tip, Path::new("")),
+                        raw_startup: raw_startup(agent),
                         ..Launch::default()
                     },
                     None => self.fresh(agent, session_id, cwd),
@@ -464,14 +482,55 @@ mod tests {
             },
         )]
         .into();
-        assert_eq!(
-            a.relaunch_with(&reg, "X", Some("/p"), |_| false).args,
-            fresh.args
-        );
+        let relaunch = a.relaunch_with(&reg, "X", Some("/p"), |_| false);
+        assert_eq!(relaunch.args, fresh.args);
+        assert!(!fresh.raw_startup && !relaunch.raw_startup);
         assert_eq!(
             resume_args(AgentKind::Hermes, "local-1", Path::new("")),
             ["chat", "--resume", "local-1"]
         );
+    }
+
+    /// Hermes prints its banner with bare `\n`, so a raw start staircases it;
+    /// the others set raw themselves.
+    #[test]
+    fn only_agents_that_set_their_own_termios_start_raw() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = agents_with(dir.path(), WorkflowModels::default());
+        assert!(a.fresh(AgentKind::Claude, "X", "/p").raw_startup);
+        assert!(a.fresh(AgentKind::Omp, "X", "/p").raw_startup);
+        assert!(!a.fresh(AgentKind::Hermes, "X", "/p").raw_startup);
+        // A Claude relaunch with a transcript resumes rather than starting fresh.
+        let resumed = a.relaunch_with(&HashMap::new(), "Y", Some("/p"), |_| true);
+        assert_eq!(resumed.args, ["--resume", "Y"]);
+        assert!(resumed.raw_startup);
+    }
+
+    /// Every agent spawn passes the launch's own flag: a hardcoded `true` is
+    /// how Hermes got a raw PTY.
+    #[test]
+    fn agent_spawns_take_raw_startup_from_the_launch() {
+        for (name, src) in [
+            ("app.rs", include_str!("app.rs")),
+            (
+                "gui main.rs",
+                include_str!("../../gui/src-tauri/src/main.rs"),
+            ),
+            (
+                "gui workflows.rs",
+                include_str!("../../gui/src-tauri/src/workflows.rs"),
+            ),
+        ] {
+            for call in src.split(".create_session(").skip(1) {
+                let args = &call[..call.find(".await").unwrap_or(call.len())];
+                if args.contains("launch.bin") {
+                    assert!(
+                        args.contains("launch.raw_startup"),
+                        "{name}: an agent spawn hardcodes its PTY mode:{args}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

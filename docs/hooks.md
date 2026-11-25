@@ -286,3 +286,14 @@ inline script ends with and accepts only a chat (bare `hermes` or `chat`):
 the gateway and one-off subcommands are not sessions. `-c clash:<id>` names
 the clash id, `--resume <id>` a Hermes id.
 
+
+**A cooked PTY, not a raw one.** The daemon starts Claude Code and OMP on a
+raw PTY (`cfmakeraw` before exec), which closes the moment before they set
+raw mode themselves. Hermes does not: Rich prints the banner, the tools and
+skills box and the welcome lines with bare `\n` before prompt_toolkit takes
+the terminal, relying on the terminal's output post-processing (`OPOST`) to
+add the `\r`. A raw PTY has `OPOST` off, so every line began where the last
+one ended and a new session opened as a staircase. (Once prompt_toolkit runs
+it writes `\r\n` itself.) Hermes therefore starts on the default cooked
+termios a terminal window gives it; the choice is `agent::raw_startup`,
+carried on every `Launch`.

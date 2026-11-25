@@ -1181,7 +1181,7 @@ impl App {
                 size.width,
                 size.height,
                 launch.env.clone(),
-                true, // TUI: Claude sets its own termios
+                launch.raw_startup,
             )
             .await;
     }
@@ -1784,7 +1784,7 @@ impl App {
                             cols,
                             rows,
                             launch.env.clone(),
-                            true, // TUI: the agent sets its own termios
+                            launch.raw_startup,
                         )
                         .await
                     {
@@ -1878,7 +1878,7 @@ impl App {
                             cols,
                             rows,
                             launch.env.clone(),
-                            true, // TUI: Claude sets its own termios
+                            launch.raw_startup,
                         )
                         .await
                     {
@@ -2112,7 +2112,7 @@ impl App {
                                     size.width,
                                     size.height,
                                     launch.env.clone(),
-                                    true, // TUI: Claude sets its own termios
+                                    launch.raw_startup,
                                 )
                                 .await
                             {

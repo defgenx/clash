@@ -2246,7 +2246,7 @@ async fn spawn_item_session(
             cols,
             rows,
             env,
-            true, // TUI: Claude sets its own termios
+            launch.raw_startup,
         )
         .await
         .map_err(|e| format!("Failed to spawn session: {}", e))?;

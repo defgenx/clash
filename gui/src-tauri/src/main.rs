@@ -560,7 +560,7 @@ async fn open_session(
                 cols,
                 rows,
                 launch.env.clone(),
-                true, // TUI: Claude sets its own termios
+                launch.raw_startup,
             )
             .await
             .map_err(|e| format!("Failed to spawn session: {}", e))?;
@@ -1141,7 +1141,7 @@ async fn create_new_session(
             cols,
             rows,
             HashMap::new(),
-            true, // TUI: Claude sets its own termios
+            launch.raw_startup,
         )
         .await
         .map_err(|e| format!("Failed to spawn session: {}", e))?;
@@ -2581,7 +2581,7 @@ async fn create_worktree_session(
             cols,
             rows,
             launch.env.clone(),
-            true, // TUI: Claude sets its own termios
+            launch.raw_startup,
         )
         .await
         .map_err(|e| format!("Failed to spawn session: {}", e))?;
@@ -2691,7 +2691,7 @@ async fn takeover_wild(
             cols,
             rows,
             launch.env.clone(),
-            true, // TUI: Claude sets its own termios
+            launch.raw_startup,
         )
         .await
         .map_err(|e| format!("Failed to adopt session: {}", e))
